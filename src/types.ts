@@ -65,6 +65,14 @@ export interface DeltaRow {
   readonly putSigma: number;
   /** σ used for call (includes skew) */
   readonly callSigma: number;
+  /** Actual BS delta of the snapped put strike (absolute value, 0–1) */
+  readonly putActualDelta: number;
+  /** Actual BS delta of the snapped call strike (absolute value, 0–1) */
+  readonly callActualDelta: number;
+  /** Gamma of the snapped put strike (delta change per $1 SPX move) */
+  readonly putGamma: number;
+  /** Gamma of the snapped call strike (delta change per $1 SPX move) */
+  readonly callGamma: number;
 }
 
 /** Iron condor legs for a single delta */

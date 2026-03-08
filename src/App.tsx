@@ -695,10 +695,14 @@ export default function StrikeCalculator() {
                         <th style={mkTh(th, 'left', th.red)}>{'\u2192'} Snap</th>
                         <th style={mkTh(th, 'left', th.red)}>SPY</th>
                         <th style={mkTh(th, 'right', th.red)}>Put $</th>
+                        <th style={mkTh(th, 'right', th.red)}>Δ</th>
+                        <th style={mkTh(th, 'right', th.red)}>Γ</th>
                         <th style={mkTh(th, 'left', th.green)}>Call (SPX)</th>
                         <th style={mkTh(th, 'left', th.green)}>{'\u2192'} Snap</th>
                         <th style={mkTh(th, 'left', th.green)}>SPY</th>
                         <th style={mkTh(th, 'right', th.green)}>Call $</th>
+                        <th style={mkTh(th, 'right', th.green)}>Δ</th>
+                        <th style={mkTh(th, 'right', th.green)}>Γ</th>
                         <th style={mkTh(th, 'left')}>Width</th>
                       </tr>
                     </thead>
@@ -713,10 +717,14 @@ export default function StrikeCalculator() {
                             <td style={{ ...mkTd(th), color: th.red, opacity: 0.8 }}>{r.putSnapped}</td>
                             <td style={{ ...mkTd(th), color: th.red, opacity: 0.65 }}>{r.putSpySnapped}</td>
                             <td style={{ ...mkTd(th), color: th.red, textAlign: 'right', fontWeight: 600 }}>{r.putPremium.toFixed(2)}</td>
+                            <td style={{ ...mkTd(th), color: th.red, textAlign: 'right', fontSize: 12 }}>{(r.putActualDelta * 100).toFixed(1)}</td>
+                            <td style={{ ...mkTd(th), color: th.red, textAlign: 'right', fontSize: 11, opacity: 0.7 }}>{r.putGamma.toFixed(4)}</td>
                             <td style={{ ...mkTd(th), color: th.green, fontWeight: 500 }}>{r.callStrike}</td>
                             <td style={{ ...mkTd(th), color: th.green, opacity: 0.8 }}>{r.callSnapped}</td>
                             <td style={{ ...mkTd(th), color: th.green, opacity: 0.65 }}>{r.callSpySnapped}</td>
                             <td style={{ ...mkTd(th), color: th.green, textAlign: 'right', fontWeight: 600 }}>{r.callPremium.toFixed(2)}</td>
+                            <td style={{ ...mkTd(th), color: th.green, textAlign: 'right', fontSize: 12 }}>{(r.callActualDelta * 100).toFixed(1)}</td>
+                            <td style={{ ...mkTd(th), color: th.green, textAlign: 'right', fontSize: 11, opacity: 0.7 }}>{r.callGamma.toFixed(4)}</td>
                             <td style={{ ...mkTd(th), color: th.textSecondary }}>{r.callStrike - r.putStrike}<span style={{ fontSize: 11, color: th.textMuted, marginLeft: 3 }}>({((r.callStrike - r.putStrike) / results.spot * 100).toFixed(1)}%)</span></td>
                           </tr>
                         );

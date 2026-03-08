@@ -103,6 +103,65 @@ describe('calcAllDeltas: SPY snapped strikes', () => {
   });
 });
 
+describe('calcAllDeltas: Greeks (actual delta & gamma)', () => {
+  const spot = 5800;
+  const sigma = 0.20;
+  const T = calcTimeToExpiry(4);
+  const rows = calcAllDeltas(spot, sigma, T, 0.03, 10);
+  const validRows = rows.filter((r): r is DeltaRow => !('error' in r));
+
+  it('actual delta is close to target delta', () => {
+    for (const r of validRows) {
+      // Snapping shifts the strike, so actual delta won't match exactly
+      // but should be within a few delta points
+      expect(r.putActualDelta * 100).toBeGreaterThan(r.delta * 0.3);
+      expect(r.putActualDelta * 100).toBeLessThan(r.delta * 3);
+      expect(r.callActualDelta * 100).toBeGreaterThan(r.delta * 0.3);
+      expect(r.callActualDelta * 100).toBeLessThan(r.delta * 3);
+    }
+  });
+
+  it('all gammas are positive', () => {
+    for (const r of validRows) {
+      expect(r.putGamma).toBeGreaterThan(0);
+      expect(r.callGamma).toBeGreaterThan(0);
+    }
+  });
+
+  it('higher delta (closer to ATM) → higher gamma', () => {
+    const d5 = validRows.find((r) => r.delta === 5)!;
+    const d20 = validRows.find((r) => r.delta === 20)!;
+    expect(d20.putGamma).toBeGreaterThan(d5.putGamma);
+    expect(d20.callGamma).toBeGreaterThan(d5.callGamma);
+  });
+
+  it('put delta + call delta < 1 (both are OTM)', () => {
+    for (const r of validRows) {
+      expect(r.putActualDelta + r.callActualDelta).toBeLessThan(1);
+    }
+  });
+
+  it('with skew, put and call deltas differ for same target delta', () => {
+    for (const r of validRows) {
+      // Skew makes put sigma higher and call sigma lower
+      // so the actual deltas won't be symmetric
+      expect(r.putActualDelta).not.toBeCloseTo(r.callActualDelta, 3);
+    }
+  });
+
+  it('less time → higher gamma at same strike', () => {
+    const earlyRows = calcAllDeltas(spot, sigma, calcTimeToExpiry(5), 0, 10);
+    const lateRows = calcAllDeltas(spot, sigma, calcTimeToExpiry(2), 0, 10);
+    const early10 = earlyRows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
+    const late10 = lateRows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
+    if (early10 && late10) {
+      // Note: strikes move closer with less time, so we compare gamma at the respective snapped strikes
+      // Late gamma at its (closer) snapped strike should be higher
+      expect(late10.putGamma).toBeGreaterThan(early10.putGamma);
+    }
+  });
+});
+
 describe('buildIronCondor', () => {
   const spot = 5800;
   const sigma = 0.20;

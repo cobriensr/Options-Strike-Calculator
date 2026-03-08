@@ -38,6 +38,70 @@ export function normalCDF(x: number): number {
 }
 
 /**
+ * Standard normal probability density function.
+ * N'(x) = (1/√(2π)) × e^(-x²/2)
+ * Used for gamma calculation.
+ */
+export function normalPDF(x: number): number {
+  return Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI);
+}
+
+/**
+ * Black-Scholes delta for a European option.
+ * r is assumed 0 for 0DTE.
+ *
+ * Call delta = N(d1)           → range [0, 1]
+ * Put delta  = N(d1) - 1       → range [-1, 0]
+ *
+ * Returns the absolute value (unsigned) for display purposes.
+ * Multiply by 100 to get conventional delta notation (e.g. 0.10 → 10Δ).
+ */
+export function calcBSDelta(
+  spot: number,
+  strike: number,
+  sigma: number,
+  T: number,
+  type: 'call' | 'put'
+): number {
+  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+
+  const sqrtT = Math.sqrt(T);
+  const sigmaRootT = sigma * sqrtT;
+  const d1 = (Math.log(spot / strike) + (sigma * sigma / 2) * T) / sigmaRootT;
+
+  if (type === 'call') {
+    return normalCDF(d1);
+  }
+  // put delta = N(d1) - 1, return absolute value
+  return Math.abs(normalCDF(d1) - 1);
+}
+
+/**
+ * Black-Scholes gamma for a European option.
+ * r is assumed 0 for 0DTE.
+ * Gamma is the same for both puts and calls.
+ *
+ * Gamma = N'(d1) / (S × σ × √T)
+ *
+ * Interpretation: for each $1 move in SPX, delta changes by gamma.
+ * On 0DTE, gamma is extremely high near ATM and increases as T → 0.
+ */
+export function calcBSGamma(
+  spot: number,
+  strike: number,
+  sigma: number,
+  T: number,
+): number {
+  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+
+  const sqrtT = Math.sqrt(T);
+  const sigmaRootT = sigma * sqrtT;
+  const d1 = (Math.log(spot / strike) + (sigma * sigma / 2) * T) / sigmaRootT;
+
+  return normalPDF(d1) / (spot * sigmaRootT);
+}
+
+/**
  * Black-Scholes European option price.
  * r is assumed 0 for 0DTE.
  *
@@ -220,6 +284,12 @@ export function calcAllDeltas(
     const putPremium = blackScholesPrice(spotPrice, result.putStrikeSnapped, putSigma, T, 'put');
     const callPremium = blackScholesPrice(spotPrice, result.callStrikeSnapped, callSigma, T, 'call');
 
+    // Actual BS Greeks at the snapped strikes
+    const putActualDelta = calcBSDelta(spotPrice, result.putStrikeSnapped, putSigma, T, 'put');
+    const callActualDelta = calcBSDelta(spotPrice, result.callStrikeSnapped, callSigma, T, 'call');
+    const putGamma = calcBSGamma(spotPrice, result.putStrikeSnapped, putSigma, T);
+    const callGamma = calcBSGamma(spotPrice, result.callStrikeSnapped, callSigma, T);
+
     return {
       delta: d,
       z: DELTA_Z_SCORES[d],
@@ -239,6 +309,10 @@ export function calcAllDeltas(
       callPremium,
       putSigma,
       callSigma,
+      putActualDelta,
+      callActualDelta,
+      putGamma,
+      callGamma,
     };
   });
 }
