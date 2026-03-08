@@ -31,3 +31,6 @@ __snapshots__/
 # OS
 .DS_Store
 *.pem
+
+# Claude
+.claude/
