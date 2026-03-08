@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+.git
+.gitignore
+.gitattributes
+*.md
+.DS_Store
+.env*
+Dockerfile
+.dockerignore
