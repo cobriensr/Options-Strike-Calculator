@@ -433,7 +433,8 @@ describe('StrikeCalculator: Iron Condor', () => {
     expect(screen.getByText('Buying Pwr')).toBeInTheDocument();
     expect(screen.getByText('RoR')).toBeInTheDocument();
     expect(screen.getByText('PoP')).toBeInTheDocument();
-    expect(screen.getByText('Breakeven')).toBeInTheDocument();
+    expect(screen.getByText('SPX BE')).toBeInTheDocument();
+    expect(screen.getByText('SPY BE')).toBeInTheDocument();
     expect(screen.getByText('Side')).toBeInTheDocument();
   });
 

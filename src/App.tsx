@@ -785,7 +785,8 @@ export default function StrikeCalculator() {
                               <th style={mkTh(th, 'right')}>Buying Pwr</th>
                               <th style={mkTh(th, 'right')}>RoR</th>
                               <th style={mkTh(th, 'right')}>PoP</th>
-                              <th style={mkTh(th, 'right')}>Breakeven</th>
+                              <th style={mkTh(th, 'right')}>SPX BE</th>
+                              <th style={mkTh(th, 'right')}>SPY BE</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -804,6 +805,7 @@ export default function StrikeCalculator() {
                                   ror: ic.putSpreadRoR,
                                   pop: ic.putSpreadPoP,
                                   be: ic.putSpreadBE.toFixed(0),
+                                  spyBe: Math.round(ic.putSpreadBE / effectiveRatio).toString(),
                                   isFirst: true,
                                   isLast: false,
                                 },
@@ -816,6 +818,7 @@ export default function StrikeCalculator() {
                                   ror: ic.callSpreadRoR,
                                   pop: ic.callSpreadPoP,
                                   be: ic.callSpreadBE.toFixed(0),
+                                  spyBe: Math.round(ic.callSpreadBE / effectiveRatio).toString(),
                                   isFirst: false,
                                   isLast: false,
                                 },
@@ -828,6 +831,7 @@ export default function StrikeCalculator() {
                                   ror: ic.returnOnRisk,
                                   pop: ic.probabilityOfProfit,
                                   be: ic.breakEvenLow.toFixed(0) + '\u2013' + ic.breakEvenHigh.toFixed(0),
+                                  spyBe: Math.round(ic.breakEvenLow / effectiveRatio) + '\u2013' + Math.round(ic.breakEvenHigh / effectiveRatio),
                                   isFirst: false,
                                   isLast: true,
                                 },
@@ -891,6 +895,12 @@ export default function StrikeCalculator() {
                                     borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
                                   }}>
                                     {r.be}
+                                  </td>
+                                  <td style={{
+                                    ...mkTd(th), textAlign: 'right', color: th.textSecondary, opacity: 0.75,
+                                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
+                                  }}>
+                                    {r.spyBe}
                                   </td>
                                 </tr>
                               ));
