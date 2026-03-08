@@ -8,7 +8,7 @@ import {
   calcSpreadPoP,
   calcScaledSkew,
   isStrikeError,
-} from '../calculator';
+} from '../utils/calculator';
 import type { DeltaRow } from '../types';
 
 describe('Skew: put IV adjustment', () => {

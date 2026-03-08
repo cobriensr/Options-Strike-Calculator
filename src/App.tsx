@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import type { IVMode, VIXDayData, VIXDataMap, CalculationResults } from './types';
 import { DEFAULTS, IV_MODES } from './constants';
-import { validateMarketTime, calcTimeToExpiry, resolveIV, calcAllDeltas, to24Hour } from './calculator';
-import { parseVixCSV } from './csvParser';
-import { cacheVixData, loadCachedVixData, loadStaticVixData } from './vixStorage';
+import { validateMarketTime, calcTimeToExpiry, resolveIV, calcAllDeltas, to24Hour } from './utils/calculator';
+import { parseVixCSV } from './utils/csvParser';
+import { cacheVixData, loadCachedVixData, loadStaticVixData } from './utils/vixStorage';
 import { lightTheme, darkTheme } from './themes';
 import { SectionBox, Chip, ErrorMsg, buildChevronUrl, srOnly, tinyLblStyle } from './components/ui';
 import DeltaStrikesTable from './components/DeltaStrikesTable';
@@ -272,7 +272,7 @@ export default function StrikeCalculator() {
               <input id="date-picker" type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} style={{ ...inputStyle, colorScheme: th.dateScheme }} />
               {vixOHLC && (
                 <div style={{ marginTop: 14 }}>
-                  <fieldset style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12, border: 'none', margin: 0, padding: 0 }}>
+                  <fieldset style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, border: 'none', margin: 0, padding: 0 }}>
                     <legend style={srOnly}>VIX OHLC values</legend>
                     {(['open', 'high', 'low', 'close'] as const).map((field) => (
                       <div key={field} style={{ padding: '10px 6px', backgroundColor: th.surfaceAlt, borderRadius: 8, textAlign: 'center' }}>
@@ -281,7 +281,7 @@ export default function StrikeCalculator() {
                       </div>
                     ))}
                   </fieldset>
-                  <fieldset style={{ border: 'none', margin: 0, padding: 0 }}>
+                  <fieldset style={{ border: 'none', margin: 0, padding: 0, marginTop: 12 }}>
                     <legend style={srOnly}>VIX value to use</legend>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} role="radiogroup">
                       {(['smart', 'open', 'high', 'low', 'close'] as const).map((f) => (

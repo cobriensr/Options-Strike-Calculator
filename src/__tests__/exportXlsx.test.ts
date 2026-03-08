@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as XLSX from 'xlsx';
-import { exportPnLComparison } from '../exportXlsx';
-import { calcAllDeltas, calcTimeToExpiry } from '../calculator';
+import { exportPnLComparison } from '../utils/exportXlsx';
+import { calcAllDeltas, calcTimeToExpiry } from '../utils/calculator';
 import type { CalculationResults } from '../types';
 
 // Mock XLSX.writeFile to capture the workbook instead of writing to disk

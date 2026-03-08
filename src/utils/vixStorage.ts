@@ -1,4 +1,4 @@
-import type { VIXDataMap } from './types';
+import type { VIXDataMap } from '../types';
 
 const STORAGE_KEY = 'strike-calc:vix-data';
 const SOURCE_KEY = 'strike-calc:vix-source';

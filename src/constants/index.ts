@@ -1,4 +1,4 @@
-import type { DeltaTarget } from './types';
+import type { DeltaTarget } from '../types';
 
 /** Market hours and trading calendar constants */
 export const MARKET = {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveIV } from '../calculator';
+import { resolveIV } from '../utils/calculator';
 import { DEFAULTS } from '../constants';
 
 describe('resolveIV: VIX mode', () => {

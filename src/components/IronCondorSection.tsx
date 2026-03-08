@@ -1,7 +1,7 @@
 import type { Theme } from '../themes';
 import type { DeltaRow, IronCondorLegs, CalculationResults } from '../types';
-import { buildIronCondor } from '../calculator';
-import { exportPnLComparison } from '../exportXlsx';
+import { buildIronCondor } from '../utils/calculator';
+import { exportPnLComparison } from '../utils/exportXlsx';
 import { mkTh, mkTd, fmtDollar } from './ui';
 
 interface Props {

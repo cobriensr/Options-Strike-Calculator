@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseVixCSV } from '../csvParser';
+import { parseVixCSV } from '../utils/csvParser';
 
 describe('parseVixCSV: standard formats', () => {
   it('parses YYYY-MM-DD format', () => {

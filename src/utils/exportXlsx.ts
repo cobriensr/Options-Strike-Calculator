@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import type { DeltaRow, CalculationResults } from './types';
+import type { DeltaRow, CalculationResults } from '../types';
 import { buildIronCondor } from './calculator';
 
 const ALL_WING_WIDTHS = [5, 10, 15, 20, 25, 30, 50];

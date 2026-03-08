@@ -8,8 +8,8 @@ import type {
   DeltaRowError,
   IronCondorLegs,
   IVMode,
-} from './types';
-import { MARKET, DELTA_Z_SCORES, DELTA_OPTIONS, DEFAULTS, IV_MODES } from './constants';
+} from '../types';
+import { MARKET, DELTA_Z_SCORES, DELTA_OPTIONS, DEFAULTS, IV_MODES } from '../constants';
 
 // ============================================================
 // CUMULATIVE NORMAL DISTRIBUTION (Abramowitz & Stegun 26.2.17)

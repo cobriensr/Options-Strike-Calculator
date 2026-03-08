@@ -7,7 +7,7 @@ import {
   spxToSpy,
   to24Hour,
   isStrikeError,
-} from '../calculator';
+} from '../utils/calculator';
 import { DELTA_OPTIONS, MARKET } from '../constants';
 import type { DeltaTarget } from '../types';
 

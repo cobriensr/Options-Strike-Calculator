@@ -1,4 +1,4 @@
-import type { VIXDataMap } from './types';
+import type { VIXDataMap } from '../types';
 
 /**
  * Parses a VIX OHLC CSV string into a date-keyed map.

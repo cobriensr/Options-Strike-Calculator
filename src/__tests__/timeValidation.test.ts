@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateMarketTime } from '../calculator';
+import { validateMarketTime } from '../utils/calculator';
 
 describe('validateMarketTime: boundary tests (all times Eastern)', () => {
   // Market hours: 9:30 AM ET - 4:00 PM ET
