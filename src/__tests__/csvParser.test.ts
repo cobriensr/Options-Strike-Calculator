@@ -10,10 +10,10 @@ describe('parseVixCSV: standard formats', () => {
     const result = parseVixCSV(csv);
     expect(Object.keys(result)).toHaveLength(2);
     expect(result['2024-03-04']).toEqual({
-      open: 14.50,
-      high: 15.20,
-      low: 14.10,
-      close: 14.80,
+      open: 14.5,
+      high: 15.2,
+      low: 14.1,
+      close: 14.8,
     });
   });
 
@@ -23,7 +23,7 @@ describe('parseVixCSV: standard formats', () => {
 
     const result = parseVixCSV(csv);
     expect(result['2024-03-04']).toBeDefined();
-    expect(result['2024-03-04']?.open).toBe(14.50);
+    expect(result['2024-03-04']?.open).toBe(14.5);
   });
 
   it('parses M/D/YY format (2-digit year)', () => {
@@ -39,7 +39,7 @@ describe('parseVixCSV: standard formats', () => {
 2024-03-04,14.50,15.20,14.10,14.80`;
 
     const result = parseVixCSV(csv);
-    expect(result['2024-03-04']?.close).toBe(14.80);
+    expect(result['2024-03-04']?.close).toBe(14.8);
   });
 
   it('handles case-insensitive headers', () => {
@@ -76,7 +76,7 @@ describe('parseVixCSV: edge cases', () => {
       open: null,
       high: null,
       low: null,
-      close: 14.80,
+      close: 14.8,
     });
   });
 
@@ -96,7 +96,7 @@ describe('parseVixCSV: edge cases', () => {
 
     const result = parseVixCSV(csv);
     expect(result['2024-03-04']?.open).toBeNull();
-    expect(result['2024-03-04']?.high).toBe(15.20);
+    expect(result['2024-03-04']?.high).toBe(15.2);
   });
 
   it('handles large dataset without error', () => {
@@ -118,6 +118,6 @@ describe('parseVixCSV: edge cases', () => {
 2024-03-04 , 14.50 , 15.20 , 14.10 , 14.80`;
 
     const result = parseVixCSV(csv);
-    expect(result['2024-03-04']?.open).toBe(14.50);
+    expect(result['2024-03-04']?.open).toBe(14.5);
   });
 });

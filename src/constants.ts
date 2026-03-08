@@ -46,6 +46,14 @@ export const DEFAULTS = {
   RISK_FREE_RATE: 0,
   /** SPX strike increment for snapping */
   STRIKE_INCREMENT: 5,
+  /**
+   * Reference z-score for skew scaling (10Δ = 1.28).
+   * Skew is specified at this delta and scaled proportionally
+   * for other deltas: further OTM (higher z) gets more skew,
+   * nearer OTM (lower z) gets less skew. This models the
+   * real volatility smile where far OTM puts have steeper skew.
+   */
+  SKEW_REFERENCE_Z: 1.28,
 } as const;
 
 /** IV input mode identifiers */

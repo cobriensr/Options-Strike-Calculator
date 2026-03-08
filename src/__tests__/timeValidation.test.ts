@@ -40,19 +40,19 @@ describe('validateMarketTime: boundary tests (all times Eastern)', () => {
   it('accepts 10:00 AM with 6h remaining', () => {
     const r = validateMarketTime(10, 0);
     expect(r.valid).toBe(true);
-    expect(r.hoursRemaining).toBeCloseTo(6.0, 4);
+    expect(r.hoursRemaining).toBeCloseTo(6, 4);
   });
 
   it('accepts 12:00 PM (noon) with 4h remaining', () => {
     const r = validateMarketTime(12, 0);
     expect(r.valid).toBe(true);
-    expect(r.hoursRemaining).toBeCloseTo(4.0, 4);
+    expect(r.hoursRemaining).toBeCloseTo(4, 4);
   });
 
   it('accepts 1:00 PM with 3h remaining', () => {
     const r = validateMarketTime(13, 0);
     expect(r.valid).toBe(true);
-    expect(r.hoursRemaining).toBeCloseTo(3.0, 4);
+    expect(r.hoursRemaining).toBeCloseTo(3, 4);
   });
 
   it('accepts 2:30 PM with 1.5h remaining', () => {
@@ -107,7 +107,7 @@ describe('validateMarketTime: hours remaining precision', () => {
   it('11:00 AM ET → 5.0 hours remaining', () => {
     const r = validateMarketTime(11, 0);
     expect(r.valid).toBe(true);
-    expect(r.hoursRemaining).toBe(5.0);
+    expect(r.hoursRemaining).toBe(5);
   });
 
   it('11:46 AM ET → 4h 14m → 4.2333h remaining', () => {

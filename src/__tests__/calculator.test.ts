@@ -60,7 +60,7 @@ describe('Full test matrix: deltas × times × IV levels', () => {
 
   const ivScenarios: Array<{ label: string; sigma: number }> = [
     { label: 'low IV (σ=0.12)', sigma: 0.12 },
-    { label: 'medium IV (σ=0.20)', sigma: 0.20 },
+    { label: 'medium IV (σ=0.20)', sigma: 0.2 },
     { label: 'high IV (σ=0.35)', sigma: 0.35 },
   ];
 
@@ -96,7 +96,7 @@ describe('Full test matrix: deltas × times × IV levels', () => {
 // ============================================================
 describe('Property: structural invariants', () => {
   const spot = 5800;
-  const sigma = 0.20;
+  const sigma = 0.2;
 
   it('put strike < spot for all deltas', () => {
     const T = calcTimeToExpiry(3);
@@ -176,24 +176,24 @@ describe('Property: structural invariants', () => {
 describe('calcAllDeltas', () => {
   it('returns exactly 6 rows', () => {
     const T = calcTimeToExpiry(3);
-    const rows = calcAllDeltas(5800, 0.20, T);
+    const rows = calcAllDeltas(5800, 0.2, T);
     expect(rows).toHaveLength(6);
   });
 
   it('rows are ordered by delta ascending', () => {
     const T = calcTimeToExpiry(3);
-    const rows = calcAllDeltas(5800, 0.20, T);
+    const rows = calcAllDeltas(5800, 0.2, T);
     const deltas = rows.map((r) => r.delta);
     expect(deltas).toEqual([5, 8, 10, 12, 15, 20]);
   });
 
   it('SPY values are SPX / 10', () => {
     const T = calcTimeToExpiry(3);
-    const rows = calcAllDeltas(5800, 0.20, T);
+    const rows = calcAllDeltas(5800, 0.2, T);
     for (const row of rows) {
       if ('spyPut' in row) {
-        expect(parseFloat(row.spyPut)).toBeCloseTo(row.putStrike / 10, 1);
-        expect(parseFloat(row.spyCall)).toBeCloseTo(row.callStrike / 10, 1);
+        expect(Number.parseFloat(row.spyPut)).toBeCloseTo(row.putStrike / 10, 1);
+        expect(Number.parseFloat(row.spyCall)).toBeCloseTo(row.callStrike / 10, 1);
       }
     }
   });

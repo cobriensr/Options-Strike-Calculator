@@ -47,57 +47,57 @@ describe('blackScholesPrice', () => {
   // S=100, K=100, σ=0.20, T=1 year, r=0
   // Expected call ≈ 7.97 (standard BS result with r=0)
   it('ATM call S=100 K=100 σ=0.20 T=1y ≈ 7.97', () => {
-    const price = blackScholesPrice(100, 100, 0.20, 1, 'call');
+    const price = blackScholesPrice(100, 100, 0.2, 1, 'call');
     expect(price).toBeCloseTo(7.97, 1);
   });
 
   it('ATM put equals ATM call when r=0 (put-call parity)', () => {
-    const call = blackScholesPrice(100, 100, 0.20, 1, 'call');
-    const put = blackScholesPrice(100, 100, 0.20, 1, 'put');
+    const call = blackScholesPrice(100, 100, 0.2, 1, 'call');
+    const put = blackScholesPrice(100, 100, 0.2, 1, 'put');
     // With r=0: C - P = S - K = 0 for ATM
     expect(call).toBeCloseTo(put, 4);
   });
 
   it('deep OTM put is near zero', () => {
-    const price = blackScholesPrice(5800, 5500, 0.20, 0.003, 'put');
+    const price = blackScholesPrice(5800, 5500, 0.2, 0.003, 'put');
     expect(price).toBeLessThan(1);
   });
 
   it('deep ITM call ≈ S - K when deep enough', () => {
-    const price = blackScholesPrice(5800, 5000, 0.20, 1, 'call');
+    const price = blackScholesPrice(5800, 5000, 0.2, 1, 'call');
     expect(price).toBeGreaterThan(780); // at least intrinsic
   });
 
   it('call price increases with spot', () => {
-    const low = blackScholesPrice(5700, 5800, 0.20, 0.003, 'call');
-    const high = blackScholesPrice(5900, 5800, 0.20, 0.003, 'call');
+    const low = blackScholesPrice(5700, 5800, 0.2, 0.003, 'call');
+    const high = blackScholesPrice(5900, 5800, 0.2, 0.003, 'call');
     expect(high).toBeGreaterThan(low);
   });
 
   it('put price decreases with spot', () => {
-    const low = blackScholesPrice(5700, 5800, 0.20, 0.003, 'put');
-    const high = blackScholesPrice(5900, 5800, 0.20, 0.003, 'put');
+    const low = blackScholesPrice(5700, 5800, 0.2, 0.003, 'put');
+    const high = blackScholesPrice(5900, 5800, 0.2, 0.003, 'put');
     expect(low).toBeGreaterThan(high);
   });
 
   it('higher IV = higher premium for both puts and calls', () => {
     const lowCall = blackScholesPrice(5800, 5800, 0.15, 0.003, 'call');
-    const highCall = blackScholesPrice(5800, 5800, 0.30, 0.003, 'call');
+    const highCall = blackScholesPrice(5800, 5800, 0.3, 0.003, 'call');
     expect(highCall).toBeGreaterThan(lowCall);
 
     const lowPut = blackScholesPrice(5800, 5800, 0.15, 0.003, 'put');
-    const highPut = blackScholesPrice(5800, 5800, 0.30, 0.003, 'put');
+    const highPut = blackScholesPrice(5800, 5800, 0.3, 0.003, 'put');
     expect(highPut).toBeGreaterThan(lowPut);
   });
 
   it('more time = higher premium', () => {
-    const short = blackScholesPrice(5800, 5800, 0.20, 0.001, 'call');
-    const long = blackScholesPrice(5800, 5800, 0.20, 0.004, 'call');
+    const short = blackScholesPrice(5800, 5800, 0.2, 0.001, 'call');
+    const long = blackScholesPrice(5800, 5800, 0.2, 0.004, 'call');
     expect(long).toBeGreaterThan(short);
   });
 
   it('returns 0 for T=0', () => {
-    expect(blackScholesPrice(5800, 5800, 0.20, 0, 'call')).toBe(0);
+    expect(blackScholesPrice(5800, 5800, 0.2, 0, 'call')).toBe(0);
   });
 
   it('returns 0 for σ=0', () => {
@@ -107,7 +107,7 @@ describe('blackScholesPrice', () => {
   it('0DTE SPX-scale premiums are reasonable', () => {
     // SPX 5800, 10Δ puts (~100 pts OTM), 3h remaining
     const T = calcTimeToExpiry(3);
-    const put = blackScholesPrice(5800, 5700, 0.20, T, 'put');
+    const put = blackScholesPrice(5800, 5700, 0.2, T, 'put');
     // Should be a few dollars, not hundreds
     expect(put).toBeGreaterThan(0.01);
     expect(put).toBeLessThan(20);
@@ -138,16 +138,16 @@ describe('normalPDF', () => {
 
 describe('calcBSDelta', () => {
   const T = calcTimeToExpiry(4);
-  const sigma = 0.20;
+  const sigma = 0.2;
 
   it('ATM call delta ≈ 0.50', () => {
     const delta = calcBSDelta(5800, 5800, sigma, T, 'call');
-    expect(delta).toBeCloseTo(0.50, 1);
+    expect(delta).toBeCloseTo(0.5, 1);
   });
 
   it('ATM put delta ≈ 0.50 (absolute)', () => {
     const delta = calcBSDelta(5800, 5800, sigma, T, 'put');
-    expect(delta).toBeCloseTo(0.50, 1);
+    expect(delta).toBeCloseTo(0.5, 1);
   });
 
   it('deep OTM put has small delta', () => {
@@ -185,13 +185,13 @@ describe('calcBSDelta', () => {
   it('put-call delta parity: callΔ + putΔ ≈ 1 for same strike', () => {
     const callD = calcBSDelta(5800, 5800, sigma, T, 'call');
     const putD = calcBSDelta(5800, 5800, sigma, T, 'put');
-    expect(callD + putD).toBeCloseTo(1.0, 2);
+    expect(callD + putD).toBeCloseTo(1, 2);
   });
 });
 
 describe('calcBSGamma', () => {
   const T = calcTimeToExpiry(4);
-  const sigma = 0.20;
+  const sigma = 0.2;
 
   it('gamma is highest ATM', () => {
     const atm = calcBSGamma(5800, 5800, sigma, T);
@@ -220,7 +220,7 @@ describe('calcBSGamma', () => {
 
   it('higher IV → lower peak gamma (flatter curve)', () => {
     const lowIV = calcBSGamma(5800, 5800, 0.15, T);
-    const highIV = calcBSGamma(5800, 5800, 0.30, T);
+    const highIV = calcBSGamma(5800, 5800, 0.3, T);
     expect(lowIV).toBeGreaterThan(highIV);
   });
 

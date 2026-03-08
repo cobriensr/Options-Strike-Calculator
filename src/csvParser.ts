@@ -49,8 +49,8 @@ export function parseVixCSV(csvText: string): VIXDataMap {
       if (idx < 0) return null;
       const val = parts[idx];
       if (val === undefined || val === '') return null;
-      const num = parseFloat(val);
-      return isNaN(num) ? null : num;
+      const num = Number.parseFloat(val);
+      return Number.isNaN(num) ? null : num;
     };
 
     data[dateKey] = {

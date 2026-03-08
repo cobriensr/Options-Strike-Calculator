@@ -10,8 +10,8 @@ describe('resolveIV: VIX mode', () => {
   });
 
   it('converts VIX 20 with multiplier 1.0 to σ = 0.20 (no adjustment)', () => {
-    const result = resolveIV('vix', { vix: 20, multiplier: 1.0 });
-    expect(result.sigma).toBeCloseTo(0.20, 6);
+    const result = resolveIV('vix', { vix: 20, multiplier: 1 });
+    expect(result.sigma).toBeCloseTo(0.2, 6);
   });
 
   it('converts VIX 19 with multiplier 1.15 to σ = 0.2185', () => {
@@ -20,12 +20,12 @@ describe('resolveIV: VIX mode', () => {
   });
 
   it('converts VIX 30 with multiplier 1.20 to σ = 0.36', () => {
-    const result = resolveIV('vix', { vix: 30, multiplier: 1.20 });
+    const result = resolveIV('vix', { vix: 30, multiplier: 1.2 });
     expect(result.sigma).toBeCloseTo(0.36, 6);
   });
 
   it('converts VIX 10 with multiplier 1.10 to σ = 0.11', () => {
-    const result = resolveIV('vix', { vix: 10, multiplier: 1.10 });
+    const result = resolveIV('vix', { vix: 10, multiplier: 1.1 });
     expect(result.sigma).toBeCloseTo(0.11, 6);
   });
 
@@ -43,7 +43,7 @@ describe('resolveIV: VIX mode', () => {
   });
 
   it('rejects NaN VIX', () => {
-    const result = resolveIV('vix', { vix: NaN, multiplier: 1.15 });
+    const result = resolveIV('vix', { vix: Number.NaN, multiplier: 1.15 });
     expect(result.sigma).toBeNull();
     expect(result.error).toBeDefined();
   });
@@ -68,7 +68,7 @@ describe('resolveIV: VIX mode', () => {
 
   it('accepts multiplier at exact minimum boundary', () => {
     const result = resolveIV('vix', { vix: 20, multiplier: DEFAULTS.IV_PREMIUM_MIN });
-    expect(result.sigma).toBeCloseTo(0.20, 6);
+    expect(result.sigma).toBeCloseTo(0.2, 6);
     expect(result.error).toBeUndefined();
   });
 
@@ -79,7 +79,7 @@ describe('resolveIV: VIX mode', () => {
   });
 
   it('rejects NaN multiplier', () => {
-    const result = resolveIV('vix', { vix: 20, multiplier: NaN });
+    const result = resolveIV('vix', { vix: 20, multiplier: Number.NaN });
     expect(result.sigma).toBeNull();
   });
 
@@ -123,7 +123,7 @@ describe('resolveIV: Direct mode', () => {
   });
 
   it('rejects NaN', () => {
-    const result = resolveIV('direct', { directIV: NaN });
+    const result = resolveIV('direct', { directIV: Number.NaN });
     expect(result.sigma).toBeNull();
   });
 

@@ -22,19 +22,19 @@ import { MARKET, DELTA_Z_SCORES, DELTA_OPTIONS, DEFAULTS, IV_MODES } from './con
  */
 export function normalCDF(x: number): number {
   const p = 0.2316419;
-  const b1 = 0.319381530;
+  const b1 = 0.31938153;
   const b2 = -0.356563782;
   const b3 = 1.781477937;
   const b4 = -1.821255978;
   const b5 = 1.330274429;
 
   const absX = Math.abs(x);
-  const t = 1.0 / (1.0 + p * absX);
+  const t = 1 / (1 + p * absX);
   const pdf = Math.exp(-absX * absX / 2) / Math.sqrt(2 * Math.PI);
   const poly = ((((b5 * t + b4) * t + b3) * t + b2) * t + b1) * t;
-  const cdf = 1.0 - pdf * poly;
+  const cdf = 1 - pdf * poly;
 
-  return x >= 0 ? cdf : 1.0 - cdf;
+  return x >= 0 ? cdf : 1 - cdf;
 }
 
 /**
@@ -171,7 +171,7 @@ export function resolveIV(
   if (mode === IV_MODES.VIX) {
     const { vix, multiplier } = params;
 
-    if (vix == null || isNaN(vix) || vix < 0) {
+    if (vix == null || Number.isNaN(vix) || vix < 0) {
       return { sigma: null, error: 'VIX must be a positive number' };
     }
     if (vix === 0) {
@@ -179,7 +179,7 @@ export function resolveIV(
     }
     if (
       multiplier == null ||
-      isNaN(multiplier) ||
+      Number.isNaN(multiplier) ||
       multiplier < DEFAULTS.IV_PREMIUM_MIN ||
       multiplier > DEFAULTS.IV_PREMIUM_MAX
     ) {
@@ -195,7 +195,7 @@ export function resolveIV(
   if (mode === IV_MODES.DIRECT) {
     const { directIV } = params;
 
-    if (directIV == null || isNaN(directIV) || directIV <= 0) {
+    if (directIV == null || Number.isNaN(directIV) || directIV <= 0) {
       return { sigma: null, error: 'IV must be a positive number' };
     }
     if (directIV > 2) {
@@ -216,13 +216,34 @@ export function snapToIncrement(strike: number, increment: number = DEFAULTS.STR
 }
 
 /**
- * Calculates put and call strikes for a given delta.
- * K_put = S × e^(-z × σ_put × √T)  where σ_put = σ × (1 + skew)
- * K_call = S × e^(+z × σ_call × √T) where σ_call = σ × (1 - skew)
+ * Calculates the skew-adjusted sigma for a given z-score.
+ * Skew is scaled proportionally to z relative to the reference z-score (10Δ).
+ * Further OTM strikes (higher z) get more skew, nearer OTM (lower z) get less.
+ * This models the real volatility smile where far OTM puts have steeper skew.
  *
- * Skew accounts for the volatility smile: OTM puts trade at higher IV
- * than OTM calls. A skew of 0.03 means put IV is 3% above and call IV
- * is 3% below the ATM level.
+ * Example with 3% skew at 10Δ reference:
+ *   5Δ (z=1.645): put σ = σ × (1 + 0.03 × 1.645/1.28) = σ × 1.0386
+ *  10Δ (z=1.280): put σ = σ × (1 + 0.03 × 1.280/1.28) = σ × 1.03    (reference)
+ *  20Δ (z=0.842): put σ = σ × (1 + 0.03 × 0.842/1.28) = σ × 1.0197
+ */
+export function calcScaledSkew(skew: number, z: number): number {
+  if (skew === 0) return 0;
+  return skew * (z / DEFAULTS.SKEW_REFERENCE_Z);
+}
+
+/**
+ * Calculates put and call strikes for a given delta.
+ *
+ * Exact delta-targeted strike formula (with log-normal drift correction):
+ *   K_put  = S × e^(-z × σ_put × √T + (σ_put²/2) × T)
+ *   K_call = S × e^(+z × σ_call × √T + (σ_call²/2) × T)
+ *
+ * The (σ²/2)T term is the drift correction from the log-normal distribution.
+ * Without it, strikes are placed ~0.5 SPX points too far OTM. Small for 0DTE
+ * but mathematically correct.
+ *
+ * Skew is z-scaled: further OTM strikes get proportionally more skew,
+ * modeling the real volatility smile shape.
  */
 export function calcStrikes(
   spotPrice: number,
@@ -237,11 +258,16 @@ export function calcStrikes(
   }
 
   const sqrtT = Math.sqrt(T);
-  const putSigma = sigma * (1 + skew);
-  const callSigma = sigma * (1 - skew);
+  const scaledSkew = calcScaledSkew(skew, z);
+  const putSigma = sigma * (1 + scaledSkew);
+  const callSigma = sigma * (1 - scaledSkew);
 
-  const putStrike = Math.round(spotPrice * Math.exp(-z * putSigma * sqrtT));
-  const callStrike = Math.round(spotPrice * Math.exp(z * callSigma * sqrtT));
+  // Drift correction: (σ²/2) × T
+  const putDrift = (putSigma * putSigma / 2) * T;
+  const callDrift = (callSigma * callSigma / 2) * T;
+
+  const putStrike = Math.round(spotPrice * Math.exp(-z * putSigma * sqrtT + putDrift));
+  const callStrike = Math.round(spotPrice * Math.exp(z * callSigma * sqrtT + callDrift));
 
   return {
     putStrike,
@@ -276,8 +302,8 @@ export function calcAllDeltas(
       return { delta: d, error: result.error };
     }
 
-    const putSigma = sigma * (1 + skew);
-    const callSigma = sigma * (1 - skew);
+    const putSigma = sigma * (1 + calcScaledSkew(skew, DELTA_Z_SCORES[d]));
+    const callSigma = sigma * (1 - calcScaledSkew(skew, DELTA_Z_SCORES[d]));
     const spyPutRaw = result.putStrike / spxToSpyRatio;
     const spyCallRaw = result.callStrike / spxToSpyRatio;
 

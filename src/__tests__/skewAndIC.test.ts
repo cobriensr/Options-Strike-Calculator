@@ -6,13 +6,14 @@ import {
   buildIronCondor,
   calcPoP,
   calcSpreadPoP,
+  calcScaledSkew,
   isStrikeError,
 } from '../calculator';
 import type { DeltaRow } from '../types';
 
 describe('Skew: put IV adjustment', () => {
   const spot = 5800;
-  const sigma = 0.20;
+  const sigma = 0.2;
   const T = calcTimeToExpiry(3);
 
   it('skew = 0 gives symmetric strikes', () => {
@@ -67,7 +68,7 @@ describe('Skew: put IV adjustment', () => {
 
 describe('calcAllDeltas: SPY snapped strikes', () => {
   const spot = 5800;
-  const sigma = 0.20;
+  const sigma = 0.2;
   const T = calcTimeToExpiry(3);
 
   it('includes putSpySnapped and callSpySnapped', () => {
@@ -103,9 +104,81 @@ describe('calcAllDeltas: SPY snapped strikes', () => {
   });
 });
 
+describe('calcScaledSkew', () => {
+  it('returns 0 when skew is 0', () => {
+    expect(calcScaledSkew(0, 1.645)).toBe(0);
+    expect(calcScaledSkew(0, 0.842)).toBe(0);
+  });
+
+  it('at reference z (1.28), scaled skew equals input skew', () => {
+    expect(calcScaledSkew(0.03, 1.28)).toBeCloseTo(0.03, 6);
+  });
+
+  it('higher z (further OTM) gets more skew', () => {
+    const atRef = calcScaledSkew(0.03, 1.28);    // 10Δ
+    const further = calcScaledSkew(0.03, 1.645);  // 5Δ
+    expect(further).toBeGreaterThan(atRef);
+  });
+
+  it('lower z (closer to ATM) gets less skew', () => {
+    const atRef = calcScaledSkew(0.03, 1.28);   // 10Δ
+    const closer = calcScaledSkew(0.03, 0.842);  // 20Δ
+    expect(closer).toBeLessThan(atRef);
+  });
+
+  it('5Δ skew is about 29% more than reference', () => {
+    // 1.645 / 1.28 = 1.285
+    const scaled = calcScaledSkew(0.03, 1.645);
+    expect(scaled).toBeCloseTo(0.03 * 1.645 / 1.28, 6);
+  });
+
+  it('20Δ skew is about 34% less than reference', () => {
+    // 0.842 / 1.28 = 0.658
+    const scaled = calcScaledSkew(0.03, 0.842);
+    expect(scaled).toBeCloseTo(0.03 * 0.842 / 1.28, 6);
+  });
+
+  it('scaling is proportional to z', () => {
+    const s1 = calcScaledSkew(0.05, 1);
+    const s2 = calcScaledSkew(0.05, 2);
+    expect(s2 / s1).toBeCloseTo(2, 6);
+  });
+});
+
+describe('calcStrikes: drift correction', () => {
+  const spot = 6850;
+  const sigma = 0.2;
+  const T = calcTimeToExpiry(4);
+
+  it('put strike with drift is slightly higher (closer to spot) than without', () => {
+    // The drift term (σ²/2)T pushes puts closer to spot
+    const result = calcStrikes(spot, sigma, T, 10, 0);
+    if ('error' in result) throw new Error('unexpected');
+
+    // Manual calculation without drift
+    const z = 1.28;
+    const sqrtT = Math.sqrt(T);
+    const withoutDrift = Math.round(spot * Math.exp(-z * sigma * sqrtT));
+
+    // With drift, put strike should be >= without drift (closer to spot)
+    expect(result.putStrike).toBeGreaterThanOrEqual(withoutDrift);
+  });
+
+  it('call strike with drift is slightly higher than without', () => {
+    const result = calcStrikes(spot, sigma, T, 10, 0);
+    if ('error' in result) throw new Error('unexpected');
+
+    const z = 1.28;
+    const sqrtT = Math.sqrt(T);
+    const withoutDrift = Math.round(spot * Math.exp(z * sigma * sqrtT));
+
+    expect(result.callStrike).toBeGreaterThanOrEqual(withoutDrift);
+  });
+});
+
 describe('calcAllDeltas: Greeks (actual delta & gamma)', () => {
   const spot = 5800;
-  const sigma = 0.20;
+  const sigma = 0.2;
   const T = calcTimeToExpiry(4);
   const rows = calcAllDeltas(spot, sigma, T, 0.03, 10);
   const validRows = rows.filter((r): r is DeltaRow => !('error' in r));
@@ -144,8 +217,9 @@ describe('calcAllDeltas: Greeks (actual delta & gamma)', () => {
   it('with skew, put and call deltas differ for same target delta', () => {
     for (const r of validRows) {
       // Skew makes put sigma higher and call sigma lower
-      // so the actual deltas won't be symmetric
-      expect(r.putActualDelta).not.toBeCloseTo(r.callActualDelta, 3);
+      // so the actual deltas won't be exactly symmetric
+      // Use 4 decimal places — at far OTM the difference is small but nonzero
+      expect(r.putActualDelta).not.toBeCloseTo(r.callActualDelta, 4);
     }
   });
 
@@ -164,7 +238,7 @@ describe('calcAllDeltas: Greeks (actual delta & gamma)', () => {
 
 describe('buildIronCondor', () => {
   const spot = 5800;
-  const sigma = 0.20;
+  const sigma = 0.2;
   const T = calcTimeToExpiry(3);
   const rows = calcAllDeltas(spot, sigma, T, 0, 10);
   const deltaRow = rows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
@@ -283,7 +357,7 @@ describe('buildIronCondor', () => {
 
 describe('calcPoP', () => {
   const spot = 5800;
-  const sigma = 0.20;
+  const sigma = 0.2;
   const T = calcTimeToExpiry(3);
 
   it('wide breakevens → high PoP', () => {
@@ -321,7 +395,7 @@ describe('calcPoP', () => {
 
 describe('calcSpreadPoP', () => {
   const spot = 5800;
-  const sigma = 0.20;
+  const sigma = 0.2;
   const T = calcTimeToExpiry(3);
 
   it('put spread PoP: far OTM → high PoP', () => {
@@ -359,7 +433,7 @@ describe('calcSpreadPoP', () => {
 
 describe('buildIronCondor: per-side breakdown', () => {
   const spot = 5800;
-  const sigma = 0.20;
+  const sigma = 0.2;
   const T = calcTimeToExpiry(3);
   const rows = calcAllDeltas(spot, sigma, T, 0.03, 10);
   const d10 = rows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
