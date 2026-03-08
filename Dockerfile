@@ -1,18 +1,20 @@
 # ---- Build stage ----
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 
 WORKDIR /app
 
 # Install dependencies first (cache layer)
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN apk update && apk upgrade --no-cache && npm ci
 
 # Copy source and build
 COPY . .
 RUN npm run build
 
 # ---- Production stage ----
-FROM nginx:1.27-alpine AS production
+FROM nginx:1.28-alpine-slim AS production
+
+RUN apk update && apk upgrade --no-cache
 
 # Copy custom nginx config for SPA routing
 COPY --from=build /app/dist /usr/share/nginx/html
