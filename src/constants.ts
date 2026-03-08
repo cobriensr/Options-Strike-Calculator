@@ -39,7 +39,7 @@ export const DEFAULTS = {
   /** Default 0DTE IV premium multiplier over VIX */
   IV_PREMIUM_FACTOR: 1.15,
   /** Minimum allowed IV premium multiplier */
-  IV_PREMIUM_MIN: 1.0,
+  IV_PREMIUM_MIN: 1,
   /** Maximum allowed IV premium multiplier */
   IV_PREMIUM_MAX: 1.3,
   /** Risk-free rate (negligible for 0DTE) */

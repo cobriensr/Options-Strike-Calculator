@@ -14,10 +14,10 @@ export function parseVixCSV(csvText: string): VIXDataMap {
 
   const cols = headerLine.toLowerCase().split(',').map((c) => c.trim());
   const dateIdx = cols.findIndex((c) => c.includes('date'));
-  const openIdx = cols.findIndex((c) => c === 'open');
-  const highIdx = cols.findIndex((c) => c === 'high');
-  const lowIdx = cols.findIndex((c) => c === 'low');
-  const closeIdx = cols.findIndex((c) => c === 'close' || c === 'adj close');
+  const openIdx = cols.indexOf('open');
+  const highIdx = cols.indexOf('high');
+  const lowIdx = cols.indexOf('low');
+  const closeIdx = cols.includes('close') ? cols.indexOf('close') : cols.indexOf('adj close');
 
   if (dateIdx === -1) return {};
 
