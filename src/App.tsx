@@ -3,6 +3,7 @@ import type { IVMode, VIXDayData, VIXDataMap, CalculationResults, DeltaRow } fro
 import { DEFAULTS, IV_MODES } from './constants';
 import { validateMarketTime, calcTimeToExpiry, resolveIV, calcAllDeltas, buildIronCondor, to24Hour } from './calculator';
 import { parseVixCSV } from './csvParser';
+import { cacheVixData, loadCachedVixData, loadStaticVixData } from './vixStorage';
 import { lightTheme, darkTheme, type Theme } from './themes';
 
 type AmPm = 'AM' | 'PM';
@@ -140,6 +141,27 @@ export default function StrikeCalculator() {
 
   const th = darkMode ? darkTheme : lightTheme;
 
+  // Load VIX data on mount: try localStorage cache first, then static JSON
+  useEffect(() => {
+    const cached = loadCachedVixData();
+    if (cached) {
+      setVixData(cached.data);
+      setVixDataLoaded(true);
+      setVixDataSource(cached.source);
+      return;
+    }
+    // No cache — try static JSON
+    loadStaticVixData().then((result) => {
+      if (result) {
+        setVixData(result.data);
+        setVixDataLoaded(true);
+        setVixDataSource(result.source);
+        // Cache the static data so future loads are instant
+        cacheVixData(result.data, result.source);
+      }
+    });
+  }, []);
+
   // Tooltip close on outside click + Escape
   useEffect(() => {
     if (!tooltipOpen) return;
@@ -260,9 +282,15 @@ export default function StrikeCalculator() {
       const parsed = parseVixCSV(text);
       const count = Object.keys(parsed).length;
       if (count > 0) {
-        setVixData((prev) => ({ ...prev, ...parsed }));
+        const sourceName = file.name + ' (' + count.toLocaleString() + ' days)';
+        setVixData((prev) => {
+          const merged = { ...prev, ...parsed };
+          // Cache the merged data for next page load
+          cacheVixData(merged, sourceName);
+          return merged;
+        });
         setVixDataLoaded(true);
-        setVixDataSource(file.name + ' (' + count.toLocaleString() + ' days)');
+        setVixDataSource(sourceName);
       }
     };
     reader.readAsText(file);
