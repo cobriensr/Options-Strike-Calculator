@@ -43,23 +43,27 @@ It computes everything client-side with zero external API dependencies. You inpu
 ## Features
 
 ### Strike Calculation
+
 - **All 6 delta targets simultaneously**: 5Δ, 8Δ, 10Δ, 12Δ, 15Δ, 20Δ
 - **SPX and SPY strikes**: Both calculated and displayed, with SPX snapped to nearest 5-pt and SPY snapped to nearest $1 (tradeable increments)
 - **Put skew adjustment**: Configurable 0–8% IV asymmetry between puts and calls to model the volatility smile
 - **Theoretical option premiums**: Black-Scholes pricing for puts and calls at every delta, displayed as "Put $" and "Call $" columns in the strike table
 
 ### SPY/SPX Conversion
+
 - **SPY price input**: Primary input designed for reading directly from Market Tide
 - **Optional SPX input**: Enter the actual SPX price to derive the exact SPX/SPY ratio
 - **Configurable ratio slider**: 9.95–10.05 range for manual ratio adjustment when SPX price isn't available
 - **Auto-derived ratio**: When both prices are entered, the ratio is computed automatically to 4 decimal places
 
 ### IV Input
+
 - **VIX mode**: Enter VIX value with a configurable 0DTE adjustment multiplier (default 1.15×, range 1.0–1.3×) to account for the fact that 0DTE IV is typically 10–20% higher than 30-day VIX
 - **Direct IV mode**: Enter σ directly as a decimal for traders with access to actual 0DTE IV data
 - **Explanation tooltip**: The "?" button on the 0DTE adjustment field explains the VIX-to-IV conversion with worked examples
 
 ### Iron Condor & Credit Spread Analysis
+
 - **Full 4-leg structure**: Long put, short put, short call, long call — all with SPX and SPY strikes
 - **Wing width selection**: 5, 10, 15, 20, 25, 30, or 50 SPX points
 - **Contracts counter**: Adjustable 1–999 with +/− stepper to see total dollar impact at any position size
@@ -71,11 +75,13 @@ It computes everything client-side with zero external API dependencies. You inpu
 - **Dollar-denominated P&L**: All values shown with SPX $100 multiplier × contracts applied, with SPX points shown underneath
 
 ### Probability of Profit (PoP)
+
 - **Iron condor PoP**: Uses the correct formula `P(S_T > BE_low) + P(S_T < BE_high) − 1`, NOT the product of individual spread PoPs (which double-counts the overlap)
 - **Individual spread PoPs**: Single-tail probabilities for each side — always higher than the combined IC PoP
 - **Skew-adjusted**: Put-side uses `putSigma` for lower breakeven, call-side uses `callSigma` for upper breakeven
 
 ### Excel Export
+
 - **One-click download**: Generates an XLSX file comparing all 7 wing widths × 6 deltas × 3 trade structures
 - **Sheet 1 — P&L Comparison**: 126 rows with credit, max loss, buying power, RoR, PoP, wins to recover, breakevens, monthly P&L projections for every combination
 - **Sheet 2 — IC Summary**: Pivot-friendly iron condor rows with per-side credit and PoP breakdowns
@@ -84,6 +90,7 @@ It computes everything client-side with zero external API dependencies. You inpu
 - **Wins to Recover**: Max loss ÷ credit — shows how many winning trades needed to offset one full loss at each delta
 
 ### Historical VIX Data
+
 - **Built-in dataset**: 9,137 days of VIX OHLC data (January 1990 through March 2026) ships with the app — works on first load with zero setup
 - **CSV upload**: Load any VIX OHLC CSV file (supports `YYYY-MM-DD` and `MM/DD/YYYY` date formats) to extend or override built-in data
 - **Date lookup**: Select a date to auto-populate VIX from historical data
@@ -93,6 +100,7 @@ It computes everything client-side with zero external API dependencies. You inpu
 - **Persistent caching**: Uploaded data and built-in data are cached in localStorage — survives page refreshes and browser restarts
 
 ### UI
+
 - **Light and dark modes**: Full theme toggle with WCAG AA contrast in both modes
 - **508 accessibility compliance**: ARIA labels, roles, focus management, keyboard navigation, screen reader support
 - **Responsive**: Works on desktop and mobile
@@ -102,16 +110,17 @@ It computes everything client-side with zero external API dependencies. You inpu
 
 ## The Math
 
-### Strike Calculation
+### Strike Calculation Formula
 
 For a delta target D with z-score z = N⁻¹(1 − D/100):
 
-```
+```bash
 K_put  = S × e^(−z × σ_put  × √T)
 K_call = S × e^(+z × σ_call × √T)
 ```
 
 Where:
+
 - `S` = SPX spot price (derived from SPY × ratio)
 - `σ_put` = σ × (1 + skew) — put IV is adjusted upward for the volatility smile
 - `σ_call` = σ × (1 − skew) — call IV is adjusted downward
@@ -121,18 +130,18 @@ Where:
 
 ### Z-Scores by Delta
 
-| Delta | Z-Score | Source |
-|-------|---------|--------|
-| 5     | 1.645   | N⁻¹(0.95) |
-| 8     | 1.405   | N⁻¹(0.92) |
-| 10    | 1.280   | N⁻¹(0.90) |
-| 12    | 1.175   | N⁻¹(0.88) |
-| 15    | 1.036   | N⁻¹(0.85) |
-| 20    | 0.842   | N⁻¹(0.80) |
+| Delta | Z-Score | Source      |
+|-------|---------|-------------|
+| 5     | 1.645   | N^-1(0.95)  |
+| 8     | 1.405   | N^-1(0.92)  |
+| 10    | 1.280   | N^-1(0.90)  |
+| 12    | 1.175   | N^-1(0.88)  |
+| 15    | 1.036   | N^-1(0.85)  |
+| 20    | 0.842   | N^-1(0.80)  |
 
 ### Option Pricing (Black-Scholes)
 
-```
+```bash
 d1 = [ln(S/K) + (σ²/2)·T] / (σ·√T)
 d2 = d1 − σ·√T
 
@@ -144,7 +153,7 @@ The cumulative normal distribution N(x) is implemented using the Abramowitz & St
 
 ### Iron Condor P&L
 
-```
+```bash
 Credit     = (short_put_premium − long_put_premium) + (short_call_premium − long_call_premium)
 Max Profit = credit
 Max Loss   = wing_width − credit
@@ -155,7 +164,7 @@ RoR        = credit ÷ max_loss
 
 ### Credit Spread P&L (per side)
 
-```
+```bash
 Put Spread:
   Credit   = short_put_premium − long_put_premium
   Max Loss = wing_width − put_credit
@@ -173,7 +182,7 @@ Individual spread PoPs are always higher than the combined IC PoP because each s
 
 ### Iron Condor Probability of Profit
 
-```
+```bash
 PoP = P(S_T > BE_low) + P(S_T < BE_high) − 1
 ```
 
@@ -181,7 +190,7 @@ This is NOT the product of individual spread PoPs (which would double-count the 
 
 ### Single Spread Probability of Profit
 
-```
+```bash
 d2 = [ln(S/K) − (σ²/2)·T] / (σ·√T)
 
 Put credit spread:   PoP = N(d2)     where K = put breakeven
@@ -190,7 +199,7 @@ Call credit spread:  PoP = N(−d2)    where K = call breakeven
 
 ### Time-to-Expiry
 
-```
+```bash
 T = hours_remaining / (6.5 × 252)
 ```
 
@@ -198,7 +207,7 @@ Market hours: 9:30 AM – 4:00 PM Eastern (6.5 hours). Times outside this range 
 
 ### IV Resolution
 
-```
+```bash
 VIX mode:    σ = VIX × multiplier / 100
 Direct mode: σ = user input (as decimal)
 ```
@@ -207,7 +216,7 @@ The default multiplier (1.15) accounts for the empirical observation that 0DTE I
 
 ### Buying Power
 
-```
+```bash
 Buying Power = Max Loss = Wing Width − Credit Received
 ```
 
@@ -260,7 +269,7 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 
 ## Project Structure
 
-```
+```bash
 ├── public/
 │   └── vix-data.json             # 9,137 days of built-in VIX OHLC data (1990–2026)
 ├── scripts/
@@ -304,6 +313,7 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 The codebase follows a strict separation between pure calculation logic, data management, and UI:
 
 **Pure functions** (`calculator.ts`) — All financial math is in standalone, stateless functions with zero React dependencies. The module exports:
+
 - `validateMarketTime()` — Time-to-expiry validation with hard rejection outside market hours
 - `calcTimeToExpiry()` — Hours → annualized T conversion
 - `resolveIV()` — Single funnel: both VIX and direct IV modes converge to one σ
@@ -329,7 +339,7 @@ The codebase follows a strict separation between pure calculation logic, data ma
 
 ### Data Flow
 
-```
+```bash
 SPY price ──→ × ratio ──→ SPX spot ──┐
                                       │
 VIX ──→ resolveIV() ──→ σ ──────────┤
@@ -355,7 +365,7 @@ Skew ─────────────────────────
 All configurable values are in `src/constants.ts`:
 
 | Constant | Value | Purpose |
-|----------|-------|---------|
+| -------- | ----- | ------- |
 | `MARKET.HOURS_PER_DAY` | 6.5 | Regular trading session length |
 | `MARKET.TRADING_DAYS_PER_YEAR` | 252 | US equity calendar |
 | `MARKET.ANNUAL_TRADING_HOURS` | 1638 | 6.5 × 252 |
@@ -372,13 +382,17 @@ All configurable values are in `src/constants.ts`:
 The app uses a three-tier strategy for VIX data:
 
 ### Tier 1: localStorage Cache (fastest)
+
 On page load, the app checks `localStorage` for previously cached VIX data. This is populated either by a prior CSV upload or by the initial load of static data. Cached data loads instantly with zero network requests.
 
 ### Tier 2: Static JSON (first load)
+
 If no cache exists, the app fetches `/vix-data.json` from the server. This file contains 9,137 days of VIX OHLC data (1990–2026) and ships with the app. On successful load, the data is cached to localStorage for subsequent visits.
 
 ### Tier 3: Manual CSV Upload (fallback/override)
+
 The user can upload any VIX OHLC CSV. The uploaded data is merged with existing data (newer values override older ones) and the merged result is cached. The CSV parser handles:
+
 - `YYYY-MM-DD` and `MM/DD/YYYY` date formats
 - Case-insensitive headers
 - `Adj Close` as an alias for `Close`
@@ -395,7 +409,7 @@ Output: `public/vix-data.json` — commit this file and deploy.
 
 ---
 
-## Excel Export
+## Excel Export Details
 
 The "Export All Wing Widths to Excel" button generates an XLSX file with three sheets:
 
@@ -404,7 +418,7 @@ The "Export All Wing Widths to Excel" button generates an XLSX file with three s
 Every combination of **7 wing widths × 6 deltas × 3 sides** = 126 rows:
 
 | Column | Description |
-|--------|-------------|
+| ------ | ----------- |
 | Delta | 5Δ through 20Δ |
 | Wing Width | 5, 10, 15, 20, 25, 30, 50 |
 | Side | Put Spread, Call Spread, or Iron Condor |
@@ -437,7 +451,7 @@ Snapshot of every parameter: SPY, SPX, ratio, σ, skew, T, hours, contracts, mul
 **296 tests across 7 test files**, all passing with TypeScript strict mode.
 
 | File | Tests | Coverage Focus |
-|------|-------|---------------|
+| ---- | ----- | -------------- |
 | `calculator.test.ts` | 132 | Golden test case, full 6×3×3 matrix, property-based invariants, utilities |
 | `App.test.tsx` | 46 | Component rendering, mode switching, validation, CSV upload, IC UI, contracts, spreads, dark mode |
 | `skewAndIC.test.ts` | 41 | Skew asymmetry, IC leg construction, P&L fields, PoP, per-side spreads, calcSpreadPoP |
@@ -473,7 +487,7 @@ npm run test:coverage
 
 ### Coverage
 
-```
+```text
 File           | % Stmts | % Branch | % Funcs | % Lines
 ---------------|---------|----------|---------|--------
 All files      |   97.95 |    88.55 |      75 |   97.95
@@ -510,6 +524,7 @@ docker run -p 3000:80 strike-calc
 ```
 
 The Dockerfile uses a two-stage build:
+
 1. **Build stage**: `node:20-alpine` runs `npm ci` and `npm run build`
 2. **Production stage**: `nginx:1.27-alpine` serves the static output with SPA routing, gzip compression, and 1-year cache headers on assets
 
@@ -541,7 +556,7 @@ The application targets Section 508 / WCAG AA compliance:
 ## Scripts Reference
 
 | Command | Description |
-|---------|-------------|
+| ------- | ----------- |
 | `npm run dev` | Start Vite dev server with HMR |
 | `npm run build` | TypeScript check + Vite production build |
 | `npm run preview` | Preview the production build locally |
@@ -559,7 +574,7 @@ The application targets Section 508 / WCAG AA compliance:
 Key design decisions made during development, with rationale:
 
 | Decision | Choice | Why |
-|----------|--------|-----|
+| -------- | ------ | --- |
 | Calc engine | Pure functions module | Testable, explicit, no class overhead |
 | Delta support | All 6 via lookup table | Avoids inverse CDF dependency |
 | IV input | Both VIX + Direct modes | Covers all user types |
@@ -605,7 +620,7 @@ This section documents the intended workflow combining the calculator with exter
 
 ### Daily Workflow
 
-```
+```bash
 9:30 AM ET:  Check Periscope gamma profile
              → Identify positive gamma zones (price suppression)
              → Identify negative gamma zones (price acceleration)
@@ -638,7 +653,7 @@ During day:  Monitor position
 ### Structure Selection
 
 | Market Tide Signal | Structure | Why |
-|--------------------|-----------|-----|
+| ------------------ | --------- | --- |
 | NCP ≈ NPP (parallel) | Iron Condor | Ranging day, collect both sides |
 | NCP >> NPP (diverging up) | Put Credit Spread | Bullish trend, no call exposure |
 | NPP >> NCP (diverging up) | Call Credit Spread | Bearish trend, no put exposure |
@@ -650,7 +665,7 @@ During day:  Monitor position
 
 ### Buying Power Budget
 
-```
+```bash
 Conservative:  5% of account per day  → survives 10+ consecutive max losses
 Moderate:     10% of account per day  → survives 5+ consecutive max losses
 Aggressive:   15% of account per day  → survives 3+ consecutive max losses
@@ -660,7 +675,7 @@ Aggressive:   15% of account per day  → survives 3+ consecutive max losses
 
 Multiple positions on the same underlying and same expiration are NOT diversified. They lose on the same move. Always add up the total buying power of all same-day SPX positions — that total is your daily risk.
 
-```
+```bash
 ❌ Wrong: "I have 5 trades at 5% each, that's diversified"
 ✓ Right: "I have 5 trades at 5% each = 25% total SPX exposure"
 ```
@@ -669,7 +684,7 @@ For genuine diversification, consider different underlyings (SPX + RUT + NDX) wh
 
 ### Example Sizing
 
-```
+```bash
 Account: $200,000
 Daily risk budget: 10% = $20,000
 
