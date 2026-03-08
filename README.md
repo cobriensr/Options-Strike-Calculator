@@ -2,7 +2,7 @@
 
 A Black-Scholes-based calculator for determining delta-targeted strike prices, theoretical option premiums, credit spread P&L, and iron condor profiles for same-day (0DTE) SPX and SPY options. Built with React, TypeScript (strict mode), and Vite.
 
-Live at: [Vercel deployment URL]
+Live at: [options-strike-calculator.vercel.app](https://options-strike-calculator.vercel.app/)
 
 ## Table of Contents
 
@@ -23,7 +23,6 @@ Live at: [Vercel deployment URL]
 - [Trading Workflow](#trading-workflow)
 - [Position Sizing Guide](#position-sizing-guide)
 - [Accuracy & Limitations](#accuracy--limitations)
-- [License](#license)
 
 ---
 
@@ -114,7 +113,7 @@ It computes everything client-side with zero external API dependencies. You inpu
 
 For a delta target D with z-score z = N⁻¹(1 − D/100):
 
-```bash
+```text
 K_put  = S × e^(−z × σ_put  × √T)
 K_call = S × e^(+z × σ_call × √T)
 ```
@@ -141,7 +140,7 @@ Where:
 
 ### Option Pricing (Black-Scholes)
 
-```bash
+```text
 d1 = [ln(S/K) + (σ²/2)·T] / (σ·√T)
 d2 = d1 − σ·√T
 
@@ -153,7 +152,7 @@ The cumulative normal distribution N(x) is implemented using the Abramowitz & St
 
 ### Iron Condor P&L
 
-```bash
+```text
 Credit     = (short_put_premium − long_put_premium) + (short_call_premium − long_call_premium)
 Max Profit = credit
 Max Loss   = wing_width − credit
@@ -164,7 +163,7 @@ RoR        = credit ÷ max_loss
 
 ### Credit Spread P&L (per side)
 
-```bash
+```text
 Put Spread:
   Credit   = short_put_premium − long_put_premium
   Max Loss = wing_width − put_credit
@@ -182,7 +181,7 @@ Individual spread PoPs are always higher than the combined IC PoP because each s
 
 ### Iron Condor Probability of Profit
 
-```bash
+```text
 PoP = P(S_T > BE_low) + P(S_T < BE_high) − 1
 ```
 
@@ -190,7 +189,7 @@ This is NOT the product of individual spread PoPs (which would double-count the 
 
 ### Single Spread Probability of Profit
 
-```bash
+```text
 d2 = [ln(S/K) − (σ²/2)·T] / (σ·√T)
 
 Put credit spread:   PoP = N(d2)     where K = put breakeven
@@ -199,7 +198,7 @@ Call credit spread:  PoP = N(−d2)    where K = call breakeven
 
 ### Time-to-Expiry
 
-```bash
+```text
 T = hours_remaining / (6.5 × 252)
 ```
 
@@ -207,7 +206,7 @@ Market hours: 9:30 AM – 4:00 PM Eastern (6.5 hours). Times outside this range 
 
 ### IV Resolution
 
-```bash
+```text
 VIX mode:    σ = VIX × multiplier / 100
 Direct mode: σ = user input (as decimal)
 ```
@@ -216,7 +215,7 @@ The default multiplier (1.15) accounts for the empirical observation that 0DTE I
 
 ### Buying Power
 
-```bash
+```text
 Buying Power = Max Loss = Wing Width − Credit Received
 ```
 
@@ -269,39 +268,49 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 
 ## Project Structure
 
-```bash
+```text
 ├── public/
-│   └── vix-data.json             # 9,137 days of built-in VIX OHLC data (1990–2026)
+│   └── vix-data.json                  # 9,137 days of built-in VIX OHLC data (1990–2026)
 ├── scripts/
-│   └── convert-vix-csv.mjs       # One-time CSV → JSON converter
+│   └── convert-vix-csv.mjs            # One-time CSV → JSON converter
 ├── src/
 │   ├── __tests__/
-│   │   ├── App.test.tsx           # Component tests (46 tests)
-│   │   ├── calculator.test.ts     # Strike calc, matrix, properties (132 tests)
-│   │   ├── csvParser.test.ts      # CSV parsing (13 tests)
-│   │   ├── pricing.test.ts        # Black-Scholes & normalCDF (19 tests)
-│   │   ├── resolveIV.test.ts      # IV resolution (25 tests)
-│   │   ├── skewAndIC.test.ts      # Skew, IC, spreads, PoP (41 tests)
-│   │   ├── timeValidation.test.ts # Market hours boundaries (20 tests)
-│   │   └── setup.ts               # Vitest setup
-│   ├── App.tsx                    # Main React component
-│   ├── calculator.ts              # Pure calculation functions (Black-Scholes, strikes, IC, PoP)
-│   ├── constants.ts               # Named constants (no magic numbers)
-│   ├── csvParser.ts               # VIX CSV parser
-│   ├── exportXlsx.ts              # Excel export (multi-sheet wing width comparison)
-│   ├── main.tsx                   # React entry point
-│   ├── themes.ts                  # Light/dark theme definitions
-│   ├── types.ts                   # TypeScript type definitions
-│   ├── vite-env.d.ts              # Vite type declarations
-│   └── vixStorage.ts              # localStorage cache + static JSON loader
+│   │   ├── App.test.tsx               # Component tests
+│   │   ├── calculator.test.ts         # Strike calc, matrix, properties
+│   │   ├── csvParser.test.ts          # CSV parsing
+│   │   ├── exportXlsx.test.ts         # Excel export
+│   │   ├── pricing.test.ts            # Black-Scholes & normalCDF
+│   │   ├── resolveIV.test.ts          # IV resolution
+│   │   ├── skewAndIC.test.ts          # Skew, IC, spreads, PoP
+│   │   ├── timeValidation.test.ts     # Market hours boundaries
+│   │   └── setup.ts                   # Vitest setup
+│   ├── components/
+│   │   ├── DeltaStrikesTable.tsx      # Strike table with premiums and Greeks
+│   │   ├── IronCondorSection.tsx      # IC legs table and P&L profile
+│   │   ├── ParameterSummary.tsx       # Calculation parameter display
+│   │   └── ui.tsx                     # Shared UI helpers
+│   ├── constants/
+│   │   └── index.ts                   # Named constants (no magic numbers)
+│   ├── themes/
+│   │   └── index.ts                   # Light/dark theme definitions
+│   ├── types/
+│   │   └── index.ts                   # TypeScript type definitions
+│   ├── utils/
+│   │   ├── calculator.ts              # Pure calculation functions (Black-Scholes, strikes, IC, PoP)
+│   │   ├── csvParser.ts               # VIX CSV parser
+│   │   ├── exportXlsx.ts              # Excel export (multi-sheet wing width comparison)
+│   │   └── vixStorage.ts              # localStorage cache + static JSON loader
+│   ├── App.tsx                        # Main React component
+│   ├── main.tsx                       # React entry point
+│   └── vite-env.d.ts                  # Vite type declarations
 ├── .dockerignore
 ├── .gitattributes
 ├── .gitignore
-├── Dockerfile                     # Multi-stage: Node build → nginx serve
-├── index.html                     # HTML entry point
+├── Dockerfile                         # Multi-stage: Node build → nginx serve
+├── index.html                         # HTML entry point
 ├── package.json
-├── tsconfig.json                  # TypeScript strict mode config
-└── vite.config.ts                 # Vite + Vitest config
+├── tsconfig.json                      # TypeScript strict mode config
+└── vite.config.ts                     # Vite + Vitest config
 ```
 
 ---
@@ -310,9 +319,9 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 
 ### Separation of Concerns
 
-The codebase follows a strict separation between pure calculation logic, data management, and UI:
+The codebase follows a strict separation between pure calculation logic, data management, UI components, and shared types:
 
-**Pure functions** (`calculator.ts`) — All financial math is in standalone, stateless functions with zero React dependencies. The module exports:
+**Pure functions** (`src/utils/calculator.ts`) — All financial math is in standalone, stateless functions with zero React dependencies. The module exports:
 
 - `validateMarketTime()` — Time-to-expiry validation with hard rejection outside market hours
 - `calcTimeToExpiry()` — Hours → annualized T conversion
@@ -327,19 +336,23 @@ The codebase follows a strict separation between pure calculation logic, data ma
 - `snapToIncrement()` — Round to nearest tradeable strike
 - `to24Hour()` — 12h → 24h time conversion
 
-**Excel export** (`exportXlsx.ts`) — Generates multi-sheet XLSX comparing all wing widths with P&L projections. Uses SheetJS for client-side spreadsheet generation.
+**Components** (`src/components/`) — Extracted UI components for the strike table, iron condor section, parameter summary, and shared UI helpers. Each component receives props from `App.tsx` and renders a focused section of the interface.
 
-**VIX data management** (`vixStorage.ts`) — Three-tier loading: localStorage cache → static JSON → manual upload. All storage operations have try/catch for environments where localStorage isn't available.
+**Excel export** (`src/utils/exportXlsx.ts`) — Generates multi-sheet XLSX comparing all wing widths with P&L projections. Uses SheetJS for client-side spreadsheet generation.
 
-**Types** (`types.ts`) — All interfaces are readonly, enforcing immutability throughout the calculation chain.
+**VIX data management** (`src/utils/vixStorage.ts`) — Three-tier loading: localStorage cache → static JSON → manual upload. All storage operations have try/catch for environments where localStorage isn't available.
 
-**Constants** (`constants.ts`) — Every magic number is named and documented. No raw numbers appear in formulas.
+**Types** (`src/types/index.ts`) — All interfaces are readonly, enforcing immutability throughout the calculation chain.
 
-**UI** (`App.tsx`) — React component with inline styles. All financial computations delegate to `calculator.ts`.
+**Constants** (`src/constants/index.ts`) — Every magic number is named and documented. No raw numbers appear in formulas.
+
+**Themes** (`src/themes/index.ts`) — Light and dark theme color definitions with WCAG AA contrast ratios.
+
+**UI** (`src/App.tsx`) — Root React component managing state, inputs, and layout. All financial computations delegate to `src/utils/calculator.ts`.
 
 ### Data Flow
 
-```bash
+```text
 SPY price ──→ × ratio ──→ SPX spot ──┐
                                       │
 VIX ──→ resolveIV() ──→ σ ──────────┤
@@ -362,7 +375,7 @@ Skew ─────────────────────────
 
 ## Configuration & Constants
 
-All configurable values are in `src/constants.ts`:
+All configurable values are in `src/constants/index.ts`:
 
 | Constant | Value | Purpose |
 | -------- | ----- | ------- |
@@ -448,17 +461,18 @@ Snapshot of every parameter: SPY, SPX, ratio, σ, skew, T, hours, contracts, mul
 
 ### Test Suite Overview
 
-**296 tests across 7 test files**, all passing with TypeScript strict mode.
+**363 tests across 8 test files**, all passing with TypeScript strict mode.
 
-| File | Tests | Coverage Focus |
-| ---- | ----- | -------------- |
-| `calculator.test.ts` | 132 | Golden test case, full 6×3×3 matrix, property-based invariants, utilities |
-| `App.test.tsx` | 46 | Component rendering, mode switching, validation, CSV upload, IC UI, contracts, spreads, dark mode |
-| `skewAndIC.test.ts` | 41 | Skew asymmetry, IC leg construction, P&L fields, PoP, per-side spreads, calcSpreadPoP |
-| `resolveIV.test.ts` | 25 | VIX mode, direct mode, boundary values, edge cases, cross-mode equivalence |
-| `timeValidation.test.ts` | 20 | Every market-hour boundary, precision checks, minute-by-minute monotonic sweep |
-| `pricing.test.ts` | 19 | normalCDF properties, Black-Scholes sanity checks, put-call parity, scaling |
-| `csvParser.test.ts` | 13 | Date formats, edge cases, 9k-row performance, whitespace handling |
+| File | Coverage Focus |
+| ---- | -------------- |
+| `calculator.test.ts` | Golden test case, full 6×3×3 matrix, property-based invariants, utilities |
+| `App.test.tsx` | Component rendering, mode switching, validation, CSV upload, IC UI, contracts, spreads, dark mode |
+| `skewAndIC.test.ts` | Skew asymmetry, IC leg construction, P&L fields, PoP, per-side spreads, calcSpreadPoP |
+| `exportXlsx.test.ts` | Excel export generation, sheet structure, data integrity |
+| `resolveIV.test.ts` | VIX mode, direct mode, boundary values, edge cases, cross-mode equivalence |
+| `timeValidation.test.ts` | Every market-hour boundary, precision checks, minute-by-minute monotonic sweep |
+| `pricing.test.ts` | normalCDF properties, Black-Scholes sanity checks, put-call parity, scaling |
+| `csvParser.test.ts` | Date formats, edge cases, 9k-row performance, whitespace handling |
 
 ### Test Philosophy
 
@@ -485,33 +499,23 @@ npm run test:run
 npm run test:coverage
 ```
 
-### Coverage
-
-```text
-File           | % Stmts | % Branch | % Funcs | % Lines
----------------|---------|----------|---------|--------
-All files      |   97.95 |    88.55 |      75 |   97.95
- App.tsx       |   98.85 |    86.43 |   65.71 |   98.85
- calculator.ts |   98.20 |    95.38 |    100  |   98.20
- constants.ts  |    100  |     100  |    100  |    100
- csvParser.ts  |    100  |    90.32 |    100  |    100
- themes.ts     |    100  |     100  |    100  |    100
-```
-
 ---
 
 ## Deployment
 
-### Vercel (Recommended)
+### Vercel (Production)
 
-The project is configured for Vercel out of the box:
+The app is deployed to Vercel via GitHub integration with automatic deployments on push to `main`.
 
-1. Push to GitHub
-2. Import the repo in Vercel
-3. Framework: Vite (auto-detected)
-4. Build command: `npm run build`
-5. Output directory: `dist`
-6. Deploy
+**Live URL**: [options-strike-calculator.vercel.app](https://options-strike-calculator.vercel.app/)
+
+Vercel auto-detects the Vite framework and uses these settings:
+
+- **Build command**: `npm run build`
+- **Output directory**: `dist`
+- **Node.js version**: 18+
+
+Every push to `main` triggers a production deployment. Pull requests get preview deployments automatically.
 
 ### Docker
 
@@ -525,17 +529,8 @@ docker run -p 3000:80 strike-calc
 
 The Dockerfile uses a two-stage build:
 
-1. **Build stage**: `node:20-alpine` runs `npm ci` and `npm run build`
-2. **Production stage**: `nginx:1.27-alpine` serves the static output with SPA routing, gzip compression, and 1-year cache headers on assets
-
-### AWS S3 + CloudFront
-
-```bash
-npm run build
-aws s3 sync dist/ s3://your-bucket-name --delete
-```
-
-Configure CloudFront with a custom error response to redirect 404s to `/index.html` for SPA routing.
+1. **Build stage**: `node:24-alpine` runs `npm ci` and `npm run build`
+2. **Production stage**: `nginx:1.28-alpine-slim` serves the static output with SPA routing, gzip compression, and 1-year cache headers on assets
 
 ---
 
@@ -576,6 +571,7 @@ Key design decisions made during development, with rationale:
 | Decision | Choice | Why |
 | -------- | ------ | --- |
 | Calc engine | Pure functions module | Testable, explicit, no class overhead |
+| Component extraction | Separate files per section | Keeps App.tsx focused on state; components handle rendering |
 | Delta support | All 6 via lookup table | Avoids inverse CDF dependency |
 | IV input | Both VIX + Direct modes | Covers all user types |
 | SPX/SPY display | Always show both | No toggle friction |
@@ -602,7 +598,7 @@ Key design decisions made during development, with rationale:
 | Framework | Vite + React | Lightest viable toolchain |
 | TypeScript | Strict mode | `noUncheckedIndexedAccess`, `noUnusedLocals`, etc. |
 | Testing | Vitest + RTL | Fast, modern, good DX |
-| Hosting | Vercel | Push-to-deploy, free tier |
+| Hosting | Vercel via GitHub | Push-to-deploy on main, preview deploys on PRs |
 | Spreadsheet | SheetJS (xlsx) | Client-side Excel generation, ~200KB |
 | Containerization | Docker (nginx alpine) | Two-stage build, SPA routing, gzip |
 
@@ -620,7 +616,7 @@ This section documents the intended workflow combining the calculator with exter
 
 ### Daily Workflow
 
-```bash
+```text
 9:30 AM ET:  Check Periscope gamma profile
              → Identify positive gamma zones (price suppression)
              → Identify negative gamma zones (price acceleration)
@@ -665,7 +661,7 @@ During day:  Monitor position
 
 ### Buying Power Budget
 
-```bash
+```text
 Conservative:  5% of account per day  → survives 10+ consecutive max losses
 Moderate:     10% of account per day  → survives 5+ consecutive max losses
 Aggressive:   15% of account per day  → survives 3+ consecutive max losses
@@ -675,16 +671,11 @@ Aggressive:   15% of account per day  → survives 3+ consecutive max losses
 
 Multiple positions on the same underlying and same expiration are NOT diversified. They lose on the same move. Always add up the total buying power of all same-day SPX positions — that total is your daily risk.
 
-```bash
-❌ Wrong: "I have 5 trades at 5% each, that's diversified"
-✓ Right: "I have 5 trades at 5% each = 25% total SPX exposure"
-```
-
 For genuine diversification, consider different underlyings (SPX + RUT + NDX) which have 65–75% correlation rather than 100%.
 
 ### Example Sizing
 
-```bash
+```text
 Account: $200,000
 Daily risk budget: 10% = $20,000
 
@@ -701,7 +692,7 @@ Option B: 10Δ, 10-pt wings, 12 contracts
 Option C: Split budget across deltas
   8Δ × 20 contracts = $8,520 BP
   5Δ × 15 contracts = $6,780 BP
-  Total: $15,300 BP (7.6% of account) ✓
+  Total: $15,300 BP (7.6% of account)
 ```
 
 ---
@@ -719,9 +710,3 @@ The calculator provides strike placement accuracy of approximately ±5–15 SPX 
 7. **Dividends** — Not modeled. Minimal impact for SPX same-day calculations.
 
 For practical 0DTE iron condor placement, credit spread analysis, and position sizing, these error sources are well within acceptable bounds. For live trading, always compare theoretical values against actual bid/ask quotes from your broker.
-
----
-
-## License
-
-MIT
