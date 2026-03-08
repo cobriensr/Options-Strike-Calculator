@@ -4,6 +4,7 @@ import { DEFAULTS, IV_MODES } from './constants';
 import { validateMarketTime, calcTimeToExpiry, resolveIV, calcAllDeltas, buildIronCondor, to24Hour } from './calculator';
 import { parseVixCSV } from './csvParser';
 import { cacheVixData, loadCachedVixData, loadStaticVixData } from './vixStorage';
+import { exportPnLComparison } from './exportXlsx';
 import { lightTheme, darkTheme, type Theme } from './themes';
 
 type AmPm = 'AM' | 'PM';
@@ -901,6 +902,22 @@ export default function StrikeCalculator() {
                       <p style={{ fontSize: 11, color: th.textMuted, marginTop: 8, fontStyle: 'italic' }}>
                         All dollar values: SPX $100 multiplier {'\u00D7'} {contracts} contract{contracts !== 1 ? 's' : ''}. Put spread = sell short put / buy long put. Call spread = sell short call / buy long call. Iron Condor = both spreads combined. Individual spread PoP is single-tail (higher than IC). IC PoP = P(price between both BEs), not the product of spread PoPs. Premiums theoretical (r=0).
                       </p>
+
+                      {/* Export Button */}
+                      <button
+                        onClick={() => exportPnLComparison({ results, contracts, effectiveRatio, skewPct })}
+                        aria-label="Export P&L comparison to Excel"
+                        style={{
+                          marginTop: 12, width: '100%', padding: '10px 16px', borderRadius: 8,
+                          border: '1.5px solid ' + th.accent,
+                          backgroundColor: th.accentBg, color: th.accent,
+                          cursor: 'pointer', fontSize: 13, fontWeight: 600,
+                          fontFamily: "'Outfit', sans-serif",
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                        }}
+                      >
+                        {'\u2913'} Export All Wing Widths to Excel
+                      </button>
                     </div>
                   );
                 })()}
