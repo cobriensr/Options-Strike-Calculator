@@ -778,52 +778,128 @@ export default function StrikeCalculator() {
                           <thead>
                             <tr style={{ backgroundColor: th.tableHeader }}>
                               <th style={mkTh(th, 'center')}>Delta</th>
+                              <th style={mkTh(th, 'left')}>Side</th>
                               <th style={mkTh(th, 'right')}>Credit</th>
-                              <th style={mkTh(th, 'right')}>Max Profit</th>
                               <th style={mkTh(th, 'right')}>Max Loss</th>
-                              <th style={mkTh(th, 'right')}>Buying Power</th>
+                              <th style={mkTh(th, 'right')}>Buying Pwr</th>
                               <th style={mkTh(th, 'right')}>RoR</th>
                               <th style={mkTh(th, 'right')}>PoP</th>
-                              <th style={mkTh(th, 'right')}>BE Low</th>
-                              <th style={mkTh(th, 'right')}>BE High</th>
+                              <th style={mkTh(th, 'right')}>Breakeven</th>
                             </tr>
                           </thead>
                           <tbody>
                             {icRows.map((ic, i) => {
                               const mult = 100 * contracts;
-                              const creditDollars = ic.creditReceived * mult;
-                              const maxProfitDollars = ic.maxProfit * mult;
-                              const maxLossDollars = ic.maxLoss * mult;
-                              return (
-                                <tr key={ic.delta} style={{ backgroundColor: i % 2 === 1 ? th.tableRowAlt : th.surface }}>
-                                  <td style={{ ...mkTd(th), textAlign: 'center', fontWeight: 700, color: th.accent }}>{ic.delta}{'\u0394'}</td>
-                                  <td style={{ ...mkTd(th), textAlign: 'right', color: th.green, fontWeight: 600 }}>
-                                    {'$' + fmtDollar(creditDollars)}
-                                    <div style={{ fontSize: 10, color: th.textMuted, fontWeight: 400 }}>{ic.creditReceived.toFixed(2)} pts</div>
+                              const groupBg = i % 2 === 1 ? th.tableRowAlt : th.surface;
+                              const borderStyle = '2px solid ' + th.border;
+
+                              const rows = [
+                                {
+                                  key: ic.delta + '-put',
+                                  side: 'Put Spread',
+                                  sideColor: th.red,
+                                  credit: ic.putSpreadCredit,
+                                  maxLoss: ic.putSpreadMaxLoss,
+                                  ror: ic.putSpreadRoR,
+                                  pop: ic.putSpreadPoP,
+                                  be: ic.putSpreadBE.toFixed(0),
+                                  isFirst: true,
+                                  isLast: false,
+                                },
+                                {
+                                  key: ic.delta + '-call',
+                                  side: 'Call Spread',
+                                  sideColor: th.green,
+                                  credit: ic.callSpreadCredit,
+                                  maxLoss: ic.callSpreadMaxLoss,
+                                  ror: ic.callSpreadRoR,
+                                  pop: ic.callSpreadPoP,
+                                  be: ic.callSpreadBE.toFixed(0),
+                                  isFirst: false,
+                                  isLast: false,
+                                },
+                                {
+                                  key: ic.delta + '-ic',
+                                  side: 'Iron Condor',
+                                  sideColor: th.accent,
+                                  credit: ic.creditReceived,
+                                  maxLoss: ic.maxLoss,
+                                  ror: ic.returnOnRisk,
+                                  pop: ic.probabilityOfProfit,
+                                  be: ic.breakEvenLow.toFixed(0) + '\u2013' + ic.breakEvenHigh.toFixed(0),
+                                  isFirst: false,
+                                  isLast: true,
+                                },
+                              ];
+
+                              return rows.map((r) => (
+                                <tr key={r.key} style={{
+                                  backgroundColor: groupBg,
+                                  borderBottom: r.isLast ? borderStyle : undefined,
+                                }}>
+                                  {r.isFirst && (
+                                    <td rowSpan={3} style={{ ...mkTd(th), textAlign: 'center', fontWeight: 700, color: th.accent, verticalAlign: 'middle', borderBottom: borderStyle }}>{ic.delta}{'\u0394'}</td>
+                                  )}
+                                  <td style={{
+                                    ...mkTd(th), color: r.sideColor,
+                                    fontWeight: r.isLast ? 700 : 500,
+                                    fontSize: r.isLast ? 13 : 12,
+                                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
+                                  }}>
+                                    {r.side}
                                   </td>
-                                  <td style={{ ...mkTd(th), textAlign: 'right', color: th.green }}>
-                                    {'$' + fmtDollar(maxProfitDollars)}
+                                  <td style={{
+                                    ...mkTd(th), textAlign: 'right', color: th.green,
+                                    fontWeight: r.isLast ? 700 : 500,
+                                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
+                                  }}>
+                                    {'$' + fmtDollar(r.credit * mult)}
+                                    <div style={{ fontSize: 10, color: th.textMuted, fontWeight: 400 }}>{r.credit.toFixed(2)} pts</div>
                                   </td>
-                                  <td style={{ ...mkTd(th), textAlign: 'right', color: th.red, fontWeight: 600 }}>
-                                    {'$' + fmtDollar(maxLossDollars)}
-                                    <div style={{ fontSize: 10, color: th.textMuted, fontWeight: 400 }}>{ic.maxLoss.toFixed(2)} pts</div>
+                                  <td style={{
+                                    ...mkTd(th), textAlign: 'right', color: th.red,
+                                    fontWeight: r.isLast ? 700 : 500,
+                                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
+                                  }}>
+                                    {'$' + fmtDollar(r.maxLoss * mult)}
+                                    <div style={{ fontSize: 10, color: th.textMuted, fontWeight: 400 }}>{r.maxLoss.toFixed(2)} pts</div>
                                   </td>
-                                  <td style={{ ...mkTd(th), textAlign: 'right', color: th.text, fontWeight: 700 }}>
-                                    {'$' + fmtDollar(maxLossDollars)}
+                                  <td style={{
+                                    ...mkTd(th), textAlign: 'right', color: th.text,
+                                    fontWeight: r.isLast ? 700 : 500,
+                                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
+                                  }}>
+                                    {'$' + fmtDollar(r.maxLoss * mult)}
                                   </td>
-                                  <td style={{ ...mkTd(th), textAlign: 'right', color: th.accent, fontWeight: 700 }}>{(ic.returnOnRisk * 100).toFixed(1)}%</td>
-                                  <td style={{ ...mkTd(th), textAlign: 'right', color: th.green, fontWeight: 700 }}>{(ic.probabilityOfProfit * 100).toFixed(1)}%</td>
-                                  <td style={{ ...mkTd(th), textAlign: 'right', color: th.textSecondary }}>{ic.breakEvenLow.toFixed(0)}</td>
-                                  <td style={{ ...mkTd(th), textAlign: 'right', color: th.textSecondary }}>{ic.breakEvenHigh.toFixed(0)}</td>
+                                  <td style={{
+                                    ...mkTd(th), textAlign: 'right', color: th.accent,
+                                    fontWeight: r.isLast ? 700 : 600,
+                                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
+                                  }}>
+                                    {(r.ror * 100).toFixed(1)}%
+                                  </td>
+                                  <td style={{
+                                    ...mkTd(th), textAlign: 'right', color: th.green,
+                                    fontWeight: r.isLast ? 700 : 600,
+                                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
+                                  }}>
+                                    {(r.pop * 100).toFixed(1)}%
+                                  </td>
+                                  <td style={{
+                                    ...mkTd(th), textAlign: 'right', color: th.textSecondary,
+                                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
+                                  }}>
+                                    {r.be}
+                                  </td>
                                 </tr>
-                              );
+                              ));
                             })}
                           </tbody>
                         </table>
                       </div>
 
                       <p style={{ fontSize: 11, color: th.textMuted, marginTop: 8, fontStyle: 'italic' }}>
-                        All dollar values based on SPX $100 multiplier {'\u00D7'} {contracts} contract{contracts !== 1 ? 's' : ''}. Buying power = max loss (capital held as margin). Credit = short premiums {'\u2212'} long premiums. RoR = credit {'\u00F7'} max loss. PoP = probability price stays between both breakevens. Premiums are theoretical (r=0).
+                        All dollar values: SPX $100 multiplier {'\u00D7'} {contracts} contract{contracts !== 1 ? 's' : ''}. Put spread = sell short put / buy long put. Call spread = sell short call / buy long call. Iron Condor = both spreads combined. Individual spread PoP is single-tail (higher than IC). IC PoP = P(price between both BEs), not the product of spread PoPs. Premiums theoretical (r=0).
                       </p>
                     </div>
                   );

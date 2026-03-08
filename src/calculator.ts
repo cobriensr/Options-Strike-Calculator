@@ -284,8 +284,37 @@ export function calcPoP(
 }
 
 /**
+ * Calculates probability of profit for a single credit spread.
+ *
+ * Put credit spread PoP: P(S_T > breakeven)  — price stays above the put BE
+ * Call credit spread PoP: P(S_T < breakeven) — price stays below the call BE
+ *
+ * Uses d2 from the log-normal distribution with the appropriate skew-adjusted σ.
+ */
+export function calcSpreadPoP(
+  spot: number,
+  breakeven: number,
+  sigma: number,
+  T: number,
+  side: 'put' | 'call'
+): number {
+  if (T <= 0 || sigma <= 0 || breakeven <= 0 || spot <= 0) return 0;
+
+  const sqrtT = Math.sqrt(T);
+  const d2 = (Math.log(spot / breakeven) - (sigma * sigma / 2) * T) / (sigma * sqrtT);
+
+  if (side === 'put') {
+    // Put credit spread profits when S_T > BE
+    return Math.max(0, Math.min(1, normalCDF(d2)));
+  }
+  // Call credit spread profits when S_T < BE
+  return Math.max(0, Math.min(1, normalCDF(-d2)));
+}
+
+/**
  * Builds iron condor legs with full P&L profile.
  * Prices all four legs via Black-Scholes.
+ * Includes per-side (put spread / call spread) breakdowns.
  * Uses SPX snapped strikes as the short strikes.
  */
 export function buildIronCondor(
@@ -305,17 +334,28 @@ export function buildIronCondor(
   const shortCallPremium = blackScholesPrice(spotPrice, shortCall, row.callSigma, T, 'call');
   const longCallPremium = blackScholesPrice(spotPrice, longCall, row.callSigma, T, 'call');
 
+  // Combined IC
   const creditReceived = (shortPutPremium - longPutPremium) + (shortCallPremium - longCallPremium);
   const maxProfit = creditReceived;
   const maxLoss = wingWidthSpx - creditReceived;
   const breakEvenLow = shortPut - creditReceived;
   const breakEvenHigh = shortCall + creditReceived;
   const returnOnRisk = maxLoss > 0 ? creditReceived / maxLoss : 0;
-
-  // Probability of profit: P(BE_low < S_T < BE_high)
-  // = P(S_T > BE_low) + P(S_T < BE_high) - 1
-  // Using skew-adjusted σ for each tail
   const probabilityOfProfit = calcPoP(spotPrice, breakEvenLow, breakEvenHigh, row.putSigma, row.callSigma, T);
+
+  // Per-side: put credit spread
+  const putSpreadCredit = shortPutPremium - longPutPremium;
+  const putSpreadMaxLoss = wingWidthSpx - putSpreadCredit;
+  const putSpreadBE = shortPut - putSpreadCredit;
+  const putSpreadRoR = putSpreadMaxLoss > 0 ? putSpreadCredit / putSpreadMaxLoss : 0;
+  const putSpreadPoP = calcSpreadPoP(spotPrice, putSpreadBE, row.putSigma, T, 'put');
+
+  // Per-side: call credit spread
+  const callSpreadCredit = shortCallPremium - longCallPremium;
+  const callSpreadMaxLoss = wingWidthSpx - callSpreadCredit;
+  const callSpreadBE = shortCall + callSpreadCredit;
+  const callSpreadRoR = callSpreadMaxLoss > 0 ? callSpreadCredit / callSpreadMaxLoss : 0;
+  const callSpreadPoP = calcSpreadPoP(spotPrice, callSpreadBE, row.callSigma, T, 'call');
 
   return {
     delta: row.delta,
@@ -339,6 +379,16 @@ export function buildIronCondor(
     breakEvenHigh,
     returnOnRisk,
     probabilityOfProfit,
+    putSpreadCredit,
+    callSpreadCredit,
+    putSpreadMaxLoss,
+    callSpreadMaxLoss,
+    putSpreadBE,
+    callSpreadBE,
+    putSpreadRoR,
+    callSpreadRoR,
+    putSpreadPoP,
+    callSpreadPoP,
   };
 }
 

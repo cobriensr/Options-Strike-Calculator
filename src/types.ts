@@ -101,6 +101,26 @@ export interface IronCondorLegs {
   readonly returnOnRisk: number;
   /** Probability of profit (price stays between breakevens) */
   readonly probabilityOfProfit: number;
+  /** Put spread credit (short put premium - long put premium) */
+  readonly putSpreadCredit: number;
+  /** Call spread credit (short call premium - long call premium) */
+  readonly callSpreadCredit: number;
+  /** Put spread max loss = wing width - put credit */
+  readonly putSpreadMaxLoss: number;
+  /** Call spread max loss = wing width - call credit */
+  readonly callSpreadMaxLoss: number;
+  /** Put spread breakeven = short put - put credit */
+  readonly putSpreadBE: number;
+  /** Call spread breakeven = short call + call credit */
+  readonly callSpreadBE: number;
+  /** Put spread RoR = put credit / put max loss */
+  readonly putSpreadRoR: number;
+  /** Call spread RoR = call credit / call max loss */
+  readonly callSpreadRoR: number;
+  /** Put spread PoP = P(S_T > put BE) */
+  readonly putSpreadPoP: number;
+  /** Call spread PoP = P(S_T < call BE) */
+  readonly callSpreadPoP: number;
 }
 
 /** Error delta row */
