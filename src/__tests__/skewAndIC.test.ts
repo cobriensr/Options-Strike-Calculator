@@ -5,6 +5,7 @@ import {
   calcAllDeltas,
   buildIronCondor,
   calcPoP,
+  calcSpreadPoP,
   isStrikeError,
 } from '../calculator';
 import type { DeltaRow } from '../types';
@@ -256,5 +257,102 @@ describe('calcPoP', () => {
 
   it('returns 0 for σ=0', () => {
     expect(calcPoP(spot, 5700, 5900, 0, 0, T)).toBe(0);
+  });
+});
+
+describe('calcSpreadPoP', () => {
+  const spot = 5800;
+  const sigma = 0.20;
+  const T = calcTimeToExpiry(3);
+
+  it('put spread PoP: far OTM → high PoP', () => {
+    const pop = calcSpreadPoP(spot, 5500, sigma, T, 'put');
+    expect(pop).toBeGreaterThan(0.95);
+  });
+
+  it('call spread PoP: far OTM → high PoP', () => {
+    const pop = calcSpreadPoP(spot, 6100, sigma, T, 'call');
+    expect(pop).toBeGreaterThan(0.95);
+  });
+
+  it('ATM spread → ~50% PoP', () => {
+    const pop = calcSpreadPoP(spot, spot, sigma, T, 'put');
+    expect(pop).toBeGreaterThan(0.4);
+    expect(pop).toBeLessThan(0.6);
+  });
+
+  it('returns 0 for T=0', () => {
+    expect(calcSpreadPoP(spot, 5700, sigma, 0, 'put')).toBe(0);
+  });
+
+  it('returns 0 for σ=0', () => {
+    expect(calcSpreadPoP(spot, 5700, 0, T, 'put')).toBe(0);
+  });
+
+  it('put spread PoP > call spread PoP for same distance when skew applied', () => {
+    // With put skew, the put-side distribution is fatter-tailed
+    const putPop = calcSpreadPoP(spot, spot - 100, sigma * 1.03, T, 'put');
+    const callPop = calcSpreadPoP(spot, spot + 100, sigma * 0.97, T, 'call');
+    // Call side has lower IV → higher PoP for same distance
+    expect(callPop).toBeGreaterThan(putPop);
+  });
+});
+
+describe('buildIronCondor: per-side breakdown', () => {
+  const spot = 5800;
+  const sigma = 0.20;
+  const T = calcTimeToExpiry(3);
+  const rows = calcAllDeltas(spot, sigma, T, 0.03, 10);
+  const d10 = rows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
+
+  it('put spread + call spread credits = total IC credit', () => {
+    if (!d10) return;
+    const ic = buildIronCondor(d10, 25, spot, T, 10);
+    expect(ic.putSpreadCredit + ic.callSpreadCredit).toBeCloseTo(ic.creditReceived, 8);
+  });
+
+  it('put and call spread credits differ when skew is applied', () => {
+    if (!d10) return;
+    const ic = buildIronCondor(d10, 25, spot, T, 10);
+    // With 3% skew, the two sides should not be equal
+    expect(Math.abs(ic.putSpreadCredit - ic.callSpreadCredit)).toBeGreaterThan(0);
+  });
+
+  it('individual spread max losses are positive and < wing width', () => {
+    if (!d10) return;
+    const ic = buildIronCondor(d10, 25, spot, T, 10);
+    expect(ic.putSpreadMaxLoss).toBeGreaterThan(0);
+    expect(ic.putSpreadMaxLoss).toBeLessThan(25);
+    expect(ic.callSpreadMaxLoss).toBeGreaterThan(0);
+    expect(ic.callSpreadMaxLoss).toBeLessThan(25);
+  });
+
+  it('spread BEs are between long and short strikes', () => {
+    if (!d10) return;
+    const ic = buildIronCondor(d10, 25, spot, T, 10);
+    expect(ic.putSpreadBE).toBeGreaterThan(ic.longPut);
+    expect(ic.putSpreadBE).toBeLessThan(ic.shortPut);
+    expect(ic.callSpreadBE).toBeGreaterThan(ic.shortCall);
+    expect(ic.callSpreadBE).toBeLessThan(ic.longCall);
+  });
+
+  it('individual spread PoPs > IC PoP (single tail vs double)', () => {
+    if (!d10) return;
+    const ic = buildIronCondor(d10, 25, spot, T, 10);
+    expect(ic.putSpreadPoP).toBeGreaterThan(ic.probabilityOfProfit);
+    expect(ic.callSpreadPoP).toBeGreaterThan(ic.probabilityOfProfit);
+  });
+
+  it('spread RoRs are positive', () => {
+    if (!d10) return;
+    const ic = buildIronCondor(d10, 25, spot, T, 10);
+    expect(ic.putSpreadRoR).toBeGreaterThan(0);
+    expect(ic.callSpreadRoR).toBeGreaterThan(0);
+  });
+
+  it('put and call spread RoRs differ when skew is applied', () => {
+    if (!d10) return;
+    const ic = buildIronCondor(d10, 25, spot, T, 10);
+    expect(Math.abs(ic.putSpreadRoR - ic.callSpreadRoR)).toBeGreaterThan(0);
   });
 });

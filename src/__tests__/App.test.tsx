@@ -429,13 +429,26 @@ describe('StrikeCalculator: Iron Condor', () => {
 
     expect(screen.getByRole('table', { name: /iron condor p&l/i })).toBeInTheDocument();
     expect(screen.getByText('Credit')).toBeInTheDocument();
-    expect(screen.getByText('Max Profit')).toBeInTheDocument();
     expect(screen.getByText('Max Loss')).toBeInTheDocument();
-    expect(screen.getByText('Buying Power')).toBeInTheDocument();
+    expect(screen.getByText('Buying Pwr')).toBeInTheDocument();
     expect(screen.getByText('RoR')).toBeInTheDocument();
     expect(screen.getByText('PoP')).toBeInTheDocument();
-    expect(screen.getByText('BE Low')).toBeInTheDocument();
-    expect(screen.getByText('BE High')).toBeInTheDocument();
+    expect(screen.getByText('Breakeven')).toBeInTheDocument();
+    expect(screen.getByText('Side')).toBeInTheDocument();
+  });
+
+  it('shows put spread, call spread, and iron condor sub-rows', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+
+    const pnlTable = screen.getByRole('table', { name: /iron condor p&l/i });
+    // Each delta gets 3 sub-rows: Put Spread, Call Spread, Iron Condor
+    expect(within(pnlTable).getAllByText('Put Spread')).toHaveLength(6);
+    expect(within(pnlTable).getAllByText('Call Spread')).toHaveLength(6);
+    expect(within(pnlTable).getAllByText('Iron Condor')).toHaveLength(6);
   });
 
   it('wing width chips work', async () => {
