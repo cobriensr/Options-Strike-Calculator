@@ -660,13 +660,13 @@ export function calcHedge(params: {
   const putPayoutAtTarget = distToPutHedge * 0.5 * 100;
   const callPayoutAtTarget = distToCallHedge * 0.5 * 100;
 
-  // Recommended contracts: enough to cover IC max loss at target crash
-  // N × payoutPerContract ≥ icMaxLossDollars
+  // Recommended contracts: enough to approximately cover IC max loss at target crash
+  // N × payoutPerContract ≈ icMaxLossDollars (rounded to nearest, minimum 1)
   const recommendedPuts = putPayoutAtTarget > 0
-    ? Math.ceil(icMaxLossDollars / putPayoutAtTarget)
+    ? Math.max(1, Math.round(icMaxLossDollars / putPayoutAtTarget))
     : 1;
   const recommendedCalls = callPayoutAtTarget > 0
-    ? Math.ceil(icMaxLossDollars / callPayoutAtTarget)
+    ? Math.max(1, Math.round(icMaxLossDollars / callPayoutAtTarget))
     : 1;
 
   // Total daily cost
