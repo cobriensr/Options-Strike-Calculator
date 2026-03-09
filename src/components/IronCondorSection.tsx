@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import type { Theme } from '../themes';
 import type { DeltaRow, IronCondorLegs, CalculationResults } from '../types';
 import { buildIronCondor } from '../utils/calculator';
 import { exportPnLComparison } from '../utils/exportXlsx';
 import { mkTh, mkTd, fmtDollar } from './ui';
+import HedgeSection from './HedgeSection';
 
 interface Props {
   th: Theme;
@@ -14,9 +16,15 @@ interface Props {
 }
 
 export default function IronCondorSection({ th, results, wingWidth, contracts, effectiveRatio, skewPct }: Props) {
+  const [showHedge, setShowHedge] = useState(false);
+  const [hedgeDeltaIdx, setHedgeDeltaIdx] = useState(0);
+
   const icRows = results.allDeltas
     .filter((row): row is DeltaRow => !('error' in row))
     .map((r) => buildIronCondor(r, wingWidth, results.spot, results.T, effectiveRatio));
+
+  // For hedge: use the selected IC row (default to first / lowest delta = most conservative)
+  const hedgeIc = icRows[hedgeDeltaIdx] ?? icRows[0];
 
   return (
     <div style={{ marginTop: 18 }}>
@@ -33,6 +41,60 @@ export default function IronCondorSection({ th, results, wingWidth, contracts, e
       <p style={{ fontSize: 11, color: th.textMuted, marginTop: 8, fontStyle: 'italic' }}>
         All dollar values: SPX $100 multiplier {'\u00D7'} {contracts} contract{contracts === 1 ? '' : 's'}. Put spread = sell short put / buy long put. Call spread = sell short call / buy long call. Iron Condor = both spreads combined. Individual spread PoP is single-tail (higher than IC). IC PoP = P(price between both BEs), not the product of spread PoPs. Premiums theoretical (r=0).
       </p>
+
+      {/* Hedge Toggle */}
+      <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button
+          onClick={() => setShowHedge(!showHedge)}
+          aria-pressed={showHedge}
+          style={{
+            padding: '8px 18px', borderRadius: 8,
+            border: '1.5px solid ' + (showHedge ? th.accent : th.borderStrong),
+            backgroundColor: showHedge ? th.accentBg : th.chipBg,
+            color: showHedge ? th.accent : th.textSecondary,
+            cursor: 'pointer', fontSize: 12, fontWeight: 600,
+            fontFamily: "'Outfit', sans-serif",
+          }}
+        >
+          {showHedge ? '\u2713' : '\u26A1'} Hedge Calculator
+        </button>
+
+        {showHedge && icRows.length > 1 && (
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif" }}>
+              IC Delta
+            </span>
+            {icRows.map((ic, idx) => (
+              <button
+                key={ic.delta}
+                onClick={() => setHedgeDeltaIdx(idx)}
+                role="radio"
+                aria-checked={hedgeDeltaIdx === idx}
+                style={{
+                  padding: '3px 10px', borderRadius: 99, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+                  border: '1.5px solid ' + (hedgeDeltaIdx === idx ? th.chipActiveBorder : th.chipBorder),
+                  backgroundColor: hedgeDeltaIdx === idx ? th.chipActiveBg : th.chipBg,
+                  color: hedgeDeltaIdx === idx ? th.chipActiveText : th.chipText,
+                  fontFamily: "'DM Mono', monospace", transition: 'all 0.1s',
+                }}
+              >
+                {ic.delta}{'\u0394'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Hedge Section */}
+      {showHedge && hedgeIc && (
+        <HedgeSection
+          th={th}
+          results={results}
+          ic={hedgeIc}
+          contracts={contracts}
+          skew={skewPct / 100}
+        />
+      )}
 
       {/* Export Button */}
       <button

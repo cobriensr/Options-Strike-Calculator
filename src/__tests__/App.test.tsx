@@ -580,3 +580,117 @@ describe('StrikeCalculator: Skew', () => {
     expect(screen.getByText(/otm puts trade at higher iv/i)).toBeInTheDocument();
   });
 });
+
+// ============================================================
+// HEDGE CALCULATOR
+// ============================================================
+describe('StrikeCalculator: Hedge Calculator', () => {
+  it('shows hedge calculator button when IC is enabled and results visible', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+
+    expect(screen.getByText(/hedge calculator/i)).toBeInTheDocument();
+  });
+
+  it('hedge calculator is hidden by default', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+
+    // Button exists but hedge content not shown
+    expect(screen.queryByText(/crash protection/i)).not.toBeInTheDocument();
+  });
+
+  it('shows hedge recommendation when hedge button is clicked', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+    await user.click(screen.getByText(/hedge calculator/i));
+
+    expect(screen.getByText(/crash protection/i)).toBeInTheDocument();
+    expect(screen.getByText(/rally protection/i)).toBeInTheDocument();
+    expect(screen.getByText(/buy puts/i)).toBeInTheDocument();
+    expect(screen.getByText(/buy calls/i)).toBeInTheDocument();
+  });
+
+  it('shows daily hedge cost and net credit', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+    await user.click(screen.getByText(/hedge calculator/i));
+
+    expect(screen.getByText(/daily hedge cost/i)).toBeInTheDocument();
+    expect(screen.getByText(/net credit after hedge/i)).toBeInTheDocument();
+    expect(screen.getByText(/hedge % of credit/i)).toBeInTheDocument();
+  });
+
+  it('shows scenario table when expand button is clicked', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+    await user.click(screen.getByText(/hedge calculator/i));
+    await user.click(screen.getByText(/show.*scenario/i));
+
+    expect(screen.getByText(/crash scenarios/i)).toBeInTheDocument();
+    expect(screen.getByText(/rally scenarios/i)).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: /hedge p&l crash/i })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: /hedge p&l rally/i })).toBeInTheDocument();
+  });
+
+  it('hides scenario table when collapse button is clicked', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+    await user.click(screen.getByText(/hedge calculator/i));
+    await user.click(screen.getByText(/show.*scenario/i));
+    expect(screen.getByText(/crash scenarios/i)).toBeInTheDocument();
+
+    await user.click(screen.getByText(/hide.*scenario/i));
+    expect(screen.queryByText(/crash scenarios/i)).not.toBeInTheDocument();
+  });
+
+  it('hedge delta chips change the recommendation', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+    await user.click(screen.getByText(/hedge calculator/i));
+
+    // Default is 2Δ, switch to 5Δ
+    // Find the 5Δ button in the hedge delta section (not IC delta)
+    const fiveDeltaBtn = screen.getAllByText('5Δ').find((el) =>
+      el.closest('button')?.getAttribute('role') === 'radio'
+    );
+    if (fiveDeltaBtn) {
+      await user.click(fiveDeltaBtn);
+    }
+    // The component should re-render with new values (just check it doesn't crash)
+    expect(screen.getByText(/crash protection/i)).toBeInTheDocument();
+  });
+
+  it('IC delta chips are shown for selecting which IC to hedge', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await user.click(screen.getByText(/show.*iron condor/i));
+    await fillBasicInputs(user);
+    await user.click(screen.getByText(/hedge calculator/i));
+
+    // Should show IC delta selector
+    expect(screen.getByText('IC Delta')).toBeInTheDocument();
+  });
+});

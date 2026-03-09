@@ -1,4 +1,4 @@
-import type { DeltaTarget } from '../types';
+import type { DeltaTarget, HedgeDelta } from '../types';
 
 /** Market hours and trading calendar constants */
 export const MARKET = {
@@ -31,8 +31,25 @@ export const DELTA_Z_SCORES: Readonly<Record<DeltaTarget, number>> = {
   20: 0.842,
 } as const;
 
+/**
+ * Z-scores for hedge delta targets (far OTM protection).
+ * 1Δ: N⁻¹(0.99) = 2.326
+ * 2Δ: N⁻¹(0.98) = 2.054
+ * 3Δ: N⁻¹(0.97) = 1.881
+ * 5Δ: N⁻¹(0.95) = 1.645 (same as main 5Δ)
+ */
+export const HEDGE_Z_SCORES: Readonly<Record<HedgeDelta, number>> = {
+  1: 2.326,
+  2: 2.054,
+  3: 1.881,
+  5: 1.645,
+} as const;
+
 /** All available delta targets, sorted ascending */
 export const DELTA_OPTIONS: readonly DeltaTarget[] = [5, 8, 10, 12, 15, 20] as const;
+
+/** Available hedge delta options */
+export const HEDGE_DELTA_OPTIONS: readonly HedgeDelta[] = [1, 2, 3, 5] as const;
 
 /** Default values and configurable limits */
 export const DEFAULTS = {
@@ -54,6 +71,8 @@ export const DEFAULTS = {
    * real volatility smile where far OTM puts have steeper skew.
    */
   SKEW_REFERENCE_Z: 1.28,
+  /** Default hedge delta */
+  HEDGE_DELTA: 2 as HedgeDelta,
 } as const;
 
 /** IV input mode identifiers */

@@ -156,3 +156,60 @@ export interface CalculationResults {
   readonly hoursRemaining: number;
   readonly spot: number;
 }
+
+// ============================================================
+// HEDGE CALCULATOR TYPES
+// ============================================================
+
+/** Valid hedge delta targets */
+export type HedgeDelta = 1 | 2 | 3 | 5;
+
+/** A single crash/rally scenario with full P&L breakdown */
+export interface HedgeScenario {
+  readonly movePoints: number;
+  readonly movePct: string;
+  readonly direction: 'crash' | 'rally';
+  /** IC P&L in dollars (negative = loss) */
+  readonly icPnL: number;
+  /** Put hedge payout in dollars */
+  readonly hedgePutPnL: number;
+  /** Call hedge payout in dollars */
+  readonly hedgeCallPnL: number;
+  /** Total hedge cost in dollars (negative) */
+  readonly hedgeCost: number;
+  /** Net P&L across IC + hedge */
+  readonly netPnL: number;
+}
+
+/** Complete hedge recommendation for a given IC position */
+export interface HedgeResult {
+  readonly hedgeDelta: HedgeDelta;
+  /** Raw 2Δ put strike */
+  readonly putStrike: number;
+  /** Raw 2Δ call strike */
+  readonly callStrike: number;
+  /** Snapped to nearest 5-pt increment */
+  readonly putStrikeSnapped: number;
+  /** Snapped to nearest 5-pt increment */
+  readonly callStrikeSnapped: number;
+  /** Theoretical put premium per contract (points) */
+  readonly putPremium: number;
+  /** Theoretical call premium per contract (points) */
+  readonly callPremium: number;
+  /** Recommended number of hedge put contracts */
+  readonly recommendedPuts: number;
+  /** Recommended number of hedge call contracts */
+  readonly recommendedCalls: number;
+  /** Total daily hedge cost in points */
+  readonly dailyCostPts: number;
+  /** Total daily hedge cost in dollars */
+  readonly dailyCostDollars: number;
+  /** SPX crash size (pts) where net P&L ≈ 0 with recommended puts */
+  readonly breakEvenCrashPts: number;
+  /** SPX rally size (pts) where net P&L ≈ 0 with recommended calls */
+  readonly breakEvenRallyPts: number;
+  /** IC credit minus hedge cost in dollars */
+  readonly netCreditAfterHedge: number;
+  /** P&L scenarios at various crash/rally sizes */
+  readonly scenarios: readonly HedgeScenario[];
+}

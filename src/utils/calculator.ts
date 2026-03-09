@@ -8,8 +8,11 @@ import type {
   DeltaRowError,
   IronCondorLegs,
   IVMode,
+  HedgeDelta,
+  HedgeResult,
+  HedgeScenario,
 } from '../types';
-import { MARKET, DELTA_Z_SCORES, DELTA_OPTIONS, DEFAULTS, IV_MODES } from '../constants';
+import { MARKET, DELTA_Z_SCORES, DELTA_OPTIONS, DEFAULTS, IV_MODES, HEDGE_Z_SCORES } from '../constants';
 
 // ============================================================
 // CUMULATIVE NORMAL DISTRIBUTION (Abramowitz & Stegun 26.2.17)
@@ -505,4 +508,256 @@ export function spxToSpy(strike: number): string {
 export function to24Hour(hour: number, ampm: 'AM' | 'PM'): number {
   if (ampm === 'AM') return hour === 12 ? 0 : hour;
   return hour === 12 ? 12 : hour + 12;
+}
+
+// ============================================================
+// HEDGE (REINSURANCE) CALCULATOR
+// ============================================================
+
+/**
+ * Computes P&L for an IC + hedge position at a given SPX move.
+ * movePoints > 0 = crash (SPX drops), movePoints < 0 = rally (SPX rises).
+ * Returns P&L in dollars.
+ */
+function computeScenarioPnL(params: {
+  spot: number;
+  movePoints: number;
+  icShortPut: number;
+  icLongPut: number;
+  icShortCall: number;
+  icLongCall: number;
+  icCreditPts: number;
+  icContracts: number;
+  hedgePutStrike: number;
+  hedgeCallStrike: number;
+  hedgePutPremium: number;
+  hedgeCallPremium: number;
+  hedgePuts: number;
+  hedgeCalls: number;
+}): { icPnL: number; hedgePutPnL: number; hedgeCallPnL: number; hedgeCost: number; netPnL: number } {
+  const { spot, movePoints, icContracts, hedgePuts, hedgeCalls } = params;
+  const sFinal = spot - movePoints; // positive movePoints = crash
+
+  // IC put side P&L (per contract, in points)
+  let icPutPnL: number;
+  if (sFinal >= params.icShortPut) {
+    icPutPnL = 0; // put side expires OTM, keep full put credit
+  } else if (sFinal >= params.icLongPut) {
+    icPutPnL = -(params.icShortPut - sFinal); // partial loss
+  } else {
+    icPutPnL = -(params.icShortPut - params.icLongPut); // full wing loss
+  }
+
+  // IC call side P&L (per contract, in points)
+  let icCallPnL: number;
+  if (sFinal <= params.icShortCall) {
+    icCallPnL = 0; // call side expires OTM
+  } else if (sFinal <= params.icLongCall) {
+    icCallPnL = -(sFinal - params.icShortCall); // partial loss
+  } else {
+    icCallPnL = -(params.icLongCall - params.icShortCall); // full wing loss
+  }
+
+  // IC total P&L in dollars (credit + losses on both sides)
+  const icPnLDollars = (params.icCreditPts + icPutPnL + icCallPnL) * 100 * icContracts;
+
+  // Hedge put payout (per hedge contract, in points)
+  const hedgePutIntrinsic = Math.max(0, params.hedgePutStrike - sFinal);
+  const hedgePutPnLPts = hedgePutIntrinsic - params.hedgePutPremium;
+  const hedgePutDollars = hedgePutPnLPts * 100 * hedgePuts;
+
+  // Hedge call payout (per hedge contract, in points)
+  const hedgeCallIntrinsic = Math.max(0, sFinal - params.hedgeCallStrike);
+  const hedgeCallPnLPts = hedgeCallIntrinsic - params.hedgeCallPremium;
+  const hedgeCallDollars = hedgeCallPnLPts * 100 * hedgeCalls;
+
+  // Total hedge cost (premium paid, regardless of payout — for display)
+  const hedgeCostDollars = -(params.hedgePutPremium * 100 * hedgePuts + params.hedgeCallPremium * 100 * hedgeCalls);
+
+  return {
+    icPnL: Math.round(icPnLDollars),
+    hedgePutPnL: Math.round(hedgePutIntrinsic * 100 * hedgePuts),
+    hedgeCallPnL: Math.round(hedgeCallIntrinsic * 100 * hedgeCalls),
+    hedgeCost: Math.round(hedgeCostDollars),
+    netPnL: Math.round(icPnLDollars + hedgePutDollars + hedgeCallDollars),
+  };
+}
+
+/**
+ * Binary search for the crash/rally size where net P&L crosses zero.
+ */
+function findBreakEven(
+  computeFn: (move: number) => number,
+  searchMin: number,
+  searchMax: number,
+): number {
+  let lo = searchMin;
+  let hi = searchMax;
+  for (let i = 0; i < 50; i++) {
+    const mid = (lo + hi) / 2;
+    if (computeFn(mid) < 0) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return Math.round((lo + hi) / 2);
+}
+
+/**
+ * Calculates full hedge recommendation for an IC position.
+ *
+ * The sizing algorithm targets breakeven at 1.5× the distance from spot
+ * to the hedge strike. This is a standard reinsurance sizing approach:
+ * - Below 1×: hedge hasn't started paying (deductible zone)
+ * - At 1×: hedge is ATM (starts paying)
+ * - At 1.5×: hedge covers the full IC max loss (target)
+ * - Above 1.5×: hedge exceeds IC loss (profit on catastrophe)
+ */
+export function calcHedge(params: {
+  spot: number;
+  sigma: number;
+  T: number;
+  skew: number;
+  icContracts: number;
+  icCreditPts: number;
+  icMaxLossPts: number;
+  icShortPut: number;
+  icLongPut: number;
+  icShortCall: number;
+  icLongCall: number;
+  hedgeDelta: HedgeDelta;
+}): HedgeResult {
+  const { spot, sigma, T, skew, icContracts, icCreditPts, icMaxLossPts, hedgeDelta } = params;
+  const z = HEDGE_Z_SCORES[hedgeDelta];
+  const sqrtT = Math.sqrt(T);
+
+  // Calculate hedge strikes using same formula as main calculator
+  const scaledSkew = calcScaledSkew(skew, z);
+  const putSigma = sigma * (1 + scaledSkew);
+  const callSigma = sigma * (1 - scaledSkew);
+  const putDrift = (putSigma * putSigma / 2) * T;
+  const callDrift = (callSigma * callSigma / 2) * T;
+
+  const putStrike = Math.round(spot * Math.exp(-z * putSigma * sqrtT + putDrift));
+  const callStrike = Math.round(spot * Math.exp(z * callSigma * sqrtT + callDrift));
+  const putStrikeSnapped = snapToIncrement(putStrike);
+  const callStrikeSnapped = snapToIncrement(callStrike);
+
+  // Price the hedge options
+  const putPremium = blackScholesPrice(spot, putStrikeSnapped, putSigma, T, 'put');
+  const callPremium = blackScholesPrice(spot, callStrikeSnapped, callSigma, T, 'call');
+
+  // IC max loss in dollars (total position)
+  const icMaxLossDollars = icMaxLossPts * 100 * icContracts;
+
+  // Distance from spot to hedge strikes
+  const distToPutHedge = spot - putStrikeSnapped;
+  const distToCallHedge = callStrikeSnapped - spot;
+
+  // Target crash: 1.5× distance to hedge strike
+  // At this crash, hedge is ITM by 0.5× distance
+  const putPayoutAtTarget = distToPutHedge * 0.5 * 100;
+  const callPayoutAtTarget = distToCallHedge * 0.5 * 100;
+
+  // Recommended contracts: enough to cover IC max loss at target crash
+  // N × payoutPerContract ≥ icMaxLossDollars
+  const recommendedPuts = putPayoutAtTarget > 0
+    ? Math.ceil(icMaxLossDollars / putPayoutAtTarget)
+    : 1;
+  const recommendedCalls = callPayoutAtTarget > 0
+    ? Math.ceil(icMaxLossDollars / callPayoutAtTarget)
+    : 1;
+
+  // Total daily cost
+  const dailyCostPts = putPremium * recommendedPuts + callPremium * recommendedCalls;
+  const dailyCostDollars = Math.round(dailyCostPts * 100);
+  const netCreditAfterHedge = Math.round(icCreditPts * 100 * icContracts - dailyCostDollars);
+
+  // Helper to compute net P&L at a given crash/rally size
+  const scenarioParams = {
+    spot,
+    icShortPut: params.icShortPut,
+    icLongPut: params.icLongPut,
+    icShortCall: params.icShortCall,
+    icLongCall: params.icLongCall,
+    icCreditPts,
+    icContracts,
+    hedgePutStrike: putStrikeSnapped,
+    hedgeCallStrike: callStrikeSnapped,
+    hedgePutPremium: putPremium,
+    hedgeCallPremium: callPremium,
+    hedgePuts: recommendedPuts,
+    hedgeCalls: recommendedCalls,
+  };
+
+  const netPnLAtCrash = (pts: number) => computeScenarioPnL({ ...scenarioParams, movePoints: pts }).netPnL;
+  const netPnLAtRally = (pts: number) => computeScenarioPnL({ ...scenarioParams, movePoints: -pts }).netPnL;
+
+  // Find breakeven points (crash/rally size where net P&L = 0)
+  // IC becomes losing when move > (spot - shortPut), so search from there
+  const distToShortPut = spot - params.icShortPut;
+  const distToShortCall = params.icShortCall - spot;
+
+  const breakEvenCrashPts = findBreakEven(
+    (move) => netPnLAtCrash(move),
+    distToShortPut, // starts losing here
+    spot * 0.15, // max 15% crash
+  );
+
+  const breakEvenRallyPts = findBreakEven(
+    (move) => netPnLAtRally(move),
+    distToShortCall,
+    spot * 0.15,
+  );
+
+  // Build scenario table: crashes and rallies at key levels
+  const crashLevels = [100, 150, 200, 250, 300, 350, 400, 450, 500];
+  const scenarios: HedgeScenario[] = [];
+
+  for (const pts of crashLevels) {
+    const result = computeScenarioPnL({ ...scenarioParams, movePoints: pts });
+    scenarios.push({
+      movePoints: pts,
+      movePct: (pts / spot * 100).toFixed(1),
+      direction: 'crash',
+      icPnL: result.icPnL,
+      hedgePutPnL: result.hedgePutPnL,
+      hedgeCallPnL: result.hedgeCallPnL,
+      hedgeCost: result.hedgeCost,
+      netPnL: result.netPnL,
+    });
+  }
+
+  for (const pts of crashLevels) {
+    const result = computeScenarioPnL({ ...scenarioParams, movePoints: -pts });
+    scenarios.push({
+      movePoints: pts,
+      movePct: (pts / spot * 100).toFixed(1),
+      direction: 'rally',
+      icPnL: result.icPnL,
+      hedgePutPnL: result.hedgePutPnL,
+      hedgeCallPnL: result.hedgeCallPnL,
+      hedgeCost: result.hedgeCost,
+      netPnL: result.netPnL,
+    });
+  }
+
+  return {
+    hedgeDelta,
+    putStrike,
+    callStrike,
+    putStrikeSnapped,
+    callStrikeSnapped,
+    putPremium: Math.round(putPremium * 100) / 100,
+    callPremium: Math.round(callPremium * 100) / 100,
+    recommendedPuts,
+    recommendedCalls,
+    dailyCostPts: Math.round(dailyCostPts * 100) / 100,
+    dailyCostDollars,
+    breakEvenCrashPts,
+    breakEvenRallyPts,
+    netCreditAfterHedge,
+    scenarios,
+  };
 }
