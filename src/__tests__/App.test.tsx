@@ -368,7 +368,9 @@ describe('StrikeCalculator: tooltip', () => {
 
     const helpBtn = screen.getByLabelText(/what is the 0dte adjustment/i);
     await user.click(helpBtn);
+    await act(() => wait(50));
 
+    // Covers line 426: onClick={() => setTooltipOpen(!tooltipOpen)}
     expect(screen.getByRole('tooltip')).toBeInTheDocument();
     expect(screen.getByText('0DTE IV Adjustment')).toBeInTheDocument();
   });
@@ -379,9 +381,12 @@ describe('StrikeCalculator: tooltip', () => {
 
     const helpBtn = screen.getByLabelText(/what is the 0dte adjustment/i);
     await user.click(helpBtn);
+    await act(() => wait(50));
     expect(screen.getByRole('tooltip')).toBeInTheDocument();
 
     await user.click(helpBtn);
+    await act(() => wait(50));
+    // Covers line 426: onClick={() => setTooltipOpen(!tooltipOpen)}
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 });
@@ -474,7 +479,9 @@ describe('StrikeCalculator: Iron Condor', () => {
 
     const incBtn = screen.getByLabelText(/increase contracts/i);
     await user.click(incBtn);
+    await act(() => wait(50));
     await user.click(incBtn);
+    await act(() => wait(50));
 
     const input = screen.getByLabelText(/number of contracts/i);
     expect(input).toHaveValue('3');
@@ -488,10 +495,13 @@ describe('StrikeCalculator: Iron Condor', () => {
 
     const incBtn = screen.getByLabelText(/increase contracts/i);
     await user.click(incBtn);
+    await act(() => wait(50));
     await user.click(incBtn);
+    await act(() => wait(50));
 
     const decBtn = screen.getByLabelText(/decrease contracts/i);
     await user.click(decBtn);
+    await act(() => wait(50));
 
     const input = screen.getByLabelText(/number of contracts/i);
     expect(input).toHaveValue('2');
@@ -505,7 +515,9 @@ describe('StrikeCalculator: Iron Condor', () => {
 
     const decBtn = screen.getByLabelText(/decrease contracts/i);
     await user.click(decBtn);
+    await act(() => wait(50));
     await user.click(decBtn);
+    await act(() => wait(50));
 
     const input = screen.getByLabelText(/number of contracts/i);
     expect(input).toHaveValue('1');
@@ -692,5 +704,24 @@ describe('StrikeCalculator: Hedge Calculator', () => {
 
     // Should show IC delta selector
     expect(screen.getByText('IC Delta')).toBeInTheDocument();
+  });
+
+  it('shows market regime analysis when toggled', async () => {
+    const user = userEvent.setup();
+    render(<StrikeCalculator />);
+
+    await fillBasicInputs(user);
+
+    // The Market Regime section should exist
+    expect(screen.getByText(/market regime/i)).toBeInTheDocument();
+
+    // Click the "Show Analysis" button
+    const toggleBtn = screen.getByText(/show analysis/i);
+    await user.click(toggleBtn);
+    await act(() => wait(50));
+
+    // Button text should change to "Hide Analysis"
+    // This covers line 587: onClick={() => setShowRegime(!showRegime)}
+    expect(screen.getByText(/hide analysis/i)).toBeInTheDocument();
   });
 });

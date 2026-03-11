@@ -9,6 +9,9 @@ import { SectionBox, Chip, ErrorMsg, buildChevronUrl, srOnly, tinyLblStyle } fro
 import DeltaStrikesTable from './components/DeltaStrikesTable';
 import IronCondorSection from './components/IronCondorSection';
 import ParameterSummary from './components/ParameterSummary';
+import VIXRegimeCard from './components/VIXRegimeCard';
+import VIXRangeAnalysis from './components/VIXRangeAnalysis';
+import DeltaRegimeGuide from './components/DeltaRegimeGuide';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -50,6 +53,7 @@ export default function StrikeCalculator() {
   const [dIV, setDIV] = useState('');
   const [dMult, setDMult] = useState(String(DEFAULTS.IV_PREMIUM_FACTOR));
   const [results, setResults] = useState<CalculationResults | null>(null);
+  const [showRegime, setShowRegime] = useState(false);
 
   const th = darkMode ? darkTheme : lightTheme;
 
@@ -445,6 +449,15 @@ export default function StrikeCalculator() {
             {errors['vix'] && <ErrorMsg th={th}>{errors['vix']}</ErrorMsg>}
             {errors['multiplier'] && <ErrorMsg th={th}>{errors['multiplier']}</ErrorMsg>}
             {errors['iv'] && <ErrorMsg th={th}>{errors['iv']}</ErrorMsg>}
+
+            {/* VIX Regime Context Card — appears when VIX is entered */}
+            {ivMode === IV_MODES.VIX && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && results && (
+              <VIXRegimeCard
+                th={th}
+                vix={Number.parseFloat(dVix)}
+                spot={results.spot}
+              />
+            )}
           </SectionBox>
 
           {/* Skew & Iron Condor Controls */}
@@ -565,6 +578,44 @@ export default function StrikeCalculator() {
                     SPX multiplier: $100/pt. P&L table shows per-contract and total dollar values.
                   </p>
                 </div>
+              </div>
+            )}
+          </SectionBox>
+
+          {/* Market Regime Analysis */}
+          <SectionBox th={th} label="Market Regime" badge={results ? ('VIX ' + (Number.parseFloat(dVix) || '—')) : null} headerRight={
+            <button onClick={() => setShowRegime(!showRegime)} style={{
+              padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              border: '1.5px solid ' + (showRegime ? th.chipActiveBorder : th.chipBorder),
+              backgroundColor: showRegime ? th.chipActiveBg : th.chipBg,
+              color: showRegime ? th.chipActiveText : th.chipText,
+              fontFamily: "'Outfit', sans-serif",
+            }}>
+              {showRegime ? 'Hide' : 'Show'} Analysis
+            </button>
+          }>
+            <p style={{ fontSize: 13, color: th.textSecondary, margin: 0, lineHeight: 1.6 }}>
+            Historical VIX-to-SPX range correlation from 9,102 trading days (1990–2026).
+            {' '}Expected daily ranges and IC survival rates at each VIX level.
+            </p>
+            {showRegime && (
+              <div style={{ marginTop: 16 }}>
+                <VIXRangeAnalysis
+                  th={th}
+                  vix={dVix ? Number.parseFloat(dVix) : null}
+                  spot={results?.spot ?? null}
+                />
+                {results && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
+                  <DeltaRegimeGuide
+                    th={th}
+                    vix={Number.parseFloat(dVix)}
+                    spot={results.spot}
+                    sigma={results.sigma}
+                    T={results.T}
+                    skew={skewPct / 100}
+                    allDeltas={results.allDeltas}
+                  />
+                )}
               </div>
             )}
           </SectionBox>

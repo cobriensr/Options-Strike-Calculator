@@ -16,7 +16,7 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     coverage: {
       include: ['src/**/*.ts', 'src/**/*.tsx'],
-      exclude: ['src/__tests__/**', 'src/vite-env.d.ts', 'src/calculator.ts', 'src/csvParser.ts', 'src/exportXlsx.ts', 'src/vixStorage.ts', 'src/types.ts', 'src/constants.ts', 'src/themes.ts', 'src/main.tsx'],
+      exclude: ['src/__tests__/**', 'src/vite-env.d.ts', 'src/calculator.ts', 'src/csvParser.ts', 'src/exportXlsx.ts', 'src/vixStorage.ts', 'src/types.ts', 'src/types/**', 'src/constants.ts', 'src/themes.ts', 'src/main.tsx'],
     },
   },
 });

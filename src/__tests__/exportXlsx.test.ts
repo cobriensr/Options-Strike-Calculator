@@ -322,6 +322,44 @@ describe('exportPnLComparison', () => {
   });
 
   describe('edge cases', () => {
+    it('wins to recover is 0 when credit is zero', async () => {
+      const calculator = await import('../utils/calculator');
+      const mockIc = {
+        delta: 5 as const,
+        shortPut: 6800, longPut: 6795, shortCall: 6900, longCall: 6905,
+        shortPutSpy: 680, longPutSpy: 679.5, shortCallSpy: 690, longCallSpy: 690.5,
+        wingWidthSpx: 5,
+        shortPutPremium: 0, longPutPremium: 0, shortCallPremium: 0, longCallPremium: 0,
+        creditReceived: 0, maxProfit: 0, maxLoss: 5,
+        breakEvenLow: 6800, breakEvenHigh: 6900,
+        returnOnRisk: 0, probabilityOfProfit: 0.5,
+        putSpreadCredit: 0, callSpreadCredit: 0,
+        putSpreadMaxLoss: 5, callSpreadMaxLoss: 5,
+        putSpreadBE: 6800, callSpreadBE: 6900,
+        putSpreadRoR: 0, callSpreadRoR: 0,
+        putSpreadPoP: 0.7, callSpreadPoP: 0.7,
+      };
+
+      vi.spyOn(calculator, 'buildIronCondor').mockReturnValue(mockIc);
+
+      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      const wb = getWorkbook();
+
+      // Sheet 1 - addRow branch: credit <= 0 → winsToRecover = 0
+      const summaryData: any[] = XLSX.utils.sheet_to_json(getSheet(wb, 'P&L Comparison'));
+      for (const row of summaryData) {
+        expect(row['Wins to Recover']).toBe(0);
+      }
+
+      // Sheet 2 - IC summary branch: creditReceived <= 0 → winsToRecover = 0
+      const icData: any[] = XLSX.utils.sheet_to_json(getSheet(wb, 'IC Summary'));
+      for (const row of icData) {
+        expect(row['Wins to Recover']).toBe(0);
+      }
+
+      vi.mocked(calculator.buildIronCondor).mockRestore();
+    });
+
     it('works with 1 contract', () => {
       expect(() => {
         exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });

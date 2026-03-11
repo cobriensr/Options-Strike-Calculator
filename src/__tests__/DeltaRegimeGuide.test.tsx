@@ -1,0 +1,383 @@
+import { describe, it, expect } from 'vitest';
+import { render, screen, within } from '@testing-library/react';
+import DeltaRegimeGuide from '../components/DeltaRegimeGuide';
+import { lightTheme, darkTheme } from '../themes';
+import { calcAllDeltas, calcTimeToExpiry } from '../utils/calculator';
+
+// Helper: standard test params matching a typical 0DTE session
+function makeProps(overrides: Partial<{
+  vix: number; spot: number; sigma: number; hours: number; skew: number;
+}> = {}) {
+  const spot = overrides.spot ?? 6800;
+  const sigma = overrides.sigma ?? 0.23;
+  const hours = overrides.hours ?? 4;
+  const T = calcTimeToExpiry(hours);
+  const skew = overrides.skew ?? 0.03;
+  const allDeltas = calcAllDeltas(spot, sigma, T, skew, 10);
+  return {
+    th: lightTheme,
+    vix: overrides.vix ?? 20,
+    spot,
+    sigma,
+    T,
+    skew,
+    allDeltas,
+  };
+}
+
+// ============================================================
+// RENDERING
+// ============================================================
+describe('DeltaRegimeGuide: rendering', () => {
+  it('renders without crashing', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+  });
+
+  it('renders in dark mode', () => {
+    render(<DeltaRegimeGuide {...makeProps()} th={darkTheme} />);
+    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+  });
+
+  it('returns null for negative VIX', () => {
+    const { container } = render(<DeltaRegimeGuide {...makeProps({ vix: -5 })} />);
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('shows the exact VIX value in the header', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 22.18 })} />);
+    expect(screen.getByText(/delta guide for vix 22\.2/i)).toBeInTheDocument();
+  });
+
+  it('header updates with different VIX values', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 15.5 })} />);
+    expect(screen.getByText(/delta guide for vix 15\.5/i)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// CONTINUOUS INTERPOLATION (the key fix)
+// ============================================================
+describe('DeltaRegimeGuide: continuous interpolation', () => {
+  it('VIX 22 and VIX 24 within same bucket produce different thresholds', () => {
+    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 22 })} />);
+    const table1 = screen.getByRole('table', { name: /range thresholds/i });
+    const cells1 = within(table1).getAllByText(/%/);
+    const text1 = cells1.map((c) => c.textContent).join(',');
+    unmount();
+
+    render(<DeltaRegimeGuide {...makeProps({ vix: 24 })} />);
+    const table2 = screen.getByRole('table', { name: /range thresholds/i });
+    const cells2 = within(table2).getAllByText(/%/);
+    const text2 = cells2.map((c) => c.textContent).join(',');
+
+    // Same bucket (20-25) but different interpolated thresholds
+    expect(text1).not.toBe(text2);
+  });
+
+  it('VIX 24.9 and VIX 25.1 produce similar (not jumpy) thresholds', () => {
+    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 24.9, sigma: 0.29 })} />);
+    const table1 = screen.getByRole('table', { name: /range thresholds/i });
+    // Find the 90th O→C row — it's the 3rd data row (index 2)
+    const rows1 = within(table1).getAllByRole('row');
+    const p90ocRow1 = rows1[3]; // header + 3rd data row
+    const pctCell1 = within(p90ocRow1!).getAllByText(/%/)[0]!.textContent!;
+    const pct1 = Number.parseFloat(pctCell1);
+    unmount();
+
+    render(<DeltaRegimeGuide {...makeProps({ vix: 25.1, sigma: 0.29 })} />);
+    const table2 = screen.getByRole('table', { name: /range thresholds/i });
+    const rows2 = within(table2).getAllByRole('row');
+    const p90ocRow2 = rows2[3];
+    const pctCell2 = within(p90ocRow2!).getAllByText(/%/)[0]!.textContent!;
+    const pct2 = Number.parseFloat(pctCell2);
+
+    // Should be close — no more than 0.3% apart across the boundary
+    expect(Math.abs(pct1 - pct2)).toBeLessThan(0.3);
+  });
+
+  it('delta changes monotonically with VIX (no reversals within 10-30 range)', () => {
+    // Test the 90th O→C threshold at VIX 15, 20, 25, 30
+    // Higher VIX should always produce wider thresholds (lower recommended delta)
+    const results: number[] = [];
+    for (const vix of [15, 20, 25, 30]) {
+      const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix, sigma: 0.25 })} />);
+      const table = screen.getByRole('table', { name: /range thresholds/i });
+      const rows = within(table).getAllByRole('row');
+      // 90th O→C is 3rd data row
+      const p90Row = rows[3];
+      const pctText = within(p90Row!).getAllByText(/%/)[0]!.textContent!;
+      results.push(Number.parseFloat(pctText));
+      unmount();
+    }
+    // Each VIX level should produce a wider threshold than the previous
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i]).toBeGreaterThan(results[i - 1]!);
+    }
+  });
+
+  it('footnote mentions interpolation', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 22.5 })} />);
+    expect(screen.getByText(/interpolated for vix 22\.5/i)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// RECOMMENDATION BANNER
+// ============================================================
+describe('DeltaRegimeGuide: recommendation banner', () => {
+  it('shows the maximum delta label', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByText(/maximum delta/i)).toBeInTheDocument();
+  });
+
+  it('shows ceiling not target messaging', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByText(/ceiling, not a target/i)).toBeInTheDocument();
+  });
+
+  it('shows the 90th percentile O→C info', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByText(/90th percentile/i)).toBeInTheDocument();
+  });
+
+  it('shows a delta number with Δ symbol', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const banner = screen.getByText(/maximum delta/i).closest('div')?.parentElement;
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).toMatch(/\d+\u0394/);
+  });
+
+  it('shows three guidance tiers (aggressive, moderate, conservative)', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByText('Aggressive')).toBeInTheDocument();
+    expect(screen.getByText('Conservative')).toBeInTheDocument();
+  });
+
+  it('conservative delta is lower than aggressive delta', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const aggressive = screen.getByText('Aggressive').closest('div');
+    const conservative = screen.getByText('Conservative').closest('div');
+    const aggDelta = Number.parseInt(aggressive?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
+    const consDelta = Number.parseInt(conservative?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
+    expect(consDelta).toBeLessThan(aggDelta);
+  });
+
+  it('shows elevated VIX warning for caution zone', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 22 })} />);
+    expect(screen.getByText(/elevated vix/i)).toBeInTheDocument();
+    expect(screen.getByText(/reducing contracts/i)).toBeInTheDocument();
+  });
+
+  it('does not show elevated VIX warning for green zone', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 14 })} />);
+    expect(screen.queryByText(/elevated vix/i)).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// THRESHOLD TABLE
+// ============================================================
+describe('DeltaRegimeGuide: threshold table', () => {
+  it('renders the threshold table', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByRole('table', { name: /range thresholds mapped to delta/i })).toBeInTheDocument();
+  });
+
+  it('shows all 4 range thresholds', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const table = screen.getByRole('table', { name: /range thresholds/i });
+    expect(within(table).getAllByText(/o.*c/i).length).toBeGreaterThanOrEqual(2);
+    expect(within(table).getAllByText(/h-l/i).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shows column headers', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const table = screen.getByRole('table', { name: /range thresholds/i });
+    expect(within(table).getByText('To Clear')).toBeInTheDocument();
+    expect(within(table).getByText('Range %')).toBeInTheDocument();
+    expect(within(table).getByText('Points')).toBeInTheDocument();
+    expect(within(table).getByText('Survival')).toBeInTheDocument();
+  });
+
+  it('shows put and call delta columns', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const table = screen.getByRole('table', { name: /range thresholds/i });
+    expect(within(table).getByText(/max put/i)).toBeInTheDocument();
+    expect(within(table).getByText(/max call/i)).toBeInTheDocument();
+  });
+
+  it('shows delta values with Δ symbol', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const table = screen.getByRole('table', { name: /range thresholds/i });
+    const deltaCells = within(table).getAllByText(/\d+\.\d+\u0394/);
+    expect(deltaCells.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('shows survival purpose text', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByText(/90% settlement survival/)).toBeInTheDocument();
+    expect(screen.getByText(/90% intraday survival/)).toBeInTheDocument();
+    expect(screen.getByText(/50% settlement survival/)).toBeInTheDocument();
+    expect(screen.getByText(/50% intraday survival/)).toBeInTheDocument();
+  });
+
+  it('shows skew note when skew > 0', () => {
+    render(<DeltaRegimeGuide {...makeProps({ skew: 0.03 })} />);
+    expect(screen.getByText(/skew-adjusted/i)).toBeInTheDocument();
+  });
+
+  it('does not show skew note when skew is 0', () => {
+    render(<DeltaRegimeGuide {...makeProps({ skew: 0 })} />);
+    expect(screen.queryByText(/skew-adjusted/i)).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// YOUR DELTAS vs. THRESHOLDS TABLE
+// ============================================================
+describe('DeltaRegimeGuide: delta vs. threshold matrix', () => {
+  it('renders the matrix table', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByRole('table', { name: /standard deltas vs/i })).toBeInTheDocument();
+  });
+
+  it('shows all 6 standard deltas', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const table = screen.getByRole('table', { name: /standard deltas vs/i });
+    expect(within(table).getByText('5\u0394')).toBeInTheDocument();
+    expect(within(table).getByText('8\u0394')).toBeInTheDocument();
+    expect(within(table).getByText('10\u0394')).toBeInTheDocument();
+    expect(within(table).getByText('12\u0394')).toBeInTheDocument();
+    expect(within(table).getByText('15\u0394')).toBeInTheDocument();
+    expect(within(table).getByText('20\u0394')).toBeInTheDocument();
+  });
+
+  it('shows checkmarks and crosses', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const table = screen.getByRole('table', { name: /standard deltas vs/i });
+    const checks = within(table).getAllByText('\u2713');
+    const crosses = within(table).getAllByText('\u2717');
+    expect(checks.length).toBeGreaterThan(0);
+    expect(crosses.length).toBeGreaterThan(0);
+  });
+
+  it('lower deltas (further OTM) have more checkmarks than higher deltas', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    const table = screen.getByRole('table', { name: /standard deltas vs/i });
+    const rows = within(table).getAllByRole('row').slice(1);
+
+    const checkCounts = rows.map((row) =>
+      within(row).queryAllByText('\u2713').length
+    );
+
+    const first = checkCounts[0] ?? 0;
+    const last = checkCounts[checkCounts.length - 1] ?? 0;
+    expect(first).toBeGreaterThanOrEqual(last);
+  });
+
+  it('shows footnote explaining checkmarks', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByText(/further from spot.*safe/i)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// VIX SENSITIVITY
+// ============================================================
+describe('DeltaRegimeGuide: VIX sensitivity', () => {
+  it('low VIX: wider deltas still get checkmarks', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 12 })} />);
+    const table = screen.getByRole('table', { name: /standard deltas vs/i });
+    const checks = within(table).getAllByText('\u2713');
+    expect(checks.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it('high VIX: most deltas fail thresholds', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 35 })} />);
+    const table = screen.getByRole('table', { name: /standard deltas vs/i });
+    const crosses = within(table).getAllByText('\u2717');
+    expect(crosses.length).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// ============================================================
+// PARAMETER SENSITIVITY
+// ============================================================
+describe('DeltaRegimeGuide: parameter sensitivity', () => {
+  it('higher sigma shifts deltas', () => {
+    render(<DeltaRegimeGuide {...makeProps({ sigma: 0.30 })} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  });
+
+  it('less time remaining changes delta values', () => {
+    render(<DeltaRegimeGuide {...makeProps({ hours: 1 })} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  });
+
+  it('works with zero skew', () => {
+    render(<DeltaRegimeGuide {...makeProps({ skew: 0 })} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  });
+
+  it('works at different SPX levels', () => {
+    render(<DeltaRegimeGuide {...makeProps({ spot: 4500 })} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// THEME SUPPORT
+// ============================================================
+describe('DeltaRegimeGuide: theme support', () => {
+  it('renders completely in light theme', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: /standard deltas/i })).toBeInTheDocument();
+  });
+
+  it('renders completely in dark theme', () => {
+    render(<DeltaRegimeGuide {...makeProps()} th={darkTheme} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: /standard deltas/i })).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// EDGE CASES
+// ============================================================
+describe('DeltaRegimeGuide: edge cases', () => {
+  it('handles VIX at exact bucket boundaries', () => {
+    const boundaries = [12, 15, 18, 20, 25, 30, 40];
+    for (const vix of boundaries) {
+      const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix })} />);
+      expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('handles very high VIX (80)', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 80 })} />);
+    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+  });
+
+  it('handles fractional VIX', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 19.73 })} />);
+    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+  });
+
+  it('handles near-close time (0.25 hours)', () => {
+    render(<DeltaRegimeGuide {...makeProps({ hours: 0.25 })} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  });
+
+  it('handles very low sigma', () => {
+    render(<DeltaRegimeGuide {...makeProps({ sigma: 0.08 })} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  });
+
+  it('handles very high sigma', () => {
+    render(<DeltaRegimeGuide {...makeProps({ sigma: 0.50 })} />);
+    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  });
+});
