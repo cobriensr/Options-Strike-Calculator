@@ -2,7 +2,7 @@
 
 A Black-Scholes-based calculator for determining delta-targeted strike prices, theoretical option premiums, credit spread P&L, iron condor profiles, and VIX regime-aware position guidance for same-day (0DTE) SPX and SPY options. Built with React, TypeScript (strict mode), and Vite.
 
-Live at: [options-strike-calculator.vercel.app](https://options-strike-calculator.vercel.app/)
+Live at: [theta-options.com](https://theta-options.com/)
 
 ## Table of Contents
 
