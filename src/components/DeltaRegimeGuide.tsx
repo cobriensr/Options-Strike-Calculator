@@ -71,7 +71,7 @@ export default function DeltaRegimeGuide({ th, vix, spot, T, skew, allDeltas, se
     }
     return getTodayDow();
   })();
-  const dowMult = dow != null ? getDowMultiplier(vix, dow) : null;
+  const dowMult = dow == null ? null : getDowMultiplier(vix, dow);
 
   // Use continuous interpolation instead of discrete bucket thresholds.
   const range = estimateRange(vix);

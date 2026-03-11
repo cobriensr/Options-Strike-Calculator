@@ -30,7 +30,7 @@ describe('VIX_BUCKETS: data integrity', () => {
     for (let i = 1; i < VIX_BUCKETS.length; i++) {
       expect(VIX_BUCKETS[i]!.lo).toBe(VIX_BUCKETS[i - 1]!.hi);
     }
-    expect(VIX_BUCKETS[VIX_BUCKETS.length - 1]!.hi).toBeGreaterThanOrEqual(100);
+    expect(VIX_BUCKETS.at(-1)!.hi).toBeGreaterThanOrEqual(100);
   });
 
   it('all buckets have positive day counts', () => {
@@ -96,7 +96,7 @@ describe('VIX_BUCKETS: data integrity', () => {
 
   it('zones progress from go toward danger', () => {
     expect(VIX_BUCKETS[0]!.zone).toBe('go');
-    expect(VIX_BUCKETS[VIX_BUCKETS.length - 1]!.zone).toBe('danger');
+    expect(VIX_BUCKETS.at(-1)!.zone).toBe('danger');
   });
 
   it('all buckets have unique labels', () => {
@@ -210,7 +210,7 @@ describe('FINE_VIX_STATS: data integrity', () => {
 
   it('median H-L generally increases with VIX', () => {
     const first = FINE_VIX_STATS[0]!.medHL;
-    const last = FINE_VIX_STATS[FINE_VIX_STATS.length - 1]!.medHL;
+    const last = FINE_VIX_STATS.at(-1)!.medHL;
     expect(last).toBeGreaterThan(first * 2);
   });
 

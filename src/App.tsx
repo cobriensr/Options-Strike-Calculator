@@ -13,6 +13,7 @@ import VIXRegimeCard from './components/VIXRegimeCard';
 import VIXRangeAnalysis from './components/VIXRangeAnalysis';
 import DeltaRegimeGuide from './components/DeltaRegimeGuide';
 import VIXTermStructure from './components/VIXTermStructure';
+import OpeningRangeCheck from './components/OpeningRangeCheck';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -620,14 +621,15 @@ export default function StrikeCalculator() {
             Historical VIX-to-SPX range correlation from 9,102 trading days (1990–2026).
             {' '}Expected daily ranges and IC survival rates at each VIX level.
             </p>
-            {showRegime && (
-              <div style={{ marginTop: 16 }}>
-                <VIXRangeAnalysis
-                  th={th}
-                  vix={dVix ? Number.parseFloat(dVix) : null}
-                  spot={results?.spot ?? null}
-                />
-                {results && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
+          {showRegime && (
+            <div style={{ marginTop: 16 }}>
+              <VIXRangeAnalysis
+                th={th}
+                vix={dVix ? Number.parseFloat(dVix) : null}
+                spot={results?.spot ?? null}
+              />
+              {results && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
+                <>
                   <DeltaRegimeGuide
                     th={th}
                     vix={Number.parseFloat(dVix)}
@@ -635,10 +637,20 @@ export default function StrikeCalculator() {
                     T={results.T}
                     skew={skewPct / 100}
                     allDeltas={results.allDeltas}
+                    selectedDate={selectedDate}
                   />
-                )}
-              </div>
-            )}
+                  <div style={{ marginTop: 20 }}>
+                    <OpeningRangeCheck
+                      th={th}
+                      vix={Number.parseFloat(dVix)}
+                      spot={results.spot}
+                      selectedDate={selectedDate}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           </SectionBox>
 
           {/* Results Table */}

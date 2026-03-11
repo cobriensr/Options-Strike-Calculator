@@ -75,8 +75,8 @@ export default function VIXTermStructure({ th, vix, onUseVix1dAsSigma }: Props) 
 
   const vix1dRatio = hasVix && hasVix1d ? vix1d / vix : null;
   const vix9dRatio = hasVix && hasVix9d ? vix9d / vix : null;
-  const vix1dResult = vix1dRatio != null ? classifyVix1dRatio(vix1dRatio, th) : null;
-  const vix9dResult = vix9dRatio != null ? classifyVix9dRatio(vix9dRatio, th) : null;
+  const vix1dResult = vix1dRatio == null ? null : classifyVix1dRatio(vix1dRatio, th);
+  const vix9dResult = vix9dRatio == null ? null : classifyVix9dRatio(vix9dRatio, th);
 
   // Combined signal: worst of the two
   const combinedSignal: Signal | null = (() => {

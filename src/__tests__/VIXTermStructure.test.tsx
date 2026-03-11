@@ -9,6 +9,19 @@ function setInput(input: HTMLElement, value: string) {
   fireEvent.change(input, { target: { value } });
 }
 
+function enterVix1d(value: string) {
+  setInput(screen.getByLabelText(/vix1d/i), value);
+}
+
+function enterVix9d(value: string) {
+  setInput(screen.getByLabelText(/vix9d/i), value);
+}
+
+function enterBoth(vix1d: string, vix9d: string) {
+  setInput(screen.getByLabelText(/vix1d/i), vix1d);
+  setInput(screen.getByLabelText(/vix9d/i), vix9d);
+}
+
 // ============================================================
 // RENDERING
 // ============================================================
@@ -47,10 +60,6 @@ describe('VIXTermStructure: rendering', () => {
 // VIX1D RATIO SIGNALS
 // ============================================================
 describe('VIXTermStructure: VIX1D ratio signals', () => {
-  function enterVix1d(value: string) {
-    setInput(screen.getByLabelText(/vix1d/i), value);
-  }
-
   it('shows CALM signal when VIX1D/VIX < 0.85', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
     enterVix1d('15'); // 15/20 = 0.75
@@ -91,10 +100,6 @@ describe('VIXTermStructure: VIX1D ratio signals', () => {
 // VIX9D RATIO SIGNALS
 // ============================================================
 describe('VIXTermStructure: VIX9D ratio signals', () => {
-  function enterVix9d(value: string) {
-    setInput(screen.getByLabelText(/vix9d/i), value);
-  }
-
   it('shows CONTANGO signal when VIX9D/VIX < 0.90', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
     enterVix9d('16'); // 16/20 = 0.80
@@ -128,11 +133,6 @@ describe('VIXTermStructure: VIX9D ratio signals', () => {
 // COMBINED SIGNAL
 // ============================================================
 describe('VIXTermStructure: combined signal', () => {
-  function enterBoth(vix1d: string, vix9d: string) {
-    setInput(screen.getByLabelText(/vix1d/i), vix1d);
-    setInput(screen.getByLabelText(/vix9d/i), vix9d);
-  }
-
   it('shows GREEN LIGHT when both ratios are calm', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
     enterBoth('15', '16'); // 0.75 and 0.80

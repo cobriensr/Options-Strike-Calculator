@@ -159,8 +159,8 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
     // parentElement gets the GuidanceCell wrapper containing label + delta + desc
     const aggressive = screen.getByText('Aggressive').parentElement;
     const conservative = screen.getByText('Conservative').parentElement;
-    const aggDelta = Number.parseInt(aggressive?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
-    const consDelta = Number.parseInt(conservative?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
+    const aggDelta = Number.parseInt(/(\d+)\u0394/.exec(aggressive?.textContent ?? '')?.[1] ?? '0');
+    const consDelta = Number.parseInt(/(\d+)\u0394/.exec(conservative?.textContent ?? '')?.[1] ?? '0');
     expect(aggDelta).toBeGreaterThan(0);
     expect(consDelta).toBeGreaterThan(0);
     expect(consDelta).toBeLessThan(aggDelta);
@@ -275,7 +275,7 @@ describe('DeltaRegimeGuide: delta vs. threshold matrix', () => {
     );
 
     const first = checkCounts[0] ?? 0;
-    const last = checkCounts[checkCounts.length - 1] ?? 0;
+    const last = checkCounts.at(-1) ?? 0;
     expect(first).toBeGreaterThanOrEqual(last);
   });
 
