@@ -8,26 +8,26 @@ interface Props {
   spot: number;
 }
 
-export default function DeltaStrikesTable({ th, allDeltas, spot }: Props) {
+export default function DeltaStrikesTable({ allDeltas, spot }: Props) {
   return (
-    <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid ' + th.border }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: "'DM Mono', monospace", fontSize: 13 }} role="table" aria-label="Strike prices by delta">
+    <div className="overflow-x-auto rounded-[10px] border border-edge">
+      <table className="w-full border-collapse font-mono text-[13px]" role="table" aria-label="Strike prices by delta">
         <thead>
-          <tr style={{ backgroundColor: th.tableHeader }}>
-            <th style={mkTh(th, 'center')}>Delta</th>
-            <th style={mkTh(th, 'left', th.red)}>Put (SPX)</th>
-            <th style={mkTh(th, 'left', th.red)}>{'\u2192'} Snap</th>
-            <th style={mkTh(th, 'left', th.red)}>SPY</th>
-            <th style={mkTh(th, 'right', th.red)}>Put $</th>
-            <th style={mkTh(th, 'right', th.red)}>Δ</th>
-            <th style={mkTh(th, 'right', th.red)}>Γ</th>
-            <th style={mkTh(th, 'left', th.green)}>Call (SPX)</th>
-            <th style={mkTh(th, 'left', th.green)}>{'\u2192'} Snap</th>
-            <th style={mkTh(th, 'left', th.green)}>SPY</th>
-            <th style={mkTh(th, 'right', th.green)}>Call $</th>
-            <th style={mkTh(th, 'right', th.green)}>Δ</th>
-            <th style={mkTh(th, 'right', th.green)}>Γ</th>
-            <th style={mkTh(th, 'left')}>Width</th>
+          <tr className="bg-table-header">
+            <th className={mkTh('center')}>Delta</th>
+            <th className={mkTh('left', 'text-danger')}>Put (SPX)</th>
+            <th className={mkTh('left', 'text-danger')}>{'\u2192'} Snap</th>
+            <th className={mkTh('left', 'text-danger')}>SPY</th>
+            <th className={mkTh('right', 'text-danger')}>Put $</th>
+            <th className={mkTh('right', 'text-danger')}>{'\u0394'}</th>
+            <th className={mkTh('right', 'text-danger')}>{'\u0393'}</th>
+            <th className={mkTh('left', 'text-success')}>Call (SPX)</th>
+            <th className={mkTh('left', 'text-success')}>{'\u2192'} Snap</th>
+            <th className={mkTh('left', 'text-success')}>SPY</th>
+            <th className={mkTh('right', 'text-success')}>Call $</th>
+            <th className={mkTh('right', 'text-success')}>{'\u0394'}</th>
+            <th className={mkTh('right', 'text-success')}>{'\u0393'}</th>
+            <th className={mkTh('left')}>Width</th>
           </tr>
         </thead>
         <tbody>
@@ -35,21 +35,21 @@ export default function DeltaStrikesTable({ th, allDeltas, spot }: Props) {
             if ('error' in row) return null;
             const r = row as DeltaRow;
             return (
-              <tr key={r.delta} style={{ backgroundColor: i % 2 === 1 ? th.tableRowAlt : th.surface }}>
-                <td style={{ ...mkTd(th), textAlign: 'center', fontWeight: 700, color: th.accent }}>{r.delta}{'\u0394'}</td>
-                <td style={{ ...mkTd(th), color: th.red, fontWeight: 500 }}>{r.putStrike}</td>
-                <td style={{ ...mkTd(th), color: th.red, opacity: 0.8 }}>{r.putSnapped}</td>
-                <td style={{ ...mkTd(th), color: th.red, opacity: 0.65 }}>{r.putSpySnapped}</td>
-                <td style={{ ...mkTd(th), color: th.red, textAlign: 'right', fontWeight: 600 }}>{r.putPremium.toFixed(2)}</td>
-                <td style={{ ...mkTd(th), color: th.red, textAlign: 'right', fontSize: 12 }}>{(r.putActualDelta * 100).toFixed(1)}</td>
-                <td style={{ ...mkTd(th), color: th.red, textAlign: 'right', fontSize: 11, opacity: 0.7 }}>{r.putGamma.toFixed(4)}</td>
-                <td style={{ ...mkTd(th), color: th.green, fontWeight: 500 }}>{r.callStrike}</td>
-                <td style={{ ...mkTd(th), color: th.green, opacity: 0.8 }}>{r.callSnapped}</td>
-                <td style={{ ...mkTd(th), color: th.green, opacity: 0.65 }}>{r.callSpySnapped}</td>
-                <td style={{ ...mkTd(th), color: th.green, textAlign: 'right', fontWeight: 600 }}>{r.callPremium.toFixed(2)}</td>
-                <td style={{ ...mkTd(th), color: th.green, textAlign: 'right', fontSize: 12 }}>{(r.callActualDelta * 100).toFixed(1)}</td>
-                <td style={{ ...mkTd(th), color: th.green, textAlign: 'right', fontSize: 11, opacity: 0.7 }}>{r.callGamma.toFixed(4)}</td>
-                <td style={{ ...mkTd(th), color: th.textSecondary }}>{r.callStrike - r.putStrike}<span style={{ fontSize: 11, color: th.textMuted, marginLeft: 3 }}>({((r.callStrike - r.putStrike) / spot * 100).toFixed(1)}%)</span></td>
+              <tr key={r.delta} className={i % 2 === 1 ? 'bg-table-alt' : 'bg-surface'}>
+                <td className={`${mkTd()} text-center font-bold text-accent`}>{r.delta}{'\u0394'}</td>
+                <td className={`${mkTd()} text-danger font-medium`}>{r.putStrike}</td>
+                <td className={`${mkTd()} text-danger opacity-80`}>{r.putSnapped}</td>
+                <td className={`${mkTd()} text-danger opacity-65`}>{r.putSpySnapped}</td>
+                <td className={`${mkTd()} text-danger text-right font-semibold`}>{r.putPremium.toFixed(2)}</td>
+                <td className={`${mkTd()} text-danger text-right text-xs`}>{(r.putActualDelta * 100).toFixed(1)}</td>
+                <td className={`${mkTd()} text-danger text-right text-[11px] opacity-70`}>{r.putGamma.toFixed(4)}</td>
+                <td className={`${mkTd()} text-success font-medium`}>{r.callStrike}</td>
+                <td className={`${mkTd()} text-success opacity-80`}>{r.callSnapped}</td>
+                <td className={`${mkTd()} text-success opacity-65`}>{r.callSpySnapped}</td>
+                <td className={`${mkTd()} text-success text-right font-semibold`}>{r.callPremium.toFixed(2)}</td>
+                <td className={`${mkTd()} text-success text-right text-xs`}>{(r.callActualDelta * 100).toFixed(1)}</td>
+                <td className={`${mkTd()} text-success text-right text-[11px] opacity-70`}>{r.callGamma.toFixed(4)}</td>
+                <td className={`${mkTd()} text-secondary`}>{r.callStrike - r.putStrike}<span className="text-[11px] text-muted ml-0.5">({((r.callStrike - r.putStrike) / spot * 100).toFixed(1)}%)</span></td>
               </tr>
             );
           })}

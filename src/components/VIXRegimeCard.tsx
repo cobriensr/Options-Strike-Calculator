@@ -30,55 +30,50 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
   const medOCPts = Math.round(est.medOC / 100 * spot);
 
   return (
-    <div style={{
-      marginTop: 14,
-      padding: '14px 16px',
-      backgroundColor: zoneConfig.bg,
-      border: '1.5px solid ' + zoneConfig.border,
-      borderRadius: 10,
-    }}>
+    <div
+      className="mt-3.5 rounded-[10px] px-4 py-3.5"
+      style={{
+        backgroundColor: zoneConfig.bg,
+        border: '1.5px solid ' + zoneConfig.border,
+      }}
+    >
       {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{
-            width: 10, height: 10, borderRadius: '50%',
-            backgroundColor: zoneConfig.color,
-            boxShadow: '0 0 6px ' + zoneConfig.color + '66',
-          }} />
-          <span style={{
-            fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const,
-            letterSpacing: '0.12em', color: zoneConfig.color,
-            fontFamily: "'Outfit', sans-serif",
-          }}>
+      <div className="mb-2.5 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div
+            className="h-2.5 w-2.5 rounded-full"
+            style={{
+              backgroundColor: zoneConfig.color,
+              boxShadow: '0 0 6px ' + zoneConfig.color + '66',
+            }}
+          />
+          <span
+            className="font-sans text-[10px] font-bold uppercase tracking-[0.12em]"
+            style={{ color: zoneConfig.color }}
+          >
             {zoneConfig.label} REGIME
           </span>
         </div>
-        <span style={{
-          fontSize: 10, color: th.textMuted,
-          fontFamily: "'DM Mono', monospace",
-        }}>
+        <span className="font-mono text-[10px] text-muted">
           {(fine?.count ?? bucket.count).toLocaleString()} historical days
         </span>
       </div>
 
       {/* Stats grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
         <MiniStat
-          th={th}
           label="Median Range"
           value={est.medHL.toFixed(2) + '%'}
           sub={medPts + ' pts'}
           color={th.accent}
         />
         <MiniStat
-          th={th}
           label="90th Pctile"
           value={est.p90HL.toFixed(2) + '%'}
           sub={p90Pts + ' pts'}
           color={zone === 'go' ? th.accent : zoneConfig.color}
         />
         <MiniStat
-          th={th}
           label={'Med. O\u2192C'}
           value={est.medOC.toFixed(2) + '%'}
           sub={medOCPts + ' pts settle'}
@@ -87,14 +82,15 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
       </div>
 
       {/* Advice line */}
-      <div style={{
-        marginTop: 10, paddingTop: 8,
-        borderTop: '1px solid ' + zoneConfig.border,
-        fontSize: 11, color: zoneConfig.color,
-        fontFamily: "'Outfit', sans-serif", fontWeight: 600,
-      }}>
+      <div
+        className="mt-2.5 pt-2 font-sans text-[11px] font-semibold"
+        style={{
+          borderTop: '1px solid ' + zoneConfig.border,
+          color: zoneConfig.color,
+        }}
+      >
         {zoneConfig.advice}
-        <span style={{ color: th.textMuted, fontWeight: 400, marginLeft: 6 }}>
+        <span className="ml-1.5 font-normal text-muted">
           {'\u2014'} {bucket.over2HL}% of days exceed 2% range
         </span>
       </div>
@@ -102,29 +98,21 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
   );
 }
 
-function MiniStat({ th, label, value, sub, color }: {
-  th: Theme; label: string; value: string; sub: string; color: string;
+function MiniStat({ label, value, sub, color }: {
+  label: string; value: string; sub: string; color: string;
 }) {
   return (
     <div>
-      <div style={{
-        fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const,
-        letterSpacing: '0.06em', color: th.textTertiary,
-        fontFamily: "'Outfit', sans-serif",
-      }}>
+      <div className="font-sans text-[9px] font-bold uppercase tracking-[0.06em] text-tertiary">
         {label}
       </div>
-      <div style={{
-        fontSize: 15, fontWeight: 600,
-        fontFamily: "'DM Mono', monospace",
-        color, marginTop: 2,
-      }}>
+      <div
+        className="mt-0.5 font-mono text-[15px] font-semibold"
+        style={{ color }}
+      >
         {value}
       </div>
-      <div style={{
-        fontSize: 10, color: th.textMuted,
-        fontFamily: "'DM Mono', monospace",
-      }}>
+      <div className="font-mono text-[10px] text-muted">
         {sub}
       </div>
     </div>

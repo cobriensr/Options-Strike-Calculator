@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { IVMode, VIXDayData, VIXDataMap, CalculationResults } from './types';
 import { DEFAULTS, IV_MODES } from './constants';
 import { validateMarketTime, calcTimeToExpiry, resolveIV, calcAllDeltas, to24Hour } from './utils/calculator';
 import { parseVixCSV } from './utils/csvParser';
 import { cacheVixData, loadCachedVixData, loadStaticVixData } from './utils/vixStorage';
 import { lightTheme, darkTheme } from './themes';
-import { SectionBox, Chip, ErrorMsg, buildChevronUrl, srOnly, tinyLblStyle } from './components/ui';
+import { SectionBox, Chip, ErrorMsg, buildChevronUrl, tinyLbl } from './components/ui';
 import DeltaStrikesTable from './components/DeltaStrikesTable';
 import IronCondorSection from './components/IronCondorSection';
 import ParameterSummary from './components/ParameterSummary';
@@ -211,501 +211,468 @@ export default function StrikeCalculator() {
     }
   }, []);
 
-  // Dynamic styles
+  // Dynamic styles that must remain inline
   const chevronUrl = buildChevronUrl(th.chevronColor);
-  const inputStyle: CSSProperties = {
-    backgroundColor: th.inputBg, border: '1.5px solid ' + th.borderStrong, borderRadius: 8,
-    color: th.text, padding: '11px 14px', fontSize: 16, fontFamily: "'DM Mono', monospace",
-    outline: 'none', width: '100%', boxSizing: 'border-box', transition: 'border-color 0.15s',
-  };
-  const selectStyle: CSSProperties = {
-    ...inputStyle, cursor: 'pointer', appearance: 'none', WebkitAppearance: 'none',
-    backgroundImage: 'url("' + chevronUrl + '")', backgroundRepeat: 'no-repeat',
-    backgroundPosition: 'right 12px center', backgroundSize: '14px 14px', paddingRight: 34,
-  };
-  const tinyLbl = tinyLblStyle(th);
+
+  // Base input classes
+  const inputCls = 'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary p-[11px_14px] text-base font-mono outline-none w-full box-border transition-[border-color] duration-150';
+  const selectCls = inputCls + ' cursor-pointer appearance-none bg-no-repeat bg-[length:14px_14px] bg-[position:right_12px_center] pr-[34px]';
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: th.bg, color: th.text, fontFamily: "'Source Serif 4', 'Charter', Georgia, serif", transition: 'background-color 0.25s, color 0.25s' }}>
-      <style>{
-        "@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=DM+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap');" +
-        "*, *::before, *::after { box-sizing: border-box; }" +
-        "input:focus, select:focus, button:focus-visible { outline: 3px solid " + th.focusRing + "; outline-offset: 2px; }" +
-        "button:focus:not(:focus-visible) { outline: none; }" +
-        "input[type='number']::-webkit-inner-spin-button, input[type='number']::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }" +
-        "input[type='number'] { -moz-appearance: textfield; }" +
-        "::selection { background: " + (darkMode ? '#2A3E66' : '#BFDBFE') + "; color: " + (darkMode ? '#BFDBFE' : '#1E3A5F') + "; }" +
-        "input::placeholder { color: " + th.textPlaceholder + "; }" +
-        "@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }"
-      }</style>
+    <div className={darkMode ? 'dark' : ''}>
+      <div className="min-h-screen bg-page text-primary font-serif transition-[background-color,color] duration-[250ms]">
 
-      <a href="#results" style={{ position: 'absolute', left: -9999, top: 0, backgroundColor: th.accent, color: '#fff', padding: '8px 16px', zIndex: 100, fontSize: 14, fontFamily: "'Outfit', sans-serif" }}
-        onFocus={(e) => { (e.target as HTMLElement).style.left = '0'; }} onBlur={(e) => { (e.target as HTMLElement).style.left = '-9999px'; }}>
-        Skip to results
-      </a>
+        <a href="#results" className="absolute -left-[9999px] top-0 bg-accent text-white p-[8px_16px] z-[100] text-sm font-sans"
+          onFocus={(e) => { (e.target as HTMLElement).style.left = '0'; }} onBlur={(e) => { (e.target as HTMLElement).style.left = '-9999px'; }}>
+          Skip to results
+        </a>
 
-      <div style={{ maxWidth: 660, margin: '0 auto', padding: '36px 20px 48px' }}>
+        <div className="max-w-[660px] mx-auto px-5 pt-9 pb-12">
 
-        {/* Header */}
-        <header style={{ marginBottom: 32, borderBottom: '2.5px solid ' + th.borderHeavy, paddingBottom: 18 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.2em', color: th.accent, marginBottom: 6 }}>0DTE Options</div>
-              <h1 style={{ fontSize: 30, fontWeight: 700, margin: 0, color: th.text, lineHeight: 1.15 }}>Strike Calculator</h1>
-              <p style={{ fontSize: 15, color: th.textSecondary, margin: '8px 0 0', lineHeight: 1.5 }}>Black-Scholes approximation for delta-based strike placement</p>
+          {/* Header */}
+          <header className="mb-8 border-b-[2.5px] border-edge-heavy pb-[18px]">
+            <div className="flex flex-col md:flex-row justify-between items-start">
+              <div>
+                <div className="font-sans text-[11px] font-bold uppercase tracking-[0.2em] text-accent mb-1.5">0DTE Options</div>
+                <h1 className="text-[30px] font-bold m-0 text-primary leading-[1.15]">Strike Calculator</h1>
+                <p className="text-[15px] text-secondary mt-2 mb-0 leading-normal">Black-Scholes approximation for delta-based strike placement</p>
+              </div>
+              <button onClick={() => setDarkMode(!darkMode)} aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                className="mt-1 p-[8px_12px] rounded-lg border-[1.5px] border-edge-strong bg-surface text-primary cursor-pointer text-lg font-sans flex items-center gap-1.5 transition-all duration-200">
+                {darkMode ? '\u2600\uFE0F' : '\uD83C\uDF19'}
+                <span className="text-xs font-semibold">{darkMode ? 'Light' : 'Dark'}</span>
+              </button>
             </div>
-            <button onClick={() => setDarkMode(!darkMode)} aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-              style={{ marginTop: 4, padding: '8px 12px', borderRadius: 8, border: '1.5px solid ' + th.borderStrong, backgroundColor: th.surface, color: th.text, cursor: 'pointer', fontSize: 18, fontFamily: "'Outfit', sans-serif", display: 'flex', alignItems: 'center', gap: 6, transition: 'all 0.2s' }}>
-              {darkMode ? '\u2600\uFE0F' : '\uD83C\uDF19'}
-              <span style={{ fontSize: 12, fontWeight: 600 }}>{darkMode ? 'Light' : 'Dark'}</span>
-            </button>
-          </div>
-        </header>
+          </header>
 
-        <main>
-          {/* VIX Upload */}
-          <SectionBox th={th} label="Historical VIX Data" badge={vixDataLoaded ? vixDataSource : null}>
-            <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileUpload} style={{ display: 'none' }} aria-label="Upload VIX OHLC CSV file" />
-            <button onClick={() => fileInputRef.current?.click()}
-              style={{ width: '100%', padding: '12px 16px', backgroundColor: vixDataLoaded ? th.surfaceAlt : th.accentBg, border: '2px dashed ' + (vixDataLoaded ? th.borderStrong : th.accent), borderRadius: 8, color: vixDataLoaded ? th.textSecondary : th.accent, cursor: 'pointer', fontSize: 14, fontWeight: 600, fontFamily: "'Outfit', sans-serif" }}>
-              {vixDataLoaded ? 'Replace CSV' : 'Upload VIX OHLC CSV'}
-            </button>
-            <p style={{ fontSize: 12, color: th.textMuted, margin: '6px 0 0' }}>CSV with Date, Open, High, Low, Close columns</p>
-          </SectionBox>
+          <main>
+            {/* VIX Upload */}
+            <SectionBox th={th} label="Historical VIX Data" badge={vixDataLoaded ? vixDataSource : null}>
+              <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileUpload} className="hidden" aria-label="Upload VIX OHLC CSV file" />
+              <button onClick={() => fileInputRef.current?.click()}
+                className={
+                  'w-full p-3 border-2 border-dashed rounded-lg cursor-pointer text-sm font-semibold font-sans ' +
+                  (vixDataLoaded
+                    ? 'bg-surface-alt border-edge-strong text-secondary'
+                    : 'bg-accent-bg border-accent text-accent')
+                }>
+                {vixDataLoaded ? 'Replace CSV' : 'Upload VIX OHLC CSV'}
+              </button>
+              <p className="text-xs text-muted mt-1.5 mb-0">CSV with Date, Open, High, Low, Close columns</p>
+            </SectionBox>
 
-          {/* Date Lookup */}
-          {vixDataLoaded && (
-            <SectionBox th={th} label="Date Lookup">
-              <label htmlFor="date-picker" style={srOnly}>Select date</label>
-              <input id="date-picker" type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} style={{ ...inputStyle, colorScheme: th.dateScheme }} />
-              {vixOHLC && (
-                <div style={{ marginTop: 14 }}>
-                  <fieldset style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, border: 'none', margin: 0, padding: 0 }}>
-                    <legend style={srOnly}>VIX OHLC values</legend>
-                    {(['open', 'high', 'low', 'close'] as const).map((field) => (
-                      <div key={field} style={{ padding: '10px 6px', backgroundColor: th.surfaceAlt, borderRadius: 8, textAlign: 'center' }}>
-                        <div style={{ fontSize: 10, textTransform: 'uppercase', color: th.textTertiary, letterSpacing: '0.08em', fontFamily: "'Outfit', sans-serif", fontWeight: 700 }}>{field}</div>
-                        <div style={{ fontSize: 17, fontWeight: 500, fontFamily: "'DM Mono', monospace", color: th.text, marginTop: 3 }}>{vixOHLC[field]?.toFixed(2) ?? '\u2014'}</div>
-                      </div>
-                    ))}
-                  </fieldset>
-                  <fieldset style={{ border: 'none', margin: 0, padding: 0, marginTop: 12 }}>
-                    <legend style={srOnly}>VIX value to use</legend>
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} role="radiogroup">
-                      {(['smart', 'open', 'high', 'low', 'close'] as const).map((f) => (
-                        <Chip key={f} th={th} active={vixOHLCField === f} onClick={() => setVixOHLCField(f)} label={f === 'smart' ? 'Auto' : f.charAt(0).toUpperCase() + f.slice(1)} />
+            {/* Date Lookup */}
+            {vixDataLoaded && (
+              <SectionBox th={th} label="Date Lookup">
+                <label htmlFor="date-picker" className="sr-only">Select date</label>
+                <input id="date-picker" type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className={inputCls} style={{ colorScheme: th.dateScheme }} />
+                {vixOHLC && (
+                  <div className="mt-3.5">
+                    <fieldset className="grid grid-cols-2 md:grid-cols-4 gap-2 border-none m-0 p-0">
+                      <legend className="sr-only">VIX OHLC values</legend>
+                      {(['open', 'high', 'low', 'close'] as const).map((field) => (
+                        <div key={field} className="p-[10px_6px] bg-surface-alt rounded-lg text-center">
+                          <div className="text-[10px] uppercase text-tertiary tracking-[0.08em] font-sans font-bold">{field}</div>
+                          <div className="text-[17px] font-medium font-mono text-primary mt-0.5">{vixOHLC[field]?.toFixed(2) ?? '\u2014'}</div>
+                        </div>
                       ))}
-                    </div>
-                  </fieldset>
-                  <p style={{ fontSize: 12, color: th.textTertiary, marginTop: 8, fontStyle: 'italic' }}>
-                    {vixOHLCField === 'smart' ? 'Auto: uses Open for AM entries, Close for PM entries' : 'Using VIX ' + vixOHLCField + ' value'}
-                  </p>
+                    </fieldset>
+                    <fieldset className="border-none m-0 p-0 mt-3">
+                      <legend className="sr-only">VIX value to use</legend>
+                      <div className="flex gap-1.5 flex-wrap" role="radiogroup">
+                        {(['smart', 'open', 'high', 'low', 'close'] as const).map((f) => (
+                          <Chip key={f} th={th} active={vixOHLCField === f} onClick={() => setVixOHLCField(f)} label={f === 'smart' ? 'Auto' : f.charAt(0).toUpperCase() + f.slice(1)} />
+                        ))}
+                      </div>
+                    </fieldset>
+                    <p className="text-xs text-tertiary mt-2 italic">
+                      {vixOHLCField === 'smart' ? 'Auto: uses Open for AM entries, Close for PM entries' : 'Using VIX ' + vixOHLCField + ' value'}
+                    </p>
+                  </div>
+                )}
+                {/* NEW: Event Day Warning */}
+                <EventDayWarning th={th} selectedDate={selectedDate} />
+                {selectedDate && !vixOHLC && <ErrorMsg th={th}>No VIX data found for this date</ErrorMsg>}
+              </SectionBox>
+            )}
+
+            {/* Spot Price */}
+            <SectionBox th={th} label="Spot Price">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                <div>
+                  <label htmlFor="spot-price" className={tinyLbl}>SPY Price</label>
+                  <input id="spot-price" type="text" inputMode="decimal" placeholder="e.g. 672" value={spotPrice} onChange={(e) => setSpotPrice(e.target.value)} aria-invalid={!!errors['spot']} aria-describedby={errors['spot'] ? 'spot-err' : undefined} className={inputCls} />
+                </div>
+                <div>
+                  <label htmlFor="spx-direct" className={tinyLbl}>SPX Price <span className="font-normal normal-case tracking-normal opacity-70">(optional)</span></label>
+                  <input id="spx-direct" type="text" inputMode="decimal" placeholder="e.g. 6731" value={spxDirect} onChange={(e) => setSpxDirect(e.target.value)} className={inputCls} />
+                </div>
+              </div>
+              {errors['spot'] && <ErrorMsg th={th} id="spot-err">{errors['spot']}</ErrorMsg>}
+              {dSpot && !errors['spot'] && Number.parseFloat(dSpot) > 0 && (
+                <div className="mt-3 p-[12px_14px] bg-surface-alt rounded-lg">
+                  {spxDirectActive.active ? (
+                    <>
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans">
+                          Derived ratio
+                        </span>
+                        <span className="text-sm font-medium font-mono text-accent">
+                          {spxDirectActive.ratio.toFixed(4)}
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted mt-1.5 italic">
+                        Using actual SPX value. Clear SPX field to use slider.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex justify-between items-center mb-2">
+                        <label htmlFor="spx-ratio" className="text-[11px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans m-0">
+                          SPX/SPY Ratio
+                        </label>
+                        <span className="text-sm font-medium font-mono text-accent">
+                          {spxRatio.toFixed(2)}
+                        </span>
+                      </div>
+                      <input
+                        id="spx-ratio"
+                        type="range"
+                        min="9.95"
+                        max="10.05"
+                        step="0.01"
+                        value={spxRatio}
+                        onChange={(e) => setSpxRatio(Number.parseFloat(e.target.value))}
+                        aria-label={'SPX to SPY ratio, currently ' + spxRatio.toFixed(2)}
+                        aria-valuemin={9.95}
+                        aria-valuemax={10.05}
+                        aria-valuenow={spxRatio}
+                        className="w-full cursor-pointer m-0"
+                        style={{ accentColor: th.accent }}
+                      />
+                      <div className="flex justify-between text-[10px] text-muted font-mono mt-1">
+                        <span>9.95</span>
+                        <span>10.00</span>
+                        <span>10.05</span>
+                      </div>
+                    </>
+                  )}
+                  <div className="mt-2.5 flex justify-between items-baseline pt-2 border-t border-edge">
+                    <span className="text-xs text-tertiary font-sans font-semibold">SPX for calculations</span>
+                    <span className="text-lg font-semibold font-mono text-primary">
+                      {(Number.parseFloat(dSpot) * effectiveRatio).toFixed(0)}
+                    </span>
+                  </div>
                 </div>
               )}
-              {/* NEW: Event Day Warning */}
-              <EventDayWarning th={th} selectedDate={selectedDate} />
-              {selectedDate && !vixOHLC && <ErrorMsg th={th}>No VIX data found for this date</ErrorMsg>}
             </SectionBox>
-          )}
 
-          {/* Spot Price */}
-          <SectionBox th={th} label="Spot Price">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <div>
-                <label htmlFor="spot-price" style={tinyLbl}>SPY Price</label>
-                <input id="spot-price" type="text" inputMode="decimal" placeholder="e.g. 672" value={spotPrice} onChange={(e) => setSpotPrice(e.target.value)} aria-invalid={!!errors['spot']} aria-describedby={errors['spot'] ? 'spot-err' : undefined} style={inputStyle} />
-              </div>
-              <div>
-                <label htmlFor="spx-direct" style={tinyLbl}>SPX Price <span style={{ fontWeight: 400, textTransform: 'none' as const, letterSpacing: 0, opacity: 0.7 }}>(optional)</span></label>
-                <input id="spx-direct" type="text" inputMode="decimal" placeholder="e.g. 6731" value={spxDirect} onChange={(e) => setSpxDirect(e.target.value)} style={inputStyle} />
-              </div>
-            </div>
-            {errors['spot'] && <ErrorMsg th={th} id="spot-err">{errors['spot']}</ErrorMsg>}
-            {dSpot && !errors['spot'] && Number.parseFloat(dSpot) > 0 && (
-              <div style={{ marginTop: 12, padding: '12px 14px', backgroundColor: th.surfaceAlt, borderRadius: 8 }}>
-                {spxDirectActive.active ? (
-                  <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif" }}>
-                        Derived ratio
-                      </span>
-                      <span style={{ fontSize: 14, fontWeight: 500, fontFamily: "'DM Mono', monospace", color: th.accent }}>
-                        {spxDirectActive.ratio.toFixed(4)}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, color: th.textMuted, marginTop: 6, fontStyle: 'italic' }}>
-                      Using actual SPX value. Clear SPX field to use slider.
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                      <label htmlFor="spx-ratio" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif", margin: 0 }}>
-                        SPX/SPY Ratio
-                      </label>
-                      <span style={{ fontSize: 14, fontWeight: 500, fontFamily: "'DM Mono', monospace", color: th.accent }}>
-                        {spxRatio.toFixed(2)}
-                      </span>
-                    </div>
-                    <input
-                      id="spx-ratio"
-                      type="range"
-                      min="9.95"
-                      max="10.05"
-                      step="0.01"
-                      value={spxRatio}
-                      onChange={(e) => setSpxRatio(Number.parseFloat(e.target.value))}
-                      aria-label={'SPX to SPY ratio, currently ' + spxRatio.toFixed(2)}
-                      aria-valuemin={9.95}
-                      aria-valuemax={10.05}
-                      aria-valuenow={spxRatio}
-                      style={{ width: '100%', cursor: 'pointer', accentColor: th.accent, margin: 0 }}
-                    />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: th.textMuted, fontFamily: "'DM Mono', monospace", marginTop: 4 }}>
-                      <span>9.95</span>
-                      <span>10.00</span>
-                      <span>10.05</span>
-                    </div>
-                  </>
-                )}
-                <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingTop: 8, borderTop: '1px solid ' + th.border }}>
-                  <span style={{ fontSize: 12, color: th.textTertiary, fontFamily: "'Outfit', sans-serif", fontWeight: 600 }}>SPX for calculations</span>
-                  <span style={{ fontSize: 18, fontWeight: 600, fontFamily: "'DM Mono', monospace", color: th.text }}>
-                    {(Number.parseFloat(dSpot) * effectiveRatio).toFixed(0)}
-                  </span>
-                </div>
-              </div>
-            )}
-          </SectionBox>
-
-          {/* Entry Time */}
-          <SectionBox th={th} label="Entry Time">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 10, alignItems: 'end' }}>
-              <div>
-                <label htmlFor="sel-hour" style={tinyLbl}>Hour</label>
-                <select id="sel-hour" value={timeHour} onChange={(e) => setTimeHour(e.target.value)} style={selectStyle}>
-                  {Array.from({ length: 12 }, (_, i) => i + 1).map((h) => <option key={h} value={h}>{String(h).padStart(2, '0')}</option>)}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="sel-min" style={tinyLbl}>Minute</label>
-                <select id="sel-min" value={timeMinute} onChange={(e) => setTimeMinute(e.target.value)} style={selectStyle}>
-                  {Array.from({ length: 60 }, (_, i) => i).map((m) => <option key={m} value={String(m).padStart(2, '0')}>{String(m).padStart(2, '0')}</option>)}
-                </select>
-              </div>
-              <fieldset style={{ border: 'none', margin: 0, padding: 0 }}><legend style={srOnly}>AM or PM</legend>
-                <div style={{ display: 'flex', gap: 4 }} role="radiogroup">
-                  {(['AM', 'PM'] as const).map((ap) => <Chip key={ap} th={th} active={timeAmPm === ap} onClick={() => setTimeAmPm(ap)} label={ap} />)}
-                </div>
-              </fieldset>
-              <fieldset style={{ border: 'none', margin: 0, padding: 0 }}><legend style={srOnly}>Timezone</legend>
-                <div style={{ display: 'flex', gap: 4 }} role="radiogroup">
-                  {(['ET', 'CT'] as const).map((tz) => <Chip key={tz} th={th} active={timezone === tz} onClick={() => setTimezone(tz)} label={tz} />)}
-                </div>
-              </fieldset>
-            </div>
-            {errors['time'] && <ErrorMsg th={th}>{errors['time']}</ErrorMsg>}
-          </SectionBox>
-
-          {/* IV Input */}
-          <SectionBox th={th} label="Implied Volatility" headerRight={
-            <fieldset style={{ border: 'none', margin: 0, padding: 0 }}><legend style={srOnly}>IV input mode</legend>
-              <div style={{ display: 'flex', gap: 4 }} role="radiogroup">
-                {([{ key: IV_MODES.VIX, label: 'VIX' }, { key: IV_MODES.DIRECT, label: 'Direct IV' }] as const).map(({ key, label }) => (
-                  <Chip key={key} th={th} active={ivMode === key} onClick={() => setIvMode(key)} label={label} />
-                ))}
-              </div>
-            </fieldset>
-          }>
-            {ivMode === IV_MODES.VIX ? (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px', gap: 10, alignItems: 'end' }}>
+            {/* Entry Time */}
+            <SectionBox th={th} label="Entry Time">
+              <div className="grid grid-cols-2 gap-2.5 md:grid-cols-[1fr_1fr_auto_auto] items-end">
                 <div>
-                  <label htmlFor="vix-val" style={tinyLbl}>VIX Value</label>
-                  <input id="vix-val" type="text" inputMode="decimal" placeholder="e.g. 19" value={vixInput} onChange={(e) => setVixInput(e.target.value)} aria-invalid={!!errors['vix']} style={inputStyle} />
+                  <label htmlFor="sel-hour" className={tinyLbl}>Hour</label>
+                  <select id="sel-hour" value={timeHour} onChange={(e) => setTimeHour(e.target.value)} className={selectCls} style={{ backgroundImage: chevronUrl }}>
+                    {Array.from({ length: 12 }, (_, i) => i + 1).map((h) => <option key={h} value={h}>{String(h).padStart(2, '0')}</option>)}
+                  </select>
                 </div>
-                <div style={{ position: 'relative' }} ref={tooltipRef}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 5 }}>
-                    <label htmlFor="mult-val" style={{ ...tinyLbl, marginBottom: 0 }}>0DTE Adj.</label>
-                    <button onClick={() => setTooltipOpen(!tooltipOpen)} aria-expanded={tooltipOpen} aria-label="What is the 0DTE adjustment?"
-                      style={{ width: 18, height: 18, borderRadius: '50%', border: '1.5px solid ' + th.borderStrong, backgroundColor: th.surfaceAlt, color: th.textTertiary, cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: "'Outfit', sans-serif", display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1 }}>?</button>
+                <div>
+                  <label htmlFor="sel-min" className={tinyLbl}>Minute</label>
+                  <select id="sel-min" value={timeMinute} onChange={(e) => setTimeMinute(e.target.value)} className={selectCls} style={{ backgroundImage: chevronUrl }}>
+                    {Array.from({ length: 60 }, (_, i) => i).map((m) => <option key={m} value={String(m).padStart(2, '0')}>{String(m).padStart(2, '0')}</option>)}
+                  </select>
+                </div>
+                <fieldset className="border-none m-0 p-0"><legend className="sr-only">AM or PM</legend>
+                  <div className="flex gap-1" role="radiogroup">
+                    {(['AM', 'PM'] as const).map((ap) => <Chip key={ap} th={th} active={timeAmPm === ap} onClick={() => setTimeAmPm(ap)} label={ap} />)}
                   </div>
-                  <input id="mult-val" type="text" inputMode="decimal" placeholder="1.15" value={multiplier} onChange={(e) => setMultiplier(e.target.value)} aria-invalid={!!errors['multiplier']} aria-describedby="adj-tooltip-content" style={inputStyle} />
-                  {tooltipOpen && (
-                    <div id="adj-tooltip-content" role="tooltip" style={{ position: 'absolute', bottom: 'calc(100% + 10px)', right: -20, width: 340, backgroundColor: th.tooltipBg, color: th.tooltipText, borderRadius: 12, padding: '18px 20px', fontSize: 13, lineHeight: 1.7, zIndex: 50, boxShadow: '0 4px 24px rgba(0,0,0,0.25)', fontFamily: "'Outfit', sans-serif", fontWeight: 400 }}>
-                      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>0DTE IV Adjustment</div>
-                      <p style={{ margin: '0 0 12px' }}>VIX measures <strong>30-day</strong> implied volatility, but same-day (0DTE) options typically trade at <strong>10{'\u2013'}20% higher IV</strong> than what VIX indicates.</p>
-                      <p style={{ margin: '0 0 12px' }}>This multiplier scales VIX upward to approximate actual 0DTE IV. For example, with VIX at 20:</p>
-                      <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, backgroundColor: th.tooltipCodeBg, color: th.tooltipCodeText, borderRadius: 8, padding: '10px 12px', marginBottom: 12, lineHeight: 1.8 }}>
-                        <div>{'\u00D7'} 1.00 {'\u2192'} {'\u03C3'} = 0.200 (raw VIX, no adj.)</div>
-                        <div>{'\u00D7'} 1.15 {'\u2192'} {'\u03C3'} = 0.230 (default)</div>
-                        <div>{'\u00D7'} 1.20 {'\u2192'} {'\u03C3'} = 0.240 (high-vol)</div>
-                      </div>
-                      <p style={{ margin: 0, fontSize: 12, opacity: 0.85 }}>Range: {DEFAULTS.IV_PREMIUM_MIN}{'\u2013'}{DEFAULTS.IV_PREMIUM_MAX}. This is the largest source of estimation error. Tune based on observed 0DTE straddle pricing.</p>
-                      <div style={{ position: 'absolute', bottom: -6, right: 32, width: 12, height: 12, backgroundColor: th.tooltipBg, transform: 'rotate(45deg)' }} />
-                    </div>
-                  )}
-                </div>
+                </fieldset>
+                <fieldset className="border-none m-0 p-0"><legend className="sr-only">Timezone</legend>
+                  <div className="flex gap-1" role="radiogroup">
+                    {(['ET', 'CT'] as const).map((tz) => <Chip key={tz} th={th} active={timezone === tz} onClick={() => setTimezone(tz)} label={tz} />)}
+                  </div>
+                </fieldset>
               </div>
-            ) : (
-              <div>
-                <label htmlFor="direct-iv" style={tinyLbl}>{'\u03C3'} as decimal (e.g. 0.22 for 22%)</label>
-                <input id="direct-iv" type="text" inputMode="decimal" placeholder="e.g. 0.22" value={directIVInput} onChange={(e) => setDirectIVInput(e.target.value)} aria-invalid={!!errors['iv']} style={inputStyle} />
-              </div>
-            )}
-            {errors['vix'] && <ErrorMsg th={th}>{errors['vix']}</ErrorMsg>}
-            {errors['multiplier'] && <ErrorMsg th={th}>{errors['multiplier']}</ErrorMsg>}
-            {errors['iv'] && <ErrorMsg th={th}>{errors['iv']}</ErrorMsg>}
+              {errors['time'] && <ErrorMsg th={th}>{errors['time']}</ErrorMsg>}
+            </SectionBox>
 
-            {/* VIX Regime Context Card — appears when VIX is entered */}
-            {ivMode === IV_MODES.VIX && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && results && (
-              <VIXRegimeCard
-                th={th}
-                vix={Number.parseFloat(dVix)}
-                spot={results.spot}
-              />
-            )}
-
-            {/* NEW: Term Structure Panel */}
-            {ivMode === IV_MODES.VIX && dVix && !errors['vix'] && (
-              <div style={{ marginTop: 14 }}>
-                <div style={{
-                  fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700,
-                  textTransform: 'uppercase', letterSpacing: '0.14em',
-                  color: th.textTertiary, marginBottom: 8,
-                }}>
-                  Term Structure
-                </div>
-                <VIXTermStructure
-                  th={th}
-                  vix={Number.parseFloat(dVix)}
-                  onUseVix1dAsSigma={(sigma) => {
-                    setIvMode(IV_MODES.DIRECT);
-                    setDirectIVInput(sigma.toFixed(4));
-                  }}
-                />
-              </div>
-            )}
-          </SectionBox>
-
-          {/* Skew & Iron Condor Controls */}
-          <SectionBox th={th} label="Advanced" headerRight={
-            <button onClick={() => setShowIC(!showIC)} style={{
-              padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              border: '1.5px solid ' + (showIC ? th.chipActiveBorder : th.chipBorder),
-              backgroundColor: showIC ? th.chipActiveBg : th.chipBg,
-              color: showIC ? th.chipActiveText : th.chipText,
-              fontFamily: "'Outfit', sans-serif",
-            }}>
-              {showIC ? 'Hide' : 'Show'} Iron Condor
-            </button>
-          }>
-            {/* Put Skew Slider */}
-            <div style={{ marginBottom: showIC ? 16 : 0 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <label htmlFor="skew-slider" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif" }}>
-                  Put Skew
-                </label>
-                <span style={{ fontSize: 14, fontWeight: 500, fontFamily: "'DM Mono', monospace", color: th.accent }}>
-                  {skewPct === 0 ? 'Off' : ('+' + skewPct + '% put / \u2212' + skewPct + '% call')}
-                </span>
-              </div>
-              <input
-                id="skew-slider"
-                type="range"
-                min="0"
-                max="8"
-                step="1"
-                value={skewPct}
-                onChange={(e) => setSkewPct(Number.parseInt(e.target.value))}
-                aria-label={'Put skew adjustment, currently ' + skewPct + ' percent'}
-                style={{ width: '100%', cursor: 'pointer', accentColor: th.accent, margin: 0 }}
-              />
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: th.textMuted, fontFamily: "'DM Mono', monospace", marginTop: 4 }}>
-                <span>0%</span>
-                <span>3%</span>
-                <span>5%</span>
-                <span>8%</span>
-              </div>
-              <p style={{ fontSize: 11, color: th.textMuted, margin: '6px 0 0', fontStyle: 'italic' }}>
-                OTM puts trade at higher IV than calls. Typical 0DTE skew: 2{'\u2013'}5%.
-              </p>
-            </div>
-
-            {/* Iron Condor Wing Width */}
-            {showIC && (
-              <div style={{ paddingTop: 14, borderTop: '1px solid ' + th.border }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <label htmlFor="wing-width" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif" }}>
-                    Wing Width (SPX pts)
-                  </label>
-                  <span style={{ fontSize: 14, fontWeight: 500, fontFamily: "'DM Mono', monospace", color: th.accent }}>
-                    {wingWidth}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} role="radiogroup" aria-label="Iron condor wing width">
-                  {[5, 10, 15, 20, 25, 30, 50].map((w) => (
-                    <Chip key={w} th={th} active={wingWidth === w} onClick={() => setWingWidth(w)} label={String(w)} />
+            {/* IV Input */}
+            <SectionBox th={th} label="Implied Volatility" headerRight={
+              <fieldset className="border-none m-0 p-0"><legend className="sr-only">IV input mode</legend>
+                <div className="flex gap-1" role="radiogroup">
+                  {([{ key: IV_MODES.VIX, label: 'VIX' }, { key: IV_MODES.DIRECT, label: 'Direct IV' }] as const).map(({ key, label }) => (
+                    <Chip key={key} th={th} active={ivMode === key} onClick={() => setIvMode(key)} label={label} />
                   ))}
                 </div>
-                <p style={{ fontSize: 11, color: th.textMuted, margin: '6px 0 0', fontStyle: 'italic' }}>
-                  Distance from short strike to long (protective) strike on each side.
-                </p>
-
-                {/* Contracts Counter */}
-                <div style={{ paddingTop: 14, marginTop: 14, borderTop: '1px solid ' + th.border }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label htmlFor="contracts-count" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif" }}>
-                      Contracts
-                    </label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
-                      <button
-                        onClick={() => setContracts(Math.max(1, contracts - 1))}
-                        aria-label="Decrease contracts"
-                        style={{
-                          width: 32, height: 32, borderRadius: '6px 0 0 6px',
-                          border: '1.5px solid ' + th.borderStrong, borderRight: 'none',
-                          backgroundColor: th.chipBg, color: th.text, cursor: 'pointer',
-                          fontSize: 16, fontWeight: 700, fontFamily: "'DM Mono', monospace",
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}
-                      >{'\u2212'}</button>
-                      <input
-                        id="contracts-count"
-                        type="text"
-                        inputMode="numeric"
-                        value={contracts}
-                        onChange={(e) => {
-                          const v = Number.parseInt(e.target.value);
-                          if (!Number.isNaN(v) && v >= 1 && v <= 999) setContracts(v);
-                          else if (e.target.value === '') setContracts(1);
-                        }}
-                        style={{
-                          width: 52, height: 32, textAlign: 'center' as const,
-                          border: '1.5px solid ' + th.borderStrong,
-                          backgroundColor: th.inputBg, color: th.text,
-                          fontSize: 15, fontWeight: 600, fontFamily: "'DM Mono', monospace",
-                          outline: 'none',
-                        }}
-                        aria-label="Number of contracts"
-                      />
-                      <button
-                        onClick={() => setContracts(Math.min(999, contracts + 1))}
-                        aria-label="Increase contracts"
-                        style={{
-                          width: 32, height: 32, borderRadius: '0 6px 6px 0',
-                          border: '1.5px solid ' + th.borderStrong, borderLeft: 'none',
-                          backgroundColor: th.chipBg, color: th.text, cursor: 'pointer',
-                          fontSize: 16, fontWeight: 700, fontFamily: "'DM Mono', monospace",
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}
-                      >+</button>
-                    </div>
+              </fieldset>
+            }>
+              {ivMode === IV_MODES.VIX ? (
+                <div className="grid grid-cols-[1fr_140px] gap-2.5 items-end">
+                  <div>
+                    <label htmlFor="vix-val" className={tinyLbl}>VIX Value</label>
+                    <input id="vix-val" type="text" inputMode="decimal" placeholder="e.g. 19" value={vixInput} onChange={(e) => setVixInput(e.target.value)} aria-invalid={!!errors['vix']} className={inputCls} />
                   </div>
-                  <p style={{ fontSize: 11, color: th.textMuted, margin: '6px 0 0', fontStyle: 'italic' }}>
-                    SPX multiplier: $100/pt. P&L table shows per-contract and total dollar values.
-                  </p>
+                  <div className="relative" ref={tooltipRef}>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <label htmlFor="mult-val" className={tinyLbl + ' !mb-0'}>0DTE Adj.</label>
+                      <button onClick={() => setTooltipOpen(!tooltipOpen)} aria-expanded={tooltipOpen} aria-label="What is the 0DTE adjustment?"
+                        className="w-[18px] h-[18px] rounded-full border-[1.5px] border-edge-strong bg-surface-alt text-tertiary cursor-pointer text-[11px] font-bold font-sans inline-flex items-center justify-center p-0 leading-none">?</button>
+                    </div>
+                    <input id="mult-val" type="text" inputMode="decimal" placeholder="1.15" value={multiplier} onChange={(e) => setMultiplier(e.target.value)} aria-invalid={!!errors['multiplier']} aria-describedby="adj-tooltip-content" className={inputCls} />
+                    {tooltipOpen && (
+                      <div id="adj-tooltip-content" role="tooltip" className="absolute bottom-[calc(100%+10px)] -right-5 w-[340px] bg-tooltip-bg text-tooltip-text rounded-xl p-[18px_20px] text-[13px] leading-[1.7] z-50 shadow-[0_4px_24px_rgba(0,0,0,0.25)] font-sans font-normal">
+                        <div className="font-bold text-[15px] mb-2.5">0DTE IV Adjustment</div>
+                        <p className="m-0 mb-3">VIX measures <strong>30-day</strong> implied volatility, but same-day (0DTE) options typically trade at <strong>10{'\u2013'}20% higher IV</strong> than what VIX indicates.</p>
+                        <p className="m-0 mb-3">This multiplier scales VIX upward to approximate actual 0DTE IV. For example, with VIX at 20:</p>
+                        <div className="font-mono text-xs bg-tooltip-code-bg text-tooltip-code-text rounded-lg p-[10px_12px] mb-3 leading-[1.8]">
+                          <div>{'\u00D7'} 1.00 {'\u2192'} {'\u03C3'} = 0.200 (raw VIX, no adj.)</div>
+                          <div>{'\u00D7'} 1.15 {'\u2192'} {'\u03C3'} = 0.230 (default)</div>
+                          <div>{'\u00D7'} 1.20 {'\u2192'} {'\u03C3'} = 0.240 (high-vol)</div>
+                        </div>
+                        <p className="m-0 text-xs opacity-85">Range: {DEFAULTS.IV_PREMIUM_MIN}{'\u2013'}{DEFAULTS.IV_PREMIUM_MAX}. This is the largest source of estimation error. Tune based on observed 0DTE straddle pricing.</p>
+                        <div className="absolute -bottom-1.5 right-8 w-3 h-3 bg-tooltip-bg rotate-45" />
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-          </SectionBox>
+              ) : (
+                <div>
+                  <label htmlFor="direct-iv" className={tinyLbl}>{'\u03C3'} as decimal (e.g. 0.22 for 22%)</label>
+                  <input id="direct-iv" type="text" inputMode="decimal" placeholder="e.g. 0.22" value={directIVInput} onChange={(e) => setDirectIVInput(e.target.value)} aria-invalid={!!errors['iv']} className={inputCls} />
+                </div>
+              )}
+              {errors['vix'] && <ErrorMsg th={th}>{errors['vix']}</ErrorMsg>}
+              {errors['multiplier'] && <ErrorMsg th={th}>{errors['multiplier']}</ErrorMsg>}
+              {errors['iv'] && <ErrorMsg th={th}>{errors['iv']}</ErrorMsg>}
 
-          {/* Market Regime Analysis */}
-          <SectionBox th={th} label="Market Regime" badge={results ? ('VIX ' + (Number.parseFloat(dVix) || '—')) : null} headerRight={
-            <button onClick={() => setShowRegime(!showRegime)} style={{
-              padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              border: '1.5px solid ' + (showRegime ? th.chipActiveBorder : th.chipBorder),
-              backgroundColor: showRegime ? th.chipActiveBg : th.chipBg,
-              color: showRegime ? th.chipActiveText : th.chipText,
-              fontFamily: "'Outfit', sans-serif",
-            }}>
-              {showRegime ? 'Hide' : 'Show'} Analysis
-            </button>
-          }>
-            <p style={{ fontSize: 13, color: th.textSecondary, margin: 0, lineHeight: 1.6 }}>
-            Historical VIX-to-SPX range correlation from 9,102 trading days (1990–2026).
-            {' '}Expected daily ranges and IC survival rates at each VIX level.
-            </p>
-            {showRegime && (
-              <div style={{ marginTop: 16 }}>
-                <VIXRangeAnalysis
+              {/* VIX Regime Context Card — appears when VIX is entered */}
+              {ivMode === IV_MODES.VIX && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && results && (
+                <VIXRegimeCard
                   th={th}
-                  vix={dVix ? Number.parseFloat(dVix) : null}
-                  spot={results?.spot ?? null}
+                  vix={Number.parseFloat(dVix)}
+                  spot={results.spot}
                 />
-                {results && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
-                  <>
-                    <div style={{ marginTop: 20 }}>
-                      <VolatilityCluster
-                        th={th}
-                        vix={Number.parseFloat(dVix)}
-                        spot={results.spot}
-                        onMultiplierChange={setClusterMult}
-                      />
-                    </div>
-                    <DeltaRegimeGuide
-                      th={th}
-                      vix={Number.parseFloat(dVix)}
-                      spot={results.spot}
-                      T={results.T}
-                      skew={skewPct / 100}
-                      allDeltas={results.allDeltas}
-                      selectedDate={selectedDate}
-                      clusterMult={clusterMult}
-                    />
-                    <div style={{ marginTop: 20 }}>
-                      <OpeningRangeCheck
-                        th={th}
-                        vix={Number.parseFloat(dVix)}
-                        spot={results.spot}
-                        selectedDate={selectedDate}
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </SectionBox>
+              )}
 
-          {/* Results Table */}
-          <div id="results" tabIndex={-1} style={{ marginTop: 4 }}>
-            {results ? (
-              <section aria-label="Strike results for all deltas" style={{ backgroundColor: th.surface, border: '2px solid ' + th.borderHeavy, borderRadius: 14, padding: '24px 20px', boxShadow: '0 2px 8px rgba(0,0,0,0.05), 0 8px 24px rgba(0,0,0,0.04)' }}>
-                <div style={{ fontFamily: "'Outfit', sans-serif", fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.16em', color: th.accent, marginBottom: 18 }}>All Delta Strikes</div>
-
-                <ParameterSummary
-                  th={th}
-                  spySpot={(results.spot / effectiveRatio).toFixed(2)}
-                  spxLabel={'SPX (\u00D7' + effectiveRatio.toFixed(spxDirectActive.active ? 4 : 2) + ')'}
-                  spxValue={results.spot.toFixed(0)}
-                  sigma={(results.sigma * 100).toFixed(2) + '%'}
-                  T={results.T.toFixed(6)}
-                  hoursLeft={results.hoursRemaining.toFixed(2) + 'h'}
-                />
-
-                <DeltaStrikesTable th={th} allDeltas={results.allDeltas} spot={results.spot} />
-
-                {showIC && (
-                  <IronCondorSection
+              {/* NEW: Term Structure Panel */}
+              {ivMode === IV_MODES.VIX && dVix && !errors['vix'] && (
+                <div className="mt-3.5">
+                  <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-tertiary mb-2">
+                    Term Structure
+                  </div>
+                  <VIXTermStructure
                     th={th}
-                    results={results}
-                    wingWidth={wingWidth}
-                    contracts={contracts}
-                    effectiveRatio={effectiveRatio}
-                    skewPct={skewPct}
+                    vix={Number.parseFloat(dVix)}
+                    onUseVix1dAsSigma={(sigma) => {
+                      setIvMode(IV_MODES.DIRECT);
+                      setDirectIVInput(sigma.toFixed(4));
+                    }}
                   />
-                )}
+                </div>
+              )}
+            </SectionBox>
 
-                <p style={{ fontSize: 12, color: th.textTertiary, marginTop: 14, lineHeight: 1.7 }}>
-                  {skewPct > 0 ? ('Put skew: +' + skewPct + '% IV on puts, \u2212' + skewPct + '% on calls. ') : ''}Accuracy {'\u00B1'}5{'\u2013'}15 SPX points. Snapped: SPX nearest {DEFAULTS.STRIKE_INCREMENT}-pt, SPY nearest $1. Ratio: {effectiveRatio.toFixed(spxDirectActive.active ? 4 : 2)}{spxDirectActive.active ? ' (derived)' : ''}.
+            {/* Skew & Iron Condor Controls */}
+            <SectionBox th={th} label="Advanced" headerRight={
+              <button onClick={() => setShowIC(!showIC)} className={
+                'p-[5px_12px] rounded-md text-xs font-semibold cursor-pointer border-[1.5px] font-sans ' +
+                (showIC
+                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                  : 'border-chip-border bg-chip-bg text-chip-text')
+              }>
+                {showIC ? 'Hide' : 'Show'} Iron Condor
+              </button>
+            }>
+              {/* Put Skew Slider */}
+              <div className={showIC ? 'mb-4' : ''}>
+                <div className="flex justify-between items-center mb-1.5">
+                  <label htmlFor="skew-slider" className="text-[11px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans">
+                    Put Skew
+                  </label>
+                  <span className="text-sm font-medium font-mono text-accent">
+                    {skewPct === 0 ? 'Off' : ('+' + skewPct + '% put / \u2212' + skewPct + '% call')}
+                  </span>
+                </div>
+                <input
+                  id="skew-slider"
+                  type="range"
+                  min="0"
+                  max="8"
+                  step="1"
+                  value={skewPct}
+                  onChange={(e) => setSkewPct(Number.parseInt(e.target.value))}
+                  aria-label={'Put skew adjustment, currently ' + skewPct + ' percent'}
+                  className="w-full cursor-pointer m-0"
+                  style={{ accentColor: th.accent }}
+                />
+                <div className="flex justify-between text-[10px] text-muted font-mono mt-1">
+                  <span>0%</span>
+                  <span>3%</span>
+                  <span>5%</span>
+                  <span>8%</span>
+                </div>
+                <p className="text-[11px] text-muted mt-1.5 mb-0 italic">
+                  OTM puts trade at higher IV than calls. Typical 0DTE skew: 2{'\u2013'}5%.
                 </p>
-              </section>
-            ) : (
-              <div style={{ textAlign: 'center', padding: 40, border: '2px dashed ' + th.borderStrong, borderRadius: 14, backgroundColor: darkMode ? th.surface : '#FAF9F6' }}>
-                <p style={{ fontSize: 15, color: th.textMuted, margin: 0 }}>Enter SPY spot price, time, and IV to see all delta strikes</p>
               </div>
-            )}
-          </div>
-        </main>
+
+              {/* Iron Condor Wing Width */}
+              {showIC && (
+                <div className="pt-3.5 border-t border-edge">
+                  <div className="flex justify-between items-center mb-1.5">
+                    <label htmlFor="wing-width" className="text-[11px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans">
+                      Wing Width (SPX pts)
+                    </label>
+                    <span className="text-sm font-medium font-mono text-accent">
+                      {wingWidth}
+                    </span>
+                  </div>
+                  <div className="flex gap-1.5 flex-wrap" role="radiogroup" aria-label="Iron condor wing width">
+                    {[5, 10, 15, 20, 25, 30, 50].map((w) => (
+                      <Chip key={w} th={th} active={wingWidth === w} onClick={() => setWingWidth(w)} label={String(w)} />
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-muted mt-1.5 mb-0 italic">
+                    Distance from short strike to long (protective) strike on each side.
+                  </p>
+
+                  {/* Contracts Counter */}
+                  <div className="pt-3.5 mt-3.5 border-t border-edge">
+                    <div className="flex justify-between items-center">
+                      <label htmlFor="contracts-count" className="text-[11px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans">
+                        Contracts
+                      </label>
+                      <div className="flex items-center">
+                        <button
+                          onClick={() => setContracts(Math.max(1, contracts - 1))}
+                          aria-label="Decrease contracts"
+                          className="w-8 h-8 rounded-l-md border-[1.5px] border-r-0 border-edge-strong bg-chip-bg text-primary cursor-pointer text-base font-bold font-mono flex items-center justify-center"
+                        >{'\u2212'}</button>
+                        <input
+                          id="contracts-count"
+                          type="text"
+                          inputMode="numeric"
+                          value={contracts}
+                          onChange={(e) => {
+                            const v = Number.parseInt(e.target.value);
+                            if (!Number.isNaN(v) && v >= 1 && v <= 999) setContracts(v);
+                            else if (e.target.value === '') setContracts(1);
+                          }}
+                          className="w-[52px] h-8 text-center border-[1.5px] border-edge-strong bg-input text-primary text-[15px] font-semibold font-mono outline-none"
+                          aria-label="Number of contracts"
+                        />
+                        <button
+                          onClick={() => setContracts(Math.min(999, contracts + 1))}
+                          aria-label="Increase contracts"
+                          className="w-8 h-8 rounded-r-md border-[1.5px] border-l-0 border-edge-strong bg-chip-bg text-primary cursor-pointer text-base font-bold font-mono flex items-center justify-center"
+                        >+</button>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-muted mt-1.5 mb-0 italic">
+                      SPX multiplier: $100/pt. P&L table shows per-contract and total dollar values.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </SectionBox>
+
+            {/* Market Regime Analysis */}
+            <SectionBox th={th} label="Market Regime" badge={results ? ('VIX ' + (Number.parseFloat(dVix) || '\u2014')) : null} headerRight={
+              <button onClick={() => setShowRegime(!showRegime)} className={
+                'p-[5px_12px] rounded-md text-xs font-semibold cursor-pointer border-[1.5px] font-sans ' +
+                (showRegime
+                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                  : 'border-chip-border bg-chip-bg text-chip-text')
+              }>
+                {showRegime ? 'Hide' : 'Show'} Analysis
+              </button>
+            }>
+              <p className="text-[13px] text-secondary m-0 leading-relaxed">
+              Historical VIX-to-SPX range correlation from 9,102 trading days (1990–2026).
+              {' '}Expected daily ranges and IC survival rates at each VIX level.
+              </p>
+              {showRegime && (
+                <div className="mt-4">
+                  <VIXRangeAnalysis
+                    th={th}
+                    vix={dVix ? Number.parseFloat(dVix) : null}
+                    spot={results?.spot ?? null}
+                  />
+                  {results && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
+                    <>
+                      <div className="mt-5">
+                        <VolatilityCluster
+                          th={th}
+                          vix={Number.parseFloat(dVix)}
+                          spot={results.spot}
+                          onMultiplierChange={setClusterMult}
+                        />
+                      </div>
+                      <DeltaRegimeGuide
+                        th={th}
+                        vix={Number.parseFloat(dVix)}
+                        spot={results.spot}
+                        T={results.T}
+                        skew={skewPct / 100}
+                        allDeltas={results.allDeltas}
+                        selectedDate={selectedDate}
+                        clusterMult={clusterMult}
+                      />
+                      <div className="mt-5">
+                        <OpeningRangeCheck
+                          th={th}
+                          vix={Number.parseFloat(dVix)}
+                          spot={results.spot}
+                          selectedDate={selectedDate}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </SectionBox>
+
+            {/* Results Table */}
+            <div id="results" tabIndex={-1} className="mt-1">
+              {results ? (
+                <section aria-label="Strike results for all deltas" className="bg-surface border-2 border-edge-heavy rounded-[14px] p-[24px_20px] shadow-[0_2px_8px_rgba(0,0,0,0.05),0_8px_24px_rgba(0,0,0,0.04)]">
+                  <div className="font-sans text-xs font-bold uppercase tracking-[0.16em] text-accent mb-[18px]">All Delta Strikes</div>
+
+                  <ParameterSummary
+                    th={th}
+                    spySpot={(results.spot / effectiveRatio).toFixed(2)}
+                    spxLabel={'SPX (\u00D7' + effectiveRatio.toFixed(spxDirectActive.active ? 4 : 2) + ')'}
+                    spxValue={results.spot.toFixed(0)}
+                    sigma={(results.sigma * 100).toFixed(2) + '%'}
+                    T={results.T.toFixed(6)}
+                    hoursLeft={results.hoursRemaining.toFixed(2) + 'h'}
+                  />
+
+                  <DeltaStrikesTable th={th} allDeltas={results.allDeltas} spot={results.spot} />
+
+                  {showIC && (
+                    <IronCondorSection
+                      th={th}
+                      results={results}
+                      wingWidth={wingWidth}
+                      contracts={contracts}
+                      effectiveRatio={effectiveRatio}
+                      skewPct={skewPct}
+                    />
+                  )}
+
+                  <p className="text-xs text-tertiary mt-3.5 leading-[1.7]">
+                    {skewPct > 0 ? ('Put skew: +' + skewPct + '% IV on puts, \u2212' + skewPct + '% on calls. ') : ''}Accuracy {'\u00B1'}5{'\u2013'}15 SPX points. Snapped: SPX nearest {DEFAULTS.STRIKE_INCREMENT}-pt, SPY nearest $1. Ratio: {effectiveRatio.toFixed(spxDirectActive.active ? 4 : 2)}{spxDirectActive.active ? ' (derived)' : ''}.
+                  </p>
+                </section>
+              ) : (
+                <div className="text-center p-10 border-2 border-dashed border-edge-strong rounded-[14px] bg-surface">
+                  <p className="text-[15px] text-muted m-0">Enter SPY spot price, time, and IV to see all delta strikes</p>
+                </div>
+              )}
+            </div>
+          </main>
+        </div>
       </div>
     </div>
   );

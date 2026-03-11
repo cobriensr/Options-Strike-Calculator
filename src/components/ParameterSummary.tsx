@@ -10,7 +10,7 @@ interface Props {
   hoursLeft: string;
 }
 
-export default function ParameterSummary({ th, spySpot, spxLabel, spxValue, sigma, T, hoursLeft }: Props) {
+export default function ParameterSummary({ spySpot, spxLabel, spxValue, sigma, T, hoursLeft }: Props) {
   const items = [
     { label: 'SPY Spot', value: spySpot },
     { label: spxLabel, value: spxValue },
@@ -20,11 +20,11 @@ export default function ParameterSummary({ th, spySpot, spxLabel, spxValue, sigm
   ];
 
   return (
-    <fieldset style={{ backgroundColor: th.surfaceAlt, borderRadius: 10, padding: 14, marginBottom: 18, display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, border: 'none', margin: 0 }} aria-label="Calculation parameters">
+    <fieldset className="bg-surface-alt rounded-[10px] p-3.5 mb-4.5 grid grid-cols-2 gap-2 md:grid-cols-5 border-none m-0" aria-label="Calculation parameters">
       {items.map((item) => (
-        <div key={item.label} style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', color: th.textTertiary, letterSpacing: '0.06em', fontFamily: "'Outfit', sans-serif", fontWeight: 700 }}>{item.label}</div>
-          <div style={{ fontSize: 15, fontWeight: 500, fontFamily: "'DM Mono', monospace", color: th.accent, marginTop: 3 }}>{item.value}</div>
+        <div key={item.label} className="text-center">
+          <div className="text-[10px] uppercase text-tertiary tracking-[0.06em] font-sans font-bold">{item.label}</div>
+          <div className="text-[15px] font-medium font-mono text-accent mt-0.5">{item.value}</div>
         </div>
       ))}
     </fieldset>

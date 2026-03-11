@@ -36,14 +36,14 @@ export default function HedgeSection({ th, results, ic, contracts, skew }: Props
   const rallyScenarios = hedge.scenarios.filter((s) => s.direction === 'rally');
 
   return (
-    <div style={{ marginTop: 18 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <div style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.14em', color: th.accent }}>
+    <div className="mt-4.5">
+      <div className="flex items-center justify-between mb-3">
+        <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-accent">
           Hedge Calculator (Reinsurance)
         </div>
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif", marginRight: 4 }}>
-            Hedge Δ
+        <div className="flex gap-1 items-center">
+          <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans mr-1">
+            Hedge {'\u0394'}
           </span>
           {HEDGE_DELTA_OPTIONS.map((d) => (
             <button
@@ -51,13 +51,12 @@ export default function HedgeSection({ th, results, ic, contracts, skew }: Props
               onClick={() => setHedgeDelta(d)}
               role="radio"
               aria-checked={hedgeDelta === d}
-              style={{
-                padding: '3px 10px', borderRadius: 99, fontSize: 12, fontWeight: 500, cursor: 'pointer',
-                border: '1.5px solid ' + (hedgeDelta === d ? th.chipActiveBorder : th.chipBorder),
-                backgroundColor: hedgeDelta === d ? th.chipActiveBg : th.chipBg,
-                color: hedgeDelta === d ? th.chipActiveText : th.chipText,
-                fontFamily: "'DM Mono', monospace", transition: 'all 0.1s',
-              }}
+              className={
+                'px-2.5 py-0.5 rounded-full text-xs font-medium cursor-pointer border-[1.5px] font-mono transition-all duration-100 ' +
+                (hedgeDelta === d
+                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                  : 'border-chip-border bg-chip-bg text-chip-text')
+              }
             >
               {d}{'\u0394'}
             </button>
@@ -66,89 +65,76 @@ export default function HedgeSection({ th, results, ic, contracts, skew }: Props
       </div>
 
       {/* Recommendation Summary */}
-      <div style={{
-        backgroundColor: th.surfaceAlt, borderRadius: 10, padding: 16,
-        border: '1px solid ' + th.border, marginBottom: 12,
-      }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+      <div className="bg-surface-alt rounded-[10px] p-4 border border-edge mb-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {/* Put Hedge */}
-          <div style={{ borderRight: '1px solid ' + th.border, paddingRight: 16 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.red, fontFamily: "'Outfit', sans-serif", marginBottom: 8 }}>
+          <div className="md:border-r md:border-edge md:pr-4">
+            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-danger font-sans mb-2">
               Put Hedge (Crash Protection)
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <StatBox th={th} label="Buy Puts" value={String(hedge.recommendedPuts)} accent={th.red} large />
-              <StatBox th={th} label="Strike" value={String(hedge.putStrikeSnapped)} />
-              <StatBox th={th} label="Premium" value={hedge.putPremium.toFixed(2) + ' pts'} />
-              <StatBox th={th} label="Cost" value={'$' + fmtDollar(hedge.putPremium * 100 * hedge.recommendedPuts)} />
+            <div className="grid grid-cols-2 gap-2">
+              <StatBox label="Buy Puts" value={String(hedge.recommendedPuts)} accent={th.red} large />
+              <StatBox label="Strike" value={String(hedge.putStrikeSnapped)} />
+              <StatBox label="Premium" value={hedge.putPremium.toFixed(2) + ' pts'} />
+              <StatBox label="Cost" value={'$' + fmtDollar(hedge.putPremium * 100 * hedge.recommendedPuts)} />
             </div>
-            <div style={{ fontSize: 10, color: th.textMuted, marginTop: 6, fontFamily: "'DM Mono', monospace" }}>
+            <div className="text-[10px] text-muted mt-1.5 font-mono">
               Breakeven at {'\u2193'}{hedge.breakEvenCrashPts} pts ({(hedge.breakEvenCrashPts / results.spot * 100).toFixed(1)}%)
             </div>
           </div>
 
           {/* Call Hedge */}
           <div>
-            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.green, fontFamily: "'Outfit', sans-serif", marginBottom: 8 }}>
+            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-success font-sans mb-2">
               Call Hedge (Rally Protection)
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <StatBox th={th} label="Buy Calls" value={String(hedge.recommendedCalls)} accent={th.green} large />
-              <StatBox th={th} label="Strike" value={String(hedge.callStrikeSnapped)} />
-              <StatBox th={th} label="Premium" value={hedge.callPremium.toFixed(2) + ' pts'} />
-              <StatBox th={th} label="Cost" value={'$' + fmtDollar(hedge.callPremium * 100 * hedge.recommendedCalls)} />
+            <div className="grid grid-cols-2 gap-2">
+              <StatBox label="Buy Calls" value={String(hedge.recommendedCalls)} accent={th.green} large />
+              <StatBox label="Strike" value={String(hedge.callStrikeSnapped)} />
+              <StatBox label="Premium" value={hedge.callPremium.toFixed(2) + ' pts'} />
+              <StatBox label="Cost" value={'$' + fmtDollar(hedge.callPremium * 100 * hedge.recommendedCalls)} />
             </div>
-            <div style={{ fontSize: 10, color: th.textMuted, marginTop: 6, fontFamily: "'DM Mono', monospace" }}>
+            <div className="text-[10px] text-muted mt-1.5 font-mono">
               Breakeven at {'\u2191'}{hedge.breakEvenRallyPts} pts ({(hedge.breakEvenRallyPts / results.spot * 100).toFixed(1)}%)
             </div>
           </div>
         </div>
 
         {/* Total Summary */}
-        <div style={{
-          marginTop: 12, paddingTop: 12, borderTop: '1px solid ' + th.border,
-          display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8,
-        }}>
-          <StatBox th={th} label="Daily Hedge Cost" value={'$' + fmtDollar(hedge.dailyCostDollars)} accent={th.red} />
-          <StatBox th={th} label="IC Credit" value={'$' + fmtDollar(ic.creditReceived * 100 * contracts)} accent={th.green} />
-          <StatBox th={th} label="Net Credit After Hedge" value={'$' + fmtDollar(hedge.netCreditAfterHedge)} accent={hedge.netCreditAfterHedge > 0 ? th.green : th.red} />
-          <StatBox th={th} label="Hedge % of Credit" value={(hedge.dailyCostDollars / (ic.creditReceived * 100 * contracts) * 100).toFixed(1) + '%'} />
+        <div className="mt-3 pt-3 border-t border-edge grid grid-cols-2 gap-2 md:grid-cols-4">
+          <StatBox label="Daily Hedge Cost" value={'$' + fmtDollar(hedge.dailyCostDollars)} accent={th.red} />
+          <StatBox label="IC Credit" value={'$' + fmtDollar(ic.creditReceived * 100 * contracts)} accent={th.green} />
+          <StatBox label="Net Credit After Hedge" value={'$' + fmtDollar(hedge.netCreditAfterHedge)} accent={hedge.netCreditAfterHedge > 0 ? th.green : th.red} />
+          <StatBox label="Hedge % of Credit" value={(hedge.dailyCostDollars / (ic.creditReceived * 100 * contracts) * 100).toFixed(1) + '%'} />
         </div>
       </div>
 
       {/* Scenario Toggle */}
       <button
         onClick={() => setShowScenarios(!showScenarios)}
-        style={{
-          width: '100%', padding: '8px 14px', borderRadius: 8,
-          border: '1px solid ' + th.border,
-          backgroundColor: th.chipBg, color: th.textSecondary,
-          cursor: 'pointer', fontSize: 12, fontWeight: 600,
-          fontFamily: "'Outfit', sans-serif",
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-        }}
+        className="w-full py-2 px-3.5 rounded-lg border border-edge bg-chip-bg text-secondary cursor-pointer text-xs font-semibold font-sans flex items-center justify-center gap-1.5"
       >
         {showScenarios ? '\u25B2' : '\u25BC'} {showScenarios ? 'Hide' : 'Show'} P&L Scenario Table
       </button>
 
       {/* Scenario Table */}
       {showScenarios && (
-        <div style={{ marginTop: 12 }}>
+        <div className="mt-3">
           {/* Crash Scenarios */}
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.1em', color: th.red, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-danger font-sans mb-1.5">
             Crash Scenarios (SPX drops)
           </div>
           <ScenarioTable th={th} scenarios={crashScenarios} spot={results.spot} direction="crash" />
 
           {/* Rally Scenarios */}
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.1em', color: th.green, fontFamily: "'Outfit', sans-serif", marginTop: 14, marginBottom: 6 }}>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-success font-sans mt-3.5 mb-1.5">
             Rally Scenarios (SPX rises)
           </div>
           <ScenarioTable th={th} scenarios={rallyScenarios} spot={results.spot} direction="rally" />
         </div>
       )}
 
-      <p style={{ fontSize: 11, color: th.textMuted, marginTop: 8, fontStyle: 'italic' }}>
+      <p className="text-[11px] text-muted mt-2 italic">
         Hedge sized for breakeven at 1.5{'\u00D7'} distance to hedge strike. Buy {hedge.recommendedPuts} put{hedge.recommendedPuts === 1 ? '' : 's'} + {hedge.recommendedCalls} call{hedge.recommendedCalls === 1 ? '' : 's'} as a 0DTE strangle at {hedgeDelta}{'\u0394'}. All values theoretical (Black-Scholes, r=0). Actual fill prices may differ.
       </p>
     </div>
@@ -159,19 +145,18 @@ export default function HedgeSection({ th, results, ic, contracts, skew }: Props
 // SUB-COMPONENTS
 // ============================================================
 
-function StatBox({ th, label, value, accent, large }: {
-  th: Theme; label: string; value: string; accent?: string; large?: boolean;
+function StatBox({ label, value, accent, large }: {
+  th?: unknown; label: string; value: string; accent?: string; large?: boolean;
 }) {
   return (
     <div>
-      <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.06em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif" }}>
+      <div className="text-[9px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans">
         {label}
       </div>
-      <div style={{
-        fontSize: large ? 22 : 14, fontWeight: large ? 800 : 600,
-        fontFamily: "'DM Mono', monospace",
-        color: accent ?? th.accent, marginTop: 2,
-      }}>
+      <div
+        className={`font-mono mt-0.5 ${large ? 'text-[22px] font-extrabold' : 'text-sm font-semibold'}`}
+        style={{ color: accent ?? 'var(--th-accent)' }}
+      >
         {value}
       </div>
     </div>
@@ -182,18 +167,18 @@ function ScenarioTable({ th, scenarios, spot, direction }: {
   th: Theme; scenarios: readonly HedgeScenario[]; spot: number; direction: 'crash' | 'rally';
 }) {
   return (
-    <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid ' + th.border }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: "'DM Mono', monospace", fontSize: 12 }} role="table" aria-label={'Hedge P&L ' + direction + ' scenarios'}>
+    <div className="overflow-x-auto rounded-[10px] border border-edge">
+      <table className="w-full border-collapse font-mono text-xs" role="table" aria-label={'Hedge P&L ' + direction + ' scenarios'}>
         <thead>
-          <tr style={{ backgroundColor: th.tableHeader }}>
-            <th style={mkTh(th, 'right')}>Move</th>
-            <th style={mkTh(th, 'right')}>SPX</th>
-            <th style={mkTh(th, 'right')}>IC P&L</th>
-            <th style={mkTh(th, 'right', direction === 'crash' ? th.red : th.green)}>
+          <tr className="bg-table-header">
+            <th className={mkTh('right')}>Move</th>
+            <th className={mkTh('right')}>SPX</th>
+            <th className={mkTh('right')}>IC P&L</th>
+            <th className={mkTh('right', direction === 'crash' ? 'text-danger' : 'text-success')}>
               {direction === 'crash' ? 'Put' : 'Call'} Hedge
             </th>
-            <th style={mkTh(th, 'right')}>Hedge Cost</th>
-            <th style={mkTh(th, 'right')}>Net P&L</th>
+            <th className={mkTh('right')}>Hedge Cost</th>
+            <th className={mkTh('right')}>Net P&L</th>
           </tr>
         </thead>
         <tbody>
@@ -201,26 +186,32 @@ function ScenarioTable({ th, scenarios, spot, direction }: {
             const spxLevel = direction === 'crash' ? spot - s.movePoints : spot + s.movePoints;
             const hedgePayout = direction === 'crash' ? s.hedgePutPnL : s.hedgeCallPnL;
             return (
-              <tr key={s.movePoints} style={{ backgroundColor: i % 2 === 1 ? th.tableRowAlt : th.surface }}>
-                <td style={{ ...mkTd(th), textAlign: 'right', fontWeight: 600 }}>
-                  {direction === 'crash' ? '\u2193' : '\u2191'}{s.movePoints} <span style={{ fontSize: 10, color: th.textMuted }}>({s.movePct}%)</span>
+              <tr key={s.movePoints} className={i % 2 === 1 ? 'bg-table-alt' : 'bg-surface'}>
+                <td className={`${mkTd()} text-right font-semibold`}>
+                  {direction === 'crash' ? '\u2193' : '\u2191'}{s.movePoints} <span className="text-[10px] text-muted">({s.movePct}%)</span>
                 </td>
-                <td style={{ ...mkTd(th), textAlign: 'right', color: th.textSecondary }}>
+                <td className={`${mkTd()} text-right text-secondary`}>
                   {Math.round(spxLevel)}
                 </td>
-                <td style={{ ...mkTd(th), textAlign: 'right', color: s.icPnL >= 0 ? th.green : th.red, fontWeight: 600 }}>
+                <td
+                  className={`${mkTd()} text-right font-semibold`}
+                  style={{ color: s.icPnL >= 0 ? th.green : th.red }}
+                >
                   {s.icPnL >= 0 ? '+' : ''}{fmtDollar(s.icPnL)}
                 </td>
-                <td style={{ ...mkTd(th), textAlign: 'right', color: hedgePayout > 0 ? th.green : th.textMuted }}>
+                <td
+                  className={`${mkTd()} text-right`}
+                  style={{ color: hedgePayout > 0 ? th.green : th.textMuted }}
+                >
                   {hedgePayout > 0 ? '+$' + fmtDollar(hedgePayout) : '$0'}
                 </td>
-                <td style={{ ...mkTd(th), textAlign: 'right', color: th.red, fontSize: 11 }}>
+                <td className={`${mkTd()} text-right text-danger text-[11px]`}>
                   {fmtDollar(s.hedgeCost)}
                 </td>
-                <td style={{
-                  ...mkTd(th), textAlign: 'right', fontWeight: 700, fontSize: 13,
-                  color: s.netPnL >= 0 ? th.green : th.red,
-                }}>
+                <td
+                  className={`${mkTd()} text-right font-bold text-[13px]`}
+                  style={{ color: s.netPnL >= 0 ? th.green : th.red }}
+                >
                   {s.netPnL >= 0 ? '+' : ''}${fmtDollar(s.netPnL)}
                 </td>
               </tr>

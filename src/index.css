@@ -1,1 +1,172 @@
 @import "tailwindcss";
+
+/* Class-based dark mode (instead of prefers-color-scheme) */
+@variant dark (&:is(.dark *));
+
+/* ============================================================
+   DESIGN TOKENS
+   ============================================================ */
+@theme {
+  /* Backgrounds */
+  --color-page: var(--th-bg);
+  --color-surface: var(--th-surface);
+  --color-surface-alt: var(--th-surface-alt);
+  --color-input: var(--th-input-bg);
+  --color-table-alt: var(--th-table-row-alt);
+  --color-table-header: var(--th-table-header);
+  --color-accent-bg: var(--th-accent-bg);
+
+  /* Text & semantic colors */
+  --color-primary: var(--th-text);
+  --color-secondary: var(--th-text-secondary);
+  --color-tertiary: var(--th-text-tertiary);
+  --color-muted: var(--th-text-muted);
+  --color-accent: var(--th-accent);
+  --color-success: var(--th-green);
+  --color-danger: var(--th-red);
+  --color-caution: #E8A317;
+
+  /* Borders */
+  --color-edge: var(--th-border);
+  --color-edge-strong: var(--th-border-strong);
+  --color-edge-heavy: var(--th-border-heavy);
+
+  /* Tooltip */
+  --color-tooltip-bg: var(--th-tooltip-bg);
+  --color-tooltip-text: var(--th-tooltip-text);
+  --color-tooltip-code-bg: var(--th-tooltip-code-bg);
+  --color-tooltip-code-text: var(--th-tooltip-code-text);
+
+  /* Chip */
+  --color-chip-bg: var(--th-chip-bg);
+  --color-chip-active-bg: var(--th-chip-active-bg);
+  --color-chip-border: var(--th-chip-border);
+  --color-chip-active-border: var(--th-chip-active-border);
+  --color-chip-text: var(--th-chip-text);
+  --color-chip-active-text: var(--th-chip-active-text);
+
+  /* Fonts */
+  --font-serif: 'Source Serif 4', 'Charter', Georgia, serif;
+  --font-mono: 'DM Mono', monospace;
+  --font-sans: 'Outfit', sans-serif;
+}
+
+/* ============================================================
+   LIGHT THEME (default)
+   ============================================================ */
+:root {
+  --th-bg: #F4F1EB;
+  --th-surface: #FFFFFF;
+  --th-surface-alt: #EDEAE3;
+  --th-input-bg: #FAF9F6;
+  --th-border: #DDD8CE;
+  --th-border-strong: #C8C3B8;
+  --th-border-heavy: #2C2A25;
+  --th-text: #1C1A15;
+  --th-text-secondary: #4A4740;
+  --th-text-tertiary: #5C5950;
+  --th-text-muted: #7A756B;
+  --th-text-placeholder: #9B9689;
+  --th-accent: #1D4ED8;
+  --th-accent-bg: #EFF6FF;
+  --th-green: #15803D;
+  --th-red: #B91C1C;
+  --th-badge-color: #15803D;
+  --th-tooltip-bg: #1C1A15;
+  --th-tooltip-text: #F4F1EB;
+  --th-tooltip-code-bg: #f0f0f0;
+  --th-tooltip-code-text: #1C1A15;
+  --th-focus-ring: #2563EB;
+  --th-table-row-alt: #FAF9F6;
+  --th-table-header: #F4F1EB;
+  --th-chip-bg: #FFFFFF;
+  --th-chip-active-bg: #EFF6FF;
+  --th-chip-border: #C8C3B8;
+  --th-chip-active-border: #1D4ED8;
+  --th-chip-text: #4A4740;
+  --th-chip-active-text: #1D4ED8;
+  --th-chevron-color: #5C5950;
+  --th-selection-bg: #BFDBFE;
+  --th-selection-text: #1E3A5F;
+  color-scheme: light;
+}
+
+/* ============================================================
+   DARK THEME
+   ============================================================ */
+.dark {
+  --th-bg: #121212;
+  --th-surface: #1E1E1E;
+  --th-surface-alt: #2A2A2A;
+  --th-input-bg: #252525;
+  --th-border: #333333;
+  --th-border-strong: #444444;
+  --th-border-heavy: #E0DDD6;
+  --th-text: #ECECEC;
+  --th-text-secondary: #C0C0C0;
+  --th-text-tertiary: #A0A0A0;
+  --th-text-muted: #808080;
+  --th-text-placeholder: #606060;
+  --th-accent: #6B9CFF;
+  --th-accent-bg: #1A2744;
+  --th-green: #4ADE80;
+  --th-red: #F87171;
+  --th-badge-color: #4ADE80;
+  --th-tooltip-bg: #ECECEC;
+  --th-tooltip-text: #1E1E1E;
+  --th-tooltip-code-bg: #333333;
+  --th-tooltip-code-text: #e0e0e0;
+  --th-focus-ring: #6B9CFF;
+  --th-table-row-alt: #252525;
+  --th-table-header: #2A2A2A;
+  --th-chip-bg: #252525;
+  --th-chip-active-bg: #1A2744;
+  --th-chip-border: #444444;
+  --th-chip-active-border: #6B9CFF;
+  --th-chip-text: #C0C0C0;
+  --th-chip-active-text: #6B9CFF;
+  --th-chevron-color: #A0A0A0;
+  --th-selection-bg: #2A3E66;
+  --th-selection-text: #BFDBFE;
+  color-scheme: dark;
+}
+
+/* ============================================================
+   GLOBAL STYLES
+   ============================================================ */
+input:focus,
+select:focus,
+button:focus-visible {
+  outline: 3px solid var(--th-focus-ring);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
+::selection {
+  background: var(--th-selection-bg);
+  color: var(--th-selection-text);
+}
+
+input::placeholder {
+  color: var(--th-text-placeholder);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

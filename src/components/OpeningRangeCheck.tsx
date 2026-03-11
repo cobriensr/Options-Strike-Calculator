@@ -1,7 +1,6 @@
 import { useState } from 'react';
-import type { CSSProperties } from 'react';
 import type { Theme } from '../themes';
-import { tinyLblStyle } from './ui';
+import { tinyLbl } from './ui';
 import { estimateRange, getDowMultiplier } from '../data/vixRangeStats';
 
 interface Props {
@@ -62,6 +61,8 @@ function parseDow(selectedDate?: string): number | null {
   return jsDay - 1;
 }
 
+const inputCls = "bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150";
+
 /**
  * Opening Range Check.
  * Compares the first ~30 minutes of trading range against the expected
@@ -119,31 +120,20 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
     : analysis?.signal === 'red' ? th.red
     : th.textMuted;
 
-  const tinyLbl = tinyLblStyle(th);
-  const inputStyle: CSSProperties = {
-    backgroundColor: th.inputBg, border: '1.5px solid ' + th.borderStrong, borderRadius: 8,
-    color: th.text, padding: '11px 14px', fontSize: 16, fontFamily: "'DM Mono', monospace",
-    outline: 'none', width: '100%', boxSizing: 'border-box' as const, transition: 'border-color 0.15s',
-  };
-
   return (
     <div>
-      <div style={{
-        fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700,
-        textTransform: 'uppercase' as const, letterSpacing: '0.14em',
-        color: th.accent, marginBottom: 10,
-      }}>
+      <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-accent mb-2.5">
         Opening Range Check
       </div>
 
-      <p style={{ fontSize: 12, color: th.textSecondary, margin: '0 0 12px', fontFamily: "'Outfit', sans-serif", lineHeight: 1.5 }}>
+      <p className="text-xs text-secondary m-0 mb-3 font-sans leading-normal">
         Enter the SPX high and low from the first ~30 minutes (9:30{'\u2013'}10:00 ET) to see how much of the expected daily range has been consumed.
       </p>
 
       {/* Input row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 mb-3.5">
         <div>
-          <label htmlFor="open-range-high" style={tinyLbl}>
+          <label htmlFor="open-range-high" className={tinyLbl}>
             30-min High
           </label>
           <input
@@ -153,11 +143,11 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
             placeholder={spot ? (spot + 15).toFixed(0) : 'e.g. 6760'}
             value={openHigh}
             onChange={(e) => setOpenHigh(e.target.value)}
-            style={inputStyle}
+            className={inputCls}
           />
         </div>
         <div>
-          <label htmlFor="open-range-low" style={tinyLbl}>
+          <label htmlFor="open-range-low" className={tinyLbl}>
             30-min Low
           </label>
           <input
@@ -167,7 +157,7 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
             placeholder={spot ? (spot - 15).toFixed(0) : 'e.g. 6720'}
             value={openLow}
             onChange={(e) => setOpenLow(e.target.value)}
-            style={inputStyle}
+            className={inputCls}
           />
         </div>
       </div>
@@ -176,59 +166,42 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
       {analysis && (
         <div>
           {/* Signal banner */}
-          <div style={{
-            padding: '12px 16px', borderRadius: 10, marginBottom: 12,
-            backgroundColor: signalColor + '10',
-            border: '1.5px solid ' + signalColor + '30',
-            display: 'flex', alignItems: 'center', gap: 12,
-          }}>
-            <div style={{
-              width: 12, height: 12, borderRadius: '50%',
-              backgroundColor: signalColor,
-              boxShadow: '0 0 8px ' + signalColor + '66',
-              flexShrink: 0,
-            }} />
+          <div
+            className="flex items-start sm:items-center gap-3 rounded-[10px] p-3 sm:p-4 mb-3"
+            style={{ backgroundColor: signalColor + '10', border: '1.5px solid ' + signalColor + '30' }}
+          >
+            <div
+              className="w-3 h-3 rounded-full shrink-0"
+              style={{ backgroundColor: signalColor, boxShadow: '0 0 8px ' + signalColor + '66' }}
+            />
             <div>
-              <span style={{
-                fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const,
-                letterSpacing: '0.1em', color: signalColor,
-                fontFamily: "'Outfit', sans-serif",
-              }}>
+              <span
+                className="text-[10px] font-bold uppercase tracking-widest font-sans"
+                style={{ color: signalColor }}
+              >
                 {analysis.label}
               </span>
-              <span style={{
-                fontSize: 11, color: th.textSecondary, marginLeft: 10,
-                fontFamily: "'Outfit', sans-serif",
-              }}>
+              <span className="text-[11px] text-secondary ml-2.5 font-sans">
                 {analysis.advice}
               </span>
             </div>
           </div>
 
           {/* Stats grid */}
-          <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
-            padding: '14px 16px', borderRadius: 10,
-            backgroundColor: th.surfaceAlt,
-            border: '1px solid ' + th.border,
-            marginBottom: 12,
-          }}>
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3 py-3.5 px-4 rounded-[10px] bg-surface-alt border border-edge mb-3">
             <StatCell
-              th={th}
               label="Opening Range"
               value={analysis.openingRangePct.toFixed(2) + '%'}
               sub={analysis.openingRangePts.toFixed(0) + ' pts'}
               color={signalColor}
             />
             <StatCell
-              th={th}
               label="Expected Median"
               value={analysis.expectedMedHL.toFixed(2) + '%'}
               sub="50th pctile H-L"
               color={th.accent}
             />
             <StatCell
-              th={th}
               label="Expected 90th"
               value={analysis.expectedP90HL.toFixed(2) + '%'}
               sub="90th pctile H-L"
@@ -237,104 +210,78 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
           </div>
 
           {/* Range consumption bar */}
-          <div style={{
-            padding: '14px 16px', borderRadius: 10,
-            backgroundColor: th.surface,
-            border: '1px solid ' + th.border,
-          }}>
-            <div style={{
-              fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const,
-              letterSpacing: '0.06em', color: th.textTertiary,
-              fontFamily: "'Outfit', sans-serif", marginBottom: 8,
-            }}>
+          <div className="py-3.5 px-4 rounded-[10px] bg-surface border border-edge">
+            <div className="text-[10px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans mb-2">
               Range consumed vs. expected daily range
             </div>
 
             {/* Median bar */}
-            <div style={{ marginBottom: 10 }}>
-              <div style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                fontSize: 11, fontFamily: "'DM Mono', monospace", marginBottom: 4,
-              }}>
-                <span style={{ color: th.textSecondary }}>vs. Median H-L</span>
-                <span style={{ fontWeight: 700, color: signalColor }}>
+            <div className="mb-2.5">
+              <div className="flex justify-between items-center text-[11px] font-mono mb-1">
+                <span className="text-secondary">vs. Median H-L</span>
+                <span className="font-bold" style={{ color: signalColor }}>
                   {(analysis.pctOfMedianUsed * 100).toFixed(0)}% consumed
                 </span>
               </div>
-              <div style={{
-                height: 10, borderRadius: 5, backgroundColor: th.surfaceAlt,
-                position: 'relative', overflow: 'hidden',
-              }}>
-                <div style={{
-                  position: 'absolute', top: 0, left: 0,
-                  height: '100%',
-                  width: Math.min(analysis.pctOfMedianUsed, 1.5) / 1.5 * 100 + '%',
-                  backgroundColor: signalColor,
-                  borderRadius: 5,
-                  transition: 'width 0.3s',
-                }} />
+              <div className="h-2.5 rounded-[5px] bg-surface-alt relative overflow-hidden">
+                <div
+                  className="absolute top-0 left-0 h-full rounded-[5px] transition-[width] duration-300"
+                  style={{
+                    width: Math.min(analysis.pctOfMedianUsed, 1.5) / 1.5 * 100 + '%',
+                    backgroundColor: signalColor,
+                  }}
+                />
                 {/* 100% marker */}
-                <div style={{
-                  position: 'absolute', top: -2, left: (1 / 1.5 * 100) + '%',
-                  width: 2, height: 14,
-                  backgroundColor: th.text + '40',
-                }} />
+                <div
+                  className="absolute -top-0.5 w-0.5 h-3.5"
+                  style={{
+                    left: (1 / 1.5 * 100) + '%',
+                    backgroundColor: th.text + '40',
+                  }}
+                />
               </div>
-              <div style={{
-                display: 'flex', justifyContent: 'space-between',
-                fontSize: 8, color: th.textMuted,
-                fontFamily: "'DM Mono', monospace", marginTop: 2,
-              }}>
+              <div className="flex justify-between text-[8px] text-muted font-mono mt-0.5">
                 <span>0%</span>
                 <span>50%</span>
-                <span style={{ fontWeight: 600 }}>100%</span>
+                <span className="font-semibold">100%</span>
                 <span>150%</span>
               </div>
             </div>
 
             {/* P90 bar */}
             <div>
-              <div style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                fontSize: 11, fontFamily: "'DM Mono', monospace", marginBottom: 4,
-              }}>
-                <span style={{ color: th.textSecondary }}>vs. 90th Pctile H-L</span>
-                <span style={{ fontWeight: 700, color: th.textSecondary }}>
+              <div className="flex justify-between items-center text-[11px] font-mono mb-1">
+                <span className="text-secondary">vs. 90th Pctile H-L</span>
+                <span className="font-bold text-secondary">
                   {(analysis.pctOfP90Used * 100).toFixed(0)}% consumed
                 </span>
               </div>
-              <div style={{
-                height: 10, borderRadius: 5, backgroundColor: th.surfaceAlt,
-                position: 'relative', overflow: 'hidden',
-              }}>
-                <div style={{
-                  position: 'absolute', top: 0, left: 0,
-                  height: '100%',
-                  width: Math.min(analysis.pctOfP90Used, 1.5) / 1.5 * 100 + '%',
-                  backgroundColor: th.accent + '80',
-                  borderRadius: 5,
-                  transition: 'width 0.3s',
-                }} />
-                <div style={{
-                  position: 'absolute', top: -2, left: (1 / 1.5 * 100) + '%',
-                  width: 2, height: 14,
-                  backgroundColor: th.text + '40',
-                }} />
+              <div className="h-2.5 rounded-[5px] bg-surface-alt relative overflow-hidden">
+                <div
+                  className="absolute top-0 left-0 h-full rounded-[5px] transition-[width] duration-300"
+                  style={{
+                    width: Math.min(analysis.pctOfP90Used, 1.5) / 1.5 * 100 + '%',
+                    backgroundColor: th.accent + '80',
+                  }}
+                />
+                <div
+                  className="absolute -top-0.5 w-0.5 h-3.5"
+                  style={{
+                    left: (1 / 1.5 * 100) + '%',
+                    backgroundColor: th.text + '40',
+                  }}
+                />
               </div>
-              <div style={{
-                display: 'flex', justifyContent: 'space-between',
-                fontSize: 8, color: th.textMuted,
-                fontFamily: "'DM Mono', monospace", marginTop: 2,
-              }}>
+              <div className="flex justify-between text-[8px] text-muted font-mono mt-0.5">
                 <span>0%</span>
                 <span>50%</span>
-                <span style={{ fontWeight: 600 }}>100%</span>
+                <span className="font-semibold">100%</span>
                 <span>150%</span>
               </div>
             </div>
           </div>
 
-          <p style={{ fontSize: 11, color: th.textMuted, margin: '8px 0 0', fontStyle: 'italic' }}>
+          <p className="text-[11px] text-muted mt-2 italic">
             {analysis.pctOfMedianUsed < 0.40
               ? 'The first 30 minutes consumed less than 40% of the expected daily range. Historically this signals a quieter day \u2014 good for adding IC positions.'
               : analysis.pctOfMedianUsed < 0.65
@@ -346,17 +293,17 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
 
       {/* Empty states */}
       {!hasVix && (
-        <p style={{ fontSize: 12, color: th.textMuted, margin: '4px 0 0', fontStyle: 'italic' }}>
+        <p className="text-xs text-muted mt-1 italic">
           Enter a VIX value above to enable opening range analysis.
         </p>
       )}
       {hasVix && !hasRange && !invertedRange && (
-        <p style={{ fontSize: 12, color: th.textMuted, margin: '4px 0 0', fontStyle: 'italic' }}>
+        <p className="text-xs text-muted mt-1 italic">
           Enter the SPX high and low from the first 30 minutes of trading to see the analysis.
         </p>
       )}
       {invertedRange && (
-        <p style={{ fontSize: 12, color: th.red, margin: '4px 0 0' }}>
+        <p className="text-xs text-danger mt-1">
           High must be greater than low.
         </p>
       )}
@@ -368,30 +315,14 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
 // SUB-COMPONENTS
 // ============================================================
 
-function StatCell({ th, label, value, sub, color }: {
-  th: Theme; label: string; value: string; sub: string; color: string;
+function StatCell({ label, value, sub, color }: {
+  label: string; value: string; sub: string; color: string;
 }) {
   return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{
-        fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const,
-        letterSpacing: '0.06em', color: th.textTertiary,
-        fontFamily: "'Outfit', sans-serif",
-      }}>
-        {label}
-      </div>
-      <div style={{
-        fontSize: 17, fontWeight: 700, color,
-        fontFamily: "'DM Mono', monospace", marginTop: 2,
-      }}>
-        {value}
-      </div>
-      <div style={{
-        fontSize: 10, color: th.textMuted,
-        fontFamily: "'DM Mono', monospace",
-      }}>
-        {sub}
-      </div>
+    <div className="text-center">
+      <div className="text-[9px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans">{label}</div>
+      <div className="text-[17px] font-bold font-mono mt-0.5" style={{ color }}>{value}</div>
+      <div className="text-[10px] text-muted font-mono">{sub}</div>
     </div>
   );
 }

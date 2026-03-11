@@ -27,41 +27,39 @@ export default function IronCondorSection({ th, results, wingWidth, contracts, e
   const hedgeIc = icRows[hedgeDeltaIdx] ?? icRows[0];
 
   return (
-    <div style={{ marginTop: 18 }}>
-      <div style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.14em', color: th.accent, marginBottom: 10 }}>
+    <div className="mt-4.5">
+      <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-accent mb-2.5">
         Iron Condor ({wingWidth}-pt wings)
       </div>
 
       {/* Legs Table */}
-      <LegsTable th={th} icRows={icRows} />
+      <LegsTable icRows={icRows} />
 
       {/* P&L Profile Table */}
       <PnLProfileTable th={th} icRows={icRows} contracts={contracts} effectiveRatio={effectiveRatio} />
 
-      <p style={{ fontSize: 11, color: th.textMuted, marginTop: 8, fontStyle: 'italic' }}>
+      <p className="text-[11px] text-muted mt-2 italic">
         All dollar values: SPX $100 multiplier {'\u00D7'} {contracts} contract{contracts === 1 ? '' : 's'}. Put spread = sell short put / buy long put. Call spread = sell short call / buy long call. Iron Condor = both spreads combined. Individual spread PoP is single-tail (higher than IC). IC PoP = P(price between both BEs), not the product of spread PoPs. Premiums theoretical (r=0).
       </p>
 
       {/* Hedge Toggle */}
-      <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div className="mt-3.5 flex items-center gap-3">
         <button
           onClick={() => setShowHedge(!showHedge)}
           aria-pressed={showHedge}
-          style={{
-            padding: '8px 18px', borderRadius: 8,
-            border: '1.5px solid ' + (showHedge ? th.accent : th.borderStrong),
-            backgroundColor: showHedge ? th.accentBg : th.chipBg,
-            color: showHedge ? th.accent : th.textSecondary,
-            cursor: 'pointer', fontSize: 12, fontWeight: 600,
-            fontFamily: "'Outfit', sans-serif",
-          }}
+          className={
+            'py-2 px-4.5 rounded-lg border-[1.5px] cursor-pointer text-xs font-semibold font-sans ' +
+            (showHedge
+              ? 'border-accent bg-accent-bg text-accent'
+              : 'border-edge-strong bg-chip-bg text-secondary')
+          }
         >
           {showHedge ? '\u2713' : '\u26A1'} Hedge Calculator
         </button>
 
         {showHedge && icRows.length > 1 && (
-          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: th.textTertiary, fontFamily: "'Outfit', sans-serif" }}>
+          <div className="flex gap-1 items-center">
+            <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans">
               IC Delta
             </span>
             {icRows.map((ic, idx) => (
@@ -70,13 +68,12 @@ export default function IronCondorSection({ th, results, wingWidth, contracts, e
                 onClick={() => setHedgeDeltaIdx(idx)}
                 role="radio"
                 aria-checked={hedgeDeltaIdx === idx}
-                style={{
-                  padding: '3px 10px', borderRadius: 99, fontSize: 12, fontWeight: 500, cursor: 'pointer',
-                  border: '1.5px solid ' + (hedgeDeltaIdx === idx ? th.chipActiveBorder : th.chipBorder),
-                  backgroundColor: hedgeDeltaIdx === idx ? th.chipActiveBg : th.chipBg,
-                  color: hedgeDeltaIdx === idx ? th.chipActiveText : th.chipText,
-                  fontFamily: "'DM Mono', monospace", transition: 'all 0.1s',
-                }}
+                className={
+                  'px-2.5 py-0.5 rounded-full text-xs font-medium cursor-pointer border-[1.5px] font-mono transition-all duration-100 ' +
+                  (hedgeDeltaIdx === idx
+                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                    : 'border-chip-border bg-chip-bg text-chip-text')
+                }
               >
                 {ic.delta}{'\u0394'}
               </button>
@@ -100,14 +97,7 @@ export default function IronCondorSection({ th, results, wingWidth, contracts, e
       <button
         onClick={() => exportPnLComparison({ results, contracts, effectiveRatio, skewPct })}
         aria-label="Export P&L comparison to Excel"
-        style={{
-          marginTop: 12, width: '100%', padding: '10px 16px', borderRadius: 8,
-          border: '1.5px solid ' + th.accent,
-          backgroundColor: th.accentBg, color: th.accent,
-          cursor: 'pointer', fontSize: 13, fontWeight: 600,
-          fontFamily: "'Outfit', sans-serif",
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-        }}
+        className="mt-3 w-full py-2.5 px-4 rounded-lg border-[1.5px] border-accent bg-accent-bg text-accent cursor-pointer text-[13px] font-semibold font-sans flex items-center justify-center gap-2"
       >
         {'\u2913'} Export All Wing Widths to Excel
       </button>
@@ -119,35 +109,35 @@ export default function IronCondorSection({ th, results, wingWidth, contracts, e
 // SUB-COMPONENTS
 // ============================================================
 
-function LegsTable({ th, icRows }: { th: Theme; icRows: IronCondorLegs[] }) {
+function LegsTable({ icRows }: { th?: unknown; icRows: IronCondorLegs[] }) {
   return (
-    <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid ' + th.border }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: "'DM Mono', monospace", fontSize: 13 }} role="table" aria-label="Iron condor legs by delta">
+    <div className="overflow-x-auto rounded-[10px] border border-edge">
+      <table className="w-full border-collapse font-mono text-[13px]" role="table" aria-label="Iron condor legs by delta">
         <thead>
-          <tr style={{ backgroundColor: th.tableHeader }}>
-            <th style={mkTh(th, 'center')}>Delta</th>
-            <th style={mkTh(th, 'left', th.red)}>Long Put</th>
-            <th style={mkTh(th, 'left', th.red)}>SPY</th>
-            <th style={mkTh(th, 'left', th.red)}>Short Put</th>
-            <th style={mkTh(th, 'left', th.red)}>SPY</th>
-            <th style={mkTh(th, 'left', th.green)}>Short Call</th>
-            <th style={mkTh(th, 'left', th.green)}>SPY</th>
-            <th style={mkTh(th, 'left', th.green)}>Long Call</th>
-            <th style={mkTh(th, 'left', th.green)}>SPY</th>
+          <tr className="bg-table-header">
+            <th className={mkTh('center')}>Delta</th>
+            <th className={mkTh('left', 'text-danger')}>Long Put</th>
+            <th className={mkTh('left', 'text-danger')}>SPY</th>
+            <th className={mkTh('left', 'text-danger')}>Short Put</th>
+            <th className={mkTh('left', 'text-danger')}>SPY</th>
+            <th className={mkTh('left', 'text-success')}>Short Call</th>
+            <th className={mkTh('left', 'text-success')}>SPY</th>
+            <th className={mkTh('left', 'text-success')}>Long Call</th>
+            <th className={mkTh('left', 'text-success')}>SPY</th>
           </tr>
         </thead>
         <tbody>
           {icRows.map((ic, i) => (
-            <tr key={ic.delta} style={{ backgroundColor: i % 2 === 1 ? th.tableRowAlt : th.surface }}>
-              <td style={{ ...mkTd(th), textAlign: 'center', fontWeight: 700, color: th.accent }}>{ic.delta}{'\u0394'}</td>
-              <td style={{ ...mkTd(th), color: th.red }}>{ic.longPut}</td>
-              <td style={{ ...mkTd(th), color: th.red, opacity: 0.65 }}>{ic.longPutSpy}</td>
-              <td style={{ ...mkTd(th), color: th.red, fontWeight: 600 }}>{ic.shortPut}</td>
-              <td style={{ ...mkTd(th), color: th.red, fontWeight: 600, opacity: 0.65 }}>{ic.shortPutSpy}</td>
-              <td style={{ ...mkTd(th), color: th.green, fontWeight: 600 }}>{ic.shortCall}</td>
-              <td style={{ ...mkTd(th), color: th.green, fontWeight: 600, opacity: 0.65 }}>{ic.shortCallSpy}</td>
-              <td style={{ ...mkTd(th), color: th.green }}>{ic.longCall}</td>
-              <td style={{ ...mkTd(th), color: th.green, opacity: 0.65 }}>{ic.longCallSpy}</td>
+            <tr key={ic.delta} className={i % 2 === 1 ? 'bg-table-alt' : 'bg-surface'}>
+              <td className={`${mkTd()} text-center font-bold text-accent`}>{ic.delta}{'\u0394'}</td>
+              <td className={`${mkTd()} text-danger`}>{ic.longPut}</td>
+              <td className={`${mkTd()} text-danger opacity-65`}>{ic.longPutSpy}</td>
+              <td className={`${mkTd()} text-danger font-semibold`}>{ic.shortPut}</td>
+              <td className={`${mkTd()} text-danger font-semibold opacity-65`}>{ic.shortPutSpy}</td>
+              <td className={`${mkTd()} text-success font-semibold`}>{ic.shortCall}</td>
+              <td className={`${mkTd()} text-success font-semibold opacity-65`}>{ic.shortCallSpy}</td>
+              <td className={`${mkTd()} text-success`}>{ic.longCall}</td>
+              <td className={`${mkTd()} text-success opacity-65`}>{ic.longCallSpy}</td>
             </tr>
           ))}
         </tbody>
@@ -161,29 +151,29 @@ function PnLProfileTable({ th, icRows, contracts, effectiveRatio }: {
 }) {
   return (
     <>
-      <div style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.14em', color: th.accent, marginTop: 16, marginBottom: 10 }}>
+      <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-accent mt-4 mb-2.5">
         P&L Profile {'\u2014'} {contracts} contract{contracts === 1 ? '' : 's'} (theoretical)
       </div>
-      <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid ' + th.border }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: "'DM Mono', monospace", fontSize: 13 }} role="table" aria-label="Iron condor P&L by delta">
+      <div className="overflow-x-auto rounded-[10px] border border-edge">
+        <table className="w-full border-collapse font-mono text-[13px]" role="table" aria-label="Iron condor P&L by delta">
           <thead>
-            <tr style={{ backgroundColor: th.tableHeader }}>
-              <th style={mkTh(th, 'center')}>Delta</th>
-              <th style={mkTh(th, 'left')}>Side</th>
-              <th style={mkTh(th, 'right')}>Credit</th>
-              <th style={mkTh(th, 'right')}>Max Loss</th>
-              <th style={mkTh(th, 'right')}>Buying Pwr</th>
-              <th style={mkTh(th, 'right')}>RoR</th>
-              <th style={mkTh(th, 'right')}>PoP</th>
-              <th style={mkTh(th, 'right')}>SPX BE</th>
-              <th style={mkTh(th, 'right')}>SPY BE</th>
+            <tr className="bg-table-header">
+              <th className={mkTh('center')}>Delta</th>
+              <th className={mkTh('left')}>Side</th>
+              <th className={mkTh('right')}>Credit</th>
+              <th className={mkTh('right')}>Max Loss</th>
+              <th className={mkTh('right')}>Buying Pwr</th>
+              <th className={mkTh('right')}>RoR</th>
+              <th className={mkTh('right')}>PoP</th>
+              <th className={mkTh('right')}>SPX BE</th>
+              <th className={mkTh('right')}>SPY BE</th>
             </tr>
           </thead>
           <tbody>
             {icRows.map((ic, i) => {
               const mult = 100 * contracts;
-              const groupBg = i % 2 === 1 ? th.tableRowAlt : th.surface;
-              const borderStyle = '2px solid ' + th.border;
+              const groupBg = i % 2 === 1 ? 'bg-table-alt' : 'bg-surface';
+              const borderStyle = '2px solid var(--th-border)';
 
               const rows = [
                 {
@@ -228,68 +218,71 @@ function PnLProfileTable({ th, icRows, contracts, effectiveRatio }: {
               ];
 
               return rows.map((r) => (
-                <tr key={r.key} style={{
-                  backgroundColor: groupBg,
-                  borderBottom: r.isLast ? borderStyle : undefined,
-                }}>
+                <tr
+                  key={r.key}
+                  className={groupBg}
+                  style={{ borderBottom: r.isLast ? borderStyle : undefined }}
+                >
                   {r.isFirst && (
-                    <td rowSpan={3} style={{ ...mkTd(th), textAlign: 'center', fontWeight: 700, color: th.accent, verticalAlign: 'middle', borderBottom: borderStyle }}>{ic.delta}{'\u0394'}</td>
+                    <td
+                      rowSpan={3}
+                      className={`${mkTd()} text-center font-bold text-accent align-middle`}
+                      style={{ borderBottom: borderStyle }}
+                    >
+                      {ic.delta}{'\u0394'}
+                    </td>
                   )}
-                  <td style={{
-                    ...mkTd(th), color: r.sideColor,
-                    fontWeight: r.isLast ? 700 : 500,
-                    fontSize: r.isLast ? 13 : 12,
-                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
-                  }}>
+                  <td
+                    className={`${mkTd()} ${r.isLast ? 'font-bold text-[13px]' : 'font-medium text-xs'}`}
+                    style={{
+                      color: r.sideColor,
+                      borderBottom: r.isLast ? borderStyle : '1px solid var(--th-border)',
+                    }}
+                  >
                     {r.side}
                   </td>
-                  <td style={{
-                    ...mkTd(th), textAlign: 'right', color: th.green,
-                    fontWeight: r.isLast ? 700 : 500,
-                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
-                  }}>
+                  <td
+                    className={`${mkTd()} text-right text-success ${r.isLast ? 'font-bold' : 'font-medium'}`}
+                    style={{ borderBottom: r.isLast ? borderStyle : '1px solid var(--th-border)' }}
+                  >
                     {'$' + fmtDollar(r.credit * mult)}
-                    <div style={{ fontSize: 10, color: th.textMuted, fontWeight: 400 }}>{r.credit.toFixed(2)} pts</div>
+                    <div className="text-[10px] text-muted font-normal">{r.credit.toFixed(2)} pts</div>
                   </td>
-                  <td style={{
-                    ...mkTd(th), textAlign: 'right', color: th.red,
-                    fontWeight: r.isLast ? 700 : 500,
-                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
-                  }}>
+                  <td
+                    className={`${mkTd()} text-right text-danger ${r.isLast ? 'font-bold' : 'font-medium'}`}
+                    style={{ borderBottom: r.isLast ? borderStyle : '1px solid var(--th-border)' }}
+                  >
                     {'$' + fmtDollar(r.maxLoss * mult)}
-                    <div style={{ fontSize: 10, color: th.textMuted, fontWeight: 400 }}>{r.maxLoss.toFixed(2)} pts</div>
+                    <div className="text-[10px] text-muted font-normal">{r.maxLoss.toFixed(2)} pts</div>
                   </td>
-                  <td style={{
-                    ...mkTd(th), textAlign: 'right', color: th.text,
-                    fontWeight: r.isLast ? 700 : 500,
-                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
-                  }}>
+                  <td
+                    className={`${mkTd()} text-right text-primary ${r.isLast ? 'font-bold' : 'font-medium'}`}
+                    style={{ borderBottom: r.isLast ? borderStyle : '1px solid var(--th-border)' }}
+                  >
                     {'$' + fmtDollar(r.maxLoss * mult)}
                   </td>
-                  <td style={{
-                    ...mkTd(th), textAlign: 'right', color: th.accent,
-                    fontWeight: r.isLast ? 700 : 600,
-                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
-                  }}>
+                  <td
+                    className={`${mkTd()} text-right text-accent ${r.isLast ? 'font-bold' : 'font-semibold'}`}
+                    style={{ borderBottom: r.isLast ? borderStyle : '1px solid var(--th-border)' }}
+                  >
                     {(r.ror * 100).toFixed(1)}%
                   </td>
-                  <td style={{
-                    ...mkTd(th), textAlign: 'right', color: th.green,
-                    fontWeight: r.isLast ? 700 : 600,
-                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
-                  }}>
+                  <td
+                    className={`${mkTd()} text-right text-success ${r.isLast ? 'font-bold' : 'font-semibold'}`}
+                    style={{ borderBottom: r.isLast ? borderStyle : '1px solid var(--th-border)' }}
+                  >
                     {(r.pop * 100).toFixed(1)}%
                   </td>
-                  <td style={{
-                    ...mkTd(th), textAlign: 'right', color: th.textSecondary,
-                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
-                  }}>
+                  <td
+                    className={`${mkTd()} text-right text-secondary`}
+                    style={{ borderBottom: r.isLast ? borderStyle : '1px solid var(--th-border)' }}
+                  >
                     {r.be}
                   </td>
-                  <td style={{
-                    ...mkTd(th), textAlign: 'right', color: th.textSecondary, opacity: 0.75,
-                    borderBottom: r.isLast ? borderStyle : '1px solid ' + th.border,
-                  }}>
+                  <td
+                    className={`${mkTd()} text-right text-secondary opacity-75`}
+                    style={{ borderBottom: r.isLast ? borderStyle : '1px solid var(--th-border)' }}
+                  >
                     {r.spyBe}
                   </td>
                 </tr>

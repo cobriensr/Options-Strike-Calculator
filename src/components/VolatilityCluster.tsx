@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
-import type { CSSProperties } from 'react';
 import type { Theme } from '../themes';
-import { tinyLblStyle } from './ui';
+import { tinyLbl } from './ui';
 import { getClusterMultiplier, CLUSTER_THRESHOLDS } from '../data/vixRangeStats';
 
 interface Props {
@@ -21,6 +20,9 @@ interface Props {
  * - After a p90 range day at VIX 25+, today's median range is 87% wider
  * - After a calm day at VIX <18, today's median range is 9% narrower
  */
+
+const inputCls = "bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150";
+
 export default function VolatilityCluster({ th, vix, spot, onMultiplierChange }: Props) {
   const [yestHigh, setYestHigh] = useState('');
   const [yestLow, setYestLow] = useState('');
@@ -78,31 +80,20 @@ export default function VolatilityCluster({ th, vix, spot, onMultiplierChange }:
       : CLUSTER_THRESHOLDS.highVix
     : null;
 
-  const tinyLbl = tinyLblStyle(th);
-  const inputStyle: CSSProperties = {
-    backgroundColor: th.inputBg, border: '1.5px solid ' + th.borderStrong, borderRadius: 8,
-    color: th.text, padding: '11px 14px', fontSize: 16, fontFamily: "'DM Mono', monospace",
-    outline: 'none', width: '100%', boxSizing: 'border-box' as const, transition: 'border-color 0.15s',
-  };
-
   return (
     <div>
-      <div style={{
-        fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700,
-        textTransform: 'uppercase' as const, letterSpacing: '0.14em',
-        color: th.accent, marginBottom: 10,
-      }}>
+      <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-accent mb-2.5">
         Volatility Clustering
       </div>
 
-      <p style={{ fontSize: 12, color: th.textSecondary, margin: '0 0 12px', fontFamily: "'Outfit', sans-serif", lineHeight: 1.5 }}>
+      <p className="text-xs text-secondary m-0 mb-3 font-sans leading-normal">
         Enter yesterday{'\u2019'}s SPX high, low, and open to check if volatility is clustering. Big range days tend to follow big range days.
       </p>
 
       {/* Input row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3 mb-3.5">
         <div>
-          <label htmlFor="yest-open" style={tinyLbl}>Yest. Open</label>
+          <label htmlFor="yest-open" className={tinyLbl}>Yest. Open</label>
           <input
             id="yest-open"
             type="text"
@@ -110,11 +101,11 @@ export default function VolatilityCluster({ th, vix, spot, onMultiplierChange }:
             placeholder={spot ? spot.toFixed(0) : 'e.g. 6800'}
             value={yestOpen}
             onChange={(e) => setYestOpen(e.target.value)}
-            style={inputStyle}
+            className={inputCls}
           />
         </div>
         <div>
-          <label htmlFor="yest-high" style={tinyLbl}>Yest. High</label>
+          <label htmlFor="yest-high" className={tinyLbl}>Yest. High</label>
           <input
             id="yest-high"
             type="text"
@@ -122,11 +113,11 @@ export default function VolatilityCluster({ th, vix, spot, onMultiplierChange }:
             placeholder={spot ? (spot + 30).toFixed(0) : 'e.g. 6830'}
             value={yestHigh}
             onChange={(e) => setYestHigh(e.target.value)}
-            style={inputStyle}
+            className={inputCls}
           />
         </div>
         <div>
-          <label htmlFor="yest-low" style={tinyLbl}>Yest. Low</label>
+          <label htmlFor="yest-low" className={tinyLbl}>Yest. Low</label>
           <input
             id="yest-low"
             type="text"
@@ -134,7 +125,7 @@ export default function VolatilityCluster({ th, vix, spot, onMultiplierChange }:
             placeholder={spot ? (spot - 30).toFixed(0) : 'e.g. 6770'}
             value={yestLow}
             onChange={(e) => setYestLow(e.target.value)}
-            style={inputStyle}
+            className={inputCls}
           />
         </div>
       </div>
@@ -143,88 +134,62 @@ export default function VolatilityCluster({ th, vix, spot, onMultiplierChange }:
       {cluster && yestRangePct != null && (
         <div>
           {/* Signal banner */}
-          <div style={{
-            padding: '12px 16px', borderRadius: 10, marginBottom: 12,
-            backgroundColor: signalColor + '10',
-            border: '1.5px solid ' + signalColor + '30',
-            display: 'flex', alignItems: 'center', gap: 12,
-          }}>
-            <div style={{
-              width: 12, height: 12, borderRadius: '50%',
-              backgroundColor: signalColor,
-              boxShadow: '0 0 8px ' + signalColor + '66',
-              flexShrink: 0,
-            }} />
+          <div
+            className="flex items-start sm:items-center gap-3 rounded-[10px] p-3 sm:p-4 mb-3"
+            style={{ backgroundColor: signalColor + '10', border: '1.5px solid ' + signalColor + '30' }}
+          >
+            <div
+              className="w-3 h-3 rounded-full shrink-0"
+              style={{ backgroundColor: signalColor, boxShadow: '0 0 8px ' + signalColor + '66' }}
+            />
             <div>
-              <span style={{
-                fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const,
-                letterSpacing: '0.1em', color: signalColor,
-                fontFamily: "'Outfit', sans-serif",
-              }}>
+              <span
+                className="text-[10px] font-bold uppercase tracking-widest font-sans"
+                style={{ color: signalColor }}
+              >
                 {signalLabel}
               </span>
-              <span style={{
-                fontSize: 11, color: th.textSecondary, marginLeft: 10,
-                fontFamily: "'Outfit', sans-serif",
-              }}>
+              <span className="text-[11px] text-secondary ml-2.5 font-sans">
                 {signalAdvice}
               </span>
             </div>
           </div>
 
           {/* Stats grid */}
-          <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
-            padding: '14px 16px', borderRadius: 10,
-            backgroundColor: th.surfaceAlt,
-            border: '1px solid ' + th.border,
-            marginBottom: 12,
-          }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{
-                fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const,
-                letterSpacing: '0.06em', color: th.textTertiary,
-                fontFamily: "'Outfit', sans-serif",
-              }}>Yesterday{'\u2019'}s Range</div>
-              <div style={{
-                fontSize: 20, fontWeight: 700, color: signalColor,
-                fontFamily: "'DM Mono', monospace", marginTop: 2,
-              }}>
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3 py-3.5 px-4 rounded-[10px] bg-surface-alt border border-edge mb-3">
+            <div className="text-center">
+              <div className="text-[9px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans">Yesterday{'\u2019'}s Range</div>
+              <div
+                className="text-xl font-bold font-mono mt-0.5"
+                style={{ color: signalColor }}
+              >
                 {yestRangePct.toFixed(2)}%
               </div>
-              <div style={{ fontSize: 10, color: th.textMuted, fontFamily: "'DM Mono', monospace" }}>
+              <div className="text-[10px] text-muted font-mono">
                 {(highVal - lowVal).toFixed(0)} pts
               </div>
             </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{
-                fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const,
-                letterSpacing: '0.06em', color: th.textTertiary,
-                fontFamily: "'Outfit', sans-serif",
-              }}>Classification</div>
-              <div style={{
-                fontSize: 13, fontWeight: 700, color: signalColor,
-                fontFamily: "'DM Mono', monospace", marginTop: 6,
-              }}>
+            <div className="text-center">
+              <div className="text-[9px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans">Classification</div>
+              <div
+                className="text-[13px] font-bold font-mono mt-1.5"
+                style={{ color: signalColor }}
+              >
                 {cluster.yesterdayPctile}
               </div>
-              <div style={{ fontSize: 10, color: th.textMuted, fontFamily: "'DM Mono', monospace" }}>
+              <div className="text-[10px] text-muted font-mono">
                 {cluster.regime}
               </div>
             </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{
-                fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const,
-                letterSpacing: '0.06em', color: th.textTertiary,
-                fontFamily: "'Outfit', sans-serif",
-              }}>Today{'\u2019'}s Multiplier</div>
-              <div style={{
-                fontSize: 20, fontWeight: 800, color: signalColor,
-                fontFamily: "'DM Mono', monospace", marginTop: 2,
-              }}>
+            <div className="text-center">
+              <div className="text-[9px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans">Today{'\u2019'}s Multiplier</div>
+              <div
+                className="text-xl font-extrabold font-mono mt-0.5"
+                style={{ color: signalColor }}
+              >
                 {cluster.mult.toFixed(3)}x
               </div>
-              <div style={{ fontSize: 10, color: th.textMuted, fontFamily: "'DM Mono', monospace" }}>
+              <div className="text-[10px] text-muted font-mono">
                 {cluster.mult > 1 ? 'wider' : cluster.mult < 1 ? 'narrower' : 'average'}
               </div>
             </div>
@@ -232,69 +197,52 @@ export default function VolatilityCluster({ th, vix, spot, onMultiplierChange }:
 
           {/* Percentile reference bar */}
           {thresholds && (
-            <div style={{
-              padding: '12px 16px', borderRadius: 10,
-              backgroundColor: th.surface,
-              border: '1px solid ' + th.border,
-            }}>
-              <div style={{
-                fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const,
-                letterSpacing: '0.06em', color: th.textTertiary,
-                fontFamily: "'Outfit', sans-serif", marginBottom: 8,
-              }}>
+            <div className="p-3 sm:px-4 sm:py-3 rounded-[10px] bg-surface border border-edge">
+              <div className="text-[10px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans mb-2">
                 Yesterday{'\u2019'}s range vs. regime percentiles
               </div>
 
-              <div style={{
-                height: 12, borderRadius: 6, backgroundColor: th.surfaceAlt,
-                position: 'relative', overflow: 'visible', marginBottom: 20,
-              }}>
+              <div className="h-3 rounded-md bg-surface-alt relative overflow-visible mb-5">
                 {/* Colored segments */}
-                <div style={{ position: 'absolute', top: 0, left: 0, width: '50%', height: '100%', backgroundColor: th.green + '30', borderRadius: '6px 0 0 6px' }} />
-                <div style={{ position: 'absolute', top: 0, left: '50%', width: '25%', height: '100%', backgroundColor: th.accent + '20' }} />
-                <div style={{ position: 'absolute', top: 0, left: '75%', width: '15%', height: '100%', backgroundColor: '#E8A31730' }} />
-                <div style={{ position: 'absolute', top: 0, left: '90%', width: '10%', height: '100%', backgroundColor: th.red + '30', borderRadius: '0 6px 6px 0' }} />
+                <div className="absolute top-0 left-0 w-1/2 h-full rounded-l-md" style={{ backgroundColor: th.green + '30' }} />
+                <div className="absolute top-0 left-1/2 w-1/4 h-full" style={{ backgroundColor: th.accent + '20' }} />
+                <div className="absolute top-0 left-3/4 w-[15%] h-full" style={{ backgroundColor: '#E8A31730' }} />
+                <div className="absolute top-0 left-[90%] w-[10%] h-full rounded-r-md" style={{ backgroundColor: th.red + '30' }} />
 
                 {/* Yesterday's position marker */}
                 {(() => {
                   const maxRange = thresholds.p90 * 1.5;
                   const pos = Math.min(yestRangePct / maxRange, 1) * 100;
                   return (
-                    <div style={{
-                      position: 'absolute', top: -4,
-                      left: pos + '%', transform: 'translateX(-50%)',
-                      width: 4, height: 20,
-                      backgroundColor: signalColor,
-                      borderRadius: 2,
-                      boxShadow: '0 0 6px ' + signalColor + '88',
-                    }} />
+                    <div
+                      className="absolute -top-1 w-1 h-5 rounded-sm -translate-x-1/2"
+                      style={{
+                        left: pos + '%',
+                        backgroundColor: signalColor,
+                        boxShadow: '0 0 6px ' + signalColor + '88',
+                      }}
+                    />
                   );
                 })()}
 
                 {/* Threshold labels */}
-                <div style={{
-                  position: 'absolute', top: 16,
-                  left: (thresholds.p50 / (thresholds.p90 * 1.5) * 100) + '%',
-                  fontSize: 8, color: th.textMuted, fontFamily: "'DM Mono', monospace",
-                  transform: 'translateX(-50%)',
-                }}>p50 ({thresholds.p50.toFixed(2)}%)</div>
-                <div style={{
-                  position: 'absolute', top: 16,
-                  left: (thresholds.p75 / (thresholds.p90 * 1.5) * 100) + '%',
-                  fontSize: 8, color: th.textMuted, fontFamily: "'DM Mono', monospace",
-                  transform: 'translateX(-50%)',
-                }}>p75 ({thresholds.p75.toFixed(2)}%)</div>
-                <div style={{
-                  position: 'absolute', top: 16,
-                  left: (thresholds.p90 / (thresholds.p90 * 1.5) * 100) + '%',
-                  fontSize: 8, color: th.textMuted, fontFamily: "'DM Mono', monospace",
-                  transform: 'translateX(-50%)',
-                }}>p90 ({thresholds.p90.toFixed(2)}%)</div>
+                <div
+                  className="absolute top-4 text-[8px] text-muted font-mono -translate-x-1/2"
+                  style={{ left: (thresholds.p50 / (thresholds.p90 * 1.5) * 100) + '%' }}
+                >p50 ({thresholds.p50.toFixed(2)}%)</div>
+                <div
+                  className="absolute top-4 text-[8px] text-muted font-mono -translate-x-1/2"
+                  style={{ left: (thresholds.p75 / (thresholds.p90 * 1.5) * 100) + '%' }}
+                >p75 ({thresholds.p75.toFixed(2)}%)</div>
+                <div
+                  className="absolute top-4 text-[8px] text-muted font-mono -translate-x-1/2"
+                  style={{ left: (thresholds.p90 / (thresholds.p90 * 1.5) * 100) + '%' }}
+                >p90 ({thresholds.p90.toFixed(2)}%)</div>
               </div>
             </div>
           )}
 
-          <p style={{ fontSize: 11, color: th.textMuted, margin: '8px 0 0', fontStyle: 'italic' }}>
+          <p className="text-[11px] text-muted mt-2 italic">
             {cluster.mult >= 1.10
               ? 'Volatility clusters: big range days tend to follow big range days. Historical data shows today\u2019s expected range is ' + ((cluster.mult - 1) * 100).toFixed(0) + '% wider than average for this VIX level. Factor this into position sizing and delta selection.'
               : cluster.mult <= 0.96
@@ -306,17 +254,17 @@ export default function VolatilityCluster({ th, vix, spot, onMultiplierChange }:
 
       {/* Empty states */}
       {!hasVix && (
-        <p style={{ fontSize: 12, color: th.textMuted, margin: '4px 0 0', fontStyle: 'italic' }}>
+        <p className="text-xs text-muted mt-1 italic">
           Enter a VIX value above to enable clustering analysis.
         </p>
       )}
       {hasVix && !hasRange && (
-        <p style={{ fontSize: 12, color: th.textMuted, margin: '4px 0 0', fontStyle: 'italic' }}>
+        <p className="text-xs text-muted mt-1 italic">
           Enter yesterday{'\u2019'}s SPX high and low to check for volatility clustering.
         </p>
       )}
       {hasBothHL && highVal <= lowVal && (
-        <p style={{ fontSize: 12, color: th.red, margin: '4px 0 0' }}>
+        <p className="text-xs text-danger mt-1">
           High must be greater than low.
         </p>
       )}

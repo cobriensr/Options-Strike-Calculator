@@ -26,23 +26,17 @@ export default function EventDayWarning({ th, selectedDate }: Props) {
   const border = isHigh ? th.red + '35' : '#E8A31735';
 
   return (
-    <div style={{
-      marginTop: 12,
-      padding: '12px 16px',
-      borderRadius: 10,
-      backgroundColor: bg,
-      border: '1.5px solid ' + border,
-    }}>
+    <div
+      className="mt-3 p-3 sm:p-4 rounded-[10px]"
+      style={{ backgroundColor: bg, border: '1.5px solid ' + border }}
+    >
       {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
-      }}>
-        <span style={{ fontSize: 16 }}>{isHigh ? '\u26A0\uFE0F' : '\uD83D\uDCC5'}</span>
-        <span style={{
-          fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const,
-          letterSpacing: '0.10em', color,
-          fontFamily: "'Outfit', sans-serif",
-        }}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-base">{isHigh ? '\u26A0\uFE0F' : '\uD83D\uDCC5'}</span>
+        <span
+          className="text-[10px] font-bold uppercase tracking-widest font-sans"
+          style={{ color }}
+        >
           {isHigh ? 'High-Impact Event Day' : 'Economic Event Day'}
         </span>
       </div>
@@ -53,12 +47,10 @@ export default function EventDayWarning({ th, selectedDate }: Props) {
       ))}
 
       {/* Advice */}
-      <div style={{
-        marginTop: 10, paddingTop: 8,
-        borderTop: '1px solid ' + border,
-        fontSize: 11, color: th.textSecondary,
-        fontFamily: "'Outfit', sans-serif", lineHeight: 1.6,
-      }}>
+      <div
+        className="mt-2.5 pt-2 text-[11px] text-secondary font-sans leading-relaxed"
+        style={{ borderTop: '1px solid ' + border }}
+      >
         {isHigh
           ? 'CPI, NFP, and FOMC days historically produce wider ranges than VIX alone predicts. Consider widening deltas 1\u20132\u0394 beyond the guide ceiling, reducing position size, or sitting out until after the release.'
           : 'GDP releases can cause moderate volatility. Follow the delta guide but consider slightly tighter sizing.'}
@@ -71,31 +63,17 @@ function EventRow({ th, event }: { th: Theme; event: MarketEvent }) {
   const tagColor = event.severity === 'high' ? th.red : '#E8A317';
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 10,
-      padding: '6px 0',
-    }}>
-      <span style={{
-        fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 99,
-        backgroundColor: tagColor + '18', color: tagColor,
-        fontFamily: "'DM Mono', monospace",
-        textTransform: 'uppercase' as const,
-        letterSpacing: '0.06em',
-        flexShrink: 0,
-      }}>
+    <div className="flex items-center gap-2.5 py-1.5">
+      <span
+        className="text-[9px] font-bold py-0.5 px-2 rounded-full font-mono uppercase tracking-[0.06em] shrink-0"
+        style={{ backgroundColor: tagColor + '18', color: tagColor }}
+      >
         {event.event}
       </span>
-      <span style={{
-        fontSize: 12, color: th.text,
-        fontFamily: "'Outfit', sans-serif", fontWeight: 500,
-      }}>
+      <span className="text-xs text-primary font-sans font-medium">
         {event.description}
       </span>
-      <span style={{
-        fontSize: 11, color: th.textMuted,
-        fontFamily: "'DM Mono', monospace",
-        marginLeft: 'auto', flexShrink: 0,
-      }}>
+      <span className="text-[11px] text-muted font-mono ml-auto shrink-0">
         {event.time} ET
       </span>
     </div>

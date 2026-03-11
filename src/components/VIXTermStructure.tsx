@@ -1,7 +1,6 @@
 import { useState } from 'react';
-import type { CSSProperties } from 'react';
 import type { Theme } from '../themes';
-import { tinyLblStyle } from './ui';
+import { tinyLbl } from './ui';
 
 interface Props {
   readonly th: Theme;
@@ -58,6 +57,8 @@ function classifyVix9dRatio(ratio: number, th: Theme): RatioResult {
   return { ratio, signal: 'extreme', label: 'STEEP INVERSION', color: th.red, advice: 'Significant near-term fear. Defensive posture warranted.' };
 }
 
+const inputCls = "bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150";
+
 /**
  * VIX Term Structure panel.
  * Accepts VIX1D and VIX9D inputs, computes ratios against the existing VIX,
@@ -103,20 +104,13 @@ export default function VIXTermStructure({ th, vix, onUseVix1dAsSigma }: Props) 
   // Suggested VIX1D sigma
   const vix1dSigma = hasVix1d ? vix1d / 100 : null;
 
-  const tinyLbl = tinyLblStyle(th);
-  const inputStyle: CSSProperties = {
-    backgroundColor: th.inputBg, border: '1.5px solid ' + th.borderStrong, borderRadius: 8,
-    color: th.text, padding: '11px 14px', fontSize: 16, fontFamily: "'DM Mono', monospace",
-    outline: 'none', width: '100%', boxSizing: 'border-box' as const, transition: 'border-color 0.15s',
-  };
-
   return (
     <div>
       {/* Input row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 mb-3.5">
         <div>
-          <label htmlFor="vix1d-input" style={tinyLbl}>
-            VIX1D <span style={{ fontWeight: 400, textTransform: 'none' as const, letterSpacing: 0, opacity: 0.7 }}>(1-day)</span>
+          <label htmlFor="vix1d-input" className={tinyLbl}>
+            VIX1D <span className="font-normal normal-case tracking-normal opacity-70">(1-day)</span>
           </label>
           <input
             id="vix1d-input"
@@ -125,12 +119,12 @@ export default function VIXTermStructure({ th, vix, onUseVix1dAsSigma }: Props) 
             placeholder="e.g. 18.5"
             value={vix1dInput}
             onChange={(e) => setVix1dInput(e.target.value)}
-            style={inputStyle}
+            className={inputCls}
           />
         </div>
         <div>
-          <label htmlFor="vix9d-input" style={tinyLbl}>
-            VIX9D <span style={{ fontWeight: 400, textTransform: 'none' as const, letterSpacing: 0, opacity: 0.7 }}>(9-day)</span>
+          <label htmlFor="vix9d-input" className={tinyLbl}>
+            VIX9D <span className="font-normal normal-case tracking-normal opacity-70">(9-day)</span>
           </label>
           <input
             id="vix9d-input"
@@ -139,40 +133,32 @@ export default function VIXTermStructure({ th, vix, onUseVix1dAsSigma }: Props) 
             placeholder="e.g. 20.1"
             value={vix9dInput}
             onChange={(e) => setVix9dInput(e.target.value)}
-            style={inputStyle}
+            className={inputCls}
           />
         </div>
       </div>
 
       {/* Ratio readouts */}
       {hasVix && (hasVix1d || hasVix9d) && (
-        <div style={{ marginBottom: 14 }}>
+        <div className="mb-3.5">
           {/* Combined signal banner */}
           {combinedSignal && (
-            <div style={{
-              padding: '10px 16px', borderRadius: 10, marginBottom: 12,
-              backgroundColor: combinedColor + '10',
-              border: '1.5px solid ' + combinedColor + '30',
-              display: 'flex', alignItems: 'center', gap: 12,
-            }}>
-              <div style={{
-                width: 12, height: 12, borderRadius: '50%',
-                backgroundColor: combinedColor,
-                boxShadow: '0 0 8px ' + combinedColor + '66',
-                flexShrink: 0,
-              }} />
+            <div
+              className="flex items-start sm:items-center gap-3 rounded-[10px] p-3 sm:p-4 mb-3"
+              style={{ backgroundColor: combinedColor + '10', border: '1.5px solid ' + combinedColor + '30' }}
+            >
+              <div
+                className="w-3 h-3 rounded-full shrink-0"
+                style={{ backgroundColor: combinedColor, boxShadow: '0 0 8px ' + combinedColor + '66' }}
+              />
               <div>
-                <span style={{
-                  fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const,
-                  letterSpacing: '0.1em', color: combinedColor,
-                  fontFamily: "'Outfit', sans-serif",
-                }}>
+                <span
+                  className="text-[10px] font-bold uppercase tracking-widest font-sans"
+                  style={{ color: combinedColor }}
+                >
                   {combinedLabel}
                 </span>
-                <span style={{
-                  fontSize: 11, color: th.textSecondary, marginLeft: 10,
-                  fontFamily: "'Outfit', sans-serif",
-                }}>
+                <span className="text-[11px] text-secondary ml-2.5 font-sans">
                   {combinedSignal === 'calm' && 'Term structure favors selling premium today'}
                   {combinedSignal === 'normal' && 'Standard conditions \u2014 follow delta guide'}
                   {combinedSignal === 'elevated' && 'Elevated short-term risk \u2014 reduce exposure'}
@@ -183,7 +169,7 @@ export default function VIXTermStructure({ th, vix, onUseVix1dAsSigma }: Props) 
           )}
 
           {/* Individual ratio cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: hasVix1d && hasVix9d ? '1fr 1fr' : '1fr', gap: 10 }}>
+          <div className={hasVix1d && hasVix9d ? 'grid grid-cols-1 gap-2.5 sm:grid-cols-2' : 'grid grid-cols-1 gap-2.5'}>
             {vix1dResult && (
               <RatioCard
                 th={th}
@@ -212,25 +198,13 @@ export default function VIXTermStructure({ th, vix, onUseVix1dAsSigma }: Props) 
 
       {/* VIX1D as direct σ suggestion */}
       {hasVix1d && vix1dSigma && (
-        <div style={{
-          padding: '10px 14px', borderRadius: 8,
-          backgroundColor: th.surfaceAlt,
-          border: '1px solid ' + th.border,
-          fontSize: 11, color: th.textSecondary,
-          fontFamily: "'Outfit', sans-serif", lineHeight: 1.6,
-        }}>
-          <strong style={{ color: th.text }}>Tip:</strong> VIX1D ({vix1d.toFixed(2)}) is derived directly from today{'\u2019'}s 0DTE options.
+        <div className="py-2.5 px-3.5 rounded-lg bg-surface-alt border border-edge text-[11px] text-secondary font-sans leading-relaxed">
+          <strong className="text-primary">Tip:</strong> VIX1D ({vix1d.toFixed(2)}) is derived directly from today{'\u2019'}s 0DTE options.
           You can use it as Direct IV ({'\u03C3'} = {vix1dSigma.toFixed(4)}) with no 0DTE adjustment needed (set multiplier to 1.00).
           {onUseVix1dAsSigma && (
             <button
               onClick={() => onUseVix1dAsSigma(vix1dSigma)}
-              style={{
-                marginLeft: 8, padding: '3px 10px', borderRadius: 6,
-                fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                border: '1.5px solid ' + th.accent,
-                backgroundColor: th.accentBg, color: th.accent,
-                fontFamily: "'Outfit', sans-serif",
-              }}
+              className="ml-2 py-[3px] px-2.5 rounded-md text-[11px] font-semibold cursor-pointer border-[1.5px] border-[var(--th-accent)] bg-accent-bg text-accent font-sans"
             >
               Use VIX1D as {'\u03C3'}
             </button>
@@ -240,12 +214,12 @@ export default function VIXTermStructure({ th, vix, onUseVix1dAsSigma }: Props) 
 
       {/* Empty state */}
       {!hasVix && (hasVix1d || hasVix9d) && (
-        <p style={{ fontSize: 12, color: th.textMuted, margin: '8px 0 0', fontStyle: 'italic' }}>
+        <p className="text-xs text-muted mt-2 italic">
           Enter a VIX value above to compute term structure ratios.
         </p>
       )}
       {hasVix && !hasVix1d && !hasVix9d && (
-        <p style={{ fontSize: 12, color: th.textMuted, margin: '4px 0 0', fontStyle: 'italic' }}>
+        <p className="text-xs text-muted mt-1 italic">
           Enter VIX1D and/or VIX9D from TradingView to see term structure signals.
           Tickers: CBOE:VIX1D and CBOE:VIX9D.
         </p>
@@ -263,74 +237,48 @@ function RatioCard({ th, title, subtitle, ratio, label, color, advice }: {
   ratio: number; label: string; color: string; advice: string;
 }) {
   return (
-    <div style={{
-      padding: '12px 14px', borderRadius: 10,
-      backgroundColor: th.surface,
-      border: '1px solid ' + th.border,
-    }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+    <div className="p-3 sm:p-3.5 rounded-[10px] bg-surface border border-edge">
+      <div className="flex justify-between items-start mb-2">
         <div>
-          <div style={{
-            fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const,
-            letterSpacing: '0.08em', color: th.textTertiary,
-            fontFamily: "'Outfit', sans-serif",
-          }}>
+          <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans">
             {title}
           </div>
-          <div style={{
-            fontSize: 9, color: th.textMuted,
-            fontFamily: "'Outfit', sans-serif",
-          }}>
+          <div className="text-[9px] text-muted font-sans">
             {subtitle}
           </div>
         </div>
-        <span style={{
-          fontSize: 9, fontWeight: 700,
-          padding: '2px 8px', borderRadius: 99,
-          backgroundColor: color + '18', color,
-          fontFamily: "'Outfit', sans-serif",
-          textTransform: 'uppercase' as const,
-          letterSpacing: '0.06em',
-        }}>
+        <span
+          className="text-[9px] font-bold py-0.5 px-2 rounded-full font-sans uppercase tracking-[0.06em]"
+          style={{ backgroundColor: color + '18', color }}
+        >
           {label}
         </span>
       </div>
 
-      <div style={{
-        fontSize: 22, fontWeight: 800, color,
-        fontFamily: "'DM Mono', monospace",
-        marginBottom: 6,
-      }}>
+      <div
+        className="text-[22px] font-extrabold font-mono mb-1.5"
+        style={{ color }}
+      >
         {ratio.toFixed(2)}x
       </div>
 
       {/* Ratio bar visualization */}
-      <div style={{ marginBottom: 8 }}>
-        <div style={{
-          height: 6, borderRadius: 3, backgroundColor: th.surfaceAlt,
-          position: 'relative', overflow: 'hidden',
-        }}>
-          <div style={{
-            position: 'absolute', top: 0, left: 0,
-            height: '100%',
-            width: Math.min(ratio / 2, 1) * 100 + '%', // 2.0x = full bar
-            backgroundColor: color,
-            borderRadius: 3,
-            transition: 'width 0.3s',
-          }} />
+      <div className="mb-2">
+        <div className="h-1.5 rounded-[3px] bg-surface-alt relative overflow-hidden">
+          <div
+            className="absolute top-0 left-0 h-full rounded-[3px] transition-[width] duration-300"
+            style={{
+              width: Math.min(ratio / 2, 1) * 100 + '%',
+              backgroundColor: color,
+            }}
+          />
           {/* 1.0x marker */}
-          <div style={{
-            position: 'absolute', top: -1, left: '50%',
-            width: 2, height: 8,
-            backgroundColor: th.textMuted + '60',
-          }} />
+          <div
+            className="absolute -top-px left-1/2 w-0.5 h-2"
+            style={{ backgroundColor: th.textMuted + '60' }}
+          />
         </div>
-        <div style={{
-          display: 'flex', justifyContent: 'space-between',
-          fontSize: 8, color: th.textMuted,
-          fontFamily: "'DM Mono', monospace",
-          marginTop: 2,
-        }}>
+        <div className="flex justify-between text-[8px] text-muted font-mono mt-0.5">
           <span>0.5x</span>
           <span>1.0x</span>
           <span>1.5x</span>
@@ -338,11 +286,7 @@ function RatioCard({ th, title, subtitle, ratio, label, color, advice }: {
         </div>
       </div>
 
-      <div style={{
-        fontSize: 11, color: th.textSecondary,
-        fontFamily: "'Outfit', sans-serif",
-        lineHeight: 1.5,
-      }}>
+      <div className="text-[11px] text-secondary font-sans leading-normal">
         {advice}
       </div>
     </div>
