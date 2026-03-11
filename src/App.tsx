@@ -632,7 +632,6 @@ export default function StrikeCalculator() {
                     th={th}
                     vix={Number.parseFloat(dVix)}
                     spot={results.spot}
-                    sigma={results.sigma}
                     T={results.T}
                     skew={skewPct / 100}
                     allDeltas={results.allDeltas}
