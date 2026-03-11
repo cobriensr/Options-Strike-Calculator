@@ -43,7 +43,7 @@ export default function IronCondorSection({ th, results, wingWidth, contracts, e
       </p>
 
       {/* Hedge Toggle */}
-      <div className="mt-3.5 flex items-center gap-3">
+      <div className="mt-3.5 flex flex-wrap items-center gap-3">
         <button
           onClick={() => setShowHedge(!showHedge)}
           aria-pressed={showHedge}
@@ -58,7 +58,7 @@ export default function IronCondorSection({ th, results, wingWidth, contracts, e
         </button>
 
         {showHedge && icRows.length > 1 && (
-          <div className="flex gap-1 items-center">
+          <div className="flex flex-wrap gap-1 items-center">
             <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans">
               IC Delta
             </span>
