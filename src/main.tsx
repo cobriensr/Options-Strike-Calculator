@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import './index.css';
 import StrikeCalculator from './App';
 
 const rootEl = document.getElementById('root');
