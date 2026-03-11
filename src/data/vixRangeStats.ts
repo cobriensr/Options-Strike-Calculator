@@ -256,3 +256,80 @@ export function getTodayDow(): number | null {
   if (jsDay === 0 || jsDay === 6) return null;
   return jsDay - 1; // convert to 0=Mon
 }
+
+// ============================================================
+// VOLATILITY CLUSTERING DATA
+// ============================================================
+// Source: 9,107 SPX trading days (1990–2026).
+// When yesterday's H-L range falls in a given percentile bucket,
+// today's expected range shifts by these multipliers (vs overall median).
+
+export interface ClusterBucket {
+  readonly label: string;
+  readonly pctileLo: number;    // lower percentile bound (0, 50, 75, 90)
+  readonly pctileHi: number;    // upper percentile bound (50, 75, 90, 100)
+  readonly mult: number;        // today's range multiplier vs unconditional median
+}
+
+/** Clustering multipliers for VIX < 18 */
+export const CLUSTER_LOW_VIX: readonly ClusterBucket[] = [
+  { label: 'Calm (<p50)',      pctileLo: 0,  pctileHi: 50,  mult: 0.914 },
+  { label: 'Normal (p50–p75)', pctileLo: 50, pctileHi: 75,  mult: 1.005 },
+  { label: 'Active (p75–p90)', pctileLo: 75, pctileHi: 90,  mult: 1.103 },
+  { label: 'Hot (>p90)',       pctileLo: 90, pctileHi: 100, mult: 1.235 },
+] as const;
+
+/** Clustering multipliers for VIX 18–25 */
+export const CLUSTER_MID_VIX: readonly ClusterBucket[] = [
+  { label: 'Calm (<p50)',      pctileLo: 0,  pctileHi: 50,  mult: 0.956 },
+  { label: 'Normal (p50–p75)', pctileLo: 50, pctileHi: 75,  mult: 0.969 },
+  { label: 'Active (p75–p90)', pctileLo: 75, pctileHi: 90,  mult: 1.039 },
+  { label: 'Hot (>p90)',       pctileLo: 90, pctileHi: 100, mult: 1.203 },
+] as const;
+
+/** Clustering multipliers for VIX 25+ */
+export const CLUSTER_HIGH_VIX: readonly ClusterBucket[] = [
+  { label: 'Calm (<p50)',      pctileLo: 0,  pctileHi: 50,  mult: 0.895 },
+  { label: 'Normal (p50–p75)', pctileLo: 50, pctileHi: 75,  mult: 0.976 },
+  { label: 'Active (p75–p90)', pctileLo: 75, pctileHi: 90,  mult: 1.192 },
+  { label: 'Hot (>p90)',       pctileLo: 90, pctileHi: 100, mult: 1.872 },
+] as const;
+
+/** Reference percentile thresholds (H-L %) for classifying yesterday's range */
+export const CLUSTER_THRESHOLDS = {
+  lowVix:  { p50: 0.73, p75: 1.01, p90: 1.32 },
+  midVix:  { p50: 1.24, p75: 1.64, p90: 2.15 },
+  highVix: { p50: 1.99, p75: 2.74, p90: 3.78 },
+} as const;
+
+export interface ClusterResult {
+  readonly bucket: ClusterBucket;
+  readonly mult: number;
+  readonly yesterdayPctile: string;   // which percentile bucket yesterday fell in
+  readonly regime: string;            // VIX regime label
+}
+
+/**
+ * Given yesterday's SPX H-L range (%) and today's VIX, compute the
+ * volatility clustering multiplier for today's expected range.
+ */
+export function getClusterMultiplier(vix: number, yesterdayHLPct: number): ClusterResult {
+  const regime = vix < 18 ? 'lowVix' : vix < 25 ? 'midVix' : 'highVix';
+  const thresholds = CLUSTER_THRESHOLDS[regime];
+  const table = vix < 18 ? CLUSTER_LOW_VIX : vix < 25 ? CLUSTER_MID_VIX : CLUSTER_HIGH_VIX;
+  const regimeLabel = vix < 18 ? 'VIX <18' : vix < 25 ? 'VIX 18\u201325' : 'VIX 25+';
+
+  let bucketIdx: number;
+  if (yesterdayHLPct < thresholds.p50) {
+    bucketIdx = 0;
+  } else if (yesterdayHLPct < thresholds.p75) {
+    bucketIdx = 1;
+  } else if (yesterdayHLPct < thresholds.p90) {
+    bucketIdx = 2;
+  } else {
+    bucketIdx = 3;
+  }
+
+  const bucket = table[bucketIdx]!;
+  return { bucket, mult: bucket.mult, yesterdayPctile: bucket.label, regime: regimeLabel };
+}

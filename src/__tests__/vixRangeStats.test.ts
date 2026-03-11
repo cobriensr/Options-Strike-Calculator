@@ -15,6 +15,11 @@ import {
   DOW_STATS_HIGH_VIX,
   getDowMultiplier,
   getTodayDow,
+  CLUSTER_LOW_VIX,
+  CLUSTER_MID_VIX,
+  CLUSTER_HIGH_VIX,
+  CLUSTER_THRESHOLDS,
+  getClusterMultiplier,
 } from '../data/vixRangeStats';
 
 // ============================================================
@@ -549,5 +554,108 @@ describe('getTodayDow', () => {
       expect(dow).toBeGreaterThanOrEqual(0);
       expect(dow).toBeLessThanOrEqual(4);
     }
+  });
+});
+
+// ============================================================
+// CLUSTERING DATA
+// ============================================================
+describe('CLUSTER data integrity', () => {
+  const tables = [
+    { name: 'LOW_VIX', data: CLUSTER_LOW_VIX },
+    { name: 'MID_VIX', data: CLUSTER_MID_VIX },
+    { name: 'HIGH_VIX', data: CLUSTER_HIGH_VIX },
+  ];
+
+  for (const { name, data } of tables) {
+    it(`${name} has 4 buckets`, () => {
+      expect(data).toHaveLength(4);
+    });
+
+    it(`${name} buckets cover 0–100 percentile range`, () => {
+      expect(data[0]!.pctileLo).toBe(0);
+      expect(data.at(-1)!.pctileHi).toBe(100);
+      for (let i = 1; i < data.length; i++) {
+        expect(data[i]!.pctileLo).toBe(data[i - 1]!.pctileHi);
+      }
+    });
+
+    it(`${name} multipliers are in reasonable range`, () => {
+      for (const row of data) {
+        expect(row.mult).toBeGreaterThan(0.5);
+        expect(row.mult).toBeLessThan(3.0);
+      }
+    });
+
+    it(`${name} multipliers increase with percentile`, () => {
+      for (let i = 1; i < data.length; i++) {
+        expect(data[i]!.mult).toBeGreaterThanOrEqual(data[i - 1]!.mult);
+      }
+    });
+  }
+
+  it('high VIX has largest spread between calm and hot', () => {
+    const highSpread = CLUSTER_HIGH_VIX[3]!.mult - CLUSTER_HIGH_VIX[0]!.mult;
+    const lowSpread = CLUSTER_LOW_VIX[3]!.mult - CLUSTER_LOW_VIX[0]!.mult;
+    expect(highSpread).toBeGreaterThan(lowSpread);
+  });
+});
+
+describe('CLUSTER_THRESHOLDS', () => {
+  it('has all three regimes', () => {
+    expect(CLUSTER_THRESHOLDS.lowVix).toBeDefined();
+    expect(CLUSTER_THRESHOLDS.midVix).toBeDefined();
+    expect(CLUSTER_THRESHOLDS.highVix).toBeDefined();
+  });
+
+  it('p50 < p75 < p90 for each regime', () => {
+    for (const key of ['lowVix', 'midVix', 'highVix'] as const) {
+      const t = CLUSTER_THRESHOLDS[key];
+      expect(t.p75).toBeGreaterThan(t.p50);
+      expect(t.p90).toBeGreaterThan(t.p75);
+    }
+  });
+
+  it('thresholds increase with VIX regime', () => {
+    expect(CLUSTER_THRESHOLDS.midVix.p50).toBeGreaterThan(CLUSTER_THRESHOLDS.lowVix.p50);
+    expect(CLUSTER_THRESHOLDS.highVix.p50).toBeGreaterThan(CLUSTER_THRESHOLDS.midVix.p50);
+  });
+});
+
+// ============================================================
+// getClusterMultiplier
+// ============================================================
+describe('getClusterMultiplier', () => {
+  it('returns calm bucket for small range at low VIX', () => {
+    const r = getClusterMultiplier(15, 0.50);
+    expect(r.mult).toBeCloseTo(0.914, 3);
+    expect(r.yesterdayPctile).toMatch(/calm/i);
+  });
+
+  it('returns hot bucket for large range at low VIX', () => {
+    const r = getClusterMultiplier(15, 1.50);
+    expect(r.mult).toBeCloseTo(1.235, 3);
+    expect(r.yesterdayPctile).toMatch(/hot/i);
+  });
+
+  it('returns extreme multiplier for p90+ at high VIX', () => {
+    const r = getClusterMultiplier(30, 4.00);
+    expect(r.mult).toBeCloseTo(1.872, 3);
+  });
+
+  it('uses correct VIX regime', () => {
+    const low = getClusterMultiplier(12, 0.50);
+    expect(low.regime).toMatch(/18/);
+    const mid = getClusterMultiplier(22, 0.50);
+    expect(mid.regime).toMatch(/18.*25/);
+    const high = getClusterMultiplier(30, 0.50);
+    expect(high.regime).toMatch(/25/);
+  });
+
+  it('same range classified differently at different VIX', () => {
+    // 1.50% is >p90 at VIX 12 but <p50 at VIX 30
+    const atLowVix = getClusterMultiplier(12, 1.50);
+    const atHighVix = getClusterMultiplier(30, 1.50);
+    expect(atLowVix.mult).toBeGreaterThan(atHighVix.mult);
   });
 });

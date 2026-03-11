@@ -6,7 +6,7 @@ import { calcAllDeltas, calcTimeToExpiry } from '../utils/calculator';
 
 // Helper: standard test params matching a typical 0DTE session
 function makeProps(overrides: Partial<{
-  vix: number; spot: number; hours: number; skew: number; selectedDate: string;
+  vix: number; spot: number; hours: number; skew: number; selectedDate: string; clusterMult: number;
 }> = {}) {
   const spot = overrides.spot ?? 6800;
   const hours = overrides.hours ?? 4;
@@ -22,6 +22,7 @@ function makeProps(overrides: Partial<{
     skew,
     allDeltas,
     selectedDate: overrides.selectedDate ?? '2026-03-10', // Tuesday (neutral ~1.0x)
+    clusterMult: overrides.clusterMult,
   };
 }
 
@@ -159,8 +160,8 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
     // parentElement gets the GuidanceCell wrapper containing label + delta + desc
     const aggressive = screen.getByText('Aggressive').parentElement;
     const conservative = screen.getByText('Conservative').parentElement;
-    const aggDelta = Number.parseInt(/(\d+)\u0394/.exec(aggressive?.textContent ?? '')?.[1] ?? '0');
-    const consDelta = Number.parseInt(/(\d+)\u0394/.exec(conservative?.textContent ?? '')?.[1] ?? '0');
+    const aggDelta = Number.parseInt(aggressive?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
+    const consDelta = Number.parseInt(conservative?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
     expect(aggDelta).toBeGreaterThan(0);
     expect(consDelta).toBeGreaterThan(0);
     expect(consDelta).toBeLessThan(aggDelta);
@@ -418,7 +419,7 @@ describe('DeltaRegimeGuide: day-of-week adjustment', () => {
 
   it('footnote mentions the day-of-week adjustment', () => {
     render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-03-09' })} />);
-    expect(screen.getByText(/monday adjustment/i)).toBeInTheDocument();
+    expect(screen.getByText(/Monday.*H-L/i)).toBeInTheDocument();
   });
 
   it('no DOW badge when selected date is a weekend', () => {
@@ -429,7 +430,7 @@ describe('DeltaRegimeGuide: day-of-week adjustment', () => {
 
   it('no DOW adjustment text in footnote when date is a weekend', () => {
     render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-03-14' })} />);
-    expect(screen.queryByText(/adjustment.*H-L/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Combined adj/i)).not.toBeInTheDocument();
   });
 
   it('all 5 weekdays render without errors', () => {
@@ -444,5 +445,70 @@ describe('DeltaRegimeGuide: day-of-week adjustment', () => {
   it('derives correct day from a known date (Feb 27 2026 = Friday)', () => {
     render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-02-27' })} />);
     expect(screen.getAllByText(/Fri/).length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ============================================================
+// VOLATILITY CLUSTERING
+// ============================================================
+describe('DeltaRegimeGuide: volatility clustering', () => {
+  it('clustering multiplier widens thresholds', () => {
+    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 20 })} />);
+    const table1 = screen.getByRole('table', { name: /range thresholds/i });
+    const rows1 = within(table1).getAllByRole('row');
+    const basePct = Number.parseFloat(within(rows1[3]!).getAllByText(/%/)[0]!.textContent!);
+    unmount();
+
+    render(<DeltaRegimeGuide {...makeProps({ vix: 20, clusterMult: 1.20 })} />);
+    const table2 = screen.getByRole('table', { name: /range thresholds/i });
+    const rows2 = within(table2).getAllByRole('row');
+    const clusterPct = Number.parseFloat(within(rows2[3]!).getAllByText(/%/)[0]!.textContent!);
+
+    expect(clusterPct).toBeGreaterThan(basePct);
+  });
+
+  it('shows clustering badge when mult > 1.03', () => {
+    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.20 })} />);
+    expect(screen.getByText(/1\.20x cluster/)).toBeInTheDocument();
+  });
+
+  it('shows calm badge when mult < 0.97', () => {
+    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 0.91 })} />);
+    expect(screen.getByText(/0\.91x calm/)).toBeInTheDocument();
+  });
+
+  it('no clustering badge when mult is near 1.0', () => {
+    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.00 })} />);
+    expect(screen.queryByText(/cluster/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/calm/)).not.toBeInTheDocument();
+  });
+
+  it('footnote shows clustering multiplier', () => {
+    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.20 })} />);
+    expect(screen.getByText(/Clustering.*1\.200/)).toBeInTheDocument();
+  });
+
+  it('clustering lowers the delta ceiling', () => {
+    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 20 })} />);
+    const banner1 = screen.getByText(/maximum delta/i).closest('div')?.parentElement;
+    const text1 = banner1?.textContent ?? '';
+    unmount();
+
+    render(<DeltaRegimeGuide {...makeProps({ vix: 20, clusterMult: 1.50 })} />);
+    const banner2 = screen.getByText(/maximum delta/i).closest('div')?.parentElement;
+    const text2 = banner2?.textContent ?? '';
+
+    // Extract ceiling deltas
+    const match1 = /CEILING(\d+)/.exec(text1);
+    const match2 = /CEILING(\d+)/.exec(text2);
+    if (match1 && match2) {
+      expect(Number(match2[1])).toBeLessThanOrEqual(Number(match1[1]));
+    }
+  });
+
+  it('works without clusterMult prop (defaults to 1.0)', () => {
+    render(<DeltaRegimeGuide {...makeProps()} />);
+    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+    expect(screen.queryByText(/cluster/)).not.toBeInTheDocument();
   });
 });

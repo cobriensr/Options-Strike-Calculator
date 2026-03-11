@@ -12,6 +12,7 @@ interface Props {
   readonly skew: number; // decimal, e.g. 0.03
   readonly allDeltas: ReadonlyArray<DeltaRow | DeltaRowError>;
   readonly selectedDate?: string; // 'YYYY-MM-DD' from date picker, falls back to today
+  readonly clusterMult?: number;  // Volatility clustering multiplier (1.0 = no effect)
 }
 
 /** Default 0DTE IV adjustment — matches the calculator's default multiplier */
@@ -48,7 +49,7 @@ interface ThresholdDelta {
  * 1. Range thresholds → max delta to sell (the answer)
  * 2. Your standard deltas → which thresholds they clear (the verification)
  */
-export default function DeltaRegimeGuide({ th, vix, spot, T, skew, allDeltas, selectedDate }: Props) {
+export default function DeltaRegimeGuide({ th, vix, spot, T, skew, allDeltas, selectedDate, clusterMult }: Props) {
   const bucket = findBucket(vix);
   if (!bucket) return null;
 
@@ -56,6 +57,9 @@ export default function DeltaRegimeGuide({ th, vix, spot, T, skew, allDeltas, se
   // so the Delta Guide stays self-consistent with VIX-based range thresholds,
   // regardless of whether the user switched to Direct IV (VIX1D) for strike pricing.
   const sigma = vix * VIX_TO_SIGMA_MULT / 100;
+
+  // Clustering multiplier (default 1.0 = no effect)
+  const cMult = clusterMult != null && clusterMult > 0 ? clusterMult : 1;
 
   // Derive day of week from selected date, falling back to today
   const dow = (() => {
@@ -76,11 +80,11 @@ export default function DeltaRegimeGuide({ th, vix, spot, T, skew, allDeltas, se
   // Use continuous interpolation instead of discrete bucket thresholds.
   const range = estimateRange(vix);
 
-  // Apply day-of-week multiplier to range thresholds
-  const hlAdj = dowMult?.multHL ?? 1;
-  const ocAdj = dowMult?.multOC ?? 1;
+  // Apply day-of-week and clustering multipliers to range thresholds
+  const hlAdj = (dowMult?.multHL ?? 1) * cMult;
+  const ocAdj = (dowMult?.multOC ?? 1) * cMult;
 
-  // Build range thresholds from interpolated data, DOW-adjusted
+  // Build range thresholds from interpolated data, adjusted for DOW + clustering
   const thresholds: RangeThreshold[] = [
     { label: 'Median O\u2192C', pct: range.medOC * ocAdj, purpose: '~50% settlement survival' },
     { label: 'Median H-L', pct: range.medHL * hlAdj, purpose: '~50% intraday survival' },
@@ -134,18 +138,41 @@ export default function DeltaRegimeGuide({ th, vix, spot, T, skew, allDeltas, se
         fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700,
         textTransform: 'uppercase' as const, letterSpacing: '0.14em',
         color: th.accent, marginBottom: 10,
-        display: 'flex', alignItems: 'center', gap: 10,
+        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
       }}>
         <span>Delta Guide for VIX {vix.toFixed(1)}</span>
-        {dowMult && (
+        {dowMult && (() => {
+          const dowHL = dowMult.multHL;
+          return (
+            <span style={{
+              fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 99,
+              fontFamily: "'DM Mono', monospace",
+              backgroundColor: dowHL < 0.97 ? th.green + '18' : dowHL > 1.03 ? '#E8A31718' : th.surfaceAlt,
+              color: dowHL < 0.97 ? th.green : dowHL > 1.03 ? '#E8A317' : th.textMuted,
+            }}>
+              {dowMult.dayShort} {dowHL < 0.97 ? '\u2193' : dowHL > 1.03 ? '\u2191' : '\u2248'}
+              {dowHL < 0.97 ? ' quieter' : dowHL > 1.03 ? ' wider' : ' avg'}
+            </span>
+          );
+        })()}
+        {cMult > 1.03 && (
           <span style={{
             fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 99,
             fontFamily: "'DM Mono', monospace",
-            backgroundColor: hlAdj < 0.97 ? th.green + '18' : hlAdj > 1.03 ? '#E8A31718' : th.surfaceAlt,
-            color: hlAdj < 0.97 ? th.green : hlAdj > 1.03 ? '#E8A317' : th.textMuted,
+            backgroundColor: cMult > 1.15 ? th.red + '18' : '#E8A31718',
+            color: cMult > 1.15 ? th.red : '#E8A317',
           }}>
-            {dowMult.dayShort} {hlAdj < 0.97 ? '\u2193' : hlAdj > 1.03 ? '\u2191' : '\u2248'}
-            {hlAdj < 0.97 ? ' quieter' : hlAdj > 1.03 ? ' wider' : ' avg'}
+            {'\u26A1'} {cMult.toFixed(2)}x cluster
+          </span>
+        )}
+        {cMult < 0.97 && (
+          <span style={{
+            fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 99,
+            fontFamily: "'DM Mono', monospace",
+            backgroundColor: th.green + '18',
+            color: th.green,
+          }}>
+            {'\u2193'} {cMult.toFixed(2)}x calm
           </span>
         )}
       </div>
@@ -296,7 +323,9 @@ export default function DeltaRegimeGuide({ th, vix, spot, T, skew, allDeltas, se
         {'"'}Max Delta{'"'} = the highest delta whose strike clears that range. Sell at or below this delta. Uses VIX-derived {'\u03C3'}={sigma.toFixed(4)} (VIX {vix.toFixed(1)} {'\u00D7'} {VIX_TO_SIGMA_MULT}) and T={T.toFixed(6)}.
         {skew > 0 ? (' Skew-adjusted: puts use higher \u03C3, calls use lower.') : ''}
         {' '}Range thresholds interpolated for VIX {vix.toFixed(1)} from per-point historical data.
-        {dowMult ? (' ' + dowMult.dayLabel + ' adjustment: H-L \u00D7' + hlAdj.toFixed(3) + ', O\u2192C \u00D7' + ocAdj.toFixed(3) + '.') : ''}
+        {dowMult ? (' ' + dowMult.dayLabel + ': H-L \u00D7' + (dowMult.multHL).toFixed(3) + '.') : ''}
+        {cMult === 1 ? '' : (' Clustering: \u00D7' + cMult.toFixed(3) + '.')}
+        {(dowMult || cMult !== 1) ? (' Combined adj: H-L \u00D7' + hlAdj.toFixed(3) + ', O\u2192C \u00D7' + ocAdj.toFixed(3) + '.') : ''}
       </p>
 
       {/* Table 2: Your Deltas vs. Regime Thresholds */}

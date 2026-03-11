@@ -14,6 +14,7 @@ import VIXRangeAnalysis from './components/VIXRangeAnalysis';
 import DeltaRegimeGuide from './components/DeltaRegimeGuide';
 import VIXTermStructure from './components/VIXTermStructure';
 import OpeningRangeCheck from './components/OpeningRangeCheck';
+import VolatilityCluster from './components/VolatilityCluster';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -56,7 +57,7 @@ export default function StrikeCalculator() {
   const [dMult, setDMult] = useState(String(DEFAULTS.IV_PREMIUM_FACTOR));
   const [results, setResults] = useState<CalculationResults | null>(null);
   const [showRegime, setShowRegime] = useState(false);
-
+  const [clusterMult, setClusterMult] = useState(1);
   const th = darkMode ? darkTheme : lightTheme;
 
   // Load VIX data on mount: try localStorage cache first, then static JSON
@@ -621,36 +622,45 @@ export default function StrikeCalculator() {
             Historical VIX-to-SPX range correlation from 9,102 trading days (1990–2026).
             {' '}Expected daily ranges and IC survival rates at each VIX level.
             </p>
-          {showRegime && (
-            <div style={{ marginTop: 16 }}>
-              <VIXRangeAnalysis
-                th={th}
-                vix={dVix ? Number.parseFloat(dVix) : null}
-                spot={results?.spot ?? null}
-              />
-              {results && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
-                <>
-                  <DeltaRegimeGuide
-                    th={th}
-                    vix={Number.parseFloat(dVix)}
-                    spot={results.spot}
-                    T={results.T}
-                    skew={skewPct / 100}
-                    allDeltas={results.allDeltas}
-                    selectedDate={selectedDate}
-                  />
-                  <div style={{ marginTop: 20 }}>
-                    <OpeningRangeCheck
+            {showRegime && (
+              <div style={{ marginTop: 16 }}>
+                <VIXRangeAnalysis
+                  th={th}
+                  vix={dVix ? Number.parseFloat(dVix) : null}
+                  spot={results?.spot ?? null}
+                />
+                {results && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
+                  <>
+                    <div style={{ marginTop: 20 }}>
+                      <VolatilityCluster
+                        th={th}
+                        vix={Number.parseFloat(dVix)}
+                        spot={results.spot}
+                        onMultiplierChange={setClusterMult}
+                      />
+                    </div>
+                    <DeltaRegimeGuide
                       th={th}
                       vix={Number.parseFloat(dVix)}
                       spot={results.spot}
+                      T={results.T}
+                      skew={skewPct / 100}
+                      allDeltas={results.allDeltas}
                       selectedDate={selectedDate}
+                      clusterMult={clusterMult}
                     />
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+                    <div style={{ marginTop: 20 }}>
+                      <OpeningRangeCheck
+                        th={th}
+                        vix={Number.parseFloat(dVix)}
+                        spot={results.spot}
+                        selectedDate={selectedDate}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </SectionBox>
 
           {/* Results Table */}
