@@ -15,6 +15,7 @@ import DeltaRegimeGuide from './components/DeltaRegimeGuide';
 import VIXTermStructure from './components/VIXTermStructure';
 import OpeningRangeCheck from './components/OpeningRangeCheck';
 import VolatilityCluster from './components/VolatilityCluster';
+import EventDayWarning from './components/EventDayWarning';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -301,6 +302,8 @@ export default function StrikeCalculator() {
                   </p>
                 </div>
               )}
+              {/* NEW: Event Day Warning */}
+              <EventDayWarning th={th} selectedDate={selectedDate} />
               {selectedDate && !vixOHLC && <ErrorMsg th={th}>No VIX data found for this date</ErrorMsg>}
             </SectionBox>
           )}

@@ -39,6 +39,7 @@ It computes everything client-side with zero external API dependencies. You inpu
 - **VIX term structure signals** (VIX1D/VIX and VIX9D/VIX ratios) for pre-market risk assessment
 - **Opening range check** comparing the first 30 minutes of trading against the expected daily range
 - **Volatility clustering analysis** showing how yesterday's range predicts today's range
+- **Event day warnings** for FOMC, CPI, NFP, and GDP release days with severity-coded alerts and actionable advice
 - An adjustable contracts counter to see dollar-denominated P&L at any position size
 - A one-click Excel export comparing all 7 wing widths × 6 deltas × 3 trade structures with monthly P&L projections and recovery metrics
 
@@ -106,6 +107,7 @@ It computes everything client-side with zero external API dependencies. You inpu
 - **Date lookup**: Select a date to auto-populate VIX from historical data
 - **OHLC display**: Shows Open, High, Low, Close for the selected date
 - **Smart field selection**: Auto-selects Open for AM entries, Close for PM entries, or manually pick any OHLC value
+- **Event day warnings**: When the selected date has a scheduled FOMC, CPI, NFP, or GDP release, a severity-coded banner warns you with release time and actionable advice. Covers all events for 2025–2026 from a static calendar updated once per year.
 - **Three-tier data loading**: localStorage cache (instant) → static JSON (first load) → manual CSV upload (override)
 - **Persistent caching**: Uploaded data and built-in data are cached in localStorage — survives page refreshes and browser restarts
 
@@ -165,6 +167,17 @@ Checks if yesterday's range predicts a wider day today:
 - **Signal**: TAILWIND (calm yesterday → quieter today, mult 0.89–0.96x), NEUTRAL (typical, 0.97–1.01x), CLUSTERING (active, 1.04–1.19x), HIGH CLUSTERING (extreme, 1.20–1.87x)
 - **Automatic Delta Guide integration**: The clustering multiplier flows directly into the Delta Guide's range thresholds, adjusting the ceiling without any manual math
 - **Percentile reference bar**: Visual showing where yesterday's range fell relative to p50/p75/p90 for the current VIX regime
+
+### Event Day Warning
+
+Automatic detection of scheduled high-impact economic releases:
+
+- **Static calendar**: All FOMC (8/year), CPI (12/year), NFP (12/year), and GDP (4/year) dates for 2025–2026, sourced from the Federal Reserve and BLS published schedules. No backend or API required — data ships with the app.
+- **High-impact events** (red banner): FOMC rate decisions, CPI releases, NFP employment reports. These historically produce wider ranges than VIX alone predicts.
+- **Medium-impact events** (yellow banner): GDP advance estimates. Moderate volatility potential.
+- **Multi-event detection**: Days with overlapping events (e.g. Dec 9, 2026 has both FOMC + CPI) show all events stacked.
+- **Actionable advice**: "Widen deltas 1–2Δ beyond the guide ceiling, reduce size, or sit out until after the release."
+- **Annual update**: Add next year's dates when the Fed publishes the FOMC schedule (usually August) and BLS publishes CPI/NFP schedules (start of year).
 
 ### Historical Range Analysis
 
@@ -373,6 +386,7 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 │   │   ├── calculator.test.ts         # Strike calc, matrix, properties (132 tests)
 │   │   ├── csvParser.test.ts          # CSV parsing (13 tests)
 │   │   ├── DeltaRegimeGuide.test.tsx  # Delta guide, DOW, clustering (51+ tests)
+│   │   ├── EventDayWarning.test.tsx   # Event calendar + warning banner
 │   │   ├── exportXlsx.test.ts         # Excel export (33 tests)
 │   │   ├── hedge.test.tsx             # Hedge calculator (32 tests)
 │   │   ├── OpeningRangeCheck.test.tsx  # Opening range analysis
@@ -390,6 +404,7 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 │   ├── components/
 │   │   ├── DeltaRegimeGuide.tsx       # Delta ceiling with DOW + clustering adjustments
 │   │   ├── DeltaStrikesTable.tsx      # Strike table with premiums and Greeks
+│   │   ├── EventDayWarning.tsx        # FOMC/CPI/NFP/GDP event day warning banner
 │   │   ├── IronCondorSection.tsx      # IC legs table and P&L profile
 │   │   ├── OpeningRangeCheck.tsx      # First-30-min range signal
 │   │   ├── ParameterSummary.tsx       # Calculation parameter display
@@ -401,6 +416,7 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 │   ├── constants/
 │   │   └── index.ts                   # Named constants (no magic numbers)
 │   ├── data/
+│   │   ├── eventCalendar.ts           # Static FOMC/CPI/NFP/GDP dates (2025–2026)
 │   │   └── vixRangeStats.ts           # Pre-computed VIX→SPX range stats, DOW data, clustering data
 │   ├── themes/
 │   │   └── index.ts                   # Light/dark theme definitions
@@ -460,6 +476,13 @@ The codebase follows a strict separation between pure calculation logic, data ma
 - `getDowMultiplier()` — Returns DOW adjustment for a given VIX and day
 - `getClusterMultiplier()` — Returns clustering adjustment for a given VIX and yesterday's range
 
+**Event calendar** (`src/data/eventCalendar.ts`) — Static dates for all major economic releases (2025–2026):
+
+- FOMC rate decisions (8/year), CPI (12/year), NFP (12/year), GDP (4/year)
+- `getEventsForDate()` — O(1) lookup returning all events for a date
+- `isHighImpactDay()` / `getMaxSeverity()` / `getEventSummary()` — Convenience helpers
+- Updated once per year when schedules are published
+
 **Regime components** (`src/components/`) — Purpose-built UI for each regime signal:
 
 - `VIXRegimeCard` — Compact card with regime label, stats, and advice
@@ -468,6 +491,7 @@ The codebase follows a strict separation between pure calculation logic, data ma
 - `VIXTermStructure` — VIX1D/VIX9D input and ratio signals
 - `OpeningRangeCheck` — First-30-min range consumption analysis
 - `VolatilityCluster` — Yesterday's range → today's range multiplier
+- `EventDayWarning` — FOMC/CPI/NFP/GDP warning banner tied to date picker
 
 **Strike/IC components** (`src/components/`) — Delta table, iron condor section, parameter summary, and shared UI helpers.
 
@@ -617,7 +641,7 @@ Snapshot of every parameter: SPY, SPX, ratio, σ, skew, T, hours, contracts, mul
 
 ### Test Suite Overview
 
-**700+ tests across 17+ test files**, all passing with TypeScript strict mode.
+**750+ tests across 18+ test files**, all passing with TypeScript strict mode.
 
 | File | Coverage Focus |
 | ---- | -------------- |
@@ -634,6 +658,7 @@ Snapshot of every parameter: SPY, SPX, ratio, σ, skew, T, hours, contracts, mul
 | `VIXRegimeCard.test.tsx` | Regime card rendering across zones, stat display, theme support |
 | `VIXRangeAnalysis.test.tsx` | Survival toggle, fine-grained toggle, table rendering, bucket highlighting |
 | `DeltaRegimeGuide.test.tsx` | Ceiling recommendation, threshold table, delta matrix, continuous interpolation, DOW badges, clustering integration |
+| `EventDayWarning.test.tsx` | Event calendar data integrity (FOMC/CPI/NFP/GDP counts), lookup functions, warning banner rendering, severity coding, multi-event days |
 | `VIXTermStructure.test.tsx` | VIX1D/VIX9D ratio signals, combined signal, VIX1D as σ callback |
 | `OpeningRangeCheck.test.tsx` | Range signals, VIX sensitivity, DOW adjustment, edge cases |
 | `VolatilityCluster.test.tsx` | Clustering signals, multiplier callback, VIX sensitivity, percentile reference |
@@ -645,7 +670,7 @@ Snapshot of every parameter: SPY, SPX, ratio, σ, skew, T, hours, contracts, mul
 - **Property-based tests**: Higher delta → narrower strikes, higher σ → wider strikes, less time → narrower strikes, put strike < spot < call strike
 - **Boundary tests**: Every minute from market open to close verified for monotonic time decrease
 - **Edge cases**: VIX = 0, negative values, NaN, undefined, multiplier boundaries, T = 0, σ = 0
-- **Regime tests**: Continuous interpolation smoothness, DOW adjustment monotonicity, clustering multiplier integration, term structure signal classification
+- **Regime tests**: Continuous interpolation smoothness, DOW adjustment monotonicity, clustering multiplier integration, term structure signal classification, event calendar data integrity (exact counts per year, field completeness)
 - **Spread-specific tests**: Put spread + call spread credits sum to IC total, individual spread PoP > IC PoP, breakevens between strikes, skew asymmetry
 - **Component tests**: Full user interaction flows including CSV upload, date selection, IV mode switching, IC toggle, contracts counter, wing width selection, dark mode, spread sub-rows rendering, regime analysis sections
 
@@ -768,6 +793,7 @@ Key design decisions made during development, with rationale:
 | Clustering | Yesterday's range percentile → multiplier | Strongest signal at high VIX (up to 1.87x) |
 | Term structure | VIX1D/VIX and VIX9D/VIX ratios | Pre-market risk assessment |
 | Opening range | First 30-min vs expected daily | Go/no-go for second entry |
+| Event calendar | Static JSON, no backend | FOMC/CPI/NFP/GDP dates fixed a year ahead; update once annually |
 | Framework | Vite + React | Lightest viable toolchain |
 | TypeScript | Strict mode | `noUncheckedIndexedAccess`, `noUnusedLocals`, etc. |
 | Testing | Vitest + RTL | Fast, modern, good DX |
@@ -792,6 +818,9 @@ This section documents the intended workflow combining the calculator with exter
 
 ```text
 NIGHT BEFORE / PRE-MARKET:
+  Select today's date in calculator → check Event Day Warning
+  Note: FOMC/CPI/NFP day → reduce size or sit out
+        No events → proceed normally
   Enter yesterday's SPX OHLC → check Volatility Clustering signal
   Note: HIGH CLUSTERING → reduce size tomorrow
         TAILWIND → normal or slightly more aggressive
@@ -861,6 +890,7 @@ Multiple signals can reinforce or conflict. When they conflict, always defer to 
 | Term structure: CAUTION + Clustering: any | Reduce size regardless of other signals |
 | Clustering: HIGH CLUSTERING + any | Widen deltas or reduce size even if other signals are green |
 | Term structure: HIGH ALERT + any | Consider sitting out entirely |
+| Event day: FOMC/CPI/NFP | Widen 1–2Δ, reduce size, or wait until after release |
 | Opening range: RED + any | Skip second entry |
 
 ---
@@ -914,7 +944,7 @@ The calculator provides strike placement accuracy of approximately ±5–15 SPX 
 2. **Put/call skew** — The linear skew model (±N% on puts/calls) is a simplification of the real volatility smile. Actual skew varies by strike distance and market conditions.
 3. **SPX/SPY ratio drift** — The ratio fluctuates due to ETF expense ratios, dividend timing, and NAV tracking. Enter the actual SPX price when available for maximum accuracy.
 4. **Theoretical vs market premiums** — Black-Scholes prices assume continuous hedging and log-normal returns. Real option prices include bid/ask spreads, market maker edge, and supply/demand effects.
-5. **Regime data limitations** — Historical range statistics are based on VIX open matched to same-day SPX OHLC. They don't account for event-day effects (CPI, FOMC, NFP), though the VIX1D term structure signal partially captures event pricing.
+5. **Regime data limitations** — Historical range statistics are based on VIX open matched to same-day SPX OHLC. They don't separate event-day ranges from non-event-day ranges. The Event Day Warning flags FOMC/CPI/NFP/GDP days, and VIX1D term structure partially captures event pricing, but the Delta Guide's historical thresholds are not event-adjusted. The event calendar covers 2025–2026 and must be updated annually.
 6. **Monthly projections** — The Excel export's monthly P&L assumes hold-to-expiration on every trade. Real results depend heavily on trade management (profit targets, stop losses, position sizing).
 7. **Interest rate** — Assumed zero. Negligible for 0DTE but non-zero for longer durations.
 8. **Dividends** — Not modeled. Minimal impact for SPX same-day calculations.
