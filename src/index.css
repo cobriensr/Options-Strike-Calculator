@@ -4,46 +4,46 @@
 @variant dark (&:is(.dark *));
 
 /* ============================================================
-   DESIGN TOKENS
+   DESIGN TOKENS — light mode values as defaults
    ============================================================ */
 @theme {
   /* Backgrounds */
-  --color-page: var(--th-bg);
-  --color-surface: var(--th-surface);
-  --color-surface-alt: var(--th-surface-alt);
-  --color-input: var(--th-input-bg);
-  --color-table-alt: var(--th-table-row-alt);
-  --color-table-header: var(--th-table-header);
-  --color-accent-bg: var(--th-accent-bg);
+  --color-page: #F4F1EB;
+  --color-surface: #FFFFFF;
+  --color-surface-alt: #EDEAE3;
+  --color-input: #FAF9F6;
+  --color-table-alt: #FAF9F6;
+  --color-table-header: #F4F1EB;
+  --color-accent-bg: #EFF6FF;
 
   /* Text & semantic colors */
-  --color-primary: var(--th-text);
-  --color-secondary: var(--th-text-secondary);
-  --color-tertiary: var(--th-text-tertiary);
-  --color-muted: var(--th-text-muted);
-  --color-accent: var(--th-accent);
-  --color-success: var(--th-green);
-  --color-danger: var(--th-red);
+  --color-primary: #1C1A15;
+  --color-secondary: #4A4740;
+  --color-tertiary: #5C5950;
+  --color-muted: #7A756B;
+  --color-accent: #1D4ED8;
+  --color-success: #15803D;
+  --color-danger: #B91C1C;
   --color-caution: #E8A317;
 
   /* Borders */
-  --color-edge: var(--th-border);
-  --color-edge-strong: var(--th-border-strong);
-  --color-edge-heavy: var(--th-border-heavy);
+  --color-edge: #DDD8CE;
+  --color-edge-strong: #C8C3B8;
+  --color-edge-heavy: #2C2A25;
 
   /* Tooltip */
-  --color-tooltip-bg: var(--th-tooltip-bg);
-  --color-tooltip-text: var(--th-tooltip-text);
-  --color-tooltip-code-bg: var(--th-tooltip-code-bg);
-  --color-tooltip-code-text: var(--th-tooltip-code-text);
+  --color-tooltip-bg: #1C1A15;
+  --color-tooltip-text: #F4F1EB;
+  --color-tooltip-code-bg: #f0f0f0;
+  --color-tooltip-code-text: #1C1A15;
 
   /* Chip */
-  --color-chip-bg: var(--th-chip-bg);
-  --color-chip-active-bg: var(--th-chip-active-bg);
-  --color-chip-border: var(--th-chip-border);
-  --color-chip-active-border: var(--th-chip-active-border);
-  --color-chip-text: var(--th-chip-text);
-  --color-chip-active-text: var(--th-chip-active-text);
+  --color-chip-bg: #FFFFFF;
+  --color-chip-active-bg: #EFF6FF;
+  --color-chip-border: #C8C3B8;
+  --color-chip-active-border: #1D4ED8;
+  --color-chip-text: #4A4740;
+  --color-chip-active-text: #1D4ED8;
 
   /* Fonts */
   --font-serif: 'Source Serif 4', 'Charter', Georgia, serif;
@@ -52,7 +52,7 @@
 }
 
 /* ============================================================
-   LIGHT THEME (default)
+   LIGHT THEME — th-* vars for JS components that need raw hex
    ============================================================ */
 :root {
   --th-bg: #F4F1EB;
@@ -92,9 +92,39 @@
 }
 
 /* ============================================================
-   DARK THEME
+   DARK THEME — override both --color-* (Tailwind) and --th-* (JS)
    ============================================================ */
 .dark {
+  /* Tailwind color overrides */
+  --color-page: #121212;
+  --color-surface: #1E1E1E;
+  --color-surface-alt: #2A2A2A;
+  --color-input: #252525;
+  --color-table-alt: #252525;
+  --color-table-header: #2A2A2A;
+  --color-accent-bg: #1A2744;
+  --color-primary: #ECECEC;
+  --color-secondary: #C0C0C0;
+  --color-tertiary: #A0A0A0;
+  --color-muted: #808080;
+  --color-accent: #6B9CFF;
+  --color-success: #4ADE80;
+  --color-danger: #F87171;
+  --color-edge: #333333;
+  --color-edge-strong: #444444;
+  --color-edge-heavy: #E0DDD6;
+  --color-tooltip-bg: #ECECEC;
+  --color-tooltip-text: #1E1E1E;
+  --color-tooltip-code-bg: #333333;
+  --color-tooltip-code-text: #e0e0e0;
+  --color-chip-bg: #252525;
+  --color-chip-active-bg: #1A2744;
+  --color-chip-border: #444444;
+  --color-chip-active-border: #6B9CFF;
+  --color-chip-text: #C0C0C0;
+  --color-chip-active-text: #6B9CFF;
+
+  /* JS theme vars */
   --th-bg: #121212;
   --th-surface: #1E1E1E;
   --th-surface-alt: #2A2A2A;
