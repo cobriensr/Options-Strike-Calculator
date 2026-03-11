@@ -16,6 +16,7 @@ import VIXTermStructure from './components/VIXTermStructure';
 import OpeningRangeCheck from './components/OpeningRangeCheck';
 import VolatilityCluster from './components/VolatilityCluster';
 import EventDayWarning from './components/EventDayWarning';
+import { Analytics } from '@vercel/analytics/react';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -674,6 +675,7 @@ export default function StrikeCalculator() {
           </main>
         </div>
       </div>
+      <Analytics />
     </div>
   );
 }
