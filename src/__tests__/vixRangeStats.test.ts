@@ -9,6 +9,12 @@ import {
   findFineStat,
   getSurvival,
   estimateRange,
+  DOW_STATS_ALL,
+  DOW_STATS_LOW_VIX,
+  DOW_STATS_MID_VIX,
+  DOW_STATS_HIGH_VIX,
+  getDowMultiplier,
+  getTodayDow,
 } from '../data/vixRangeStats';
 
 // ============================================================
@@ -24,7 +30,7 @@ describe('VIX_BUCKETS: data integrity', () => {
     for (let i = 1; i < VIX_BUCKETS.length; i++) {
       expect(VIX_BUCKETS[i]!.lo).toBe(VIX_BUCKETS[i - 1]!.hi);
     }
-    expect(VIX_BUCKETS.at(-1)!.hi).toBeGreaterThanOrEqual(100);
+    expect(VIX_BUCKETS[VIX_BUCKETS.length - 1]!.hi).toBeGreaterThanOrEqual(100);
   });
 
   it('all buckets have positive day counts', () => {
@@ -90,7 +96,7 @@ describe('VIX_BUCKETS: data integrity', () => {
 
   it('zones progress from go toward danger', () => {
     expect(VIX_BUCKETS[0]!.zone).toBe('go');
-    expect(VIX_BUCKETS.at(-1)!.zone).toBe('danger');
+    expect(VIX_BUCKETS[VIX_BUCKETS.length - 1]!.zone).toBe('danger');
   });
 
   it('all buckets have unique labels', () => {
@@ -204,7 +210,7 @@ describe('FINE_VIX_STATS: data integrity', () => {
 
   it('median H-L generally increases with VIX', () => {
     const first = FINE_VIX_STATS[0]!.medHL;
-    const last = FINE_VIX_STATS.at(-1)!.medHL;
+    const last = FINE_VIX_STATS[FINE_VIX_STATS.length - 1]!.medHL;
     expect(last).toBeGreaterThan(first * 2);
   });
 
@@ -422,6 +428,126 @@ describe('estimateRange', () => {
       const r = estimateRange(vix);
       expect(r.medHL).toBeGreaterThanOrEqual(r.medOC);
       expect(r.p90HL).toBeGreaterThanOrEqual(r.p90OC);
+    }
+  });
+});
+
+// ============================================================
+// DAY-OF-WEEK DATA
+// ============================================================
+describe('DOW_STATS: data integrity', () => {
+  const allTables = [
+    { name: 'ALL', data: DOW_STATS_ALL },
+    { name: 'LOW_VIX', data: DOW_STATS_LOW_VIX },
+    { name: 'MID_VIX', data: DOW_STATS_MID_VIX },
+    { name: 'HIGH_VIX', data: DOW_STATS_HIGH_VIX },
+  ];
+
+  for (const { name, data } of allTables) {
+    it(`${name} contains exactly 5 entries (Mon-Fri)`, () => {
+      expect(data).toHaveLength(5);
+    });
+
+    it(`${name} has consecutive days 0-4`, () => {
+      for (let i = 0; i < data.length; i++) {
+        expect(data[i]!.day).toBe(i);
+      }
+    });
+
+    it(`${name} has positive counts`, () => {
+      for (const row of data) {
+        expect(row.count).toBeGreaterThan(0);
+      }
+    });
+
+    it(`${name} has valid multipliers near 1.0`, () => {
+      for (const row of data) {
+        expect(row.multHL).toBeGreaterThan(0.8);
+        expect(row.multHL).toBeLessThan(1.2);
+        expect(row.multOC).toBeGreaterThan(0.8);
+        expect(row.multOC).toBeLessThan(1.2);
+      }
+    });
+
+    it(`${name} multipliers average close to 1.0`, () => {
+      const avgHL = data.reduce((s, r) => s + r.multHL, 0) / 5;
+      const avgOC = data.reduce((s, r) => s + r.multOC, 0) / 5;
+      expect(avgHL).toBeCloseTo(1.0, 1);
+      expect(avgOC).toBeCloseTo(1.0, 1);
+    });
+
+    it(`${name} p90 > median for H-L and O-C`, () => {
+      for (const row of data) {
+        expect(row.p90HL).toBeGreaterThan(row.medHL);
+        expect(row.p90OC).toBeGreaterThan(row.medOC);
+      }
+    });
+  }
+
+  it('Monday is quieter than Thursday across all regimes', () => {
+    for (const { data } of allTables) {
+      const mon = data[0]!;
+      const thu = data[3]!;
+      expect(mon.multHL).toBeLessThan(thu.multHL);
+    }
+  });
+});
+
+// ============================================================
+// getDowMultiplier
+// ============================================================
+describe('getDowMultiplier', () => {
+  it('returns Monday multiplier for VIX 15 (low regime)', () => {
+    const m = getDowMultiplier(15, 0);
+    expect(m.dayLabel).toBe('Monday');
+    expect(m.dayShort).toBe('Mon');
+    expect(m.multHL).toBeCloseTo(0.905, 3);
+  });
+
+  it('returns Thursday multiplier for VIX 22 (mid regime)', () => {
+    const m = getDowMultiplier(22, 3);
+    expect(m.dayLabel).toBe('Thursday');
+    expect(m.multHL).toBeCloseTo(1.021, 3);
+  });
+
+  it('returns Friday multiplier for VIX 30 (high regime)', () => {
+    const m = getDowMultiplier(30, 4);
+    expect(m.dayLabel).toBe('Friday');
+    expect(m.multHL).toBeCloseTo(1.013, 3);
+  });
+
+  it('clamps day of week to 0-4', () => {
+    const m = getDowMultiplier(20, -1);
+    expect(m.dayLabel).toBe('Monday');
+    const m2 = getDowMultiplier(20, 7);
+    expect(m2.dayLabel).toBe('Friday');
+  });
+
+  it('uses low VIX table for VIX < 18', () => {
+    const m = getDowMultiplier(12, 0);
+    expect(m.multHL).toBeCloseTo(0.905, 3);
+  });
+
+  it('uses mid VIX table for VIX 18-24.99', () => {
+    const m = getDowMultiplier(22, 0);
+    expect(m.multHL).toBeCloseTo(0.966, 3);
+  });
+
+  it('uses high VIX table for VIX >= 25', () => {
+    const m = getDowMultiplier(35, 0);
+    expect(m.multHL).toBeCloseTo(0.956, 3);
+  });
+});
+
+// ============================================================
+// getTodayDow
+// ============================================================
+describe('getTodayDow', () => {
+  it('returns a number 0-4 or null', () => {
+    const dow = getTodayDow();
+    if (dow !== null) {
+      expect(dow).toBeGreaterThanOrEqual(0);
+      expect(dow).toBeLessThanOrEqual(4);
     }
   });
 });

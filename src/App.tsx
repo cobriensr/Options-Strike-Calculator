@@ -12,6 +12,7 @@ import ParameterSummary from './components/ParameterSummary';
 import VIXRegimeCard from './components/VIXRegimeCard';
 import VIXRangeAnalysis from './components/VIXRangeAnalysis';
 import DeltaRegimeGuide from './components/DeltaRegimeGuide';
+import VIXTermStructure from './components/VIXTermStructure';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -457,6 +458,27 @@ export default function StrikeCalculator() {
                 vix={Number.parseFloat(dVix)}
                 spot={results.spot}
               />
+            )}
+
+            {/* NEW: Term Structure Panel */}
+            {ivMode === IV_MODES.VIX && dVix && !errors['vix'] && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{
+                  fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700,
+                  textTransform: 'uppercase', letterSpacing: '0.14em',
+                  color: th.textTertiary, marginBottom: 8,
+                }}>
+                  Term Structure
+                </div>
+                <VIXTermStructure
+                  th={th}
+                  vix={Number.parseFloat(dVix)}
+                  onUseVix1dAsSigma={(sigma) => {
+                    setIvMode(IV_MODES.DIRECT);
+                    setDirectIVInput(sigma.toFixed(4));
+                  }}
+                />
+              </div>
             )}
           </SectionBox>
 

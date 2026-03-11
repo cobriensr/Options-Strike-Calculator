@@ -1,18 +1,21 @@
 import type { Theme } from '../themes';
 import type { DeltaRow, DeltaRowError } from '../types';
 import { calcBSDelta, calcScaledSkew } from '../utils/calculator';
-import { findBucket, estimateRange } from '../data/vixRangeStats';
+import { findBucket, estimateRange, getDowMultiplier, getTodayDow } from '../data/vixRangeStats';
 import { mkTh, mkTd } from './ui';
 
 interface Props {
   readonly th: Theme;
   readonly vix: number;
   readonly spot: number;
-  readonly sigma: number;
   readonly T: number;
   readonly skew: number; // decimal, e.g. 0.03
   readonly allDeltas: ReadonlyArray<DeltaRow | DeltaRowError>;
+  readonly selectedDate?: string; // 'YYYY-MM-DD' from date picker, falls back to today
 }
+
+/** Default 0DTE IV adjustment — matches the calculator's default multiplier */
+const VIX_TO_SIGMA_MULT = 1.15;
 
 /** A range threshold from the VIX regime data */
 interface RangeThreshold {
@@ -45,21 +48,44 @@ interface ThresholdDelta {
  * 1. Range thresholds → max delta to sell (the answer)
  * 2. Your standard deltas → which thresholds they clear (the verification)
  */
-export default function DeltaRegimeGuide({ th, vix, spot, sigma, T, skew, allDeltas }: Props) {
+export default function DeltaRegimeGuide({ th, vix, spot, T, skew, allDeltas, selectedDate }: Props) {
   const bucket = findBucket(vix);
   if (!bucket) return null;
 
+  // Compute sigma internally from VIX — always uses VIX × 1.15 / 100
+  // so the Delta Guide stays self-consistent with VIX-based range thresholds,
+  // regardless of whether the user switched to Direct IV (VIX1D) for strike pricing.
+  const sigma = vix * VIX_TO_SIGMA_MULT / 100;
+
+  // Derive day of week from selected date, falling back to today
+  const dow = (() => {
+    if (selectedDate) {
+      // Parse 'YYYY-MM-DD' — use UTC to avoid timezone shift
+      const parts = selectedDate.split('-');
+      if (parts.length === 3) {
+        const d = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])));
+        const jsDay = d.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
+        if (jsDay >= 1 && jsDay <= 5) return jsDay - 1; // 0=Mon..4=Fri
+        return null; // weekend
+      }
+    }
+    return getTodayDow();
+  })();
+  const dowMult = dow != null ? getDowMultiplier(vix, dow) : null;
+
   // Use continuous interpolation instead of discrete bucket thresholds.
-  // estimateRange interpolates per-point data for VIX 10–30 and falls
-  // back to bucket stats for VIX > 30.
   const range = estimateRange(vix);
 
-  // Build range thresholds from interpolated data
+  // Apply day-of-week multiplier to range thresholds
+  const hlAdj = dowMult?.multHL ?? 1;
+  const ocAdj = dowMult?.multOC ?? 1;
+
+  // Build range thresholds from interpolated data, DOW-adjusted
   const thresholds: RangeThreshold[] = [
-    { label: 'Median O\u2192C', pct: range.medOC, purpose: '~50% settlement survival' },
-    { label: 'Median H-L', pct: range.medHL, purpose: '~50% intraday survival' },
-    { label: '90th O\u2192C', pct: range.p90OC, purpose: '~90% settlement survival' },
-    { label: '90th H-L', pct: range.p90HL, purpose: '~90% intraday survival' },
+    { label: 'Median O\u2192C', pct: range.medOC * ocAdj, purpose: '~50% settlement survival' },
+    { label: 'Median H-L', pct: range.medHL * hlAdj, purpose: '~50% intraday survival' },
+    { label: '90th O\u2192C', pct: range.p90OC * ocAdj, purpose: '~90% settlement survival' },
+    { label: '90th H-L', pct: range.p90HL * hlAdj, purpose: '~90% intraday survival' },
   ];
 
   // Compute the BS delta at each threshold distance
@@ -108,8 +134,20 @@ export default function DeltaRegimeGuide({ th, vix, spot, sigma, T, skew, allDel
         fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700,
         textTransform: 'uppercase' as const, letterSpacing: '0.14em',
         color: th.accent, marginBottom: 10,
+        display: 'flex', alignItems: 'center', gap: 10,
       }}>
-        Delta Guide for VIX {vix.toFixed(1)}
+        <span>Delta Guide for VIX {vix.toFixed(1)}</span>
+        {dowMult && (
+          <span style={{
+            fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 99,
+            fontFamily: "'DM Mono', monospace",
+            backgroundColor: hlAdj < 0.97 ? th.green + '18' : hlAdj > 1.03 ? '#E8A31718' : th.surfaceAlt,
+            color: hlAdj < 0.97 ? th.green : hlAdj > 1.03 ? '#E8A317' : th.textMuted,
+          }}>
+            {dowMult.dayShort} {hlAdj < 0.97 ? '\u2193' : hlAdj > 1.03 ? '\u2191' : '\u2248'}
+            {hlAdj < 0.97 ? ' quieter' : hlAdj > 1.03 ? ' wider' : ' avg'}
+          </span>
+        )}
       </div>
 
       {/* Recommendation Banner */}
@@ -255,9 +293,10 @@ export default function DeltaRegimeGuide({ th, vix, spot, sigma, T, skew, allDel
       </div>
 
       <p style={{ fontSize: 11, color: th.textMuted, margin: '6px 0 16px', fontStyle: 'italic' }}>
-        {'"'}Max Delta{'"'} = the highest delta whose strike clears that range. Sell at or below this delta. Computed using your current {'\u03C3'}={sigma.toFixed(4)} and T={T.toFixed(6)}.
+        {'"'}Max Delta{'"'} = the highest delta whose strike clears that range. Sell at or below this delta. Uses VIX-derived {'\u03C3'}={sigma.toFixed(4)} (VIX {vix.toFixed(1)} {'\u00D7'} {VIX_TO_SIGMA_MULT}) and T={T.toFixed(6)}.
         {skew > 0 ? (' Skew-adjusted: puts use higher \u03C3, calls use lower.') : ''}
         {' '}Range thresholds interpolated for VIX {vix.toFixed(1)} from per-point historical data.
+        {dowMult ? (' ' + dowMult.dayLabel + ' adjustment: H-L \u00D7' + hlAdj.toFixed(3) + ', O\u2192C \u00D7' + ocAdj.toFixed(3) + '.') : ''}
       </p>
 
       {/* Table 2: Your Deltas vs. Regime Thresholds */}

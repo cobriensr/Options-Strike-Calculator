@@ -6,22 +6,22 @@ import { calcAllDeltas, calcTimeToExpiry } from '../utils/calculator';
 
 // Helper: standard test params matching a typical 0DTE session
 function makeProps(overrides: Partial<{
-  vix: number; spot: number; sigma: number; hours: number; skew: number;
+  vix: number; spot: number; hours: number; skew: number; selectedDate: string;
 }> = {}) {
   const spot = overrides.spot ?? 6800;
-  const sigma = overrides.sigma ?? 0.23;
   const hours = overrides.hours ?? 4;
   const T = calcTimeToExpiry(hours);
   const skew = overrides.skew ?? 0.03;
+  const sigma = (overrides.vix ?? 20) * 1.15 / 100; // only used for allDeltas computation
   const allDeltas = calcAllDeltas(spot, sigma, T, skew, 10);
   return {
     th: lightTheme,
     vix: overrides.vix ?? 20,
     spot,
-    sigma,
     T,
     skew,
     allDeltas,
+    selectedDate: overrides.selectedDate ?? '2026-03-10', // Tuesday (neutral ~1.0x)
   };
 }
 
@@ -76,7 +76,7 @@ describe('DeltaRegimeGuide: continuous interpolation', () => {
   });
 
   it('VIX 24.9 and VIX 25.1 produce similar (not jumpy) thresholds', () => {
-    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 24.9, sigma: 0.29 })} />);
+    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 24.9 })} />);
     const table1 = screen.getByRole('table', { name: /range thresholds/i });
     // Find the 90th O→C row — it's the 3rd data row (index 2)
     const rows1 = within(table1).getAllByRole('row');
@@ -85,7 +85,7 @@ describe('DeltaRegimeGuide: continuous interpolation', () => {
     const pct1 = Number.parseFloat(pctCell1);
     unmount();
 
-    render(<DeltaRegimeGuide {...makeProps({ vix: 25.1, sigma: 0.29 })} />);
+    render(<DeltaRegimeGuide {...makeProps({ vix: 25.1 })} />);
     const table2 = screen.getByRole('table', { name: /range thresholds/i });
     const rows2 = within(table2).getAllByRole('row');
     const p90ocRow2 = rows2[3];
@@ -101,7 +101,7 @@ describe('DeltaRegimeGuide: continuous interpolation', () => {
     // Higher VIX should always produce wider thresholds (lower recommended delta)
     const results: number[] = [];
     for (const vix of [15, 20, 25, 30]) {
-      const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix, sigma: 0.25 })} />);
+      const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix })} />);
       const table = screen.getByRole('table', { name: /range thresholds/i });
       const rows = within(table).getAllByRole('row');
       // 90th O→C is 3rd data row
@@ -156,10 +156,13 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
 
   it('conservative delta is lower than aggressive delta', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    const aggressive = screen.getByText('Aggressive').closest('div');
-    const conservative = screen.getByText('Conservative').closest('div');
+    // parentElement gets the GuidanceCell wrapper containing label + delta + desc
+    const aggressive = screen.getByText('Aggressive').parentElement;
+    const conservative = screen.getByText('Conservative').parentElement;
     const aggDelta = Number.parseInt(aggressive?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
     const consDelta = Number.parseInt(conservative?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
+    expect(aggDelta).toBeGreaterThan(0);
+    expect(consDelta).toBeGreaterThan(0);
     expect(consDelta).toBeLessThan(aggDelta);
   });
 
@@ -305,9 +308,10 @@ describe('DeltaRegimeGuide: VIX sensitivity', () => {
 // PARAMETER SENSITIVITY
 // ============================================================
 describe('DeltaRegimeGuide: parameter sensitivity', () => {
-  it('higher sigma shifts deltas', () => {
-    render(<DeltaRegimeGuide {...makeProps({ sigma: 0.30 })} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  it('higher VIX produces different sigma internally', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 30 })} />);
+    // footnote shows VIX-derived sigma: 30 * 1.15 / 100 = 0.3450
+    expect(screen.getByText(/0\.3450/)).toBeInTheDocument();
   });
 
   it('less time remaining changes delta values', () => {
@@ -371,13 +375,74 @@ describe('DeltaRegimeGuide: edge cases', () => {
     expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
   });
 
-  it('handles very low sigma', () => {
-    render(<DeltaRegimeGuide {...makeProps({ sigma: 0.08 })} />);
+  it('handles very low VIX', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 10 })} />);
     expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
   });
 
-  it('handles very high sigma', () => {
-    render(<DeltaRegimeGuide {...makeProps({ sigma: 0.50 })} />);
+  it('handles very high VIX', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 45 })} />);
     expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// DAY-OF-WEEK ADJUSTMENT
+// ============================================================
+describe('DeltaRegimeGuide: day-of-week adjustment', () => {
+  // 2026-03-09 = Monday, 2026-03-12 = Thursday, 2026-03-14 = Saturday
+  it('shows DOW badge for Monday', () => {
+    render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-03-09' })} />);
+    expect(screen.getByText(/Mon.*quieter/)).toBeInTheDocument();
+  });
+
+  it('shows DOW badge for Thursday', () => {
+    render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-03-12' })} />);
+    expect(screen.getByText(/Thu.*wider|Thu.*avg/)).toBeInTheDocument();
+  });
+
+  it('Monday produces narrower thresholds than Thursday at same VIX', () => {
+    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 20, selectedDate: '2026-03-09' })} />);
+    const table1 = screen.getByRole('table', { name: /range thresholds/i });
+    const rows1 = within(table1).getAllByRole('row');
+    const monPct = Number.parseFloat(within(rows1[3]!).getAllByText(/%/)[0]!.textContent!);
+    unmount();
+
+    render(<DeltaRegimeGuide {...makeProps({ vix: 20, selectedDate: '2026-03-12' })} />);
+    const table2 = screen.getByRole('table', { name: /range thresholds/i });
+    const rows2 = within(table2).getAllByRole('row');
+    const thuPct = Number.parseFloat(within(rows2[3]!).getAllByText(/%/)[0]!.textContent!);
+
+    expect(monPct).toBeLessThan(thuPct);
+  });
+
+  it('footnote mentions the day-of-week adjustment', () => {
+    render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-03-09' })} />);
+    expect(screen.getByText(/monday adjustment/i)).toBeInTheDocument();
+  });
+
+  it('no DOW badge when selected date is a weekend', () => {
+    render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-03-14' })} />);
+    expect(screen.queryByText(/quieter/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/wider/i)).not.toBeInTheDocument();
+  });
+
+  it('no DOW adjustment text in footnote when date is a weekend', () => {
+    render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-03-14' })} />);
+    expect(screen.queryByText(/adjustment.*H-L/i)).not.toBeInTheDocument();
+  });
+
+  it('all 5 weekdays render without errors', () => {
+    // Mon 3/9 through Fri 3/13
+    for (let d = 9; d <= 13; d++) {
+      const { unmount } = render(<DeltaRegimeGuide {...makeProps({ selectedDate: `2026-03-${String(d).padStart(2, '0')}` })} />);
+      expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('derives correct day from a known date (Feb 27 2026 = Friday)', () => {
+    render(<DeltaRegimeGuide {...makeProps({ selectedDate: '2026-02-27' })} />);
+    expect(screen.getAllByText(/Fri/).length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -174,3 +174,85 @@ export const CORRELATIONS = {
   vixToHL: 0.7371,
   vixToOC: 0.5244,
 } as const;
+
+// ============================================================
+// DAY-OF-WEEK ADJUSTMENT DATA
+// ============================================================
+// Source: 9,107 SPX trading days (1990–2026), matched with VIX.
+// Multipliers = day's median range / weekly average median range.
+// 0=Monday through 4=Friday.
+
+export interface DayOfWeekStats {
+  readonly day: number;           // 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri
+  readonly label: string;
+  readonly shortLabel: string;
+  readonly count: number;
+  readonly medHL: number;
+  readonly p90HL: number;
+  readonly medOC: number;
+  readonly p90OC: number;
+  readonly over2HL: number;       // % of days with H-L > 2%
+  readonly multHL: number;        // multiplier vs weekly average
+  readonly multOC: number;
+}
+
+/** Day-of-week stats for all VIX levels */
+export const DOW_STATS_ALL: readonly DayOfWeekStats[] = [
+  { day: 0, label: 'Monday',    shortLabel: 'Mon', count: 1716, medHL: 0.95, p90HL: 2.22, medOC: 0.46, p90OC: 1.61, over2HL: 13.0, multHL: 0.942, multOC: 0.958 },
+  { day: 1, label: 'Tuesday',   shortLabel: 'Tue', count: 1869, medHL: 1.01, p90HL: 2.18, medOC: 0.50, p90OC: 1.57, over2HL: 12.5, multHL: 1.005, multOC: 1.047 },
+  { day: 2, label: 'Wednesday', shortLabel: 'Wed', count: 1866, medHL: 1.02, p90HL: 2.25, medOC: 0.46, p90OC: 1.50, over2HL: 14.1, multHL: 1.012, multOC: 0.951 },
+  { day: 3, label: 'Thursday',  shortLabel: 'Thu', count: 1832, medHL: 1.04, p90HL: 2.27, medOC: 0.50, p90OC: 1.61, over2HL: 13.5, multHL: 1.038, multOC: 1.037 },
+  { day: 4, label: 'Friday',    shortLabel: 'Fri', count: 1824, medHL: 1.01, p90HL: 2.27, medOC: 0.49, p90OC: 1.64, over2HL: 14.2, multHL: 1.003, multOC: 1.007 },
+] as const;
+
+/** Day-of-week stats for VIX < 18 */
+export const DOW_STATS_LOW_VIX: readonly DayOfWeekStats[] = [
+  { day: 0, label: 'Monday',    shortLabel: 'Mon', count: 860,  medHL: 0.66, p90HL: 1.21, medOC: 0.29, p90OC: 0.90, over2HL: 1.0,  multHL: 0.905, multOC: 0.874 },
+  { day: 1, label: 'Tuesday',   shortLabel: 'Tue', count: 970,  medHL: 0.74, p90HL: 1.32, medOC: 0.34, p90OC: 0.99, over2HL: 1.0,  multHL: 1.025, multOC: 1.013 },
+  { day: 2, label: 'Wednesday', shortLabel: 'Wed', count: 970,  medHL: 0.75, p90HL: 1.35, medOC: 0.32, p90OC: 1.03, over2HL: 2.4,  multHL: 1.034, multOC: 0.969 },
+  { day: 3, label: 'Thursday',  shortLabel: 'Thu', count: 964,  medHL: 0.75, p90HL: 1.37, medOC: 0.35, p90OC: 1.02, over2HL: 1.8,  multHL: 1.040, multOC: 1.063 },
+  { day: 4, label: 'Friday',    shortLabel: 'Fri', count: 979,  medHL: 0.72, p90HL: 1.36, medOC: 0.36, p90OC: 1.00, over2HL: 1.5,  multHL: 0.996, multOC: 1.081 },
+] as const;
+
+/** Day-of-week stats for VIX 18-25 */
+export const DOW_STATS_MID_VIX: readonly DayOfWeekStats[] = [
+  { day: 0, label: 'Monday',    shortLabel: 'Mon', count: 539,  medHL: 1.19, p90HL: 2.05, medOC: 0.59, p90OC: 1.59, over2HL: 11.5, multHL: 0.966, multOC: 0.942 },
+  { day: 1, label: 'Tuesday',   shortLabel: 'Tue', count: 562,  medHL: 1.23, p90HL: 2.14, medOC: 0.67, p90OC: 1.58, over2HL: 11.7, multHL: 0.994, multOC: 1.061 },
+  { day: 2, label: 'Wednesday', shortLabel: 'Wed', count: 572,  medHL: 1.22, p90HL: 2.13, medOC: 0.61, p90OC: 1.57, over2HL: 13.1, multHL: 0.987, multOC: 0.973 },
+  { day: 3, label: 'Thursday',  shortLabel: 'Thu', count: 551,  medHL: 1.26, p90HL: 2.10, medOC: 0.62, p90OC: 1.58, over2HL: 11.8, multHL: 1.021, multOC: 0.985 },
+  { day: 4, label: 'Friday',    shortLabel: 'Fri', count: 521,  medHL: 1.27, p90HL: 2.33, medOC: 0.65, p90OC: 1.73, over2HL: 15.7, multHL: 1.032, multOC: 1.040 },
+] as const;
+
+/** Day-of-week stats for VIX 25+ */
+export const DOW_STATS_HIGH_VIX: readonly DayOfWeekStats[] = [
+  { day: 0, label: 'Monday',    shortLabel: 'Mon', count: 317,  medHL: 1.90, p90HL: 3.97, medOC: 0.98, p90OC: 3.17, over2HL: 47.9, multHL: 0.956, multOC: 0.970 },
+  { day: 1, label: 'Tuesday',   shortLabel: 'Tue', count: 336,  medHL: 1.95, p90HL: 3.83, medOC: 0.98, p90OC: 3.01, over2HL: 47.0, multHL: 0.981, multOC: 0.969 },
+  { day: 2, label: 'Wednesday', shortLabel: 'Wed', count: 323,  medHL: 2.02, p90HL: 3.77, medOC: 0.97, p90OC: 2.80, over2HL: 51.1, multHL: 1.015, multOC: 0.953 },
+  { day: 3, label: 'Thursday',  shortLabel: 'Thu', count: 317,  medHL: 2.06, p90HL: 3.90, medOC: 1.14, p90OC: 3.01, over2HL: 52.4, multHL: 1.035, multOC: 1.120 },
+  { day: 4, label: 'Friday',    shortLabel: 'Fri', count: 321,  medHL: 2.02, p90HL: 3.59, medOC: 1.00, p90OC: 2.44, over2HL: 50.5, multHL: 1.013, multOC: 0.988 },
+] as const;
+
+/**
+ * Get the day-of-week multiplier for range thresholds.
+ * Selects the appropriate VIX regime table and returns the multiplier
+ * for the given day (0=Mon through 4=Fri).
+ * Multipliers are relative to the weekly average: <1 means quieter, >1 means wider.
+ */
+export function getDowMultiplier(vix: number, dayOfWeek: number): { multHL: number; multOC: number; dayLabel: string; dayShort: string } {
+  const clamped = Math.max(0, Math.min(4, dayOfWeek));
+  const table = vix < 18 ? DOW_STATS_LOW_VIX
+    : vix < 25 ? DOW_STATS_MID_VIX
+    : DOW_STATS_HIGH_VIX;
+  const row = table[clamped]!;
+  return { multHL: row.multHL, multOC: row.multOC, dayLabel: row.label, dayShort: row.shortLabel };
+}
+
+/**
+ * Get today's day of week (0=Mon through 4=Fri).
+ * Returns null on weekends.
+ */
+export function getTodayDow(): number | null {
+  const jsDay = new Date().getDay(); // 0=Sun, 1=Mon ... 6=Sat
+  if (jsDay === 0 || jsDay === 6) return null;
+  return jsDay - 1; // convert to 0=Mon
+}
