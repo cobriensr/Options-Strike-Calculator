@@ -64,9 +64,9 @@ export default function StrikeCalculator() {
   const [vixOHLC, setVixOHLC] = useState<VIXDayData | null>(null);
   const [vixOHLCField, setVixOHLCField] = useState<OHLCField>('smart');
   const [tooltipOpen, setTooltipOpen] = useState(false);
-  const [wingWidth, setWingWidth] = useState(25);
-  const [showIC, setShowIC] = useState(false);
-  const [contracts, setContracts] = useState(1);
+  const [wingWidth, setWingWidth] = useState(20);
+  const [showIC, setShowIC] = useState(true);
+  const [contracts, setContracts] = useState(20);
   const [skewPct, setSkewPct] = useState(3); // percent, e.g. 3 = 3%
   const fileInputRef = useRef<HTMLInputElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -77,7 +77,7 @@ export default function StrikeCalculator() {
   const [dIV, setDIV] = useState('');
   const [dMult, setDMult] = useState(String(DEFAULTS.IV_PREMIUM_FACTOR));
   const [results, setResults] = useState<CalculationResults | null>(null);
-  const [showRegime, setShowRegime] = useState(false);
+  const [showRegime, setShowRegime] = useState(true);
   const [clusterMult, setClusterMult] = useState(1);
   const th = darkMode ? darkTheme : lightTheme;
   const market = useMarketData();
