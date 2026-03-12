@@ -107,19 +107,37 @@ export interface MoversResponse {
 }
 
 export interface HistoryCandle {
-  readonly datetime: number; // Unix ms
-  readonly time: string; // "9:30 AM", "10:05 AM"
+  readonly datetime: number;
+  readonly time: string;
   readonly open: number;
   readonly high: number;
   readonly low: number;
   readonly close: number;
 }
 
-export interface HistoryResponse {
+export interface HistoryDaySummary {
   readonly date: string;
+  readonly open: number;
+  readonly high: number;
+  readonly low: number;
+  readonly close: number;
+  readonly rangePct: number;
+  readonly rangePts: number;
+}
+
+export interface SymbolDayData {
   readonly candles: readonly HistoryCandle[];
   readonly previousClose: number;
-  readonly previousDay: DaySummary | null;
+  readonly previousDay: HistoryDaySummary | null;
+}
+
+export interface HistoryResponse {
+  readonly date: string;
+  readonly spx: SymbolDayData;
+  readonly vix: SymbolDayData;
+  readonly vix1d: SymbolDayData;
+  readonly vix9d: SymbolDayData;
+  readonly vvix: SymbolDayData;
   readonly candleCount: number;
   readonly asOf: string;
 }

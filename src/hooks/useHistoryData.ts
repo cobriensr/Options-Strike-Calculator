@@ -1,21 +1,18 @@
 /**
- * useHistoryData — React hook for historical SPX backtesting.
+ * useHistoryData — React hook for historical backtesting.
  *
- * When a past date is selected, fetches all 5-min candles for that day
- * from /api/history. All time navigation is then client-side — changing
- * the time slider finds the nearest candle and computes:
- *   - SPX spot price (candle close at that time)
- *   - Running OHLC (open-to-now)
- *   - Opening range (first 30 minutes)
- *   - Yesterday's OHLC (for clustering)
- *   - Overnight gap (today's open vs yesterday's close)
+ * Fetches 5-min candles for SPX, VIX, VIX1D, VIX9D, and VVIX for the
+ * selected date. All time navigation is client-side after the initial fetch.
  *
- * For today's date or when no date is selected, returns null — the app
- * uses live Schwab data instead.
+ * For today's date, returns null — live Schwab data is used instead.
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import type { HistoryResponse, HistoryCandle } from '../types/api';
+import type {
+  HistoryResponse,
+  HistoryCandle,
+  SymbolDayData,
+} from '../types/api';
 
 // ============================================================
 // TYPES
@@ -26,21 +23,21 @@ export interface HistorySnapshot {
   spot: number;
   /** SPY-equivalent price (spot / 10) */
   spy: number;
-  /** Running OHLC from market open to the selected time */
+  /** Running SPX OHLC from market open to the selected time */
   runningOHLC: {
     open: number;
     high: number;
     low: number;
     last: number;
   };
-  /** First 30 minutes of trading (first 6 candles) */
+  /** First 30 minutes of SPX trading (first 6 candles) */
   openingRange: {
     high: number;
     low: number;
     rangePts: number;
     complete: boolean;
   } | null;
-  /** Previous trading day's OHLC for clustering */
+  /** Previous trading day's SPX OHLC for clustering */
   yesterday: {
     date: string;
     open: number;
@@ -50,14 +47,19 @@ export interface HistorySnapshot {
     rangePct: number;
     rangePts: number;
   } | null;
-  /** Gap between today's open and yesterday's close */
-  overnightGap: {
-    gapPts: number;
-    gapPct: number;
-  } | null;
-  /** Previous day's closing price */
+  /** VIX value at the selected time */
+  vix: number | null;
+  /** VIX previous close (for RV/IV calculation) */
+  vixPrevClose: number | null;
+  /** VIX1D value at the selected time */
+  vix1d: number | null;
+  /** VIX9D value at the selected time */
+  vix9d: number | null;
+  /** VVIX value at the selected time */
+  vvix: number | null;
+  /** SPX previous close */
   previousClose: number;
-  /** The candle matching the selected time */
+  /** The SPX candle matching the selected time */
   candle: HistoryCandle;
   /** Index of the candle in the full day */
   candleIndex: number;
@@ -66,20 +68,15 @@ export interface HistorySnapshot {
 }
 
 export interface UseHistoryDataReturn {
-  /** Full day's candle data (null if not loaded or today) */
   history: HistoryResponse | null;
-  /** Whether history is currently being fetched */
   loading: boolean;
-  /** Error message if fetch failed */
   error: string | null;
-  /** Get the market state at a specific time. Returns null if no data. */
   getStateAtTime: (hourET: number, minuteET: number) => HistorySnapshot | null;
-  /** Whether we have historical data for the current date */
   hasHistory: boolean;
 }
 
 // ============================================================
-// FETCH HELPER
+// FETCH
 // ============================================================
 
 async function fetchHistory(
@@ -95,8 +92,7 @@ async function fetchHistory(
         .catch(() => ({ error: `HTTP ${res.status}` }));
       return { error: body.error || `HTTP ${res.status}` };
     }
-    const data: HistoryResponse = await res.json();
-    return { data };
+    return { data: await res.json() };
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Network error' };
   }
@@ -108,8 +104,6 @@ async function fetchHistory(
 
 /**
  * Find the candle at or just before the given ET time.
- * Candle times are in 5-min increments: 9:30, 9:35, 9:40, ...
- * If the exact time isn't a candle boundary, we use the previous candle.
  */
 function findCandleAtTime(
   candles: readonly HistoryCandle[],
@@ -120,7 +114,6 @@ function findCandleAtTime(
 
   const targetMin = hourET * 60 + minuteET;
 
-  // Walk backwards to find the last candle at or before our target time
   for (let i = candles.length - 1; i >= 0; i--) {
     const c = candles[i]!;
     const d = new Date(c.datetime);
@@ -133,13 +126,21 @@ function findCandleAtTime(
     }
   }
 
-  // Target time is before market open — return first candle
   return { candle: candles[0]!, index: 0 };
 }
 
 /**
- * Compute running OHLC from candles[0] through candles[endIdx].
+ * Get the close price of a symbol's candle at the given ET time.
  */
+function getSymbolPriceAtTime(
+  data: SymbolDayData,
+  hourET: number,
+  minuteET: number,
+): number | null {
+  const match = findCandleAtTime(data.candles, hourET, minuteET);
+  return match ? match.candle.close : null;
+}
+
 function computeRunningOHLC(
   candles: readonly HistoryCandle[],
   endIdx: number,
@@ -158,15 +159,12 @@ function computeRunningOHLC(
   return { open, high, low, last };
 }
 
-/**
- * Compute opening range from the first 6 candles (30 minutes).
- */
 function computeOpeningRange(
   candles: readonly HistoryCandle[],
 ): { high: number; low: number; rangePts: number; complete: boolean } | null {
   if (candles.length === 0) return null;
 
-  const count = Math.min(candles.length, 6);
+  const count = Math.min(candles.length, 6); // 6 candles × 5 min = 30 min
   let high = -Infinity;
   let low = Infinity;
 
@@ -193,7 +191,6 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch history when date changes
   useEffect(() => {
     if (!selectedDate) {
       setHistory(null);
@@ -201,19 +198,11 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
       return;
     }
 
-    // Don't fetch for today — live data handles that
     const now = new Date();
     const todayET = now.toLocaleDateString('en-CA', {
       timeZone: 'America/New_York',
     });
-    if (selectedDate === todayET) {
-      setHistory(null);
-      setError(null);
-      return;
-    }
-
-    // Don't fetch for future dates
-    if (selectedDate > todayET) {
+    if (selectedDate >= todayET) {
       setHistory(null);
       setError(null);
       return;
@@ -242,45 +231,40 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
 
   const getStateAtTime = useCallback(
     (hourET: number, minuteET: number): HistorySnapshot | null => {
-      if (!history || history.candles.length === 0) return null;
+      if (!history || history.spx.candles.length === 0) return null;
 
-      const match = findCandleAtTime(history.candles, hourET, minuteET);
+      const spxCandles = history.spx.candles;
+      const match = findCandleAtTime(spxCandles, hourET, minuteET);
       if (!match) return null;
 
       const { candle, index } = match;
-      const runningOHLC = computeRunningOHLC(history.candles, index);
-      const openingRange = computeOpeningRange(history.candles);
+      const runningOHLC = computeRunningOHLC(spxCandles, index);
+      const openingRange = computeOpeningRange(spxCandles);
 
       const spot = candle.close;
       const spy = Math.round((spot / 10) * 100) / 100;
 
-      // Overnight gap
-      const todayOpen = history.candles[0]!.open;
-      const overnightGap =
-        history.previousClose > 0
-          ? {
-              gapPts:
-                Math.round((todayOpen - history.previousClose) * 100) / 100,
-              gapPct:
-                Math.round(
-                  ((todayOpen - history.previousClose) /
-                    history.previousClose) *
-                    10000,
-                ) / 100,
-            }
-          : null;
+      // VIX values at the same time
+      const vix = getSymbolPriceAtTime(history.vix, hourET, minuteET);
+      const vix1d = getSymbolPriceAtTime(history.vix1d, hourET, minuteET);
+      const vix9d = getSymbolPriceAtTime(history.vix9d, hourET, minuteET);
+      const vvix = getSymbolPriceAtTime(history.vvix, hourET, minuteET);
 
       return {
         spot,
         spy,
         runningOHLC,
         openingRange,
-        yesterday: history.previousDay,
-        overnightGap,
-        previousClose: history.previousClose,
+        yesterday: history.spx.previousDay,
+        vix,
+        vixPrevClose: history.vix.previousClose || null,
+        vix1d,
+        vix9d,
+        vvix,
+        previousClose: history.spx.previousClose,
         candle,
         candleIndex: index,
-        totalCandles: history.candles.length,
+        totalCandles: spxCandles.length,
       };
     },
     [history],
@@ -291,6 +275,6 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
     loading,
     error,
     getStateAtTime,
-    hasHistory: history != null && history.candles.length > 0,
+    hasHistory: history != null && history.spx.candles.length > 0,
   };
 }

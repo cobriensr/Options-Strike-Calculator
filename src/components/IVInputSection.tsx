@@ -7,6 +7,7 @@ import { tinyLbl } from '../utils/ui-utils';
 import VIXRegimeCard from './VIXRegimeCard';
 import VIXTermStructure from './VIXTermStructure';
 import type { MarketDataState } from '../hooks/useMarketData';
+import type { HistorySnapshot } from '../hooks/useHistoryData';
 
 interface Props {
   th: Theme;
@@ -23,6 +24,7 @@ interface Props {
   results: CalculationResults | null;
   errors: Record<string, string>;
   market: MarketDataState;
+  historySnapshot?: HistorySnapshot | null;
   onUseVix1dAsSigma: (sigma: number) => void;
 }
 
@@ -41,6 +43,7 @@ export default function IVInputSection({
   results,
   errors,
   market,
+  historySnapshot,
   onUseVix1dAsSigma,
 }: Props) {
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -216,12 +219,23 @@ export default function IVInputSection({
             Term Structure
           </div>
           <VIXTermStructure
+            key={
+              historySnapshot
+                ? `hist-${historySnapshot.candle.datetime}`
+                : 'live'
+            }
             th={th}
             vix={Number.parseFloat(dVix)}
             onUseVix1dAsSigma={onUseVix1dAsSigma}
-            initialVix1d={market.data.quotes?.vix1d?.price}
-            initialVix9d={market.data.quotes?.vix9d?.price}
-            initialVvix={market.data.quotes?.vvix?.price}
+            initialVix1d={
+              historySnapshot?.vix1d ?? market.data.quotes?.vix1d?.price
+            }
+            initialVix9d={
+              historySnapshot?.vix9d ?? market.data.quotes?.vix9d?.price
+            }
+            initialVvix={
+              historySnapshot?.vvix ?? market.data.quotes?.vvix?.price
+            }
           />
         </div>
       )}

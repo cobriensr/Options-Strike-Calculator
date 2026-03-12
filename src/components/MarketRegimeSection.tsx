@@ -72,6 +72,11 @@ export default function MarketRegimeSection({
             <>
               <div className="mt-5">
                 <VolatilityCluster
+                  key={
+                    historySnapshot
+                      ? `hist-vc-${historySnapshot.candle.datetime}`
+                      : 'live-vc'
+                  }
                   th={th}
                   vix={Number.parseFloat(dVix)}
                   spot={results.spot}
@@ -95,6 +100,11 @@ export default function MarketRegimeSection({
               />
               <div className="mt-5">
                 <OpeningRangeCheck
+                  key={
+                    historySnapshot
+                      ? `hist-or-${historySnapshot.candle.datetime}`
+                      : 'live-or'
+                  }
                   th={th}
                   vix={Number.parseFloat(dVix)}
                   spot={results.spot}
@@ -111,7 +121,7 @@ export default function MarketRegimeSection({
                   th={th}
                   quotes={historySnapshot ? null : market.data.quotes}
                   yesterday={
-                    historySnapshot
+                    historySnapshot?.yesterday
                       ? {
                           yesterday: historySnapshot.yesterday,
                           twoDaysAgo: null,
@@ -120,6 +130,9 @@ export default function MarketRegimeSection({
                       : market.data.yesterday
                   }
                   movers={historySnapshot ? null : market.data.movers}
+                  vixPrevClose={historySnapshot?.vixPrevClose ?? undefined}
+                  spxOpen={historySnapshot?.runningOHLC.open ?? undefined}
+                  spxPrevClose={historySnapshot?.previousClose ?? undefined}
                 />
               </div>
             </>

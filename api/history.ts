@@ -1,26 +1,17 @@
 /**
  * GET /api/history?date=2026-03-10
  *
- * Returns all 5-minute SPX candles for a given trading day, plus the
- * previous day's OHLC for clustering analysis. Designed for backtesting:
- * fetch once per date, navigate time on the client.
+ * Returns all 5-minute candles for SPX, VIX, VIX1D, VIX9D, and VVIX
+ * for a given trading day. Designed for backtesting: fetch once per date,
+ * navigate time on the client.
+ *
+ * All five symbols are fetched in parallel from Schwab's priceHistory API.
  *
  * Owner-gated (uses Schwab credentials).
  *
  * Cache strategy:
- *   - Past dates: cached in Redis indefinitely (data never changes)
+ *   - Past dates: cached in Redis for 90 days (data never changes)
  *   - Today: cached 120s (data is still accumulating)
- *   - Edge cache: same logic
- *
- * Response:
- * {
- *   date: "2026-03-10",
- *   candles: [{ datetime, open, high, low, close, time }],
- *   previousClose: 6946.13,
- *   previousDay: { date, open, high, low, close, rangePct, rangePts },
- *   marketClose: "4:00 PM",   // or "1:00 PM" for half days
- *   asOf: ISO string
- * }
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -41,7 +32,7 @@ interface SchwabCandle {
   low: number;
   close: number;
   volume: number;
-  datetime: number; // Unix ms
+  datetime: number;
 }
 
 interface SchwabPriceHistory {
@@ -51,8 +42,8 @@ interface SchwabPriceHistory {
 }
 
 interface ProcessedCandle {
-  datetime: number; // Unix ms
-  time: string; // "9:30 AM", "10:05 AM", etc.
+  datetime: number;
+  time: string;
   open: number;
   high: number;
   low: number;
@@ -69,11 +60,19 @@ interface DaySummary {
   rangePts: number;
 }
 
-interface HistoryResponse {
-  date: string;
+interface SymbolDayData {
   candles: ProcessedCandle[];
   previousClose: number;
   previousDay: DaySummary | null;
+}
+
+interface HistoryResponse {
+  date: string;
+  spx: SymbolDayData;
+  vix: SymbolDayData;
+  vix1d: SymbolDayData;
+  vix9d: SymbolDayData;
+  vvix: SymbolDayData;
   candleCount: number;
   asOf: string;
 }
@@ -82,15 +81,11 @@ interface HistoryResponse {
 // HELPERS
 // ============================================================
 
-const REDIS_PREFIX = 'history:';
-const PAST_CACHE_TTL = 90 * 24 * 60 * 60; // 90 days for past dates
+const REDIS_PREFIX = 'history:v2:';
+const PAST_CACHE_TTL = 90 * 24 * 60 * 60;
 
-/**
- * Convert a Unix ms timestamp to a human-readable ET time string.
- */
 function formatTimeET(ms: number): string {
-  const d = new Date(ms);
-  return d.toLocaleTimeString('en-US', {
+  return new Date(ms).toLocaleTimeString('en-US', {
     timeZone: 'America/New_York',
     hour: 'numeric',
     minute: '2-digit',
@@ -98,18 +93,12 @@ function formatTimeET(ms: number): string {
   });
 }
 
-/**
- * Get the ET date string from a Unix ms timestamp.
- */
 function getETDate(ms: number): string {
   return new Date(ms).toLocaleDateString('en-CA', {
     timeZone: 'America/New_York',
   });
 }
 
-/**
- * Check if a candle falls within regular market hours (9:30 AM - 4:00 PM ET).
- */
 function isRegularHours(ms: number): boolean {
   const d = new Date(ms);
   const etStr = d.toLocaleString('en-US', { timeZone: 'America/New_York' });
@@ -118,9 +107,6 @@ function isRegularHours(ms: number): boolean {
   return totalMin >= 570 && totalMin < 960; // 9:30 AM to 4:00 PM
 }
 
-/**
- * Compute OHLC summary for a set of candles.
- */
 function computeOHLC(
   candles: SchwabCandle[],
   refDate: string,
@@ -151,61 +137,23 @@ function computeOHLC(
   };
 }
 
-// ============================================================
-// HANDLER
-// ============================================================
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (rejectIfNotOwner(req, res)) return;
-
-  const dateParam = typeof req.query?.date === 'string' ? req.query.date : '';
-  if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-    return res.status(400).json({
-      error: 'Missing or invalid date parameter. Use ?date=YYYY-MM-DD',
-    });
-  }
-
-  // Check if this is today or a past date
-  const now = new Date();
-  const todayET = now.toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-  const isToday = dateParam === todayET;
-  const isFuture = dateParam > todayET;
-
-  if (isFuture) {
-    return res
-      .status(400)
-      .json({ error: 'Cannot fetch history for future dates' });
-  }
-
-  // Try Redis cache (past dates are cached indefinitely)
-  const cacheKey = `${REDIS_PREFIX}${dateParam}`;
-  if (!isToday) {
-    try {
-      const cached = await redis.get<HistoryResponse>(cacheKey);
-      if (cached) {
-        res.setHeader(
-          'Cache-Control',
-          's-maxage=86400, stale-while-revalidate=3600',
-        );
-        res.setHeader('X-Cache', 'HIT');
-        return res.status(200).json(cached);
-      }
-    } catch {
-      // Redis unavailable — fetch fresh
-    }
-  }
-
-  // Fetch 5-min candles for the target date + a few surrounding days.
-  // We request a 10-day window and filter to the specific date.
-  // This also gives us the previous trading day for clustering.
-  const targetMs = new Date(dateParam + 'T12:00:00Z').getTime();
-  const startMs = targetMs - 7 * 24 * 60 * 60 * 1000; // 7 days before
-  const endMs = targetMs + 2 * 24 * 60 * 60 * 1000; // 2 days after (covers the full day)
+/**
+ * Fetch priceHistory for a single symbol and extract the target date + previous day.
+ */
+async function fetchSymbolHistory(
+  symbol: string,
+  startMs: number,
+  endMs: number,
+  targetDate: string,
+): Promise<SymbolDayData> {
+  const empty: SymbolDayData = {
+    candles: [],
+    previousClose: 0,
+    previousDay: null,
+  };
 
   const params = new URLSearchParams({
-    symbol: '$SPX',
+    symbol,
     periodType: 'day',
     frequencyType: 'minute',
     frequency: '5',
@@ -220,12 +168,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   );
 
   if ('error' in result) {
-    return res.status(result.status).json({ error: result.error });
+    console.error(`History fetch failed for ${symbol}: ${result.error}`);
+    return empty;
   }
 
   const { candles: allCandles, previousClose } = result.data;
 
-  // Group candles by ET date
+  // Group candles by ET date, filtering to regular hours only
   const byDate = new Map<string, SchwabCandle[]>();
   for (const c of allCandles) {
     if (!isRegularHours(c.datetime)) continue;
@@ -236,11 +185,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Get target date candles
-  const targetCandles = byDate.get(dateParam) ?? [];
+  const targetCandles = byDate.get(targetDate) ?? [];
 
-  // Get previous trading day (the last date before our target)
+  // Get previous trading day
   const sortedDates = [...byDate.keys()].sort((a, b) => a.localeCompare(b));
-  const targetIdx = sortedDates.indexOf(dateParam);
+  const targetIdx = sortedDates.indexOf(targetDate);
   const prevDate = targetIdx > 0 ? sortedDates[targetIdx - 1]! : null;
   const prevCandles = prevDate ? (byDate.get(prevDate) ?? []) : [];
   const previousDay = prevDate ? computeOHLC(prevCandles, prevDate) : null;
@@ -255,35 +204,92 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     close: c.close,
   }));
 
+  return { candles: processed, previousClose, previousDay };
+}
+
+// ============================================================
+// HANDLER
+// ============================================================
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (rejectIfNotOwner(req, res)) return;
+
+  const dateParam = typeof req.query?.date === 'string' ? req.query.date : '';
+  if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+    return res
+      .status(400)
+      .json({
+        error: 'Missing or invalid date parameter. Use ?date=YYYY-MM-DD',
+      });
+  }
+
+  const now = new Date();
+  const todayET = now.toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+  const isToday = dateParam === todayET;
+
+  if (dateParam > todayET) {
+    return res
+      .status(400)
+      .json({ error: 'Cannot fetch history for future dates' });
+  }
+
+  // Try Redis cache (past dates are cached long-term)
+  const cacheKey = `${REDIS_PREFIX}${dateParam}`;
+  if (!isToday) {
+    try {
+      const cached = await redis.get<HistoryResponse>(cacheKey);
+      if (cached) {
+        res.setHeader(
+          'Cache-Control',
+          's-maxage=86400, stale-while-revalidate=3600',
+        );
+        res.setHeader('X-Cache', 'HIT');
+        return res.status(200).json(cached);
+      }
+    } catch {
+      // Redis unavailable
+    }
+  }
+
+  // Time window: 7 days before to 2 days after target date
+  const targetMs = new Date(dateParam + 'T12:00:00Z').getTime();
+  const startMs = targetMs - 7 * 24 * 60 * 60 * 1000;
+  const endMs = targetMs + 2 * 24 * 60 * 60 * 1000;
+
+  // Fetch all 5 symbols in parallel
+  const [spx, vix, vix1d, vix9d, vvix] = await Promise.all([
+    fetchSymbolHistory('$SPX', startMs, endMs, dateParam),
+    fetchSymbolHistory('$VIX', startMs, endMs, dateParam),
+    fetchSymbolHistory('$VIX1D', startMs, endMs, dateParam),
+    fetchSymbolHistory('$VIX9D', startMs, endMs, dateParam),
+    fetchSymbolHistory('$VVIX', startMs, endMs, dateParam),
+  ]);
+
   const response: HistoryResponse = {
     date: dateParam,
-    candles: processed,
-    previousClose,
-    previousDay,
-    candleCount: processed.length,
+    spx,
+    vix,
+    vix1d,
+    vix9d,
+    vvix,
+    candleCount: spx.candles.length,
     asOf: new Date().toISOString(),
   };
 
-  // Cache in Redis
+  // Cache
   try {
     if (isToday) {
-      // Today's data is still accumulating — short TTL
       await redis.set(cacheKey, response, { ex: 120 });
-    } else if (processed.length > 0) {
-      // Past dates with data — cache for a long time
+    } else if (spx.candles.length > 0) {
       await redis.set(cacheKey, response, { ex: PAST_CACHE_TTL });
     }
-    // Don't cache empty responses (weekends, holidays)
   } catch (err) {
     console.error('Failed to cache history:', err);
   }
 
-  // Edge cache
-  setCacheHeaders(
-    res,
-    isToday ? 120 : 86400, // 2 min for today, 1 day for past
-    isToday ? 60 : 3600,
-  );
+  setCacheHeaders(res, isToday ? 120 : 86400, isToday ? 60 : 3600);
 
   res.status(200).json(response);
 }

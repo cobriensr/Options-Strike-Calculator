@@ -32,33 +32,52 @@ function makeCandle(
   };
 }
 
+const spxCandles = [
+  makeCandle(9, 30, 5100, 5110, 5095, 5105), // 0: open
+  makeCandle(9, 35, 5105, 5115, 5100, 5112), // 1
+  makeCandle(9, 40, 5112, 5120, 5108, 5118), // 2
+  makeCandle(9, 45, 5118, 5125, 5115, 5122), // 3
+  makeCandle(9, 50, 5122, 5130, 5120, 5128), // 4
+  makeCandle(9, 55, 5128, 5135, 5125, 5132), // 5: end of opening range
+  makeCandle(10, 0, 5132, 5140, 5130, 5138), // 6
+  makeCandle(10, 5, 5138, 5145, 5135, 5142), // 7
+  makeCandle(10, 10, 5142, 5150, 5140, 5148), // 8
+  makeCandle(10, 15, 5148, 5155, 5145, 5152), // 9
+  makeCandle(10, 20, 5152, 5158, 5148, 5155), // 10
+  makeCandle(10, 25, 5155, 5160, 5150, 5157), // 11
+  makeCandle(10, 30, 5157, 5162, 5153, 5160), // 12
+];
+
+const spxPreviousDay = {
+  date: '2024-03-01',
+  open: 5080,
+  high: 5100,
+  low: 5070,
+  close: 5090,
+  rangePct: 0.59,
+  rangePts: 30,
+};
+
+/** Stub SymbolDayData with a single flat candle for non-SPX symbols */
+function makeStubSymbol(price: number) {
+  return {
+    candles: [makeCandle(9, 30, price, price, price, price)],
+    previousClose: price,
+    previousDay: null,
+  };
+}
+
 const mockHistory: HistoryResponse = {
   date: '2024-03-04',
-  candles: [
-    makeCandle(9, 30, 5100, 5110, 5095, 5105), // 0: open
-    makeCandle(9, 35, 5105, 5115, 5100, 5112), // 1
-    makeCandle(9, 40, 5112, 5120, 5108, 5118), // 2
-    makeCandle(9, 45, 5118, 5125, 5115, 5122), // 3
-    makeCandle(9, 50, 5122, 5130, 5120, 5128), // 4
-    makeCandle(9, 55, 5128, 5135, 5125, 5132), // 5: end of opening range
-    makeCandle(10, 0, 5132, 5140, 5130, 5138), // 6
-    makeCandle(10, 5, 5138, 5145, 5135, 5142), // 7
-    makeCandle(10, 10, 5142, 5150, 5140, 5148), // 8
-    makeCandle(10, 15, 5148, 5155, 5145, 5152), // 9
-    makeCandle(10, 20, 5152, 5158, 5148, 5155), // 10
-    makeCandle(10, 25, 5155, 5160, 5150, 5157), // 11
-    makeCandle(10, 30, 5157, 5162, 5153, 5160), // 12
-  ],
-  previousClose: 5090,
-  previousDay: {
-    date: '2024-03-01',
-    open: 5080,
-    high: 5100,
-    low: 5070,
-    close: 5090,
-    rangePct: 0.59,
-    rangePts: 30,
+  spx: {
+    candles: spxCandles,
+    previousClose: 5090,
+    previousDay: spxPreviousDay,
   },
+  vix: makeStubSymbol(14.5),
+  vix1d: makeStubSymbol(10.2),
+  vix9d: makeStubSymbol(12.8),
+  vvix: makeStubSymbol(85),
   candleCount: 13,
   asOf: '2024-03-04T20:00:00Z',
 };
@@ -375,7 +394,7 @@ describe('useHistoryData: getStateAtTime', () => {
     expect(or.rangePts).toBe(40);
   });
 
-  it('computes overnight gap', async () => {
+  it('exposes previousClose for gap calculation', async () => {
     mockHistoryFetch(mockHistory);
 
     const { result } = renderHook(() => useHistoryData('2024-03-04'));
@@ -386,30 +405,12 @@ describe('useHistoryData: getStateAtTime', () => {
 
     const snapshot = result.current.getStateAtTime(10, 0);
     expect(snapshot).not.toBeNull();
-    expect(snapshot!.overnightGap).not.toBeNull();
-
-    const gap = snapshot!.overnightGap!;
-    // Today open (5100) - previous close (5090) = 10
-    expect(gap.gapPts).toBe(10);
-    expect(gap.gapPct).toBeCloseTo(0.2, 1); // 10/5090 ≈ 0.196%
-  });
-
-  it('returns null overnight gap when previousClose is 0', async () => {
-    const noCloseHistory: HistoryResponse = {
-      ...mockHistory,
-      previousClose: 0,
-    };
-    mockHistoryFetch(noCloseHistory);
-
-    const { result } = renderHook(() => useHistoryData('2024-03-04'));
-
-    await waitFor(() => {
-      expect(result.current.hasHistory).toBe(true);
-    });
-
-    const snapshot = result.current.getStateAtTime(10, 0);
-    expect(snapshot).not.toBeNull();
-    expect(snapshot!.overnightGap).toBeNull();
+    // Previous close comes from spx.previousClose
+    expect(snapshot!.previousClose).toBe(5090);
+    // Today's open is the first candle's open
+    expect(snapshot!.runningOHLC.open).toBe(5100);
+    // Gap = 5100 - 5090 = 10
+    expect(snapshot!.runningOHLC.open - snapshot!.previousClose).toBe(10);
   });
 
   it('includes previousDay data in snapshot', async () => {
@@ -422,7 +423,7 @@ describe('useHistoryData: getStateAtTime', () => {
     });
 
     const snapshot = result.current.getStateAtTime(10, 0);
-    expect(snapshot!.yesterday).toEqual(mockHistory.previousDay);
+    expect(snapshot!.yesterday).toEqual(mockHistory.spx.previousDay);
     expect(snapshot!.previousClose).toBe(5090);
   });
 });
@@ -435,7 +436,7 @@ describe('useHistoryData: edge cases', () => {
   it('handles empty candles array', async () => {
     const emptyHistory: HistoryResponse = {
       ...mockHistory,
-      candles: [],
+      spx: { ...mockHistory.spx, candles: [] },
       candleCount: 0,
     };
     mockHistoryFetch(emptyHistory);
@@ -454,7 +455,7 @@ describe('useHistoryData: edge cases', () => {
   it('opening range is incomplete with fewer than 6 candles', async () => {
     const shortHistory: HistoryResponse = {
       ...mockHistory,
-      candles: mockHistory.candles.slice(0, 3),
+      spx: { ...mockHistory.spx, candles: mockHistory.spx.candles.slice(0, 3) },
       candleCount: 3,
     };
     mockHistoryFetch(shortHistory);
@@ -473,7 +474,7 @@ describe('useHistoryData: edge cases', () => {
   it('returns null previousDay when history has none', async () => {
     const noPrevDay: HistoryResponse = {
       ...mockHistory,
-      previousDay: null,
+      spx: { ...mockHistory.spx, previousDay: null },
     };
     mockHistoryFetch(noPrevDay);
 

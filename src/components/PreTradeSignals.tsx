@@ -10,6 +10,9 @@ interface Props {
   readonly quotes: QuotesResponse | null;
   readonly yesterday: YesterdayResponse | null;
   readonly movers: MoversResponse | null;
+  readonly vixPrevClose?: number;
+  readonly spxOpen?: number;
+  readonly spxPrevClose?: number;
 }
 
 // ============================================================
@@ -151,12 +154,18 @@ export default function PreTradeSignals({
   quotes,
   yesterday,
   movers,
+  vixPrevClose,
+  spxOpen,
+  spxPrevClose,
 }: Props) {
   const rvIv = computeRvIv(
     yesterday?.yesterday?.rangePct,
-    quotes?.vix?.prevClose,
+    vixPrevClose ?? quotes?.vix?.prevClose,
   );
-  const gap = computeGap(quotes?.spx?.open, quotes?.spx?.prevClose);
+  const gap = computeGap(
+    spxOpen ?? quotes?.spx?.open,
+    spxPrevClose ?? quotes?.spx?.prevClose,
+  );
   const breadth = computeBreadth(movers);
 
   const signals = [rvIv, gap, breadth].filter(Boolean) as SignalResult[];

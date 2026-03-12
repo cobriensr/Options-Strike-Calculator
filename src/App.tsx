@@ -139,8 +139,14 @@ export default function StrikeCalculator() {
       const snapshot = historyData.getStateAtTime(etHour, etMinute);
       if (!snapshot) return;
 
+      // SPX/SPY prices
       setSpotPrice(snapshot.spy.toFixed(2));
       setSpxDirect(snapshot.spot.toFixed(0));
+
+      // VIX — override the static VIX data with actual intraday VIX
+      if (snapshot.vix != null && ivMode === IV_MODES.VIX) {
+        setVixInput(snapshot.vix.toFixed(2));
+      }
     } else if (market.data.quotes) {
       // Today (or no history): restore live prices if available
       const q = market.data.quotes;
@@ -148,15 +154,13 @@ export default function StrikeCalculator() {
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
     }
   }, [
-    historyData,
-    market.data.quotes,
     historyData.hasHistory,
     historyData.getStateAtTime,
     timeHour,
     timeMinute,
     timeAmPm,
     timezone,
-  ]);
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute current history snapshot for downstream components
   const historySnapshot = (() => {
@@ -337,6 +341,7 @@ export default function StrikeCalculator() {
               results={results}
               errors={errors}
               market={market}
+              historySnapshot={historySnapshot}
               onUseVix1dAsSigma={(sigma) => {
                 setIvMode(IV_MODES.DIRECT);
                 setDirectIVInput(sigma.toFixed(4));
