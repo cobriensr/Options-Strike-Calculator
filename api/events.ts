@@ -157,7 +157,7 @@ interface EventItem {
 
 const FRED_BASE = 'https://api.stlouisfed.org/fred';
 const REDIS_KEY = 'fred:events';
-const CACHE_TTL_SEC = 24 * 60 * 60; // 24 hours
+const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped, so stale keys auto-expire)
 
 /**
  * Fetch release dates from FRED for a specific release ID.
@@ -289,7 +289,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (cached) {
       res.setHeader(
         'Cache-Control',
-        's-maxage=3600, stale-while-revalidate=1800',
+        's-maxage=43200, stale-while-revalidate=3600',
       );
       res.setHeader('X-Cache', 'HIT');
       return res.status(200).json({
