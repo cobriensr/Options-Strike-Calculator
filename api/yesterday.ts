@@ -24,7 +24,7 @@ import {
   setCacheHeaders,
   isMarketOpen,
   rejectIfNotOwner,
-} from './auth/api-helpers';
+} from './lib/api-helpers';
 
 // ============================================================
 // TYPES

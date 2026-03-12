@@ -10,8 +10,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { storeInitialTokens } from './schwab';
-import { OWNER_COOKIE, OWNER_COOKIE_MAX_AGE } from './api-helpers';
+import { storeInitialTokens } from '../lib/schwab';
+import { OWNER_COOKIE, OWNER_COOKIE_MAX_AGE } from '../lib/api-helpers';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const code = req.query.code;
