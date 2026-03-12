@@ -141,7 +141,6 @@ describe('resolveIV: Direct mode', () => {
 
 describe('resolveIV: Invalid mode', () => {
   it('returns error for unknown mode', () => {
-     
     const result = resolveIV('unknown' as any, { vix: 20, multiplier: 1.15 });
     expect(result.sigma).toBeNull();
     expect(result.error).toBeDefined();
