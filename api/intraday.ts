@@ -22,7 +22,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { schwabFetch, setCacheHeaders, isMarketOpen, rejectIfNotOwner } from './_lib/api-helpers.js';
+import { schwabFetch, setCacheHeaders, isMarketOpen, rejectIfNotOwner } from './_lib/api-helpers';
 
 // ============================================================
 // TYPES
@@ -113,12 +113,27 @@ function computeTodayOHLC(candles: SchwabCandle[]): {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Owner-only: public visitors get 401, frontend falls back to manual input
   if (rejectIfNotOwner(req, res)) return;
+
+  // Use explicit start/end dates for TODAY's session.
+  // period=1 returns the most recent *completed* day, which during market
+  // hours is yesterday. Instead, fetch a 24h window and filter to today's
+  // ET date to get the current session's candles.
+  const now = new Date();
+  const todayET = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+  // Fetch a 24h window. Schwab only returns market-hours candles
+  // (needExtendedHoursData=false). We filter to today's date below
+  // in case the window overlaps yesterday's session.
+  const startMs = now.getTime() - 24 * 60 * 60 * 1000;
+  const endMs = now.getTime();
+
   const params = new URLSearchParams({
     symbol: '$SPX',
     periodType: 'day',
-    period: '1',
     frequencyType: 'minute',
     frequency: '5',
+    startDate: String(startMs),
+    endDate: String(endMs),
     needExtendedHoursData: 'false',
     needPreviousClose: 'true',
   });
@@ -131,21 +146,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(result.status).json({ error: result.error });
   }
 
-  const { candles, previousClose } = result.data;
+  const { previousClose } = result.data;
   const marketOpen = isMarketOpen();
+
+  // Filter candles to today's ET date only (the 24h window may include
+  // yesterday's afternoon candles if called before market open)
+  const todayCandles = result.data.candles.filter((c) => {
+    const d = new Date(c.datetime);
+    return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) === todayET;
+  });
 
   // Cache: 2 min during hours (opening range doesn't change after 10 AM),
   // 10 min after close (data is final)
   setCacheHeaders(res, marketOpen ? 120 : 600, marketOpen ? 60 : 120);
 
-  const today = computeTodayOHLC(candles);
-  const openingRange = computeOpeningRange(candles);
+  const today = computeTodayOHLC(todayCandles);
+  const openingRange = computeOpeningRange(todayCandles);
 
   res.status(200).json({
     today,
     openingRange,
     previousClose,
-    candleCount: candles.length,
+    candleCount: todayCandles.length,
     marketOpen,
     asOf: new Date().toISOString(),
   });
