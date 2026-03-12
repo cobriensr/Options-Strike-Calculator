@@ -20,12 +20,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  schwabFetch,
-  setCacheHeaders,
-  isMarketOpen,
-  rejectIfNotOwner,
-} from './_lib/api-helpers';
+import { schwabFetch, setCacheHeaders, isMarketOpen, rejectIfNotOwner } from './_lib/api-helpers.js';
 
 // ============================================================
 // TYPES

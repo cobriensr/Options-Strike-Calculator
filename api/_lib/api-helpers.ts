@@ -8,7 +8,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getAccessToken } from './schwab';
+import { getAccessToken } from './schwab.js';
 
 const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 
