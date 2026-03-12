@@ -167,12 +167,16 @@ describe('eventCalendar: data integrity', () => {
 // ============================================================
 describe('EventDayWarning: rendering', () => {
   it('renders nothing for non-event date', () => {
-    const { container } = render(<EventDayWarning th={lightTheme} selectedDate="2026-03-15" />);
+    const { container } = render(
+      <EventDayWarning th={lightTheme} selectedDate="2026-03-15" />,
+    );
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing for empty date', () => {
-    const { container } = render(<EventDayWarning th={lightTheme} selectedDate="" />);
+    const { container } = render(
+      <EventDayWarning th={lightTheme} selectedDate="" />,
+    );
     expect(container.innerHTML).toBe('');
   });
 

@@ -188,7 +188,9 @@ describe('StrikeCalculator: results rendering', () => {
     render(<StrikeCalculator />);
     await fillBasicInputs(user);
 
-    const deltaTable = screen.getByRole('table', { name: /strike prices by delta/i });
+    const deltaTable = screen.getByRole('table', {
+      name: /strike prices by delta/i,
+    });
     const spyHeaders = within(deltaTable).getAllByText('SPY');
     expect(spyHeaders.length).toBe(2);
   });
@@ -246,7 +248,9 @@ describe('StrikeCalculator: SPX direct input', () => {
 
     await act(() => wait(DEBOUNCE));
 
-    expect(screen.queryByLabelText(/spx to spy ratio/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/spx to spy ratio/i),
+    ).not.toBeInTheDocument();
   });
 
   it('shows SPX for calculations value', async () => {
@@ -274,7 +278,8 @@ describe('StrikeCalculator: CSV upload', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    const csvContent = 'Date,Open,High,Low,Close\n2024-03-04,14.50,15.20,14.10,14.80';
+    const csvContent =
+      'Date,Open,High,Low,Close\n2024-03-04,14.50,15.20,14.10,14.80';
     const file = new File([csvContent], 'vix.csv', { type: 'text/csv' });
 
     const fileInput = screen.getByLabelText(/upload vix ohlc csv file/i);
@@ -290,7 +295,8 @@ describe('StrikeCalculator: CSV upload', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    const csvContent = 'Date,Open,High,Low,Close\n2024-03-04,14.50,15.20,14.10,14.80';
+    const csvContent =
+      'Date,Open,High,Low,Close\n2024-03-04,14.50,15.20,14.10,14.80';
     const file = new File([csvContent], 'vix.csv', { type: 'text/csv' });
 
     const fileInput = screen.getByLabelText(/upload vix ohlc csv file/i);
@@ -299,7 +305,10 @@ describe('StrikeCalculator: CSV upload', () => {
 
     const datePicker = screen.getByLabelText(/select date/i);
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set;
       setter?.call(datePicker, '2024-03-04');
       datePicker.dispatchEvent(new Event('change', { bubbles: true }));
     });
@@ -315,7 +324,8 @@ describe('StrikeCalculator: CSV upload', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    const csvContent = 'Date,Open,High,Low,Close\n2024-03-04,14.50,15.20,14.10,14.80';
+    const csvContent =
+      'Date,Open,High,Low,Close\n2024-03-04,14.50,15.20,14.10,14.80';
     const file = new File([csvContent], 'vix.csv', { type: 'text/csv' });
 
     const fileInput = screen.getByLabelText(/upload vix ohlc csv file/i);
@@ -324,7 +334,10 @@ describe('StrikeCalculator: CSV upload', () => {
 
     const datePicker = screen.getByLabelText(/select date/i);
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set;
       setter?.call(datePicker, '2024-03-05');
       datePicker.dispatchEvent(new Event('change', { bubbles: true }));
     });
@@ -337,7 +350,8 @@ describe('StrikeCalculator: CSV upload', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    const csvContent = 'Date,Open,High,Low,Close\n2024-03-04,14.50,15.20,14.10,14.80';
+    const csvContent =
+      'Date,Open,High,Low,Close\n2024-03-04,14.50,15.20,14.10,14.80';
     const file = new File([csvContent], 'vix.csv', { type: 'text/csv' });
 
     const fileInput = screen.getByLabelText(/upload vix ohlc csv file/i);
@@ -346,7 +360,10 @@ describe('StrikeCalculator: CSV upload', () => {
 
     const datePicker = screen.getByLabelText(/select date/i);
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set;
       setter?.call(datePicker, '2024-03-04');
       datePicker.dispatchEvent(new Event('change', { bubbles: true }));
     });
@@ -407,7 +424,9 @@ describe('StrikeCalculator: Iron Condor', () => {
 
     await user.click(screen.getByText(/show.*iron condor/i));
     expect(screen.getByText(/wing width/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/iron condor wing width/i)).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/iron condor wing width/i),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText(/number of contracts/i)).toBeInTheDocument();
   });
 
@@ -418,7 +437,9 @@ describe('StrikeCalculator: Iron Condor', () => {
     await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
 
-    expect(screen.getByRole('table', { name: /iron condor legs/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /iron condor legs/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText('Long Put')).toBeInTheDocument();
     expect(screen.getByText('Short Put')).toBeInTheDocument();
     expect(screen.getByText('Short Call')).toBeInTheDocument();
@@ -432,7 +453,9 @@ describe('StrikeCalculator: Iron Condor', () => {
     await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
 
-    expect(screen.getByRole('table', { name: /iron condor p&l/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /iron condor p&l/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText('Credit')).toBeInTheDocument();
     expect(screen.getByText('Max Loss')).toBeInTheDocument();
     expect(screen.getByText('Buying Pwr')).toBeInTheDocument();
@@ -463,7 +486,9 @@ describe('StrikeCalculator: Iron Condor', () => {
 
     await user.click(screen.getByText(/show.*iron condor/i));
 
-    const wingGroup = screen.getByRole('radiogroup', { name: /iron condor wing width/i });
+    const wingGroup = screen.getByRole('radiogroup', {
+      name: /iron condor wing width/i,
+    });
     const chip10 = within(wingGroup).getByText('10');
     await user.click(chip10);
 
@@ -537,7 +562,9 @@ describe('StrikeCalculator: Iron Condor', () => {
 
     await fillBasicInputs(user);
 
-    expect(screen.getAllByText(/5 contracts/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/5 contracts/i).length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it('shows dollar amounts in P&L table', async () => {
@@ -589,7 +616,9 @@ describe('StrikeCalculator: Skew', () => {
 
   it('shows skew description', () => {
     render(<StrikeCalculator />);
-    expect(screen.getByText(/otm puts trade at higher iv/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/otm puts trade at higher iv/i),
+    ).toBeInTheDocument();
   });
 });
 
@@ -656,8 +685,12 @@ describe('StrikeCalculator: Hedge Calculator', () => {
 
     expect(screen.getByText(/crash scenarios/i)).toBeInTheDocument();
     expect(screen.getByText(/rally scenarios/i)).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: /hedge p&l crash/i })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: /hedge p&l rally/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /hedge p&l crash/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /hedge p&l rally/i }),
+    ).toBeInTheDocument();
   });
 
   it('hides scenario table when collapse button is clicked', async () => {
@@ -684,9 +717,9 @@ describe('StrikeCalculator: Hedge Calculator', () => {
 
     // Default is 2Δ, switch to 5Δ
     // Find the 5Δ button in the hedge delta section (not IC delta)
-    const fiveDeltaBtn = screen.getAllByText('5Δ').find((el) =>
-      el.closest('button')?.getAttribute('role') === 'radio'
-    );
+    const fiveDeltaBtn = screen
+      .getAllByText('5Δ')
+      .find((el) => el.closest('button')?.getAttribute('role') === 'radio');
     if (fiveDeltaBtn) {
       await user.click(fiveDeltaBtn);
     }

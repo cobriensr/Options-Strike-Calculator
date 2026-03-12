@@ -12,7 +12,14 @@ import type {
   HedgeResult,
   HedgeScenario,
 } from '../types';
-import { MARKET, DELTA_Z_SCORES, DELTA_OPTIONS, DEFAULTS, IV_MODES, HEDGE_Z_SCORES } from '../constants';
+import {
+  MARKET,
+  DELTA_Z_SCORES,
+  DELTA_OPTIONS,
+  DEFAULTS,
+  IV_MODES,
+  HEDGE_Z_SCORES,
+} from '../constants';
 
 // ============================================================
 // CUMULATIVE NORMAL DISTRIBUTION (Abramowitz & Stegun 26.2.17)
@@ -33,7 +40,7 @@ export function normalCDF(x: number): number {
 
   const absX = Math.abs(x);
   const t = 1 / (1 + p * absX);
-  const pdf = Math.exp(-absX * absX / 2) / Math.sqrt(2 * Math.PI);
+  const pdf = Math.exp((-absX * absX) / 2) / Math.sqrt(2 * Math.PI);
   const poly = ((((b5 * t + b4) * t + b3) * t + b2) * t + b1) * t;
   const cdf = 1 - pdf * poly;
 
@@ -46,7 +53,7 @@ export function normalCDF(x: number): number {
  * Used for gamma calculation.
  */
 export function normalPDF(x: number): number {
-  return Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI);
+  return Math.exp((-x * x) / 2) / Math.sqrt(2 * Math.PI);
 }
 
 /**
@@ -64,13 +71,13 @@ export function calcBSDelta(
   strike: number,
   sigma: number,
   T: number,
-  type: 'call' | 'put'
+  type: 'call' | 'put',
 ): number {
   if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
 
   const sqrtT = Math.sqrt(T);
   const sigmaRootT = sigma * sqrtT;
-  const d1 = (Math.log(spot / strike) + (sigma * sigma / 2) * T) / sigmaRootT;
+  const d1 = (Math.log(spot / strike) + ((sigma * sigma) / 2) * T) / sigmaRootT;
 
   if (type === 'call') {
     return normalCDF(d1);
@@ -99,7 +106,7 @@ export function calcBSGamma(
 
   const sqrtT = Math.sqrt(T);
   const sigmaRootT = sigma * sqrtT;
-  const d1 = (Math.log(spot / strike) + (sigma * sigma / 2) * T) / sigmaRootT;
+  const d1 = (Math.log(spot / strike) + ((sigma * sigma) / 2) * T) / sigmaRootT;
 
   return normalPDF(d1) / (spot * sigmaRootT);
 }
@@ -119,13 +126,13 @@ export function blackScholesPrice(
   strike: number,
   sigma: number,
   T: number,
-  type: 'call' | 'put'
+  type: 'call' | 'put',
 ): number {
   if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
 
   const sqrtT = Math.sqrt(T);
   const sigmaRootT = sigma * sqrtT;
-  const d1 = (Math.log(spot / strike) + (sigma * sigma / 2) * T) / sigmaRootT;
+  const d1 = (Math.log(spot / strike) + ((sigma * sigma) / 2) * T) / sigmaRootT;
   const d2 = d1 - sigmaRootT;
 
   if (type === 'call') {
@@ -139,7 +146,10 @@ export function blackScholesPrice(
  * Validates that a given time (in ET, 24h format) falls within market hours.
  * Returns hours remaining if valid, error message if not.
  */
-export function validateMarketTime(hour: number, minute: number): TimeValidation {
+export function validateMarketTime(
+  hour: number,
+  minute: number,
+): TimeValidation {
   const totalMinutes = hour * 60 + minute;
   const openMinutes = MARKET.OPEN_HOUR_ET * 60 + MARKET.OPEN_MINUTE_ET;
   const closeMinutes = MARKET.CLOSE_HOUR_ET * 60 + MARKET.CLOSE_MINUTE_ET;
@@ -169,7 +179,7 @@ export function calcTimeToExpiry(hoursRemaining: number): number {
  */
 export function resolveIV(
   mode: IVMode,
-  params: { vix?: number; multiplier?: number; directIV?: number }
+  params: { vix?: number; multiplier?: number; directIV?: number },
 ): IVResult {
   if (mode === IV_MODES.VIX) {
     const { vix, multiplier } = params;
@@ -214,7 +224,10 @@ export function resolveIV(
 /**
  * Snaps a strike price to the nearest increment.
  */
-export function snapToIncrement(strike: number, increment: number = DEFAULTS.STRIKE_INCREMENT): number {
+export function snapToIncrement(
+  strike: number,
+  increment: number = DEFAULTS.STRIKE_INCREMENT,
+): number {
   return Math.round(strike / increment) * increment;
 }
 
@@ -253,7 +266,7 @@ export function calcStrikes(
   sigma: number,
   T: number,
   delta: DeltaTarget,
-  skew: number = 0
+  skew: number = 0,
 ): StrikeResult | StrikeError {
   const z = DELTA_Z_SCORES[delta];
   if (z === undefined) {
@@ -266,11 +279,15 @@ export function calcStrikes(
   const callSigma = sigma * (1 - scaledSkew);
 
   // Drift correction: (σ²/2) × T
-  const putDrift = (putSigma * putSigma / 2) * T;
-  const callDrift = (callSigma * callSigma / 2) * T;
+  const putDrift = ((putSigma * putSigma) / 2) * T;
+  const callDrift = ((callSigma * callSigma) / 2) * T;
 
-  const putStrike = Math.round(spotPrice * Math.exp(-z * putSigma * sqrtT + putDrift));
-  const callStrike = Math.round(spotPrice * Math.exp(z * callSigma * sqrtT + callDrift));
+  const putStrike = Math.round(
+    spotPrice * Math.exp(-z * putSigma * sqrtT + putDrift),
+  );
+  const callStrike = Math.round(
+    spotPrice * Math.exp(z * callSigma * sqrtT + callDrift),
+  );
 
   return {
     putStrike,
@@ -283,7 +300,9 @@ export function calcStrikes(
 /**
  * Type guard: checks if a strike result is an error.
  */
-export function isStrikeError(result: StrikeResult | StrikeError): result is StrikeError {
+export function isStrikeError(
+  result: StrikeResult | StrikeError,
+): result is StrikeError {
   return 'error' in result;
 }
 
@@ -296,7 +315,7 @@ export function calcAllDeltas(
   sigma: number,
   T: number,
   skew: number = 0,
-  spxToSpyRatio: number = 10
+  spxToSpyRatio: number = 10,
 ): ReadonlyArray<DeltaRow | DeltaRowError> {
   return DELTA_OPTIONS.map((d: DeltaTarget): DeltaRow | DeltaRowError => {
     const result = calcStrikes(spotPrice, sigma, T, d, skew);
@@ -310,14 +329,48 @@ export function calcAllDeltas(
     const spyPutRaw = result.putStrike / spxToSpyRatio;
     const spyCallRaw = result.callStrike / spxToSpyRatio;
 
-    const putPremium = blackScholesPrice(spotPrice, result.putStrikeSnapped, putSigma, T, 'put');
-    const callPremium = blackScholesPrice(spotPrice, result.callStrikeSnapped, callSigma, T, 'call');
+    const putPremium = blackScholesPrice(
+      spotPrice,
+      result.putStrikeSnapped,
+      putSigma,
+      T,
+      'put',
+    );
+    const callPremium = blackScholesPrice(
+      spotPrice,
+      result.callStrikeSnapped,
+      callSigma,
+      T,
+      'call',
+    );
 
     // Actual BS Greeks at the snapped strikes
-    const putActualDelta = calcBSDelta(spotPrice, result.putStrikeSnapped, putSigma, T, 'put');
-    const callActualDelta = calcBSDelta(spotPrice, result.callStrikeSnapped, callSigma, T, 'call');
-    const putGamma = calcBSGamma(spotPrice, result.putStrikeSnapped, putSigma, T);
-    const callGamma = calcBSGamma(spotPrice, result.callStrikeSnapped, callSigma, T);
+    const putActualDelta = calcBSDelta(
+      spotPrice,
+      result.putStrikeSnapped,
+      putSigma,
+      T,
+      'put',
+    );
+    const callActualDelta = calcBSDelta(
+      spotPrice,
+      result.callStrikeSnapped,
+      callSigma,
+      T,
+      'call',
+    );
+    const putGamma = calcBSGamma(
+      spotPrice,
+      result.putStrikeSnapped,
+      putSigma,
+      T,
+    );
+    const callGamma = calcBSGamma(
+      spotPrice,
+      result.callStrikeSnapped,
+      callSigma,
+      T,
+    );
 
     return {
       delta: d,
@@ -367,18 +420,23 @@ export function calcPoP(
   beHigh: number,
   putSigma: number,
   callSigma: number,
-  T: number
+  T: number,
 ): number {
-  if (T <= 0 || putSigma <= 0 || callSigma <= 0 || beLow <= 0 || beHigh <= 0) return 0;
+  if (T <= 0 || putSigma <= 0 || callSigma <= 0 || beLow <= 0 || beHigh <= 0)
+    return 0;
 
   const sqrtT = Math.sqrt(T);
 
   // P(S_T > BE_low) using put-side sigma
-  const d2Low = (Math.log(spot / beLow) - (putSigma * putSigma / 2) * T) / (putSigma * sqrtT);
+  const d2Low =
+    (Math.log(spot / beLow) - ((putSigma * putSigma) / 2) * T) /
+    (putSigma * sqrtT);
   const pAboveLow = normalCDF(d2Low);
 
   // P(S_T < BE_high) using call-side sigma
-  const d2High = (Math.log(spot / beHigh) - (callSigma * callSigma / 2) * T) / (callSigma * sqrtT);
+  const d2High =
+    (Math.log(spot / beHigh) - ((callSigma * callSigma) / 2) * T) /
+    (callSigma * sqrtT);
   const pBelowHigh = normalCDF(-d2High);
 
   // PoP = P(above low) + P(below high) - 1
@@ -399,12 +457,13 @@ export function calcSpreadPoP(
   breakeven: number,
   sigma: number,
   T: number,
-  side: 'put' | 'call'
+  side: 'put' | 'call',
 ): number {
   if (T <= 0 || sigma <= 0 || breakeven <= 0 || spot <= 0) return 0;
 
   const sqrtT = Math.sqrt(T);
-  const d2 = (Math.log(spot / breakeven) - (sigma * sigma / 2) * T) / (sigma * sqrtT);
+  const d2 =
+    (Math.log(spot / breakeven) - ((sigma * sigma) / 2) * T) / (sigma * sqrtT);
 
   if (side === 'put') {
     // Put credit spread profits when S_T > BE
@@ -425,40 +484,86 @@ export function buildIronCondor(
   wingWidthSpx: number,
   spotPrice: number,
   T: number,
-  spxToSpyRatio: number = 10
+  spxToSpyRatio: number = 10,
 ): IronCondorLegs {
   const shortPut = row.putSnapped;
   const longPut = shortPut - wingWidthSpx;
   const shortCall = row.callSnapped;
   const longCall = shortCall + wingWidthSpx;
 
-  const shortPutPremium = blackScholesPrice(spotPrice, shortPut, row.putSigma, T, 'put');
-  const longPutPremium = blackScholesPrice(spotPrice, longPut, row.putSigma, T, 'put');
-  const shortCallPremium = blackScholesPrice(spotPrice, shortCall, row.callSigma, T, 'call');
-  const longCallPremium = blackScholesPrice(spotPrice, longCall, row.callSigma, T, 'call');
+  const shortPutPremium = blackScholesPrice(
+    spotPrice,
+    shortPut,
+    row.putSigma,
+    T,
+    'put',
+  );
+  const longPutPremium = blackScholesPrice(
+    spotPrice,
+    longPut,
+    row.putSigma,
+    T,
+    'put',
+  );
+  const shortCallPremium = blackScholesPrice(
+    spotPrice,
+    shortCall,
+    row.callSigma,
+    T,
+    'call',
+  );
+  const longCallPremium = blackScholesPrice(
+    spotPrice,
+    longCall,
+    row.callSigma,
+    T,
+    'call',
+  );
 
   // Combined IC
-  const creditReceived = (shortPutPremium - longPutPremium) + (shortCallPremium - longCallPremium);
+  const creditReceived =
+    shortPutPremium - longPutPremium + (shortCallPremium - longCallPremium);
   const maxProfit = creditReceived;
   const maxLoss = wingWidthSpx - creditReceived;
   const breakEvenLow = shortPut - creditReceived;
   const breakEvenHigh = shortCall + creditReceived;
   const returnOnRisk = maxLoss > 0 ? creditReceived / maxLoss : 0;
-  const probabilityOfProfit = calcPoP(spotPrice, breakEvenLow, breakEvenHigh, row.putSigma, row.callSigma, T);
+  const probabilityOfProfit = calcPoP(
+    spotPrice,
+    breakEvenLow,
+    breakEvenHigh,
+    row.putSigma,
+    row.callSigma,
+    T,
+  );
 
   // Per-side: put credit spread
   const putSpreadCredit = shortPutPremium - longPutPremium;
   const putSpreadMaxLoss = wingWidthSpx - putSpreadCredit;
   const putSpreadBE = shortPut - putSpreadCredit;
-  const putSpreadRoR = putSpreadMaxLoss > 0 ? putSpreadCredit / putSpreadMaxLoss : 0;
-  const putSpreadPoP = calcSpreadPoP(spotPrice, putSpreadBE, row.putSigma, T, 'put');
+  const putSpreadRoR =
+    putSpreadMaxLoss > 0 ? putSpreadCredit / putSpreadMaxLoss : 0;
+  const putSpreadPoP = calcSpreadPoP(
+    spotPrice,
+    putSpreadBE,
+    row.putSigma,
+    T,
+    'put',
+  );
 
   // Per-side: call credit spread
   const callSpreadCredit = shortCallPremium - longCallPremium;
   const callSpreadMaxLoss = wingWidthSpx - callSpreadCredit;
   const callSpreadBE = shortCall + callSpreadCredit;
-  const callSpreadRoR = callSpreadMaxLoss > 0 ? callSpreadCredit / callSpreadMaxLoss : 0;
-  const callSpreadPoP = calcSpreadPoP(spotPrice, callSpreadBE, row.callSigma, T, 'call');
+  const callSpreadRoR =
+    callSpreadMaxLoss > 0 ? callSpreadCredit / callSpreadMaxLoss : 0;
+  const callSpreadPoP = calcSpreadPoP(
+    spotPrice,
+    callSpreadBE,
+    row.callSigma,
+    T,
+    'call',
+  );
 
   return {
     delta: row.delta,
@@ -534,7 +639,13 @@ function computeScenarioPnL(params: {
   hedgeCallPremium: number;
   hedgePuts: number;
   hedgeCalls: number;
-}): { icPnL: number; hedgePutPnL: number; hedgeCallPnL: number; hedgeCost: number; netPnL: number } {
+}): {
+  icPnL: number;
+  hedgePutPnL: number;
+  hedgeCallPnL: number;
+  hedgeCost: number;
+  netPnL: number;
+} {
   const { spot, movePoints, icContracts, hedgePuts, hedgeCalls } = params;
   const sFinal = spot - movePoints; // positive movePoints = crash
 
@@ -559,7 +670,8 @@ function computeScenarioPnL(params: {
   }
 
   // IC total P&L in dollars (credit + losses on both sides)
-  const icPnLDollars = (params.icCreditPts + icPutPnL + icCallPnL) * 100 * icContracts;
+  const icPnLDollars =
+    (params.icCreditPts + icPutPnL + icCallPnL) * 100 * icContracts;
 
   // Hedge put payout (per hedge contract, in points)
   const hedgePutIntrinsic = Math.max(0, params.hedgePutStrike - sFinal);
@@ -572,7 +684,10 @@ function computeScenarioPnL(params: {
   const hedgeCallDollars = hedgeCallPnLPts * 100 * hedgeCalls;
 
   // Total hedge cost (premium paid, regardless of payout — for display)
-  const hedgeCostDollars = -(params.hedgePutPremium * 100 * hedgePuts + params.hedgeCallPremium * 100 * hedgeCalls);
+  const hedgeCostDollars = -(
+    params.hedgePutPremium * 100 * hedgePuts +
+    params.hedgeCallPremium * 100 * hedgeCalls
+  );
 
   return {
     icPnL: Math.round(icPnLDollars),
@@ -628,7 +743,16 @@ export function calcHedge(params: {
   icLongCall: number;
   hedgeDelta: HedgeDelta;
 }): HedgeResult {
-  const { spot, sigma, T, skew, icContracts, icCreditPts, icMaxLossPts, hedgeDelta } = params;
+  const {
+    spot,
+    sigma,
+    T,
+    skew,
+    icContracts,
+    icCreditPts,
+    icMaxLossPts,
+    hedgeDelta,
+  } = params;
   const z = HEDGE_Z_SCORES[hedgeDelta];
   const sqrtT = Math.sqrt(T);
 
@@ -636,17 +760,33 @@ export function calcHedge(params: {
   const scaledSkew = calcScaledSkew(skew, z);
   const putSigma = sigma * (1 + scaledSkew);
   const callSigma = sigma * (1 - scaledSkew);
-  const putDrift = (putSigma * putSigma / 2) * T;
-  const callDrift = (callSigma * callSigma / 2) * T;
+  const putDrift = ((putSigma * putSigma) / 2) * T;
+  const callDrift = ((callSigma * callSigma) / 2) * T;
 
-  const putStrike = Math.round(spot * Math.exp(-z * putSigma * sqrtT + putDrift));
-  const callStrike = Math.round(spot * Math.exp(z * callSigma * sqrtT + callDrift));
+  const putStrike = Math.round(
+    spot * Math.exp(-z * putSigma * sqrtT + putDrift),
+  );
+  const callStrike = Math.round(
+    spot * Math.exp(z * callSigma * sqrtT + callDrift),
+  );
   const putStrikeSnapped = snapToIncrement(putStrike);
   const callStrikeSnapped = snapToIncrement(callStrike);
 
   // Price the hedge options
-  const putPremium = blackScholesPrice(spot, putStrikeSnapped, putSigma, T, 'put');
-  const callPremium = blackScholesPrice(spot, callStrikeSnapped, callSigma, T, 'call');
+  const putPremium = blackScholesPrice(
+    spot,
+    putStrikeSnapped,
+    putSigma,
+    T,
+    'put',
+  );
+  const callPremium = blackScholesPrice(
+    spot,
+    callStrikeSnapped,
+    callSigma,
+    T,
+    'call',
+  );
 
   // IC max loss in dollars (total position)
   const icMaxLossDollars = icMaxLossPts * 100 * icContracts;
@@ -662,17 +802,22 @@ export function calcHedge(params: {
 
   // Recommended contracts: enough to approximately cover IC max loss at target crash
   // N × payoutPerContract ≈ icMaxLossDollars (rounded to nearest, minimum 1)
-  const recommendedPuts = putPayoutAtTarget > 0
-    ? Math.max(1, Math.round(icMaxLossDollars / putPayoutAtTarget))
-    : 1;
-  const recommendedCalls = callPayoutAtTarget > 0
-    ? Math.max(1, Math.round(icMaxLossDollars / callPayoutAtTarget))
-    : 1;
+  const recommendedPuts =
+    putPayoutAtTarget > 0
+      ? Math.max(1, Math.round(icMaxLossDollars / putPayoutAtTarget))
+      : 1;
+  const recommendedCalls =
+    callPayoutAtTarget > 0
+      ? Math.max(1, Math.round(icMaxLossDollars / callPayoutAtTarget))
+      : 1;
 
   // Total daily cost
-  const dailyCostPts = putPremium * recommendedPuts + callPremium * recommendedCalls;
+  const dailyCostPts =
+    putPremium * recommendedPuts + callPremium * recommendedCalls;
   const dailyCostDollars = Math.round(dailyCostPts * 100);
-  const netCreditAfterHedge = Math.round(icCreditPts * 100 * icContracts - dailyCostDollars);
+  const netCreditAfterHedge = Math.round(
+    icCreditPts * 100 * icContracts - dailyCostDollars,
+  );
 
   // Helper to compute net P&L at a given crash/rally size
   const scenarioParams = {
@@ -691,8 +836,10 @@ export function calcHedge(params: {
     hedgeCalls: recommendedCalls,
   };
 
-  const netPnLAtCrash = (pts: number) => computeScenarioPnL({ ...scenarioParams, movePoints: pts }).netPnL;
-  const netPnLAtRally = (pts: number) => computeScenarioPnL({ ...scenarioParams, movePoints: -pts }).netPnL;
+  const netPnLAtCrash = (pts: number) =>
+    computeScenarioPnL({ ...scenarioParams, movePoints: pts }).netPnL;
+  const netPnLAtRally = (pts: number) =>
+    computeScenarioPnL({ ...scenarioParams, movePoints: -pts }).netPnL;
 
   // Find breakeven points (crash/rally size where net P&L = 0)
   // IC becomes losing when move > (spot - shortPut), so search from there
@@ -719,7 +866,7 @@ export function calcHedge(params: {
     const result = computeScenarioPnL({ ...scenarioParams, movePoints: pts });
     scenarios.push({
       movePoints: pts,
-      movePct: (pts / spot * 100).toFixed(1),
+      movePct: ((pts / spot) * 100).toFixed(1),
       direction: 'crash',
       icPnL: result.icPnL,
       hedgePutPnL: result.hedgePutPnL,
@@ -733,7 +880,7 @@ export function calcHedge(params: {
     const result = computeScenarioPnL({ ...scenarioParams, movePoints: -pts });
     scenarios.push({
       movePoints: pts,
-      movePct: (pts / spot * 100).toFixed(1),
+      movePct: ((pts / spot) * 100).toFixed(1),
       direction: 'rally',
       icPnL: result.icPnL,
       hedgePutPnL: result.hedgePutPnL,

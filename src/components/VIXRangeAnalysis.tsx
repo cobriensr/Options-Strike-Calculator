@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Theme } from '../themes';
-import { mkTh, mkTd, Chip } from './ui';
+import { Chip } from './ui';
+import { mkTh, mkTd } from './ui-utils';
 import {
   VIX_BUCKETS,
   SURVIVAL_DATA,
@@ -34,12 +35,16 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
   return (
     <div>
       {/* VIX Range Breakdown Table */}
-      <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-accent mb-2.5">
+      <div className="text-accent mb-2.5 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
         Historical SPX Range by VIX Level
       </div>
 
-      <div className="overflow-x-auto rounded-[10px] border border-edge">
-        <table className="w-full border-collapse font-mono text-[13px]" role="table" aria-label="SPX daily range statistics by VIX level">
+      <div className="border-edge overflow-x-auto rounded-[10px] border">
+        <table
+          className="w-full border-collapse font-mono text-[13px]"
+          role="table"
+          aria-label="SPX daily range statistics by VIX level"
+        >
           <thead>
             <tr className="bg-table-header">
               <th className={mkTh('left')}>VIX</th>
@@ -58,17 +63,28 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
               return (
                 <tr
                   key={b.label}
-                  className={isActive ? 'border-l-[3px]' : `border-l-[3px] border-transparent ${i % 2 === 1 ? 'bg-table-alt' : 'bg-surface'}`}
-                  style={isActive ? {
-                    backgroundColor: zoneColor + '14',
-                    borderLeftColor: zoneColor,
-                  } : undefined}
+                  className={
+                    isActive
+                      ? 'border-l-[3px]'
+                      : `border-l-[3px] border-transparent ${i % 2 === 1 ? 'bg-table-alt' : 'bg-surface'}`
+                  }
+                  style={
+                    isActive
+                      ? {
+                          backgroundColor: zoneColor + '14',
+                          borderLeftColor: zoneColor,
+                        }
+                      : undefined
+                  }
                 >
-                  <td className={`${mkTd()} font-semibold`} style={{ color: zoneColor }}>
+                  <td
+                    className={`${mkTd()} font-semibold`}
+                    style={{ color: zoneColor }}
+                  >
                     {b.label}
                     {isActive && (
                       <span
-                        className="ml-1.5 inline-block rounded-full px-1.5 py-px font-sans text-[9px] font-bold uppercase tracking-[0.06em]"
+                        className="ml-1.5 inline-block rounded-full px-1.5 py-px font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
                         style={{
                           backgroundColor: zoneColor + '22',
                           color: zoneColor,
@@ -78,19 +94,25 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
                       </span>
                     )}
                   </td>
-                  <td className={`${mkTd()} text-right text-muted`}>{b.count.toLocaleString()}</td>
+                  <td className={`${mkTd()} text-muted text-right`}>
+                    {b.count.toLocaleString()}
+                  </td>
                   <td className={`${mkTd()} text-right font-semibold`}>
                     {b.medHL.toFixed(2)}%
                     {spot != null && (
-                      <span className="ml-1 text-[10px] text-muted">
-                        ({Math.round(b.medHL / 100 * spot)})
+                      <span className="text-muted ml-1 text-[10px]">
+                        ({Math.round((b.medHL / 100) * spot)})
                       </span>
                     )}
                   </td>
-                  <td className={`${mkTd()} text-right font-medium text-danger`}>
+                  <td
+                    className={`${mkTd()} text-danger text-right font-medium`}
+                  >
                     {b.p90HL.toFixed(2)}%
                   </td>
-                  <td className={`${mkTd()} text-right font-medium text-success`}>
+                  <td
+                    className={`${mkTd()} text-success text-right font-medium`}
+                  >
                     {b.medOC.toFixed(2)}%
                   </td>
                   <td className={`${mkTd()} text-right`}>{b.over1HL}%</td>
@@ -110,27 +132,45 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
         </table>
       </div>
 
-      <p className="mt-1.5 mb-4 text-[11px] italic text-muted">
-        Based on {TOTAL_MATCHED_DAYS.toLocaleString()} trading days (1990{'\u2013'}2026). VIX open matched to same-day SPX OHLC. O{'\u2192'}C = settlement-relevant move.
+      <p className="text-muted mt-1.5 mb-4 text-[11px] italic">
+        Based on {TOTAL_MATCHED_DAYS.toLocaleString()} trading days (1990
+        {'\u2013'}2026). VIX open matched to same-day SPX OHLC. O{'\u2192'}C =
+        settlement-relevant move.
       </p>
 
       {/* Survival Heatmap */}
-      <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-accent mb-2.5">
+      <div className="text-accent mb-2.5 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
         Iron Condor Survival Rate
       </div>
 
-      <div className="flex gap-1.5 mb-3">
-        <Chip th={th} active={survMode === 'settle'} onClick={() => setSurvMode('settle')} label={'Settlement (O\u2192C)'} />
-        <Chip th={th} active={survMode === 'intraday'} onClick={() => setSurvMode('intraday')} label="Intraday (H-L)" />
+      <div className="mb-3 flex gap-1.5">
+        <Chip
+          th={th}
+          active={survMode === 'settle'}
+          onClick={() => setSurvMode('settle')}
+          label={'Settlement (O\u2192C)'}
+        />
+        <Chip
+          th={th}
+          active={survMode === 'intraday'}
+          onClick={() => setSurvMode('intraday')}
+          label="Intraday (H-L)"
+        />
       </div>
 
-      <div className="overflow-x-auto rounded-[10px] border border-edge">
-        <table className="w-full border-collapse font-mono text-[12px]" role="table" aria-label={'Iron condor survival rates (' + survMode + ')'}>
+      <div className="border-edge overflow-x-auto rounded-[10px] border">
+        <table
+          className="w-full border-collapse font-mono text-[12px]"
+          role="table"
+          aria-label={'Iron condor survival rates (' + survMode + ')'}
+        >
           <thead>
             <tr className="bg-table-header">
               <th className={mkTh('left')}>VIX Level</th>
               {SURVIVAL_DATA.map((s) => (
-                <th key={s.wing} className={`${mkTh('center')} min-w-14`}>{s.label}</th>
+                <th key={s.wing} className={`${mkTh('center')} min-w-14`}>
+                  {s.label}
+                </th>
               ))}
             </tr>
           </thead>
@@ -146,12 +186,17 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
                     borderLeftColor: isActive ? zoneColor : 'transparent',
                   }}
                 >
-                  <td className={`${mkTd()} whitespace-nowrap font-semibold`} style={{ color: zoneColor }}>
+                  <td
+                    className={`${mkTd()} font-semibold whitespace-nowrap`}
+                    style={{ color: zoneColor }}
+                  >
                     {b.label}
                   </td>
                   {SURVIVAL_DATA.map((s) => {
-                    const val = survMode === 'settle' ? s.settle[bi] : s.intraday[bi];
-                    if (val === undefined) return <td key={s.wing} className={mkTd()} />;
+                    const val =
+                      survMode === 'settle' ? s.settle[bi] : s.intraday[bi];
+                    if (val === undefined)
+                      return <td key={s.wing} className={mkTd()} />;
                     return (
                       <td
                         key={s.wing}
@@ -173,7 +218,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
         </table>
       </div>
 
-      <p className="mt-1.5 text-[11px] italic text-muted">
+      <p className="text-muted mt-1.5 text-[11px] italic">
         {survMode === 'settle'
           ? 'Settlement: % of days the closing price stayed within \u00B1X% of the open. Determines if your short strikes finish ITM.'
           : 'Intraday: % of days the full H-L range stayed within \u00B1X% of the open. Use for intraday defense triggers.'}
@@ -182,9 +227,10 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
       {/* Fine-grained toggle */}
       <button
         onClick={() => setShowFine(!showFine)}
-        className="mt-3.5 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-edge bg-input px-3.5 py-2 font-sans text-[12px] font-semibold text-secondary"
+        className="border-edge bg-input text-secondary mt-3.5 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border px-3.5 py-2 font-sans text-[12px] font-semibold"
       >
-        {showFine ? '\u25B2' : '\u25BC'} {showFine ? 'Hide' : 'Show'} Point-by-Point VIX Breakdown (10{'\u2013'}30)
+        {showFine ? '\u25B2' : '\u25BC'} {showFine ? 'Hide' : 'Show'}{' '}
+        Point-by-Point VIX Breakdown (10{'\u2013'}30)
       </button>
 
       {showFine && (
@@ -200,13 +246,25 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
 // FINE-GRAINED BAR CHART (pure CSS)
 // ============================================================
 
-function FineGrainedBars({ th, vix, spot }: { th: Theme; vix: number | null; spot: number | null }) {
+function FineGrainedBars({
+  th,
+  vix,
+  spot,
+}: {
+  th: Theme;
+  vix: number | null;
+  spot: number | null;
+}) {
   const activeVix = vix == null ? -1 : Math.floor(vix);
   const maxP90 = Math.max(...FINE_VIX_STATS.map((s) => s.p90HL));
 
   return (
-    <div className="overflow-x-auto rounded-[10px] border border-edge">
-      <table className="w-full border-collapse font-mono text-[12px]" role="table" aria-label="Fine-grained VIX range breakdown">
+    <div className="border-edge overflow-x-auto rounded-[10px] border">
+      <table
+        className="w-full border-collapse font-mono text-[12px]"
+        role="table"
+        aria-label="Fine-grained VIX range breakdown"
+      >
         <thead>
           <tr className="bg-table-header">
             <th className={`${mkTh('center')} w-12`}>VIX</th>
@@ -221,15 +279,24 @@ function FineGrainedBars({ th, vix, spot }: { th: Theme; vix: number | null; spo
             const isActive = s.vix === activeVix;
             const barWidth = (s.medHL / maxP90) * 100;
             const p90BarWidth = (s.p90HL / maxP90) * 100;
-            const barColor = s.vix < 18 ? th.accent : s.vix < 25 ? '#E8A317' : th.red;
+            const barColor =
+              s.vix < 18 ? th.accent : s.vix < 25 ? '#E8A317' : th.red;
             return (
               <tr
                 key={s.vix}
-                className={isActive ? 'border-l-[3px]' : `border-l-[3px] border-transparent ${i % 2 === 1 ? 'bg-table-alt' : 'bg-surface'}`}
-                style={isActive ? {
-                  backgroundColor: barColor + '10',
-                  borderLeftColor: barColor,
-                } : undefined}
+                className={
+                  isActive
+                    ? 'border-l-[3px]'
+                    : `border-l-[3px] border-transparent ${i % 2 === 1 ? 'bg-table-alt' : 'bg-surface'}`
+                }
+                style={
+                  isActive
+                    ? {
+                        backgroundColor: barColor + '10',
+                        borderLeftColor: barColor,
+                      }
+                    : undefined
+                }
               >
                 <td
                   className={`${mkTd()} text-center`}
@@ -240,12 +307,12 @@ function FineGrainedBars({ th, vix, spot }: { th: Theme; vix: number | null; spo
                 >
                   {s.vix}
                 </td>
-                <td className={`${mkTd()} text-right text-[11px] text-muted`}>
+                <td className={`${mkTd()} text-muted text-right text-[11px]`}>
                   {s.count}
                 </td>
                 <td className={`${mkTd()} px-3 py-2`}>
                   <div className="flex items-center gap-2">
-                    <div className="relative h-4 flex-1 overflow-hidden rounded bg-surface-alt">
+                    <div className="bg-surface-alt relative h-4 flex-1 overflow-hidden rounded">
                       {/* 90th percentile ghost bar */}
                       <div
                         className="absolute inset-y-0 left-0 rounded"
@@ -256,24 +323,26 @@ function FineGrainedBars({ th, vix, spot }: { th: Theme; vix: number | null; spo
                       />
                       {/* Median bar */}
                       <div
-                        className="absolute left-0 top-0.5 h-3 rounded-[3px] transition-[width] duration-200"
+                        className="absolute top-0.5 left-0 h-3 rounded-[3px] transition-[width] duration-200"
                         style={{
                           width: barWidth + '%',
                           backgroundColor: barColor,
                         }}
                       />
                     </div>
-                    <span className="min-w-10.5 text-right text-[12px] font-semibold text-primary">
+                    <span className="text-primary min-w-10.5 text-right text-[12px] font-semibold">
                       {s.medHL.toFixed(2)}%
                     </span>
                   </div>
                   {spot != null && (
-                    <div className="mt-0.5 text-[10px] text-muted">
-                      {'\u2248'}{Math.round(s.medHL / 100 * spot)} pts median, {Math.round(s.p90HL / 100 * spot)} pts 90th
+                    <div className="text-muted mt-0.5 text-[10px]">
+                      {'\u2248'}
+                      {Math.round((s.medHL / 100) * spot)} pts median,{' '}
+                      {Math.round((s.p90HL / 100) * spot)} pts 90th
                     </div>
                   )}
                 </td>
-                <td className={`${mkTd()} text-right text-[11px] text-danger`}>
+                <td className={`${mkTd()} text-danger text-right text-[11px]`}>
                   {s.p90HL.toFixed(2)}%
                 </td>
                 <td
@@ -300,10 +369,14 @@ function FineGrainedBars({ th, vix, spot }: { th: Theme; vix: number | null; spo
 
 function zoneToColor(zone: VIXBucket['zone'], th: Theme): string {
   switch (zone) {
-    case 'go': return th.green;
-    case 'caution': return '#E8A317';
-    case 'stop': return th.red;
-    case 'danger': return th.red;
+    case 'go':
+      return th.green;
+    case 'caution':
+      return '#E8A317';
+    case 'stop':
+      return th.red;
+    case 'danger':
+      return th.red;
   }
 }
 

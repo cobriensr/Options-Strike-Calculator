@@ -86,7 +86,9 @@ describe('VIXTermStructure: VIX1D ratio signals', () => {
     enterVix1d('35'); // 35/20 = 1.75
     expect(screen.getByText('EVENT RISK')).toBeInTheDocument();
     // "sitting out" appears in both the combined banner and the card advice
-    expect(screen.getAllByText(/sitting out/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/sitting out/i).length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it('displays the ratio value', () => {
@@ -167,13 +169,17 @@ describe('VIXTermStructure: VIX1D as sigma', () => {
   it('shows the VIX1D sigma tip when VIX1D is entered', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
     setInput(screen.getByLabelText(/vix1d/i), '22.5');
-    expect(screen.getByText(/derived directly from today/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/derived directly from today/i),
+    ).toBeInTheDocument();
     expect(screen.getByText(/0.2250/)).toBeInTheDocument(); // σ = 22.5/100
   });
 
   it('shows use button when callback is provided', () => {
     const onUse = vi.fn();
-    render(<VIXTermStructure th={lightTheme} vix={20} onUseVix1dAsSigma={onUse} />);
+    render(
+      <VIXTermStructure th={lightTheme} vix={20} onUseVix1dAsSigma={onUse} />,
+    );
     setInput(screen.getByLabelText(/vix1d/i), '22.5');
     const btn = screen.getByRole('button', { name: /use vix1d/i });
     expect(btn).toBeInTheDocument();
@@ -182,7 +188,9 @@ describe('VIXTermStructure: VIX1D as sigma', () => {
   it('calls onUseVix1dAsSigma with correct value when clicked', async () => {
     const user = userEvent.setup();
     const onUse = vi.fn();
-    render(<VIXTermStructure th={lightTheme} vix={20} onUseVix1dAsSigma={onUse} />);
+    render(
+      <VIXTermStructure th={lightTheme} vix={20} onUseVix1dAsSigma={onUse} />,
+    );
     setInput(screen.getByLabelText(/vix1d/i), '22.5');
     await user.click(screen.getByRole('button', { name: /use vix1d/i }));
     expect(onUse).toHaveBeenCalledWith(0.225);
@@ -191,7 +199,9 @@ describe('VIXTermStructure: VIX1D as sigma', () => {
   it('does not show use button when no callback provided', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
     setInput(screen.getByLabelText(/vix1d/i), '22.5');
-    expect(screen.queryByRole('button', { name: /use vix1d/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /use vix1d/i }),
+    ).not.toBeInTheDocument();
   });
 });
 

@@ -67,13 +67,19 @@ describe('resolveIV: VIX mode', () => {
   });
 
   it('accepts multiplier at exact minimum boundary', () => {
-    const result = resolveIV('vix', { vix: 20, multiplier: DEFAULTS.IV_PREMIUM_MIN });
+    const result = resolveIV('vix', {
+      vix: 20,
+      multiplier: DEFAULTS.IV_PREMIUM_MIN,
+    });
     expect(result.sigma).toBeCloseTo(0.2, 6);
     expect(result.error).toBeUndefined();
   });
 
   it('accepts multiplier at exact maximum boundary', () => {
-    const result = resolveIV('vix', { vix: 20, multiplier: DEFAULTS.IV_PREMIUM_MAX });
+    const result = resolveIV('vix', {
+      vix: 20,
+      multiplier: DEFAULTS.IV_PREMIUM_MAX,
+    });
     expect(result.sigma).toBeCloseTo(0.26, 6);
     expect(result.error).toBeUndefined();
   });
@@ -135,7 +141,7 @@ describe('resolveIV: Direct mode', () => {
 
 describe('resolveIV: Invalid mode', () => {
   it('returns error for unknown mode', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result = resolveIV('unknown' as any, { vix: 20, multiplier: 1.15 });
     expect(result.sigma).toBeNull();
     expect(result.error).toBeDefined();

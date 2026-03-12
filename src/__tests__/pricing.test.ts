@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { normalCDF, normalPDF, blackScholesPrice, calcBSDelta, calcBSGamma, calcTimeToExpiry } from '../utils/calculator';
+import {
+  normalCDF,
+  normalPDF,
+  blackScholesPrice,
+  calcBSDelta,
+  calcBSGamma,
+  calcTimeToExpiry,
+} from '../utils/calculator';
 
 describe('normalCDF', () => {
   it('N(0) = 0.5', () => {

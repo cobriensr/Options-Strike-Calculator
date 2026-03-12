@@ -1,5 +1,9 @@
 import type { Theme } from '../themes';
-import { getEventsForDate, getMaxSeverity, type MarketEvent } from '../data/eventCalendar';
+import {
+  getEventsForDate,
+  getMaxSeverity,
+  type MarketEvent,
+} from '../data/eventCalendar';
 
 interface Props {
   readonly th: Theme;
@@ -27,14 +31,16 @@ export default function EventDayWarning({ th, selectedDate }: Props) {
 
   return (
     <div
-      className="mt-3 p-3 sm:p-4 rounded-[10px]"
+      className="mt-3 rounded-[10px] p-3 sm:p-4"
       style={{ backgroundColor: bg, border: '1.5px solid ' + border }}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-base">{isHigh ? '\u26A0\uFE0F' : '\uD83D\uDCC5'}</span>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-base">
+          {isHigh ? '\u26A0\uFE0F' : '\uD83D\uDCC5'}
+        </span>
         <span
-          className="text-[10px] font-bold uppercase tracking-widest font-sans"
+          className="font-sans text-[10px] font-bold tracking-widest uppercase"
           style={{ color }}
         >
           {isHigh ? 'High-Impact Event Day' : 'Economic Event Day'}
@@ -48,7 +54,7 @@ export default function EventDayWarning({ th, selectedDate }: Props) {
 
       {/* Advice */}
       <div
-        className="mt-2.5 pt-2 text-[11px] text-secondary font-sans leading-relaxed"
+        className="text-secondary mt-2.5 pt-2 font-sans text-[11px] leading-relaxed"
         style={{ borderTop: '1px solid ' + border }}
       >
         {isHigh
@@ -65,15 +71,15 @@ function EventRow({ th, event }: { th: Theme; event: MarketEvent }) {
   return (
     <div className="flex items-center gap-2.5 py-1.5">
       <span
-        className="text-[9px] font-bold py-0.5 px-2 rounded-full font-mono uppercase tracking-[0.06em] shrink-0"
+        className="shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px] font-bold tracking-[0.06em] uppercase"
         style={{ backgroundColor: tagColor + '18', color: tagColor }}
       >
         {event.event}
       </span>
-      <span className="text-xs text-primary font-sans font-medium">
+      <span className="text-primary font-sans text-xs font-medium">
         {event.description}
       </span>
-      <span className="text-[11px] text-muted font-mono ml-auto shrink-0">
+      <span className="text-muted ml-auto shrink-0 font-mono text-[11px]">
         {event.time} ET
       </span>
     </div>

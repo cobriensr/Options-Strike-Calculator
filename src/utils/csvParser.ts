@@ -12,16 +12,29 @@ export function parseVixCSV(csvText: string): VIXDataMap {
   const headerLine = lines[0];
   if (!headerLine) return {};
 
-  const cols = headerLine.toLowerCase().split(',').map((c) => c.trim());
+  const cols = headerLine
+    .toLowerCase()
+    .split(',')
+    .map((c) => c.trim());
   const dateIdx = cols.findIndex((c) => c.includes('date'));
   const openIdx = cols.indexOf('open');
   const highIdx = cols.indexOf('high');
   const lowIdx = cols.indexOf('low');
-  const closeIdx = cols.includes('close') ? cols.indexOf('close') : cols.indexOf('adj close');
+  const closeIdx = cols.includes('close')
+    ? cols.indexOf('close')
+    : cols.indexOf('adj close');
 
   if (dateIdx === -1) return {};
 
-  const data: Record<string, { open: number | null; high: number | null; low: number | null; close: number | null }> = {};
+  const data: Record<
+    string,
+    {
+      open: number | null;
+      high: number | null;
+      low: number | null;
+      close: number | null;
+    }
+  > = {};
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];

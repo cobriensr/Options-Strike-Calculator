@@ -13,7 +13,11 @@ vi.mock('xlsx', async () => {
   };
 });
 
-function makeResults(spot = 6850, sigma = 0.2, hoursRemaining = 4): CalculationResults {
+function makeResults(
+  spot = 6850,
+  sigma = 0.2,
+  hoursRemaining = 4,
+): CalculationResults {
   const T = calcTimeToExpiry(hoursRemaining);
   const allDeltas = calcAllDeltas(spot, sigma, T, 0.03, 10);
   return { allDeltas, sigma, T, hoursRemaining, spot };
@@ -36,18 +40,34 @@ describe('exportPnLComparison', () => {
   });
 
   it('calls XLSX.writeFile', () => {
-    exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+    exportPnLComparison({
+      results: makeResults(),
+      contracts: 1,
+      effectiveRatio: 10,
+      skewPct: 3,
+    });
     expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
   });
 
   it('generates filename with timestamp', () => {
-    exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
-    const filename = (XLSX.writeFile as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    exportPnLComparison({
+      results: makeResults(),
+      contracts: 1,
+      effectiveRatio: 10,
+      skewPct: 3,
+    });
+    const filename = (XLSX.writeFile as ReturnType<typeof vi.fn>).mock
+      .calls[0]![1] as string;
     expect(filename).toMatch(/^strike-calc-pnl-\d{4}-\d{2}-\d{2}_\d{4}\.xlsx$/);
   });
 
   it('creates 3 sheets', () => {
-    exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+    exportPnLComparison({
+      results: makeResults(),
+      contracts: 1,
+      effectiveRatio: 10,
+      skewPct: 3,
+    });
     const wb = getWorkbook();
     expect(wb.SheetNames).toHaveLength(3);
     expect(wb.SheetNames).toEqual(['P&L Comparison', 'IC Summary', 'Inputs']);
@@ -55,7 +75,12 @@ describe('exportPnLComparison', () => {
 
   describe('Sheet 1: P&L Comparison', () => {
     it('has correct header row', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 5, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 5,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
@@ -75,7 +100,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('has 126 data rows (7 wing widths × 6 deltas × 3 sides)', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
@@ -84,7 +114,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('contains all three side types', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -95,16 +130,28 @@ describe('exportPnLComparison', () => {
     });
 
     it('contains all wing widths', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
-      const widths = [...new Set(data.map((r) => r['Wing Width']))].sort((a, b) => Number(a) - Number(b));
+      const widths = [...new Set(data.map((r) => r['Wing Width']))].sort(
+        (a, b) => Number(a) - Number(b),
+      );
       expect(widths).toEqual([5, 10, 15, 20, 25, 30, 50]);
     });
 
     it('contains all 6 deltas', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -118,7 +165,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('credits are positive', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 10, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 10,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -130,7 +182,12 @@ describe('exportPnLComparison', () => {
 
     it('max loss is positive and less than wing width × multiplier × contracts', () => {
       const contracts = 5;
-      exportPnLComparison({ results: makeResults(), contracts, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -142,7 +199,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('buying power equals max loss', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 10, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 10,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -152,7 +214,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('wins to recover is positive', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -162,20 +229,42 @@ describe('exportPnLComparison', () => {
     });
 
     it('dollar values scale with contracts', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb1 = getWorkbook();
-      const data1: any[] = XLSX.utils.sheet_to_json(getSheet(wb1, 'P&L Comparison'));
+      const data1: any[] = XLSX.utils.sheet_to_json(
+        getSheet(wb1, 'P&L Comparison'),
+      );
 
-      exportPnLComparison({ results: makeResults(), contracts: 10, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 10,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb10 = getWorkbook();
-      const data10: any[] = XLSX.utils.sheet_to_json(getSheet(wb10, 'P&L Comparison'));
+      const data10: any[] = XLSX.utils.sheet_to_json(
+        getSheet(wb10, 'P&L Comparison'),
+      );
 
       // First row credit should be 10× for 10 contracts
-      expect(data10[0]['Credit ($)']).toBeCloseTo(data1[0]['Credit ($)'] * 10, 0);
+      expect(data10[0]['Credit ($)']).toBeCloseTo(
+        data1[0]['Credit ($)'] * 10,
+        0,
+      );
     });
 
     it('PoP is between 0 and 100', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -186,7 +275,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('RoR is between 0 and 100', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'P&L Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -199,7 +293,12 @@ describe('exportPnLComparison', () => {
 
   describe('Sheet 2: IC Summary', () => {
     it('has 42 rows (7 wing widths × 6 deltas)', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'IC Summary');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -207,7 +306,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('has per-side credit columns', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 5, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 5,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'IC Summary');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -218,17 +322,30 @@ describe('exportPnLComparison', () => {
     });
 
     it('put credit + call credit ≈ total credit', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 5, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 5,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'IC Summary');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
       for (const row of data) {
-        expect(row['Put Credit ($)'] + row['Call Credit ($)']).toBeCloseTo(row['Credit ($)'], 0);
+        expect(row['Put Credit ($)'] + row['Call Credit ($)']).toBeCloseTo(
+          row['Credit ($)'],
+          0,
+        );
       }
     });
 
     it('has wins to recover column', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'IC Summary');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -238,10 +355,17 @@ describe('exportPnLComparison', () => {
     });
 
     it('has monthly projection columns', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'IC Summary');
-      const headers = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1 })[0];
+      const headers = XLSX.utils.sheet_to_json<string[]>(sheet, {
+        header: 1,
+      })[0];
       expect(headers).toContain('Monthly Wins');
       expect(headers).toContain('Monthly Losses');
       expect(headers).toContain('Monthly Profit ($)');
@@ -250,7 +374,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('monthly wins + monthly losses ≈ 22', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'IC Summary');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -260,7 +389,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('has strike columns', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'IC Summary');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -274,7 +408,12 @@ describe('exportPnLComparison', () => {
 
   describe('Sheet 3: Inputs', () => {
     it('captures SPY spot', () => {
-      exportPnLComparison({ results: makeResults(6850), contracts: 5, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(6850),
+        contracts: 5,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'Inputs');
       const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
@@ -283,7 +422,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('captures contracts count', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 25, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 25,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'Inputs');
       const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
@@ -292,7 +436,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('captures skew percentage', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 5 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 5,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'Inputs');
       const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
@@ -301,7 +450,12 @@ describe('exportPnLComparison', () => {
     });
 
     it('includes methodology notes', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'Inputs');
       const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
@@ -312,12 +466,19 @@ describe('exportPnLComparison', () => {
     });
 
     it('lists all wing widths compared', () => {
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'Inputs');
       const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
       const flat = data.map((r) => r.join(' '));
-      expect(flat.some((s) => s.includes('5, 10, 15, 20, 25, 30, 50'))).toBe(true);
+      expect(flat.some((s) => s.includes('5, 10, 15, 20, 25, 30, 50'))).toBe(
+        true,
+      );
     });
   });
 
@@ -326,33 +487,60 @@ describe('exportPnLComparison', () => {
       const calculator = await import('../utils/calculator');
       const mockIc = {
         delta: 5 as const,
-        shortPut: 6800, longPut: 6795, shortCall: 6900, longCall: 6905,
-        shortPutSpy: 680, longPutSpy: 679.5, shortCallSpy: 690, longCallSpy: 690.5,
+        shortPut: 6800,
+        longPut: 6795,
+        shortCall: 6900,
+        longCall: 6905,
+        shortPutSpy: 680,
+        longPutSpy: 679.5,
+        shortCallSpy: 690,
+        longCallSpy: 690.5,
         wingWidthSpx: 5,
-        shortPutPremium: 0, longPutPremium: 0, shortCallPremium: 0, longCallPremium: 0,
-        creditReceived: 0, maxProfit: 0, maxLoss: 5,
-        breakEvenLow: 6800, breakEvenHigh: 6900,
-        returnOnRisk: 0, probabilityOfProfit: 0.5,
-        putSpreadCredit: 0, callSpreadCredit: 0,
-        putSpreadMaxLoss: 5, callSpreadMaxLoss: 5,
-        putSpreadBE: 6800, callSpreadBE: 6900,
-        putSpreadRoR: 0, callSpreadRoR: 0,
-        putSpreadPoP: 0.7, callSpreadPoP: 0.7,
+        shortPutPremium: 0,
+        longPutPremium: 0,
+        shortCallPremium: 0,
+        longCallPremium: 0,
+        creditReceived: 0,
+        maxProfit: 0,
+        maxLoss: 5,
+        breakEvenLow: 6800,
+        breakEvenHigh: 6900,
+        returnOnRisk: 0,
+        probabilityOfProfit: 0.5,
+        putSpreadCredit: 0,
+        callSpreadCredit: 0,
+        putSpreadMaxLoss: 5,
+        callSpreadMaxLoss: 5,
+        putSpreadBE: 6800,
+        callSpreadBE: 6900,
+        putSpreadRoR: 0,
+        callSpreadRoR: 0,
+        putSpreadPoP: 0.7,
+        callSpreadPoP: 0.7,
       };
 
       vi.spyOn(calculator, 'buildIronCondor').mockReturnValue(mockIc);
 
-      exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+      exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
       const wb = getWorkbook();
 
       // Sheet 1 - addRow branch: credit <= 0 → winsToRecover = 0
-      const summaryData: any[] = XLSX.utils.sheet_to_json(getSheet(wb, 'P&L Comparison'));
+      const summaryData: any[] = XLSX.utils.sheet_to_json(
+        getSheet(wb, 'P&L Comparison'),
+      );
       for (const row of summaryData) {
         expect(row['Wins to Recover']).toBe(0);
       }
 
       // Sheet 2 - IC summary branch: creditReceived <= 0 → winsToRecover = 0
-      const icData: any[] = XLSX.utils.sheet_to_json(getSheet(wb, 'IC Summary'));
+      const icData: any[] = XLSX.utils.sheet_to_json(
+        getSheet(wb, 'IC Summary'),
+      );
       for (const row of icData) {
         expect(row['Wins to Recover']).toBe(0);
       }
@@ -362,34 +550,64 @@ describe('exportPnLComparison', () => {
 
     it('works with 1 contract', () => {
       expect(() => {
-        exportPnLComparison({ results: makeResults(), contracts: 1, effectiveRatio: 10, skewPct: 3 });
+        exportPnLComparison({
+          results: makeResults(),
+          contracts: 1,
+          effectiveRatio: 10,
+          skewPct: 3,
+        });
       }).not.toThrow();
     });
 
     it('works with large contract count', () => {
       expect(() => {
-        exportPnLComparison({ results: makeResults(), contracts: 500, effectiveRatio: 10, skewPct: 3 });
+        exportPnLComparison({
+          results: makeResults(),
+          contracts: 500,
+          effectiveRatio: 10,
+          skewPct: 3,
+        });
       }).not.toThrow();
     });
 
     it('works with zero skew', () => {
       expect(() => {
-        exportPnLComparison({ results: makeResults(), contracts: 10, effectiveRatio: 10, skewPct: 0 });
+        exportPnLComparison({
+          results: makeResults(),
+          contracts: 10,
+          effectiveRatio: 10,
+          skewPct: 0,
+        });
       }).not.toThrow();
     });
 
     it('works with non-default ratio', () => {
       expect(() => {
-        exportPnLComparison({ results: makeResults(), contracts: 10, effectiveRatio: 10.0238, skewPct: 3 });
+        exportPnLComparison({
+          results: makeResults(),
+          contracts: 10,
+          effectiveRatio: 10.0238,
+          skewPct: 3,
+        });
       }).not.toThrow();
     });
 
     it('works with different time inputs', () => {
       expect(() => {
-        exportPnLComparison({ results: makeResults(6850, 0.2, 1), contracts: 10, effectiveRatio: 10, skewPct: 3 });
+        exportPnLComparison({
+          results: makeResults(6850, 0.2, 1),
+          contracts: 10,
+          effectiveRatio: 10,
+          skewPct: 3,
+        });
       }).not.toThrow();
       expect(() => {
-        exportPnLComparison({ results: makeResults(6850, 0.2, 6), contracts: 10, effectiveRatio: 10, skewPct: 3 });
+        exportPnLComparison({
+          results: makeResults(6850, 0.2, 6),
+          contracts: 10,
+          effectiveRatio: 10,
+          skewPct: 3,
+        });
       }).not.toThrow();
     });
   });

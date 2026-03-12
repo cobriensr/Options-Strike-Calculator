@@ -46,7 +46,9 @@ export const HEDGE_Z_SCORES: Readonly<Record<HedgeDelta, number>> = {
 } as const;
 
 /** All available delta targets, sorted ascending */
-export const DELTA_OPTIONS: readonly DeltaTarget[] = [5, 8, 10, 12, 15, 20] as const;
+export const DELTA_OPTIONS: readonly DeltaTarget[] = [
+  5, 8, 10, 12, 15, 20,
+] as const;
 
 /** Available hedge delta options */
 export const HEDGE_DELTA_OPTIONS: readonly HedgeDelta[] = [1, 2, 3, 5] as const;

@@ -3,7 +3,11 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import VIXRangeAnalysis from '../components/VIXRangeAnalysis';
 import { lightTheme, darkTheme } from '../themes';
-import { VIX_BUCKETS, SURVIVAL_DATA, FINE_VIX_STATS } from '../data/vixRangeStats';
+import {
+  VIX_BUCKETS,
+  SURVIVAL_DATA,
+  FINE_VIX_STATS,
+} from '../data/vixRangeStats';
 
 // Helper: get the settle/intraday chip buttons by role (avoids matching description paragraphs)
 function getSettleChip() {
@@ -39,7 +43,9 @@ describe('VIXRangeAnalysis: rendering', () => {
 describe('VIXRangeAnalysis: VIX range table', () => {
   it('renders the range table', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
-    expect(screen.getByRole('table', { name: /spx daily range statistics/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /spx daily range statistics/i }),
+    ).toBeInTheDocument();
   });
 
   it('shows all 8 VIX bucket labels in range table', () => {
@@ -47,7 +53,9 @@ describe('VIXRangeAnalysis: VIX range table', () => {
     const table = screen.getByRole('table', { name: /spx daily range/i });
     for (const b of VIX_BUCKETS) {
       // Each label appears in both range table and survival table, so scope to range table
-      expect(within(table).getAllByText(b.label).length).toBeGreaterThanOrEqual(1);
+      expect(within(table).getAllByText(b.label).length).toBeGreaterThanOrEqual(
+        1,
+      );
     }
   });
 
@@ -137,20 +145,28 @@ describe('VIXRangeAnalysis: active bucket highlighting', () => {
 describe('VIXRangeAnalysis: survival heatmap', () => {
   it('renders the survival heatmap table', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
-    expect(screen.getByRole('table', { name: /iron condor survival rates/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /iron condor survival rates/i }),
+    ).toBeInTheDocument();
   });
 
   it('shows all VIX bucket labels in survival table', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
-    const table = screen.getByRole('table', { name: /iron condor survival rates/i });
+    const table = screen.getByRole('table', {
+      name: /iron condor survival rates/i,
+    });
     for (const b of VIX_BUCKETS) {
-      expect(within(table).getAllByText(b.label).length).toBeGreaterThanOrEqual(1);
+      expect(within(table).getAllByText(b.label).length).toBeGreaterThanOrEqual(
+        1,
+      );
     }
   });
 
   it('shows all wing width column headers', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
-    const table = screen.getByRole('table', { name: /iron condor survival rates/i });
+    const table = screen.getByRole('table', {
+      name: /iron condor survival rates/i,
+    });
     for (const s of SURVIVAL_DATA) {
       expect(within(table).getByText(s.label)).toBeInTheDocument();
     }
@@ -163,13 +179,17 @@ describe('VIXRangeAnalysis: survival heatmap', () => {
 
   it('shows settlement survival values by default', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
-    const table = screen.getByRole('table', { name: /iron condor survival rates/i });
+    const table = screen.getByRole('table', {
+      name: /iron condor survival rates/i,
+    });
     expect(within(table).getByText('76.6%')).toBeInTheDocument();
   });
 
   it('shows settlement description text by default', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
-    expect(screen.getByText(/closing price stayed within/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/closing price stayed within/i),
+    ).toBeInTheDocument();
   });
 });
 
@@ -191,7 +211,9 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
 
     await user.click(getIntradayChip());
 
-    const table = screen.getByRole('table', { name: /iron condor survival rates.*intraday/i });
+    const table = screen.getByRole('table', {
+      name: /iron condor survival rates.*intraday/i,
+    });
     // First bucket, first wing (0.50% intraday) = 88.8%
     expect(within(table).getByText('88.8%')).toBeInTheDocument();
   });
@@ -201,7 +223,9 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
 
     await user.click(getIntradayChip());
-    expect(screen.getByText(/full h-l range stayed within/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/full h-l range stayed within/i),
+    ).toBeInTheDocument();
   });
 
   it('switches back to settlement mode', async () => {
@@ -217,10 +241,14 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
     const user = userEvent.setup();
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
 
-    expect(screen.getByRole('table', { name: /survival rates.*settle/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /survival rates.*settle/i }),
+    ).toBeInTheDocument();
 
     await user.click(getIntradayChip());
-    expect(screen.getByRole('table', { name: /survival rates.*intraday/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /survival rates.*intraday/i }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -230,7 +258,9 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
 describe('VIXRangeAnalysis: fine-grained breakdown', () => {
   it('fine-grained table is hidden by default', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
-    expect(screen.queryByRole('table', { name: /fine-grained/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('table', { name: /fine-grained/i }),
+    ).not.toBeInTheDocument();
   });
 
   it('shows expand button', () => {
@@ -243,7 +273,9 @@ describe('VIXRangeAnalysis: fine-grained breakdown', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
 
     await user.click(screen.getByText(/show.*point-by-point/i));
-    expect(screen.getByRole('table', { name: /fine-grained/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /fine-grained/i }),
+    ).toBeInTheDocument();
   });
 
   it('collapses fine-grained table when button is clicked again', async () => {
@@ -251,10 +283,14 @@ describe('VIXRangeAnalysis: fine-grained breakdown', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
 
     await user.click(screen.getByText(/show.*point-by-point/i));
-    expect(screen.getByRole('table', { name: /fine-grained/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /fine-grained/i }),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByText(/hide.*point-by-point/i));
-    expect(screen.queryByRole('table', { name: /fine-grained/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('table', { name: /fine-grained/i }),
+    ).not.toBeInTheDocument();
   });
 
   it('button text changes from Show to Hide', async () => {
@@ -341,7 +377,9 @@ describe('VIXRangeAnalysis: fine-grained table content', () => {
 // ============================================================
 describe('VIXRangeAnalysis: VIX prop reactivity', () => {
   it('updates active bucket highlight when VIX changes', () => {
-    const { rerender } = render(<VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />);
+    const { rerender } = render(
+      <VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />,
+    );
 
     let currentBadge = screen.getByText('current');
     let row = currentBadge.closest('tr');
@@ -354,7 +392,9 @@ describe('VIXRangeAnalysis: VIX prop reactivity', () => {
   });
 
   it('removes highlighting when VIX becomes null', () => {
-    const { rerender } = render(<VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />);
+    const { rerender } = render(
+      <VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />,
+    );
     expect(screen.getByText('current')).toBeInTheDocument();
 
     rerender(<VIXRangeAnalysis th={lightTheme} vix={null} spot={6800} />);
@@ -368,27 +408,41 @@ describe('VIXRangeAnalysis: VIX prop reactivity', () => {
 describe('VIXRangeAnalysis: theme support', () => {
   it('renders complete component in light theme', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={20} spot={6800} />);
-    expect(screen.getByRole('table', { name: /spx daily range/i })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: /iron condor survival/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /spx daily range/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /iron condor survival/i }),
+    ).toBeInTheDocument();
   });
 
   it('renders complete component in dark theme', () => {
     render(<VIXRangeAnalysis th={darkTheme} vix={20} spot={6800} />);
-    expect(screen.getByRole('table', { name: /spx daily range/i })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: /iron condor survival/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /spx daily range/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /iron condor survival/i }),
+    ).toBeInTheDocument();
   });
 
   it('renders fine-grained table in both themes', async () => {
     const user = userEvent.setup();
 
-    const { unmount } = render(<VIXRangeAnalysis th={lightTheme} vix={20} spot={6800} />);
+    const { unmount } = render(
+      <VIXRangeAnalysis th={lightTheme} vix={20} spot={6800} />,
+    );
     await user.click(screen.getByText(/show.*point-by-point/i));
-    expect(screen.getByRole('table', { name: /fine-grained/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /fine-grained/i }),
+    ).toBeInTheDocument();
     unmount();
 
     render(<VIXRangeAnalysis th={darkTheme} vix={20} spot={6800} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
-    expect(screen.getByRole('table', { name: /fine-grained/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /fine-grained/i }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -398,7 +452,9 @@ describe('VIXRangeAnalysis: theme support', () => {
 describe('VIXRangeAnalysis: edge cases', () => {
   it('handles VIX 0', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={0} spot={6800} />);
-    expect(screen.getByRole('table', { name: /spx daily range/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /spx daily range/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText('current')).toBeInTheDocument();
   });
 
@@ -409,7 +465,9 @@ describe('VIXRangeAnalysis: edge cases', () => {
 
   it('handles spot = 0', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={20} spot={0} />);
-    expect(screen.getByRole('table', { name: /spx daily range/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /spx daily range/i }),
+    ).toBeInTheDocument();
   });
 
   it('handles fractional VIX 14.73', () => {
@@ -425,9 +483,15 @@ describe('VIXRangeAnalysis: edge cases', () => {
 
     await user.click(screen.getByText(/show.*point-by-point/i));
 
-    expect(screen.getByRole('table', { name: /spx daily range/i })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: /iron condor survival/i })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: /fine-grained/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /spx daily range/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /iron condor survival/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /fine-grained/i }),
+    ).toBeInTheDocument();
   });
 
   it('survival toggle and fine-grained toggle work independently', async () => {
@@ -444,11 +508,15 @@ describe('VIXRangeAnalysis: edge cases', () => {
     expect(getIntradayChip()).toHaveAttribute('aria-checked', 'true');
 
     // Fine-grained should be visible
-    expect(screen.getByRole('table', { name: /fine-grained/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /fine-grained/i }),
+    ).toBeInTheDocument();
 
     // Toggle back to settle — fine-grained should remain open
     await user.click(getSettleChip());
-    expect(screen.getByRole('table', { name: /fine-grained/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /fine-grained/i }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -473,7 +541,9 @@ describe('VIXRangeAnalysis: survival value spot checks', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
     await user.click(getIntradayChip());
 
-    const table = screen.getByRole('table', { name: /iron condor survival.*intraday/i });
+    const table = screen.getByRole('table', {
+      name: /iron condor survival.*intraday/i,
+    });
     expect(within(table).getByText('98.6%')).toBeInTheDocument();
   });
 
@@ -482,7 +552,9 @@ describe('VIXRangeAnalysis: survival value spot checks', () => {
     render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
     await user.click(getIntradayChip());
 
-    const table = screen.getByRole('table', { name: /iron condor survival.*intraday/i });
+    const table = screen.getByRole('table', {
+      name: /iron condor survival.*intraday/i,
+    });
     expect(within(table).getByText('1.4%')).toBeInTheDocument();
   });
 });

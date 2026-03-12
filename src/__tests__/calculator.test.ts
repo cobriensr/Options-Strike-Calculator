@@ -192,8 +192,14 @@ describe('calcAllDeltas', () => {
     const rows = calcAllDeltas(5800, 0.2, T);
     for (const row of rows) {
       if ('spyPut' in row) {
-        expect(Number.parseFloat(row.spyPut)).toBeCloseTo(row.putStrike / 10, 1);
-        expect(Number.parseFloat(row.spyCall)).toBeCloseTo(row.callStrike / 10, 1);
+        expect(Number.parseFloat(row.spyPut)).toBeCloseTo(
+          row.putStrike / 10,
+          1,
+        );
+        expect(Number.parseFloat(row.spyCall)).toBeCloseTo(
+          row.callStrike / 10,
+          1,
+        );
       }
     }
   });
@@ -251,7 +257,10 @@ describe('to24Hour', () => {
 
 describe('calcTimeToExpiry', () => {
   it('full day (6.5h) gives T ≈ 0.003968', () => {
-    expect(calcTimeToExpiry(6.5)).toBeCloseTo(6.5 / MARKET.ANNUAL_TRADING_HOURS, 6);
+    expect(calcTimeToExpiry(6.5)).toBeCloseTo(
+      6.5 / MARKET.ANNUAL_TRADING_HOURS,
+      6,
+    );
   });
 
   it('0 hours gives T = 0', () => {

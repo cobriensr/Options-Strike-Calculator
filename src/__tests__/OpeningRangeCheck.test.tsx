@@ -39,7 +39,9 @@ describe('OpeningRangeCheck: rendering', () => {
 
   it('shows hint when VIX set but no range entered', () => {
     render(<OpeningRangeCheck th={lightTheme} vix={20} spot={6800} />);
-    expect(screen.getByText(/first 30 minutes of trading/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/first 30 minutes of trading/i),
+    ).toBeInTheDocument();
   });
 });
 
@@ -69,7 +71,9 @@ describe('OpeningRangeCheck: signals', () => {
     render(<OpeningRangeCheck th={lightTheme} vix={20} spot={6800} />);
     enterRange('6830', '6790');
     expect(screen.getByText('MODERATE')).toBeInTheDocument();
-    expect(screen.getAllByText(/tighter deltas/i).length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(/tighter deltas/i).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -101,7 +105,9 @@ describe('OpeningRangeCheck: stats', () => {
     render(<OpeningRangeCheck th={lightTheme} vix={20} spot={6800} />);
     enterRange('6820', '6780');
     expect(screen.getByText(/expected 90th/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/90th pctile/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/90th pctile/i).length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it('shows percentage consumed bars', () => {
@@ -177,17 +183,31 @@ describe('OpeningRangeCheck: DOW adjustment', () => {
   it('applies DOW multiplier from selectedDate', () => {
     // Monday (quieter) vs Thursday (wider) at same VIX should change the expected range
     const { unmount } = render(
-      <OpeningRangeCheck th={lightTheme} vix={20} spot={6800} selectedDate="2026-03-09" />
+      <OpeningRangeCheck
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        selectedDate="2026-03-09"
+      />,
     );
     enterRange('6820', '6780');
-    const monText = screen.getByText(/vs\. median h-l/i).closest('div')?.parentElement?.textContent ?? '';
+    const monText =
+      screen.getByText(/vs\. median h-l/i).closest('div')?.parentElement
+        ?.textContent ?? '';
     unmount();
 
     render(
-      <OpeningRangeCheck th={lightTheme} vix={20} spot={6800} selectedDate="2026-03-12" />
+      <OpeningRangeCheck
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        selectedDate="2026-03-12"
+      />,
     );
     enterRange('6820', '6780');
-    const thuText = screen.getByText(/vs\. median h-l/i).closest('div')?.parentElement?.textContent ?? '';
+    const thuText =
+      screen.getByText(/vs\. median h-l/i).closest('div')?.parentElement
+        ?.textContent ?? '';
 
     // Monday expected median is lower, so same range consumes more → different %
     expect(monText).not.toBe(thuText);

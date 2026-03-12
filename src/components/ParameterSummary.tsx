@@ -10,7 +10,14 @@ interface Props {
   hoursLeft: string;
 }
 
-export default function ParameterSummary({ spySpot, spxLabel, spxValue, sigma, T, hoursLeft }: Props) {
+export default function ParameterSummary({
+  spySpot,
+  spxLabel,
+  spxValue,
+  sigma,
+  T,
+  hoursLeft,
+}: Props) {
   const items = [
     { label: 'SPY Spot', value: spySpot },
     { label: spxLabel, value: spxValue },
@@ -20,11 +27,18 @@ export default function ParameterSummary({ spySpot, spxLabel, spxValue, sigma, T
   ];
 
   return (
-    <fieldset className="bg-surface-alt rounded-[10px] p-3.5 mb-4.5 grid grid-cols-2 gap-2 md:grid-cols-5 border-none m-0" aria-label="Calculation parameters">
+    <fieldset
+      className="bg-surface-alt m-0 mb-4.5 grid grid-cols-2 gap-2 rounded-[10px] border-none p-3.5 md:grid-cols-5"
+      aria-label="Calculation parameters"
+    >
       {items.map((item) => (
         <div key={item.label} className="text-center">
-          <div className="text-[10px] uppercase text-tertiary tracking-[0.06em] font-sans font-bold">{item.label}</div>
-          <div className="text-[15px] font-medium font-mono text-accent mt-0.5">{item.value}</div>
+          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
+            {item.label}
+          </div>
+          <div className="text-accent mt-0.5 font-mono text-[15px] font-medium">
+            {item.value}
+          </div>
         </div>
       ))}
     </fieldset>

@@ -23,7 +23,10 @@ export function cacheVixData(data: VIXDataMap, source: string): boolean {
  * Load VIX data from localStorage cache.
  * Returns null if no cached data exists.
  */
-export function loadCachedVixData(): { data: VIXDataMap; source: string } | null {
+export function loadCachedVixData(): {
+  data: VIXDataMap;
+  source: string;
+} | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const source = localStorage.getItem(SOURCE_KEY);
@@ -52,13 +55,20 @@ export function clearCachedVixData(): void {
  * Load the static VIX JSON that ships with the app.
  * Returns null if the file doesn't exist or can't be parsed.
  */
-export async function loadStaticVixData(): Promise<{ data: VIXDataMap; source: string } | null> {
+export async function loadStaticVixData(): Promise<{
+  data: VIXDataMap;
+  source: string;
+} | null> {
   try {
     const response = await fetch(STATIC_PATH);
     if (!response.ok) return null;
     const data = (await response.json()) as VIXDataMap;
     if (Object.keys(data).length === 0) return null;
-    return { data, source: 'built-in (' + Object.keys(data).length.toLocaleString() + ' days)' };
+    return {
+      data,
+      source:
+        'built-in (' + Object.keys(data).length.toLocaleString() + ' days)',
+    };
   } catch {
     return null;
   }

@@ -1,48 +1,55 @@
 import { useState } from 'react';
 import type { Theme } from '../themes';
-import { tinyLbl } from './ui';
+import { tinyLbl } from './ui-utils';
 import { estimateRange, getDowMultiplier } from '../data/vixRangeStats';
 
 interface Props {
   readonly th: Theme;
   readonly vix: number | null;
-  readonly spot: number | null;        // Current SPX spot from parent
-  readonly selectedDate?: string;       // For DOW adjustment
+  readonly spot: number | null; // Current SPX spot from parent
+  readonly selectedDate?: string; // For DOW adjustment
 }
 
 type Signal = 'green' | 'yellow' | 'red';
 
 interface RangeAnalysis {
-  readonly openingRangePct: number;     // First 30-min H-L as % of open
-  readonly openingRangePts: number;     // First 30-min H-L in points
-  readonly expectedMedHL: number;       // Expected median daily H-L %
-  readonly expectedP90HL: number;       // Expected 90th pctile daily H-L %
-  readonly pctOfMedianUsed: number;     // Opening range / median H-L (0-1+)
-  readonly pctOfP90Used: number;        // Opening range / p90 H-L (0-1+)
+  readonly openingRangePct: number; // First 30-min H-L as % of open
+  readonly openingRangePts: number; // First 30-min H-L in points
+  readonly expectedMedHL: number; // Expected median daily H-L %
+  readonly expectedP90HL: number; // Expected 90th pctile daily H-L %
+  readonly pctOfMedianUsed: number; // Opening range / median H-L (0-1+)
+  readonly pctOfP90Used: number; // Opening range / p90 H-L (0-1+)
   readonly signal: Signal;
   readonly label: string;
   readonly advice: string;
 }
 
-function classify(pctOfMedian: number): { signal: Signal; label: string; advice: string } {
-  if (pctOfMedian < 0.40) {
+function classify(pctOfMedian: number): {
+  signal: Signal;
+  label: string;
+  advice: string;
+} {
+  if (pctOfMedian < 0.4) {
     return {
       signal: 'green',
       label: 'RANGE INTACT',
-      advice: 'Opening range is small relative to the expected daily move. Good conditions to add positions.',
+      advice:
+        'Opening range is small relative to the expected daily move. Good conditions to add positions.',
     };
   }
   if (pctOfMedian < 0.65) {
     return {
       signal: 'yellow',
       label: 'MODERATE',
-      advice: 'A meaningful portion of the expected range is used. Add positions with tighter deltas or smaller size.',
+      advice:
+        'A meaningful portion of the expected range is used. Add positions with tighter deltas or smaller size.',
     };
   }
   return {
     signal: 'red',
     label: 'RANGE EXHAUSTED',
-    advice: 'The day is already running hot. Adding new positions carries elevated risk of further extension.',
+    advice:
+      'The day is already running hot. Adding new positions carries elevated risk of further extension.',
   };
 }
 
@@ -50,7 +57,9 @@ function parseDow(selectedDate?: string): number | null {
   if (selectedDate) {
     const parts = selectedDate.split('-');
     if (parts.length === 3) {
-      const d = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])));
+      const d = new Date(
+        Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])),
+      );
       const jsDay = d.getUTCDay();
       if (jsDay >= 1 && jsDay <= 5) return jsDay - 1;
       return null;
@@ -61,7 +70,8 @@ function parseDow(selectedDate?: string): number | null {
   return jsDay - 1;
 }
 
-const inputCls = "bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150";
+const inputCls =
+  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
 
 /**
  * Opening Range Check.
@@ -69,7 +79,12 @@ const inputCls = "bg-input border-[1.5px] border-edge-strong rounded-lg text-pri
  * daily range for the current VIX level. Helps decide whether to add
  * more positions later in the morning.
  */
-export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props) {
+export default function OpeningRangeCheck({
+  th,
+  vix,
+  spot,
+  selectedDate,
+}: Props) {
   const [openHigh, setOpenHigh] = useState('');
   const [openLow, setOpenLow] = useState('');
 
@@ -77,7 +92,11 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
 
   const highVal = Number.parseFloat(openHigh);
   const lowVal = Number.parseFloat(openLow);
-  const bothFilled = !Number.isNaN(highVal) && !Number.isNaN(lowVal) && highVal > 0 && lowVal > 0;
+  const bothFilled =
+    !Number.isNaN(highVal) &&
+    !Number.isNaN(lowVal) &&
+    highVal > 0 &&
+    lowVal > 0;
   const hasRange = bothFilled && highVal > lowVal;
   const invertedRange = bothFilled && highVal <= lowVal;
 
@@ -85,7 +104,7 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
   const analysis: RangeAnalysis | null = (() => {
     if (!hasVix || !hasRange || !vix) return null;
 
-    const openPrice = spot ?? ((highVal + lowVal) / 2); // use spot if available, else midpoint
+    const openPrice = spot ?? (highVal + lowVal) / 2; // use spot if available, else midpoint
     const openingRangePts = highVal - lowVal;
     const openingRangePct = (openingRangePts / openPrice) * 100;
 
@@ -115,23 +134,28 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
     };
   })();
 
-  const signalColor = analysis?.signal === 'green' ? th.green
-    : analysis?.signal === 'yellow' ? '#E8A317'
-    : analysis?.signal === 'red' ? th.red
-    : th.textMuted;
+  const signalColor =
+    analysis?.signal === 'green'
+      ? th.green
+      : analysis?.signal === 'yellow'
+        ? '#E8A317'
+        : analysis?.signal === 'red'
+          ? th.red
+          : th.textMuted;
 
   return (
     <div>
-      <div className="font-sans text-[11px] font-bold uppercase tracking-[0.14em] text-accent mb-2.5">
+      <div className="text-accent mb-2.5 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
         Opening Range Check
       </div>
 
-      <p className="text-xs text-secondary m-0 mb-3 font-sans leading-normal">
-        Enter the SPX high and low from the first ~30 minutes (9:30{'\u2013'}10:00 ET) to see how much of the expected daily range has been consumed.
+      <p className="text-secondary m-0 mb-3 font-sans text-xs leading-normal">
+        Enter the SPX high and low from the first ~30 minutes (9:30{'\u2013'}
+        10:00 ET) to see how much of the expected daily range has been consumed.
       </p>
 
       {/* Input row */}
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 mb-3.5">
+      <div className="mb-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
         <div>
           <label htmlFor="open-range-high" className={tinyLbl}>
             30-min High
@@ -167,28 +191,34 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
         <div>
           {/* Signal banner */}
           <div
-            className="flex items-start sm:items-center gap-3 rounded-[10px] p-3 sm:p-4 mb-3"
-            style={{ backgroundColor: signalColor + '10', border: '1.5px solid ' + signalColor + '30' }}
+            className="mb-3 flex items-start gap-3 rounded-[10px] p-3 sm:items-center sm:p-4"
+            style={{
+              backgroundColor: signalColor + '10',
+              border: '1.5px solid ' + signalColor + '30',
+            }}
           >
             <div
-              className="w-3 h-3 rounded-full shrink-0"
-              style={{ backgroundColor: signalColor, boxShadow: '0 0 8px ' + signalColor + '66' }}
+              className="h-3 w-3 shrink-0 rounded-full"
+              style={{
+                backgroundColor: signalColor,
+                boxShadow: '0 0 8px ' + signalColor + '66',
+              }}
             />
             <div>
               <span
-                className="text-[10px] font-bold uppercase tracking-widest font-sans"
+                className="font-sans text-[10px] font-bold tracking-widest uppercase"
                 style={{ color: signalColor }}
               >
                 {analysis.label}
               </span>
-              <span className="text-[11px] text-secondary ml-2.5 font-sans">
+              <span className="text-secondary ml-2.5 font-sans text-[11px]">
                 {analysis.advice}
               </span>
             </div>
           </div>
 
           {/* Stats grid */}
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3 py-3.5 px-4 rounded-[10px] bg-surface-alt border border-edge mb-3">
+          <div className="bg-surface-alt border-edge mb-3 grid grid-cols-1 gap-2.5 rounded-[10px] border px-4 py-3.5 sm:grid-cols-3">
             <StatCell
               label="Opening Range"
               value={analysis.openingRangePct.toFixed(2) + '%'}
@@ -210,37 +240,39 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
           </div>
 
           {/* Range consumption bar */}
-          <div className="py-3.5 px-4 rounded-[10px] bg-surface border border-edge">
-            <div className="text-[10px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans mb-2">
+          <div className="bg-surface border-edge rounded-[10px] border px-4 py-3.5">
+            <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
               Range consumed vs. expected daily range
             </div>
 
             {/* Median bar */}
             <div className="mb-2.5">
-              <div className="flex justify-between items-center text-[11px] font-mono mb-1">
+              <div className="mb-1 flex items-center justify-between font-mono text-[11px]">
                 <span className="text-secondary">vs. Median H-L</span>
                 <span className="font-bold" style={{ color: signalColor }}>
                   {(analysis.pctOfMedianUsed * 100).toFixed(0)}% consumed
                 </span>
               </div>
-              <div className="h-2.5 rounded-[5px] bg-surface-alt relative overflow-hidden">
+              <div className="bg-surface-alt relative h-2.5 overflow-hidden rounded-[5px]">
                 <div
                   className="absolute top-0 left-0 h-full rounded-[5px] transition-[width] duration-300"
                   style={{
-                    width: Math.min(analysis.pctOfMedianUsed, 1.5) / 1.5 * 100 + '%',
+                    width:
+                      (Math.min(analysis.pctOfMedianUsed, 1.5) / 1.5) * 100 +
+                      '%',
                     backgroundColor: signalColor,
                   }}
                 />
                 {/* 100% marker */}
                 <div
-                  className="absolute -top-0.5 w-0.5 h-3.5"
+                  className="absolute -top-0.5 h-3.5 w-0.5"
                   style={{
-                    left: (1 / 1.5 * 100) + '%',
+                    left: (1 / 1.5) * 100 + '%',
                     backgroundColor: th.text + '40',
                   }}
                 />
               </div>
-              <div className="flex justify-between text-[8px] text-muted font-mono mt-0.5">
+              <div className="text-muted mt-0.5 flex justify-between font-mono text-[8px]">
                 <span>0%</span>
                 <span>50%</span>
                 <span className="font-semibold">100%</span>
@@ -250,29 +282,30 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
 
             {/* P90 bar */}
             <div>
-              <div className="flex justify-between items-center text-[11px] font-mono mb-1">
+              <div className="mb-1 flex items-center justify-between font-mono text-[11px]">
                 <span className="text-secondary">vs. 90th Pctile H-L</span>
-                <span className="font-bold text-secondary">
+                <span className="text-secondary font-bold">
                   {(analysis.pctOfP90Used * 100).toFixed(0)}% consumed
                 </span>
               </div>
-              <div className="h-2.5 rounded-[5px] bg-surface-alt relative overflow-hidden">
+              <div className="bg-surface-alt relative h-2.5 overflow-hidden rounded-[5px]">
                 <div
                   className="absolute top-0 left-0 h-full rounded-[5px] transition-[width] duration-300"
                   style={{
-                    width: Math.min(analysis.pctOfP90Used, 1.5) / 1.5 * 100 + '%',
+                    width:
+                      (Math.min(analysis.pctOfP90Used, 1.5) / 1.5) * 100 + '%',
                     backgroundColor: th.accent + '80',
                   }}
                 />
                 <div
-                  className="absolute -top-0.5 w-0.5 h-3.5"
+                  className="absolute -top-0.5 h-3.5 w-0.5"
                   style={{
-                    left: (1 / 1.5 * 100) + '%',
+                    left: (1 / 1.5) * 100 + '%',
                     backgroundColor: th.text + '40',
                   }}
                 />
               </div>
-              <div className="flex justify-between text-[8px] text-muted font-mono mt-0.5">
+              <div className="text-muted mt-0.5 flex justify-between font-mono text-[8px]">
                 <span>0%</span>
                 <span>50%</span>
                 <span className="font-semibold">100%</span>
@@ -281,8 +314,8 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
             </div>
           </div>
 
-          <p className="text-[11px] text-muted mt-2 italic">
-            {analysis.pctOfMedianUsed < 0.40
+          <p className="text-muted mt-2 text-[11px] italic">
+            {analysis.pctOfMedianUsed < 0.4
               ? 'The first 30 minutes consumed less than 40% of the expected daily range. Historically this signals a quieter day \u2014 good for adding IC positions.'
               : analysis.pctOfMedianUsed < 0.65
                 ? 'The first 30 minutes consumed 40\u201365% of the expected daily range. The day is moving but not extreme. Use tighter deltas for any additions.'
@@ -293,17 +326,18 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
 
       {/* Empty states */}
       {!hasVix && (
-        <p className="text-xs text-muted mt-1 italic">
+        <p className="text-muted mt-1 text-xs italic">
           Enter a VIX value above to enable opening range analysis.
         </p>
       )}
       {hasVix && !hasRange && !invertedRange && (
-        <p className="text-xs text-muted mt-1 italic">
-          Enter the SPX high and low from the first 30 minutes of trading to see the analysis.
+        <p className="text-muted mt-1 text-xs italic">
+          Enter the SPX high and low from the first 30 minutes of trading to see
+          the analysis.
         </p>
       )}
       {invertedRange && (
-        <p className="text-xs text-danger mt-1">
+        <p className="text-danger mt-1 text-xs">
           High must be greater than low.
         </p>
       )}
@@ -315,14 +349,26 @@ export default function OpeningRangeCheck({ th, vix, spot, selectedDate }: Props
 // SUB-COMPONENTS
 // ============================================================
 
-function StatCell({ label, value, sub, color }: {
-  label: string; value: string; sub: string; color: string;
+function StatCell({
+  label,
+  value,
+  sub,
+  color,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  color: string;
 }) {
   return (
     <div className="text-center">
-      <div className="text-[9px] font-bold uppercase tracking-[0.06em] text-tertiary font-sans">{label}</div>
-      <div className="text-[17px] font-bold font-mono mt-0.5" style={{ color }}>{value}</div>
-      <div className="text-[10px] text-muted font-mono">{sub}</div>
+      <div className="text-tertiary font-sans text-[9px] font-bold tracking-[0.06em] uppercase">
+        {label}
+      </div>
+      <div className="mt-0.5 font-mono text-[17px] font-bold" style={{ color }}>
+        {value}
+      </div>
+      <div className="text-muted font-mono text-[10px]">{sub}</div>
     </div>
   );
 }

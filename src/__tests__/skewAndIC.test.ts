@@ -98,7 +98,9 @@ describe('calcAllDeltas: SPY snapped strikes', () => {
       if (!('error' in row)) {
         // SPY snapped should be within $1 of raw SPY
         const rawPutSpy = row.putStrike / ratio;
-        expect(Math.abs(row.putSpySnapped - rawPutSpy)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(row.putSpySnapped - rawPutSpy)).toBeLessThanOrEqual(
+          0.5,
+        );
       }
     }
   });
@@ -115,27 +117,27 @@ describe('calcScaledSkew', () => {
   });
 
   it('higher z (further OTM) gets more skew', () => {
-    const atRef = calcScaledSkew(0.03, 1.28);    // 10Δ
-    const further = calcScaledSkew(0.03, 1.645);  // 5Δ
+    const atRef = calcScaledSkew(0.03, 1.28); // 10Δ
+    const further = calcScaledSkew(0.03, 1.645); // 5Δ
     expect(further).toBeGreaterThan(atRef);
   });
 
   it('lower z (closer to ATM) gets less skew', () => {
-    const atRef = calcScaledSkew(0.03, 1.28);   // 10Δ
-    const closer = calcScaledSkew(0.03, 0.842);  // 20Δ
+    const atRef = calcScaledSkew(0.03, 1.28); // 10Δ
+    const closer = calcScaledSkew(0.03, 0.842); // 20Δ
     expect(closer).toBeLessThan(atRef);
   });
 
   it('5Δ skew is about 29% more than reference', () => {
     // 1.645 / 1.28 = 1.285
     const scaled = calcScaledSkew(0.03, 1.645);
-    expect(scaled).toBeCloseTo(0.03 * 1.645 / 1.28, 6);
+    expect(scaled).toBeCloseTo((0.03 * 1.645) / 1.28, 6);
   });
 
   it('20Δ skew is about 34% less than reference', () => {
     // 0.842 / 1.28 = 0.658
     const scaled = calcScaledSkew(0.03, 0.842);
-    expect(scaled).toBeCloseTo(0.03 * 0.842 / 1.28, 6);
+    expect(scaled).toBeCloseTo((0.03 * 0.842) / 1.28, 6);
   });
 
   it('scaling is proportional to z', () => {
@@ -226,8 +228,12 @@ describe('calcAllDeltas: Greeks (actual delta & gamma)', () => {
   it('less time → higher gamma at same strike', () => {
     const earlyRows = calcAllDeltas(spot, sigma, calcTimeToExpiry(5), 0, 10);
     const lateRows = calcAllDeltas(spot, sigma, calcTimeToExpiry(2), 0, 10);
-    const early10 = earlyRows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
-    const late10 = lateRows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
+    const early10 = earlyRows.find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+    );
+    const late10 = lateRows.find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+    );
     if (early10 && late10) {
       // Note: strikes move closer with less time, so we compare gamma at the respective snapped strikes
       // Late gamma at its (closer) snapped strike should be higher
@@ -241,7 +247,9 @@ describe('buildIronCondor', () => {
   const sigma = 0.2;
   const T = calcTimeToExpiry(3);
   const rows = calcAllDeltas(spot, sigma, T, 0, 10);
-  const deltaRow = rows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
+  const deltaRow = rows.find(
+    (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+  );
 
   it('builds valid iron condor legs for 10 delta', () => {
     expect(deltaRow).toBeDefined();
@@ -346,8 +354,12 @@ describe('buildIronCondor', () => {
   });
 
   it('lower delta IC has higher PoP (wider profit zone)', () => {
-    const d5 = rows.find((r): r is DeltaRow => !('error' in r) && r.delta === 5);
-    const d20 = rows.find((r): r is DeltaRow => !('error' in r) && r.delta === 20);
+    const d5 = rows.find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 5,
+    );
+    const d20 = rows.find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 20,
+    );
     if (!d5 || !d20) return;
     const ic5 = buildIronCondor(d5, 25, spot, T, 10);
     const ic20 = buildIronCondor(d20, 25, spot, T, 10);
@@ -436,19 +448,26 @@ describe('buildIronCondor: per-side breakdown', () => {
   const sigma = 0.2;
   const T = calcTimeToExpiry(3);
   const rows = calcAllDeltas(spot, sigma, T, 0.03, 10);
-  const d10 = rows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
+  const d10 = rows.find(
+    (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+  );
 
   it('put spread + call spread credits = total IC credit', () => {
     if (!d10) return;
     const ic = buildIronCondor(d10, 25, spot, T, 10);
-    expect(ic.putSpreadCredit + ic.callSpreadCredit).toBeCloseTo(ic.creditReceived, 8);
+    expect(ic.putSpreadCredit + ic.callSpreadCredit).toBeCloseTo(
+      ic.creditReceived,
+      8,
+    );
   });
 
   it('put and call spread credits differ when skew is applied', () => {
     if (!d10) return;
     const ic = buildIronCondor(d10, 25, spot, T, 10);
     // With 3% skew, the two sides should not be equal
-    expect(Math.abs(ic.putSpreadCredit - ic.callSpreadCredit)).toBeGreaterThan(0);
+    expect(Math.abs(ic.putSpreadCredit - ic.callSpreadCredit)).toBeGreaterThan(
+      0,
+    );
   });
 
   it('individual spread max losses are positive and < wing width', () => {

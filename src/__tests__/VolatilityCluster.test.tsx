@@ -19,12 +19,16 @@ function enterYesterday(open: string, high: string, low: string) {
 describe('VolatilityCluster: rendering', () => {
   it('renders without crashing', () => {
     render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} />);
-    expect(screen.getAllByText(/volatility clustering/i).length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(/volatility clustering/i).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('renders in dark mode', () => {
     render(<VolatilityCluster th={darkTheme} vix={20} spot={6800} />);
-    expect(screen.getAllByText(/volatility clustering/i).length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(/volatility clustering/i).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('shows all three input fields', () => {
@@ -41,7 +45,9 @@ describe('VolatilityCluster: rendering', () => {
 
   it('shows hint when VIX set but no range entered', () => {
     render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} />);
-    expect(screen.getAllByText(/enter yesterday/i).length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(/enter yesterday/i).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -143,7 +149,9 @@ describe('VolatilityCluster: VIX sensitivity', () => {
   it('same range is "hot" at low VIX but "calm" at high VIX', () => {
     // 100 pts / 6800 = 1.47%
     // At VIX 12: p90 is 1.32% → this is >p90 → Hot
-    const { unmount } = render(<VolatilityCluster th={lightTheme} vix={12} spot={6800} />);
+    const { unmount } = render(
+      <VolatilityCluster th={lightTheme} vix={12} spot={6800} />,
+    );
     enterYesterday('6800', '6850', '6750');
     expect(screen.getByText('HIGH CLUSTERING')).toBeInTheDocument();
     unmount();
@@ -212,7 +220,14 @@ describe('VolatilityCluster: theme support', () => {
 describe('VolatilityCluster: onMultiplierChange callback', () => {
   it('calls onMultiplierChange when range is entered', () => {
     const onMult = vi.fn();
-    render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} onMultiplierChange={onMult} />);
+    render(
+      <VolatilityCluster
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        onMultiplierChange={onMult}
+      />,
+    );
     enterYesterday('6800', '6850', '6750');
     expect(onMult).toHaveBeenCalled();
     const lastCall = onMult.mock.calls.at(-1)![0];
@@ -221,7 +236,14 @@ describe('VolatilityCluster: onMultiplierChange callback', () => {
 
   it('calls with 1.0 when no data entered', () => {
     const onMult = vi.fn();
-    render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} onMultiplierChange={onMult} />);
+    render(
+      <VolatilityCluster
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        onMultiplierChange={onMult}
+      />,
+    );
     // Initial render calls with 1 (no data)
     expect(onMult).toHaveBeenCalledWith(1);
   });

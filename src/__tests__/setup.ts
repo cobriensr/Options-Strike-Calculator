@@ -6,8 +6,9 @@ if (typeof Blob.prototype.text !== 'function') {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
-      reader.readAsText(this); // eslint-disable-line unicorn/prefer-blob-reading-methods
+      reader.onerror = () =>
+        reject(reader.error ?? new Error('FileReader failed'));
+      reader.readAsText(this);
     });
   };
 }

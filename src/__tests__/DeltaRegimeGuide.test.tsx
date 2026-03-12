@@ -5,14 +5,21 @@ import { lightTheme, darkTheme } from '../themes';
 import { calcAllDeltas, calcTimeToExpiry } from '../utils/calculator';
 
 // Helper: standard test params matching a typical 0DTE session
-function makeProps(overrides: Partial<{
-  vix: number; spot: number; hours: number; skew: number; selectedDate: string; clusterMult: number;
-}> = {}) {
+function makeProps(
+  overrides: Partial<{
+    vix: number;
+    spot: number;
+    hours: number;
+    skew: number;
+    selectedDate: string;
+    clusterMult: number;
+  }> = {},
+) {
   const spot = overrides.spot ?? 6800;
   const hours = overrides.hours ?? 4;
   const T = calcTimeToExpiry(hours);
   const skew = overrides.skew ?? 0.03;
-  const sigma = (overrides.vix ?? 20) * 1.15 / 100; // only used for allDeltas computation
+  const sigma = ((overrides.vix ?? 20) * 1.15) / 100; // only used for allDeltas computation
   const allDeltas = calcAllDeltas(spot, sigma, T, skew, 10);
   return {
     th: lightTheme,
@@ -41,7 +48,9 @@ describe('DeltaRegimeGuide: rendering', () => {
   });
 
   it('returns null for negative VIX', () => {
-    const { container } = render(<DeltaRegimeGuide {...makeProps({ vix: -5 })} />);
+    const { container } = render(
+      <DeltaRegimeGuide {...makeProps({ vix: -5 })} />,
+    );
     expect(container.innerHTML).toBe('');
   });
 
@@ -61,7 +70,9 @@ describe('DeltaRegimeGuide: rendering', () => {
 // ============================================================
 describe('DeltaRegimeGuide: continuous interpolation', () => {
   it('VIX 22 and VIX 24 within same bucket produce different thresholds', () => {
-    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 22 })} />);
+    const { unmount } = render(
+      <DeltaRegimeGuide {...makeProps({ vix: 22 })} />,
+    );
     const table1 = screen.getByRole('table', { name: /range thresholds/i });
     const cells1 = within(table1).getAllByText(/%/);
     const text1 = cells1.map((c) => c.textContent).join(',');
@@ -77,7 +88,9 @@ describe('DeltaRegimeGuide: continuous interpolation', () => {
   });
 
   it('VIX 24.9 and VIX 25.1 produce similar (not jumpy) thresholds', () => {
-    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 24.9 })} />);
+    const { unmount } = render(
+      <DeltaRegimeGuide {...makeProps({ vix: 24.9 })} />,
+    );
     const table1 = screen.getByRole('table', { name: /range thresholds/i });
     // Find the 90th O→C row — it's the 3rd data row (index 2)
     const rows1 = within(table1).getAllByRole('row');
@@ -144,7 +157,9 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
 
   it('shows a delta number with Δ symbol', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    const banner = screen.getByText(/maximum delta/i).closest('div')?.parentElement;
+    const banner = screen
+      .getByText(/maximum delta/i)
+      .closest('div')?.parentElement;
     expect(banner).not.toBeNull();
     expect(banner!.textContent).toMatch(/\d+\u0394/);
   });
@@ -160,8 +175,12 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
     // parentElement gets the GuidanceCell wrapper containing label + delta + desc
     const aggressive = screen.getByText('Aggressive').parentElement;
     const conservative = screen.getByText('Conservative').parentElement;
-    const aggDelta = Number.parseInt(aggressive?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
-    const consDelta = Number.parseInt(conservative?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0');
+    const aggDelta = Number.parseInt(
+      aggressive?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0',
+    );
+    const consDelta = Number.parseInt(
+      conservative?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0',
+    );
     expect(aggDelta).toBeGreaterThan(0);
     expect(consDelta).toBeGreaterThan(0);
     expect(consDelta).toBeLessThan(aggDelta);
@@ -185,13 +204,17 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
 describe('DeltaRegimeGuide: threshold table', () => {
   it('renders the threshold table', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    expect(screen.getByRole('table', { name: /range thresholds mapped to delta/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds mapped to delta/i }),
+    ).toBeInTheDocument();
   });
 
   it('shows all 4 range thresholds', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
     const table = screen.getByRole('table', { name: /range thresholds/i });
-    expect(within(table).getAllByText(/o.*c/i).length).toBeGreaterThanOrEqual(2);
+    expect(within(table).getAllByText(/o.*c/i).length).toBeGreaterThanOrEqual(
+      2,
+    );
     expect(within(table).getAllByText(/h-l/i).length).toBeGreaterThanOrEqual(2);
   });
 
@@ -243,7 +266,9 @@ describe('DeltaRegimeGuide: threshold table', () => {
 describe('DeltaRegimeGuide: delta vs. threshold matrix', () => {
   it('renders the matrix table', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    expect(screen.getByRole('table', { name: /standard deltas vs/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /standard deltas vs/i }),
+    ).toBeInTheDocument();
   });
 
   it('shows all 6 standard deltas', () => {
@@ -271,8 +296,8 @@ describe('DeltaRegimeGuide: delta vs. threshold matrix', () => {
     const table = screen.getByRole('table', { name: /standard deltas vs/i });
     const rows = within(table).getAllByRole('row').slice(1);
 
-    const checkCounts = rows.map((row) =>
-      within(row).queryAllByText('\u2713').length
+    const checkCounts = rows.map(
+      (row) => within(row).queryAllByText('\u2713').length,
     );
 
     const first = checkCounts[0] ?? 0;
@@ -317,17 +342,23 @@ describe('DeltaRegimeGuide: parameter sensitivity', () => {
 
   it('less time remaining changes delta values', () => {
     render(<DeltaRegimeGuide {...makeProps({ hours: 1 })} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds/i }),
+    ).toBeInTheDocument();
   });
 
   it('works with zero skew', () => {
     render(<DeltaRegimeGuide {...makeProps({ skew: 0 })} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds/i }),
+    ).toBeInTheDocument();
   });
 
   it('works at different SPX levels', () => {
     render(<DeltaRegimeGuide {...makeProps({ spot: 4500 })} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds/i }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -337,14 +368,22 @@ describe('DeltaRegimeGuide: parameter sensitivity', () => {
 describe('DeltaRegimeGuide: theme support', () => {
   it('renders completely in light theme', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: /standard deltas/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /standard deltas/i }),
+    ).toBeInTheDocument();
   });
 
   it('renders completely in dark theme', () => {
     render(<DeltaRegimeGuide {...makeProps()} th={darkTheme} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: /standard deltas/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /standard deltas/i }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -373,17 +412,23 @@ describe('DeltaRegimeGuide: edge cases', () => {
 
   it('handles near-close time (0.25 hours)', () => {
     render(<DeltaRegimeGuide {...makeProps({ hours: 0.25 })} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds/i }),
+    ).toBeInTheDocument();
   });
 
   it('handles very low VIX', () => {
     render(<DeltaRegimeGuide {...makeProps({ vix: 10 })} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds/i }),
+    ).toBeInTheDocument();
   });
 
   it('handles very high VIX', () => {
     render(<DeltaRegimeGuide {...makeProps({ vix: 45 })} />);
-    expect(screen.getByRole('table', { name: /range thresholds/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: /range thresholds/i }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -403,16 +448,28 @@ describe('DeltaRegimeGuide: day-of-week adjustment', () => {
   });
 
   it('Monday produces narrower thresholds than Thursday at same VIX', () => {
-    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 20, selectedDate: '2026-03-09' })} />);
+    const { unmount } = render(
+      <DeltaRegimeGuide
+        {...makeProps({ vix: 20, selectedDate: '2026-03-09' })}
+      />,
+    );
     const table1 = screen.getByRole('table', { name: /range thresholds/i });
     const rows1 = within(table1).getAllByRole('row');
-    const monPct = Number.parseFloat(within(rows1[3]!).getAllByText(/%/)[0]!.textContent!);
+    const monPct = Number.parseFloat(
+      within(rows1[3]!).getAllByText(/%/)[0]!.textContent!,
+    );
     unmount();
 
-    render(<DeltaRegimeGuide {...makeProps({ vix: 20, selectedDate: '2026-03-12' })} />);
+    render(
+      <DeltaRegimeGuide
+        {...makeProps({ vix: 20, selectedDate: '2026-03-12' })}
+      />,
+    );
     const table2 = screen.getByRole('table', { name: /range thresholds/i });
     const rows2 = within(table2).getAllByRole('row');
-    const thuPct = Number.parseFloat(within(rows2[3]!).getAllByText(/%/)[0]!.textContent!);
+    const thuPct = Number.parseFloat(
+      within(rows2[3]!).getAllByText(/%/)[0]!.textContent!,
+    );
 
     expect(monPct).toBeLessThan(thuPct);
   });
@@ -436,7 +493,13 @@ describe('DeltaRegimeGuide: day-of-week adjustment', () => {
   it('all 5 weekdays render without errors', () => {
     // Mon 3/9 through Fri 3/13
     for (let d = 9; d <= 13; d++) {
-      const { unmount } = render(<DeltaRegimeGuide {...makeProps({ selectedDate: `2026-03-${String(d).padStart(2, '0')}` })} />);
+      const { unmount } = render(
+        <DeltaRegimeGuide
+          {...makeProps({
+            selectedDate: `2026-03-${String(d).padStart(2, '0')}`,
+          })}
+        />,
+      );
       expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
       unmount();
     }
@@ -453,22 +516,28 @@ describe('DeltaRegimeGuide: day-of-week adjustment', () => {
 // ============================================================
 describe('DeltaRegimeGuide: volatility clustering', () => {
   it('clustering multiplier widens thresholds', () => {
-    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 20 })} />);
+    const { unmount } = render(
+      <DeltaRegimeGuide {...makeProps({ vix: 20 })} />,
+    );
     const table1 = screen.getByRole('table', { name: /range thresholds/i });
     const rows1 = within(table1).getAllByRole('row');
-    const basePct = Number.parseFloat(within(rows1[3]!).getAllByText(/%/)[0]!.textContent!);
+    const basePct = Number.parseFloat(
+      within(rows1[3]!).getAllByText(/%/)[0]!.textContent!,
+    );
     unmount();
 
-    render(<DeltaRegimeGuide {...makeProps({ vix: 20, clusterMult: 1.20 })} />);
+    render(<DeltaRegimeGuide {...makeProps({ vix: 20, clusterMult: 1.2 })} />);
     const table2 = screen.getByRole('table', { name: /range thresholds/i });
     const rows2 = within(table2).getAllByRole('row');
-    const clusterPct = Number.parseFloat(within(rows2[3]!).getAllByText(/%/)[0]!.textContent!);
+    const clusterPct = Number.parseFloat(
+      within(rows2[3]!).getAllByText(/%/)[0]!.textContent!,
+    );
 
     expect(clusterPct).toBeGreaterThan(basePct);
   });
 
   it('shows clustering badge when mult > 1.03', () => {
-    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.20 })} />);
+    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.2 })} />);
     expect(screen.getByText(/1\.20x cluster/)).toBeInTheDocument();
   });
 
@@ -478,24 +547,30 @@ describe('DeltaRegimeGuide: volatility clustering', () => {
   });
 
   it('no clustering badge when mult is near 1.0', () => {
-    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.00 })} />);
+    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.0 })} />);
     expect(screen.queryByText(/cluster/)).not.toBeInTheDocument();
     expect(screen.queryByText(/calm/)).not.toBeInTheDocument();
   });
 
   it('footnote shows clustering multiplier', () => {
-    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.20 })} />);
+    render(<DeltaRegimeGuide {...makeProps({ clusterMult: 1.2 })} />);
     expect(screen.getByText(/Clustering.*1\.200/)).toBeInTheDocument();
   });
 
   it('clustering lowers the delta ceiling', () => {
-    const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix: 20 })} />);
-    const banner1 = screen.getByText(/maximum delta/i).closest('div')?.parentElement;
+    const { unmount } = render(
+      <DeltaRegimeGuide {...makeProps({ vix: 20 })} />,
+    );
+    const banner1 = screen
+      .getByText(/maximum delta/i)
+      .closest('div')?.parentElement;
     const text1 = banner1?.textContent ?? '';
     unmount();
 
-    render(<DeltaRegimeGuide {...makeProps({ vix: 20, clusterMult: 1.50 })} />);
-    const banner2 = screen.getByText(/maximum delta/i).closest('div')?.parentElement;
+    render(<DeltaRegimeGuide {...makeProps({ vix: 20, clusterMult: 1.5 })} />);
+    const banner2 = screen
+      .getByText(/maximum delta/i)
+      .closest('div')?.parentElement;
     const text2 = banner2?.textContent ?? '';
 
     // Extract ceiling deltas

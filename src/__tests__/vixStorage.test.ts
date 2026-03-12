@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { cacheVixData, loadCachedVixData, clearCachedVixData, loadStaticVixData } from '../utils/vixStorage';
+import {
+  cacheVixData,
+  loadCachedVixData,
+  clearCachedVixData,
+  loadStaticVixData,
+} from '../utils/vixStorage';
 import type { VIXDataMap } from '../types';
 
 const STORAGE_KEY = 'strike-calc:vix-data';
@@ -43,7 +48,9 @@ describe('cacheVixData', () => {
 
   it('overwrites existing data', () => {
     cacheVixData(sampleData, 'first');
-    const newData: VIXDataMap = { '2025-01-01': { open: 20, high: 21, low: 19, close: 20.5 } };
+    const newData: VIXDataMap = {
+      '2025-01-01': { open: 20, high: 21, low: 19, close: 20.5 },
+    };
     cacheVixData(newData, 'second');
     expect(localStorage.getItem(SOURCE_KEY)).toBe('second');
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
@@ -130,28 +137,39 @@ describe('loadStaticVixData', () => {
   });
 
   it('fetches from /vix-data.json and returns parsed data', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(sampleData),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(sampleData),
+      }),
+    );
 
     const result = await loadStaticVixData();
     expect(result).not.toBeNull();
     expect(result!.data['2024-03-04']!.open).toBe(14.5);
     expect(result!.source).toContain('built-in');
-    expect(result!.source).toContain('2');  // 2 days
+    expect(result!.source).toContain('2'); // 2 days
     expect(fetch).toHaveBeenCalledWith('/vix-data.json');
   });
 
   it('source string includes day count', async () => {
     const bigData: VIXDataMap = {};
     for (let i = 0; i < 100; i++) {
-      bigData[`2024-01-${String(i + 1).padStart(2, '0')}`] = { open: 15, high: 16, low: 14, close: 15 };
+      bigData[`2024-01-${String(i + 1).padStart(2, '0')}`] = {
+        open: 15,
+        high: 16,
+        low: 14,
+        close: 15,
+      };
     }
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(bigData),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(bigData),
+      }),
+    );
 
     const result = await loadStaticVixData();
     expect(result).not.toBeNull();
@@ -159,37 +177,49 @@ describe('loadStaticVixData', () => {
   });
 
   it('returns null when response is not ok', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+      }),
+    );
 
     const result = await loadStaticVixData();
     expect(result).toBeNull();
   });
 
   it('returns null when response JSON is empty object', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({}),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({}),
+      }),
+    );
 
     const result = await loadStaticVixData();
     expect(result).toBeNull();
   });
 
   it('returns null when fetch throws (network error)', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('NetworkError')));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new Error('NetworkError')),
+    );
 
     const result = await loadStaticVixData();
     expect(result).toBeNull();
   });
 
   it('returns null when json() parsing throws', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.reject(new Error('Invalid JSON')),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.reject(new Error('Invalid JSON')),
+      }),
+    );
 
     const result = await loadStaticVixData();
     expect(result).toBeNull();

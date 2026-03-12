@@ -73,7 +73,9 @@ describe('VIX_BUCKETS: data integrity', () => {
 
   it('% days >2% H-L increases with VIX level', () => {
     for (let i = 1; i < VIX_BUCKETS.length; i++) {
-      expect(VIX_BUCKETS[i]!.over2HL).toBeGreaterThanOrEqual(VIX_BUCKETS[i - 1]!.over2HL);
+      expect(VIX_BUCKETS[i]!.over2HL).toBeGreaterThanOrEqual(
+        VIX_BUCKETS[i - 1]!.over2HL,
+      );
     }
   });
 
@@ -120,7 +122,9 @@ describe('SURVIVAL_DATA: data integrity', () => {
 
   it('wing widths are sorted ascending', () => {
     for (let i = 1; i < SURVIVAL_DATA.length; i++) {
-      expect(SURVIVAL_DATA[i]!.wing).toBeGreaterThan(SURVIVAL_DATA[i - 1]!.wing);
+      expect(SURVIVAL_DATA[i]!.wing).toBeGreaterThan(
+        SURVIVAL_DATA[i - 1]!.wing,
+      );
     }
   });
 
@@ -147,8 +151,12 @@ describe('SURVIVAL_DATA: data integrity', () => {
   it('wider wings have higher survival rates at same VIX', () => {
     for (let bi = 0; bi < VIX_BUCKETS.length; bi++) {
       for (let si = 1; si < SURVIVAL_DATA.length; si++) {
-        expect(SURVIVAL_DATA[si]!.settle[bi]).toBeGreaterThanOrEqual(SURVIVAL_DATA[si - 1]!.settle[bi]!);
-        expect(SURVIVAL_DATA[si]!.intraday[bi]).toBeGreaterThanOrEqual(SURVIVAL_DATA[si - 1]!.intraday[bi]!);
+        expect(SURVIVAL_DATA[si]!.settle[bi]).toBeGreaterThanOrEqual(
+          SURVIVAL_DATA[si - 1]!.settle[bi]!,
+        );
+        expect(SURVIVAL_DATA[si]!.intraday[bi]).toBeGreaterThanOrEqual(
+          SURVIVAL_DATA[si - 1]!.intraday[bi]!,
+        );
       }
     }
   });
@@ -333,7 +341,7 @@ describe('findFineStat', () => {
 // ============================================================
 describe('getSurvival', () => {
   it('returns survival for VIX 13 with 1.00% wing', () => {
-    const result = getSurvival(13, 1.00);
+    const result = getSurvival(13, 1.0);
     expect(result).not.toBeNull();
     expect(result!.settle).toBe(92.6);
     expect(result!.intraday).toBe(99.2);
@@ -344,7 +352,7 @@ describe('getSurvival', () => {
   });
 
   it('returns null for negative VIX', () => {
-    expect(getSurvival(-5, 1.00)).toBeNull();
+    expect(getSurvival(-5, 1.0)).toBeNull();
   });
 });
 
@@ -401,7 +409,7 @@ describe('estimateRange', () => {
     const r35 = estimateRange(35);
     // VIX 35 falls in 30-40 bucket
     expect(r35.medHL).toBe(2.17);
-    expect(r35.p90OC).toBe(3.00);
+    expect(r35.p90OC).toBe(3.0);
   });
 
   it('uses bucket stats for VIX 50', () => {
@@ -617,8 +625,12 @@ describe('CLUSTER_THRESHOLDS', () => {
   });
 
   it('thresholds increase with VIX regime', () => {
-    expect(CLUSTER_THRESHOLDS.midVix.p50).toBeGreaterThan(CLUSTER_THRESHOLDS.lowVix.p50);
-    expect(CLUSTER_THRESHOLDS.highVix.p50).toBeGreaterThan(CLUSTER_THRESHOLDS.midVix.p50);
+    expect(CLUSTER_THRESHOLDS.midVix.p50).toBeGreaterThan(
+      CLUSTER_THRESHOLDS.lowVix.p50,
+    );
+    expect(CLUSTER_THRESHOLDS.highVix.p50).toBeGreaterThan(
+      CLUSTER_THRESHOLDS.midVix.p50,
+    );
   });
 });
 
@@ -627,35 +639,35 @@ describe('CLUSTER_THRESHOLDS', () => {
 // ============================================================
 describe('getClusterMultiplier', () => {
   it('returns calm bucket for small range at low VIX', () => {
-    const r = getClusterMultiplier(15, 0.50);
+    const r = getClusterMultiplier(15, 0.5);
     expect(r.mult).toBeCloseTo(0.914, 3);
     expect(r.yesterdayPctile).toMatch(/calm/i);
   });
 
   it('returns hot bucket for large range at low VIX', () => {
-    const r = getClusterMultiplier(15, 1.50);
+    const r = getClusterMultiplier(15, 1.5);
     expect(r.mult).toBeCloseTo(1.235, 3);
     expect(r.yesterdayPctile).toMatch(/hot/i);
   });
 
   it('returns extreme multiplier for p90+ at high VIX', () => {
-    const r = getClusterMultiplier(30, 4.00);
+    const r = getClusterMultiplier(30, 4.0);
     expect(r.mult).toBeCloseTo(1.872, 3);
   });
 
   it('uses correct VIX regime', () => {
-    const low = getClusterMultiplier(12, 0.50);
+    const low = getClusterMultiplier(12, 0.5);
     expect(low.regime).toMatch(/18/);
-    const mid = getClusterMultiplier(22, 0.50);
+    const mid = getClusterMultiplier(22, 0.5);
     expect(mid.regime).toMatch(/18.*25/);
-    const high = getClusterMultiplier(30, 0.50);
+    const high = getClusterMultiplier(30, 0.5);
     expect(high.regime).toMatch(/25/);
   });
 
   it('same range classified differently at different VIX', () => {
     // 1.50% is >p90 at VIX 12 but <p50 at VIX 30
-    const atLowVix = getClusterMultiplier(12, 1.50);
-    const atHighVix = getClusterMultiplier(30, 1.50);
+    const atLowVix = getClusterMultiplier(12, 1.5);
+    const atHighVix = getClusterMultiplier(30, 1.5);
     expect(atLowVix.mult).toBeGreaterThan(atHighVix.mult);
   });
 });

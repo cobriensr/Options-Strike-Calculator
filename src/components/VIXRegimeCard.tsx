@@ -19,15 +19,39 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
 
   const zone = bucket.zone;
   const zoneConfig = {
-    go:      { color: th.green, bg: th.green + '12', border: th.green + '30', label: 'GREEN', advice: 'Favorable for iron condors' },
-    caution: { color: '#E8A317', bg: '#E8A31712', border: '#E8A31730', label: 'CAUTION', advice: 'Widen strikes or reduce size' },
-    stop:    { color: th.red,   bg: th.red + '12',   border: th.red + '30',   label: 'ELEVATED', advice: 'Consider sitting out' },
-    danger:  { color: th.red,   bg: th.red + '18',   border: th.red + '40',   label: 'EXTREME', advice: 'Do not sell iron condors' },
+    go: {
+      color: th.green,
+      bg: th.green + '12',
+      border: th.green + '30',
+      label: 'GREEN',
+      advice: 'Favorable for iron condors',
+    },
+    caution: {
+      color: '#E8A317',
+      bg: '#E8A31712',
+      border: '#E8A31730',
+      label: 'CAUTION',
+      advice: 'Widen strikes or reduce size',
+    },
+    stop: {
+      color: th.red,
+      bg: th.red + '12',
+      border: th.red + '30',
+      label: 'ELEVATED',
+      advice: 'Consider sitting out',
+    },
+    danger: {
+      color: th.red,
+      bg: th.red + '18',
+      border: th.red + '40',
+      label: 'EXTREME',
+      advice: 'Do not sell iron condors',
+    },
   }[zone];
 
-  const medPts = Math.round(est.medHL / 100 * spot);
-  const p90Pts = Math.round(est.p90HL / 100 * spot);
-  const medOCPts = Math.round(est.medOC / 100 * spot);
+  const medPts = Math.round((est.medHL / 100) * spot);
+  const p90Pts = Math.round((est.p90HL / 100) * spot);
+  const medOCPts = Math.round((est.medOC / 100) * spot);
 
   return (
     <div
@@ -48,13 +72,13 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
             }}
           />
           <span
-            className="font-sans text-[10px] font-bold uppercase tracking-[0.12em]"
+            className="font-sans text-[10px] font-bold tracking-[0.12em] uppercase"
             style={{ color: zoneConfig.color }}
           >
             {zoneConfig.label} REGIME
           </span>
         </div>
-        <span className="font-mono text-[10px] text-muted">
+        <span className="text-muted font-mono text-[10px]">
           {(fine?.count ?? bucket.count).toLocaleString()} historical days
         </span>
       </div>
@@ -90,7 +114,7 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
         }}
       >
         {zoneConfig.advice}
-        <span className="ml-1.5 font-normal text-muted">
+        <span className="text-muted ml-1.5 font-normal">
           {'\u2014'} {bucket.over2HL}% of days exceed 2% range
         </span>
       </div>
@@ -98,12 +122,20 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
   );
 }
 
-function MiniStat({ label, value, sub, color }: {
-  label: string; value: string; sub: string; color: string;
+function MiniStat({
+  label,
+  value,
+  sub,
+  color,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  color: string;
 }) {
   return (
     <div>
-      <div className="font-sans text-[9px] font-bold uppercase tracking-[0.06em] text-tertiary">
+      <div className="text-tertiary font-sans text-[9px] font-bold tracking-[0.06em] uppercase">
         {label}
       </div>
       <div
@@ -112,9 +144,7 @@ function MiniStat({ label, value, sub, color }: {
       >
         {value}
       </div>
-      <div className="font-mono text-[10px] text-muted">
-        {sub}
-      </div>
+      <div className="text-muted font-mono text-[10px]">{sub}</div>
     </div>
   );
 }

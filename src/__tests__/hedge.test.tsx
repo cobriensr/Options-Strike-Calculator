@@ -1,12 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import { calcHedge, calcTimeToExpiry, calcAllDeltas, buildIronCondor } from '../utils/calculator';
+import {
+  calcHedge,
+  calcTimeToExpiry,
+  calcAllDeltas,
+  buildIronCondor,
+} from '../utils/calculator';
 import type { DeltaRow, HedgeDelta } from '../types';
 
 // Helper: build a standard IC position for testing
-function makeTestIC(spot = 6830, sigma = 0.2836, hoursRemaining = 6.33, delta: 10 | 12 = 10, wingWidth = 20) {
+function makeTestIC(
+  spot = 6830,
+  sigma = 0.2836,
+  hoursRemaining = 6.33,
+  delta: 10 | 12 = 10,
+  wingWidth = 20,
+) {
   const T = calcTimeToExpiry(hoursRemaining);
   const allDeltas = calcAllDeltas(spot, sigma, T, 0.03, 10);
-  const row = allDeltas.find((r) => !('error' in r) && r.delta === delta) as DeltaRow;
+  const row = allDeltas.find(
+    (r) => !('error' in r) && r.delta === delta,
+  ) as DeltaRow;
   const ic = buildIronCondor(row, wingWidth, spot, T, 10);
   return { spot, sigma, T, ic, row };
 }
@@ -15,10 +28,17 @@ describe('calcHedge: basic structure', () => {
   it('returns all required fields', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -42,10 +62,17 @@ describe('calcHedge: basic structure', () => {
   it('generates scenarios for both crashes and rallies', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -60,10 +87,17 @@ describe('calcHedge: strike positioning', () => {
   it('hedge put strike is below IC long put', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -73,10 +107,17 @@ describe('calcHedge: strike positioning', () => {
   it('hedge call strike is above IC long call', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -86,10 +127,17 @@ describe('calcHedge: strike positioning', () => {
   it('hedge strikes are snapped to 5-point increments', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -100,10 +148,17 @@ describe('calcHedge: strike positioning', () => {
   it('lower hedge delta = further OTM strikes', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const params = {
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
     };
 
     const hedge1 = calcHedge({ ...params, hedgeDelta: 1 as HedgeDelta });
@@ -124,10 +179,17 @@ describe('calcHedge: recommended contract sizing', () => {
   it('recommends at least 1 put and 1 call', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 1, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 1,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -138,10 +200,16 @@ describe('calcHedge: recommended contract sizing', () => {
   it('more IC contracts = more hedge contracts', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const params = {
-      spot, sigma, T, skew: 0.03,
-      icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2 as HedgeDelta,
     };
 
@@ -155,26 +223,42 @@ describe('calcHedge: recommended contract sizing', () => {
   it('wider IC wings = more hedge contracts needed', () => {
     const { spot, sigma, T } = makeTestIC();
     const allDeltas = calcAllDeltas(spot, sigma, T, 0.03, 10);
-    const row = allDeltas.find((r) => !('error' in r) && r.delta === 10) as DeltaRow;
+    const row = allDeltas.find(
+      (r) => !('error' in r) && r.delta === 10,
+    ) as DeltaRow;
 
     const ic5 = buildIronCondor(row, 5, spot, T, 10);
     const ic20 = buildIronCondor(row, 20, spot, T, 10);
 
     const params = {
-      spot, sigma, T, skew: 0.03, icContracts: 15,
-      icShortPut: ic5.shortPut, icLongPut: ic5.longPut,
-      icShortCall: ic5.shortCall, icLongCall: ic5.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icShortPut: ic5.shortPut,
+      icLongPut: ic5.longPut,
+      icShortCall: ic5.shortCall,
+      icLongCall: ic5.longCall,
       hedgeDelta: 2 as HedgeDelta,
     };
 
-    const hedge5 = calcHedge({ ...params, icCreditPts: ic5.creditReceived, icMaxLossPts: ic5.maxLoss });
+    const hedge5 = calcHedge({
+      ...params,
+      icCreditPts: ic5.creditReceived,
+      icMaxLossPts: ic5.maxLoss,
+    });
     const hedge20 = calcHedge({
       ...params,
-      icCreditPts: ic20.creditReceived, icMaxLossPts: ic20.maxLoss,
-      icLongPut: ic20.longPut, icLongCall: ic20.longCall,
+      icCreditPts: ic20.creditReceived,
+      icMaxLossPts: ic20.maxLoss,
+      icLongPut: ic20.longPut,
+      icLongCall: ic20.longCall,
     });
 
-    expect(hedge20.recommendedPuts).toBeGreaterThanOrEqual(hedge5.recommendedPuts);
+    expect(hedge20.recommendedPuts).toBeGreaterThanOrEqual(
+      hedge5.recommendedPuts,
+    );
   });
 });
 
@@ -182,10 +266,17 @@ describe('calcHedge: cost calculations', () => {
   it('daily cost is positive', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -196,10 +287,17 @@ describe('calcHedge: cost calculations', () => {
   it('net credit after hedge is less than IC credit alone', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -210,10 +308,17 @@ describe('calcHedge: cost calculations', () => {
   it('net credit after hedge is still positive for reasonable setups', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -223,10 +328,17 @@ describe('calcHedge: cost calculations', () => {
   it('lower hedge delta = cheaper premiums per contract', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const params = {
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
     };
 
     const hedge1 = calcHedge({ ...params, hedgeDelta: 1 as HedgeDelta });
@@ -242,14 +354,23 @@ describe('calcHedge: scenario P&L', () => {
   it('IC is profitable for small moves (100 pts)', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
-    const smallCrash = hedge.scenarios.find((s) => s.direction === 'crash' && s.movePoints === 100);
+    const smallCrash = hedge.scenarios.find(
+      (s) => s.direction === 'crash' && s.movePoints === 100,
+    );
     expect(smallCrash).toBeDefined();
     expect(smallCrash!.icPnL).toBeGreaterThan(0);
   });
@@ -257,14 +378,23 @@ describe('calcHedge: scenario P&L', () => {
   it('IC hits max loss for large moves', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
-    const largeCrash = hedge.scenarios.find((s) => s.direction === 'crash' && s.movePoints === 500);
+    const largeCrash = hedge.scenarios.find(
+      (s) => s.direction === 'crash' && s.movePoints === 500,
+    );
     expect(largeCrash).toBeDefined();
     expect(largeCrash!.icPnL).toBeLessThan(0);
   });
@@ -272,46 +402,73 @@ describe('calcHedge: scenario P&L', () => {
   it('hedge put payout increases with crash size', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
     const crashes = hedge.scenarios.filter((s) => s.direction === 'crash');
     for (let i = 1; i < crashes.length; i++) {
-      expect(crashes[i]!.hedgePutPnL).toBeGreaterThanOrEqual(crashes[i - 1]!.hedgePutPnL);
+      expect(crashes[i]!.hedgePutPnL).toBeGreaterThanOrEqual(
+        crashes[i - 1]!.hedgePutPnL,
+      );
     }
   });
 
   it('hedge call payout increases with rally size', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
     const rallies = hedge.scenarios.filter((s) => s.direction === 'rally');
     for (let i = 1; i < rallies.length; i++) {
-      expect(rallies[i]!.hedgeCallPnL).toBeGreaterThanOrEqual(rallies[i - 1]!.hedgeCallPnL);
+      expect(rallies[i]!.hedgeCallPnL).toBeGreaterThanOrEqual(
+        rallies[i - 1]!.hedgeCallPnL,
+      );
     }
   });
 
   it('net P&L becomes positive for very large crashes (reinsurance kicks in)', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
-    const hugeCrash = hedge.scenarios.find((s) => s.direction === 'crash' && s.movePoints === 500);
+    const hugeCrash = hedge.scenarios.find(
+      (s) => s.direction === 'crash' && s.movePoints === 500,
+    );
     expect(hugeCrash).toBeDefined();
     expect(hugeCrash!.netPnL).toBeGreaterThan(0);
   });
@@ -319,10 +476,17 @@ describe('calcHedge: scenario P&L', () => {
   it('hedge cost is negative in all scenarios', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -335,16 +499,25 @@ describe('calcHedge: scenario P&L', () => {
     const spot = 6830;
     const { sigma, T, ic } = makeTestIC(spot);
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
-    const scenario300 = hedge.scenarios.find((s) => s.movePoints === 300 && s.direction === 'crash');
+    const scenario300 = hedge.scenarios.find(
+      (s) => s.movePoints === 300 && s.direction === 'crash',
+    );
     expect(scenario300).toBeDefined();
-    const expectedPct = (300 / spot * 100).toFixed(1);
+    const expectedPct = ((300 / spot) * 100).toFixed(1);
     expect(scenario300!.movePct).toBe(expectedPct);
   });
 });
@@ -353,10 +526,17 @@ describe('calcHedge: breakeven points', () => {
   it('breakeven crash is between IC max loss point and 2× that distance', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -370,10 +550,17 @@ describe('calcHedge: breakeven points', () => {
   it('breakeven rally is between IC max loss point and 2× that distance', () => {
     const { spot, sigma, T, ic } = makeTestIC();
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
@@ -390,10 +577,17 @@ describe('calcHedge: all hedge deltas work', () => {
     it(`${hd}Δ hedge produces valid result`, () => {
       const { spot, sigma, T, ic } = makeTestIC();
       const hedge = calcHedge({
-        spot, sigma, T, skew: 0.03,
-        icContracts: 10, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-        icShortPut: ic.shortPut, icLongPut: ic.longPut,
-        icShortCall: ic.shortCall, icLongCall: ic.longCall,
+        spot,
+        sigma,
+        T,
+        skew: 0.03,
+        icContracts: 10,
+        icCreditPts: ic.creditReceived,
+        icMaxLossPts: ic.maxLoss,
+        icShortPut: ic.shortPut,
+        icLongPut: ic.longPut,
+        icShortCall: ic.shortCall,
+        icLongCall: ic.longCall,
         hedgeDelta: hd,
       });
 
@@ -410,35 +604,62 @@ describe('calcHedge: all hedge deltas work', () => {
 describe('calcHedge: edge cases', () => {
   it('works with 1 IC contract', () => {
     const { spot, sigma, T, ic } = makeTestIC();
-    expect(() => calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 1, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
-      hedgeDelta: 2,
-    })).not.toThrow();
+    expect(() =>
+      calcHedge({
+        spot,
+        sigma,
+        T,
+        skew: 0.03,
+        icContracts: 1,
+        icCreditPts: ic.creditReceived,
+        icMaxLossPts: ic.maxLoss,
+        icShortPut: ic.shortPut,
+        icLongPut: ic.longPut,
+        icShortCall: ic.shortCall,
+        icLongCall: ic.longCall,
+        hedgeDelta: 2,
+      }),
+    ).not.toThrow();
   });
 
   it('works with high IV (VIX 40+)', () => {
     const { spot, T, ic } = makeTestIC(6830, 0.46, 6.33); // σ=0.46
-    expect(() => calcHedge({
-      spot, sigma: 0.46, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
-      hedgeDelta: 2,
-    })).not.toThrow();
+    expect(() =>
+      calcHedge({
+        spot,
+        sigma: 0.46,
+        T,
+        skew: 0.03,
+        icContracts: 15,
+        icCreditPts: ic.creditReceived,
+        icMaxLossPts: ic.maxLoss,
+        icShortPut: ic.shortPut,
+        icLongPut: ic.longPut,
+        icShortCall: ic.shortCall,
+        icLongCall: ic.longCall,
+        hedgeDelta: 2,
+      }),
+    ).not.toThrow();
   });
 
   it('works with zero skew', () => {
     const { spot, sigma, T, ic } = makeTestIC();
-    expect(() => calcHedge({
-      spot, sigma, T, skew: 0,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
-      hedgeDelta: 2,
-    })).not.toThrow();
+    expect(() =>
+      calcHedge({
+        spot,
+        sigma,
+        T,
+        skew: 0,
+        icContracts: 15,
+        icCreditPts: ic.creditReceived,
+        icMaxLossPts: ic.maxLoss,
+        icShortPut: ic.shortPut,
+        icLongPut: ic.longPut,
+        icShortCall: ic.shortCall,
+        icLongCall: ic.longCall,
+        hedgeDelta: 2,
+      }),
+    ).not.toThrow();
   });
 
   it('works with 5-pt wings', () => {
@@ -446,53 +667,82 @@ describe('calcHedge: edge cases', () => {
     const sigma = 0.2836;
     const T = calcTimeToExpiry(6.33);
     const allDeltas = calcAllDeltas(spot, sigma, T, 0.03, 10);
-    const row = allDeltas.find((r) => !('error' in r) && r.delta === 10) as DeltaRow;
+    const row = allDeltas.find(
+      (r) => !('error' in r) && r.delta === 10,
+    ) as DeltaRow;
     const ic = buildIronCondor(row, 5, spot, T, 10);
 
-    expect(() => calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
-      hedgeDelta: 2,
-    })).not.toThrow();
+    expect(() =>
+      calcHedge({
+        spot,
+        sigma,
+        T,
+        skew: 0.03,
+        icContracts: 15,
+        icCreditPts: ic.creditReceived,
+        icMaxLossPts: ic.maxLoss,
+        icShortPut: ic.shortPut,
+        icLongPut: ic.longPut,
+        icShortCall: ic.shortCall,
+        icLongCall: ic.longCall,
+        hedgeDelta: 2,
+      }),
+    ).not.toThrow();
   });
 
   it('works with near-close time (0.5h remaining)', () => {
     const { spot, ic } = makeTestIC(6830, 0.2836, 0.5);
     const T = calcTimeToExpiry(0.5);
-    expect(() => calcHedge({
-      spot, sigma: 0.2836, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
-      hedgeDelta: 2,
-    })).not.toThrow();
+    expect(() =>
+      calcHedge({
+        spot,
+        sigma: 0.2836,
+        T,
+        skew: 0.03,
+        icContracts: 15,
+        icCreditPts: ic.creditReceived,
+        icMaxLossPts: ic.maxLoss,
+        icShortPut: ic.shortPut,
+        icLongPut: ic.longPut,
+        icShortCall: ic.shortCall,
+        icLongCall: ic.longCall,
+        hedgeDelta: 2,
+      }),
+    ).not.toThrow();
   });
 });
 
 describe('calcHedge: real-world scenario (March 2 setup)', () => {
   // SPX 6830, VIX 24.66, 0DTE adj 1.15, 8:40 AM CT = 6.33h remaining
   const spot = 6830;
-  const sigma = 24.66 * 1.15 / 100; // 0.2836
+  const sigma = (24.66 * 1.15) / 100; // 0.2836
   const T = calcTimeToExpiry(6.33);
 
   it('15 contracts, 10Δ, 20-pt wings at 2Δ hedge', () => {
     const allDeltas = calcAllDeltas(spot, sigma, T, 0.03, 10);
-    const row = allDeltas.find((r) => !('error' in r) && r.delta === 10) as DeltaRow;
+    const row = allDeltas.find(
+      (r) => !('error' in r) && r.delta === 10,
+    ) as DeltaRow;
     const ic = buildIronCondor(row, 20, spot, T, 10);
 
     const hedge = calcHedge({
-      spot, sigma, T, skew: 0.03,
-      icContracts: 15, icCreditPts: ic.creditReceived, icMaxLossPts: ic.maxLoss,
-      icShortPut: ic.shortPut, icLongPut: ic.longPut,
-      icShortCall: ic.shortCall, icLongCall: ic.longCall,
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
       hedgeDelta: 2,
     });
 
     // Hedge cost should be a small fraction of IC credit
     const icCreditDollars = ic.creditReceived * 100 * 15;
-    const hedgePct = hedge.dailyCostDollars / icCreditDollars * 100;
+    const hedgePct = (hedge.dailyCostDollars / icCreditDollars) * 100;
     expect(hedgePct).toBeGreaterThan(1);
     expect(hedgePct).toBeLessThan(30);
 
