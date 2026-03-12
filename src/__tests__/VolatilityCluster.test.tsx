@@ -248,3 +248,75 @@ describe('VolatilityCluster: onMultiplierChange callback', () => {
     expect(onMult).toHaveBeenCalledWith(1);
   });
 });
+
+// ============================================================
+// AUTO-FILL FROM LIVE DATA
+// ============================================================
+describe('VolatilityCluster: auto-fill from live data', () => {
+  it('auto-fills yesterday OHLC when initialYesterday is provided', () => {
+    render(
+      <VolatilityCluster
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
+      />,
+    );
+    const openInput = screen.getByLabelText(/yest\. open/i) as HTMLInputElement;
+    const highInput = screen.getByLabelText(/yest\. high/i) as HTMLInputElement;
+    const lowInput = screen.getByLabelText(/yest\. low/i) as HTMLInputElement;
+    expect(openInput.value).toBe('6681.78');
+    expect(highInput.value).toBe('6810.44');
+    expect(lowInput.value).toBe('6636.04');
+  });
+
+  it('shows clustering signal when auto-filled', () => {
+    render(
+      <VolatilityCluster
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
+      />,
+    );
+    // Range = 174.4 pts / 6681.78 = 2.61% → well above p90 for VIX 18-25
+    expect(screen.getByText('HIGH CLUSTERING')).toBeInTheDocument();
+  });
+
+  it('fires onMultiplierChange when auto-filled', () => {
+    const onMult = vi.fn();
+    render(
+      <VolatilityCluster
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        onMultiplierChange={onMult}
+        initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
+      />,
+    );
+    // Should have been called with the clustering multiplier
+    const lastCall = onMult.mock.calls.at(-1)![0];
+    expect(lastCall).toBeGreaterThan(1);
+  });
+
+  it('does not overwrite user input with initialYesterday', () => {
+    render(
+      <VolatilityCluster
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
+      />,
+    );
+    const openInput = screen.getByLabelText(/yest\. open/i) as HTMLInputElement;
+    // User types a different value
+    fireEvent.change(openInput, { target: { value: '7000' } });
+    expect(openInput.value).toBe('7000');
+  });
+
+  it('works without initialYesterday (backward compatible)', () => {
+    render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} />);
+    const openInput = screen.getByLabelText(/yest\. open/i) as HTMLInputElement;
+    expect(openInput.value).toBe('');
+  });
+});

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { Theme } from '../themes';
 import { tinyLbl } from '../utils/ui-utils';
 import { estimateRange, getDowMultiplier } from '../data/vixRangeStats';
@@ -8,6 +8,10 @@ interface Props {
   readonly vix: number | null;
   readonly spot: number | null; // Current SPX spot from parent
   readonly selectedDate?: string; // For DOW adjustment
+  readonly initialRange?: {      // Auto-fill from live data
+    readonly high: number;
+    readonly low: number;
+  };
 }
 
 type Signal = 'green' | 'yellow' | 'red';
@@ -84,9 +88,18 @@ export default function OpeningRangeCheck({
   vix,
   spot,
   selectedDate,
+  initialRange,
 }: Props) {
   const [openHigh, setOpenHigh] = useState('');
   const [openLow, setOpenLow] = useState('');
+
+  // Auto-fill from live data (only populates empty fields)
+  useEffect(() => {
+    if (initialRange && !openHigh) {
+      setOpenHigh(initialRange.high.toFixed(2));
+      setOpenLow(initialRange.low.toFixed(2));
+    }
+  }, [initialRange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasVix = vix != null && vix > 0;
 

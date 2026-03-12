@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { Theme } from '../themes';
 import { tinyLbl } from '../utils/ui-utils';
 
@@ -6,6 +6,8 @@ interface Props {
   readonly th: Theme;
   readonly vix: number | null; // Current VIX from parent (already entered)
   readonly onUseVix1dAsSigma?: (sigma: number) => void; // Optional: let parent switch to VIX1D-derived σ
+  readonly initialVix1d?: number; // Auto-fill from live data
+  readonly initialVix9d?: number; // Auto-fill from live data
 }
 
 /** Ratio thresholds for signal classification */
@@ -120,9 +122,17 @@ export default function VIXTermStructure({
   th,
   vix,
   onUseVix1dAsSigma,
+  initialVix1d,
+  initialVix9d,
 }: Props) {
   const [vix1dInput, setVix1dInput] = useState('');
   const [vix9dInput, setVix9dInput] = useState('');
+
+  // Auto-fill from live data (only populates empty fields)
+  useEffect(() => {
+    if (initialVix1d != null && !vix1dInput) setVix1dInput(initialVix1d.toFixed(2));
+    if (initialVix9d != null && !vix9dInput) setVix9dInput(initialVix9d.toFixed(2));
+  }, [initialVix1d, initialVix9d]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const vix1d = Number.parseFloat(vix1dInput);
   const vix9d = Number.parseFloat(vix9dInput);

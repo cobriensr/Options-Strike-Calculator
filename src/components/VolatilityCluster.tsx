@@ -11,6 +11,11 @@ interface Props {
   readonly vix: number | null;
   readonly spot: number | null;
   readonly onMultiplierChange?: (mult: number) => void; // Callback when clustering mult changes
+  readonly initialYesterday?: {        // Auto-fill from live data
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+  };
 }
 
 /**
@@ -32,10 +37,20 @@ export default function VolatilityCluster({
   vix,
   spot,
   onMultiplierChange,
+  initialYesterday,
 }: Props) {
   const [yestHigh, setYestHigh] = useState('');
   const [yestLow, setYestLow] = useState('');
   const [yestOpen, setYestOpen] = useState('');
+
+  // Auto-fill from live data (only populates empty fields)
+  useEffect(() => {
+    if (initialYesterday && !yestOpen) {
+      setYestOpen(initialYesterday.open.toFixed(2));
+      setYestHigh(initialYesterday.high.toFixed(2));
+      setYestLow(initialYesterday.low.toFixed(2));
+    }
+  }, [initialYesterday]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasVix = vix != null && vix > 0;
   const highVal = Number.parseFloat(yestHigh);

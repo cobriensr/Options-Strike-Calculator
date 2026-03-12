@@ -1,10 +1,26 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import StrikeCalculator from '../App';
 
 const DEBOUNCE = 300;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Mock fetch for useMarketData — return 401 (public visitor) so the hook
+// silently does nothing and all existing tests work unchanged.
+beforeEach(() => {
+  globalThis.fetch = vi.fn(() =>
+    Promise.resolve({
+      ok: false,
+      status: 401,
+      json: () => Promise.resolve({ error: 'Not authenticated' }),
+    }),
+  ) as unknown as typeof fetch;
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 // Helper: fill in minimum inputs to trigger results
 async function fillBasicInputs(user: ReturnType<typeof userEvent.setup>) {

@@ -230,3 +230,71 @@ describe('OpeningRangeCheck: theme support', () => {
     expect(screen.getAllByText(/% consumed/i).length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ============================================================
+// AUTO-FILL FROM LIVE DATA
+// ============================================================
+describe('OpeningRangeCheck: auto-fill from live data', () => {
+  it('auto-fills range when initialRange is provided', () => {
+    render(
+      <OpeningRangeCheck
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        initialRange={{ high: 6798.96, low: 6762.05 }}
+      />,
+    );
+    const highInput = screen.getByLabelText(/30-min high/i) as HTMLInputElement;
+    const lowInput = screen.getByLabelText(/30-min low/i) as HTMLInputElement;
+    expect(highInput.value).toBe('6798.96');
+    expect(lowInput.value).toBe('6762.05');
+  });
+
+  it('shows signal when auto-filled', () => {
+    render(
+      <OpeningRangeCheck
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        initialRange={{ high: 6820, low: 6790 }}
+      />,
+    );
+    // 30 pts / 6800 = 0.44% → well under 40% of ~1.25% median → RANGE INTACT
+    expect(screen.getByText('RANGE INTACT')).toBeInTheDocument();
+  });
+
+  it('does not overwrite user input with initialRange', () => {
+    render(
+      <OpeningRangeCheck
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        initialRange={{ high: 6820, low: 6790 }}
+      />,
+    );
+    const highInput = screen.getByLabelText(/30-min high/i) as HTMLInputElement;
+    // User types a different value
+    fireEvent.change(highInput, { target: { value: '6850' } });
+    expect(highInput.value).toBe('6850');
+  });
+
+  it('works without initialRange (backward compatible)', () => {
+    render(<OpeningRangeCheck th={lightTheme} vix={20} spot={6800} />);
+    const highInput = screen.getByLabelText(/30-min high/i) as HTMLInputElement;
+    expect(highInput.value).toBe('');
+  });
+
+  it('auto-fill triggers analysis display', () => {
+    render(
+      <OpeningRangeCheck
+        th={lightTheme}
+        vix={20}
+        spot={6800}
+        initialRange={{ high: 6840, low: 6770 }}
+      />,
+    );
+    // 70 pts / 6800 = 1.03% → >65% of ~1.25% median → RANGE EXHAUSTED
+    expect(screen.getByText('RANGE EXHAUSTED')).toBeInTheDocument();
+    expect(screen.getAllByText(/consumed/i).length).toBeGreaterThanOrEqual(1);
+  });
+});

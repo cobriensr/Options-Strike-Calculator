@@ -263,3 +263,50 @@ describe('VIXTermStructure: theme support', () => {
     expect(screen.getByText('NORMAL')).toBeInTheDocument();
   });
 });
+
+// ============================================================
+// AUTO-FILL FROM LIVE DATA
+// ============================================================
+describe('VIXTermStructure: auto-fill from live data', () => {
+  it('auto-fills VIX1D when initialVix1d is provided', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVix1d={18.99} />);
+    const input = screen.getByLabelText(/vix1d/i) as HTMLInputElement;
+    expect(input.value).toBe('18.99');
+  });
+
+  it('auto-fills VIX9D when initialVix9d is provided', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVix9d={24.44} />);
+    const input = screen.getByLabelText(/vix9d/i) as HTMLInputElement;
+    expect(input.value).toBe('24.44');
+  });
+
+  it('auto-fills both VIX1D and VIX9D', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVix1d={18.99} initialVix9d={24.44} />);
+    const vix1dInput = screen.getByLabelText(/vix1d/i) as HTMLInputElement;
+    const vix9dInput = screen.getByLabelText(/vix9d/i) as HTMLInputElement;
+    expect(vix1dInput.value).toBe('18.99');
+    expect(vix9dInput.value).toBe('24.44');
+  });
+
+  it('shows signal when auto-filled', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVix1d={15} />);
+    // 15/20 = 0.75 → CALM
+    expect(screen.getByText('CALM')).toBeInTheDocument();
+  });
+
+  it('does not overwrite user input with initialVix1d', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVix1d={18.99} />);
+    const input = screen.getByLabelText(/vix1d/i) as HTMLInputElement;
+    // User types a different value
+    fireEvent.change(input, { target: { value: '25' } });
+    expect(input.value).toBe('25');
+  });
+
+  it('works without initial values (backward compatible)', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} />);
+    const vix1dInput = screen.getByLabelText(/vix1d/i) as HTMLInputElement;
+    const vix9dInput = screen.getByLabelText(/vix9d/i) as HTMLInputElement;
+    expect(vix1dInput.value).toBe('');
+    expect(vix9dInput.value).toBe('');
+  });
+});

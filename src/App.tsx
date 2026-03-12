@@ -32,6 +32,7 @@ import VIXTermStructure from './components/VIXTermStructure';
 import OpeningRangeCheck from './components/OpeningRangeCheck';
 import VolatilityCluster from './components/VolatilityCluster';
 import EventDayWarning from './components/EventDayWarning';
+import { useMarketData } from './hooks/useMarketData';
 import { Analytics } from '@vercel/analytics/react';
 
 type AmPm = 'AM' | 'PM';
@@ -79,6 +80,7 @@ export default function StrikeCalculator() {
   const [showRegime, setShowRegime] = useState(false);
   const [clusterMult, setClusterMult] = useState(1);
   const th = darkMode ? darkTheme : lightTheme;
+  const market = useMarketData();
 
   // Load VIX data on mount: try localStorage cache first, then static JSON
   useEffect(() => {
@@ -159,6 +161,23 @@ export default function StrikeCalculator() {
     const t = setTimeout(() => setDMult(multiplier), 250);
     return () => clearTimeout(t);
   }, [multiplier]);
+
+  // Auto-fill from live Schwab data (owner-only, silently skipped for public)
+  useEffect(() => {
+    if (!market.data.quotes) return;
+    const q = market.data.quotes;
+
+    // Only auto-fill empty fields — never overwrite user input
+    if (!spotPrice && q.spy) setSpotPrice(q.spy.price.toFixed(2));
+    if (!spxDirect && q.spx) setSpxDirect(q.spx.price.toFixed(0));
+    if (!vixInput && q.vix && ivMode === IV_MODES.VIX) setVixInput(q.vix.price.toFixed(2));
+
+    // Auto-set today's date if not already set
+    if (!selectedDate) {
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      setSelectedDate(today);
+    }
+  }, [market.data.quotes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // VIX data lookup on date change
   useEffect(() => {
@@ -337,7 +356,28 @@ export default function StrikeCalculator() {
                   Black-Scholes approximation for delta-based strike placement
                 </p>
               </div>
-              <button
+              <div className="flex items-center gap-2">
+                {market.hasData && (
+                  <span
+                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
+                    style={{
+                      backgroundColor: market.data.quotes?.marketOpen ? th.green + '18' : th.surfaceAlt,
+                      color: market.data.quotes?.marketOpen ? th.green : th.textMuted,
+                    }}
+                  >
+                    {market.data.quotes?.marketOpen ? '● LIVE' : '● CLOSED'}
+                  </span>
+                )}
+                {market.needsAuth && (
+                  <a
+                    href="/api/auth/init"
+                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold no-underline"
+                    style={{ backgroundColor: th.red + '18', color: th.red }}
+                  >
+                    Re-authenticate
+                  </a>
+                )}
+                <button
                 onClick={() => setDarkMode(!darkMode)}
                 aria-label={
                   darkMode ? 'Switch to light mode' : 'Switch to dark mode'
@@ -349,6 +389,7 @@ export default function StrikeCalculator() {
                   {darkMode ? 'Light' : 'Dark'}
                 </span>
               </button>
+              </div>
             </div>
           </header>
 
@@ -794,6 +835,8 @@ export default function StrikeCalculator() {
                       setIvMode(IV_MODES.DIRECT);
                       setDirectIVInput(sigma.toFixed(4));
                     }}
+                    initialVix1d={market.data.quotes?.vix1d?.price}
+                    initialVix9d={market.data.quotes?.vix9d?.price}
                   />
                 </div>
               )}
@@ -989,6 +1032,7 @@ export default function StrikeCalculator() {
                             vix={Number.parseFloat(dVix)}
                             spot={results.spot}
                             onMultiplierChange={setClusterMult}
+                            initialYesterday={market.data.yesterday?.yesterday ?? undefined}
                           />
                         </div>
                         <DeltaRegimeGuide
@@ -1007,6 +1051,7 @@ export default function StrikeCalculator() {
                             vix={Number.parseFloat(dVix)}
                             spot={results.spot}
                             selectedDate={selectedDate}
+                            initialRange={market.data.intraday?.openingRange ?? undefined}
                           />
                         </div>
                       </>
