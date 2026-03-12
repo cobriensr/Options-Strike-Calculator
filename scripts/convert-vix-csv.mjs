@@ -29,7 +29,10 @@ if (lines.length < 2) {
   process.exit(1);
 }
 
-const cols = lines[0].toLowerCase().split(',').map((c) => c.trim());
+const cols = lines[0]
+  .toLowerCase()
+  .split(',')
+  .map((c) => c.trim());
 const dateIdx = cols.findIndex((c) => c.includes('date'));
 const openIdx = cols.findIndex((c) => c === 'open');
 const highIdx = cols.findIndex((c) => c === 'high');
@@ -46,7 +49,10 @@ let skipped = 0;
 
 for (let i = 1; i < lines.length; i++) {
   const parts = lines[i].split(',').map((p) => p.trim());
-  if (parts.length <= dateIdx || !parts[dateIdx]) { skipped++; continue; }
+  if (parts.length <= dateIdx || !parts[dateIdx]) {
+    skipped++;
+    continue;
+  }
 
   let dateKey = parts[dateIdx];
 

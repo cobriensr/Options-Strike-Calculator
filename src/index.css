@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 /* Class-based dark mode (instead of prefers-color-scheme) */
 @variant dark (&:is(.dark *));
@@ -8,42 +8,42 @@
    ============================================================ */
 @theme {
   /* Backgrounds */
-  --color-page: #F4F1EB;
-  --color-surface: #FFFFFF;
-  --color-surface-alt: #EDEAE3;
-  --color-input: #FAF9F6;
-  --color-table-alt: #FAF9F6;
-  --color-table-header: #F4F1EB;
-  --color-accent-bg: #EFF6FF;
+  --color-page: #f4f1eb;
+  --color-surface: #ffffff;
+  --color-surface-alt: #edeae3;
+  --color-input: #faf9f6;
+  --color-table-alt: #faf9f6;
+  --color-table-header: #f4f1eb;
+  --color-accent-bg: #eff6ff;
 
   /* Text & semantic colors */
-  --color-primary: #1C1A15;
-  --color-secondary: #4A4740;
-  --color-tertiary: #5C5950;
-  --color-muted: #7A756B;
-  --color-accent: #1D4ED8;
-  --color-success: #15803D;
-  --color-danger: #B91C1C;
-  --color-caution: #E8A317;
+  --color-primary: #1c1a15;
+  --color-secondary: #4a4740;
+  --color-tertiary: #5c5950;
+  --color-muted: #7a756b;
+  --color-accent: #1d4ed8;
+  --color-success: #15803d;
+  --color-danger: #b91c1c;
+  --color-caution: #e8a317;
 
   /* Borders */
-  --color-edge: #DDD8CE;
-  --color-edge-strong: #C8C3B8;
-  --color-edge-heavy: #2C2A25;
+  --color-edge: #ddd8ce;
+  --color-edge-strong: #c8c3b8;
+  --color-edge-heavy: #2c2a25;
 
   /* Tooltip */
-  --color-tooltip-bg: #1C1A15;
-  --color-tooltip-text: #F4F1EB;
+  --color-tooltip-bg: #1c1a15;
+  --color-tooltip-text: #f4f1eb;
   --color-tooltip-code-bg: #f0f0f0;
-  --color-tooltip-code-text: #1C1A15;
+  --color-tooltip-code-text: #1c1a15;
 
   /* Chip */
-  --color-chip-bg: #FFFFFF;
-  --color-chip-active-bg: #EFF6FF;
-  --color-chip-border: #C8C3B8;
-  --color-chip-active-border: #1D4ED8;
-  --color-chip-text: #4A4740;
-  --color-chip-active-text: #1D4ED8;
+  --color-chip-bg: #ffffff;
+  --color-chip-active-bg: #eff6ff;
+  --color-chip-border: #c8c3b8;
+  --color-chip-active-border: #1d4ed8;
+  --color-chip-text: #4a4740;
+  --color-chip-active-text: #1d4ed8;
 
   /* Fonts */
   --font-serif: 'Source Serif 4', 'Charter', Georgia, serif;
@@ -55,39 +55,39 @@
    LIGHT THEME — th-* vars for JS components that need raw hex
    ============================================================ */
 :root {
-  --th-bg: #F4F1EB;
-  --th-surface: #FFFFFF;
-  --th-surface-alt: #EDEAE3;
-  --th-input-bg: #FAF9F6;
-  --th-border: #DDD8CE;
-  --th-border-strong: #C8C3B8;
-  --th-border-heavy: #2C2A25;
-  --th-text: #1C1A15;
-  --th-text-secondary: #4A4740;
-  --th-text-tertiary: #5C5950;
-  --th-text-muted: #7A756B;
-  --th-text-placeholder: #9B9689;
-  --th-accent: #1D4ED8;
-  --th-accent-bg: #EFF6FF;
-  --th-green: #15803D;
-  --th-red: #B91C1C;
-  --th-badge-color: #15803D;
-  --th-tooltip-bg: #1C1A15;
-  --th-tooltip-text: #F4F1EB;
+  --th-bg: #f4f1eb;
+  --th-surface: #ffffff;
+  --th-surface-alt: #edeae3;
+  --th-input-bg: #faf9f6;
+  --th-border: #ddd8ce;
+  --th-border-strong: #c8c3b8;
+  --th-border-heavy: #2c2a25;
+  --th-text: #1c1a15;
+  --th-text-secondary: #4a4740;
+  --th-text-tertiary: #5c5950;
+  --th-text-muted: #7a756b;
+  --th-text-placeholder: #9b9689;
+  --th-accent: #1d4ed8;
+  --th-accent-bg: #eff6ff;
+  --th-green: #15803d;
+  --th-red: #b91c1c;
+  --th-badge-color: #15803d;
+  --th-tooltip-bg: #1c1a15;
+  --th-tooltip-text: #f4f1eb;
   --th-tooltip-code-bg: #f0f0f0;
-  --th-tooltip-code-text: #1C1A15;
-  --th-focus-ring: #2563EB;
-  --th-table-row-alt: #FAF9F6;
-  --th-table-header: #F4F1EB;
-  --th-chip-bg: #FFFFFF;
-  --th-chip-active-bg: #EFF6FF;
-  --th-chip-border: #C8C3B8;
-  --th-chip-active-border: #1D4ED8;
-  --th-chip-text: #4A4740;
-  --th-chip-active-text: #1D4ED8;
-  --th-chevron-color: #5C5950;
-  --th-selection-bg: #BFDBFE;
-  --th-selection-text: #1E3A5F;
+  --th-tooltip-code-text: #1c1a15;
+  --th-focus-ring: #2563eb;
+  --th-table-row-alt: #faf9f6;
+  --th-table-header: #f4f1eb;
+  --th-chip-bg: #ffffff;
+  --th-chip-active-bg: #eff6ff;
+  --th-chip-border: #c8c3b8;
+  --th-chip-active-border: #1d4ed8;
+  --th-chip-text: #4a4740;
+  --th-chip-active-text: #1d4ed8;
+  --th-chevron-color: #5c5950;
+  --th-selection-bg: #bfdbfe;
+  --th-selection-text: #1e3a5f;
   color-scheme: light;
 }
 
@@ -97,67 +97,67 @@
 .dark {
   /* Tailwind color overrides */
   --color-page: #121212;
-  --color-surface: #1E1E1E;
-  --color-surface-alt: #2A2A2A;
+  --color-surface: #1e1e1e;
+  --color-surface-alt: #2a2a2a;
   --color-input: #252525;
   --color-table-alt: #252525;
-  --color-table-header: #2A2A2A;
-  --color-accent-bg: #1A2744;
-  --color-primary: #ECECEC;
-  --color-secondary: #C0C0C0;
-  --color-tertiary: #A0A0A0;
+  --color-table-header: #2a2a2a;
+  --color-accent-bg: #1a2744;
+  --color-primary: #ececec;
+  --color-secondary: #c0c0c0;
+  --color-tertiary: #a0a0a0;
   --color-muted: #808080;
-  --color-accent: #6B9CFF;
-  --color-success: #4ADE80;
-  --color-danger: #F87171;
+  --color-accent: #6b9cff;
+  --color-success: #4ade80;
+  --color-danger: #f87171;
   --color-edge: #333333;
   --color-edge-strong: #444444;
-  --color-edge-heavy: #E0DDD6;
-  --color-tooltip-bg: #ECECEC;
-  --color-tooltip-text: #1E1E1E;
+  --color-edge-heavy: #e0ddd6;
+  --color-tooltip-bg: #ececec;
+  --color-tooltip-text: #1e1e1e;
   --color-tooltip-code-bg: #333333;
   --color-tooltip-code-text: #e0e0e0;
   --color-chip-bg: #252525;
-  --color-chip-active-bg: #1A2744;
+  --color-chip-active-bg: #1a2744;
   --color-chip-border: #444444;
-  --color-chip-active-border: #6B9CFF;
-  --color-chip-text: #C0C0C0;
-  --color-chip-active-text: #6B9CFF;
+  --color-chip-active-border: #6b9cff;
+  --color-chip-text: #c0c0c0;
+  --color-chip-active-text: #6b9cff;
 
   /* JS theme vars */
   --th-bg: #121212;
-  --th-surface: #1E1E1E;
-  --th-surface-alt: #2A2A2A;
+  --th-surface: #1e1e1e;
+  --th-surface-alt: #2a2a2a;
   --th-input-bg: #252525;
   --th-border: #333333;
   --th-border-strong: #444444;
-  --th-border-heavy: #E0DDD6;
-  --th-text: #ECECEC;
-  --th-text-secondary: #C0C0C0;
-  --th-text-tertiary: #A0A0A0;
+  --th-border-heavy: #e0ddd6;
+  --th-text: #ececec;
+  --th-text-secondary: #c0c0c0;
+  --th-text-tertiary: #a0a0a0;
   --th-text-muted: #808080;
   --th-text-placeholder: #606060;
-  --th-accent: #6B9CFF;
-  --th-accent-bg: #1A2744;
-  --th-green: #4ADE80;
-  --th-red: #F87171;
-  --th-badge-color: #4ADE80;
-  --th-tooltip-bg: #ECECEC;
-  --th-tooltip-text: #1E1E1E;
+  --th-accent: #6b9cff;
+  --th-accent-bg: #1a2744;
+  --th-green: #4ade80;
+  --th-red: #f87171;
+  --th-badge-color: #4ade80;
+  --th-tooltip-bg: #ececec;
+  --th-tooltip-text: #1e1e1e;
   --th-tooltip-code-bg: #333333;
   --th-tooltip-code-text: #e0e0e0;
-  --th-focus-ring: #6B9CFF;
+  --th-focus-ring: #6b9cff;
   --th-table-row-alt: #252525;
-  --th-table-header: #2A2A2A;
+  --th-table-header: #2a2a2a;
   --th-chip-bg: #252525;
-  --th-chip-active-bg: #1A2744;
+  --th-chip-active-bg: #1a2744;
   --th-chip-border: #444444;
-  --th-chip-active-border: #6B9CFF;
-  --th-chip-text: #C0C0C0;
-  --th-chip-active-text: #6B9CFF;
-  --th-chevron-color: #A0A0A0;
-  --th-selection-bg: #2A3E66;
-  --th-selection-text: #BFDBFE;
+  --th-chip-active-border: #6b9cff;
+  --th-chip-text: #c0c0c0;
+  --th-chip-active-text: #6b9cff;
+  --th-chevron-color: #a0a0a0;
+  --th-selection-bg: #2a3e66;
+  --th-selection-text: #bfdbfe;
   color-scheme: dark;
 }
 

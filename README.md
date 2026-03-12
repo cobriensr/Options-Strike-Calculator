@@ -122,7 +122,7 @@ It computes everything client-side with zero external API dependencies. You inpu
 
 ## Market Regime Intelligence
 
-The calculator includes a comprehensive market regime analysis system built on 9,102 matched VIX/SPX trading days (1990–2026). This goes beyond simple strike placement to answer: *should I trade today, and if so, how aggressively?*
+The calculator includes a comprehensive market regime analysis system built on 9,102 matched VIX/SPX trading days (1990–2026). This goes beyond simple strike placement to answer: _should I trade today, and if so, how aggressively?_
 
 ### VIX Regime Card
 
@@ -211,14 +211,14 @@ Where:
 
 ### Z-Scores by Delta
 
-| Delta | Z-Score | Source      |
-|-------|---------|-------------|
-| 5     | 1.645   | N^-1(0.95)  |
-| 8     | 1.405   | N^-1(0.92)  |
-| 10    | 1.280   | N^-1(0.90)  |
-| 12    | 1.175   | N^-1(0.88)  |
-| 15    | 1.036   | N^-1(0.85)  |
-| 20    | 0.842   | N^-1(0.80)  |
+| Delta | Z-Score | Source     |
+| ----- | ------- | ---------- |
+| 5     | 1.645   | N^-1(0.95) |
+| 8     | 1.405   | N^-1(0.92) |
+| 10    | 1.280   | N^-1(0.90) |
+| 12    | 1.175   | N^-1(0.88) |
+| 15    | 1.036   | N^-1(0.85) |
+| 20    | 0.842   | N^-1(0.80) |
 
 ### Option Pricing (Black-Scholes)
 
@@ -548,25 +548,25 @@ VIX9D / VIX ──→ term structure signal ──┤──→ combined pre-mark
 
 All configurable values are in `src/constants/index.ts`:
 
-| Constant | Value | Purpose |
-| -------- | ----- | ------- |
-| `MARKET.HOURS_PER_DAY` | 6.5 | Regular trading session length |
-| `MARKET.TRADING_DAYS_PER_YEAR` | 252 | US equity calendar |
-| `MARKET.ANNUAL_TRADING_HOURS` | 1638 | 6.5 × 252 |
-| `DEFAULTS.IV_PREMIUM_FACTOR` | 1.15 | Default 0DTE IV multiplier over VIX |
-| `DEFAULTS.IV_PREMIUM_MIN` | 1.0 | Minimum allowed multiplier |
-| `DEFAULTS.IV_PREMIUM_MAX` | 1.3 | Maximum allowed multiplier |
-| `DEFAULTS.RISK_FREE_RATE` | 0 | Negligible for 0DTE |
-| `DEFAULTS.STRIKE_INCREMENT` | 5 | SPX strike snap interval |
+| Constant                       | Value | Purpose                             |
+| ------------------------------ | ----- | ----------------------------------- |
+| `MARKET.HOURS_PER_DAY`         | 6.5   | Regular trading session length      |
+| `MARKET.TRADING_DAYS_PER_YEAR` | 252   | US equity calendar                  |
+| `MARKET.ANNUAL_TRADING_HOURS`  | 1638  | 6.5 × 252                           |
+| `DEFAULTS.IV_PREMIUM_FACTOR`   | 1.15  | Default 0DTE IV multiplier over VIX |
+| `DEFAULTS.IV_PREMIUM_MIN`      | 1.0   | Minimum allowed multiplier          |
+| `DEFAULTS.IV_PREMIUM_MAX`      | 1.3   | Maximum allowed multiplier          |
+| `DEFAULTS.RISK_FREE_RATE`      | 0     | Negligible for 0DTE                 |
+| `DEFAULTS.STRIKE_INCREMENT`    | 5     | SPX strike snap interval            |
 
 ### Regime Thresholds (in `vixRangeStats.ts`)
 
-| Signal | VIX1D/VIX | VIX9D/VIX |
-| ------ | --------- | --------- |
-| Calm / Contango | < 0.85 | < 0.90 |
-| Normal / Flat | 0.85–1.15 | 0.90–1.10 |
+| Signal              | VIX1D/VIX | VIX9D/VIX |
+| ------------------- | --------- | --------- |
+| Calm / Contango     | < 0.85    | < 0.90    |
+| Normal / Flat       | 0.85–1.15 | 0.90–1.10 |
 | Elevated / Inverted | 1.15–1.50 | 1.10–1.25 |
-| Event Risk / Steep | > 1.50 | > 1.25 |
+| Event Risk / Steep  | > 1.50    | > 1.25    |
 
 ---
 
@@ -610,22 +610,22 @@ The "Export All Wing Widths to Excel" button generates an XLSX file with three s
 
 Every combination of **7 wing widths × 6 deltas × 3 sides** = 126 rows:
 
-| Column | Description |
-| ------ | ----------- |
-| Delta | 5Δ through 20Δ |
-| Wing Width | 5, 10, 15, 20, 25, 30, 50 |
-| Side | Put Spread, Call Spread, or Iron Condor |
-| Credit (pts / $) | Premium received in SPX points and dollars |
-| Max Loss (pts / $) | Maximum possible loss |
-| Buying Power ($) | Capital held as margin (= max loss) |
-| RoR (%) | Return on risk = credit ÷ max loss |
-| PoP (%) | Probability of profit |
-| Wins to Recover | Max loss ÷ credit — winning trades needed to offset one full loss |
-| Breakeven | SPX price level where P&L = $0 |
-| Short/Long Strike | Actual strike prices |
-| Monthly Wins/Losses | 22 trading days × PoP |
-| Monthly Profit/Loss ($) | Estimated monthly dollar P&L |
-| Monthly Net ($) | Profit − Loss (theoretical, assumes no trade management) |
+| Column                  | Description                                                       |
+| ----------------------- | ----------------------------------------------------------------- |
+| Delta                   | 5Δ through 20Δ                                                    |
+| Wing Width              | 5, 10, 15, 20, 25, 30, 50                                         |
+| Side                    | Put Spread, Call Spread, or Iron Condor                           |
+| Credit (pts / $)        | Premium received in SPX points and dollars                        |
+| Max Loss (pts / $)      | Maximum possible loss                                             |
+| Buying Power ($)        | Capital held as margin (= max loss)                               |
+| RoR (%)                 | Return on risk = credit ÷ max loss                                |
+| PoP (%)                 | Probability of profit                                             |
+| Wins to Recover         | Max loss ÷ credit — winning trades needed to offset one full loss |
+| Breakeven               | SPX price level where P&L = $0                                    |
+| Short/Long Strike       | Actual strike prices                                              |
+| Monthly Wins/Losses     | 22 trading days × PoP                                             |
+| Monthly Profit/Loss ($) | Estimated monthly dollar P&L                                      |
+| Monthly Net ($)         | Profit − Loss (theoretical, assumes no trade management)          |
 
 ### Sheet 2: IC Summary
 
@@ -643,26 +643,26 @@ Snapshot of every parameter: SPY, SPX, ratio, σ, skew, T, hours, contracts, mul
 
 **750+ tests across 18+ test files**, all passing with TypeScript strict mode.
 
-| File | Coverage Focus |
-| ---- | -------------- |
-| `calculator.test.ts` | Golden test case, full 6×3×3 matrix, property-based invariants, utilities |
-| `App.test.tsx` | Component rendering, mode switching, validation, CSV upload, IC UI, contracts, spreads, dark mode, market regime toggle |
-| `skewAndIC.test.ts` | Skew asymmetry, IC leg construction, P&L fields, PoP, per-side spreads, calcSpreadPoP |
-| `exportXlsx.test.ts` | Excel export generation, sheet structure, data integrity |
-| `resolveIV.test.ts` | VIX mode, direct mode, boundary values, edge cases, cross-mode equivalence |
-| `timeValidation.test.ts` | Every market-hour boundary, precision checks, minute-by-minute monotonic sweep |
-| `pricing.test.ts` | normalCDF properties, Black-Scholes sanity checks, put-call parity, scaling |
-| `csvParser.test.ts` | Date formats, edge cases, 9k-row performance, whitespace handling |
-| `hedge.test.tsx` | Hedge calculator rendering, recommendations, scenario table |
-| `vixRangeStats.test.ts` | VIX bucket integrity, survival data, fine stats, estimateRange interpolation, DOW data, clustering data, multiplier functions |
-| `VIXRegimeCard.test.tsx` | Regime card rendering across zones, stat display, theme support |
-| `VIXRangeAnalysis.test.tsx` | Survival toggle, fine-grained toggle, table rendering, bucket highlighting |
-| `DeltaRegimeGuide.test.tsx` | Ceiling recommendation, threshold table, delta matrix, continuous interpolation, DOW badges, clustering integration |
-| `EventDayWarning.test.tsx` | Event calendar data integrity (FOMC/CPI/NFP/GDP counts), lookup functions, warning banner rendering, severity coding, multi-event days |
-| `VIXTermStructure.test.tsx` | VIX1D/VIX9D ratio signals, combined signal, VIX1D as σ callback |
-| `OpeningRangeCheck.test.tsx` | Range signals, VIX sensitivity, DOW adjustment, edge cases |
-| `VolatilityCluster.test.tsx` | Clustering signals, multiplier callback, VIX sensitivity, percentile reference |
-| `vixStorage.test.ts` | localStorage cache, static JSON loading |
+| File                         | Coverage Focus                                                                                                                         |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `calculator.test.ts`         | Golden test case, full 6×3×3 matrix, property-based invariants, utilities                                                              |
+| `App.test.tsx`               | Component rendering, mode switching, validation, CSV upload, IC UI, contracts, spreads, dark mode, market regime toggle                |
+| `skewAndIC.test.ts`          | Skew asymmetry, IC leg construction, P&L fields, PoP, per-side spreads, calcSpreadPoP                                                  |
+| `exportXlsx.test.ts`         | Excel export generation, sheet structure, data integrity                                                                               |
+| `resolveIV.test.ts`          | VIX mode, direct mode, boundary values, edge cases, cross-mode equivalence                                                             |
+| `timeValidation.test.ts`     | Every market-hour boundary, precision checks, minute-by-minute monotonic sweep                                                         |
+| `pricing.test.ts`            | normalCDF properties, Black-Scholes sanity checks, put-call parity, scaling                                                            |
+| `csvParser.test.ts`          | Date formats, edge cases, 9k-row performance, whitespace handling                                                                      |
+| `hedge.test.tsx`             | Hedge calculator rendering, recommendations, scenario table                                                                            |
+| `vixRangeStats.test.ts`      | VIX bucket integrity, survival data, fine stats, estimateRange interpolation, DOW data, clustering data, multiplier functions          |
+| `VIXRegimeCard.test.tsx`     | Regime card rendering across zones, stat display, theme support                                                                        |
+| `VIXRangeAnalysis.test.tsx`  | Survival toggle, fine-grained toggle, table rendering, bucket highlighting                                                             |
+| `DeltaRegimeGuide.test.tsx`  | Ceiling recommendation, threshold table, delta matrix, continuous interpolation, DOW badges, clustering integration                    |
+| `EventDayWarning.test.tsx`   | Event calendar data integrity (FOMC/CPI/NFP/GDP counts), lookup functions, warning banner rendering, severity coding, multi-event days |
+| `VIXTermStructure.test.tsx`  | VIX1D/VIX9D ratio signals, combined signal, VIX1D as σ callback                                                                        |
+| `OpeningRangeCheck.test.tsx` | Range signals, VIX sensitivity, DOW adjustment, edge cases                                                                             |
+| `VolatilityCluster.test.tsx` | Clustering signals, multiplier callback, VIX sensitivity, percentile reference                                                         |
+| `vixStorage.test.ts`         | localStorage cache, static JSON loading                                                                                                |
 
 ### Test Philosophy
 
@@ -741,17 +741,17 @@ The application targets Section 508 / WCAG AA compliance:
 
 ## Scripts Reference
 
-| Command | Description |
-| ------- | ----------- |
-| `npm run dev` | Start Vite dev server with HMR |
-| `npm run build` | TypeScript check + Vite production build |
-| `npm run preview` | Preview the production build locally |
-| `npm test` | Vitest in watch mode |
-| `npm run test:ui` | Vitest interactive browser dashboard |
-| `npm run test:run` | Single test run (for CI) |
-| `npm run test:coverage` | Generate v8 coverage report |
-| `npm run lint` | TypeScript type check without emitting |
-| `node scripts/convert-vix-csv.mjs <csv>` | Convert VIX CSV to static JSON |
+| Command                                  | Description                              |
+| ---------------------------------------- | ---------------------------------------- |
+| `npm run dev`                            | Start Vite dev server with HMR           |
+| `npm run build`                          | TypeScript check + Vite production build |
+| `npm run preview`                        | Preview the production build locally     |
+| `npm test`                               | Vitest in watch mode                     |
+| `npm run test:ui`                        | Vitest interactive browser dashboard     |
+| `npm run test:run`                       | Single test run (for CI)                 |
+| `npm run test:coverage`                  | Generate v8 coverage report              |
+| `npm run lint`                           | TypeScript type check without emitting   |
+| `node scripts/convert-vix-csv.mjs <csv>` | Convert VIX CSV to static JSON           |
 
 ---
 
@@ -759,47 +759,47 @@ The application targets Section 508 / WCAG AA compliance:
 
 Key design decisions made during development, with rationale:
 
-| Decision | Choice | Why |
-| -------- | ------ | --- |
-| Calc engine | Pure functions module | Testable, explicit, no class overhead |
-| Component extraction | Separate files per section | Keeps App.tsx focused on state; components handle rendering |
-| Delta support | All 6 via lookup table | Avoids inverse CDF dependency |
-| IV input | Both VIX + Direct modes | Covers all user types; VIX1D button bridges the gap |
-| SPX/SPY display | Always show both | No toggle friction |
-| Magic numbers | Named constants | DRY, self-documenting |
-| Time validation | Hard reject outside market hours | Prevents meaningless results |
-| IV convergence | Single `resolveIV()` funnel | Eliminates conversion bugs |
-| Strike rounding | Integer + nearest 5-pt snap | "Engineered enough" for ±5-15pt accuracy |
-| Recalculation | Hybrid debounce | Instant for discrete, 250ms for text |
-| Memoization | None | Math is ~10μs, not worth the complexity |
-| Input parsing | Strict validation + errors | Explicit over clever |
-| External math | Zero dependencies | Native `Math` handles everything |
-| CDF implementation | Abramowitz & Stegun 26.2.17 | <7.5×10⁻⁸ error, 15 lines, no deps |
-| Option pricing | Black-Scholes with r=0 | Standard model, negligible rate for 0DTE |
-| PoP (IC) | Two-tail formula | Correct for IC (not product of spread PoPs) |
-| PoP (spreads) | Single-tail formula | Each spread only needs one breakeven |
-| P&L display | Split into put/call/combined | Supports directional spread trading |
-| Breakevens | Dual SPX/SPY columns | Cross-reference with Market Tide SPY charts |
-| Contracts | Adjustable counter with +/− | Instant dollar-denominated sizing |
-| Excel export | All wing widths × all deltas | Side-by-side comparison for position sizing |
-| Monthly projections | 22 days × PoP | Shows theoretical monthly P&L (approx. zero) |
-| Wins to Recover | Max loss ÷ credit | Key metric for risk assessment |
-| VIX data | Static JSON + localStorage cache | Works offline after first load |
-| Built-in data | 9,137 days (1990–2026) | Zero setup required |
-| Regime data | Pre-computed in vixRangeStats.ts | No runtime CSV parsing; instant lookups |
-| Range interpolation | Per-point linear (VIX 10–30) | Avoids bucket boundary jumps |
-| Delta Guide σ | VIX × 1.15 / 100 (internal) | Self-consistent with VIX-based thresholds |
-| DOW adjustment | Historical multipliers per VIX regime | Monday 6% narrower, Thursday 4% wider |
-| Clustering | Yesterday's range percentile → multiplier | Strongest signal at high VIX (up to 1.87x) |
-| Term structure | VIX1D/VIX and VIX9D/VIX ratios | Pre-market risk assessment |
-| Opening range | First 30-min vs expected daily | Go/no-go for second entry |
-| Event calendar | Static JSON, no backend | FOMC/CPI/NFP/GDP dates fixed a year ahead; update once annually |
-| Framework | Vite + React | Lightest viable toolchain |
-| TypeScript | Strict mode | `noUncheckedIndexedAccess`, `noUnusedLocals`, etc. |
-| Testing | Vitest + RTL | Fast, modern, good DX |
-| Hosting | Vercel via GitHub | Push-to-deploy on main, preview deploys on PRs |
-| Spreadsheet | SheetJS (xlsx) | Client-side Excel generation, ~200KB |
-| Containerization | Docker (nginx alpine) | Two-stage build, SPA routing, gzip |
+| Decision             | Choice                                    | Why                                                             |
+| -------------------- | ----------------------------------------- | --------------------------------------------------------------- |
+| Calc engine          | Pure functions module                     | Testable, explicit, no class overhead                           |
+| Component extraction | Separate files per section                | Keeps App.tsx focused on state; components handle rendering     |
+| Delta support        | All 6 via lookup table                    | Avoids inverse CDF dependency                                   |
+| IV input             | Both VIX + Direct modes                   | Covers all user types; VIX1D button bridges the gap             |
+| SPX/SPY display      | Always show both                          | No toggle friction                                              |
+| Magic numbers        | Named constants                           | DRY, self-documenting                                           |
+| Time validation      | Hard reject outside market hours          | Prevents meaningless results                                    |
+| IV convergence       | Single `resolveIV()` funnel               | Eliminates conversion bugs                                      |
+| Strike rounding      | Integer + nearest 5-pt snap               | "Engineered enough" for ±5-15pt accuracy                        |
+| Recalculation        | Hybrid debounce                           | Instant for discrete, 250ms for text                            |
+| Memoization          | None                                      | Math is ~10μs, not worth the complexity                         |
+| Input parsing        | Strict validation + errors                | Explicit over clever                                            |
+| External math        | Zero dependencies                         | Native `Math` handles everything                                |
+| CDF implementation   | Abramowitz & Stegun 26.2.17               | <7.5×10⁻⁸ error, 15 lines, no deps                              |
+| Option pricing       | Black-Scholes with r=0                    | Standard model, negligible rate for 0DTE                        |
+| PoP (IC)             | Two-tail formula                          | Correct for IC (not product of spread PoPs)                     |
+| PoP (spreads)        | Single-tail formula                       | Each spread only needs one breakeven                            |
+| P&L display          | Split into put/call/combined              | Supports directional spread trading                             |
+| Breakevens           | Dual SPX/SPY columns                      | Cross-reference with Market Tide SPY charts                     |
+| Contracts            | Adjustable counter with +/−               | Instant dollar-denominated sizing                               |
+| Excel export         | All wing widths × all deltas              | Side-by-side comparison for position sizing                     |
+| Monthly projections  | 22 days × PoP                             | Shows theoretical monthly P&L (approx. zero)                    |
+| Wins to Recover      | Max loss ÷ credit                         | Key metric for risk assessment                                  |
+| VIX data             | Static JSON + localStorage cache          | Works offline after first load                                  |
+| Built-in data        | 9,137 days (1990–2026)                    | Zero setup required                                             |
+| Regime data          | Pre-computed in vixRangeStats.ts          | No runtime CSV parsing; instant lookups                         |
+| Range interpolation  | Per-point linear (VIX 10–30)              | Avoids bucket boundary jumps                                    |
+| Delta Guide σ        | VIX × 1.15 / 100 (internal)               | Self-consistent with VIX-based thresholds                       |
+| DOW adjustment       | Historical multipliers per VIX regime     | Monday 6% narrower, Thursday 4% wider                           |
+| Clustering           | Yesterday's range percentile → multiplier | Strongest signal at high VIX (up to 1.87x)                      |
+| Term structure       | VIX1D/VIX and VIX9D/VIX ratios            | Pre-market risk assessment                                      |
+| Opening range        | First 30-min vs expected daily            | Go/no-go for second entry                                       |
+| Event calendar       | Static JSON, no backend                   | FOMC/CPI/NFP/GDP dates fixed a year ahead; update once annually |
+| Framework            | Vite + React                              | Lightest viable toolchain                                       |
+| TypeScript           | Strict mode                               | `noUncheckedIndexedAccess`, `noUnusedLocals`, etc.              |
+| Testing              | Vitest + RTL                              | Fast, modern, good DX                                           |
+| Hosting              | Vercel via GitHub                         | Push-to-deploy on main, preview deploys on PRs                  |
+| Spreadsheet          | SheetJS (xlsx)                            | Client-side Excel generation, ~200KB                            |
+| Containerization     | Docker (nginx alpine)                     | Two-stage build, SPA routing, gzip                              |
 
 ---
 
@@ -872,26 +872,26 @@ During day:  Monitor positions
 
 ### Structure Selection
 
-| Market Tide Signal | Structure | Why |
-| ------------------ | --------- | --- |
-| NCP ≈ NPP (parallel) | Iron Condor | Ranging day, collect both sides |
-| NCP >> NPP (diverging up) | Put Credit Spread | Bullish trend, no call exposure |
-| NPP >> NCP (diverging up) | Call Credit Spread | Bearish trend, no put exposure |
-| Both declining sharply | Sit out | High uncertainty, model less reliable |
+| Market Tide Signal        | Structure          | Why                                   |
+| ------------------------- | ------------------ | ------------------------------------- |
+| NCP ≈ NPP (parallel)      | Iron Condor        | Ranging day, collect both sides       |
+| NCP >> NPP (diverging up) | Put Credit Spread  | Bullish trend, no call exposure       |
+| NPP >> NCP (diverging up) | Call Credit Spread | Bearish trend, no put exposure        |
+| Both declining sharply    | Sit out            | High uncertainty, model less reliable |
 
 ### Regime Signal Stacking
 
 Multiple signals can reinforce or conflict. When they conflict, always defer to the most cautious signal:
 
-| Signal | Action |
-| ------ | ------ |
-| Term structure: GREEN LIGHT + Clustering: TAILWIND + DOW: Mon | Full size, standard deltas |
-| Term structure: PROCEED + Clustering: NEUTRAL + DOW: avg | Standard — follow delta guide ceiling |
-| Term structure: CAUTION + Clustering: any | Reduce size regardless of other signals |
-| Clustering: HIGH CLUSTERING + any | Widen deltas or reduce size even if other signals are green |
-| Term structure: HIGH ALERT + any | Consider sitting out entirely |
-| Event day: FOMC/CPI/NFP | Widen 1–2Δ, reduce size, or wait until after release |
-| Opening range: RED + any | Skip second entry |
+| Signal                                                        | Action                                                      |
+| ------------------------------------------------------------- | ----------------------------------------------------------- |
+| Term structure: GREEN LIGHT + Clustering: TAILWIND + DOW: Mon | Full size, standard deltas                                  |
+| Term structure: PROCEED + Clustering: NEUTRAL + DOW: avg      | Standard — follow delta guide ceiling                       |
+| Term structure: CAUTION + Clustering: any                     | Reduce size regardless of other signals                     |
+| Clustering: HIGH CLUSTERING + any                             | Widen deltas or reduce size even if other signals are green |
+| Term structure: HIGH ALERT + any                              | Consider sitting out entirely                               |
+| Event day: FOMC/CPI/NFP                                       | Widen 1–2Δ, reduce size, or wait until after release        |
+| Opening range: RED + any                                      | Skip second entry                                           |
 
 ---
 
