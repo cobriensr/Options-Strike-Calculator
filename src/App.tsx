@@ -56,7 +56,7 @@ export default function StrikeCalculator() {
   const [timeHour, setTimeHour] = useState('10');
   const [timeMinute, setTimeMinute] = useState('00');
   const [timeAmPm, setTimeAmPm] = useState<AmPm>('AM');
-  const [timezone, setTimezone] = useState<Timezone>('ET');
+  const [timezone, setTimezone] = useState<Timezone>('CT');
   const [selectedDate, setSelectedDate] = useState('');
   const [vixData, setVixData] = useState<VIXDataMap>({});
   const [vixDataLoaded, setVixDataLoaded] = useState(false);
@@ -176,6 +176,21 @@ export default function StrikeCalculator() {
     if (!selectedDate) {
       const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
       setSelectedDate(today);
+    }
+      // Auto-set current time in CT
+    if (timeHour === '10' && timeMinute === '00') {
+      const now = new Date();
+      const ctStr = now.toLocaleString('en-US', { timeZone: 'America/Chicago' });
+      const ctDate = new Date(ctStr);
+      let h = ctDate.getHours();
+      const m = ctDate.getMinutes();
+      const ampm: 'AM' | 'PM' = h >= 12 ? 'PM' : 'AM';
+      if (h > 12) h -= 12;
+      if (h === 0) h = 12;
+      setTimeHour(String(h));
+      setTimeMinute(String(m).padStart(2, '0'));
+      setTimeAmPm(ampm);
+      setTimezone('CT');
     }
   }, [market.data.quotes]); // eslint-disable-line react-hooks/exhaustive-deps
 
