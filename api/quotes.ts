@@ -1,7 +1,7 @@
 /**
  * GET /api/quotes
  *
- * Returns real-time quotes for SPY, $SPX, $VIX, $VIX1D, $VIX9D.
+ * Returns real-time quotes for SPY, $SPX, $VIX, $VIX1D, $VIX9D, $VVIX.
  *
  * Cache:
  *   Market hours: 60s edge cache + 30s SWR
@@ -60,7 +60,7 @@ interface QuoteSlice {
 // HELPERS
 // ============================================================
 
-const SYMBOLS = 'SPY,$SPX,$VIX,$VIX1D,$VIX9D';
+const SYMBOLS = 'SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX';
 
 function toSlice(q: SchwabQuote): QuoteSlice {
   return {
@@ -107,6 +107,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ['vix', '$VIX'],
     ['vix1d', '$VIX1D'],
     ['vix9d', '$VIX9D'],
+    ['vvix', '$VVIX'],
   ];
 
   for (const [key, symbol] of mapping) {

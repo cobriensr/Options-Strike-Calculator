@@ -221,6 +221,7 @@ export default function IVInputSection({
             onUseVix1dAsSigma={onUseVix1dAsSigma}
             initialVix1d={market.data.quotes?.vix1d?.price}
             initialVix9d={market.data.quotes?.vix9d?.price}
+            initialVvix={market.data.quotes?.vvix?.price}
           />
         </div>
       )}

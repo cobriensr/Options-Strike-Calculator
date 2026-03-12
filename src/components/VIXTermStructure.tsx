@@ -8,6 +8,7 @@ interface Props {
   readonly onUseVix1dAsSigma?: (sigma: number) => void; // Optional: let parent switch to VIX1D-derived σ
   readonly initialVix1d?: number; // Auto-fill from live data
   readonly initialVix9d?: number; // Auto-fill from live data
+  readonly initialVvix?: number; // Auto-fill from live data
 }
 
 /** Ratio thresholds for signal classification */
@@ -110,6 +111,59 @@ function classifyVix9dRatio(ratio: number, th: Theme): RatioResult {
   };
 }
 
+const VVIX_THRESHOLDS = {
+  stable: 80,
+  normal: 100,
+  unstable: 120,
+} as const;
+
+interface VvixResult {
+  readonly value: number;
+  readonly signal: Signal;
+  readonly label: string;
+  readonly color: string;
+  readonly advice: string;
+}
+
+function classifyVvix(vvix: number, th: Theme): VvixResult {
+  if (vvix < VVIX_THRESHOLDS.stable) {
+    return {
+      value: vvix,
+      signal: 'calm',
+      label: 'STABLE',
+      color: th.green,
+      advice:
+        'VIX is calm and unlikely to spike. Favorable for selling premium.',
+    };
+  }
+  if (vvix < VVIX_THRESHOLDS.normal) {
+    return {
+      value: vvix,
+      signal: 'normal',
+      label: 'NORMAL',
+      color: th.accent,
+      advice: 'Standard VIX volatility. No additional signal.',
+    };
+  }
+  if (vvix < VVIX_THRESHOLDS.unstable) {
+    return {
+      value: vvix,
+      signal: 'elevated',
+      label: 'UNSTABLE',
+      color: '#E8A317',
+      advice: 'VIX could spike mid-session. Tighten deltas or reduce size.',
+    };
+  }
+  return {
+    value: vvix,
+    signal: 'extreme',
+    label: 'DANGER',
+    color: th.red,
+    advice:
+      'VIX is highly volatile \u2014 significant whipsaw risk. Consider sitting out.',
+  };
+}
+
 const inputCls =
   'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
 
@@ -124,6 +178,7 @@ export default function VIXTermStructure({
   onUseVix1dAsSigma,
   initialVix1d,
   initialVix9d,
+  initialVvix,
 }: Props) {
   const [vix1dInput, setVix1dInput] = useState('');
   const [vix9dInput, setVix9dInput] = useState('');
@@ -141,6 +196,7 @@ export default function VIXTermStructure({
   const hasVix = vix != null && vix > 0;
   const hasVix1d = !Number.isNaN(vix1d) && vix1d > 0;
   const hasVix9d = !Number.isNaN(vix9d) && vix9d > 0;
+  const hasVvix = initialVvix != null && initialVvix > 0;
 
   const vix1dRatio = hasVix && hasVix1d ? vix1d / vix : null;
   const vix9dRatio = hasVix && hasVix9d ? vix9d / vix : null;
@@ -148,13 +204,15 @@ export default function VIXTermStructure({
     vix1dRatio == null ? null : classifyVix1dRatio(vix1dRatio, th);
   const vix9dResult =
     vix9dRatio == null ? null : classifyVix9dRatio(vix9dRatio, th);
+  const vvixResult = hasVvix ? classifyVvix(initialVvix, th) : null;
 
-  // Combined signal: worst of the two
+  // Combined signal: worst of all available signals
   const combinedSignal: Signal | null = (() => {
-    if (!vix1dResult && !vix9dResult) return null;
+    if (!vix1dResult && !vix9dResult && !vvixResult) return null;
     const signals: Signal[] = [];
     if (vix1dResult) signals.push(vix1dResult.signal);
     if (vix9dResult) signals.push(vix9dResult.signal);
+    if (vvixResult) signals.push(vvixResult.signal);
     const order: Signal[] = ['calm', 'normal', 'elevated', 'extreme'];
     return signals.reduce(
       (worst, s) => (order.indexOf(s) > order.indexOf(worst) ? s : worst),
@@ -228,7 +286,7 @@ export default function VIXTermStructure({
       </div>
 
       {/* Ratio readouts */}
-      {hasVix && (hasVix1d || hasVix9d) && (
+      {hasVix && (hasVix1d || hasVix9d || hasVvix) && (
         <div className="mb-3.5">
           {/* Combined signal banner */}
           {combinedSignal && (
@@ -270,7 +328,7 @@ export default function VIXTermStructure({
           {/* Individual ratio cards */}
           <div
             className={
-              hasVix1d && hasVix9d
+              [hasVix1d, hasVix9d, hasVvix].filter(Boolean).length >= 2
                 ? 'grid grid-cols-1 gap-2.5 sm:grid-cols-2'
                 : 'grid grid-cols-1 gap-2.5'
             }
@@ -298,6 +356,13 @@ export default function VIXTermStructure({
               />
             )}
           </div>
+
+          {/* VVIX card — full width below the ratio cards */}
+          {vvixResult && (
+            <div className="mt-2.5">
+              <VvixCard th={th} result={vvixResult} />
+            </div>
+          )}
         </div>
       )}
 
@@ -326,7 +391,7 @@ export default function VIXTermStructure({
           Enter a VIX value above to compute term structure ratios.
         </p>
       )}
-      {hasVix && !hasVix1d && !hasVix9d && (
+      {hasVix && !hasVix1d && !hasVix9d && !hasVvix && (
         <p className="text-muted mt-1 text-xs italic">
           Enter VIX1D and/or VIX9D from TradingView to see term structure
           signals. Tickers: CBOE:VIX1D and CBOE:VIX9D.
@@ -402,6 +467,73 @@ function RatioCard({
           <span>1.0x</span>
           <span>1.5x</span>
           <span>2.0x</span>
+        </div>
+      </div>
+
+      <div className="text-secondary font-sans text-[11px] leading-normal">
+        {advice}
+      </div>
+    </div>
+  );
+}
+
+function VvixCard({ th, result }: { th: Theme; result: VvixResult }) {
+  const { value, label, color, advice } = result;
+
+  // Bar scale: 60–140 range
+  const barPct = Math.min(Math.max((value - 60) / 80, 0), 1) * 100;
+
+  return (
+    <div className="bg-surface border-edge rounded-[10px] border p-3 sm:p-3.5">
+      <div className="mb-2 flex items-start justify-between">
+        <div>
+          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+            VVIX
+          </div>
+          <div className="text-muted font-sans text-[9px]">
+            Volatility of VIX
+          </div>
+        </div>
+        <span
+          className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
+          style={{ backgroundColor: color + '18', color }}
+        >
+          {label}
+        </span>
+      </div>
+
+      <div
+        className="mb-1.5 font-mono text-[22px] font-extrabold"
+        style={{ color }}
+      >
+        {value.toFixed(1)}
+      </div>
+
+      {/* VVIX bar visualization: 60–140 scale */}
+      <div className="mb-2">
+        <div className="bg-surface-alt relative h-1.5 overflow-hidden rounded-[3px]">
+          <div
+            className="absolute top-0 left-0 h-full rounded-[3px] transition-[width] duration-300"
+            style={{
+              width: barPct + '%',
+              backgroundColor: color,
+            }}
+          />
+          {/* 100 marker (midpoint of concern) */}
+          <div
+            className="absolute -top-px h-2 w-0.5"
+            style={{
+              left: ((100 - 60) / 80) * 100 + '%',
+              backgroundColor: th.textMuted + '60',
+            }}
+          />
+        </div>
+        <div className="text-muted mt-0.5 flex justify-between font-mono text-[8px]">
+          <span>60</span>
+          <span>80</span>
+          <span>100</span>
+          <span>120</span>
+          <span>140</span>
         </div>
       </div>
 

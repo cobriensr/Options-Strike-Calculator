@@ -19,6 +19,7 @@ export interface QuotesResponse {
   readonly vix: QuoteSlice | null;
   readonly vix1d: QuoteSlice | null;
   readonly vix9d: QuoteSlice | null;
+  readonly vvix: QuoteSlice | null;
   readonly marketOpen: boolean;
   readonly asOf: string;
 }
