@@ -34,3 +34,5 @@ __snapshots__/
 
 # Claude
 .claude/
+.vercel
+.env*.local
