@@ -9,7 +9,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getAuthUrl } from '../lib/schwab';
+import { getAuthUrl } from '../_lib/schwab';
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
   const host = req.headers.host || 'localhost:3000';
