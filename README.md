@@ -2,17 +2,18 @@
 
 A Black-Scholes-based calculator for determining delta-targeted strike prices, theoretical option premiums, credit spread P&L, iron condor profiles, and VIX regime-aware position guidance for same-day (0DTE) SPX and SPY options. Built with React, TypeScript (strict mode), and Vite.
 
-Live at: [theta-options.com](https://theta-options.com/)
+Live at: [theta-options.com](https://theta-options.com)
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Features](#features)
 - [Market Regime Intelligence](#market-regime-intelligence)
+- [Live Market Data API](#live-market-data-api)
 - [The Math](#the-math)
 - [Getting Started](#getting-started)
 - [Project Structure](#project-structure)
-- [Architecture](#architecture)
+- [Architecture & Design](#architecture--design)
 - [Configuration & Constants](#configuration--constants)
 - [VIX Data Management](#vix-data-management)
 - [Excel Export](#excel-export)
@@ -31,7 +32,9 @@ Live at: [theta-options.com](https://theta-options.com/)
 
 This tool solves a specific problem for 0DTE options traders: given a spot price, time of day, and implied volatility, where should your delta-targeted strikes be, what are the theoretical premiums, what does your iron condor P&L look like, and what delta ceiling should you respect based on today's VIX regime, term structure, volatility clustering, and day-of-week effects?
 
-It computes everything client-side with zero external API dependencies. You input the current SPY price, the VIX (plus optionally VIX1D and VIX9D), and the time — and it gives you:
+All financial calculations run client-side with zero external dependencies. For the site owner, a Schwab API integration auto-populates real-time SPY, SPX, VIX, VIX1D, and VIX9D quotes plus yesterday's SPX OHLC — public visitors use the same full calculator with manual input.
+
+You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1D and VIX9D), and the time — and it gives you:
 
 - A complete strike table across 6 delta targets (5Δ through 20Δ) with theoretical put and call premiums
 - A full iron condor breakdown split into put spread, call spread, and combined IC — with credit, max loss, buying power, return on risk, probability of profit, and breakevens in both SPX and SPY terms
@@ -117,12 +120,22 @@ It computes everything client-side with zero external API dependencies. You inpu
 - **508 accessibility compliance**: ARIA labels, roles, focus management, keyboard navigation, screen reader support
 - **Responsive**: Works on desktop and mobile
 - **Debounced inputs**: Text fields recalculate after 250ms pause; dropdowns and sliders update instantly
+- **Live data indicator**: Shows "● LIVE" or "● CLOSED" badge when market data is streaming (owner-only)
+
+### Live Market Data (Owner-Only)
+
+- **Real-time Schwab API integration**: SPY, SPX, VIX, VIX1D, VIX9D quotes auto-populate all input fields on page load
+- **Yesterday's SPX OHLC**: Automatically fetched and pre-filled in the Volatility Clustering inputs
+- **30-minute opening range**: Computed server-side from 5-minute intraday candles and pre-filled in the Opening Range Check
+- **Auto-refresh**: Quotes refresh every 60 seconds during market hours, stop after close
+- **Owner-gated**: All API endpoints require an authenticated session cookie — public visitors see the full calculator with manual input, identical to the standalone experience
+- **Graceful degradation**: If the API is down or auth expires, the calculator works normally — just without auto-populated data
 
 ---
 
 ## Market Regime Intelligence
 
-The calculator includes a comprehensive market regime analysis system built on 9,102 matched VIX/SPX trading days (1990–2026). This goes beyond simple strike placement to answer: _should I trade today, and if so, how aggressively?_
+The calculator includes a comprehensive market regime analysis system built on 9,102 matched VIX/SPX trading days (1990–2026). This goes beyond simple strike placement to answer: *should I trade today, and if so, how aggressively?*
 
 ### VIX Regime Card
 
@@ -189,6 +202,60 @@ Full expandable section with:
 
 ---
 
+## Live Market Data API
+
+The calculator includes an optional backend powered by Vercel serverless functions and the Charles Schwab Trader API. This provides real-time market data to the site owner while public visitors use the same calculator with manual input.
+
+### Architecture
+
+Three independent serverless functions, each making one Schwab API call:
+
+| Endpoint | Schwab Call | Returns | Cache (market) | Cache (closed) |
+| ---------- | ----------- | --------- | --------------- | ---------------- |
+| `GET /api/quotes` | `getQuotes(SPY,$SPX,$VIX,$VIX1D,$VIX9D)` | Real-time spot prices | 60s | 5 min |
+| `GET /api/intraday` | `priceHistory($SPX, 5-min, 1 day)` | Today's OHLC + 30-min opening range | 2 min | 10 min |
+| `GET /api/yesterday` | `priceHistory($SPX, daily, 1 month)` | Prior day SPX OHLC for clustering | 1 hour | 1 day |
+
+### Owner Gating
+
+All data endpoints are gated behind an HTTP-only session cookie (`sc-owner`) set during the Schwab OAuth flow. This protects the Schwab API credentials and rate limits on the publicly deployed site.
+
+| Visitor | Experience |
+| --------- | ----------- |
+| Public user at theta-options.com | Full calculator with all regime tools. Manual input only. API calls return 401 silently. |
+| Owner (after authenticating) | Same calculator + all inputs auto-populated with live data. "● LIVE" badge in header. |
+
+### Authentication Flow
+
+Schwab uses OAuth 2.0 with a 30-minute access token and 7-day refresh token:
+
+1. Owner visits `/api/auth/init` → redirects to Schwab login
+2. After login, Schwab redirects to `/api/auth/callback` → tokens stored in Upstash Redis + owner cookie set
+3. All subsequent API calls auto-refresh the access token using the refresh token
+4. After 7 days, the refresh token expires → owner re-authenticates (takes ~10 seconds)
+
+### Token Storage
+
+Tokens are stored in **Upstash Redis** (provisioned via Vercel Marketplace). The REST-based client requires no persistent connections and works natively with serverless functions. Free tier: 10,000 commands/day (~$0.02/100K commands).
+
+### Schwab API Symbols
+
+| Calculator Input | Schwab Symbol | Data Source |
+| ----------------- | --------------- | ------------- |
+| SPY Spot Price | `SPY` | `quote.lastPrice` |
+| SPX Direct Price | `$SPX` | `quote.lastPrice` |
+| VIX | `$VIX` | `quote.lastPrice` |
+| VIX1D (Term Structure) | `$VIX1D` | `quote.lastPrice` |
+| VIX9D (Term Structure) | `$VIX9D` | `quote.lastPrice` |
+| Yesterday's SPX OHLC | `$SPX` | `priceHistory` (daily candles) |
+| 30-min Opening Range | `$SPX` | `priceHistory` (5-min candles, first 6) |
+
+### Rate Budget
+
+With Vercel edge caching, actual Schwab API usage is approximately 1.5 requests/minute during market hours — well under the 120/minute limit. Multiple browser tabs share the same edge cache.
+
+---
+
 ## The Math
 
 ### Strike Calculation Formula
@@ -211,14 +278,14 @@ Where:
 
 ### Z-Scores by Delta
 
-| Delta | Z-Score | Source     |
-| ----- | ------- | ---------- |
-| 5     | 1.645   | N^-1(0.95) |
-| 8     | 1.405   | N^-1(0.92) |
-| 10    | 1.280   | N^-1(0.90) |
-| 12    | 1.175   | N^-1(0.88) |
-| 15    | 1.036   | N^-1(0.85) |
-| 20    | 0.842   | N^-1(0.80) |
+| Delta | Z-Score | Source      |
+|-------|---------|-------------|
+| 5     | 1.645   | N^-1(0.95)  |
+| 8     | 1.405   | N^-1(0.92)  |
+| 10    | 1.280   | N^-1(0.90)  |
+| 12    | 1.175   | N^-1(0.88)  |
+| 15    | 1.036   | N^-1(0.85)  |
+| 20    | 0.842   | N^-1(0.80)  |
 
 ### Option Pricing (Black-Scholes)
 
@@ -336,6 +403,7 @@ For an iron condor, the broker holds margin on one side only (SPX can't breach b
 
 - Node.js 18+
 - npm 9+
+- Vercel CLI (`npm i -g vercel`) — for local development with serverless functions
 
 ### Installation
 
@@ -351,7 +419,15 @@ npm install
 npm run dev
 ```
 
-Opens at `http://localhost:5173`. The app loads with 9,137 days of built-in VIX data automatically.
+Opens at `http://localhost:5173`. The app loads with 9,137 days of built-in VIX data automatically. All calculator features work without the backend.
+
+For local development with the serverless functions:
+
+```bash
+vercel link           # Link to your Vercel project
+vercel env pull .env.local  # Pull env vars (Upstash, Schwab, owner secret)
+vercel dev            # Starts frontend + API functions on localhost:3000
+```
 
 ### Build
 
@@ -376,12 +452,23 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 ## Project Structure
 
 ```text
+├── api/
+│   ├── _lib/
+│   │   ├── schwab.ts                  # Schwab OAuth token management (Upstash Redis)
+│   │   └── api-helpers.ts             # Shared fetch, cache, owner-gate helpers
+│   ├── auth/
+│   │   ├── init.ts                    # GET /api/auth/init → redirect to Schwab login
+│   │   └── callback.ts               # GET /api/auth/callback → exchange code for tokens
+│   ├── quotes.ts                      # GET /api/quotes → SPY, SPX, VIX, VIX1D, VIX9D
+│   ├── intraday.ts                    # GET /api/intraday → today's OHLC + opening range
+│   └── yesterday.ts                   # GET /api/yesterday → prior day SPX OHLC
 ├── public/
 │   └── vix-data.json                  # 9,137 days of built-in VIX OHLC data (1990–2026)
 ├── scripts/
 │   └── convert-vix-csv.mjs            # One-time CSV → JSON converter
 ├── src/
 │   ├── __tests__/
+│   │   ├── api.test.ts                # API data processing, owner gating, token logic
 │   │   ├── App.test.tsx               # Component tests (55 tests)
 │   │   ├── calculator.test.ts         # Strike calc, matrix, properties (132 tests)
 │   │   ├── csvParser.test.ts          # CSV parsing (13 tests)
@@ -394,6 +481,7 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 │   │   ├── resolveIV.test.ts          # IV resolution (25 tests)
 │   │   ├── skewAndIC.test.ts          # Skew, IC, spreads, PoP (56 tests)
 │   │   ├── timeValidation.test.ts     # Market hours boundaries (20 tests)
+│   │   ├── useMarketData.test.ts      # Market data hook (fetch, 401s, refresh)
 │   │   ├── VIXRangeAnalysis.test.tsx  # Range analysis component (53 tests)
 │   │   ├── VIXRegimeCard.test.tsx     # Regime card component (39 tests)
 │   │   ├── VIXTermStructure.test.tsx  # Term structure signals (30 tests)
@@ -418,9 +506,12 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 │   ├── data/
 │   │   ├── eventCalendar.ts           # Static FOMC/CPI/NFP/GDP dates (2025–2026)
 │   │   └── vixRangeStats.ts           # Pre-computed VIX→SPX range stats, DOW data, clustering data
+│   ├── hooks/
+│   │   └── useMarketData.ts           # React hook for live Schwab data (owner-only)
 │   ├── themes/
 │   │   └── index.ts                   # Light/dark theme definitions
 │   ├── types/
+│   │   ├── api.ts                     # Shared API response types
 │   │   └── index.ts                   # TypeScript type definitions
 │   ├── utils/
 │   │   ├── calculator.ts              # Pure calculation functions (Black-Scholes, strikes, IC, PoP)
@@ -437,12 +528,13 @@ This converts the CSV to `public/vix-data.json`, which ships with the app. The C
 ├── index.html                         # HTML entry point
 ├── package.json
 ├── tsconfig.json                      # TypeScript strict mode config
-└── vite.config.ts                     # Vite + Vitest config
+├── vercel.json                        # Routing config (SPA fallback + API passthrough)
+└── vite.config.ts                     # Vite + Vitest + PWA config
 ```
 
 ---
 
-## Architecture
+## Architecture & Design
 
 ### Separation of Concerns
 
@@ -495,11 +587,23 @@ The codebase follows a strict separation between pure calculation logic, data ma
 
 **Strike/IC components** (`src/components/`) — Delta table, iron condor section, parameter summary, and shared UI helpers.
 
+**Serverless backend** (`api/`) — Three Vercel serverless functions proxying the Schwab Trader API:
+
+- `api/_lib/schwab.ts` — OAuth token management (auto-refresh access tokens, store in Upstash Redis)
+- `api/_lib/api-helpers.ts` — Shared fetch wrapper, edge cache headers, owner-gate cookie verification
+- `api/auth/init.ts` — Redirects to Schwab OAuth login (called once every 7 days)
+- `api/auth/callback.ts` — Exchanges auth code for tokens, sets owner session cookie
+- `api/quotes.ts` — Batch quotes for SPY, $SPX, $VIX, $VIX1D, $VIX9D
+- `api/intraday.ts` — Today's 5-min candles → running OHLC + 30-min opening range
+- `api/yesterday.ts` — Daily candles → prior completed trading day OHLC
+
+**Frontend data hook** (`src/hooks/useMarketData.ts`) — Fetches all three data endpoints in parallel on mount. Auto-refreshes quotes every 60s during market hours. Silently handles 401s for public visitors (falls back to manual input).
+
 **Excel export** (`src/utils/exportXlsx.ts`) — Generates multi-sheet XLSX comparing all wing widths with P&L projections. Uses SheetJS for client-side spreadsheet generation.
 
 **VIX data management** (`src/utils/vixStorage.ts`) — Three-tier loading: localStorage cache → static JSON → manual upload. All storage operations have try/catch for environments where localStorage isn't available.
 
-**Types** (`src/types/index.ts`) — All interfaces are readonly, enforcing immutability throughout the calculation chain.
+**Types** (`src/types/index.ts`, `src/types/api.ts`) — All interfaces are readonly, enforcing immutability throughout the calculation chain. API response types are shared between serverless functions and the React frontend.
 
 **Constants** (`src/constants/index.ts`) — Every magic number is named and documented. No raw numbers appear in formulas.
 
@@ -510,6 +614,16 @@ The codebase follows a strict separation between pure calculation logic, data ma
 ### Data Flow
 
 ```text
+                    ┌─── Schwab API (owner-only) ───┐
+                    │  /api/quotes → SPY,SPX,VIX,   │
+                    │    VIX1D,VIX9D                 │
+                    │  /api/intraday → today OHLC,   │
+                    │    opening range               │
+                    │  /api/yesterday → prior day    │
+                    │    OHLC                        │
+                    └───────────┬────────────────────┘
+                                │ (auto-populate)
+                                ▼
 SPY price ──→ × ratio ──→ SPX spot ──┐
                                       │
 VIX ──→ resolveIV() ──→ σ ──────────┤
@@ -548,25 +662,37 @@ VIX9D / VIX ──→ term structure signal ──┤──→ combined pre-mark
 
 All configurable values are in `src/constants/index.ts`:
 
-| Constant                       | Value | Purpose                             |
-| ------------------------------ | ----- | ----------------------------------- |
-| `MARKET.HOURS_PER_DAY`         | 6.5   | Regular trading session length      |
-| `MARKET.TRADING_DAYS_PER_YEAR` | 252   | US equity calendar                  |
-| `MARKET.ANNUAL_TRADING_HOURS`  | 1638  | 6.5 × 252                           |
-| `DEFAULTS.IV_PREMIUM_FACTOR`   | 1.15  | Default 0DTE IV multiplier over VIX |
-| `DEFAULTS.IV_PREMIUM_MIN`      | 1.0   | Minimum allowed multiplier          |
-| `DEFAULTS.IV_PREMIUM_MAX`      | 1.3   | Maximum allowed multiplier          |
-| `DEFAULTS.RISK_FREE_RATE`      | 0     | Negligible for 0DTE                 |
-| `DEFAULTS.STRIKE_INCREMENT`    | 5     | SPX strike snap interval            |
+| Constant | Value | Purpose |
+| -------- | ----- | ------- |
+| `MARKET.HOURS_PER_DAY` | 6.5 | Regular trading session length |
+| `MARKET.TRADING_DAYS_PER_YEAR` | 252 | US equity calendar |
+| `MARKET.ANNUAL_TRADING_HOURS` | 1638 | 6.5 × 252 |
+| `DEFAULTS.IV_PREMIUM_FACTOR` | 1.15 | Default 0DTE IV multiplier over VIX |
+| `DEFAULTS.IV_PREMIUM_MIN` | 1.0 | Minimum allowed multiplier |
+| `DEFAULTS.IV_PREMIUM_MAX` | 1.3 | Maximum allowed multiplier |
+| `DEFAULTS.RISK_FREE_RATE` | 0 | Negligible for 0DTE |
+| `DEFAULTS.STRIKE_INCREMENT` | 5 | SPX strike snap interval |
 
 ### Regime Thresholds (in `vixRangeStats.ts`)
 
-| Signal              | VIX1D/VIX | VIX9D/VIX |
-| ------------------- | --------- | --------- |
-| Calm / Contango     | < 0.85    | < 0.90    |
-| Normal / Flat       | 0.85–1.15 | 0.90–1.10 |
+| Signal | VIX1D/VIX | VIX9D/VIX |
+| -------- | ----------- | ----------- |
+| Calm / Contango | < 0.85 | < 0.90 |
+| Normal / Flat | 0.85–1.15 | 0.90–1.10 |
 | Elevated / Inverted | 1.15–1.50 | 1.10–1.25 |
-| Event Risk / Steep  | > 1.50    | > 1.25    |
+| Event Risk / Steep | > 1.50 | > 1.25 |
+
+### Environment Variables
+
+Required for the live market data API (not needed for the standalone calculator):
+
+| Variable | Source | Purpose |
+| ---------- | -------- | --------- |
+| `SCHWAB_CLIENT_ID` | [developer.schwab.com](https://developer.schwab.com) | Schwab API app key |
+| `SCHWAB_CLIENT_SECRET` | [developer.schwab.com](https://developer.schwab.com) | Schwab API app secret |
+| `OWNER_SECRET` | `openssl rand -hex 32` | Owner session cookie value (gates API access) |
+| `KV_REST_API_URL` | Auto-set by Vercel Marketplace | Upstash Redis REST endpoint |
+| `KV_REST_API_TOKEN` | Auto-set by Vercel Marketplace | Upstash Redis auth token |
 
 ---
 
@@ -610,22 +736,22 @@ The "Export All Wing Widths to Excel" button generates an XLSX file with three s
 
 Every combination of **7 wing widths × 6 deltas × 3 sides** = 126 rows:
 
-| Column                  | Description                                                       |
-| ----------------------- | ----------------------------------------------------------------- |
-| Delta                   | 5Δ through 20Δ                                                    |
-| Wing Width              | 5, 10, 15, 20, 25, 30, 50                                         |
-| Side                    | Put Spread, Call Spread, or Iron Condor                           |
-| Credit (pts / $)        | Premium received in SPX points and dollars                        |
-| Max Loss (pts / $)      | Maximum possible loss                                             |
-| Buying Power ($)        | Capital held as margin (= max loss)                               |
-| RoR (%)                 | Return on risk = credit ÷ max loss                                |
-| PoP (%)                 | Probability of profit                                             |
-| Wins to Recover         | Max loss ÷ credit — winning trades needed to offset one full loss |
-| Breakeven               | SPX price level where P&L = $0                                    |
-| Short/Long Strike       | Actual strike prices                                              |
-| Monthly Wins/Losses     | 22 trading days × PoP                                             |
-| Monthly Profit/Loss ($) | Estimated monthly dollar P&L                                      |
-| Monthly Net ($)         | Profit − Loss (theoretical, assumes no trade management)          |
+| Column | Description |
+| ------ | ----------- |
+| Delta | 5Δ through 20Δ |
+| Wing Width | 5, 10, 15, 20, 25, 30, 50 |
+| Side | Put Spread, Call Spread, or Iron Condor |
+| Credit (pts / $) | Premium received in SPX points and dollars |
+| Max Loss (pts / $) | Maximum possible loss |
+| Buying Power ($) | Capital held as margin (= max loss) |
+| RoR (%) | Return on risk = credit ÷ max loss |
+| PoP (%) | Probability of profit |
+| Wins to Recover | Max loss ÷ credit — winning trades needed to offset one full loss |
+| Breakeven | SPX price level where P&L = $0 |
+| Short/Long Strike | Actual strike prices |
+| Monthly Wins/Losses | 22 trading days × PoP |
+| Monthly Profit/Loss ($) | Estimated monthly dollar P&L |
+| Monthly Net ($) | Profit − Loss (theoretical, assumes no trade management) |
 
 ### Sheet 2: IC Summary
 
@@ -641,28 +767,30 @@ Snapshot of every parameter: SPY, SPX, ratio, σ, skew, T, hours, contracts, mul
 
 ### Test Suite Overview
 
-**750+ tests across 18+ test files**, all passing with TypeScript strict mode.
+**800+ tests across 20+ test files**, all passing with TypeScript strict mode.
 
-| File                         | Coverage Focus                                                                                                                         |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `calculator.test.ts`         | Golden test case, full 6×3×3 matrix, property-based invariants, utilities                                                              |
-| `App.test.tsx`               | Component rendering, mode switching, validation, CSV upload, IC UI, contracts, spreads, dark mode, market regime toggle                |
-| `skewAndIC.test.ts`          | Skew asymmetry, IC leg construction, P&L fields, PoP, per-side spreads, calcSpreadPoP                                                  |
-| `exportXlsx.test.ts`         | Excel export generation, sheet structure, data integrity                                                                               |
-| `resolveIV.test.ts`          | VIX mode, direct mode, boundary values, edge cases, cross-mode equivalence                                                             |
-| `timeValidation.test.ts`     | Every market-hour boundary, precision checks, minute-by-minute monotonic sweep                                                         |
-| `pricing.test.ts`            | normalCDF properties, Black-Scholes sanity checks, put-call parity, scaling                                                            |
-| `csvParser.test.ts`          | Date formats, edge cases, 9k-row performance, whitespace handling                                                                      |
-| `hedge.test.tsx`             | Hedge calculator rendering, recommendations, scenario table                                                                            |
-| `vixRangeStats.test.ts`      | VIX bucket integrity, survival data, fine stats, estimateRange interpolation, DOW data, clustering data, multiplier functions          |
-| `VIXRegimeCard.test.tsx`     | Regime card rendering across zones, stat display, theme support                                                                        |
-| `VIXRangeAnalysis.test.tsx`  | Survival toggle, fine-grained toggle, table rendering, bucket highlighting                                                             |
-| `DeltaRegimeGuide.test.tsx`  | Ceiling recommendation, threshold table, delta matrix, continuous interpolation, DOW badges, clustering integration                    |
-| `EventDayWarning.test.tsx`   | Event calendar data integrity (FOMC/CPI/NFP/GDP counts), lookup functions, warning banner rendering, severity coding, multi-event days |
-| `VIXTermStructure.test.tsx`  | VIX1D/VIX9D ratio signals, combined signal, VIX1D as σ callback                                                                        |
-| `OpeningRangeCheck.test.tsx` | Range signals, VIX sensitivity, DOW adjustment, edge cases                                                                             |
-| `VolatilityCluster.test.tsx` | Clustering signals, multiplier callback, VIX sensitivity, percentile reference                                                         |
-| `vixStorage.test.ts`         | localStorage cache, static JSON loading                                                                                                |
+| File | Coverage Focus |
+| ---- | -------------- |
+| `api.test.ts` | API data processing, owner gating logic, cookie parsing, token expiry, cache headers, response shape contracts |
+| `useMarketData.test.ts` | Market data hook: fetch behavior, 401 handling, auto-refresh, credentials |
+| `calculator.test.ts` | Golden test case, full 6×3×3 matrix, property-based invariants, utilities |
+| `App.test.tsx` | Component rendering, mode switching, validation, CSV upload, IC UI, contracts, spreads, dark mode, market regime toggle |
+| `skewAndIC.test.ts` | Skew asymmetry, IC leg construction, P&L fields, PoP, per-side spreads, calcSpreadPoP |
+| `exportXlsx.test.ts` | Excel export generation, sheet structure, data integrity |
+| `resolveIV.test.ts` | VIX mode, direct mode, boundary values, edge cases, cross-mode equivalence |
+| `timeValidation.test.ts` | Every market-hour boundary, precision checks, minute-by-minute monotonic sweep |
+| `pricing.test.ts` | normalCDF properties, Black-Scholes sanity checks, put-call parity, scaling |
+| `csvParser.test.ts` | Date formats, edge cases, 9k-row performance, whitespace handling |
+| `hedge.test.tsx` | Hedge calculator rendering, recommendations, scenario table |
+| `vixRangeStats.test.ts` | VIX bucket integrity, survival data, fine stats, estimateRange interpolation, DOW data, clustering data, multiplier functions |
+| `VIXRegimeCard.test.tsx` | Regime card rendering across zones, stat display, theme support |
+| `VIXRangeAnalysis.test.tsx` | Survival toggle, fine-grained toggle, table rendering, bucket highlighting |
+| `DeltaRegimeGuide.test.tsx` | Ceiling recommendation, threshold table, delta matrix, continuous interpolation, DOW badges, clustering integration |
+| `EventDayWarning.test.tsx` | Event calendar data integrity (FOMC/CPI/NFP/GDP counts), lookup functions, warning banner rendering, severity coding, multi-event days |
+| `VIXTermStructure.test.tsx` | VIX1D/VIX9D ratio signals, combined signal, VIX1D as σ callback |
+| `OpeningRangeCheck.test.tsx` | Range signals, VIX sensitivity, DOW adjustment, edge cases |
+| `VolatilityCluster.test.tsx` | Clustering signals, multiplier callback, VIX sensitivity, percentile reference |
+| `vixStorage.test.ts` | localStorage cache, static JSON loading |
 
 ### Test Philosophy
 
@@ -671,6 +799,8 @@ Snapshot of every parameter: SPY, SPX, ratio, σ, skew, T, hours, contracts, mul
 - **Boundary tests**: Every minute from market open to close verified for monotonic time decrease
 - **Edge cases**: VIX = 0, negative values, NaN, undefined, multiplier boundaries, T = 0, σ = 0
 - **Regime tests**: Continuous interpolation smoothness, DOW adjustment monotonicity, clustering multiplier integration, term structure signal classification, event calendar data integrity (exact counts per year, field completeness)
+- **API tests**: Owner cookie verification, token expiry logic, cache header construction, response shape contracts, market hours detection, opening range computation, data filtering
+- **Hook tests**: Mocked fetch for all 3 endpoints, 401 silent handling for public visitors, auto-refresh behavior, credentials inclusion
 - **Spread-specific tests**: Put spread + call spread credits sum to IC total, individual spread PoP > IC PoP, breakevens between strikes, skew asymmetry
 - **Component tests**: Full user interaction flows including CSV upload, date selection, IV mode switching, IC toggle, contracts counter, wing width selection, dark mode, spread sub-rows rendering, regime analysis sections
 
@@ -696,17 +826,46 @@ npm run test:coverage
 
 ### Vercel (Production)
 
-The app is deployed to Vercel via GitHub integration with automatic deployments on push to `main`.
+The app is deployed to Vercel via GitHub integration with automatic deployments on push to `main`. The frontend (Vite SPA) and backend (serverless functions) deploy together from the same repo.
 
-**Live URL**: [options-strike-calculator.vercel.app](https://options-strike-calculator.vercel.app/)
+**Live URL**: [theta-options.com](https://theta-options.com)
 
-Vercel auto-detects the Vite framework and uses these settings:
+**Dashboard settings** (Project → Settings → General):
 
+- **Framework Preset**: Other (not Vite — prevents SPA catch-all from intercepting API routes)
 - **Build command**: `npm run build`
 - **Output directory**: `dist`
-- **Node.js version**: 18+
+- **Node.js version**: 24.x
+
+**Routing** (`vercel.json`):
+
+```json
+{
+  "rewrites": [
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}
+```
+
+This routes everything *except* `/api/*` to the SPA. API requests pass through untouched to the serverless functions.
+
+**PWA configuration**: The Vite PWA plugin includes `navigateFallbackDenylist: [/^\/api\//]` to prevent the service worker from intercepting API requests.
 
 Every push to `main` triggers a production deployment. Pull requests get preview deployments automatically.
+
+### Serverless Functions Setup
+
+1. **Upstash Redis**: Vercel dashboard → Storage → Marketplace → Upstash for Redis → Create → Link to project (auto-sets `KV_REST_API_URL` and `KV_REST_API_TOKEN`)
+2. **Schwab API**: Register at [developer.schwab.com](https://developer.schwab.com), create an app with "Market Data Production", set callback URL to `https://theta-options.com/api/auth/callback`
+3. **Environment variables**: Add `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, and `OWNER_SECRET` (see Configuration section)
+4. **Authenticate**: Visit `https://theta-options.com/api/auth/init` → log in with Schwab → repeat every 7 days
+
+### Key Deployment Lessons
+
+- Vercel's Framework Preset in the dashboard overrides `vercel.json` — must be set to "Other" for API routes to work alongside a Vite SPA
+- Shared modules in `api/` must live in an underscore-prefixed directory (`api/_lib/`) — Vercel treats all other files as function endpoints
+- Cross-file imports within `api/` require `.js` extensions for Node.js ESM resolution
+- PWA service workers intercept all navigation requests by default — `navigateFallbackDenylist` is required to exclude `/api/*`
 
 ### Docker
 
@@ -722,6 +881,8 @@ The Dockerfile uses a two-stage build:
 
 1. **Build stage**: `node:24-alpine` runs `npm ci` and `npm run build`
 2. **Production stage**: `nginx:1.28-alpine-slim` serves the static output with SPA routing, gzip compression, and 1-year cache headers on assets
+
+Note: The Docker build serves the frontend only. Serverless functions require Vercel deployment.
 
 ---
 
@@ -741,17 +902,17 @@ The application targets Section 508 / WCAG AA compliance:
 
 ## Scripts Reference
 
-| Command                                  | Description                              |
-| ---------------------------------------- | ---------------------------------------- |
-| `npm run dev`                            | Start Vite dev server with HMR           |
-| `npm run build`                          | TypeScript check + Vite production build |
-| `npm run preview`                        | Preview the production build locally     |
-| `npm test`                               | Vitest in watch mode                     |
-| `npm run test:ui`                        | Vitest interactive browser dashboard     |
-| `npm run test:run`                       | Single test run (for CI)                 |
-| `npm run test:coverage`                  | Generate v8 coverage report              |
-| `npm run lint`                           | TypeScript type check without emitting   |
-| `node scripts/convert-vix-csv.mjs <csv>` | Convert VIX CSV to static JSON           |
+| Command | Description |
+| ------- | ----------- |
+| `npm run dev` | Start Vite dev server with HMR |
+| `npm run build` | TypeScript check + Vite production build |
+| `npm run preview` | Preview the production build locally |
+| `npm test` | Vitest in watch mode |
+| `npm run test:ui` | Vitest interactive browser dashboard |
+| `npm run test:run` | Single test run (for CI) |
+| `npm run test:coverage` | Generate v8 coverage report |
+| `npm run lint` | TypeScript type check without emitting |
+| `node scripts/convert-vix-csv.mjs <csv>` | Convert VIX CSV to static JSON |
 
 ---
 
@@ -759,47 +920,53 @@ The application targets Section 508 / WCAG AA compliance:
 
 Key design decisions made during development, with rationale:
 
-| Decision             | Choice                                    | Why                                                             |
-| -------------------- | ----------------------------------------- | --------------------------------------------------------------- |
-| Calc engine          | Pure functions module                     | Testable, explicit, no class overhead                           |
-| Component extraction | Separate files per section                | Keeps App.tsx focused on state; components handle rendering     |
-| Delta support        | All 6 via lookup table                    | Avoids inverse CDF dependency                                   |
-| IV input             | Both VIX + Direct modes                   | Covers all user types; VIX1D button bridges the gap             |
-| SPX/SPY display      | Always show both                          | No toggle friction                                              |
-| Magic numbers        | Named constants                           | DRY, self-documenting                                           |
-| Time validation      | Hard reject outside market hours          | Prevents meaningless results                                    |
-| IV convergence       | Single `resolveIV()` funnel               | Eliminates conversion bugs                                      |
-| Strike rounding      | Integer + nearest 5-pt snap               | "Engineered enough" for ±5-15pt accuracy                        |
-| Recalculation        | Hybrid debounce                           | Instant for discrete, 250ms for text                            |
-| Memoization          | None                                      | Math is ~10μs, not worth the complexity                         |
-| Input parsing        | Strict validation + errors                | Explicit over clever                                            |
-| External math        | Zero dependencies                         | Native `Math` handles everything                                |
-| CDF implementation   | Abramowitz & Stegun 26.2.17               | <7.5×10⁻⁸ error, 15 lines, no deps                              |
-| Option pricing       | Black-Scholes with r=0                    | Standard model, negligible rate for 0DTE                        |
-| PoP (IC)             | Two-tail formula                          | Correct for IC (not product of spread PoPs)                     |
-| PoP (spreads)        | Single-tail formula                       | Each spread only needs one breakeven                            |
-| P&L display          | Split into put/call/combined              | Supports directional spread trading                             |
-| Breakevens           | Dual SPX/SPY columns                      | Cross-reference with Market Tide SPY charts                     |
-| Contracts            | Adjustable counter with +/−               | Instant dollar-denominated sizing                               |
-| Excel export         | All wing widths × all deltas              | Side-by-side comparison for position sizing                     |
-| Monthly projections  | 22 days × PoP                             | Shows theoretical monthly P&L (approx. zero)                    |
-| Wins to Recover      | Max loss ÷ credit                         | Key metric for risk assessment                                  |
-| VIX data             | Static JSON + localStorage cache          | Works offline after first load                                  |
-| Built-in data        | 9,137 days (1990–2026)                    | Zero setup required                                             |
-| Regime data          | Pre-computed in vixRangeStats.ts          | No runtime CSV parsing; instant lookups                         |
-| Range interpolation  | Per-point linear (VIX 10–30)              | Avoids bucket boundary jumps                                    |
-| Delta Guide σ        | VIX × 1.15 / 100 (internal)               | Self-consistent with VIX-based thresholds                       |
-| DOW adjustment       | Historical multipliers per VIX regime     | Monday 6% narrower, Thursday 4% wider                           |
-| Clustering           | Yesterday's range percentile → multiplier | Strongest signal at high VIX (up to 1.87x)                      |
-| Term structure       | VIX1D/VIX and VIX9D/VIX ratios            | Pre-market risk assessment                                      |
-| Opening range        | First 30-min vs expected daily            | Go/no-go for second entry                                       |
-| Event calendar       | Static JSON, no backend                   | FOMC/CPI/NFP/GDP dates fixed a year ahead; update once annually |
-| Framework            | Vite + React                              | Lightest viable toolchain                                       |
-| TypeScript           | Strict mode                               | `noUncheckedIndexedAccess`, `noUnusedLocals`, etc.              |
-| Testing              | Vitest + RTL                              | Fast, modern, good DX                                           |
-| Hosting              | Vercel via GitHub                         | Push-to-deploy on main, preview deploys on PRs                  |
-| Spreadsheet          | SheetJS (xlsx)                            | Client-side Excel generation, ~200KB                            |
-| Containerization     | Docker (nginx alpine)                     | Two-stage build, SPA routing, gzip                              |
+| Decision | Choice | Why |
+| -------- | ------ | --- |
+| Calc engine | Pure functions module | Testable, explicit, no class overhead |
+| Component extraction | Separate files per section | Keeps App.tsx focused on state; components handle rendering |
+| Delta support | All 6 via lookup table | Avoids inverse CDF dependency |
+| IV input | Both VIX + Direct modes | Covers all user types; VIX1D button bridges the gap |
+| SPX/SPY display | Always show both | No toggle friction |
+| Magic numbers | Named constants | DRY, self-documenting |
+| Time validation | Hard reject outside market hours | Prevents meaningless results |
+| IV convergence | Single `resolveIV()` funnel | Eliminates conversion bugs |
+| Strike rounding | Integer + nearest 5-pt snap | "Engineered enough" for ±5-15pt accuracy |
+| Recalculation | Hybrid debounce | Instant for discrete, 250ms for text |
+| Memoization | None | Math is ~10μs, not worth the complexity |
+| Input parsing | Strict validation + errors | Explicit over clever |
+| External math | Zero dependencies | Native `Math` handles everything |
+| CDF implementation | Abramowitz & Stegun 26.2.17 | <7.5×10⁻⁸ error, 15 lines, no deps |
+| Option pricing | Black-Scholes with r=0 | Standard model, negligible rate for 0DTE |
+| PoP (IC) | Two-tail formula | Correct for IC (not product of spread PoPs) |
+| PoP (spreads) | Single-tail formula | Each spread only needs one breakeven |
+| P&L display | Split into put/call/combined | Supports directional spread trading |
+| Breakevens | Dual SPX/SPY columns | Cross-reference with Market Tide SPY charts |
+| Contracts | Adjustable counter with +/− | Instant dollar-denominated sizing |
+| Excel export | All wing widths × all deltas | Side-by-side comparison for position sizing |
+| Monthly projections | 22 days × PoP | Shows theoretical monthly P&L (approx. zero) |
+| Wins to Recover | Max loss ÷ credit | Key metric for risk assessment |
+| VIX data | Static JSON + localStorage cache | Works offline after first load |
+| Built-in data | 9,137 days (1990–2026) | Zero setup required |
+| Regime data | Pre-computed in vixRangeStats.ts | No runtime CSV parsing; instant lookups |
+| Range interpolation | Per-point linear (VIX 10–30) | Avoids bucket boundary jumps |
+| Delta Guide σ | VIX × 1.15 / 100 (internal) | Self-consistent with VIX-based thresholds |
+| DOW adjustment | Historical multipliers per VIX regime | Monday 6% narrower, Thursday 4% wider |
+| Clustering | Yesterday's range percentile → multiplier | Strongest signal at high VIX (up to 1.87x) |
+| Term structure | VIX1D/VIX and VIX9D/VIX ratios | Pre-market risk assessment |
+| Opening range | First 30-min vs expected daily | Go/no-go for second entry |
+| Event calendar | Static JSON, no backend | FOMC/CPI/NFP/GDP dates fixed a year ahead; update once annually |
+| Live data | Schwab API via Vercel serverless | Real-time quotes, no third-party data vendor |
+| Token storage | Upstash Redis (via Vercel Marketplace) | Serverless-compatible, ~$0/month, auto-provisioned |
+| Owner gating | HTTP-only session cookie | Public visitors get full calculator; owner gets live data |
+| API caching | Vercel edge cache + Vary:Cookie | One upstream call serves all requests; owner/public isolated |
+| PWA + API routing | `navigateFallbackDenylist` + framework=Other | Prevents service worker and SPA catch-all from intercepting `/api/*` |
+| Shared API modules | `api/_lib/` (underscore prefix) | Vercel ignores `_`-prefixed dirs; prevents helper files becoming endpoints |
+| Framework | Vite + React | Lightest viable toolchain |
+| TypeScript | Strict mode | `noUncheckedIndexedAccess`, `noUnusedLocals`, etc. |
+| Testing | Vitest + RTL | Fast, modern, good DX |
+| Hosting | Vercel via GitHub | Push-to-deploy on main, preview deploys on PRs |
+| Spreadsheet | SheetJS (xlsx) | Client-side Excel generation, ~200KB |
+| Containerization | Docker (nginx alpine) | Two-stage build, SPA routing, gzip |
 
 ---
 
@@ -809,8 +976,8 @@ This section documents the intended workflow combining the calculator with exter
 
 ### Recommended Tools
 
-1. **This calculator** — Strike placement, premiums, P&L, sizing, regime guidance
-2. **TradingView** — VIX, VIX1D, VIX9D panels for term structure; SPX charts for opening range
+1. **This calculator** — Strike placement, premiums, P&L, sizing, regime guidance, live data
+2. **TradingView** — SPX charts for visual confirmation, gamma exposure overlays
 3. **Market Tide (Unusual Whales)** — Net premium flow for directional filtering
 4. **Periscope (Unusual Whales)** — Market maker gamma exposure for strike validation
 
@@ -818,17 +985,18 @@ This section documents the intended workflow combining the calculator with exter
 
 ```text
 NIGHT BEFORE / PRE-MARKET:
-  Select today's date in calculator → check Event Day Warning
+  Open calculator → live data auto-populates SPY, SPX, VIX, VIX1D, VIX9D
+  (If not authenticated, enter manually — same experience as before)
+  Select today's date → check Event Day Warning
   Note: FOMC/CPI/NFP day → reduce size or sit out
         No events → proceed normally
-  Enter yesterday's SPX OHLC → check Volatility Clustering signal
+  Yesterday's SPX OHLC auto-populated → check Volatility Clustering signal
   Note: HIGH CLUSTERING → reduce size tomorrow
         TAILWIND → normal or slightly more aggressive
 
-8:30 AM ET:  Open TradingView
-             → Note VIX, VIX1D, VIX9D
-             → Enter in calculator
-             → Check term structure signal (GREEN LIGHT → proceed, HIGH ALERT → sit out)
+8:30 AM ET:  Check term structure (VIX1D/VIX9D auto-filled from Schwab)
+             → GREEN LIGHT → proceed
+             → HIGH ALERT → sit out
 
 9:30 AM ET:  Check Periscope gamma profile
              → Identify positive gamma zones (price suppression)
@@ -872,26 +1040,26 @@ During day:  Monitor positions
 
 ### Structure Selection
 
-| Market Tide Signal        | Structure          | Why                                   |
-| ------------------------- | ------------------ | ------------------------------------- |
-| NCP ≈ NPP (parallel)      | Iron Condor        | Ranging day, collect both sides       |
-| NCP >> NPP (diverging up) | Put Credit Spread  | Bullish trend, no call exposure       |
-| NPP >> NCP (diverging up) | Call Credit Spread | Bearish trend, no put exposure        |
-| Both declining sharply    | Sit out            | High uncertainty, model less reliable |
+| Market Tide Signal | Structure | Why |
+| ------------------ | --------- | --- |
+| NCP ≈ NPP (parallel) | Iron Condor | Ranging day, collect both sides |
+| NCP >> NPP (diverging up) | Put Credit Spread | Bullish trend, no call exposure |
+| NPP >> NCP (diverging up) | Call Credit Spread | Bearish trend, no put exposure |
+| Both declining sharply | Sit out | High uncertainty, model less reliable |
 
 ### Regime Signal Stacking
 
 Multiple signals can reinforce or conflict. When they conflict, always defer to the most cautious signal:
 
-| Signal                                                        | Action                                                      |
-| ------------------------------------------------------------- | ----------------------------------------------------------- |
-| Term structure: GREEN LIGHT + Clustering: TAILWIND + DOW: Mon | Full size, standard deltas                                  |
-| Term structure: PROCEED + Clustering: NEUTRAL + DOW: avg      | Standard — follow delta guide ceiling                       |
-| Term structure: CAUTION + Clustering: any                     | Reduce size regardless of other signals                     |
-| Clustering: HIGH CLUSTERING + any                             | Widen deltas or reduce size even if other signals are green |
-| Term structure: HIGH ALERT + any                              | Consider sitting out entirely                               |
-| Event day: FOMC/CPI/NFP                                       | Widen 1–2Δ, reduce size, or wait until after release        |
-| Opening range: RED + any                                      | Skip second entry                                           |
+| Signal | Action |
+| -------- | -------- |
+| Term structure: GREEN LIGHT + Clustering: TAILWIND + DOW: Mon | Full size, standard deltas |
+| Term structure: PROCEED + Clustering: NEUTRAL + DOW: avg | Standard — follow delta guide ceiling |
+| Term structure: CAUTION + Clustering: any | Reduce size regardless of other signals |
+| Clustering: HIGH CLUSTERING + any | Widen deltas or reduce size even if other signals are green |
+| Term structure: HIGH ALERT + any | Consider sitting out entirely |
+| Event day: FOMC/CPI/NFP | Widen 1–2Δ, reduce size, or wait until after release |
+| Opening range: RED + any | Skip second entry |
 
 ---
 
@@ -940,9 +1108,9 @@ Option C: Laddered entries (recommended)
 
 The calculator provides strike placement accuracy of approximately ±5–15 SPX points. Sources of error, in order of impact:
 
-1. **VIX vs actual 0DTE IV** (largest) — VIX measures 30-day IV. The adjustable multiplier compensates but cannot perfectly capture real-time 0DTE IV. Use the "Use VIX1D as σ" button for the most accurate strike pricing when VIX1D is available.
+1. **VIX vs actual 0DTE IV** (largest) — VIX measures 30-day IV. The adjustable multiplier compensates but cannot perfectly capture real-time 0DTE IV. Use the "Use VIX1D as σ" button for the most accurate strike pricing when VIX1D is available (auto-populated via Schwab API for authenticated users).
 2. **Put/call skew** — The linear skew model (±N% on puts/calls) is a simplification of the real volatility smile. Actual skew varies by strike distance and market conditions.
-3. **SPX/SPY ratio drift** — The ratio fluctuates due to ETF expense ratios, dividend timing, and NAV tracking. Enter the actual SPX price when available for maximum accuracy.
+3. **SPX/SPY ratio drift** — The ratio fluctuates due to ETF expense ratios, dividend timing, and NAV tracking. When live data is active, both SPY and SPX are auto-populated from real-time quotes, eliminating this error source.
 4. **Theoretical vs market premiums** — Black-Scholes prices assume continuous hedging and log-normal returns. Real option prices include bid/ask spreads, market maker edge, and supply/demand effects.
 5. **Regime data limitations** — Historical range statistics are based on VIX open matched to same-day SPX OHLC. They don't separate event-day ranges from non-event-day ranges. The Event Day Warning flags FOMC/CPI/NFP/GDP days, and VIX1D term structure partially captures event pricing, but the Delta Guide's historical thresholds are not event-adjusted. The event calendar covers 2025–2026 and must be updated annually.
 6. **Monthly projections** — The Excel export's monthly P&L assumes hold-to-expiration on every trade. Real results depend heavily on trade management (profit targets, stop losses, position sizing).
