@@ -21,6 +21,7 @@ import type {
   QuotesResponse,
   IntradayResponse,
   YesterdayResponse,
+  EventsResponse,
 } from '../types/api';
 
 // ============================================================
@@ -31,6 +32,7 @@ export interface MarketData {
   quotes: QuotesResponse | null;
   intraday: IntradayResponse | null;
   yesterday: YesterdayResponse | null;
+  events: EventsResponse | null;
 }
 
 export interface MarketDataState {
@@ -86,6 +88,7 @@ export function useMarketData(): MarketDataState {
     quotes: null,
     intraday: null,
     yesterday: null,
+    events: null,
   });
   const [loading, setLoading] = useState(true);
   const [needsAuth, setNeedsAuth] = useState(false);
@@ -95,11 +98,13 @@ export function useMarketData(): MarketDataState {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAll = useCallback(async () => {
-    const [quotesResult, intradayResult, yesterdayResult] = await Promise.all([
-      fetchJson<QuotesResponse>('/api/quotes'),
-      fetchJson<IntradayResponse>('/api/intraday'),
-      fetchJson<YesterdayResponse>('/api/yesterday'),
-    ]);
+    const [quotesResult, intradayResult, yesterdayResult, eventsResult] =
+      await Promise.all([
+        fetchJson<QuotesResponse>('/api/quotes'),
+        fetchJson<IntradayResponse>('/api/intraday'),
+        fetchJson<YesterdayResponse>('/api/yesterday'),
+        fetchJson<EventsResponse>('/api/events?days=30'),
+      ]);
 
     let anySuccess = false;
     let anyAuthError = false;
@@ -126,6 +131,11 @@ export function useMarketData(): MarketDataState {
         anySuccess = true;
       } else if (yesterdayResult.status === 401) {
         anyAuthError = true;
+      }
+
+      // Events is public — always store if successful
+      if ('data' in eventsResult) {
+        next.events = eventsResult.data;
       }
 
       return next;

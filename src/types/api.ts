@@ -62,3 +62,20 @@ export interface YesterdayResponse {
 export interface MarketDataError {
   readonly error: string;
 }
+
+export interface EventItem {
+  readonly date: string;
+  readonly event: string;
+  readonly description: string;
+  readonly time: string;
+  readonly severity: 'high' | 'medium';
+  readonly source: 'fred' | 'static';
+}
+
+export interface EventsResponse {
+  readonly events: readonly EventItem[];
+  readonly startDate: string;
+  readonly endDate: string;
+  readonly cached: boolean;
+  readonly asOf: string;
+}

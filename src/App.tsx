@@ -222,6 +222,7 @@ export default function StrikeCalculator() {
                 vixOHLC={vix.vixOHLC}
                 vixOHLCField={vix.vixOHLCField}
                 onOHLCFieldChange={vix.setVixOHLCField}
+                liveEvents={market.data.events?.events}
               />
             )}
 

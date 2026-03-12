@@ -1,28 +1,46 @@
 import type { Theme } from '../themes';
-import {
-  getEventsForDate,
-  getMaxSeverity,
-  type MarketEvent,
-} from '../data/eventCalendar';
+import { getEventsForDate, getMaxSeverity } from '../data/eventCalendar';
+import type { EventItem } from '../types/api';
 
 interface Props {
   readonly th: Theme;
   readonly selectedDate: string; // YYYY-MM-DD
+  readonly liveEvents?: readonly EventItem[]; // From FRED API
 }
 
 /**
  * Event Day Warning banner.
  * Shows a prominent warning when the selected date has scheduled
- * high-impact economic events (FOMC, CPI, NFP, GDP).
+ * high-impact economic events (FOMC, CPI, NFP, GDP, PCE, PPI, etc).
+ *
+ * Uses live FRED API events when available, falls back to static data.
  * Renders nothing when no events are scheduled.
  */
-export default function EventDayWarning({ th, selectedDate }: Props) {
+export default function EventDayWarning({
+  th,
+  selectedDate,
+  liveEvents,
+}: Props) {
   if (!selectedDate) return null;
 
-  const events = getEventsForDate(selectedDate);
+  // Use live events for the selected date if available, else static
+  const liveForDate = liveEvents?.filter((e) => e.date === selectedDate) ?? [];
+  const useStatic = liveForDate.length === 0;
+
+  const events: readonly {
+    event: string;
+    description: string;
+    time: string;
+    severity: 'high' | 'medium';
+  }[] = useStatic ? getEventsForDate(selectedDate) : liveForDate;
+
   if (events.length === 0) return null;
 
-  const severity = getMaxSeverity(selectedDate);
+  const severity = useStatic
+    ? getMaxSeverity(selectedDate)
+    : events.some((e) => e.severity === 'high')
+      ? 'high'
+      : 'medium';
   const isHigh = severity === 'high';
 
   const color = isHigh ? th.red : '#E8A317';
@@ -58,14 +76,25 @@ export default function EventDayWarning({ th, selectedDate }: Props) {
         style={{ borderTop: '1px solid ' + border }}
       >
         {isHigh
-          ? 'CPI, NFP, and FOMC days historically produce wider ranges than VIX alone predicts. Consider widening deltas 1\u20132\u0394 beyond the guide ceiling, reducing position size, or sitting out until after the release.'
-          : 'GDP releases can cause moderate volatility. Follow the delta guide but consider slightly tighter sizing.'}
+          ? 'CPI, NFP, PCE, and FOMC days historically produce wider ranges than VIX alone predicts. Consider widening deltas 1\u20132\u0394 beyond the guide ceiling, reducing position size, or sitting out until after the release.'
+          : 'GDP, PPI, Retail Sales, and JOLTS releases can cause moderate volatility. Follow the delta guide but consider slightly tighter sizing.'}
       </div>
     </div>
   );
 }
 
-function EventRow({ th, event }: { th: Theme; event: MarketEvent }) {
+function EventRow({
+  th,
+  event,
+}: {
+  th: Theme;
+  event: {
+    event: string;
+    description: string;
+    time: string;
+    severity: 'high' | 'medium';
+  };
+}) {
   const tagColor = event.severity === 'high' ? th.red : '#E8A317';
 
   return (
