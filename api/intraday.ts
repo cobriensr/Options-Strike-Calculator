@@ -149,11 +149,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { previousClose } = result.data;
   const marketOpen = isMarketOpen();
 
-  // Filter candles to today's ET date only (the 24h window may include
-  // yesterday's afternoon candles if called before market open)
+  // Filter candles to today's ET date AND regular session hours only.
+  // $SPX candles can start before 9:30 AM (pre-market indicative values)
+  // even with needExtendedHoursData=false. We need the 9:30 AM open to
+  // match the actual regular session open shown on TradingView/brokers.
   const todayCandles = result.data.candles.filter((c) => {
     const d = new Date(c.datetime);
-    return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) === todayET;
+    const etStr = d.toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const etDate = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    if (etDate !== todayET) return false;
+
+    // Parse the ET time — only keep candles from 9:30 AM onward
+    const etTime = new Date(etStr);
+    const hours = etTime.getHours();
+    const minutes = etTime.getMinutes();
+    const totalMinutes = hours * 60 + minutes;
+    return totalMinutes >= 570; // 9:30 AM = 9*60 + 30 = 570
   });
 
   // Cache: 2 min during hours (opening range doesn't change after 10 AM),
