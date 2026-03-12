@@ -6,6 +6,7 @@ import VIXRangeAnalysis from './VIXRangeAnalysis';
 import VolatilityCluster from './VolatilityCluster';
 import DeltaRegimeGuide from './DeltaRegimeGuide';
 import OpeningRangeCheck from './OpeningRangeCheck';
+import PreTradeSignals from './PreTradeSignals';
 import type { MarketDataState } from '../hooks/useMarketData';
 
 interface Props {
@@ -94,6 +95,14 @@ export default function MarketRegimeSection({
                   spot={results.spot}
                   selectedDate={selectedDate}
                   initialRange={market.data.intraday?.openingRange ?? undefined}
+                />
+              </div>
+              <div className="mt-5">
+                <PreTradeSignals
+                  th={th}
+                  quotes={market.data.quotes}
+                  yesterday={market.data.yesterday}
+                  movers={market.data.movers}
                 />
               </div>
             </>

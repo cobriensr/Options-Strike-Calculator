@@ -80,3 +80,28 @@ export interface EventsResponse {
   readonly cached: boolean;
   readonly asOf: string;
 }
+
+export interface MoverSlice {
+  readonly symbol: string;
+  readonly name: string;
+  readonly change: number;
+  readonly price: number;
+  readonly volume: number;
+}
+
+export interface MoversAnalysis {
+  readonly concentrated: boolean;
+  readonly megaCapCount: number;
+  readonly megaCapSymbols: readonly string[];
+  readonly bias: 'bullish' | 'bearish' | 'mixed';
+  readonly topUp: MoverSlice | null;
+  readonly topDown: MoverSlice | null;
+}
+
+export interface MoversResponse {
+  readonly up: readonly MoverSlice[];
+  readonly down: readonly MoverSlice[];
+  readonly analysis: MoversAnalysis;
+  readonly marketOpen: boolean;
+  readonly asOf: string;
+}

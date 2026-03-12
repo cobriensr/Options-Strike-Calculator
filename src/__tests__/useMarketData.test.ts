@@ -104,12 +104,19 @@ function mockFetchResponses(
     quotes?: MockEndpoint;
     intraday?: MockEndpoint;
     yesterday?: MockEndpoint;
+    events?: MockEndpoint;
+    movers?: MockEndpoint;
   } = {},
 ) {
   const defaults: Record<string, MockEndpoint> = {
     quotes: { status: 200, body: mockQuotes },
     intraday: { status: 200, body: mockIntraday },
     yesterday: { status: 200, body: mockYesterday },
+    events: {
+      status: 200,
+      body: { events: [], startDate: '', endDate: '', cached: false, asOf: '' },
+    },
+    movers: { status: 200, body: { up: [], down: [], asOf: '' } },
   };
 
   return vi.fn((...args: [url: string, init?: RequestInit]) => {
@@ -121,6 +128,10 @@ function mockFetchResponses(
       endpoint = overrides.intraday ?? defaults.intraday!;
     else if (url.includes('/api/yesterday'))
       endpoint = overrides.yesterday ?? defaults.yesterday!;
+    else if (url.includes('/api/events'))
+      endpoint = overrides.events ?? defaults.events!;
+    else if (url.includes('/api/movers'))
+      endpoint = overrides.movers ?? defaults.movers!;
 
     return Promise.resolve({
       ok: endpoint.status >= 200 && endpoint.status < 300,
@@ -308,5 +319,206 @@ describe('useMarketData: fetch options', () => {
       const init = call[1] as RequestInit | undefined;
       expect(init?.credentials).toBe('same-origin');
     }
+  });
+});
+
+// ============================================================
+// FETCH JSON EDGE CASES
+// ============================================================
+
+describe('useMarketData: fetchJson edge cases', () => {
+  it('handles non-ok response where .json() throws (line 65)', async () => {
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.includes('/api/quotes')) {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          json: () => Promise.reject(new Error('bad gateway html')),
+        });
+      }
+      // Other endpoints succeed
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => {
+          if (url.includes('/api/intraday'))
+            return Promise.resolve(mockIntraday);
+          if (url.includes('/api/yesterday'))
+            return Promise.resolve(mockYesterday);
+          if (url.includes('/api/events'))
+            return Promise.resolve({ events: [] });
+          if (url.includes('/api/movers'))
+            return Promise.resolve({ up: [], down: [] });
+          return Promise.resolve({});
+        },
+      });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Quotes failed but others succeeded
+    expect(result.current.data.quotes).toBeNull();
+    expect(result.current.data.intraday).not.toBeNull();
+    expect(result.current.hasData).toBe(true);
+  });
+
+  it('handles non-Error throw from fetch (line 75)', async () => {
+    globalThis.fetch = vi.fn(() =>
+      Promise.reject(new TypeError('string error')),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.hasData).toBe(false);
+  });
+});
+
+// ============================================================
+// AUTO-REFRESH (lines 184-192)
+// ============================================================
+
+describe('useMarketData: auto-refresh', () => {
+  it('auto-refreshes quotes every 60s when market is open', async () => {
+    const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
+    const fetchMock = mockFetchResponses({
+      quotes: {
+        status: 200,
+        body: mockQuotesOpen as unknown as Record<string, unknown>,
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Initial fetch: 5 endpoints
+    const initialCalls = fetchMock.mock.calls.length;
+    expect(initialCalls).toBe(5);
+
+    // Advance past the refresh interval
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // Should have made one additional quotes fetch
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    // The extra call should be to /api/quotes
+    const lastCallUrl = fetchMock.mock.calls.at(-1)![0];
+    expect(lastCallUrl).toBe('/api/quotes');
+  });
+
+  it('does not auto-refresh when market is closed', async () => {
+    const fetchMock = mockFetchResponses();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const initialCalls = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+
+    // No additional calls since marketOpen is false
+    expect(fetchMock.mock.calls.length).toBe(initialCalls);
+  });
+
+  it('cleans up interval on unmount', async () => {
+    const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
+    const fetchMock = mockFetchResponses({
+      quotes: {
+        status: 200,
+        body: mockQuotesOpen as unknown as Record<string, unknown>,
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result, unmount } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const callsAfterMount = fetchMock.mock.calls.length;
+    unmount();
+
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+
+    // No new calls after unmount
+    expect(fetchMock.mock.calls.length).toBe(callsAfterMount);
+  });
+});
+
+// ============================================================
+// EVENTS & MOVERS ENDPOINTS
+// ============================================================
+
+describe('useMarketData: events and movers', () => {
+  it('stores events data when endpoint succeeds', async () => {
+    const mockEvents = {
+      events: [
+        {
+          date: '2026-03-11',
+          event: 'CPI',
+          description: 'CPI',
+          time: '8:30 AM',
+          severity: 'high',
+        },
+      ],
+      startDate: '2026-03-01',
+      endDate: '2026-03-31',
+      cached: false,
+      asOf: '2026-03-11T08:00:00Z',
+    };
+    const fetchMock = mockFetchResponses({
+      events: {
+        status: 200,
+        body: mockEvents as unknown as Record<string, unknown>,
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data.events).not.toBeNull();
+  });
+
+  it('stores movers data when endpoint succeeds', async () => {
+    const mockMovers = {
+      up: [{ symbol: 'AAPL', changePct: 5 }],
+      down: [],
+      asOf: '',
+    };
+    const fetchMock = mockFetchResponses({
+      movers: {
+        status: 200,
+        body: mockMovers as unknown as Record<string, unknown>,
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data.movers).not.toBeNull();
+  });
+
+  it('handles 401 on movers silently', async () => {
+    const fetchMock = mockFetchResponses({
+      movers: { status: 401, body: { error: 'Not authenticated' } },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data.movers).toBeNull();
+    expect(result.current.hasData).toBe(true); // Other endpoints succeeded
   });
 });

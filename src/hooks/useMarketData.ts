@@ -22,6 +22,7 @@ import type {
   IntradayResponse,
   YesterdayResponse,
   EventsResponse,
+  MoversResponse,
 } from '../types/api';
 
 // ============================================================
@@ -33,6 +34,7 @@ export interface MarketData {
   intraday: IntradayResponse | null;
   yesterday: YesterdayResponse | null;
   events: EventsResponse | null;
+  movers: MoversResponse | null;
 }
 
 export interface MarketDataState {
@@ -89,6 +91,7 @@ export function useMarketData(): MarketDataState {
     intraday: null,
     yesterday: null,
     events: null,
+    movers: null,
   });
   const [loading, setLoading] = useState(true);
   const [needsAuth, setNeedsAuth] = useState(false);
@@ -98,13 +101,19 @@ export function useMarketData(): MarketDataState {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAll = useCallback(async () => {
-    const [quotesResult, intradayResult, yesterdayResult, eventsResult] =
-      await Promise.all([
-        fetchJson<QuotesResponse>('/api/quotes'),
-        fetchJson<IntradayResponse>('/api/intraday'),
-        fetchJson<YesterdayResponse>('/api/yesterday'),
-        fetchJson<EventsResponse>('/api/events?days=30'),
-      ]);
+    const [
+      quotesResult,
+      intradayResult,
+      yesterdayResult,
+      eventsResult,
+      moversResult,
+    ] = await Promise.all([
+      fetchJson<QuotesResponse>('/api/quotes'),
+      fetchJson<IntradayResponse>('/api/intraday'),
+      fetchJson<YesterdayResponse>('/api/yesterday'),
+      fetchJson<EventsResponse>('/api/events?days=30'),
+      fetchJson<MoversResponse>('/api/movers'),
+    ]);
 
     let anySuccess = false;
     let anyAuthError = false;
@@ -136,6 +145,14 @@ export function useMarketData(): MarketDataState {
       // Events is public — always store if successful
       if ('data' in eventsResult) {
         next.events = eventsResult.data;
+      }
+
+      // Movers is owner-gated — silently skip 401s
+      if ('data' in moversResult) {
+        next.movers = moversResult.data;
+        anySuccess = true;
+      } else if (moversResult.status === 401) {
+        anyAuthError = true;
       }
 
       return next;

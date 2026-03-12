@@ -220,4 +220,242 @@ describe('EventDayWarning: rendering', () => {
     render(<EventDayWarning th={darkTheme} selectedDate="2026-03-11" />);
     expect(screen.getAllByText(/CPI/).length).toBeGreaterThan(0);
   });
+
+  // --------------------------------------------------------
+  // Advice branch coverage (lines 101-119)
+  // --------------------------------------------------------
+  it('shows CLOSED advice for market closure', () => {
+    const liveEvents = [
+      {
+        date: '2026-01-19',
+        event: 'CLOSED',
+        description: 'Martin Luther King Jr. Day',
+        time: 'All Day',
+        severity: 'high' as const,
+        source: 'static' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-01-19"
+        liveEvents={liveEvents}
+      />,
+    );
+    expect(screen.getByText(/market closed/i)).toBeInTheDocument();
+    expect(screen.getByText(/no 0dte trading possible/i)).toBeInTheDocument();
+  });
+
+  it('shows EARLY CLOSE + macro advice', () => {
+    const liveEvents = [
+      {
+        date: '2026-11-27',
+        event: 'EARLY CLOSE',
+        description: 'Day after Thanksgiving',
+        time: '1:00 PM',
+        severity: 'medium' as const,
+        source: 'static' as const,
+      },
+      {
+        date: '2026-11-27',
+        event: 'CPI',
+        description: 'Consumer Price Index',
+        time: '8:30 AM',
+        severity: 'high' as const,
+        source: 'fred' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-11-27"
+        liveEvents={liveEvents}
+      />,
+    );
+    expect(
+      screen.getByText(/early close day with macro events/i),
+    ).toBeInTheDocument();
+  });
+
+  it('shows EARLY CLOSE advice without macro', () => {
+    const liveEvents = [
+      {
+        date: '2026-11-27',
+        event: 'EARLY CLOSE',
+        description: 'Day after Thanksgiving',
+        time: '1:00 PM',
+        severity: 'medium' as const,
+        source: 'static' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-11-27"
+        liveEvents={liveEvents}
+      />,
+    );
+    expect(
+      screen.getByText(/market closes at 1:00 PM ET/i),
+    ).toBeInTheDocument();
+  });
+
+  it('shows earnings + macro advice', () => {
+    const liveEvents = [
+      {
+        date: '2026-07-15',
+        event: 'AAPL Earnings',
+        description: 'Apple quarterly earnings',
+        time: '4:00 PM',
+        severity: 'high' as const,
+        source: 'finnhub' as const,
+      },
+      {
+        date: '2026-07-15',
+        event: 'CPI',
+        description: 'Consumer Price Index',
+        time: '8:30 AM',
+        severity: 'high' as const,
+        source: 'fred' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-07-15"
+        liveEvents={liveEvents}
+      />,
+    );
+    expect(screen.getByText(/mega-cap earnings \+ macro/i)).toBeInTheDocument();
+  });
+
+  it('shows earnings-only advice', () => {
+    const liveEvents = [
+      {
+        date: '2026-07-15',
+        event: 'AAPL Earnings',
+        description: 'Apple quarterly earnings',
+        time: '4:00 PM',
+        severity: 'high' as const,
+        source: 'finnhub' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-07-15"
+        liveEvents={liveEvents}
+      />,
+    );
+    expect(
+      screen.getByText(/mega-cap earnings can cause/i),
+    ).toBeInTheDocument();
+  });
+
+  it('shows correct header icon/label for CLOSED events', () => {
+    const liveEvents = [
+      {
+        date: '2026-01-19',
+        event: 'CLOSED',
+        description: 'Holiday',
+        time: 'All Day',
+        severity: 'high' as const,
+        source: 'static' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-01-19"
+        liveEvents={liveEvents}
+      />,
+    );
+    expect(screen.getByText('Market Closed')).toBeInTheDocument();
+  });
+
+  it('shows correct header label for EARLY CLOSE events', () => {
+    const liveEvents = [
+      {
+        date: '2026-11-27',
+        event: 'EARLY CLOSE',
+        description: 'Day after Thanksgiving',
+        time: '1:00 PM',
+        severity: 'medium' as const,
+        source: 'static' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-11-27"
+        liveEvents={liveEvents}
+      />,
+    );
+    expect(screen.getByText('Early Close Day')).toBeInTheDocument();
+  });
+
+  it('shows earnings icon for earnings events', () => {
+    const liveEvents = [
+      {
+        date: '2026-07-15',
+        event: 'MSFT Earnings',
+        description: 'Microsoft quarterly earnings',
+        time: '4:00 PM',
+        severity: 'high' as const,
+        source: 'finnhub' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-07-15"
+        liveEvents={liveEvents}
+      />,
+    );
+    // Earnings events use 📈 icon and show as high-impact
+    expect(screen.getByText('📈')).toBeInTheDocument();
+  });
+
+  it('uses live events over static when available', () => {
+    const liveEvents = [
+      {
+        date: '2026-03-11',
+        event: 'NFP',
+        description: 'Nonfarm Payrolls (live)',
+        time: '8:30 AM',
+        severity: 'high' as const,
+        source: 'fred' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-03-11"
+        liveEvents={liveEvents}
+      />,
+    );
+    // Should show the live description, not the static CPI one
+    expect(screen.getByText(/nonfarm payrolls \(live\)/i)).toBeInTheDocument();
+  });
+
+  it('determines severity from live events when medium-only', () => {
+    const liveEvents = [
+      {
+        date: '2026-04-29',
+        event: 'GDP',
+        description: 'Gross Domestic Product',
+        time: '8:30 AM',
+        severity: 'medium' as const,
+        source: 'fred' as const,
+      },
+    ];
+    render(
+      <EventDayWarning
+        th={lightTheme}
+        selectedDate="2026-04-29"
+        liveEvents={liveEvents}
+      />,
+    );
+    expect(screen.getByText(/economic event day/i)).toBeInTheDocument();
+  });
 });
