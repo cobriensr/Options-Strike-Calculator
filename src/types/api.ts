@@ -105,3 +105,21 @@ export interface MoversResponse {
   readonly marketOpen: boolean;
   readonly asOf: string;
 }
+
+export interface HistoryCandle {
+  readonly datetime: number; // Unix ms
+  readonly time: string; // "9:30 AM", "10:05 AM"
+  readonly open: number;
+  readonly high: number;
+  readonly low: number;
+  readonly close: number;
+}
+
+export interface HistoryResponse {
+  readonly date: string;
+  readonly candles: readonly HistoryCandle[];
+  readonly previousClose: number;
+  readonly previousDay: DaySummary | null;
+  readonly candleCount: number;
+  readonly asOf: string;
+}

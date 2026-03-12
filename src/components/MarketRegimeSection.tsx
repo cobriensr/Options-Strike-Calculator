@@ -8,6 +8,7 @@ import DeltaRegimeGuide from './DeltaRegimeGuide';
 import OpeningRangeCheck from './OpeningRangeCheck';
 import PreTradeSignals from './PreTradeSignals';
 import type { MarketDataState } from '../hooks/useMarketData';
+import type { HistorySnapshot } from '../hooks/useHistoryData';
 
 interface Props {
   th: Theme;
@@ -19,6 +20,7 @@ interface Props {
   market: MarketDataState;
   onClusterMultChange: (v: number) => void;
   clusterMult: number;
+  historySnapshot?: HistorySnapshot | null;
 }
 
 export default function MarketRegimeSection({
@@ -31,6 +33,7 @@ export default function MarketRegimeSection({
   market,
   onClusterMultChange,
   clusterMult,
+  historySnapshot,
 }: Props) {
   const [showRegime, setShowRegime] = useState(true);
 
@@ -74,7 +77,9 @@ export default function MarketRegimeSection({
                   spot={results.spot}
                   onMultiplierChange={onClusterMultChange}
                   initialYesterday={
-                    market.data.yesterday?.yesterday ?? undefined
+                    historySnapshot?.yesterday ??
+                    market.data.yesterday?.yesterday ??
+                    undefined
                   }
                 />
               </div>
@@ -94,15 +99,27 @@ export default function MarketRegimeSection({
                   vix={Number.parseFloat(dVix)}
                   spot={results.spot}
                   selectedDate={selectedDate}
-                  initialRange={market.data.intraday?.openingRange ?? undefined}
+                  initialRange={
+                    historySnapshot?.openingRange ??
+                    market.data.intraday?.openingRange ??
+                    undefined
+                  }
                 />
               </div>
               <div className="mt-5">
                 <PreTradeSignals
                   th={th}
-                  quotes={market.data.quotes}
-                  yesterday={market.data.yesterday}
-                  movers={market.data.movers}
+                  quotes={historySnapshot ? null : market.data.quotes}
+                  yesterday={
+                    historySnapshot
+                      ? {
+                          yesterday: historySnapshot.yesterday,
+                          twoDaysAgo: null,
+                          asOf: '',
+                        }
+                      : market.data.yesterday
+                  }
+                  movers={historySnapshot ? null : market.data.movers}
                 />
               </div>
             </>

@@ -7,6 +7,8 @@ import { useDebounced } from './hooks/useDebounced';
 import { useVixData } from './hooks/useVixData';
 import { useCalculation } from './hooks/useCalculation';
 import { useMarketData } from './hooks/useMarketData';
+import { useHistoryData } from './hooks/useHistoryData';
+import { to24Hour } from './utils/calculator';
 import VixUploadSection from './components/VixUploadSection';
 import DateLookupSection from './components/DateLookupSection';
 import SpotPriceSection from './components/SpotPriceSection';
@@ -72,6 +74,7 @@ export default function StrikeCalculator() {
   // Hooks
   const market = useMarketData();
   const vix = useVixData(ivMode, timeHour, timeAmPm, timezone, setVixInput);
+  const historyData = useHistoryData(vix.selectedDate);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -124,6 +127,46 @@ export default function StrikeCalculator() {
     }
   }, [market.data.quotes]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-fill from historical data when a past date is selected,
+  // or restore live data when switching back to today
+  useEffect(() => {
+    if (historyData.hasHistory) {
+      // Past date: fill from historical candles
+      const h24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
+      const etHour = timezone === 'CT' ? h24 + 1 : h24;
+      const etMinute = Number.parseInt(timeMinute) || 0;
+
+      const snapshot = historyData.getStateAtTime(etHour, etMinute);
+      if (!snapshot) return;
+
+      setSpotPrice(snapshot.spy.toFixed(2));
+      setSpxDirect(snapshot.spot.toFixed(0));
+    } else if (market.data.quotes) {
+      // Today (or no history): restore live prices if available
+      const q = market.data.quotes;
+      if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
+      if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
+    }
+  }, [
+    historyData,
+    market.data.quotes,
+    historyData.hasHistory,
+    historyData.getStateAtTime,
+    timeHour,
+    timeMinute,
+    timeAmPm,
+    timezone,
+  ]);
+
+  // Compute current history snapshot for downstream components
+  const historySnapshot = (() => {
+    if (!historyData.hasHistory) return null;
+    const h24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
+    const etHour = timezone === 'CT' ? h24 + 1 : h24;
+    const etMinute = Number.parseInt(timeMinute) || 0;
+    return historyData.getStateAtTime(etHour, etMinute);
+  })();
+
   // Shared CSS classes
   const chevronUrl = buildChevronUrl(th.chevronColor);
   const inputCls =
@@ -164,7 +207,29 @@ export default function StrikeCalculator() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                {market.hasData && (
+                {historySnapshot && (
+                  <span
+                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
+                    style={{
+                      backgroundColor: '#7C3AED18',
+                      color: '#7C3AED',
+                    }}
+                  >
+                    ● BACKTEST
+                  </span>
+                )}
+                {historyData.loading && (
+                  <span
+                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
+                    style={{
+                      backgroundColor: th.surfaceAlt,
+                      color: th.textMuted,
+                    }}
+                  >
+                    Loading…
+                  </span>
+                )}
+                {!historySnapshot && market.hasData && (
                   <span
                     className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
                     style={{
@@ -300,6 +365,7 @@ export default function StrikeCalculator() {
               market={market}
               onClusterMultChange={setClusterMult}
               clusterMult={clusterMult}
+              historySnapshot={historySnapshot}
             />
 
             <ResultsSection
