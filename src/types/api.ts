@@ -70,7 +70,7 @@ export interface EventItem {
   readonly description: string;
   readonly time: string;
   readonly severity: 'high' | 'medium';
-  readonly source: 'fred' | 'static';
+  readonly source: 'fred' | 'static' | 'finnhub';
 }
 
 export interface EventsResponse {

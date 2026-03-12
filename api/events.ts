@@ -1,20 +1,20 @@
 /**
  * GET /api/events
  *
- * Returns upcoming economic events from the FRED API (St. Louis Fed).
- * Public endpoint — no owner gate. Events are public government data.
+ * Returns upcoming market events from multiple sources:
+ *   - FRED API: CPI, NFP, GDP, PCE, PPI, Retail Sales, JOLTS
+ *   - Static: FOMC dates, half-day/early close dates
+ *   - Finnhub API: Mega-cap earnings (AAPL, MSFT, NVDA, AMZN, GOOG, META, TSLA)
  *
- * Fetches release dates for CPI, NFP, GDP, FOMC, PCE, PPI, Retail Sales,
- * and JOLTS. Results are cached in Upstash Redis for 24 hours.
- *
- * FOMC dates are not in FRED (they're policy meetings, not data releases),
- * so they're sourced from the static eventCalendar.ts and merged in.
+ * Public endpoint — no owner gate. All data is publicly available.
+ * Results cached in Upstash Redis for 7 days (key is date-scoped).
  *
  * Query params:
  *   ?days=30  — how many days ahead to return (default 30, max 90)
  *
  * Environment variables:
- *   FRED_API_KEY — Free API key from https://fred.stlouisfed.org/docs/api/api_key.html
+ *   FRED_API_KEY    — Free key from https://fred.stlouisfed.org/docs/api/api_key.html
+ *   FINNHUB_API_KEY — Free key from https://finnhub.io/register (optional, earnings only)
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -28,14 +28,10 @@ interface FredReleaseConfig {
   readonly id: number;
   readonly event: string;
   readonly description: string;
-  readonly time: string; // Typical release time ET
+  readonly time: string;
   readonly severity: 'high' | 'medium';
 }
 
-/**
- * FRED release IDs we care about for 0DTE trading.
- * IDs from https://fred.stlouisfed.org/releases
- */
 const TRACKED_RELEASES: readonly FredReleaseConfig[] = [
   {
     id: 10,
@@ -88,11 +84,10 @@ const TRACKED_RELEASES: readonly FredReleaseConfig[] = [
   },
 ] as const;
 
-/**
- * Static FOMC dates — not available via FRED API.
- * These are policy meetings, not data releases.
- * Source: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
- */
+// ============================================================
+// STATIC FOMC DATES
+// ============================================================
+
 const FOMC_DATES_2025 = [
   '2025-01-29',
   '2025-03-19',
@@ -129,6 +124,165 @@ const SEP_DATES = new Set([
 const ALL_FOMC = [...FOMC_DATES_2025, ...FOMC_DATES_2026];
 
 // ============================================================
+// STATIC HALF-DAY / EARLY CLOSE DATES
+// ============================================================
+
+/**
+ * NYSE early close days — market closes at 1:00 PM ET instead of 4:00 PM.
+ * This reduces time-to-expiry by 3 hours, significantly impacting 0DTE pricing.
+ *
+ * Recurring pattern:
+ *   - Day before Independence Day (July 3, unless July 4 is Sat/Sun)
+ *   - Black Friday (day after Thanksgiving)
+ *   - Christmas Eve (Dec 24, unless it falls on weekend)
+ *
+ * Also includes full market closures for Good Friday (no 0DTE possible).
+ *
+ * Sources: https://www.nyse.com/markets/hours-calendars
+ */
+interface HalfDayEntry {
+  readonly date: string;
+  readonly type: 'early_close' | 'closed';
+  readonly closeTime?: string;
+  readonly reason: string;
+}
+
+const HALF_DAYS_2025: readonly HalfDayEntry[] = [
+  { date: '2025-04-18', type: 'closed', reason: 'Good Friday' },
+  {
+    date: '2025-07-03',
+    type: 'early_close',
+    closeTime: '1:00 PM',
+    reason: 'Independence Day Eve',
+  },
+  {
+    date: '2025-11-28',
+    type: 'early_close',
+    closeTime: '1:00 PM',
+    reason: 'Black Friday',
+  },
+  {
+    date: '2025-12-24',
+    type: 'early_close',
+    closeTime: '1:00 PM',
+    reason: 'Christmas Eve',
+  },
+] as const;
+
+const HALF_DAYS_2026: readonly HalfDayEntry[] = [
+  { date: '2026-04-03', type: 'closed', reason: 'Good Friday' },
+  {
+    date: '2026-07-03',
+    type: 'early_close',
+    closeTime: '1:00 PM',
+    reason: 'Independence Day Eve',
+  },
+  {
+    date: '2026-11-27',
+    type: 'early_close',
+    closeTime: '1:00 PM',
+    reason: 'Black Friday',
+  },
+  {
+    date: '2026-12-24',
+    type: 'early_close',
+    closeTime: '1:00 PM',
+    reason: 'Christmas Eve',
+  },
+] as const;
+
+const ALL_HALF_DAYS = [...HALF_DAYS_2025, ...HALF_DAYS_2026];
+
+// ============================================================
+// MEGA-CAP EARNINGS (FINNHUB)
+// ============================================================
+
+/**
+ * The "Magnificent 7" — each represents 3–8% of SPX.
+ * When one reports earnings (even after hours), the next morning's
+ * SPX open can gap significantly.
+ */
+const MEGA_CAP_SYMBOLS = new Set([
+  'AAPL',
+  'MSFT',
+  'NVDA',
+  'AMZN',
+  'GOOG',
+  'META',
+  'TSLA',
+]);
+
+const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+
+interface FinnhubEarningsEntry {
+  date: string;
+  epsActual: number | null;
+  epsEstimate: number | null;
+  hour: string; // 'bmo' (before open), 'amc' (after close), 'dmh' (during)
+  quarter: number;
+  revenueActual: number | null;
+  revenueEstimate: number | null;
+  symbol: string;
+  year: number;
+}
+
+interface FinnhubEarningsResponse {
+  earningsCalendar: FinnhubEarningsEntry[];
+}
+
+async function fetchMegaCapEarnings(
+  apiKey: string,
+  startDate: string,
+  endDate: string,
+): Promise<EventItem[]> {
+  const events: EventItem[] = [];
+
+  try {
+    const params = new URLSearchParams({
+      from: startDate,
+      to: endDate,
+      token: apiKey,
+    });
+
+    const url = `${FINNHUB_BASE}/calendar/earnings?${params.toString()}`;
+    const res = await fetch(url);
+
+    if (!res.ok) {
+      console.error(`Finnhub earnings API error: ${res.status}`);
+      return [];
+    }
+
+    const data: FinnhubEarningsResponse = await res.json();
+
+    for (const entry of data.earningsCalendar || []) {
+      if (!MEGA_CAP_SYMBOLS.has(entry.symbol)) continue;
+
+      const timeLabel =
+        entry.hour === 'bmo'
+          ? 'Before Open'
+          : entry.hour === 'amc'
+            ? 'After Close'
+            : entry.hour === 'dmh'
+              ? 'During Hours'
+              : '';
+
+      events.push({
+        date: entry.date,
+        event: `${entry.symbol} Earnings`,
+        description: `${entry.symbol} Q${entry.quarter} ${entry.year} earnings${timeLabel ? ' (' + timeLabel + ')' : ''}`,
+        time: timeLabel || 'TBD',
+        severity: 'high',
+        source: 'finnhub',
+      });
+    }
+  } catch (err) {
+    console.error('Finnhub earnings fetch failed:', err);
+  }
+
+  return events;
+}
+
+// ============================================================
 // TYPES
 // ============================================================
 
@@ -148,7 +302,7 @@ interface EventItem {
   description: string;
   time: string;
   severity: 'high' | 'medium';
-  source: 'fred' | 'static';
+  source: 'fred' | 'static' | 'finnhub';
 }
 
 // ============================================================
@@ -156,13 +310,9 @@ interface EventItem {
 // ============================================================
 
 const FRED_BASE = 'https://api.stlouisfed.org/fred';
-const REDIS_KEY = 'fred:events';
-const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped, so stale keys auto-expire)
+const REDIS_KEY = 'events:v2';
+const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped)
 
-/**
- * Fetch release dates from FRED for a specific release ID.
- * Uses fred/release/dates (singular) to get dates for one release at a time.
- */
 async function fetchReleaseDates(
   releaseId: number,
   apiKey: string,
@@ -187,34 +337,41 @@ async function fetchReleaseDates(
 
   const data: FredReleaseDatesResponse = await res.json();
 
-  // Filter to our date range (FRED may return a wider range)
   return (data.release_dates || []).filter(
     (r) => r.date >= startDate && r.date <= endDate,
   );
 }
 
-/**
- * Fetch all tracked events from FRED and merge with static FOMC dates.
- */
+// ============================================================
+// MAIN FETCH
+// ============================================================
+
 async function fetchAllEvents(
-  apiKey: string,
+  fredKey: string,
+  finnhubKey: string | undefined,
   startDate: string,
   endDate: string,
 ): Promise<EventItem[]> {
   const releaseMap = new Map<number, FredReleaseConfig>();
   for (const r of TRACKED_RELEASES) releaseMap.set(r.id, r);
 
-  // Fetch all release dates in parallel
-  const results = await Promise.all(
-    TRACKED_RELEASES.map((r) =>
-      fetchReleaseDates(r.id, apiKey, startDate, endDate),
-    ),
+  // Fetch FRED releases + Finnhub earnings in parallel
+  const fredPromises = TRACKED_RELEASES.map((r) =>
+    fetchReleaseDates(r.id, fredKey, startDate, endDate),
   );
+  const earningsPromise = finnhubKey
+    ? fetchMegaCapEarnings(finnhubKey, startDate, endDate)
+    : Promise.resolve([] as EventItem[]);
+
+  const [fredResults, earningsEvents] = await Promise.all([
+    Promise.all(fredPromises),
+    earningsPromise,
+  ]);
 
   const events: EventItem[] = [];
 
   // Map FRED results to events
-  for (const entries of results) {
+  for (const entries of fredResults) {
     for (const entry of entries) {
       const config = releaseMap.get(entry.release_id);
       if (!config) continue;
@@ -247,11 +404,39 @@ async function fetchAllEvents(
     }
   }
 
-  // Sort by date, then severity (high first)
+  // Add half-day / early close dates within range
+  for (const hd of ALL_HALF_DAYS) {
+    if (hd.date >= startDate && hd.date <= endDate) {
+      if (hd.type === 'closed') {
+        events.push({
+          date: hd.date,
+          event: 'CLOSED',
+          description: `Market closed \u2014 ${hd.reason}`,
+          time: 'All Day',
+          severity: 'high',
+          source: 'static',
+        });
+      } else {
+        events.push({
+          date: hd.date,
+          event: 'EARLY CLOSE',
+          description: `Market closes at ${hd.closeTime} ET \u2014 ${hd.reason}. Time-to-expiry uses ${hd.closeTime} instead of 4:00 PM.`,
+          time: hd.closeTime!,
+          severity: 'high',
+          source: 'static',
+        });
+      }
+    }
+  }
+
+  // Add mega-cap earnings
+  events.push(...earningsEvents);
+
+  // Sort by date, then severity (high first), then event name
   events.sort((a, b) => {
     if (a.date !== b.date) return a.date.localeCompare(b.date);
     if (a.severity !== b.severity) return a.severity === 'high' ? -1 : 1;
-    return 0;
+    return a.event.localeCompare(b.event);
   });
 
   return events;
@@ -262,12 +447,13 @@ async function fetchAllEvents(
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const apiKey = process.env.FRED_API_KEY;
-  if (!apiKey) {
+  const fredKey = process.env.FRED_API_KEY;
+  if (!fredKey) {
     return res
       .status(500)
       .json({ error: 'FRED_API_KEY environment variable must be set' });
   }
+  const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
 
   // Parse days parameter (default 30, max 90)
   const daysParam = Number(req.query?.days) || 30;
@@ -304,18 +490,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Redis unavailable — fetch fresh
   }
 
-  // Fetch from FRED
-  const events = await fetchAllEvents(apiKey, startDate, endDate);
+  // Fetch from all sources
+  const events = await fetchAllEvents(fredKey, finnhubKey, startDate, endDate);
 
-  // Cache in Redis for 24h
+  // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
   try {
     await redis.set(cacheKey, events, { ex: CACHE_TTL_SEC });
   } catch (err) {
     console.error('Failed to cache events in Redis:', err);
   }
 
-  // Edge cache: 1 hour (events change at most daily)
-  res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=1800');
+  // Edge cache: 12 hours
+  res.setHeader('Cache-Control', 's-maxage=43200, stale-while-revalidate=3600');
   res.setHeader('X-Cache', 'MISS');
 
   res.status(200).json({

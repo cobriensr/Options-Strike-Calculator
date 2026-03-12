@@ -55,13 +55,27 @@ export default function EventDayWarning({
       {/* Header */}
       <div className="mb-2 flex items-center gap-2">
         <span className="text-base">
-          {isHigh ? '\u26A0\uFE0F' : '\uD83D\uDCC5'}
+          {events.some((e) => e.event === 'CLOSED')
+            ? '\uD83D\uDEAB'
+            : events.some((e) => e.event === 'EARLY CLOSE')
+              ? '\u23F0'
+              : events.some((e) => e.event.includes('Earnings'))
+                ? '\uD83D\uDCC8'
+                : isHigh
+                  ? '\u26A0\uFE0F'
+                  : '\uD83D\uDCC5'}
         </span>
         <span
           className="font-sans text-[10px] font-bold tracking-widest uppercase"
           style={{ color }}
         >
-          {isHigh ? 'High-Impact Event Day' : 'Economic Event Day'}
+          {events.some((e) => e.event === 'CLOSED')
+            ? 'Market Closed'
+            : events.some((e) => e.event === 'EARLY CLOSE')
+              ? 'Early Close Day'
+              : isHigh
+                ? 'High-Impact Event Day'
+                : 'Economic Event Day'}
         </span>
       </div>
 
@@ -75,9 +89,35 @@ export default function EventDayWarning({
         className="text-secondary mt-2.5 pt-2 font-sans text-[11px] leading-relaxed"
         style={{ borderTop: '1px solid ' + border }}
       >
-        {isHigh
-          ? 'CPI, NFP, PCE, and FOMC days historically produce wider ranges than VIX alone predicts. Consider widening deltas 1\u20132\u0394 beyond the guide ceiling, reducing position size, or sitting out until after the release.'
-          : 'GDP, PPI, Retail Sales, and JOLTS releases can cause moderate volatility. Follow the delta guide but consider slightly tighter sizing.'}
+        {(() => {
+          const eventNames = events.map((e) => e.event);
+          const hasClosed = eventNames.includes('CLOSED');
+          const hasEarlyClose = eventNames.includes('EARLY CLOSE');
+          const hasEarnings = eventNames.some((n) => n.includes('Earnings'));
+          const hasMacro = eventNames.some((n) =>
+            ['CPI', 'NFP', 'PCE', 'FOMC', 'FOMC + SEP'].includes(n),
+          );
+
+          if (hasClosed) {
+            return 'Market is closed today. No 0DTE trading possible.';
+          }
+          if (hasEarlyClose && hasMacro) {
+            return 'Early close day with macro events. Market closes at 1:00 PM ET \u2014 your time-to-expiry is 3 hours shorter than normal. Combined with the data release, expect compressed but potentially volatile price action. Use extreme caution.';
+          }
+          if (hasEarlyClose) {
+            return 'Early close day \u2014 market closes at 1:00 PM ET. Your time-to-expiry is 3 hours shorter than normal, which means tighter strikes for the same delta. Premium is lower and theta decay is faster. Adjust your entry time and size accordingly.';
+          }
+          if (hasEarnings && hasMacro) {
+            return 'Mega-cap earnings + macro data release. This combination can produce outsized moves. Consider sitting out or trading minimum size with the widest wings available.';
+          }
+          if (hasEarnings) {
+            return 'Mega-cap earnings can cause SPX to gap at the open or move sharply intraday. If the report was after yesterday\u2019s close, check the overnight /ES move before entering. Consider wider deltas or reduced size.';
+          }
+          if (isHigh) {
+            return 'CPI, NFP, PCE, and FOMC days historically produce wider ranges than VIX alone predicts. Consider widening deltas 1\u20132\u0394 beyond the guide ceiling, reducing position size, or sitting out until after the release.';
+          }
+          return 'GDP, PPI, Retail Sales, and JOLTS releases can cause moderate volatility. Follow the delta guide but consider slightly tighter sizing.';
+        })()}
       </div>
     </div>
   );
