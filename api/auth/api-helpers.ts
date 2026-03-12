@@ -1,0 +1,155 @@
+/**
+ * Shared helper for making authenticated Schwab API calls.
+ * Used by the three data endpoints (quotes, intraday, yesterday).
+ *
+ * OWNER GATING: All data endpoints require a session cookie set
+ * during the Schwab OAuth flow. Public visitors get a 401 and the
+ * frontend silently falls back to manual input.
+ */
+
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { getAccessToken } from './schwab';
+
+const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
+
+// ============================================================
+// OWNER VERIFICATION
+// ============================================================
+
+/**
+ * Cookie name for the owner session.
+ * Set during /api/auth/callback, checked on every data request.
+ */
+export const OWNER_COOKIE = 'sc-owner';
+
+/**
+ * Max age for the owner cookie (7 days — matches Schwab refresh token).
+ */
+export const OWNER_COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
+
+/**
+ * Parse cookies from the request header.
+ * Vercel's VercelRequest doesn't always parse cookies automatically.
+ */
+function parseCookies(req: VercelRequest): Record<string, string> {
+  const header = req.headers.cookie || '';
+  const cookies: Record<string, string> = {};
+  for (const pair of header.split(';')) {
+    const [key, ...rest] = pair.trim().split('=');
+    if (key) cookies[key] = rest.join('=');
+  }
+  return cookies;
+}
+
+/**
+ * Verify that the request is from the site owner.
+ * Returns true if the owner cookie matches OWNER_SECRET.
+ * Returns false for public visitors — the endpoint should return 401.
+ */
+export function isOwner(req: VercelRequest): boolean {
+  const secret = process.env.OWNER_SECRET;
+  if (!secret) return false;
+
+  const cookies = parseCookies(req);
+  return cookies[OWNER_COOKIE] === secret;
+}
+
+/**
+ * Guard a data endpoint. Call at the top of every handler.
+ * Returns true if the request should be rejected (response already sent).
+ */
+export function rejectIfNotOwner(
+  req: VercelRequest,
+  res: VercelResponse,
+): boolean {
+  if (!isOwner(req)) {
+    // Don't cache 401s at the edge — each request should check the cookie
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(401).json({ error: 'Not authenticated' });
+    return true;
+  }
+  return false;
+}
+
+// ============================================================
+// SCHWAB API FETCH
+// ============================================================
+
+/**
+ * Make an authenticated GET request to the Schwab Market Data API.
+ * Handles token retrieval and error responses.
+ */
+export async function schwabFetch<T>(
+  path: string,
+): Promise<{ data: T } | { error: string; status: number }> {
+  const authResult = await getAccessToken();
+
+  if ('error' in authResult) {
+    const status = authResult.error.type === 'expired_refresh' ? 401 : 500;
+    return { error: authResult.error.message, status };
+  }
+
+  const url = `${SCHWAB_BASE}${path}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${authResult.token}`,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    return {
+      error: `Schwab API error (${res.status}): ${body}`,
+      status: res.status === 401 ? 401 : 502,
+    };
+  }
+
+  const data: T = await res.json();
+  return { data };
+}
+
+// ============================================================
+// CACHE + MARKET HOURS
+// ============================================================
+
+/**
+ * Set cache headers on the response.
+ *
+ * IMPORTANT: These headers cache at Vercel's edge, keyed by URL + Cookie.
+ * Because the owner cookie is required, cached responses are only served
+ * to the same authenticated session — not to public visitors.
+ *
+ * We add Vary: Cookie to ensure the edge doesn't serve an owner's cached
+ * response to a public visitor (who would get a 401 instead).
+ */
+export function setCacheHeaders(
+  res: VercelResponse,
+  edgeSec: number,
+  swr: number = 60,
+): void {
+  res.setHeader(
+    'Cache-Control',
+    `s-maxage=${edgeSec}, stale-while-revalidate=${swr}`,
+  );
+  res.setHeader('Vary', 'Cookie');
+}
+
+/**
+ * Check if US equity markets are currently open.
+ * Simple heuristic — doesn't account for holidays.
+ * Used to adjust cache durations.
+ */
+export function isMarketOpen(): boolean {
+  const now = new Date();
+  const et = new Date(
+    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
+  );
+  const day = et.getDay();
+  if (day === 0 || day === 6) return false;
+  const hour = et.getHours();
+  const min = et.getMinutes();
+  const totalMin = hour * 60 + min;
+  // Market: 9:30 AM (570) to 4:00 PM (960) ET
+  return totalMin >= 570 && totalMin <= 960;
+}
