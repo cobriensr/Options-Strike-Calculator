@@ -118,7 +118,10 @@ describe('StrikeCalculator: IV mode switching', () => {
     render(<StrikeCalculator />);
 
     await user.click(screen.getByText('Direct IV'));
-    await user.click(screen.getByText('VIX'));
+    // Use getAllByText since 'VIX' appears in multiple places (IV chip + regime analysis)
+    const vixChips = screen.getAllByText('VIX');
+    const ivChip = vixChips.find((el) => el.closest('button'));
+    await user.click(ivChip!);
     expect(screen.getByLabelText(/vix value/i)).toBeInTheDocument();
   });
 
@@ -182,12 +185,15 @@ describe('StrikeCalculator: results rendering', () => {
     render(<StrikeCalculator />);
     await fillBasicInputs(user);
 
-    expect(screen.getByText('5Δ')).toBeInTheDocument();
-    expect(screen.getByText('8Δ')).toBeInTheDocument();
-    expect(screen.getByText('10Δ')).toBeInTheDocument();
-    expect(screen.getByText('12Δ')).toBeInTheDocument();
-    expect(screen.getByText('15Δ')).toBeInTheDocument();
-    expect(screen.getByText('20Δ')).toBeInTheDocument();
+    const resultsTable = screen.getByRole('table', {
+      name: /strike prices by delta/i,
+    });
+    expect(within(resultsTable).getByText('5Δ')).toBeInTheDocument();
+    expect(within(resultsTable).getByText('8Δ')).toBeInTheDocument();
+    expect(within(resultsTable).getByText('10Δ')).toBeInTheDocument();
+    expect(within(resultsTable).getByText('12Δ')).toBeInTheDocument();
+    expect(within(resultsTable).getByText('15Δ')).toBeInTheDocument();
+    expect(within(resultsTable).getByText('20Δ')).toBeInTheDocument();
   });
 
   it('shows put and call premium columns', async () => {
@@ -395,28 +401,21 @@ describe('StrikeCalculator: CSV upload', () => {
 // 0DTE ADJUSTMENT TOOLTIP
 // ============================================================
 describe('StrikeCalculator: tooltip', () => {
-  it('shows tooltip when ? button is clicked', async () => {
-    const user = userEvent.setup();
+  it('tooltip is visible by default', () => {
     render(<StrikeCalculator />);
 
-    const helpBtn = screen.getByLabelText(/what is the 0dte adjustment/i);
-    await user.click(helpBtn);
-    await act(() => wait(50));
-
-    // Covers line 426: onClick={() => setTooltipOpen(!tooltipOpen)}
+    // Tooltip defaults to open
     expect(screen.getByRole('tooltip')).toBeInTheDocument();
     expect(screen.getByText('0DTE IV Adjustment')).toBeInTheDocument();
   });
 
-  it('closes tooltip on second click', async () => {
+  it('closes tooltip when ? button is clicked', async () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    const helpBtn = screen.getByLabelText(/what is the 0dte adjustment/i);
-    await user.click(helpBtn);
-    await act(() => wait(50));
     expect(screen.getByRole('tooltip')).toBeInTheDocument();
 
+    const helpBtn = screen.getByLabelText(/what is the 0dte adjustment/i);
     await user.click(helpBtn);
     await act(() => wait(50));
     // Covers line 426: onClick={() => setTooltipOpen(!tooltipOpen)}
@@ -428,17 +427,9 @@ describe('StrikeCalculator: tooltip', () => {
 // IRON CONDOR UI
 // ============================================================
 describe('StrikeCalculator: Iron Condor', () => {
-  it('IC is hidden by default', () => {
+  it('IC is shown by default', () => {
     render(<StrikeCalculator />);
-    expect(screen.getByText(/show.*iron condor/i)).toBeInTheDocument();
-    expect(screen.queryByText(/wing width/i)).not.toBeInTheDocument();
-  });
-
-  it('shows IC controls when toggled on', async () => {
-    const user = userEvent.setup();
-    render(<StrikeCalculator />);
-
-    await user.click(screen.getByText(/show.*iron condor/i));
+    expect(screen.getByText(/hide.*iron condor/i)).toBeInTheDocument();
     expect(screen.getByText(/wing width/i)).toBeInTheDocument();
     expect(
       screen.getByLabelText(/iron condor wing width/i),
@@ -450,7 +441,6 @@ describe('StrikeCalculator: Iron Condor', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
 
     expect(
@@ -466,7 +456,6 @@ describe('StrikeCalculator: Iron Condor', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
 
     expect(
@@ -486,7 +475,6 @@ describe('StrikeCalculator: Iron Condor', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
 
     const pnlTable = screen.getByRole('table', { name: /iron condor p&l/i });
@@ -499,8 +487,6 @@ describe('StrikeCalculator: Iron Condor', () => {
   it('wing width chips work', async () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
-
-    await user.click(screen.getByText(/show.*iron condor/i));
 
     const wingGroup = screen.getByRole('radiogroup', {
       name: /iron condor wing width/i,
@@ -516,7 +502,9 @@ describe('StrikeCalculator: Iron Condor', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
+    // Default is 20 contracts
+    const input = screen.getByLabelText(/number of contracts/i);
+    expect(input).toHaveValue('20');
 
     const incBtn = screen.getByLabelText(/increase contracts/i);
     await user.click(incBtn);
@@ -524,16 +512,14 @@ describe('StrikeCalculator: Iron Condor', () => {
     await user.click(incBtn);
     await act(() => wait(50));
 
-    const input = screen.getByLabelText(/number of contracts/i);
-    expect(input).toHaveValue('3');
+    expect(input).toHaveValue('22');
   });
 
   it('contracts counter decrements', async () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
-
+    // Default is 20 contracts
     const incBtn = screen.getByLabelText(/increase contracts/i);
     await user.click(incBtn);
     await act(() => wait(50));
@@ -545,19 +531,18 @@ describe('StrikeCalculator: Iron Condor', () => {
     await act(() => wait(50));
 
     const input = screen.getByLabelText(/number of contracts/i);
-    expect(input).toHaveValue('2');
+    expect(input).toHaveValue('21');
   });
 
   it('contracts counter does not go below 1', async () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
-
+    // Click decrease many times to try to go below 1
     const decBtn = screen.getByLabelText(/decrease contracts/i);
-    await user.click(decBtn);
-    await act(() => wait(50));
-    await user.click(decBtn);
+    for (let i = 0; i < 25; i++) {
+      await user.click(decBtn);
+    }
     await act(() => wait(50));
 
     const input = screen.getByLabelText(/number of contracts/i);
@@ -568,26 +553,18 @@ describe('StrikeCalculator: Iron Condor', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
-
-    const incBtn = screen.getByLabelText(/increase contracts/i);
-    await user.click(incBtn);
-    await user.click(incBtn);
-    await user.click(incBtn);
-    await user.click(incBtn);
-
+    // Default is 20 contracts
     await fillBasicInputs(user);
 
-    expect(screen.getAllByText(/5 contracts/i).length).toBeGreaterThanOrEqual(
-      1,
-    );
+    expect(
+      screen.getAllByText(/20 contracts/i).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('shows dollar amounts in P&L table', async () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
 
     const pnlTable = screen.getByRole('table', { name: /iron condor p&l/i });
@@ -599,7 +576,6 @@ describe('StrikeCalculator: Iron Condor', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
 
     const pnlTable = screen.getByRole('table', { name: /iron condor p&l/i });
@@ -611,7 +587,7 @@ describe('StrikeCalculator: Iron Condor', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
+    // IC is shown by default
     expect(screen.getByText(/wing width/i)).toBeInTheDocument();
 
     await user.click(screen.getByText(/hide.*iron condor/i));
@@ -646,7 +622,7 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
+    // IC is shown by default
     await fillBasicInputs(user);
 
     expect(screen.getByText(/hedge calculator/i)).toBeInTheDocument();
@@ -656,7 +632,6 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
 
     // Button exists but hedge content not shown
@@ -667,7 +642,6 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
     await user.click(screen.getByText(/hedge calculator/i));
 
@@ -681,7 +655,6 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
     await user.click(screen.getByText(/hedge calculator/i));
 
@@ -694,7 +667,6 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
     await user.click(screen.getByText(/hedge calculator/i));
     await user.click(screen.getByText(/show.*scenario/i));
@@ -713,7 +685,6 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
     await user.click(screen.getByText(/hedge calculator/i));
     await user.click(screen.getByText(/show.*scenario/i));
@@ -727,7 +698,6 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
     await user.click(screen.getByText(/hedge calculator/i));
 
@@ -747,7 +717,6 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
-    await user.click(screen.getByText(/show.*iron condor/i));
     await fillBasicInputs(user);
     await user.click(screen.getByText(/hedge calculator/i));
 
@@ -755,7 +724,7 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     expect(screen.getByText('IC Delta')).toBeInTheDocument();
   });
 
-  it('shows market regime analysis when toggled', async () => {
+  it('shows market regime analysis is visible by default', async () => {
     const user = userEvent.setup();
     render(<StrikeCalculator />);
 
@@ -764,13 +733,14 @@ describe('StrikeCalculator: Hedge Calculator', () => {
     // The Market Regime section should exist
     expect(screen.getByText(/market regime/i)).toBeInTheDocument();
 
-    // Click the "Show Analysis" button
-    const toggleBtn = screen.getByText(/show analysis/i);
-    await user.click(toggleBtn);
+    // Analysis is shown by default (showRegime defaults to true)
+    expect(screen.getByText(/hide analysis/i)).toBeInTheDocument();
+
+    // Click to hide
+    await user.click(screen.getByText(/hide analysis/i));
     await act(() => wait(50));
 
-    // Button text should change to "Hide Analysis"
-    // This covers line 587: onClick={() => setShowRegime(!showRegime)}
-    expect(screen.getByText(/hide analysis/i)).toBeInTheDocument();
+    // Button text should change to "Show Analysis"
+    expect(screen.getByText(/show analysis/i)).toBeInTheDocument();
   });
 });
