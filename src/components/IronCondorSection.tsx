@@ -2,7 +2,6 @@ import { useState } from 'react';
 import type { Theme } from '../themes';
 import type { DeltaRow, IronCondorLegs, CalculationResults } from '../types';
 import { buildIronCondor } from '../utils/calculator';
-import { exportPnLComparison } from '../utils/exportXlsx';
 import { mkTh, mkTd, fmtDollar } from '../utils/ui-utils';
 import HedgeSection from './HedgeSection';
 
@@ -116,7 +115,9 @@ export default function IronCondorSection({
       {/* Export Button */}
       <button
         onClick={() =>
-          exportPnLComparison({ results, contracts, effectiveRatio, skewPct })
+          import('../utils/exportXlsx').then(({ exportPnLComparison }) =>
+            exportPnLComparison({ results, contracts, effectiveRatio, skewPct }),
+          )
         }
         aria-label="Export P&L comparison to Excel"
         className="border-accent bg-accent-bg text-accent mt-3 flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border-[1.5px] px-4 py-2.5 font-sans text-[13px] font-semibold"

@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+import type * as XLSX from 'xlsx';
 import type { DeltaRow, CalculationResults } from '../types';
 import { buildIronCondor } from './calculator';
 
@@ -18,12 +18,13 @@ interface ExportParams {
  * Sheet 2: "Iron Condor Legs" — all legs for each combo
  * Sheet 3: "Inputs" — captures the inputs used for the export
  */
-export function exportPnLComparison({
+export async function exportPnLComparison({
   results,
   contracts,
   effectiveRatio,
   skewPct,
-}: ExportParams): void {
+}: ExportParams): Promise<void> {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
   const mult = 100 * contracts;
   const deltaRows = results.allDeltas.filter(

@@ -39,8 +39,8 @@ describe('exportPnLComparison', () => {
     vi.clearAllMocks();
   });
 
-  it('calls XLSX.writeFile', () => {
-    exportPnLComparison({
+  it('calls XLSX.writeFile', async () => {
+    await exportPnLComparison({
       results: makeResults(),
       contracts: 1,
       effectiveRatio: 10,
@@ -49,8 +49,8 @@ describe('exportPnLComparison', () => {
     expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
   });
 
-  it('generates filename with timestamp', () => {
-    exportPnLComparison({
+  it('generates filename with timestamp', async () => {
+    await exportPnLComparison({
       results: makeResults(),
       contracts: 1,
       effectiveRatio: 10,
@@ -61,8 +61,8 @@ describe('exportPnLComparison', () => {
     expect(filename).toMatch(/^strike-calc-pnl-\d{4}-\d{2}-\d{2}_\d{4}\.xlsx$/);
   });
 
-  it('creates 3 sheets', () => {
-    exportPnLComparison({
+  it('creates 3 sheets', async () => {
+    await exportPnLComparison({
       results: makeResults(),
       contracts: 1,
       effectiveRatio: 10,
@@ -74,8 +74,8 @@ describe('exportPnLComparison', () => {
   });
 
   describe('Sheet 1: P&L Comparison', () => {
-    it('has correct header row', () => {
-      exportPnLComparison({
+    it('has correct header row', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 5,
         effectiveRatio: 10,
@@ -99,8 +99,8 @@ describe('exportPnLComparison', () => {
       expect(headers).toContain('Monthly Net ($)');
     });
 
-    it('has 126 data rows (7 wing widths × 6 deltas × 3 sides)', () => {
-      exportPnLComparison({
+    it('has 126 data rows (7 wing widths × 6 deltas × 3 sides)', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -113,8 +113,8 @@ describe('exportPnLComparison', () => {
       expect(data.length).toBe(127);
     });
 
-    it('contains all three side types', () => {
-      exportPnLComparison({
+    it('contains all three side types', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -129,8 +129,8 @@ describe('exportPnLComparison', () => {
       expect(sides).toContain('Iron Condor');
     });
 
-    it('contains all wing widths', () => {
-      exportPnLComparison({
+    it('contains all wing widths', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -145,8 +145,8 @@ describe('exportPnLComparison', () => {
       expect(widths).toEqual([5, 10, 15, 20, 25, 30, 50]);
     });
 
-    it('contains all 6 deltas', () => {
-      exportPnLComparison({
+    it('contains all 6 deltas', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -164,8 +164,8 @@ describe('exportPnLComparison', () => {
       expect(deltas).toContain('20Δ');
     });
 
-    it('credits are positive', () => {
-      exportPnLComparison({
+    it('credits are positive', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 10,
         effectiveRatio: 10,
@@ -180,9 +180,9 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('max loss is positive and less than wing width × multiplier × contracts', () => {
+    it('max loss is positive and less than wing width × multiplier × contracts', async () => {
       const contracts = 5;
-      exportPnLComparison({
+      await exportPnLComparison({
         results: makeResults(),
         contracts,
         effectiveRatio: 10,
@@ -198,8 +198,8 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('buying power equals max loss', () => {
-      exportPnLComparison({
+    it('buying power equals max loss', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 10,
         effectiveRatio: 10,
@@ -213,8 +213,8 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('wins to recover is positive', () => {
-      exportPnLComparison({
+    it('wins to recover is positive', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -228,8 +228,8 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('dollar values scale with contracts', () => {
-      exportPnLComparison({
+    it('dollar values scale with contracts', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -240,7 +240,7 @@ describe('exportPnLComparison', () => {
         getSheet(wb1, 'P&L Comparison'),
       );
 
-      exportPnLComparison({
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 10,
         effectiveRatio: 10,
@@ -258,8 +258,8 @@ describe('exportPnLComparison', () => {
       );
     });
 
-    it('PoP is between 0 and 100', () => {
-      exportPnLComparison({
+    it('PoP is between 0 and 100', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -274,8 +274,8 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('RoR is between 0 and 100', () => {
-      exportPnLComparison({
+    it('RoR is between 0 and 100', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -292,8 +292,8 @@ describe('exportPnLComparison', () => {
   });
 
   describe('Sheet 2: IC Summary', () => {
-    it('has 42 rows (7 wing widths × 6 deltas)', () => {
-      exportPnLComparison({
+    it('has 42 rows (7 wing widths × 6 deltas)', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -305,8 +305,8 @@ describe('exportPnLComparison', () => {
       expect(data.length).toBe(42);
     });
 
-    it('has per-side credit columns', () => {
-      exportPnLComparison({
+    it('has per-side credit columns', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 5,
         effectiveRatio: 10,
@@ -321,8 +321,8 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('put credit + call credit ≈ total credit', () => {
-      exportPnLComparison({
+    it('put credit + call credit ≈ total credit', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 5,
         effectiveRatio: 10,
@@ -339,8 +339,8 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('has wins to recover column', () => {
-      exportPnLComparison({
+    it('has wins to recover column', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -354,8 +354,8 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('has monthly projection columns', () => {
-      exportPnLComparison({
+    it('has monthly projection columns', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -373,8 +373,8 @@ describe('exportPnLComparison', () => {
       expect(headers).toContain('Monthly Net ($)');
     });
 
-    it('monthly wins + monthly losses ≈ 22', () => {
-      exportPnLComparison({
+    it('monthly wins + monthly losses ≈ 22', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -388,8 +388,8 @@ describe('exportPnLComparison', () => {
       }
     });
 
-    it('has strike columns', () => {
-      exportPnLComparison({
+    it('has strike columns', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -407,8 +407,8 @@ describe('exportPnLComparison', () => {
   });
 
   describe('Sheet 3: Inputs', () => {
-    it('captures SPY spot', () => {
-      exportPnLComparison({
+    it('captures SPY spot', async () => {
+      await exportPnLComparison({
         results: makeResults(6850),
         contracts: 5,
         effectiveRatio: 10,
@@ -421,8 +421,8 @@ describe('exportPnLComparison', () => {
       expect(flat.some((s) => s.includes('685'))).toBe(true); // 6850/10 = 685
     });
 
-    it('captures contracts count', () => {
-      exportPnLComparison({
+    it('captures contracts count', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 25,
         effectiveRatio: 10,
@@ -435,8 +435,8 @@ describe('exportPnLComparison', () => {
       expect(flat.some((s) => s.includes('25'))).toBe(true);
     });
 
-    it('captures skew percentage', () => {
-      exportPnLComparison({
+    it('captures skew percentage', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -449,8 +449,8 @@ describe('exportPnLComparison', () => {
       expect(flat.some((s) => s.includes('5%'))).toBe(true);
     });
 
-    it('includes methodology notes', () => {
-      exportPnLComparison({
+    it('includes methodology notes', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -465,8 +465,8 @@ describe('exportPnLComparison', () => {
       expect(flat.some((s) => s.includes('trade management'))).toBe(true);
     });
 
-    it('lists all wing widths compared', () => {
-      exportPnLComparison({
+    it('lists all wing widths compared', async () => {
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -521,7 +521,7 @@ describe('exportPnLComparison', () => {
 
       vi.spyOn(calculator, 'buildIronCondor').mockReturnValue(mockIc);
 
-      exportPnLComparison({
+      await exportPnLComparison({
         results: makeResults(),
         contracts: 1,
         effectiveRatio: 10,
@@ -548,67 +548,55 @@ describe('exportPnLComparison', () => {
       vi.mocked(calculator.buildIronCondor).mockRestore();
     });
 
-    it('works with 1 contract', () => {
-      expect(() => {
-        exportPnLComparison({
-          results: makeResults(),
-          contracts: 1,
-          effectiveRatio: 10,
-          skewPct: 3,
-        });
-      }).not.toThrow();
+    it('works with 1 contract', async () => {
+      await exportPnLComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
     });
 
-    it('works with large contract count', () => {
-      expect(() => {
-        exportPnLComparison({
-          results: makeResults(),
-          contracts: 500,
-          effectiveRatio: 10,
-          skewPct: 3,
-        });
-      }).not.toThrow();
+    it('works with large contract count', async () => {
+      await exportPnLComparison({
+        results: makeResults(),
+        contracts: 500,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
     });
 
-    it('works with zero skew', () => {
-      expect(() => {
-        exportPnLComparison({
-          results: makeResults(),
-          contracts: 10,
-          effectiveRatio: 10,
-          skewPct: 0,
-        });
-      }).not.toThrow();
+    it('works with zero skew', async () => {
+      await exportPnLComparison({
+        results: makeResults(),
+        contracts: 10,
+        effectiveRatio: 10,
+        skewPct: 0,
+      });
     });
 
-    it('works with non-default ratio', () => {
-      expect(() => {
-        exportPnLComparison({
-          results: makeResults(),
-          contracts: 10,
-          effectiveRatio: 10.0238,
-          skewPct: 3,
-        });
-      }).not.toThrow();
+    it('works with non-default ratio', async () => {
+      await exportPnLComparison({
+        results: makeResults(),
+        contracts: 10,
+        effectiveRatio: 10.0238,
+        skewPct: 3,
+      });
     });
 
-    it('works with different time inputs', () => {
-      expect(() => {
-        exportPnLComparison({
-          results: makeResults(6850, 0.2, 1),
-          contracts: 10,
-          effectiveRatio: 10,
-          skewPct: 3,
-        });
-      }).not.toThrow();
-      expect(() => {
-        exportPnLComparison({
-          results: makeResults(6850, 0.2, 6),
-          contracts: 10,
-          effectiveRatio: 10,
-          skewPct: 3,
-        });
-      }).not.toThrow();
+    it('works with different time inputs', async () => {
+      await exportPnLComparison({
+        results: makeResults(6850, 0.2, 1),
+        contracts: 10,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
+      await exportPnLComparison({
+        results: makeResults(6850, 0.2, 6),
+        contracts: 10,
+        effectiveRatio: 10,
+        skewPct: 3,
+      });
     });
   });
 });
