@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Theme } from '../themes';
 import { Chip } from './ui';
-import { mkTh, mkTd } from './ui-utils';
+import { mkTh, mkTd } from '../utils/ui-utils';
 import {
   VIX_BUCKETS,
   SURVIVAL_DATA,

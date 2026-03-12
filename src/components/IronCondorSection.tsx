@@ -3,7 +3,7 @@ import type { Theme } from '../themes';
 import type { DeltaRow, IronCondorLegs, CalculationResults } from '../types';
 import { buildIronCondor } from '../utils/calculator';
 import { exportPnLComparison } from '../utils/exportXlsx';
-import { mkTh, mkTd, fmtDollar } from './ui-utils';
+import { mkTh, mkTd, fmtDollar } from '../utils/ui-utils';
 import HedgeSection from './HedgeSection';
 
 interface Props {

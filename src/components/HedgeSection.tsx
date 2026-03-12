@@ -8,7 +8,7 @@ import type {
 } from '../types';
 import { calcHedge } from '../utils/calculator';
 import { HEDGE_DELTA_OPTIONS } from '../constants';
-import { mkTh, mkTd, fmtDollar } from './ui-utils';
+import { mkTh, mkTd, fmtDollar } from '../utils/ui-utils';
 
 interface Props {
   th: Theme;

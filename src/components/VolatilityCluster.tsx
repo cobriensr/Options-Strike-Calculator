@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Theme } from '../themes';
-import { tinyLbl } from './ui-utils';
+import { tinyLbl } from '../utils/ui-utils';
 import {
   getClusterMultiplier,
   CLUSTER_THRESHOLDS,

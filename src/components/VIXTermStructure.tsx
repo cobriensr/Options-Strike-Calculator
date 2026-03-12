@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Theme } from '../themes';
-import { tinyLbl } from './ui-utils';
+import { tinyLbl } from '../utils/ui-utils';
 
 interface Props {
   readonly th: Theme;

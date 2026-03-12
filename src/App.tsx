@@ -21,7 +21,7 @@ import {
 } from './utils/vixStorage';
 import { lightTheme, darkTheme } from './themes';
 import { SectionBox, Chip, ErrorMsg } from './components/ui';
-import { buildChevronUrl, tinyLbl } from './components/ui-utils';
+import { buildChevronUrl, tinyLbl } from './utils/ui-utils';
 import DeltaStrikesTable from './components/DeltaStrikesTable';
 import IronCondorSection from './components/IronCondorSection';
 import ParameterSummary from './components/ParameterSummary';

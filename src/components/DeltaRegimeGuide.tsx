@@ -7,7 +7,7 @@ import {
   getDowMultiplier,
   getTodayDow,
 } from '../data/vixRangeStats';
-import { mkTh, mkTd } from './ui-utils';
+import { mkTh, mkTd } from '../utils/ui-utils';
 
 interface Props {
   readonly th: Theme;
