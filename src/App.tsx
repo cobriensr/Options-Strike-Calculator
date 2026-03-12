@@ -63,7 +63,7 @@ export default function StrikeCalculator() {
   const [vixDataSource, setVixDataSource] = useState('');
   const [vixOHLC, setVixOHLC] = useState<VIXDayData | null>(null);
   const [vixOHLCField, setVixOHLCField] = useState<OHLCField>('smart');
-  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const [tooltipOpen, setTooltipOpen] = useState(true);
   const [wingWidth, setWingWidth] = useState(20);
   const [showIC, setShowIC] = useState(true);
   const [contracts, setContracts] = useState(20);
