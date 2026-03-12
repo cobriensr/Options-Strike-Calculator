@@ -224,16 +224,75 @@ export default function DeltaRegimeGuide({
 
       {/* Recommendation Banner */}
       {recommendedDelta != null &&
-        recommendedDelta > 0 &&
         (() => {
           const maxD = Math.floor(recommendedDelta);
-          const conservD = Math.max(1, Math.floor(maxD * 0.6));
           const intradayTarget = computed[3]; // 90th H-L
           const intradayDelta = intradayTarget
             ? Math.floor(
                 Math.min(intradayTarget.putDelta, intradayTarget.callDelta),
               )
             : null;
+
+          // When ceiling is 0 or below, no safe delta exists — sit out
+          if (maxD <= 0) {
+            return (
+              <div
+                className="mb-3.5 overflow-hidden rounded-[10px]"
+                style={{ border: '1.5px solid ' + th.red + '30' }}
+              >
+                <div
+                  className="flex flex-col gap-2.5 p-3.5 px-4.5 md:flex-row md:items-center md:justify-between"
+                  style={{ backgroundColor: th.red + '10' }}
+                >
+                  <div>
+                    <div
+                      className="mb-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
+                      style={{ color: th.red }}
+                    >
+                      No safe delta {'\u2014'} consider sitting out
+                    </div>
+                    <div className="text-secondary font-sans text-[12px] leading-normal">
+                      The 90th percentile O{'\u2192'}C move (
+                      {settlementTarget!.pct.toFixed(2)}% /{' '}
+                      {settlementTarget!.pts} pts) is too wide for any delta to
+                      clear at this VIX level and time remaining. Selling
+                      premium here means accepting {'\u003C'}90% settlement
+                      survival.
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted mb-0.5 font-sans text-[10px] font-semibold">
+                      CEILING
+                    </div>
+                    <div
+                      className="font-mono text-[28px] leading-none font-extrabold"
+                      style={{ color: th.red }}
+                    >
+                      SIT OUT
+                    </div>
+                  </div>
+                </div>
+                <div
+                  className="text-secondary px-4.5 py-2 font-sans text-[11px] leading-normal"
+                  style={{
+                    backgroundColor: th.red + '08',
+                    borderTop: '1px solid ' + th.red + '15',
+                  }}
+                >
+                  {'\u26A0\uFE0F'}{' '}
+                  <strong style={{ color: th.red }}>Extreme conditions</strong>{' '}
+                  {'\u2014'} if you must trade, use the absolute minimum size
+                  and the widest wings available. But the data says today is one
+                  of the days that breaks iron condors.
+                </div>
+              </div>
+            );
+          }
+
+          // Conservative: 60% of ceiling, but never equal to or above ceiling
+          const conservD = Math.max(1, Math.floor(maxD * 0.6));
+          // Only show conservative if it's meaningfully below ceiling
+          const showConserv = conservD < maxD;
 
           return (
             <div
@@ -282,31 +341,48 @@ export default function DeltaRegimeGuide({
               </div>
 
               {/* Guidance row */}
-              <div
-                className="bg-surface-alt grid grid-cols-1 gap-3 px-4.5 py-2.5 sm:grid-cols-3"
-                style={{ borderTop: '1px solid ' + zoneColor + '20' }}
-              >
-                <GuidanceCell
-                  label="Aggressive"
-                  delta={maxD}
-                  desc={'Ceiling \u2014 90% settle'}
-                  color={zoneColor}
-                />
-                {intradayDelta != null && intradayDelta > 0 && (
-                  <GuidanceCell
-                    label="Moderate"
-                    delta={intradayDelta}
-                    desc="90% intraday safe"
-                    color={th.accent}
-                  />
-                )}
-                <GuidanceCell
-                  label="Conservative"
-                  delta={conservD}
-                  desc="Extra cushion"
-                  color={th.green}
-                />
-              </div>
+              {(() => {
+                const showModerate =
+                  intradayDelta != null &&
+                  intradayDelta > 0 &&
+                  intradayDelta < maxD;
+                const cols = 1 + (showModerate ? 1 : 0) + (showConserv ? 1 : 0);
+                const gridCls =
+                  cols === 3
+                    ? 'grid grid-cols-1 gap-3 sm:grid-cols-3'
+                    : cols === 2
+                      ? 'grid grid-cols-1 gap-3 sm:grid-cols-2'
+                      : 'grid grid-cols-1 gap-3';
+                return (
+                  <div
+                    className={'bg-surface-alt px-4.5 py-2.5 ' + gridCls}
+                    style={{ borderTop: '1px solid ' + zoneColor + '20' }}
+                  >
+                    <GuidanceCell
+                      label="Aggressive"
+                      delta={maxD}
+                      desc={'Ceiling \u2014 90% settle'}
+                      color={zoneColor}
+                    />
+                    {showModerate && (
+                      <GuidanceCell
+                        label="Moderate"
+                        delta={intradayDelta!}
+                        desc="90% intraday safe"
+                        color={th.accent}
+                      />
+                    )}
+                    {showConserv && (
+                      <GuidanceCell
+                        label="Conservative"
+                        delta={conservD}
+                        desc="Extra cushion"
+                        color={th.green}
+                      />
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Position sizing note for elevated regimes */}
               {(bucket.zone === 'caution' ||

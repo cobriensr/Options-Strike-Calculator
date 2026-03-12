@@ -107,9 +107,10 @@ export async function isRateLimited(
  */
 export function getRateLimitKey(req: VercelRequest, endpoint: string): string {
   const forwarded = req.headers['x-forwarded-for'];
-  const ip = typeof forwarded === 'string'
-    ? forwarded.split(',')[0]?.trim() ?? 'unknown'
-    : 'unknown';
+  const ip =
+    typeof forwarded === 'string'
+      ? (forwarded.split(',')[0]?.trim() ?? 'unknown')
+      : 'unknown';
   return `${endpoint}:${ip}`;
 }
 
@@ -127,7 +128,9 @@ export async function rejectIfRateLimited(
   const limited = await isRateLimited(key, maxPerMinute);
   if (limited) {
     res.setHeader('Retry-After', '60');
-    res.status(429).json({ error: 'Too many requests. Try again in 60 seconds.' });
+    res
+      .status(429)
+      .json({ error: 'Too many requests. Try again in 60 seconds.' });
     return true;
   }
   return false;

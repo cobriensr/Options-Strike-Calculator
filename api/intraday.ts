@@ -22,7 +22,12 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { schwabFetch, setCacheHeaders, isMarketOpen, rejectIfNotOwner } from './_lib/api-helpers.js';
+import {
+  schwabFetch,
+  setCacheHeaders,
+  isMarketOpen,
+  rejectIfNotOwner,
+} from './_lib/api-helpers.js';
 
 // ============================================================
 // TYPES
@@ -119,7 +124,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // hours is yesterday. Instead, fetch a 24h window and filter to today's
   // ET date to get the current session's candles.
   const now = new Date();
-  const todayET = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const todayET = now.toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
 
   // Fetch a 24h window. Schwab only returns market-hours candles
   // (needExtendedHoursData=false). We filter to today's date below
@@ -156,7 +163,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const todayCandles = result.data.candles.filter((c) => {
     const d = new Date(c.datetime);
     const etStr = d.toLocaleString('en-US', { timeZone: 'America/New_York' });
-    const etDate = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const etDate = d.toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
     if (etDate !== todayET) return false;
 
     // Parse the ET time — only keep candles from 9:30 AM onward

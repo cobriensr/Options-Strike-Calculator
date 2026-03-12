@@ -116,7 +116,12 @@ export default function IronCondorSection({
       <button
         onClick={() =>
           import('../utils/exportXlsx').then(({ exportPnLComparison }) =>
-            exportPnLComparison({ results, contracts, effectiveRatio, skewPct }),
+            exportPnLComparison({
+              results,
+              contracts,
+              effectiveRatio,
+              skewPct,
+            }),
           )
         }
         aria-label="Export P&L comparison to Excel"

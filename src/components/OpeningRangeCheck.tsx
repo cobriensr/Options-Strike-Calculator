@@ -8,7 +8,8 @@ interface Props {
   readonly vix: number | null;
   readonly spot: number | null; // Current SPX spot from parent
   readonly selectedDate?: string; // For DOW adjustment
-  readonly initialRange?: {      // Auto-fill from live data
+  readonly initialRange?: {
+    // Auto-fill from live data
     readonly high: number;
     readonly low: number;
   };

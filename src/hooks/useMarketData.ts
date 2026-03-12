@@ -50,13 +50,15 @@ export interface MarketDataState {
 // FETCH HELPERS
 // ============================================================
 
-async function fetchJson<T>(url: string): Promise<
-  { data: T } | { error: string; status: number }
-> {
+async function fetchJson<T>(
+  url: string,
+): Promise<{ data: T } | { error: string; status: number }> {
   try {
     const res = await fetch(url, { credentials: 'same-origin' });
     if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      const body = await res
+        .json()
+        .catch(() => ({ error: `HTTP ${res.status}` }));
       return {
         error: body.error || `HTTP ${res.status}`,
         status: res.status,
@@ -171,7 +173,8 @@ export function useMarketData(): MarketDataState {
     };
   }, [data.quotes?.marketOpen]);
 
-  const hasData = data.quotes != null || data.intraday != null || data.yesterday != null;
+  const hasData =
+    data.quotes != null || data.intraday != null || data.yesterday != null;
 
   return {
     data,

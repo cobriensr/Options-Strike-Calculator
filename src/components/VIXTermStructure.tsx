@@ -130,8 +130,10 @@ export default function VIXTermStructure({
 
   // Auto-fill from live data (only populates empty fields)
   useEffect(() => {
-    if (initialVix1d != null && !vix1dInput) setVix1dInput(initialVix1d.toFixed(2));
-    if (initialVix9d != null && !vix9dInput) setVix9dInput(initialVix9d.toFixed(2));
+    if (initialVix1d != null && !vix1dInput)
+      setVix1dInput(initialVix1d.toFixed(2));
+    if (initialVix9d != null && !vix9dInput)
+      setVix9dInput(initialVix9d.toFixed(2));
   }, [initialVix1d, initialVix9d]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const vix1d = Number.parseFloat(vix1dInput);

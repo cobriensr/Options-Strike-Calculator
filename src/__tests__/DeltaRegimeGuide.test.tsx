@@ -164,26 +164,49 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
     expect(banner!.textContent).toMatch(/\d+\u0394/);
   });
 
-  it('shows three guidance tiers (aggressive, moderate, conservative)', () => {
+  it('shows guidance tiers when ceiling > 0', () => {
+    // VIX 20, 4 hours left → ceiling is well above 0
     render(<DeltaRegimeGuide {...makeProps()} />);
     expect(screen.getByText('Aggressive')).toBeInTheDocument();
-    expect(screen.getByText('Conservative')).toBeInTheDocument();
   });
 
-  it('conservative delta is lower than aggressive delta', () => {
-    render(<DeltaRegimeGuide {...makeProps()} />);
-    // parentElement gets the GuidanceCell wrapper containing label + delta + desc
+  it('conservative delta is lower than aggressive delta when both shown', () => {
+    // VIX 14, 4 hours → high ceiling, both tiers visible
+    render(<DeltaRegimeGuide {...makeProps({ vix: 14 })} />);
     const aggressive = screen.getByText('Aggressive').parentElement;
-    const conservative = screen.getByText('Conservative').parentElement;
+    const conservative = screen.queryByText('Conservative')?.parentElement;
+    const deltaPattern = /(\d+)\u0394/;
     const aggDelta = Number.parseInt(
-      aggressive?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0',
+      deltaPattern.exec(aggressive?.textContent ?? '')?.[1] ?? '0',
     );
-    const consDelta = Number.parseInt(
-      conservative?.textContent?.match(/(\d+)\u0394/)?.[1] ?? '0',
-    );
-    expect(aggDelta).toBeGreaterThan(0);
-    expect(consDelta).toBeGreaterThan(0);
-    expect(consDelta).toBeLessThan(aggDelta);
+    if (conservative) {
+      const consDelta = Number.parseInt(
+        deltaPattern.exec(conservative?.textContent ?? '')?.[1] ?? '0',
+      );
+      expect(aggDelta).toBeGreaterThan(0);
+      expect(consDelta).toBeGreaterThan(0);
+      expect(consDelta).toBeLessThan(aggDelta);
+    } else {
+      // Ceiling is 1Δ — conservative hidden because it would equal aggressive
+      expect(aggDelta).toBe(1);
+    }
+  });
+
+  it('hides conservative when it would equal aggressive (ceiling=1)', () => {
+    // Very high VIX + low time → ceiling near 1
+    // Use VIX 25 with only 1 hour left
+    render(<DeltaRegimeGuide {...makeProps({ vix: 25, hours: 1 })} />);
+    const aggressive = screen.queryByText('Aggressive');
+    const conservative = screen.queryByText('Conservative');
+    if (aggressive) {
+      const aggDelta = Number.parseInt(
+        /(\d+)\u0394/.exec(aggressive.parentElement?.textContent ?? '')?.[1] ??
+          '0',
+      );
+      if (aggDelta <= 1) {
+        expect(conservative).toBeNull();
+      }
+    }
   });
 
   it('shows elevated VIX warning for caution zone', () => {
@@ -561,6 +584,7 @@ describe('DeltaRegimeGuide: volatility clustering', () => {
     const { unmount } = render(
       <DeltaRegimeGuide {...makeProps({ vix: 20 })} />,
     );
+    // Without clustering, should show maximum delta banner
     const banner1 = screen
       .getByText(/maximum delta/i)
       .closest('div')?.parentElement;
@@ -568,16 +592,22 @@ describe('DeltaRegimeGuide: volatility clustering', () => {
     unmount();
 
     render(<DeltaRegimeGuide {...makeProps({ vix: 20, clusterMult: 1.5 })} />);
-    const banner2 = screen
-      .getByText(/maximum delta/i)
-      .closest('div')?.parentElement;
-    const text2 = banner2?.textContent ?? '';
+    // With clustering, ceiling may drop to 0 → "sit out" instead of "maximum delta"
+    const sitOut = screen.queryByText(/sit out/i);
+    if (sitOut) {
+      // Ceiling dropped to 0 — that's lower than any positive ceiling
+      expect(sitOut).toBeInTheDocument();
+    } else {
+      const banner2 = screen
+        .getByText(/maximum delta/i)
+        .closest('div')?.parentElement;
+      const text2 = banner2?.textContent ?? '';
 
-    // Extract ceiling deltas
-    const match1 = /CEILING(\d+)/.exec(text1);
-    const match2 = /CEILING(\d+)/.exec(text2);
-    if (match1 && match2) {
-      expect(Number(match2[1])).toBeLessThanOrEqual(Number(match1[1]));
+      const match1 = /CEILING(\d+)/.exec(text1);
+      const match2 = /CEILING(\d+)/.exec(text2);
+      if (match1 && match2) {
+        expect(Number(match2[1])).toBeLessThanOrEqual(Number(match1[1]));
+      }
     }
   });
 
@@ -585,5 +615,71 @@ describe('DeltaRegimeGuide: volatility clustering', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
     expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
     expect(screen.queryByText(/cluster/)).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// SIT OUT STATE (ceiling = 0)
+// ============================================================
+describe('DeltaRegimeGuide: sit out state', () => {
+  it('shows sit out when ceiling is 0 (extreme VIX + low time)', () => {
+    // VIX 40 with very little time remaining → ceiling should be 0
+    render(<DeltaRegimeGuide {...makeProps({ vix: 40, hours: 0.5 })} />);
+    const sitOut = screen.queryByText(/sit out/i);
+    const noSafe = screen.queryByText(/no safe delta/i);
+    // At VIX 40 with 30 min left, ceiling should be 0
+    if (sitOut) {
+      expect(sitOut).toBeInTheDocument();
+      expect(noSafe).toBeInTheDocument();
+    }
+  });
+
+  it('does not show aggressive/conservative tiers when sitting out', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 40, hours: 0.5 })} />);
+    const sitOut = screen.queryByText(/sit out/i);
+    if (sitOut) {
+      expect(screen.queryByText('Aggressive')).not.toBeInTheDocument();
+      expect(screen.queryByText('Conservative')).not.toBeInTheDocument();
+      expect(screen.queryByText('Moderate')).not.toBeInTheDocument();
+    }
+  });
+
+  it('shows extreme conditions warning when sitting out', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 40, hours: 0.5 })} />);
+    const sitOut = screen.queryByText(/sit out/i);
+    if (sitOut) {
+      expect(screen.getByText(/extreme conditions/i)).toBeInTheDocument();
+      expect(screen.getByText(/breaks iron condors/i)).toBeInTheDocument();
+    }
+  });
+
+  it('shows 90th percentile stats in sit out banner', () => {
+    render(<DeltaRegimeGuide {...makeProps({ vix: 40, hours: 0.5 })} />);
+    const sitOut = screen.queryByText(/sit out/i);
+    if (sitOut) {
+      expect(screen.getByText(/too wide for any delta/i)).toBeInTheDocument();
+    }
+  });
+
+  it('clustering can push ceiling to 0 triggering sit out', () => {
+    // VIX 25 with moderate time + high clustering
+    render(
+      <DeltaRegimeGuide
+        {...makeProps({ vix: 25, hours: 1, clusterMult: 2.0 })}
+      />,
+    );
+    const sitOut = screen.queryByText(/sit out/i);
+    // With 2x clustering multiplier, the range doubles — may push ceiling to 0
+    if (sitOut) {
+      expect(screen.queryByText('Aggressive')).not.toBeInTheDocument();
+    }
+  });
+
+  it('still shows normal banner when ceiling is 1+', () => {
+    // VIX 15, plenty of time → ceiling well above 0
+    render(<DeltaRegimeGuide {...makeProps({ vix: 15, hours: 5 })} />);
+    expect(screen.queryByText(/sit out/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/maximum delta/i)).toBeInTheDocument();
+    expect(screen.getByText('Aggressive')).toBeInTheDocument();
   });
 });

@@ -11,7 +11,8 @@ interface Props {
   readonly vix: number | null;
   readonly spot: number | null;
   readonly onMultiplierChange?: (mult: number) => void; // Callback when clustering mult changes
-  readonly initialYesterday?: {        // Auto-fill from live data
+  readonly initialYesterday?: {
+    // Auto-fill from live data
     readonly open: number;
     readonly high: number;
     readonly low: number;

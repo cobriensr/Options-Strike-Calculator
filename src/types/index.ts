@@ -4,6 +4,15 @@ export type DeltaTarget = 5 | 8 | 10 | 12 | 15 | 20;
 /** IV input modes */
 export type IVMode = 'vix' | 'direct';
 
+/** AM/PM selector */
+export type AmPm = 'AM' | 'PM';
+
+/** Timezone selector */
+export type Timezone = 'ET' | 'CT';
+
+/** OHLC field selector for VIX date lookup */
+export type OHLCField = 'smart' | 'open' | 'high' | 'low' | 'close';
+
 /** Result of market time validation */
 export interface TimeValidation {
   readonly valid: boolean;

@@ -281,7 +281,14 @@ describe('VIXTermStructure: auto-fill from live data', () => {
   });
 
   it('auto-fills both VIX1D and VIX9D', () => {
-    render(<VIXTermStructure th={lightTheme} vix={20} initialVix1d={18.99} initialVix9d={24.44} />);
+    render(
+      <VIXTermStructure
+        th={lightTheme}
+        vix={20}
+        initialVix1d={18.99}
+        initialVix9d={24.44}
+      />,
+    );
     const vix1dInput = screen.getByLabelText(/vix1d/i) as HTMLInputElement;
     const vix9dInput = screen.getByLabelText(/vix9d/i) as HTMLInputElement;
     expect(vix1dInput.value).toBe('18.99');
