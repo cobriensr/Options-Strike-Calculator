@@ -8,7 +8,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getAccessToken } from './schwab.js';
+import { getAccessToken, redis } from './schwab.js';
 
 const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 
@@ -66,6 +66,68 @@ export function rejectIfNotOwner(
     // Don't cache 401s at the edge — each request should check the cookie
     res.setHeader('Cache-Control', 'no-store');
     res.status(401).json({ error: 'Not authenticated' });
+    return true;
+  }
+  return false;
+}
+
+// ============================================================
+// RATE LIMITING
+// ============================================================
+
+/**
+ * Check if a request should be rate-limited.
+ * Uses Upstash Redis to track request counts per key per minute.
+ *
+ * Used on auth endpoints to prevent brute-force and abuse.
+ * Fails open (returns false) if Redis is unavailable — don't block
+ * legitimate requests if the rate limiter itself is down.
+ *
+ * @param key - Unique identifier (e.g. IP address, endpoint name)
+ * @param maxPerMinute - Maximum requests allowed per 60-second window
+ * @returns true if the request should be blocked
+ */
+export async function isRateLimited(
+  key: string,
+  maxPerMinute: number = 5,
+): Promise<boolean> {
+  try {
+    const redisKey = `ratelimit:${key}`;
+    const count = await redis.incr(redisKey);
+    if (count === 1) await redis.expire(redisKey, 60);
+    return count > maxPerMinute;
+  } catch {
+    return false; // fail open
+  }
+}
+
+/**
+ * Extract a rate-limit key from the request.
+ * Uses X-Forwarded-For (set by Vercel) or falls back to a generic key.
+ */
+export function getRateLimitKey(req: VercelRequest, endpoint: string): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  const ip = typeof forwarded === 'string'
+    ? forwarded.split(',')[0]?.trim() ?? 'unknown'
+    : 'unknown';
+  return `${endpoint}:${ip}`;
+}
+
+/**
+ * Guard an endpoint with rate limiting.
+ * Returns true if the request was rejected (response already sent).
+ */
+export async function rejectIfRateLimited(
+  req: VercelRequest,
+  res: VercelResponse,
+  endpoint: string,
+  maxPerMinute: number = 5,
+): Promise<boolean> {
+  const key = getRateLimitKey(req, endpoint);
+  const limited = await isRateLimited(key, maxPerMinute);
+  if (limited) {
+    res.setHeader('Retry-After', '60');
+    res.status(429).json({ error: 'Too many requests. Try again in 60 seconds.' });
     return true;
   }
   return false;

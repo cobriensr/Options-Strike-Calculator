@@ -28,8 +28,9 @@ import { Redis } from '@upstash/redis';
  *   UPSTASH_REDIS_REST_TOKEN
  *
  * Uses the REST-based client (no persistent connections needed).
+ * Exported so api-helpers.ts can use it for rate limiting.
  */
-const redis = new Redis({
+export const redis = new Redis({
   url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || '',
   token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '',
 });
