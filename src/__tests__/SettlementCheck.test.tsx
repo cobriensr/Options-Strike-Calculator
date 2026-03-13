@@ -229,7 +229,7 @@ describe('SettlementCheck', () => {
     ).toBeGreaterThanOrEqual(1);
   });
 
-  it('shows call breach with SPX high when call is breached', () => {
+  it('shows call breach with settled-at text when call is breached and settlement outside strikes', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -237,19 +237,22 @@ describe('SettlementCheck', () => {
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
           5: {
-            callStrike: 5825,
+            callStrike: 5810,
             putStrike: 5700,
-            callSnapped: 5825,
+            callSnapped: 5810,
             putSnapped: 5700,
           },
         })}
       />,
     );
-    expect(screen.getByText(/Call breached by 5 pts/)).toBeInTheDocument();
-    expect(screen.getByText(/SPX hit 5830/)).toBeInTheDocument();
+    // callSnapped=5810, remainingHigh=5830, callCushion=-20, settlement=5818 > 5810 → loss
+    expect(screen.getByText(/Call breached by 20 pts/)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/settled at 5818/).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
-  it('shows put breach with SPX low when put is breached', () => {
+  it('shows put breach with settled-at text when put is breached and settlement outside strikes', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -258,15 +261,18 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas({
           5: {
             callStrike: 5900,
-            putStrike: 5810,
+            putStrike: 5820,
             callSnapped: 5900,
-            putSnapped: 5810,
+            putSnapped: 5820,
           },
         })}
       />,
     );
-    expect(screen.getByText(/Put breached by 5 pts/)).toBeInTheDocument();
-    expect(screen.getByText(/SPX hit 5805/)).toBeInTheDocument();
+    // putSnapped=5820, remainingLow=5805, putCushion=-15, settlement=5818 < 5820 → loss
+    expect(screen.getByText(/Put breached by 15 pts/)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/settled at 5818/).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('shows partial survival verdict', () => {
@@ -277,26 +283,30 @@ describe('SettlementCheck', () => {
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
           5: {
-            callStrike: 5825,
+            callStrike: 5810,
             putStrike: 5700,
-            callSnapped: 5825,
+            callSnapped: 5810,
             putSnapped: 5700,
           },
           8: {
-            callStrike: 5828,
+            callStrike: 5815,
             putStrike: 5720,
-            callSnapped: 5830,
+            callSnapped: 5815,
             putSnapped: 5720,
           },
         })}
       />,
     );
-    // 5Δ call 5825 < high 5830 → breached
-    // 8Δ call 5830 <= high 5830 → breached
-    expect(screen.getByText(/3\/5 Survived/)).toBeInTheDocument();
+    // 5Δ callSnapped=5810, settlement=5818 > 5810 → loss (not settledSafe)
+    // 8Δ callSnapped=5815, settlement=5818 > 5815 → loss (not settledSafe)
+    // 10,12,15Δ → settledSafe
+    // settledSafeCount=3, settledLossCount=2
+    expect(
+      screen.getByText(/3\/5 max profit at settlement/),
+    ).toBeInTheDocument();
   });
 
-  it('shows all breached verdict when none survive', () => {
+  it('shows all settled beyond strikes verdict when none settle safe', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -304,39 +314,40 @@ describe('SettlementCheck', () => {
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
           5: {
-            callStrike: 5825,
-            putStrike: 5810,
-            callSnapped: 5825,
-            putSnapped: 5810,
+            callStrike: 5815,
+            putStrike: 5700,
+            callSnapped: 5815,
+            putSnapped: 5700,
           },
           8: {
-            callStrike: 5825,
-            putStrike: 5810,
-            callSnapped: 5825,
-            putSnapped: 5810,
+            callStrike: 5815,
+            putStrike: 5700,
+            callSnapped: 5815,
+            putSnapped: 5700,
           },
           10: {
-            callStrike: 5825,
-            putStrike: 5810,
-            callSnapped: 5825,
-            putSnapped: 5810,
+            callStrike: 5815,
+            putStrike: 5700,
+            callSnapped: 5815,
+            putSnapped: 5700,
           },
           12: {
-            callStrike: 5825,
-            putStrike: 5810,
-            callSnapped: 5825,
-            putSnapped: 5810,
+            callStrike: 5815,
+            putStrike: 5700,
+            callSnapped: 5815,
+            putSnapped: 5700,
           },
           15: {
-            callStrike: 5825,
-            putStrike: 5810,
-            callSnapped: 5825,
-            putSnapped: 5810,
+            callStrike: 5815,
+            putStrike: 5700,
+            callSnapped: 5815,
+            putSnapped: 5700,
           },
         })}
       />,
     );
-    expect(screen.getByText(/All Breached/)).toBeInTheDocument();
+    // callSnapped=5815, settlement=5818 > 5815 → all settledSafe=false
+    expect(screen.getByText(/All settled beyond strikes/)).toBeInTheDocument();
   });
 
   it('only renders rows for deltas in the target list', () => {

@@ -129,7 +129,7 @@ describe('StrikeCalculator: IV mode switching', () => {
     await renderApp();
 
     await user.click(screen.getByText('Direct IV'));
-    expect(screen.getByLabelText(/as decimal/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Direct IV/i)).toBeInTheDocument();
   });
 
   it('switches back to VIX mode', async () => {

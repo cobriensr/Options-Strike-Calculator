@@ -31,6 +31,7 @@ interface SettlementResult {
   delta: number;
   callStrike: number;
   putStrike: number;
+  /** Never touched either strike intraday */
   survived: boolean;
   callBreached: boolean;
   putBreached: boolean;
@@ -39,6 +40,8 @@ interface SettlementResult {
   settlement: number;
   remainingHigh: number;
   remainingLow: number;
+  /** Settlement price ended between strikes (max profit even if breached intraday) */
+  settledSafe: boolean;
 }
 
 function computeSettlement(
@@ -64,6 +67,7 @@ function computeSettlement(
   const putCushion = remainingLow - putStrike;
   const callBreached = remainingHigh >= callStrike;
   const putBreached = remainingLow <= putStrike;
+  const settledSafe = settlement > putStrike && settlement < callStrike;
 
   return {
     delta,
@@ -77,6 +81,7 @@ function computeSettlement(
     settlement: Math.round(settlement * 100) / 100,
     remainingHigh: Math.round(remainingHigh * 100) / 100,
     remainingLow: Math.round(remainingLow * 100) / 100,
+    settledSafe,
   };
 }
 
@@ -132,8 +137,45 @@ export default function SettlementCheck({
   const settleMove = settlement - entryPrice;
 
   const survived = results.filter((r) => r.survived).length;
+  const settledSafeCount = results.filter((r) => r.settledSafe).length;
+  const settledLossCount = results.filter((r) => !r.settledSafe).length;
+  const breachedButSafe = results.filter(
+    (r) => !r.survived && r.settledSafe,
+  ).length;
   const total = results.length;
   const displayTime = entryTimeLabel ?? snapshot.candle.time;
+
+  // Determine overall verdict color
+  const verdictColor =
+    settledSafeCount === total
+      ? th.green
+      : settledLossCount === 0
+        ? '#E8A317'
+        : th.red;
+  const verdictBg =
+    settledSafeCount === total
+      ? th.green + '0C'
+      : settledLossCount === 0
+        ? '#E8A3170C'
+        : th.red + '0C';
+  const verdictBorder =
+    settledSafeCount === total
+      ? th.green + '25'
+      : settledLossCount === 0
+        ? '#E8A31725'
+        : th.red + '25';
+
+  // Verdict text
+  let verdictText: string;
+  if (survived === total) {
+    verdictText = '\u2705 All Survived';
+  } else if (settledSafeCount === total) {
+    verdictText = `\u26A0\uFE0F ${breachedButSafe} breached intraday, all settled safe \u2014 max profit`;
+  } else if (settledLossCount === total) {
+    verdictText = `\u274C All settled beyond strikes`;
+  } else {
+    verdictText = `${settledSafeCount}/${total} max profit at settlement (${settledLossCount} loss)`;
+  }
 
   return (
     <div>
@@ -145,32 +187,16 @@ export default function SettlementCheck({
       <div
         className="mb-3 rounded-[10px] p-3.5"
         style={{
-          backgroundColor:
-            survived === total
-              ? th.green + '0C'
-              : survived >= total / 2
-                ? '#E8A3170C'
-                : th.red + '0C',
-          border: `1px solid ${survived === total ? th.green + '25' : survived >= total / 2 ? '#E8A31725' : th.red + '25'}`,
+          backgroundColor: verdictBg,
+          border: `1px solid ${verdictBorder}`,
         }}
       >
         <div className="mb-2 flex items-center gap-2">
           <span
             className="font-sans text-[13px] font-bold"
-            style={{
-              color:
-                survived === total
-                  ? th.green
-                  : survived >= total / 2
-                    ? '#E8A317'
-                    : th.red,
-            }}
+            style={{ color: verdictColor }}
           >
-            {survived === total
-              ? '\u2705 All Survived'
-              : survived === 0
-                ? '\u274C All Breached'
-                : `\u26A0\uFE0F ${survived}/${total} Survived`}
+            {verdictText}
           </span>
         </div>
 
@@ -252,16 +278,18 @@ function DeltaRow({
   const barLeft = lowPct;
   const barWidth = Math.max(1, highPct - lowPct);
 
-  const barColor = r.survived ? th.green : th.red;
+  // Color logic: green = survived, amber = breached but settled safe, red = loss
+  const rowColor = r.survived ? th.green : r.settledSafe ? '#E8A317' : th.red;
+  const barColor = r.survived ? th.green : r.settledSafe ? '#E8A317' : th.red;
 
   return (
     <div className="bg-surface border-edge overflow-hidden rounded-lg border">
       <div className="flex items-center gap-3 p-2.5 pb-2">
-        {/* Delta + icon */}
+        {/* Delta label */}
         <div className="w-[44px] shrink-0">
           <span
             className="font-mono text-[14px] font-bold"
-            style={{ color: r.survived ? th.green : th.red }}
+            style={{ color: rowColor }}
           >
             {r.delta}Δ
           </span>
@@ -276,13 +304,26 @@ function DeltaRow({
                 (nearest: {closerSide} side)
               </span>
             </span>
+          ) : r.settledSafe ? (
+            <span
+              className="font-sans text-[11px]"
+              style={{ color: '#E8A317' }}
+            >
+              Breached intraday, settled safe
+              <span
+                className="font-sans text-[10px] font-bold"
+                style={{ color: th.green }}
+              >
+                {' \u2014 max profit'}
+              </span>
+            </span>
           ) : (
             <span className="font-sans text-[11px]" style={{ color: th.red }}>
               {r.callBreached && r.putBreached
-                ? `Both sides breached \u2014 call by ${Math.abs(r.callCushion).toFixed(0)}, put by ${Math.abs(r.putCushion).toFixed(0)}`
+                ? `Both sides breached \u2014 settled at ${r.settlement.toFixed(0)}`
                 : r.callBreached
-                  ? `Call breached by ${Math.abs(r.callCushion).toFixed(0)} pts (SPX hit ${remainingHigh.toFixed(0)})`
-                  : `Put breached by ${Math.abs(r.putCushion).toFixed(0)} pts (SPX hit ${remainingLow.toFixed(0)})`}
+                  ? `Call breached by ${Math.abs(r.callCushion).toFixed(0)} pts \u2014 settled at ${r.settlement.toFixed(0)}`
+                  : `Put breached by ${Math.abs(r.putCushion).toFixed(0)} pts \u2014 settled at ${r.settlement.toFixed(0)}`}
             </span>
           )}
         </div>
@@ -309,8 +350,8 @@ function DeltaRow({
             {/* Actual price range — with tooltip on hover */}
             <div
               role="img"
-              aria-label={`Price range: Low ${remainingLow.toFixed(2)}, High ${remainingHigh.toFixed(2)}, Range ${(remainingHigh - remainingLow).toFixed(2)} pts`}
-              className="absolute top-0 h-full rounded-full"
+              aria-label={`Price range: $${remainingLow.toFixed(2)} to $${remainingHigh.toFixed(2)}`}
+              className="absolute top-0 h-full cursor-pointer rounded-full"
               style={{
                 left: `${barLeft}%`,
                 width: `${barWidth}%`,
@@ -350,8 +391,8 @@ function DeltaRow({
                 className="absolute top-0 left-0 h-full rounded-l-full"
                 style={{
                   width: `${Math.min(20, Math.abs((remainingLow - r.putStrike) / width) * 100)}%`,
-                  backgroundColor: th.red + '40',
-                  borderLeft: `2px solid ${th.red}`,
+                  backgroundColor: rowColor + '40',
+                  borderLeft: `2px solid ${rowColor}`,
                 }}
               />
             )}
@@ -360,21 +401,20 @@ function DeltaRow({
                 className="absolute top-0 right-0 h-full rounded-r-full"
                 style={{
                   width: `${Math.min(20, Math.abs((remainingHigh - r.callStrike) / width) * 100)}%`,
-                  backgroundColor: th.red + '40',
-                  borderRight: `2px solid ${th.red}`,
+                  backgroundColor: rowColor + '40',
+                  borderRight: `2px solid ${rowColor}`,
                 }}
               />
             )}
           </div>
 
-          {/* Cushion labels below the bar:
-              Put side = negative (below entry), Call side = positive (above entry) */}
+          {/* Cushion labels below the bar */}
           <div className="mt-0.5 flex justify-between font-mono text-[8px]">
-            <span style={{ color: r.putBreached ? th.red : th.textMuted }}>
+            <span style={{ color: r.putBreached ? rowColor : th.textMuted }}>
               {r.putCushion > 0 ? '\u2212' : '+'}
               {Math.abs(r.putCushion).toFixed(0)}
             </span>
-            <span style={{ color: r.callBreached ? th.red : th.textMuted }}>
+            <span style={{ color: r.callBreached ? rowColor : th.textMuted }}>
               {r.callCushion >= 0 ? '+' : '\u2212'}
               {Math.abs(r.callCushion).toFixed(0)}
             </span>

@@ -39,12 +39,16 @@ function makeProps(
 describe('DeltaRegimeGuide: rendering', () => {
   it('renders without crashing', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/delta guide/i).length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it('renders in dark mode', () => {
     render(<DeltaRegimeGuide {...makeProps()} th={darkTheme} />);
-    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/delta guide/i).length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it('returns null for negative VIX', () => {
@@ -330,7 +334,9 @@ describe('DeltaRegimeGuide: delta vs. threshold matrix', () => {
 
   it('shows footnote explaining checkmarks', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    expect(screen.getByText(/further from spot.*safe/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/clears the historical range threshold/i),
+    ).toBeInTheDocument();
   });
 });
 
@@ -418,19 +424,25 @@ describe('DeltaRegimeGuide: edge cases', () => {
     const boundaries = [12, 15, 18, 20, 25, 30, 40];
     for (const vix of boundaries) {
       const { unmount } = render(<DeltaRegimeGuide {...makeProps({ vix })} />);
-      expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/delta guide/i).length).toBeGreaterThanOrEqual(
+        1,
+      );
       unmount();
     }
   });
 
   it('handles very high VIX (80)', () => {
     render(<DeltaRegimeGuide {...makeProps({ vix: 80 })} />);
-    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/delta guide/i).length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it('handles fractional VIX', () => {
     render(<DeltaRegimeGuide {...makeProps({ vix: 19.73 })} />);
-    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/delta guide/i).length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it('handles near-close time (0.25 hours)', () => {
@@ -523,7 +535,9 @@ describe('DeltaRegimeGuide: day-of-week adjustment', () => {
           })}
         />,
       );
-      expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/delta guide/i).length).toBeGreaterThanOrEqual(
+        1,
+      );
       unmount();
     }
   });
@@ -613,7 +627,9 @@ describe('DeltaRegimeGuide: volatility clustering', () => {
 
   it('works without clusterMult prop (defaults to 1.0)', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    expect(screen.getByText(/delta guide/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/delta guide/i).length).toBeGreaterThanOrEqual(
+      1,
+    );
     expect(screen.queryByText(/cluster/)).not.toBeInTheDocument();
   });
 });

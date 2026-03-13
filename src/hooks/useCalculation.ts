@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import type { IVMode, CalculationResults } from '../types';
 import { IV_MODES } from '../constants';
 import {
-  validateMarketTime,
   calcTimeToExpiry,
   resolveIV,
   calcAllDeltas,
@@ -30,6 +29,7 @@ export function useCalculation(
   timezone: Timezone,
   spxRatio: number,
   skewPct: number,
+  earlyCloseHourET?: number,
 ): UseCalculationReturn {
   const [results, setResults] = useState<CalculationResults | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -59,9 +59,18 @@ export function useCalculation(
     } else {
       let h24 = to24Hour(h, timeAmPm);
       if (timezone === 'CT') h24 += 1;
-      const timeResult = validateMarketTime(h24, m);
-      if (!timeResult.valid && timeResult.error)
-        newErrors['time'] = timeResult.error;
+
+      // Early close days: market closes at 1:00 PM ET instead of 4:00 PM ET
+      const closeMinutes = earlyCloseHourET ? earlyCloseHourET * 60 : 16 * 60; // 4:00 PM ET default
+      const totalMinutes = h24 * 60 + m;
+
+      if (totalMinutes < 9 * 60 + 30) {
+        newErrors['time'] = 'Before market open (9:30 AM ET)';
+      } else if (totalMinutes >= closeMinutes) {
+        newErrors['time'] = earlyCloseHourET
+          ? `At or after early close (${earlyCloseHourET > 12 ? earlyCloseHourET - 12 : earlyCloseHourET}:00 PM ET)`
+          : 'At or after market close (4:00 PM ET)';
+      }
     }
 
     let sigma: number | null = null;
@@ -91,8 +100,13 @@ export function useCalculation(
     if (Object.keys(newErrors).length === 0 && spyInput > 0 && sigma != null) {
       let h24 = to24Hour(h, timeAmPm);
       if (timezone === 'CT') h24 += 1;
-      const { hoursRemaining } = validateMarketTime(h24, m);
-      if (hoursRemaining != null) {
+
+      // Compute hours remaining using actual close time (early close or standard)
+      const closeMinutes = earlyCloseHourET ? earlyCloseHourET * 60 : 16 * 60;
+      const totalMinutes = h24 * 60 + m;
+      const hoursRemaining = (closeMinutes - totalMinutes) / 60;
+
+      if (hoursRemaining > 0) {
         const T = calcTimeToExpiry(hoursRemaining);
         const allDeltas = calcAllDeltas(
           spot,
@@ -118,6 +132,7 @@ export function useCalculation(
     timezone,
     effectiveRatio,
     skewPct,
+    earlyCloseHourET,
   ]);
 
   return { results, errors };

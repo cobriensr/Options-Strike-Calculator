@@ -1,6 +1,7 @@
 import type { Theme } from '../themes';
 import type { DeltaRow, DeltaRowError } from '../types';
 import { calcBSDelta, calcScaledSkew } from '../utils/calculator';
+import { DELTA_Z_SCORES, DELTA_OPTIONS } from '../constants';
 import {
   findBucket,
   estimateRange,
@@ -158,6 +159,27 @@ export default function DeltaRegimeGuide({
 
   // Build the "your deltas" matrix
   const deltaRows = allDeltas.filter((r): r is DeltaRow => !('error' in r));
+
+  // Compute guide-consistent strike distances using VIX × 1.15 σ.
+  // The user's actual strikes may use VIX1D (tighter), but the regime table
+  // must compare against VIX-based thresholds using VIX-based strikes.
+  const sqrtT = Math.sqrt(T);
+  const guideDistances = new Map<number, { putPct: string; callPct: string }>();
+  for (const d of DELTA_OPTIONS) {
+    const z = DELTA_Z_SCORES[d];
+    if (z == null) continue;
+    const sk = calcScaledSkew(skew, z);
+    const pSigma = sigma * (1 + sk);
+    const cSigma = sigma * (1 - sk);
+    const pDrift = -(pSigma * pSigma * T) / 2;
+    const cDrift = -(cSigma * cSigma * T) / 2;
+    const putStrike = spot * Math.exp(-z * pSigma * sqrtT + pDrift);
+    const callStrike = spot * Math.exp(z * cSigma * sqrtT + cDrift);
+    guideDistances.set(d, {
+      putPct: (((spot - putStrike) / spot) * 100).toFixed(2),
+      callPct: (((callStrike - spot) / spot) * 100).toFixed(2),
+    });
+  }
 
   // Zone color
   const zoneColor =
@@ -525,9 +547,14 @@ export default function DeltaRegimeGuide({
               </thead>
               <tbody>
                 {deltaRows.map((r, i) => {
-                  const putPct = Number.parseFloat(r.putPct);
-                  const callPct = Number.parseFloat(r.callPct);
-                  // Use the narrower of put/call distance for threshold checks (conservative)
+                  // Use guide-consistent distances (VIX × 1.15 σ) for threshold comparison
+                  const gd = guideDistances.get(r.delta);
+                  const putPct = gd
+                    ? Number.parseFloat(gd.putPct)
+                    : Number.parseFloat(r.putPct);
+                  const callPct = gd
+                    ? Number.parseFloat(gd.callPct)
+                    : Number.parseFloat(r.callPct);
                   const minPct = Math.min(putPct, callPct);
                   return (
                     <tr
@@ -541,10 +568,10 @@ export default function DeltaRegimeGuide({
                         {'\u0394'}
                       </td>
                       <td className={`${mkTd()} text-danger text-right`}>
-                        {r.putPct}%
+                        {gd ? gd.putPct : r.putPct}%
                       </td>
                       <td className={`${mkTd()} text-success text-right`}>
-                        {r.callPct}%
+                        {gd ? gd.callPct : r.callPct}%
                       </td>
                       {computed.map((c, ci) => (
                         <td
@@ -570,10 +597,11 @@ export default function DeltaRegimeGuide({
           </div>
 
           <p className="text-muted mt-1.5 text-[11px] italic">
-            {'\u2713'} = your short strike is further from spot than the
-            historical range threshold (safe). {'\u2717'} = strike is within the
-            threshold (at risk). Checks use the narrower side (min of put/call
-            distance) for conservative evaluation.
+            {'\u2713'} = strike clears the historical range threshold (safe).{' '}
+            {'\u2717'} = within the threshold (at risk). Put/Call % and checks
+            use VIX {'\u00D7'} 1.15 {'\u03C3'} to match the Delta Guide
+            {'\u2019'}s own thresholds. Your actual VIX1D-based strikes may
+            differ.
           </p>
         </>
       )}

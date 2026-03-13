@@ -10,6 +10,7 @@ import { useMarketData } from './hooks/useMarketData';
 import { useHistoryData } from './hooks/useHistoryData';
 import { useVix1dData } from './hooks/useVix1dData';
 import { to24Hour } from './utils/calculator';
+import { getEarlyCloseHourET } from './data/eventCalendar';
 import VixUploadSection from './components/VixUploadSection';
 import DateLookupSection from './components/DateLookupSection';
 import SpotPriceSection from './components/SpotPriceSection';
@@ -91,6 +92,7 @@ export default function StrikeCalculator() {
     timezone,
     spxRatio,
     skewPct,
+    getEarlyCloseHourET(vix.selectedDate),
   );
 
   // Auto-fill from live Schwab data (owner-only, silently skipped for public)

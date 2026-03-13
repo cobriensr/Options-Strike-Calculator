@@ -180,19 +180,51 @@ export default function IVInputSection({
         </div>
       ) : (
         <div>
-          <label htmlFor="direct-iv" className={tinyLbl}>
-            {'\u03C3'} as decimal (e.g. 0.22 for 22%)
-          </label>
-          <input
-            id="direct-iv"
-            type="text"
-            inputMode="decimal"
-            placeholder="e.g. 0.22"
-            value={directIVInput}
-            onChange={(e) => onDirectIVChange(e.target.value)}
-            aria-invalid={!!errors['iv']}
-            className={inputCls}
-          />
+          {/* Direct IV mode: σ from VIX1D + VIX field for regime analysis */}
+          <div className="grid grid-cols-[1fr_1fr] items-end gap-2.5">
+            <div>
+              <div className="mb-1 flex items-center gap-1.5">
+                <label htmlFor="direct-iv" className={tinyLbl + ' !mb-0'}>
+                  {'\u03C3'} (Direct IV)
+                </label>
+                <span
+                  className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-wider uppercase"
+                  style={{ backgroundColor: '#7C3AED18', color: '#7C3AED' }}
+                >
+                  VIX1D
+                </span>
+              </div>
+              <input
+                id="direct-iv"
+                type="text"
+                inputMode="decimal"
+                placeholder="e.g. 0.22"
+                value={directIVInput}
+                onChange={(e) => onDirectIVChange(e.target.value)}
+                aria-invalid={!!errors['iv']}
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label htmlFor="vix-regime" className={tinyLbl}>
+                VIX (regime only)
+              </label>
+              <input
+                id="vix-regime"
+                type="text"
+                inputMode="decimal"
+                placeholder="e.g. 19"
+                value={vixInput}
+                onChange={(e) => onVixChange(e.target.value)}
+                aria-invalid={!!errors['vix']}
+                className={inputCls}
+              />
+            </div>
+          </div>
+          <div className="text-muted mt-1.5 font-sans text-[10px] leading-normal">
+            Strike pricing uses VIX1D directly. VIX is used only for regime
+            analysis and delta guide thresholds.
+          </div>
         </div>
       )}
       {errors['vix'] && <ErrorMsg th={th}>{errors['vix']}</ErrorMsg>}
@@ -201,19 +233,17 @@ export default function IVInputSection({
       )}
       {errors['iv'] && <ErrorMsg th={th}>{errors['iv']}</ErrorMsg>}
 
-      {ivMode === IV_MODES.VIX &&
-        dVix &&
-        !errors['vix'] &&
-        Number.parseFloat(dVix) > 0 &&
-        results && (
-          <VIXRegimeCard
-            th={th}
-            vix={Number.parseFloat(dVix)}
-            spot={results.spot}
-          />
-        )}
+      {/* VIX Regime Card — shown in both VIX and Direct IV modes */}
+      {dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && results && (
+        <VIXRegimeCard
+          th={th}
+          vix={Number.parseFloat(dVix)}
+          spot={results.spot}
+        />
+      )}
 
-      {ivMode === IV_MODES.VIX && dVix && !errors['vix'] && (
+      {/* Term Structure — shown in both modes */}
+      {dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
         <div className="mt-3.5">
           <div className="text-tertiary mb-2 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
             Term Structure
