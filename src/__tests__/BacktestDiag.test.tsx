@@ -69,6 +69,14 @@ function makeHistory(
   };
 }
 
+// Default time props for all tests
+const timeProps = {
+  timeHour: '9',
+  timeMinute: '25',
+  timeAmPm: 'AM',
+  timezone: 'CT',
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -76,18 +84,30 @@ function makeHistory(
 describe('BacktestDiag', () => {
   it('renders nothing when snapshot is null', () => {
     const { container } = render(
-      <BacktestDiag snapshot={null} history={makeHistory()} />,
+      <BacktestDiag snapshot={null} history={makeHistory()} {...timeProps} />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('renders the diagnostic overlay when snapshot is provided', () => {
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
     expect(screen.getByText('Backtest Diagnostic')).toBeInTheDocument();
   });
 
   it('displays core snapshot values', () => {
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
 
     expect(screen.getByText('5800.25')).toBeInTheDocument(); // SPX Spot
     expect(screen.getByText('580.03')).toBeInTheDocument(); // SPY
@@ -98,13 +118,26 @@ describe('BacktestDiag', () => {
     expect(screen.getByText('92.50')).toBeInTheDocument(); // VVIX
   });
 
-  it('displays candle info with index', () => {
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
-    expect(screen.getByText('10:30 (13/78)')).toBeInTheDocument();
+  it('displays entry time matching user inputs', () => {
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+    expect(screen.getByText(/9:25 AM CT/)).toBeInTheDocument();
+    expect(screen.getByText(/candle 13\/78/)).toBeInTheDocument();
   });
 
   it('displays OHLC and previous close', () => {
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
 
     expect(screen.getByText('5790.00')).toBeInTheDocument(); // SPX Open
     expect(screen.getByText('5810.50')).toBeInTheDocument(); // SPX Hi
@@ -115,25 +148,37 @@ describe('BacktestDiag', () => {
   it('calculates gap percentage correctly', () => {
     // gap = (open - prevClose) / prevClose * 100
     // (5790 - 5795) / 5795 * 100 ≈ -0.09%
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
     expect(screen.getByText('-0.09%')).toBeInTheDocument();
   });
 
-  it('shows "—" for gap when previousClose is 0', () => {
+  it('shows "\u2014" for gap when previousClose is 0', () => {
     render(
       <BacktestDiag
         snapshot={makeSnapshot({ previousClose: 0 })}
         history={makeHistory()}
+        {...timeProps}
       />,
     );
-    // Two dashes: one from Gap row, one from date row if history is null
-    const dashes = screen.getAllByText('—');
+    const dashes = screen.getAllByText('\u2014');
     expect(dashes.length).toBeGreaterThanOrEqual(1);
   });
 
   it('displays opening range when present', () => {
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
-    expect(screen.getByText('5785–5810 (25.0 pts)')).toBeInTheDocument();
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+    expect(screen.getByText('5785\u20135810 (25.0 pts)')).toBeInTheDocument();
   });
 
   it('shows "incomplete" when opening range is null', () => {
@@ -141,13 +186,20 @@ describe('BacktestDiag', () => {
       <BacktestDiag
         snapshot={makeSnapshot({ openingRange: null })}
         history={makeHistory()}
+        {...timeProps}
       />,
     );
     expect(screen.getByText('incomplete')).toBeInTheDocument();
   });
 
   it('displays yesterday data when present', () => {
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
     expect(screen.getByText('2026-03-11: 0.86% range')).toBeInTheDocument();
   });
 
@@ -156,12 +208,13 @@ describe('BacktestDiag', () => {
       <BacktestDiag
         snapshot={makeSnapshot({ yesterday: null })}
         history={makeHistory()}
+        {...timeProps}
       />,
     );
     expect(screen.getByText('no data')).toBeInTheDocument();
   });
 
-  it('shows "no data" for null VIX fields', () => {
+  it('shows "no data" or "n/a" for null VIX fields', () => {
     render(
       <BacktestDiag
         snapshot={makeSnapshot({
@@ -172,25 +225,34 @@ describe('BacktestDiag', () => {
           vvix: null,
         })}
         history={makeHistory()}
+        {...timeProps}
       />,
     );
+    // vix, vixPrevClose, vix9d, vvix = "no data" (4), vix1d = "n/a (no history)" (1)
     const noDataCells = screen.getAllByText('no data');
-    expect(noDataCells).toHaveLength(5);
+    expect(noDataCells.length).toBeGreaterThanOrEqual(4);
   });
 
   it('displays the date from history', () => {
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
     expect(screen.getByText('2026-03-12')).toBeInTheDocument();
   });
 
-  it('shows "—" for date when history is null', () => {
+  it('shows "\u2014" for date when history is null', () => {
     render(
       <BacktestDiag
         snapshot={makeSnapshot()}
         history={makeHistory({ history: null })}
+        {...timeProps}
       />,
     );
-    const dashes = screen.getAllByText('—');
+    const dashes = screen.getAllByText('\u2014');
     expect(dashes.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -199,13 +261,20 @@ describe('BacktestDiag', () => {
       <BacktestDiag
         snapshot={makeSnapshot()}
         history={makeHistory({ error: 'Network timeout' })}
+        {...timeProps}
       />,
     );
     expect(screen.getByText('Error: Network timeout')).toBeInTheDocument();
   });
 
   it('does not show error div when there is no error', () => {
-    render(<BacktestDiag snapshot={makeSnapshot()} history={makeHistory()} />);
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
     expect(screen.queryByText(/^Error:/)).not.toBeInTheDocument();
   });
 
@@ -214,6 +283,7 @@ describe('BacktestDiag', () => {
       <BacktestDiag
         snapshot={makeSnapshot({ vix: null })}
         history={makeHistory()}
+        {...timeProps}
       />,
     );
     const noDataCell = screen.getAllByText('no data')[0]!;

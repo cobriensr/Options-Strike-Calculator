@@ -17,23 +17,36 @@ import type {
 interface Props {
   snapshot: HistorySnapshot | null;
   history: UseHistoryDataReturn;
+  timeHour: string;
+  timeMinute: string;
+  timeAmPm: string;
+  timezone: string;
 }
 
-export default function BacktestDiag({ snapshot, history }: Props) {
+export default function BacktestDiag({
+  snapshot,
+  history,
+  timeHour,
+  timeMinute,
+  timeAmPm,
+  timezone,
+}: Props) {
   if (!snapshot) return null;
 
+  const displayTime = `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`;
+
   const rows: [string, string][] = [
-    ['Mode', '● BACKTEST'],
-    ['Date', history.history?.date ?? '—'],
+    ['Mode', '\u25CF BACKTEST'],
+    ['Date', history.history?.date ?? '\u2014'],
     [
-      'Candle',
-      `${snapshot.candle.time} (${snapshot.candleIndex + 1}/${snapshot.totalCandles})`,
+      'Entry Time',
+      `${displayTime} \u2192 candle ${snapshot.candleIndex + 1}/${snapshot.totalCandles}`,
     ],
     ['SPX Spot', snapshot.spot.toFixed(2)],
     ['SPY', snapshot.spy.toFixed(2)],
     ['VIX', snapshot.vix?.toFixed(2) ?? 'no data'],
     ['VIX prevClose', snapshot.vixPrevClose?.toFixed(2) ?? 'no data'],
-    ['VIX1D', snapshot.vix1d?.toFixed(2) ?? 'no data'],
+    ['VIX1D', snapshot.vix1d?.toFixed(2) ?? 'n/a (no history)'],
     ['VIX9D', snapshot.vix9d?.toFixed(2) ?? 'no data'],
     ['VVIX', snapshot.vvix?.toFixed(2) ?? 'no data'],
     ['SPX Open', snapshot.runningOHLC.open.toFixed(2)],
@@ -109,7 +122,10 @@ export default function BacktestDiag({ snapshot, history }: Props) {
               <td
                 style={{
                   padding: '1px 0',
-                  color: value === 'no data' ? '#f44' : '#e0e0e0',
+                  color:
+                    value === 'no data' || value.includes('n/a')
+                      ? '#f44'
+                      : '#e0e0e0',
                   textAlign: 'right',
                 }}
               >

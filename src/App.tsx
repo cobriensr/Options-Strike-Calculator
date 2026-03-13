@@ -402,7 +402,14 @@ export default function StrikeCalculator() {
           </main>
         </div>
       </div>
-      <BacktestDiag snapshot={historySnapshot} history={historyData} />
+      <BacktestDiag
+        snapshot={historySnapshot}
+        history={historyData}
+        timeHour={timeHour}
+        timeMinute={timeMinute}
+        timeAmPm={timeAmPm}
+        timezone={timezone}
+      />
       <Analytics />
     </div>
   );
