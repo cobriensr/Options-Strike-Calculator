@@ -109,8 +109,54 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
 }
 
 // ============================================================
-// TOKEN REFRESH
+// TOKEN REFRESH (with mutex to prevent concurrent refreshes)
 // ============================================================
+
+/**
+ * In-memory dedup: when 5 parallel schwabFetch calls in the same
+ * serverless invocation all see an expired token, only the first
+ * one calls Schwab's OAuth endpoint. The rest await the same promise.
+ */
+let refreshInFlight: Promise<SchwabTokens> | null = null;
+
+/**
+ * Redis distributed lock: when separate serverless invocations
+ * (e.g. quotes + history) both need to refresh, only one calls
+ * Schwab. The other waits for the lock to release, then reads
+ * the fresh token from Redis.
+ */
+const LOCK_KEY = 'schwab:refresh_lock';
+const LOCK_TTL = 10; // seconds
+
+async function acquireLock(): Promise<boolean> {
+  try {
+    const result = await redis.set(LOCK_KEY, '1', { nx: true, ex: LOCK_TTL });
+    return result === 'OK';
+  } catch {
+    return true; // If Redis fails, proceed anyway
+  }
+}
+
+async function releaseLock(): Promise<void> {
+  try {
+    await redis.del(LOCK_KEY);
+  } catch {
+    // Best effort
+  }
+}
+
+async function waitForLockRelease(maxWaitMs = 8000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise((r) => setTimeout(r, 300));
+    try {
+      const held = await redis.get(LOCK_KEY);
+      if (!held) return;
+    } catch {
+      return;
+    }
+  }
+}
 
 async function refreshAccessToken(
   refreshToken: string,
@@ -141,8 +187,45 @@ async function refreshAccessToken(
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
     expiresAt: now + data.expires_in * 1000,
-    refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000, // 7 days
+    refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
   };
+}
+
+/**
+ * Refresh with deduplication — both in-memory (same invocation)
+ * and Redis-based (across invocations).
+ */
+async function refreshAccessTokenOnce(
+  refreshToken: string,
+  clientId: string,
+  clientSecret: string,
+): Promise<SchwabTokens> {
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    const gotLock = await acquireLock();
+
+    if (!gotLock) {
+      // Another invocation is refreshing — wait, then read fresh token
+      await waitForLockRelease();
+      const fresh = await getStoredTokens();
+      if (fresh && Date.now() < fresh.expiresAt - BUFFER_MS) {
+        return fresh;
+      }
+    }
+
+    try {
+      const tokens = await refreshAccessToken(refreshToken, clientId, clientSecret);
+      await storeTokens(tokens);
+      return tokens;
+    } finally {
+      if (gotLock) await releaseLock();
+    }
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+
+  return refreshInFlight;
 }
 
 // ============================================================
@@ -194,14 +277,13 @@ export async function getAccessToken(): Promise<
     return { token: stored.accessToken };
   }
 
-  // Refresh the access token
+  // Refresh the access token (deduplicated across parallel calls)
   try {
-    const newTokens = await refreshAccessToken(
+    const newTokens = await refreshAccessTokenOnce(
       stored.refreshToken,
       creds.clientId,
       creds.clientSecret,
     );
-    await storeTokens(newTokens);
     return { token: newTokens.accessToken };
   } catch (err) {
     return {
