@@ -156,13 +156,16 @@ export default function StrikeCalculator() {
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
     }
   }, [
+    historyData,
+    ivMode,
+    market.data.quotes,
     historyData.hasHistory,
     historyData.getStateAtTime,
     timeHour,
     timeMinute,
     timeAmPm,
     timezone,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+  ]);
 
   // Compute current history snapshot for downstream components
   const historySnapshot = (() => {
@@ -373,6 +376,7 @@ export default function StrikeCalculator() {
               onClusterMultChange={setClusterMult}
               clusterMult={clusterMult}
               historySnapshot={historySnapshot}
+              historyCandles={historyData.history?.spx.candles}
             />
 
             <ResultsSection

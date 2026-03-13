@@ -7,8 +7,10 @@ import VolatilityCluster from './VolatilityCluster';
 import DeltaRegimeGuide from './DeltaRegimeGuide';
 import OpeningRangeCheck from './OpeningRangeCheck';
 import PreTradeSignals from './PreTradeSignals';
+import SettlementCheck from './SettlementCheck';
 import type { MarketDataState } from '../hooks/useMarketData';
 import type { HistorySnapshot } from '../hooks/useHistoryData';
+import type { HistoryCandle } from '../types/api';
 
 interface Props {
   th: Theme;
@@ -21,6 +23,7 @@ interface Props {
   onClusterMultChange: (v: number) => void;
   clusterMult: number;
   historySnapshot?: HistorySnapshot | null;
+  historyCandles?: readonly HistoryCandle[];
 }
 
 export default function MarketRegimeSection({
@@ -34,6 +37,7 @@ export default function MarketRegimeSection({
   onClusterMultChange,
   clusterMult,
   historySnapshot,
+  historyCandles,
 }: Props) {
   const [showRegime, setShowRegime] = useState(true);
 
@@ -135,6 +139,19 @@ export default function MarketRegimeSection({
                   spxPrevClose={historySnapshot?.previousClose ?? undefined}
                 />
               </div>
+              {historySnapshot &&
+                historyCandles &&
+                historyCandles.length > 0 &&
+                results.allDeltas && (
+                  <div className="mt-5">
+                    <SettlementCheck
+                      th={th}
+                      snapshot={historySnapshot}
+                      allCandles={historyCandles}
+                      allDeltas={results.allDeltas}
+                    />
+                  </div>
+                )}
             </>
           )}
         </div>
