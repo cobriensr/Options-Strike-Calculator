@@ -178,7 +178,7 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    expect(screen.getByText(/All Survived/)).toBeInTheDocument();
+    expect(screen.getByText(/All survived/)).toBeInTheDocument();
   });
 
   it('shows entry context in summary', () => {
@@ -206,9 +206,8 @@ describe('SettlementCheck', () => {
       />,
     );
     // From entry (index 2) onward: high = 5830, low = 5805 → range = 25 pts
-    expect(screen.getByText(/25 pts/)).toBeInTheDocument();
-    expect(screen.getByText(/5805/)).toBeInTheDocument();
-    expect(screen.getByText(/5830/)).toBeInTheDocument();
+    expect(screen.getByText(/ranged\s+25\s+pts/)).toBeInTheDocument();
+    expect(screen.getByText(/5805\s+–\s+5830/)).toBeInTheDocument();
   });
 
   it('shows "Safe by X pts" for survived rows', () => {
@@ -379,7 +378,7 @@ describe('SettlementCheck', () => {
       />,
     );
     expect(screen.getByText('10Δ')).toBeInTheDocument();
-    expect(screen.getByText(/All Survived/)).toBeInTheDocument();
+    expect(screen.getByText(/All survived/)).toBeInTheDocument();
   });
 
   it('shows directional cushion values: negative on put side, positive on call side', () => {
@@ -407,8 +406,8 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    expect(screen.getByText('Strike corridor')).toBeInTheDocument();
-    expect(screen.getByText(/Actual SPX range/)).toBeInTheDocument();
+    expect(screen.getByText(/Comfortable/)).toBeInTheDocument();
+    expect(screen.getByText(/Close call/)).toBeInTheDocument();
   });
 
   it('renders in both themes without crashing', () => {

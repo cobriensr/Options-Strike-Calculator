@@ -145,30 +145,49 @@ export default function SettlementCheck({
   const total = results.length;
   const displayTime = entryTimeLabel ?? snapshot.candle.time;
 
-  // Determine overall verdict color
-  const verdictColor =
-    settledSafeCount === total
-      ? th.green
-      : settledLossCount === 0
-        ? '#E8A317'
-        : th.red;
-  const verdictBg =
-    settledSafeCount === total
-      ? th.green + '0C'
-      : settledLossCount === 0
-        ? '#E8A3170C'
-        : th.red + '0C';
-  const verdictBorder =
-    settledSafeCount === total
-      ? th.green + '25'
-      : settledLossCount === 0
-        ? '#E8A31725'
-        : th.red + '25';
+  // Tightness analysis across all rows
+  const TIGHT_PTS = 25;
+  const WARN_PTS = 50;
+  const allCushions = results.map((r) =>
+    Math.min(Math.abs(r.callCushion), Math.abs(r.putCushion)),
+  );
+  const minCushionOverall = Math.min(...allCushions);
+  const tightCount = results.filter(
+    (r) =>
+      r.survived &&
+      Math.min(Math.abs(r.callCushion), Math.abs(r.putCushion)) < TIGHT_PTS,
+  ).length;
+
+  // Determine overall verdict color — factor in tightness
+  let verdictColor: string;
+  let verdictBg: string;
+  let verdictBorder: string;
+
+  if (settledLossCount > 0) {
+    verdictColor = th.red;
+    verdictBg = th.red + '0C';
+    verdictBorder = th.red + '25';
+  } else if (
+    !results.every((r) => r.survived) ||
+    minCushionOverall < WARN_PTS
+  ) {
+    verdictColor = '#E8A317';
+    verdictBg = '#E8A3170C';
+    verdictBorder = '#E8A31725';
+  } else {
+    verdictColor = th.green;
+    verdictBg = th.green + '0C';
+    verdictBorder = th.green + '25';
+  }
 
   // Verdict text
   let verdictText: string;
-  if (survived === total) {
+  if (survived === total && minCushionOverall >= WARN_PTS) {
     verdictText = '\u2705 All Survived';
+  } else if (survived === total && minCushionOverall < TIGHT_PTS) {
+    verdictText = `\u26A0\uFE0F All survived, ${tightCount} close call${tightCount > 1 ? 's' : ''} (tightest: ${minCushionOverall.toFixed(0)} pts)`;
+  } else if (survived === total) {
+    verdictText = `\u26A0\uFE0F All survived, tightest cushion ${minCushionOverall.toFixed(0)} pts`;
   } else if (settledSafeCount === total) {
     verdictText = `\u26A0\uFE0F ${breachedButSafe} breached intraday, all settled safe \u2014 max profit`;
   } else if (settledLossCount === total) {
@@ -208,6 +227,22 @@ export default function SettlementCheck({
           {settleMove >= 0 ? '+' : ''}
           {settleMove.toFixed(0)} from entry).
         </div>
+
+        {/* Stop-loss insight */}
+        {survived > 0 && minCushionOverall < WARN_PTS && (
+          <div className="text-muted mt-1.5 font-sans text-[10px] leading-normal">
+            <strong style={{ color: '#D97706' }}>Stop-loss note:</strong> A{' '}
+            {minCushionOverall.toFixed(0)}-pt stop would have been triggered on
+            the{' '}
+            {Math.min(
+              Math.abs(results.at(-1)!.callCushion),
+              Math.abs(results.at(-1)!.putCushion),
+            ) === minCushionOverall
+              ? `${results.at(-1)!.delta}\u0394`
+              : 'tightest'}{' '}
+            row, even though it settled safe.
+          </div>
+        )}
       </div>
 
       {/* Delta rows */}
@@ -224,20 +259,27 @@ export default function SettlementCheck({
       </div>
 
       {/* Legend */}
-      <div className="mt-2.5 flex items-center gap-4 font-sans text-[9px]">
-        <span className="text-muted flex items-center gap-1">
-          <span
-            className="inline-block h-1.5 w-3 rounded-full"
-            style={{ backgroundColor: th.surfaceAlt }}
-          />
-          Strike corridor
-        </span>
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 font-sans text-[9px]">
         <span className="text-muted flex items-center gap-1">
           <span
             className="inline-block h-1.5 w-3 rounded-full"
             style={{ backgroundColor: th.green + '70' }}
           />
-          Actual SPX range (hover for details)
+          Comfortable ({'\u2265'}50 pts)
+        </span>
+        <span className="text-muted flex items-center gap-1">
+          <span
+            className="inline-block h-1.5 w-3 rounded-full"
+            style={{ backgroundColor: '#E8A31770' }}
+          />
+          Tight (25{'\u2013'}50 pts)
+        </span>
+        <span className="text-muted flex items-center gap-1">
+          <span
+            className="inline-block h-1.5 w-3 rounded-full"
+            style={{ backgroundColor: '#D9770670' }}
+          />
+          Close call ({'<'}25 pts)
         </span>
       </div>
     </div>
@@ -265,6 +307,7 @@ function DeltaRow({
   const closerSide =
     Math.abs(r.callCushion) < Math.abs(r.putCushion) ? 'call' : 'put';
   const closerCushion = closerSide === 'call' ? r.callCushion : r.putCushion;
+  const minCushion = Math.min(Math.abs(r.callCushion), Math.abs(r.putCushion));
 
   // Bar positions as percentages within the strike range
   const lowPct = Math.max(
@@ -278,13 +321,47 @@ function DeltaRow({
   const barLeft = lowPct;
   const barWidth = Math.max(1, highPct - lowPct);
 
-  // Color logic: green = survived, amber = breached but settled safe, red = loss
-  const rowColor = r.survived ? th.green : r.settledSafe ? '#E8A317' : th.red;
-  const barColor = r.survived ? th.green : r.settledSafe ? '#E8A317' : th.red;
+  // Tightness thresholds for survived rows
+  const TIGHT_PTS = 25; // < 25 pts cushion = close call
+  const WARN_PTS = 50; // < 50 pts = caution
+
+  // Color logic:
+  //   survived + comfortable (>50) → green
+  //   survived + caution (25-50)   → amber
+  //   survived + tight (<25)       → amber (darker)
+  //   breached + settled safe      → amber
+  //   breached + settled loss      → red
+  let rowColor: string;
+  let barColor: string;
+  if (r.survived) {
+    if (minCushion < TIGHT_PTS) {
+      rowColor = '#D97706'; // dark amber — close call
+      barColor = '#D97706';
+    } else if (minCushion < WARN_PTS) {
+      rowColor = '#E8A317'; // amber — caution
+      barColor = '#E8A317';
+    } else {
+      rowColor = th.green;
+      barColor = th.green;
+    }
+  } else if (r.settledSafe) {
+    rowColor = '#E8A317';
+    barColor = '#E8A317';
+  } else {
+    rowColor = th.red;
+    barColor = th.red;
+  }
+
+  // Tightness label for survived rows
+  let tightnessLabel = '';
+  if (r.survived) {
+    if (minCushion < TIGHT_PTS) tightnessLabel = 'CLOSE CALL';
+    else if (minCushion < WARN_PTS) tightnessLabel = 'TIGHT';
+  }
 
   return (
     <div className="bg-surface border-edge overflow-hidden rounded-lg border">
-      <div className="flex items-center gap-3 p-2.5 pb-2">
+      <div className="flex items-center gap-3 p-2.5 pb-1">
         {/* Delta label */}
         <div className="w-[44px] shrink-0">
           <span
@@ -298,11 +375,19 @@ function DeltaRow({
         {/* Verdict text */}
         <div className="min-w-0 flex-1">
           {r.survived ? (
-            <span className="font-sans text-[11px]" style={{ color: th.green }}>
+            <span className="font-sans text-[11px]" style={{ color: rowColor }}>
               Safe by {Math.abs(closerCushion).toFixed(0)} pts
               <span className="text-muted ml-1 text-[10px]">
                 (nearest: {closerSide} side)
               </span>
+              {tightnessLabel && (
+                <span
+                  className="ml-1.5 rounded-sm px-1 py-0.5 font-sans text-[8px] font-bold tracking-wider"
+                  style={{ backgroundColor: rowColor + '18', color: rowColor }}
+                >
+                  {tightnessLabel}
+                </span>
+              )}
             </span>
           ) : r.settledSafe ? (
             <span
@@ -329,6 +414,46 @@ function DeltaRow({
         </div>
       </div>
 
+      {/* Closest approach detail — always shown */}
+      <div className="flex gap-4 px-2.5 pb-1.5 font-sans text-[9px]">
+        <span className="text-muted">
+          Put: SPX low {remainingLow.toFixed(0)}, strike{' '}
+          {r.putStrike.toFixed(0)}
+          {' \u2192 '}
+          <span
+            style={{
+              color: r.putBreached
+                ? th.red
+                : Math.abs(r.putCushion) < TIGHT_PTS
+                  ? '#D97706'
+                  : th.textMuted,
+            }}
+          >
+            {r.putCushion >= 0
+              ? `${Math.abs(r.putCushion).toFixed(0)} pts cushion`
+              : `breached by ${Math.abs(r.putCushion).toFixed(0)}`}
+          </span>
+        </span>
+        <span className="text-muted">
+          Call: SPX high {remainingHigh.toFixed(0)}, strike{' '}
+          {r.callStrike.toFixed(0)}
+          {' \u2192 '}
+          <span
+            style={{
+              color: r.callBreached
+                ? th.red
+                : Math.abs(r.callCushion) < TIGHT_PTS
+                  ? '#D97706'
+                  : th.textMuted,
+            }}
+          >
+            {r.callCushion >= 0
+              ? `${Math.abs(r.callCushion).toFixed(0)} pts cushion`
+              : `breached by ${Math.abs(r.callCushion).toFixed(0)}`}
+          </span>
+        </span>
+      </div>
+
       {/* Visual bar */}
       <div className="px-2.5 pb-2.5">
         <div className="relative">
@@ -348,18 +473,20 @@ function DeltaRow({
             style={{ backgroundColor: th.surfaceAlt }}
           >
             {/* Actual price range — with tooltip on hover */}
-            <div
-              role="img"
-              aria-label={`Price range: $${remainingLow.toFixed(2)} to $${remainingHigh.toFixed(2)}`}
+            <button
+              type="button"
               className="absolute top-0 h-full cursor-pointer rounded-full"
               style={{
                 left: `${barLeft}%`,
                 width: `${barWidth}%`,
                 backgroundColor: barColor + '50',
                 border: `1px solid ${barColor}80`,
+                padding: 0,
               }}
               onMouseEnter={() => setShowTooltip(true)}
               onMouseLeave={() => setShowTooltip(false)}
+              onFocus={() => setShowTooltip(true)}
+              onBlur={() => setShowTooltip(false)}
             >
               {showTooltip && (
                 <div
@@ -383,7 +510,7 @@ function DeltaRow({
                   </div>
                 </div>
               )}
-            </div>
+            </button>
 
             {/* Breach overflow indicators */}
             {r.putBreached && (

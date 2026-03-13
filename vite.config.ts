@@ -96,11 +96,12 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/__tests__/setup.ts'],
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: ['src/**/*.{test,spec}.{ts,tsx}', 'api/**/*.{test,spec}.{ts,tsx}'],
     coverage: {
-      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      include: ['src/**/*.ts', 'src/**/*.tsx', 'api/**/*.ts'],
       exclude: [
         'src/__tests__/**',
+        'api/**/*.{test,spec}.{ts,tsx}',
         'src/vite-env.d.ts',
         'src/calculator.ts',
         'src/csvParser.ts',
