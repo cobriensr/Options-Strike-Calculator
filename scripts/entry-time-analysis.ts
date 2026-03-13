@@ -1,9 +1,9 @@
 #!/usr/bin/env npx tsx
 /**
  * Entry Time Analysis: 8:45 AM CT vs 9:00 AM CT
- * 
+ *
  * Run: npx tsx scripts/entry-time-analysis.ts
- * 
+ *
  * Requires: your sc-owner cookie value as env var or hardcoded below.
  * Fetches ~60 days of history from your live API.
  */
@@ -13,7 +13,9 @@ const COOKIE = process.env.SC_OWNER_COOKIE || ''; // paste your cookie value her
 
 if (!COOKIE) {
   console.error('Set SC_OWNER_COOKIE env var or paste it into the script.');
-  console.error('Usage: SC_OWNER_COOKIE=your_value npx tsx scripts/entry-time-analysis.ts');
+  console.error(
+    'Usage: SC_OWNER_COOKIE=your_value npx tsx scripts/entry-time-analysis.ts',
+  );
   process.exit(1);
 }
 
@@ -28,7 +30,10 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-type Vix1dDaily = Record<string, { o: number; h: number; l: number; c: number }>;
+type Vix1dDaily = Record<
+  string,
+  { o: number; h: number; l: number; c: number }
+>;
 let vix1dStatic: Vix1dDaily = {};
 
 function loadVix1dStatic(): void {
@@ -41,7 +46,9 @@ function loadVix1dStatic(): void {
     try {
       const raw = readFileSync(p, 'utf-8');
       vix1dStatic = JSON.parse(raw);
-      console.log(`Loaded ${Object.keys(vix1dStatic).length} days of static VIX1D data from ${p}`);
+      console.log(
+        `Loaded ${Object.keys(vix1dStatic).length} days of static VIX1D data from ${p}`,
+      );
       return;
     } catch {
       // try next path
@@ -64,11 +71,17 @@ function getStaticVix1d(date: string, hourET: number): number | null {
 // ============================================================
 
 function normalCDF(x: number): number {
-  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
-  const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+  const a1 = 0.254829592,
+    a2 = -0.284496736,
+    a3 = 1.421413741;
+  const a4 = -1.453152027,
+    a5 = 1.061405429,
+    p = 0.3275911;
   const sign = x < 0 ? -1 : 1;
   const t = 1 / (1 + p * Math.abs(x));
-  const y = 1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
+  const y =
+    1 -
+    ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp((-x * x) / 2);
   return 0.5 * (1 + sign * y);
 }
 
@@ -77,16 +90,30 @@ function normalInv(p: number): number {
   if (p >= 1) return Infinity;
   if (p < 0.5) return -normalInv(1 - p);
   const t = Math.sqrt(-2 * Math.log(1 - p));
-  const c0 = 2.515517, c1 = 0.802853, c2 = 0.010328;
-  const d1 = 1.432788, d2 = 0.189269, d3 = 0.001308;
-  return t - (c0 + c1 * t + c2 * t * t) / (1 + d1 * t + d2 * t * t + d3 * t * t * t);
+  const c0 = 2.515517,
+    c1 = 0.802853,
+    c2 = 0.010328;
+  const d1 = 1.432788,
+    d2 = 0.189269,
+    d3 = 0.001308;
+  return (
+    t - (c0 + c1 * t + c2 * t * t) / (1 + d1 * t + d2 * t * t + d3 * t * t * t)
+  );
 }
 
-function calcStrike(spot: number, sigma: number, T: number, delta: number, skew: number, side: 'put' | 'call'): number {
+function calcStrike(
+  spot: number,
+  sigma: number,
+  T: number,
+  delta: number,
+  skew: number,
+  side: 'put' | 'call',
+): number {
   const z = -normalInv(delta / 100);
   const sqrtT = Math.sqrt(T);
-  const scaledSkew = (skew / 100) * Math.min(z, 3) / 1.28;
-  const s = side === 'put' ? sigma * (1 + scaledSkew) : sigma * (1 - scaledSkew);
+  const scaledSkew = ((skew / 100) * Math.min(z, 3)) / 1.28;
+  const s =
+    side === 'put' ? sigma * (1 + scaledSkew) : sigma * (1 - scaledSkew);
   const drift = -(s * s * T) / 2;
   return side === 'put'
     ? spot * Math.exp(-z * s * sqrtT + drift)
@@ -140,7 +167,11 @@ function parseTimeToMinutes(timeStr: string): number {
   return h * 60 + m;
 }
 
-function findCandleAt(candles: Candle[], hourET: number, minuteET: number): { candle: Candle; index: number } | null {
+function findCandleAt(
+  candles: Candle[],
+  hourET: number,
+  minuteET: number,
+): { candle: Candle; index: number } | null {
   const targetMin = hourET * 60 + minuteET;
   let bestIdx = -1;
   for (let i = 0; i < candles.length; i++) {
@@ -150,7 +181,11 @@ function findCandleAt(candles: Candle[], hourET: number, minuteET: number): { ca
   return bestIdx >= 0 ? { candle: candles[bestIdx]!, index: bestIdx } : null;
 }
 
-function getValueAt(candles: Candle[], hourET: number, minuteET: number): number | null {
+function getValueAt(
+  candles: Candle[],
+  hourET: number,
+  minuteET: number,
+): number | null {
   const r = findCandleAt(candles, hourET, minuteET);
   return r ? r.candle.close : null;
 }
@@ -168,7 +203,8 @@ function analyzeEntry(
     const putStrike = snapTo5(calcStrike(spot, sigma, T, d, SKEW, 'put'));
     const callStrike = snapTo5(calcStrike(spot, sigma, T, d, SKEW, 'call'));
 
-    let high = -Infinity, low = Infinity;
+    let high = -Infinity,
+      low = Infinity;
     for (let i = entryIndex; i < spxCandles.length; i++) {
       if (spxCandles[i]!.high > high) high = spxCandles[i]!.high;
       if (spxCandles[i]!.low < low) low = spxCandles[i]!.low;
@@ -186,7 +222,10 @@ function analyzeEntry(
       settledSafe: settlement > putStrike && settlement < callStrike,
       callCushion,
       putCushion,
-      minCushion: Math.round(Math.min(Math.abs(callCushion), Math.abs(putCushion)) * 100) / 100,
+      minCushion:
+        Math.round(
+          Math.min(Math.abs(callCushion), Math.abs(putCushion)) * 100,
+        ) / 100,
     };
   });
 }
@@ -208,7 +247,10 @@ function getTradingDays(count: number): string[] {
   return days;
 }
 
-async function fetchDay(date: string, verbose = false): Promise<HistoryResponse | null> {
+async function fetchDay(
+  date: string,
+  verbose = false,
+): Promise<HistoryResponse | null> {
   try {
     const url = `${BASE_URL}/api/history?date=${date}`;
     const r = await fetch(url, {
@@ -220,14 +262,18 @@ async function fetchDay(date: string, verbose = false): Promise<HistoryResponse 
     }
     const data: HistoryResponse = await r.json();
     if (verbose) {
-      console.log(`    ${date}: candleCount=${data.candleCount}, spx=${data.spx.candles.length}, vix=${data.vix.candles.length}`);
+      console.log(
+        `    ${date}: candleCount=${data.candleCount}, spx=${data.spx.candles.length}, vix=${data.vix.candles.length}`,
+      );
     }
     if (data.candleCount === 0) {
       return null;
     }
     return data;
   } catch (e) {
-    console.error(`  ✗ ${date}: ${e instanceof Error ? e.message : 'unknown error'}`);
+    console.error(
+      `  ✗ ${date}: ${e instanceof Error ? e.message : 'unknown error'}`,
+    );
     return null;
   }
 }
@@ -242,7 +288,9 @@ async function main() {
       headers: { Cookie: `sc-owner=${COOKIE}` },
     });
     if (test.status === 401) {
-      console.error('✗ Authentication failed (401). Cookie may be expired — re-authenticate at /api/auth/init');
+      console.error(
+        '✗ Authentication failed (401). Cookie may be expired — re-authenticate at /api/auth/init',
+      );
       process.exit(1);
     }
     if (!test.ok) {
@@ -250,7 +298,9 @@ async function main() {
       process.exit(1);
     }
     const q = await test.json();
-    console.log(`✓ Authenticated. SPX: ${q.spx?.price ?? 'N/A'}, VIX: ${q.vix?.price ?? 'N/A'}\n`);
+    console.log(
+      `✓ Authenticated. SPX: ${q.spx?.price ?? 'N/A'}, VIX: ${q.vix?.price ?? 'N/A'}\n`,
+    );
   } catch (e) {
     console.error(`✗ Cannot reach API: ${e instanceof Error ? e.message : e}`);
     process.exit(1);
@@ -281,14 +331,17 @@ async function main() {
 
     const isFirstBatch = i === 0;
     if (isFirstBatch) console.log('  (verbose for first batch)');
-    const fetches = await Promise.all(batch.map((d) => fetchDay(d, isFirstBatch)));
+    const fetches = await Promise.all(
+      batch.map((d) => fetchDay(d, isFirstBatch)),
+    );
     let count = 0;
 
     for (const data of fetches) {
       if (!data) continue;
       const spx = data.spx.candles;
       if (spx.length < 10) {
-        if (isFirstBatch) console.log(`    ${data.date}: SKIP spx<10 (${spx.length})`);
+        if (isFirstBatch)
+          console.log(`    ${data.date}: SKIP spx<10 (${spx.length})`);
         continue;
       }
 
@@ -296,25 +349,45 @@ async function main() {
       const e845 = findCandleAt(spx, 9, 45);
       const e900 = findCandleAt(spx, 10, 0);
       if (!e845 || !e900) {
-        if (isFirstBatch) console.log(`    ${data.date}: SKIP candle miss (e845=${!!e845} e900=${!!e900} firstTime="${spx[0]?.time}" lastTime="${spx.at(-1)?.time}")`);
+        if (isFirstBatch)
+          console.log(
+            `    ${data.date}: SKIP candle miss (e845=${!!e845} e900=${!!e900} firstTime="${spx[0]?.time}" lastTime="${spx.at(-1)?.time}")`,
+          );
         continue;
       }
 
-      const vix1d845 = getValueAt(data.vix1d.candles, 9, 45) || getStaticVix1d(data.date, 9);
-      const vix1d900 = getValueAt(data.vix1d.candles, 10, 0) || getStaticVix1d(data.date, 10);
+      const vix1d845 =
+        getValueAt(data.vix1d.candles, 9, 45) || getStaticVix1d(data.date, 9);
+      const vix1d900 =
+        getValueAt(data.vix1d.candles, 10, 0) || getStaticVix1d(data.date, 10);
       const vix845 = getValueAt(data.vix.candles, 9, 45);
       const vix900 = getValueAt(data.vix.candles, 10, 0);
 
-      const sigma845 = vix1d845 ? vix1d845 / 100 : (vix845 ? vix845 * 1.15 / 100 : null);
-      const sigma900 = vix1d900 ? vix1d900 / 100 : (vix900 ? vix900 * 1.15 / 100 : null);
+      const sigma845 = vix1d845
+        ? vix1d845 / 100
+        : vix845
+          ? (vix845 * 1.15) / 100
+          : null;
+      const sigma900 = vix1d900
+        ? vix1d900 / 100
+        : vix900
+          ? (vix900 * 1.15) / 100
+          : null;
       if (!sigma845 || !sigma900) {
-        if (isFirstBatch) console.log(`    ${data.date}: SKIP sigma null (vix1d845=${vix1d845} vix845=${vix845} vix1dCandles=${data.vix1d.candles.length} sigma845=${sigma845} sigma900=${sigma900})`);
+        if (isFirstBatch)
+          console.log(
+            `    ${data.date}: SKIP sigma null (vix1d845=${vix1d845} vix845=${vix845} vix1dCandles=${data.vix1d.candles.length} sigma845=${sigma845} sigma900=${sigma900})`,
+          );
         continue;
       }
 
-      if (isFirstBatch) console.log(`    ${data.date}: OK spot845=${e845.candle.close.toFixed(0)} sigma=${sigma845.toFixed(4)} vix1d=${(vix1d845 ?? 0).toFixed(1)} (${getValueAt(data.vix1d.candles, 9, 45) ? 'schwab' : 'static'})`);
+      if (isFirstBatch)
+        console.log(
+          `    ${data.date}: OK spot845=${e845.candle.close.toFixed(0)} sigma=${sigma845.toFixed(4)} vix1d=${(vix1d845 ?? 0).toFixed(1)} (${getValueAt(data.vix1d.candles, 9, 45) ? 'schwab' : 'static'})`,
+        );
 
-      let dayHigh = -Infinity, dayLow = Infinity;
+      let dayHigh = -Infinity,
+        dayLow = Infinity;
       for (const c of spx) {
         if (c.high > dayHigh) dayHigh = c.high;
         if (c.low < dayLow) dayLow = c.low;
@@ -329,8 +402,20 @@ async function main() {
         vix1d900,
         spot845: e845.candle.close,
         spot900: e900.candle.close,
-        deltas: analyzeEntry(spx, e845.index, e845.candle.close, sigma845, 6.25),
-        deltas900: analyzeEntry(spx, e900.index, e900.candle.close, sigma900, 6.0),
+        deltas: analyzeEntry(
+          spx,
+          e845.index,
+          e845.candle.close,
+          sigma845,
+          6.25,
+        ),
+        deltas900: analyzeEntry(
+          spx,
+          e900.index,
+          e900.candle.close,
+          sigma900,
+          6.0,
+        ),
       });
       count++;
     }
@@ -346,18 +431,25 @@ async function main() {
 
   console.log(`\n${'='.repeat(80)}`);
   console.log(`ENTRY TIME ANALYSIS: 8:45 AM CT vs 9:00 AM CT`);
-  console.log(`${results.length} trading days: ${results[0]?.date} to ${results.at(-1)?.date}`);
+  console.log(
+    `${results.length} trading days: ${results[0]?.date} to ${results.at(-1)?.date}`,
+  );
   console.log(`${'='.repeat(80)}\n`);
 
   // Per-delta summary
   console.log('SETTLEMENT SURVIVAL RATE (hold to close):');
   console.log(`${'─'.repeat(72)}`);
-  console.log(`  Delta │  8:45 CT       │  9:00 CT       │  Avg Cushion 845 │  Avg Cushion 900`);
+  console.log(
+    `  Delta │  8:45 CT       │  9:00 CT       │  Avg Cushion 845 │  Avg Cushion 900`,
+  );
   console.log(`${'─'.repeat(72)}`);
 
   for (const delta of TARGET_DELTAS) {
-    let safe845 = 0, safe900 = 0, total = 0;
-    const cushions845: number[] = [], cushions900: number[] = [];
+    let safe845 = 0,
+      safe900 = 0,
+      total = 0;
+    const cushions845: number[] = [],
+      cushions900: number[] = [];
 
     for (const day of results) {
       const d845 = day.deltas.find((d) => d.delta === delta);
@@ -374,7 +466,7 @@ async function main() {
     const avg900 = cushions900.reduce((a, b) => a + b, 0) / cushions900.length;
 
     console.log(
-      `  ${String(delta).padStart(3)}Δ  │  ${safe845}/${total} (${(safe845 / total * 100).toFixed(1)}%)  │  ${safe900}/${total} (${(safe900 / total * 100).toFixed(1)}%)  │  ${avg845.toFixed(1)} pts          │  ${avg900.toFixed(1)} pts`
+      `  ${String(delta).padStart(3)}Δ  │  ${safe845}/${total} (${((safe845 / total) * 100).toFixed(1)}%)  │  ${safe900}/${total} (${((safe900 / total) * 100).toFixed(1)}%)  │  ${avg845.toFixed(1)} pts          │  ${avg900.toFixed(1)} pts`,
     );
   }
   console.log(`${'─'.repeat(72)}\n`);
@@ -389,15 +481,20 @@ async function main() {
       const d845 = day.deltas.find((d) => d.delta === delta);
       const d900 = day.deltas900.find((d) => d.delta === delta);
       if (!d845 || !d900) return null;
-      if (!d845.settledSafe && d900.settledSafe) return { delta, cushion900: d900.minCushion };
+      if (!d845.settledSafe && d900.settledSafe)
+        return { delta, cushion900: d900.minCushion };
       return null;
     }).filter(Boolean);
 
     if (diffs.length > 0) {
       savedCount++;
-      console.log(`  ${day.date} (${day.dow}) — range: ${day.range.toFixed(0)} pts`);
+      console.log(
+        `  ${day.date} (${day.dow}) — range: ${day.range.toFixed(0)} pts`,
+      );
       for (const d of diffs) {
-        console.log(`    ${d!.delta}Δ: LOSS at 8:45 → SAFE at 9:00 (cushion: ${d!.cushion900.toFixed(0)} pts)`);
+        console.log(
+          `    ${d!.delta}Δ: LOSS at 8:45 → SAFE at 9:00 (cushion: ${d!.cushion900.toFixed(0)} pts)`,
+        );
       }
     }
   }
@@ -413,15 +510,20 @@ async function main() {
       const d845 = day.deltas.find((d) => d.delta === delta);
       const d900 = day.deltas900.find((d) => d.delta === delta);
       if (!d845 || !d900) return null;
-      if (d845.settledSafe && !d900.settledSafe) return { delta, cushion845: d845.minCushion };
+      if (d845.settledSafe && !d900.settledSafe)
+        return { delta, cushion845: d845.minCushion };
       return null;
     }).filter(Boolean);
 
     if (diffs.length > 0) {
       hurtCount++;
-      console.log(`  ${day.date} (${day.dow}) — range: ${day.range.toFixed(0)} pts`);
+      console.log(
+        `  ${day.date} (${day.dow}) — range: ${day.range.toFixed(0)} pts`,
+      );
       for (const d of diffs) {
-        console.log(`    ${d!.delta}Δ: SAFE at 8:45 → LOSS at 9:00 (845 cushion: ${d!.cushion845.toFixed(0)} pts)`);
+        console.log(
+          `    ${d!.delta}Δ: SAFE at 8:45 → LOSS at 9:00 (845 cushion: ${d!.cushion845.toFixed(0)} pts)`,
+        );
       }
     }
   }
@@ -431,8 +533,12 @@ async function main() {
   // Per-day full grid
   console.log('FULL DAY-BY-DAY COMPARISON (S = settled safe, X = loss):');
   console.log(`${'─'.repeat(90)}`);
-  console.log(`  Date       │ DOW │ Range │ VIX1D │  5Δ    │  8Δ    │  10Δ   │  12Δ   │  15Δ`);
-  console.log(`             │     │       │       │ 845/900│ 845/900│ 845/900│ 845/900│ 845/900`);
+  console.log(
+    `  Date       │ DOW │ Range │ VIX1D │  5Δ    │  8Δ    │  10Δ   │  12Δ   │  15Δ`,
+  );
+  console.log(
+    `             │     │       │       │ 845/900│ 845/900│ 845/900│ 845/900│ 845/900`,
+  );
   console.log(`${'─'.repeat(90)}`);
 
   for (const day of results) {
@@ -446,7 +552,7 @@ async function main() {
     });
 
     console.log(
-      `  ${day.date} │ ${day.dow} │ ${day.range.toFixed(0).padStart(5)} │ ${(day.vix1d845 ?? 0).toFixed(1).padStart(5)} │ ${cols.map((c) => c.padEnd(6)).join(' │ ')}`
+      `  ${day.date} │ ${day.dow} │ ${day.range.toFixed(0).padStart(5)} │ ${(day.vix1d845 ?? 0).toFixed(1).padStart(5)} │ ${cols.map((c) => c.padEnd(6)).join(' │ ')}`,
     );
   }
 
@@ -456,7 +562,9 @@ async function main() {
   console.log(`BOTTOM LINE:`);
   console.log(`  Days saved by waiting:  ${savedCount}`);
   console.log(`  Days hurt by waiting:   ${hurtCount}`);
-  console.log(`  Days no difference:     ${results.length - savedCount - hurtCount}`);
+  console.log(
+    `  Days no difference:     ${results.length - savedCount - hurtCount}`,
+  );
   console.log();
 }
 
