@@ -187,7 +187,7 @@ export default function SettlementCheck({
                     color: r.survived ? th.green : th.red,
                   }}
                 >
-                  {r.delta}\u0394
+                  {r.delta}Δ
                 </span>
               </div>
 

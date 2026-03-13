@@ -79,13 +79,13 @@ function makeAllDeltas(
     }));
 }
 
-/** Extract delta numbers from delta-label spans (e.g. "5\u0394" → "5") */
+/** Extract delta numbers from delta-label spans (e.g. "5Δ" → "5") */
 function getDeltaLabels(container: HTMLElement): string[] {
   const spans = container.querySelectorAll('span');
   return Array.from(spans)
     .map((el) => el.textContent?.trim() ?? '')
-    .filter((t) => t.endsWith(String.raw`\u0394`))
-    .map((t) => t.replace(String.raw`\u0394`, ''));
+    .filter((t) => t.endsWith('Δ'))
+    .map((t) => t.replace('Δ', ''));
 }
 
 // ---------------------------------------------------------------------------
