@@ -217,6 +217,11 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
       if ('error' in result) {
         setError(result.error);
         setHistory(null);
+      } else if (result.data.candleCount === 0) {
+        setError(
+          `No intraday data available for ${selectedDate}. Schwab keeps ~60 days of 5-min candles. Older dates can use daily OHLC from the VIX/SPX CSV data.`,
+        );
+        setHistory(null);
       } else {
         setHistory(result.data);
         setError(null);

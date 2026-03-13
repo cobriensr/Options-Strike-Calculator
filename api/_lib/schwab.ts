@@ -215,7 +215,11 @@ async function refreshAccessTokenOnce(
     }
 
     try {
-      const tokens = await refreshAccessToken(refreshToken, clientId, clientSecret);
+      const tokens = await refreshAccessToken(
+        refreshToken,
+        clientId,
+        clientSecret,
+      );
       await storeTokens(tokens);
       return tokens;
     } finally {

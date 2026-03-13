@@ -19,12 +19,11 @@ function makeCandle(
   return { datetime: Date.now(), time, open, high, low, close };
 }
 
-/** A small day of candles: entry candle + a few after */
 function makeCandles(): HistoryCandle[] {
   return [
-    makeCandle('09:30', 5800, 5810, 5795, 5805), // 0 — before entry
-    makeCandle('09:35', 5805, 5815, 5800, 5810), // 1 — before entry
-    makeCandle('10:00', 5810, 5820, 5805, 5815), // 2 — entry candle
+    makeCandle('09:30', 5800, 5810, 5795, 5805), // 0
+    makeCandle('09:35', 5805, 5815, 5800, 5810), // 1
+    makeCandle('10:00', 5810, 5820, 5805, 5815), // 2 — entry
     makeCandle('10:05', 5815, 5825, 5808, 5820), // 3
     makeCandle('10:10', 5820, 5830, 5810, 5825), // 4
     makeCandle('15:55', 5825, 5828, 5812, 5818), // 5 — settlement
@@ -47,13 +46,12 @@ function makeSnapshot(
     vvix: 90.0,
     previousClose: 5790,
     candle: makeCandle('10:00', 5810, 5820, 5805, 5815),
-    candleIndex: 2, // entry at index 2
+    candleIndex: 2,
     totalCandles: 6,
     ...overrides,
   };
 }
 
-/** Creates allDeltas with valid entries for the target deltas */
 function makeAllDeltas(
   overrides: Partial<
     Record<number, { callStrike: number; putStrike: number }>
@@ -77,15 +75,6 @@ function makeAllDeltas(
       delta: Number(delta),
       ...strikes,
     }));
-}
-
-/** Extract delta numbers from delta-label spans (e.g. "5Δ" → "5") */
-function getDeltaLabels(container: HTMLElement): string[] {
-  const spans = container.querySelectorAll('span');
-  return Array.from(spans)
-    .map((el) => el.textContent?.trim() ?? '')
-    .filter((t) => t.endsWith('Δ'))
-    .map((t) => t.replace('Δ', ''));
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +119,7 @@ describe('SettlementCheck', () => {
     expect(screen.getByText('Settlement Check')).toBeInTheDocument();
   });
 
-  it('shows survived count in summary bar', () => {
+  it('shows all survived verdict when all strikes hold', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -139,12 +128,25 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    // All strikes are wide enough (5900C/5700P etc.) that the day high/low
-    // (5830/5805 from entry onward) won't breach them → all survive
-    expect(screen.getByText(/5\/5 SURVIVED/)).toBeInTheDocument();
+    expect(screen.getByText(/All Survived/)).toBeInTheDocument();
   });
 
-  it('shows entry time and settlement price in summary', () => {
+  it('shows entry context in summary', () => {
+    render(
+      <SettlementCheck
+        th={lightTheme}
+        snapshot={makeSnapshot()}
+        allCandles={makeCandles()}
+        allDeltas={makeAllDeltas()}
+        entryTimeLabel="8:45 AM CT"
+      />,
+    );
+    expect(screen.getByText(/Entry at 8:45 AM CT/)).toBeInTheDocument();
+    expect(screen.getByText(/SPX at 5815/)).toBeInTheDocument();
+    expect(screen.getByText(/settled at 5818/)).toBeInTheDocument();
+  });
+
+  it('shows actual SPX range in summary', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -153,12 +155,13 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    // Entry time is 10:00, settlement is last candle close = 5818
-    expect(screen.getByText(/Entry 10:00/)).toBeInTheDocument();
-    expect(screen.getByText(/Settlement 5818/)).toBeInTheDocument();
+    // From entry (index 2) onward: high = 5830, low = 5805 → range = 25 pts
+    expect(screen.getByText(/25 pts/)).toBeInTheDocument();
+    expect(screen.getByText(/5805/)).toBeInTheDocument();
+    expect(screen.getByText(/5830/)).toBeInTheDocument();
   });
 
-  it('shows remaining high and low', () => {
+  it('shows "Safe by X pts" for survived rows', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -167,55 +170,14 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    // From index 2 onward: high = 5830 (candle 4), low = 5805 (candle 2)
-    expect(screen.getByText(/H 5830/)).toBeInTheDocument();
-    expect(screen.getByText(/L 5805/)).toBeInTheDocument();
-  });
-
-  it('renders a row for each matched delta', () => {
-    const { container } = render(
-      <SettlementCheck
-        th={lightTheme}
-        snapshot={makeSnapshot()}
-        allCandles={makeCandles()}
-        allDeltas={makeAllDeltas()}
-      />,
-    );
-    const labels = getDeltaLabels(container);
-    expect(labels).toEqual(['5', '8', '10', '12', '15']);
-  });
-
-  it('shows strike labels on each row', () => {
-    render(
-      <SettlementCheck
-        th={lightTheme}
-        snapshot={makeSnapshot()}
-        allCandles={makeCandles()}
-        allDeltas={makeAllDeltas()}
-      />,
-    );
-    // 5-delta strikes: 5700P / 5900C
-    expect(screen.getByText('5700P')).toBeInTheDocument();
-    expect(screen.getByText('5900C')).toBeInTheDocument();
-  });
-
-  it('shows positive cushion for survived strikes', () => {
-    render(
-      <SettlementCheck
-        th={lightTheme}
-        snapshot={makeSnapshot()}
-        allCandles={makeCandles()}
-        allDeltas={makeAllDeltas()}
-      />,
-    );
-    // 15-delta: call 5840, put 5760
+    // 15Δ: call 5840, put 5760
     // callCushion = 5840 - 5830 = 10, putCushion = 5805 - 5760 = 45
-    // min cushion = 10 → "+10 pts"
-    expect(screen.getByText('+10 pts')).toBeInTheDocument();
+    // closer side = call, 10 pts
+    expect(screen.getByText(/Safe by 10 pts/)).toBeInTheDocument();
+    expect(screen.getAllByText(/nearest: call side/).length).toBeGreaterThan(0);
   });
 
-  it('detects call breach correctly', () => {
-    // Tight call strike that gets breached
+  it('shows call breach with SPX high when call is breached', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -226,12 +188,11 @@ describe('SettlementCheck', () => {
         })}
       />,
     );
-    // 5830 high >= 5825 call → breached by 5 pts
-    expect(screen.getByText('C −5')).toBeInTheDocument();
+    expect(screen.getByText(/Call breached by 5 pts/)).toBeInTheDocument();
+    expect(screen.getByText(/SPX hit 5830/)).toBeInTheDocument();
   });
 
-  it('detects put breach correctly', () => {
-    // Tight put strike that gets breached
+  it('shows put breach with SPX low when put is breached', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -242,29 +203,45 @@ describe('SettlementCheck', () => {
         })}
       />,
     );
-    // 5805 low <= 5810 put → breached by 5 pts
-    expect(screen.getByText('P −5')).toBeInTheDocument();
+    expect(screen.getByText(/Put breached by 5 pts/)).toBeInTheDocument();
+    expect(screen.getByText(/SPX hit 5805/)).toBeInTheDocument();
   });
 
-  it('shows partial survival count when some breached', () => {
+  it('shows partial survival verdict', () => {
     render(
       <SettlementCheck
         th={lightTheme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
-          // Breach the 5-delta and 8-delta call strikes
           5: { callStrike: 5825, putStrike: 5700 },
           8: { callStrike: 5828, putStrike: 5720 },
         })}
       />,
     );
-    expect(screen.getByText(/3\/5 SURVIVED/)).toBeInTheDocument();
+    expect(screen.getByText(/3\/5 Survived/)).toBeInTheDocument();
+  });
+
+  it('shows all breached verdict when none survive', () => {
+    render(
+      <SettlementCheck
+        th={lightTheme}
+        snapshot={makeSnapshot()}
+        allCandles={makeCandles()}
+        allDeltas={makeAllDeltas({
+          5: { callStrike: 5825, putStrike: 5810 },
+          8: { callStrike: 5825, putStrike: 5810 },
+          10: { callStrike: 5825, putStrike: 5810 },
+          12: { callStrike: 5825, putStrike: 5810 },
+          15: { callStrike: 5825, putStrike: 5810 },
+        })}
+      />,
+    );
+    expect(screen.getByText(/All Breached/)).toBeInTheDocument();
   });
 
   it('only renders rows for deltas in the target list', () => {
-    // Provide a delta=20 which is not in targetDeltas [5,8,10,12,15]
-    const { container } = render(
+    render(
       <SettlementCheck
         th={lightTheme}
         snapshot={makeSnapshot()}
@@ -275,12 +252,12 @@ describe('SettlementCheck', () => {
         ]}
       />,
     );
-    const labels = getDeltaLabels(container);
-    expect(labels).toEqual(['10']);
+    expect(screen.getByText('10Δ')).toBeInTheDocument();
+    expect(screen.queryByText('20Δ')).not.toBeInTheDocument();
   });
 
   it('filters out error entries from allDeltas', () => {
-    const { container } = render(
+    render(
       <SettlementCheck
         th={lightTheme}
         snapshot={makeSnapshot()}
@@ -291,12 +268,11 @@ describe('SettlementCheck', () => {
         ]}
       />,
     );
-    const labels = getDeltaLabels(container);
-    expect(labels).toEqual(['10']);
-    expect(screen.getByText(/1\/1 SURVIVED/)).toBeInTheDocument();
+    expect(screen.getByText('10Δ')).toBeInTheDocument();
+    expect(screen.getByText(/All Survived/)).toBeInTheDocument();
   });
 
-  it('shows the footnote with entry time', () => {
+  it('shows cushion values below the bar for both sides', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -305,9 +281,22 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    expect(
-      screen.getByText(/from 10:00 through settlement/),
-    ).toBeInTheDocument();
+    // 15Δ: callCushion = +10, putCushion = +45
+    expect(screen.getByText('+10')).toBeInTheDocument();
+    expect(screen.getByText('+45')).toBeInTheDocument();
+  });
+
+  it('shows legend for the bar visualization', () => {
+    render(
+      <SettlementCheck
+        th={lightTheme}
+        snapshot={makeSnapshot()}
+        allCandles={makeCandles()}
+        allDeltas={makeAllDeltas()}
+      />,
+    );
+    expect(screen.getByText('Strike corridor')).toBeInTheDocument();
+    expect(screen.getByText('Actual SPX range')).toBeInTheDocument();
   });
 
   it('renders in both themes without crashing', () => {

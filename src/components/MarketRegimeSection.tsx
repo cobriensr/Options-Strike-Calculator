@@ -24,6 +24,7 @@ interface Props {
   clusterMult: number;
   historySnapshot?: HistorySnapshot | null;
   historyCandles?: readonly HistoryCandle[];
+  entryTimeLabel?: string;
 }
 
 export default function MarketRegimeSection({
@@ -38,6 +39,7 @@ export default function MarketRegimeSection({
   clusterMult,
   historySnapshot,
   historyCandles,
+  entryTimeLabel,
 }: Props) {
   const [showRegime, setShowRegime] = useState(true);
 
@@ -149,6 +151,7 @@ export default function MarketRegimeSection({
                       snapshot={historySnapshot}
                       allCandles={historyCandles}
                       allDeltas={results.allDeltas}
+                      entryTimeLabel={entryTimeLabel}
                     />
                   </div>
                 )}

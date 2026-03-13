@@ -248,7 +248,19 @@ export default function StrikeCalculator() {
                     Loading…
                   </span>
                 )}
-                {!historySnapshot && market.hasData && (
+                {historyData.error && !historyData.loading && (
+                  <span
+                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
+                    style={{
+                      backgroundColor: th.red + '18',
+                      color: th.red,
+                    }}
+                    title={historyData.error}
+                  >
+                    ● NO INTRADAY
+                  </span>
+                )}
+                {!historySnapshot && !historyData.error && market.hasData && (
                   <span
                     className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
                     style={{
@@ -387,6 +399,11 @@ export default function StrikeCalculator() {
               clusterMult={clusterMult}
               historySnapshot={historySnapshot}
               historyCandles={historyData.history?.spx.candles}
+              entryTimeLabel={
+                historySnapshot
+                  ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
+                  : undefined
+              }
             />
 
             <ResultsSection
