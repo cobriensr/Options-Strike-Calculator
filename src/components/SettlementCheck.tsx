@@ -5,7 +5,7 @@
  * Only renders in backtest mode (when historySnapshot is available).
  */
 
-import { useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import type { Theme } from '../themes';
 import type { HistoryCandle } from '../types/api';
 import type { HistorySnapshot } from '../hooks/useHistoryData';
@@ -15,7 +15,14 @@ interface Props {
   readonly snapshot: HistorySnapshot;
   readonly allCandles: readonly HistoryCandle[];
   readonly allDeltas: ReadonlyArray<
-    { delta: number; callStrike: number; putStrike: number } | { error: string }
+    | {
+        delta: number;
+        callStrike: number;
+        putStrike: number;
+        callSnapped?: number;
+        putSnapped?: number;
+      }
+    | { error: string }
   >;
   readonly entryTimeLabel?: string;
 }
@@ -84,19 +91,30 @@ export default function SettlementCheck({
 }: Props) {
   const results = useMemo(() => {
     const validDeltas = allDeltas.filter(
-      (d): d is { delta: number; callStrike: number; putStrike: number } =>
-        !('error' in d),
+      (
+        d,
+      ): d is {
+        delta: number;
+        callStrike: number;
+        putStrike: number;
+        callSnapped?: number;
+        putSnapped?: number;
+      } => !('error' in d),
     );
     const out: SettlementResult[] = [];
     for (const target of targetDeltas) {
       const entry = validDeltas.find((d) => d.delta === target);
       if (!entry) continue;
 
+      // Use snapped strikes (nearest 5) if available, otherwise raw
+      const call = entry.callSnapped ?? entry.callStrike;
+      const put = entry.putSnapped ?? entry.putStrike;
+
       const r = computeSettlement(
         allCandles,
         snapshot.candleIndex,
-        entry.callStrike,
-        entry.putStrike,
+        call,
+        put,
         target,
       );
       if (r) out.push(r);
@@ -136,7 +154,6 @@ export default function SettlementCheck({
           border: `1px solid ${survived === total ? th.green + '25' : survived >= total / 2 ? '#E8A31725' : th.red + '25'}`,
         }}
       >
-        {/* Top line: verdict */}
         <div className="mb-2 flex items-center gap-2">
           <span
             className="font-sans text-[13px] font-bold"
@@ -157,10 +174,10 @@ export default function SettlementCheck({
           </span>
         </div>
 
-        {/* Context line */}
         <div className="text-secondary font-sans text-[11px] leading-relaxed">
           Entry at {displayTime} with SPX at {entryPrice.toFixed(0)}. SPX ranged{' '}
-          {actualRange.toFixed(0)} pts ({remainingLow.toFixed(0)} \u2013{' '}
+          {actualRange.toFixed(0)} pts ({remainingLow.toFixed(0)}
+          {' \u2013 '}
           {remainingHigh.toFixed(0)}) and settled at {settlement.toFixed(0)} (
           {settleMove >= 0 ? '+' : ''}
           {settleMove.toFixed(0)} from entry).
@@ -194,7 +211,7 @@ export default function SettlementCheck({
             className="inline-block h-1.5 w-3 rounded-full"
             style={{ backgroundColor: th.green + '70' }}
           />
-          Actual SPX range
+          Actual SPX range (hover for details)
         </span>
       </div>
     </div>
@@ -216,6 +233,8 @@ function DeltaRow({
   remainingHigh: number;
   remainingLow: number;
 }) {
+  const [showTooltip, setShowTooltip] = useState(false);
+
   const width = r.callStrike - r.putStrike;
   const closerSide =
     Math.abs(r.callCushion) < Math.abs(r.putCushion) ? 'call' : 'put';
@@ -254,7 +273,7 @@ function DeltaRow({
             <span className="font-sans text-[11px]" style={{ color: th.green }}>
               Safe by {Math.abs(closerCushion).toFixed(0)} pts
               <span className="text-muted ml-1 text-[10px]">
-                (nearest: {closerSide === 'call' ? 'call' : 'put'} side)
+                (nearest: {closerSide} side)
               </span>
             </span>
           ) : (
@@ -287,8 +306,10 @@ function DeltaRow({
             className="relative h-[6px] w-full overflow-visible rounded-full"
             style={{ backgroundColor: th.surfaceAlt }}
           >
-            {/* Actual price range */}
+            {/* Actual price range — with tooltip on hover */}
             <div
+              role="img"
+              aria-label={`Price range: Low ${remainingLow.toFixed(2)}, High ${remainingHigh.toFixed(2)}, Range ${(remainingHigh - remainingLow).toFixed(2)} pts`}
               className="absolute top-0 h-full rounded-full"
               style={{
                 left: `${barLeft}%`,
@@ -296,7 +317,32 @@ function DeltaRow({
                 backgroundColor: barColor + '50',
                 border: `1px solid ${barColor}80`,
               }}
-            />
+              onMouseEnter={() => setShowTooltip(true)}
+              onMouseLeave={() => setShowTooltip(false)}
+            >
+              {showTooltip && (
+                <div
+                  className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 rounded-md px-2.5 py-1.5 font-mono text-[10px] leading-snug whitespace-nowrap shadow-lg"
+                  style={{
+                    backgroundColor: '#1a1a2e',
+                    color: '#e0e0e0',
+                    border: '1px solid #444',
+                  }}
+                >
+                  <div>
+                    Low: <strong>{remainingLow.toFixed(2)}</strong>
+                  </div>
+                  <div>
+                    High: <strong>{remainingHigh.toFixed(2)}</strong>
+                  </div>
+                  <div>
+                    Range:{' '}
+                    <strong>{(remainingHigh - remainingLow).toFixed(2)}</strong>{' '}
+                    pts
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Breach overflow indicators */}
             {r.putBreached && (
@@ -321,15 +367,16 @@ function DeltaRow({
             )}
           </div>
 
-          {/* Cushion labels below the bar */}
+          {/* Cushion labels below the bar:
+              Put side = negative (below entry), Call side = positive (above entry) */}
           <div className="mt-0.5 flex justify-between font-mono text-[8px]">
             <span style={{ color: r.putBreached ? th.red : th.textMuted }}>
-              {r.putCushion >= 0 ? '+' : ''}
-              {r.putCushion.toFixed(0)}
+              {r.putCushion > 0 ? '\u2212' : '+'}
+              {Math.abs(r.putCushion).toFixed(0)}
             </span>
             <span style={{ color: r.callBreached ? th.red : th.textMuted }}>
-              {r.callCushion >= 0 ? '+' : ''}
-              {r.callCushion.toFixed(0)}
+              {r.callCushion >= 0 ? '+' : '\u2212'}
+              {Math.abs(r.callCushion).toFixed(0)}
             </span>
           </div>
         </div>

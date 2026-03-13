@@ -54,22 +54,72 @@ function makeSnapshot(
 
 function makeAllDeltas(
   overrides: Partial<
-    Record<number, { callStrike: number; putStrike: number }>
+    Record<
+      number,
+      {
+        callStrike: number;
+        putStrike: number;
+        callSnapped?: number;
+        putSnapped?: number;
+      }
+    >
   > = {},
 ) {
-  const defaults: Record<number, { callStrike: number; putStrike: number }> = {
-    5: { callStrike: 5900, putStrike: 5700 },
-    8: { callStrike: 5880, putStrike: 5720 },
-    10: { callStrike: 5860, putStrike: 5740 },
-    12: { callStrike: 5850, putStrike: 5750 },
-    15: { callStrike: 5840, putStrike: 5760 },
+  const defaults: Record<
+    number,
+    {
+      callStrike: number;
+      putStrike: number;
+      callSnapped: number;
+      putSnapped: number;
+    }
+  > = {
+    5: {
+      callStrike: 5902,
+      putStrike: 5703,
+      callSnapped: 5900,
+      putSnapped: 5705,
+    },
+    8: {
+      callStrike: 5881,
+      putStrike: 5722,
+      callSnapped: 5880,
+      putSnapped: 5720,
+    },
+    10: {
+      callStrike: 5863,
+      putStrike: 5741,
+      callSnapped: 5865,
+      putSnapped: 5740,
+    },
+    12: {
+      callStrike: 5848,
+      putStrike: 5752,
+      callSnapped: 5850,
+      putSnapped: 5750,
+    },
+    15: {
+      callStrike: 5839,
+      putStrike: 5762,
+      callSnapped: 5840,
+      putSnapped: 5760,
+    },
   };
 
   const merged = { ...defaults, ...overrides };
   return Object.entries(merged)
     .filter(
-      (entry): entry is [string, { callStrike: number; putStrike: number }] =>
-        entry[1] != null,
+      (
+        entry,
+      ): entry is [
+        string,
+        {
+          callStrike: number;
+          putStrike: number;
+          callSnapped?: number;
+          putSnapped?: number;
+        },
+      ] => entry[1] != null,
     )
     .map(([delta, strikes]) => ({
       delta: Number(delta),
@@ -174,7 +224,9 @@ describe('SettlementCheck', () => {
     // callCushion = 5840 - 5830 = 10, putCushion = 5805 - 5760 = 45
     // closer side = call, 10 pts
     expect(screen.getByText(/Safe by 10 pts/)).toBeInTheDocument();
-    expect(screen.getAllByText(/nearest: call side/).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/nearest: call side/).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('shows call breach with SPX high when call is breached', () => {
@@ -184,7 +236,12 @@ describe('SettlementCheck', () => {
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
-          5: { callStrike: 5825, putStrike: 5700 },
+          5: {
+            callStrike: 5825,
+            putStrike: 5700,
+            callSnapped: 5825,
+            putSnapped: 5700,
+          },
         })}
       />,
     );
@@ -199,7 +256,12 @@ describe('SettlementCheck', () => {
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
-          5: { callStrike: 5900, putStrike: 5810 },
+          5: {
+            callStrike: 5900,
+            putStrike: 5810,
+            callSnapped: 5900,
+            putSnapped: 5810,
+          },
         })}
       />,
     );
@@ -214,11 +276,23 @@ describe('SettlementCheck', () => {
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
-          5: { callStrike: 5825, putStrike: 5700 },
-          8: { callStrike: 5828, putStrike: 5720 },
+          5: {
+            callStrike: 5825,
+            putStrike: 5700,
+            callSnapped: 5825,
+            putSnapped: 5700,
+          },
+          8: {
+            callStrike: 5828,
+            putStrike: 5720,
+            callSnapped: 5830,
+            putSnapped: 5720,
+          },
         })}
       />,
     );
+    // 5Δ call 5825 < high 5830 → breached
+    // 8Δ call 5830 <= high 5830 → breached
     expect(screen.getByText(/3\/5 Survived/)).toBeInTheDocument();
   });
 
@@ -229,11 +303,36 @@ describe('SettlementCheck', () => {
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
-          5: { callStrike: 5825, putStrike: 5810 },
-          8: { callStrike: 5825, putStrike: 5810 },
-          10: { callStrike: 5825, putStrike: 5810 },
-          12: { callStrike: 5825, putStrike: 5810 },
-          15: { callStrike: 5825, putStrike: 5810 },
+          5: {
+            callStrike: 5825,
+            putStrike: 5810,
+            callSnapped: 5825,
+            putSnapped: 5810,
+          },
+          8: {
+            callStrike: 5825,
+            putStrike: 5810,
+            callSnapped: 5825,
+            putSnapped: 5810,
+          },
+          10: {
+            callStrike: 5825,
+            putStrike: 5810,
+            callSnapped: 5825,
+            putSnapped: 5810,
+          },
+          12: {
+            callStrike: 5825,
+            putStrike: 5810,
+            callSnapped: 5825,
+            putSnapped: 5810,
+          },
+          15: {
+            callStrike: 5825,
+            putStrike: 5810,
+            callSnapped: 5825,
+            putSnapped: 5810,
+          },
         })}
       />,
     );
@@ -272,7 +371,7 @@ describe('SettlementCheck', () => {
     expect(screen.getByText(/All Survived/)).toBeInTheDocument();
   });
 
-  it('shows cushion values below the bar for both sides', () => {
+  it('shows directional cushion values: negative on put side, positive on call side', () => {
     render(
       <SettlementCheck
         th={lightTheme}
@@ -281,9 +380,11 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    // 15Δ: callCushion = +10, putCushion = +45
+    // 15Δ: callCushion = 5840 - 5830 = +10, putCushion = 5805 - 5760 = +45
+    // Display: put side = −45, call side = +10
     expect(screen.getByText('+10')).toBeInTheDocument();
-    expect(screen.getByText('+45')).toBeInTheDocument();
+    const negatives = screen.getAllByText(/\u221245/);
+    expect(negatives.length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows legend for the bar visualization', () => {
@@ -296,7 +397,7 @@ describe('SettlementCheck', () => {
       />,
     );
     expect(screen.getByText('Strike corridor')).toBeInTheDocument();
-    expect(screen.getByText('Actual SPX range')).toBeInTheDocument();
+    expect(screen.getByText(/Actual SPX range/)).toBeInTheDocument();
   });
 
   it('renders in both themes without crashing', () => {
