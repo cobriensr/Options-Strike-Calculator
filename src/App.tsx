@@ -8,6 +8,7 @@ import { useVixData } from './hooks/useVixData';
 import { useCalculation } from './hooks/useCalculation';
 import { useMarketData } from './hooks/useMarketData';
 import { useHistoryData } from './hooks/useHistoryData';
+import { useVix1dData } from './hooks/useVix1dData';
 import { to24Hour } from './utils/calculator';
 import VixUploadSection from './components/VixUploadSection';
 import DateLookupSection from './components/DateLookupSection';
@@ -76,6 +77,7 @@ export default function StrikeCalculator() {
   const market = useMarketData();
   const vix = useVixData(ivMode, timeHour, timeAmPm, timezone, setVixInput);
   const historyData = useHistoryData(vix.selectedDate);
+  const vix1dStatic = useVix1dData();
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -157,14 +159,12 @@ export default function StrikeCalculator() {
     }
   }, [
     historyData,
-    ivMode,
-    market.data.quotes,
-    historyData.hasHistory,
-    historyData.getStateAtTime,
     timeHour,
     timeMinute,
     timeAmPm,
     timezone,
+    ivMode,
+    market.data.quotes,
   ]);
 
   // Compute current history snapshot for downstream components
@@ -173,7 +173,17 @@ export default function StrikeCalculator() {
     const h24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
     const etHour = timezone === 'CT' ? h24 + 1 : h24;
     const etMinute = Number.parseInt(timeMinute) || 0;
-    return historyData.getStateAtTime(etHour, etMinute);
+    const snapshot = historyData.getStateAtTime(etHour, etMinute);
+    if (!snapshot) return null;
+
+    // Fall back to static VIX1D daily data if Schwab intraday unavailable
+    if (snapshot.vix1d == null && vix1dStatic.loaded) {
+      const staticVal = vix1dStatic.getVix1d(historyData.history!.date, etHour);
+      if (staticVal != null) {
+        return { ...snapshot, vix1d: staticVal };
+      }
+    }
+    return snapshot;
   })();
 
   // Shared CSS classes

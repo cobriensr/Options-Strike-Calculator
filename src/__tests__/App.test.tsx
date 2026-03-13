@@ -18,13 +18,23 @@ async function renderApp() {
 // Mock fetch for useMarketData — return 401 (public visitor) so the hook
 // silently does nothing and all existing tests work unchanged.
 beforeEach(() => {
-  globalThis.fetch = vi.fn(() =>
-    Promise.resolve({
+  globalThis.fetch = vi.fn((url: string) => {
+    if (url === '/vix1d-daily.json') {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            '2026-03-11': { o: 18.5, h: 20.1, l: 17.8, c: 19.2 },
+          }),
+      });
+    }
+    return Promise.resolve({
       ok: false,
       status: 401,
       json: () => Promise.resolve({ error: 'Not authenticated' }),
-    }),
-  ) as unknown as typeof fetch;
+    });
+  }) as unknown as typeof fetch;
 });
 
 afterEach(() => {
@@ -965,13 +975,20 @@ describe('StrikeCalculator: market data auto-fill', () => {
       asOf: '2024-03-04T15:30:00Z',
     };
 
-    globalThis.fetch = vi.fn((url: string | URL | Request) => {
+    globalThis.fetch = vi.fn((url: RequestInfo) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('/api/quotes')) {
         return Promise.resolve({
           ok: true,
           status: 200,
           json: () => Promise.resolve(mockQuotes),
+        });
+      }
+      if (urlStr.includes('/vix1d-daily.json')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
         });
       }
       // Return 401 for other endpoints
@@ -1017,13 +1034,20 @@ describe('StrikeCalculator: market data auto-fill', () => {
       asOf: '2024-03-04T15:30:00Z',
     };
 
-    globalThis.fetch = vi.fn((url: string | URL | Request) => {
+    globalThis.fetch = vi.fn((url: RequestInfo) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('/api/quotes')) {
         return Promise.resolve({
           ok: true,
           status: 200,
           json: () => Promise.resolve(mockQuotes),
+        });
+      }
+      if (urlStr.includes('/vix1d-daily.json')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
         });
       }
       return Promise.resolve({
@@ -1058,13 +1082,20 @@ describe('StrikeCalculator: market data auto-fill', () => {
       asOf: '2024-03-04T21:00:00Z',
     };
 
-    globalThis.fetch = vi.fn((url: string | URL | Request) => {
+    globalThis.fetch = vi.fn((url: RequestInfo) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('/api/quotes')) {
         return Promise.resolve({
           ok: true,
           status: 200,
           json: () => Promise.resolve(mockQuotes),
+        });
+      }
+      if (urlStr.includes('/vix1d-daily.json')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
         });
       }
       return Promise.resolve({
