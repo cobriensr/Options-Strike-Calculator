@@ -334,9 +334,7 @@ describe('DeltaRegimeGuide: delta vs. threshold matrix', () => {
 
   it('shows footnote explaining checkmarks', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    expect(
-      screen.getByText(/clears the historical range threshold/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/both sides clear threshold/i)).toBeInTheDocument();
   });
 });
 

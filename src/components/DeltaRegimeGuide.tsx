@@ -157,6 +157,14 @@ export default function DeltaRegimeGuide({
     ? Math.min(settlementTarget.putDelta, settlementTarget.callDelta)
     : null;
 
+  // Spread-specific ceilings (use individual put/call deltas instead of min)
+  const putSpreadCeiling = settlementTarget
+    ? Math.floor(settlementTarget.putDelta)
+    : null;
+  const callSpreadCeiling = settlementTarget
+    ? Math.floor(settlementTarget.callDelta)
+    : null;
+
   // Build the "your deltas" matrix
   const deltaRows = allDeltas.filter((r): r is DeltaRow => !('error' in r));
 
@@ -406,6 +414,45 @@ export default function DeltaRegimeGuide({
                 );
               })()}
 
+              {/* Spread-specific ceilings */}
+              {putSpreadCeiling != null &&
+                callSpreadCeiling != null &&
+                (putSpreadCeiling > maxD || callSpreadCeiling > maxD) && (
+                  <div
+                    className="flex items-center gap-4 px-4.5 py-2"
+                    style={{
+                      borderTop: '1px solid ' + zoneColor + '15',
+                      backgroundColor: zoneColor + '05',
+                    }}
+                  >
+                    <span className="text-muted font-sans text-[10px] font-bold tracking-wider uppercase">
+                      Directional:
+                    </span>
+                    <span className="font-sans text-[11px]">
+                      <span className="text-danger font-bold">
+                        {putSpreadCeiling}
+                        {'\u0394'}
+                      </span>
+                      <span className="text-muted ml-1 text-[10px]">
+                        put spread
+                      </span>
+                    </span>
+                    <span className="text-muted text-[10px]">{'\u2502'}</span>
+                    <span className="font-sans text-[11px]">
+                      <span className="text-success font-bold">
+                        {callSpreadCeiling}
+                        {'\u0394'}
+                      </span>
+                      <span className="text-muted ml-1 text-[10px]">
+                        call spread
+                      </span>
+                    </span>
+                    <span className="text-muted ml-auto font-sans text-[9px] italic">
+                      Single-side only {'\u2014'} use with Market Tide
+                    </span>
+                  </div>
+                )}
+
               {/* Position sizing note for elevated regimes */}
               {(bucket.zone === 'caution' ||
                 bucket.zone === 'stop' ||
@@ -555,7 +602,7 @@ export default function DeltaRegimeGuide({
                   const callPct = gd
                     ? Number.parseFloat(gd.callPct)
                     : Number.parseFloat(r.callPct);
-                  const minPct = Math.min(putPct, callPct);
+
                   return (
                     <tr
                       key={r.delta}
@@ -573,22 +620,34 @@ export default function DeltaRegimeGuide({
                       <td className={`${mkTd()} text-success text-right`}>
                         {gd ? gd.callPct : r.callPct}%
                       </td>
-                      {computed.map((c, ci) => (
-                        <td
-                          key={c.label}
-                          className={`${mkTd()} text-center ${ci === 2 ? 'border-edge border-l-2' : ''}`}
-                        >
-                          {minPct >= c.pct ? (
-                            <span className="text-success text-[15px] font-bold">
-                              {'\u2713'}
-                            </span>
-                          ) : (
-                            <span className="text-danger text-[13px] font-medium">
-                              {'\u2717'}
-                            </span>
-                          )}
-                        </td>
-                      ))}
+                      {computed.map((c, ci) => {
+                        const putClears = putPct >= c.pct;
+                        const callClears = callPct >= c.pct;
+                        const bothClear = putClears && callClears;
+                        return (
+                          <td
+                            key={c.label}
+                            className={`${mkTd()} text-center ${ci === 2 ? 'border-edge border-l-2' : ''}`}
+                          >
+                            {bothClear ? (
+                              <span className="text-success text-[15px] font-bold">
+                                {'\u2713'}
+                              </span>
+                            ) : putClears || callClears ? (
+                              <span
+                                className="text-[11px] font-semibold"
+                                style={{ color: '#E8A317' }}
+                              >
+                                {putClears ? 'P\u2713' : 'C\u2713'}
+                              </span>
+                            ) : (
+                              <span className="text-danger text-[13px] font-medium">
+                                {'\u2717'}
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}
@@ -597,11 +656,13 @@ export default function DeltaRegimeGuide({
           </div>
 
           <p className="text-muted mt-1.5 text-[11px] italic">
-            {'\u2713'} = strike clears the historical range threshold (safe).{' '}
-            {'\u2717'} = within the threshold (at risk). Put/Call % and checks
-            use VIX {'\u00D7'} 1.15 {'\u03C3'} to match the Delta Guide
-            {'\u2019'}s own thresholds. Your actual VIX1D-based strikes may
-            differ.
+            {'\u2713'} = both sides clear threshold (IC safe).{' '}
+            <span style={{ color: '#E8A317' }}>P{'\u2713'}</span> = only put
+            side clears (put spread OK).{' '}
+            <span style={{ color: '#E8A317' }}>C{'\u2713'}</span> = only call
+            side clears (call spread OK). {'\u2717'} = neither side clears.
+            Put/Call % use VIX {'\u00D7'} 1.15 {'\u03C3'} to match the Guide
+            {'\u2019'}s thresholds.
           </p>
         </>
       )}
