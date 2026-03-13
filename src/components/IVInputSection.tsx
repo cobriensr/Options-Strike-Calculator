@@ -257,6 +257,7 @@ export default function IVInputSection({
             th={th}
             vix={Number.parseFloat(dVix)}
             onUseVix1dAsSigma={onUseVix1dAsSigma}
+            isVix1dActive={ivMode === IV_MODES.DIRECT}
             initialVix1d={
               historySnapshot?.vix1d ?? market.data.quotes?.vix1d?.price
             }

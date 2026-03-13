@@ -6,6 +6,7 @@ interface Props {
   readonly th: Theme;
   readonly vix: number | null; // Current VIX from parent (already entered)
   readonly onUseVix1dAsSigma?: (sigma: number) => void; // Optional: let parent switch to VIX1D-derived σ
+  readonly isVix1dActive?: boolean; // True when VIX1D is already being used as σ (Direct IV mode)
   readonly initialVix1d?: number; // Auto-fill from live data
   readonly initialVix9d?: number; // Auto-fill from live data
   readonly initialVvix?: number; // Auto-fill from live data
@@ -176,6 +177,7 @@ export default function VIXTermStructure({
   th,
   vix,
   onUseVix1dAsSigma,
+  isVix1dActive,
   initialVix1d,
   initialVix9d,
   initialVvix,
@@ -366,21 +368,34 @@ export default function VIXTermStructure({
         </div>
       )}
 
-      {/* VIX1D as direct σ suggestion */}
+      {/* VIX1D σ status */}
       {hasVix1d && vix1dSigma && (
         <div className="bg-surface-alt border-edge text-secondary rounded-lg border px-3.5 py-2.5 font-sans text-[11px] leading-relaxed">
-          <strong className="text-primary">Tip:</strong> VIX1D (
-          {vix1d.toFixed(2)}) is derived directly from today{'\u2019'}s 0DTE
-          options. You can use it as Direct IV ({'\u03C3'} ={' '}
-          {vix1dSigma.toFixed(4)}) with no 0DTE adjustment needed (set
-          multiplier to 1.00).
-          {onUseVix1dAsSigma && (
-            <button
-              onClick={() => onUseVix1dAsSigma(vix1dSigma)}
-              className="bg-accent-bg text-accent ml-2 cursor-pointer rounded-md border-[1.5px] border-[var(--th-accent)] px-2.5 py-[3px] font-sans text-[11px] font-semibold"
-            >
-              Use VIX1D as {'\u03C3'}
-            </button>
+          {isVix1dActive ? (
+            <>
+              <span
+                className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
+                style={{ backgroundColor: '#7C3AED' }}
+              />
+              <strong style={{ color: '#7C3AED' }}>Active:</strong> Strike
+              pricing uses VIX1D ({vix1d.toFixed(2)}) as {'\u03C3'} ={' '}
+              {vix1dSigma.toFixed(4)}. No 0DTE adjustment applied.
+            </>
+          ) : (
+            <>
+              <strong className="text-primary">Tip:</strong> VIX1D (
+              {vix1d.toFixed(2)}) is derived directly from today{'\u2019'}s 0DTE
+              options. You can use it as Direct IV ({'\u03C3'} ={' '}
+              {vix1dSigma.toFixed(4)}) with no 0DTE adjustment needed.
+              {onUseVix1dAsSigma && (
+                <button
+                  onClick={() => onUseVix1dAsSigma(vix1dSigma)}
+                  className="bg-accent-bg text-accent ml-2 cursor-pointer rounded-md border-[1.5px] border-[var(--th-accent)] px-2.5 py-[3px] font-sans text-[11px] font-semibold"
+                >
+                  Use VIX1D as {'\u03C3'}
+                </button>
+              )}
+            </>
           )}
         </div>
       )}
