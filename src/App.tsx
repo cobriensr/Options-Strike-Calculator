@@ -17,6 +17,7 @@ import IVInputSection from './components/IVInputSection';
 import AdvancedSection from './components/AdvancedSection';
 import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
+import BacktestDiag from './components/BacktestDiag';
 import { Analytics } from '@vercel/analytics/react';
 
 // ============================================================
@@ -117,11 +118,12 @@ export default function StrikeCalculator() {
       const ctDate = new Date(ctStr);
       let h = ctDate.getHours();
       const m = ctDate.getMinutes();
+      const snappedMin = Math.floor(m / 5) * 5;
       const ampm: AmPm = h >= 12 ? 'PM' : 'AM';
       if (h > 12) h -= 12;
       if (h === 0) h = 12;
       setTimeHour(String(h));
-      setTimeMinute(String(m).padStart(2, '0'));
+      setTimeMinute(String(snappedMin).padStart(2, '0'));
       setTimeAmPm(ampm);
       setTimezone('CT');
     }
@@ -386,6 +388,7 @@ export default function StrikeCalculator() {
           </main>
         </div>
       </div>
+      <BacktestDiag snapshot={historySnapshot} history={historyData} />
       <Analytics />
     </div>
   );

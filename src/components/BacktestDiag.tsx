@@ -1,0 +1,129 @@
+/**
+ * BacktestDiag — Diagnostic overlay showing data sources during backtest mode.
+ * Only renders when historySnapshot is active. Shows the raw values feeding
+ * each input so you can verify correctness at a glance.
+ *
+ * Add to App.tsx temporarily for testing, remove when satisfied.
+ *
+ * Usage:
+ *   <BacktestDiag snapshot={historySnapshot} history={historyData} />
+ */
+
+import type {
+  HistorySnapshot,
+  UseHistoryDataReturn,
+} from '../hooks/useHistoryData';
+
+interface Props {
+  snapshot: HistorySnapshot | null;
+  history: UseHistoryDataReturn;
+}
+
+export default function BacktestDiag({ snapshot, history }: Props) {
+  if (!snapshot) return null;
+
+  const rows: [string, string][] = [
+    ['Mode', '● BACKTEST'],
+    ['Date', history.history?.date ?? '—'],
+    [
+      'Candle',
+      `${snapshot.candle.time} (${snapshot.candleIndex + 1}/${snapshot.totalCandles})`,
+    ],
+    ['SPX Spot', snapshot.spot.toFixed(2)],
+    ['SPY', snapshot.spy.toFixed(2)],
+    ['VIX', snapshot.vix?.toFixed(2) ?? 'no data'],
+    ['VIX prevClose', snapshot.vixPrevClose?.toFixed(2) ?? 'no data'],
+    ['VIX1D', snapshot.vix1d?.toFixed(2) ?? 'no data'],
+    ['VIX9D', snapshot.vix9d?.toFixed(2) ?? 'no data'],
+    ['VVIX', snapshot.vvix?.toFixed(2) ?? 'no data'],
+    ['SPX Open', snapshot.runningOHLC.open.toFixed(2)],
+    ['SPX Hi→Now', snapshot.runningOHLC.high.toFixed(2)],
+    ['SPX Lo→Now', snapshot.runningOHLC.low.toFixed(2)],
+    ['Prev Close', snapshot.previousClose.toFixed(2)],
+    [
+      'Gap',
+      snapshot.previousClose > 0
+        ? (
+            ((snapshot.runningOHLC.open - snapshot.previousClose) /
+              snapshot.previousClose) *
+            100
+          ).toFixed(2) + '%'
+        : '—',
+    ],
+    [
+      'Open Range',
+      snapshot.openingRange
+        ? `${snapshot.openingRange.low.toFixed(0)}–${snapshot.openingRange.high.toFixed(0)} (${snapshot.openingRange.rangePts.toFixed(1)} pts)`
+        : 'incomplete',
+    ],
+    [
+      'Yesterday',
+      snapshot.yesterday
+        ? `${snapshot.yesterday.date}: ${snapshot.yesterday.rangePct}% range`
+        : 'no data',
+    ],
+  ];
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        bottom: 12,
+        right: 12,
+        zIndex: 9999,
+        backgroundColor: '#1a1a2e',
+        color: '#e0e0e0',
+        borderRadius: 10,
+        padding: '12px 16px',
+        fontSize: 11,
+        fontFamily: 'monospace',
+        lineHeight: 1.6,
+        maxWidth: 320,
+        boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+        border: '1px solid #333',
+      }}
+    >
+      <div
+        style={{
+          fontWeight: 700,
+          fontSize: 12,
+          marginBottom: 6,
+          color: '#7C3AED',
+        }}
+      >
+        Backtest Diagnostic
+      </div>
+      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+        <tbody>
+          {rows.map(([label, value]) => (
+            <tr key={label}>
+              <td
+                style={{
+                  padding: '1px 8px 1px 0',
+                  color: '#888',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {label}
+              </td>
+              <td
+                style={{
+                  padding: '1px 0',
+                  color: value === 'no data' ? '#f44' : '#e0e0e0',
+                  textAlign: 'right',
+                }}
+              >
+                {value}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {history.error && (
+        <div style={{ marginTop: 6, color: '#f44', fontSize: 10 }}>
+          Error: {history.error}
+        </div>
+      )}
+    </div>
+  );
+}

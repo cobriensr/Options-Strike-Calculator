@@ -64,7 +64,7 @@ export default function EntryTimeSection({
             className={selectCls}
             style={{ backgroundImage: chevronUrl }}
           >
-            {Array.from({ length: 60 }, (_, i) => i).map((m) => (
+            {Array.from({ length: 12 }, (_, i) => i * 5).map((m) => (
               <option key={m} value={String(m).padStart(2, '0')}>
                 {String(m).padStart(2, '0')}
               </option>

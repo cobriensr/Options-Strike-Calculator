@@ -216,11 +216,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const dateParam = typeof req.query?.date === 'string' ? req.query.date : '';
   if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-    return res
-      .status(400)
-      .json({
-        error: 'Missing or invalid date parameter. Use ?date=YYYY-MM-DD',
-      });
+    return res.status(400).json({
+      error: 'Missing or invalid date parameter. Use ?date=YYYY-MM-DD',
+    });
   }
 
   const now = new Date();
