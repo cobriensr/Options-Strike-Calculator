@@ -101,8 +101,16 @@ export default function StrikeCalculator() {
     // Only auto-fill empty fields — never overwrite user input
     if (!spotPrice && q.spy) setSpotPrice(q.spy.price.toFixed(2));
     if (!spxDirect && q.spx) setSpxDirect(q.spx.price.toFixed(0));
-    if (!vixInput && q.vix && ivMode === IV_MODES.VIX)
-      setVixInput(q.vix.price.toFixed(2));
+
+    // VIX always populates the VIX field (regime analysis needs it)
+    if (!vixInput && q.vix) setVixInput(q.vix.price.toFixed(2));
+
+    // Auto-use VIX1D as σ when available (most accurate 0DTE IV).
+    // Updates on every quote refresh — VIX1D changes intraday.
+    if (q.vix1d && q.vix1d.price > 0) {
+      setIvMode(IV_MODES.DIRECT);
+      setDirectIVInput((q.vix1d.price / 100).toFixed(4));
+    }
 
     // Auto-set today's date if not already set
     if (!vix.selectedDate) {
@@ -147,9 +155,23 @@ export default function StrikeCalculator() {
       setSpotPrice(snapshot.spy.toFixed(2));
       setSpxDirect(snapshot.spot.toFixed(0));
 
-      // VIX — override the static VIX data with actual intraday VIX
-      if (snapshot.vix != null && ivMode === IV_MODES.VIX) {
+      // VIX always populates the VIX field (regime analysis needs it)
+      if (snapshot.vix != null) {
         setVixInput(snapshot.vix.toFixed(2));
+      }
+
+      // Auto-use VIX1D as σ when available (from Schwab intraday or CBOE static)
+      const vix1dVal =
+        snapshot.vix1d ??
+        (vix1dStatic.loaded
+          ? vix1dStatic.getVix1d(historyData.history!.date, etHour)
+          : null);
+      if (vix1dVal != null && vix1dVal > 0) {
+        setIvMode(IV_MODES.DIRECT);
+        setDirectIVInput((vix1dVal / 100).toFixed(4));
+      } else if (snapshot.vix != null) {
+        // No VIX1D available — fall back to VIX mode
+        setIvMode(IV_MODES.VIX);
       }
     } else if (market.data.quotes) {
       // Today (or no history): restore live prices if available
@@ -163,7 +185,7 @@ export default function StrikeCalculator() {
     timeMinute,
     timeAmPm,
     timezone,
-    ivMode,
+    vix1dStatic,
     market.data.quotes,
   ]);
 
