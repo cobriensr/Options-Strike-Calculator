@@ -168,7 +168,7 @@ describe('POST /api/analyze', () => {
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     expect(opts.method).toBe('POST');
     expect(opts.headers['x-api-key']).toBe('test-key');
-    expect(opts.headers['anthropic-version']).toBe('2025-04-15');
+    expect(opts.headers['anthropic-version']).toBe('2023-06-01');
 
     const sentBody = JSON.parse(opts.body);
     expect(sentBody.model).toBe('claude-opus-4-6');
