@@ -174,8 +174,7 @@ describe('POST /api/analyze', () => {
     expect(sentBody.model).toBe('claude-opus-4-6');
     expect(sentBody.max_tokens).toBe(25000);
     expect(sentBody.thinking).toEqual({
-      type: 'enabled',
-      budget_tokens: 20000,
+      type: 'adaptive',
     });
     expect(sentBody.messages).toHaveLength(1);
     // Should have 1 text label + 1 image block + 1 context text block

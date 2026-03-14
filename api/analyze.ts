@@ -354,8 +354,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         model: 'claude-opus-4-6',
         max_tokens: 25000,
         thinking: {
-          type: 'enabled',
-          budget_tokens: 20000,
+          type: 'adaptive',
         },
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content }],
