@@ -216,9 +216,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const today = getTodayET();
   const strikeCount = Number(req.query.strikeCount) || 40;
 
-  // Fetch 0DTE chain from Schwab
+  // Schwab uses $SPX for SPX options (SPXW weeklies for 0DTE)
+  // First try today's expiration, then next available trading day
   const result = await schwabFetch<SchwabChainResponse>(
-    `/chains?symbol=$SPX.X&contractType=ALL&includeUnderlyingQuote=true&strategy=SINGLE&range=OTM&fromDate=${today}&toDate=${today}&strikeCount=${strikeCount}`,
+    `/chains?symbol=$SPX&contractType=ALL&includeUnderlyingQuote=true` +
+    `&strategy=SINGLE&range=OTM&fromDate=${today}&toDate=${today}` +
+    `&strikeCount=${strikeCount}`,
   );
 
   if ('error' in result) {
@@ -226,30 +229,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const chain = result.data;
-
-  // Flatten the nested expDateMap into sorted arrays
-  const rawPuts = flattenMap(chain.putExpDateMap);
-  const rawCalls = flattenMap(chain.callExpDateMap);
+  const rawPuts = flattenMap(chain.putExpDateMap ?? {});
+  const rawCalls = flattenMap(chain.callExpDateMap ?? {});
 
   if (rawPuts.length === 0 && rawCalls.length === 0) {
-    // Try without the .X suffix — Schwab symbol may vary
-    const retry = await schwabFetch<SchwabChainResponse>(
-      `/chains?symbol=SPX&contractType=ALL&includeUnderlyingQuote=true&strategy=SINGLE&range=OTM&fromDate=${today}&toDate=${today}&strikeCount=${strikeCount}`,
-    );
-    if ('error' in retry) {
-      return res.status(200).json({
-        error: 'No 0DTE contracts found. Market may be closed or chain unavailable.',
-        puts: [],
-        calls: [],
-        targetDeltas: {},
-        asOf: new Date().toISOString(),
-      });
-    }
-    const retryChain = retry.data;
-    const retryPuts = flattenMap(retryChain.putExpDateMap);
-    const retryCalls = flattenMap(retryChain.callExpDateMap);
-
-    return buildResponse(res, retryChain, retryPuts, retryCalls, today);
+    return res.status(200).json({
+      error: 'No 0DTE contracts found. Market may be closed or chain not yet available.',
+      underlying: chain.underlying ? {
+        symbol: chain.underlying.symbol,
+        price: chain.underlying.last,
+        prevClose: chain.underlying.close,
+      } : null,
+      puts: [],
+      calls: [],
+      targetDeltas: {},
+      asOf: new Date().toISOString(),
+    });
   }
 
   return buildResponse(res, chain, rawPuts, rawCalls, today);
