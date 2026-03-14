@@ -1,13 +1,74 @@
 /**
  * ChartAnalysis — Upload Market Tide, Net Flow, and/or Periscope screenshots.
- * Sends images + current calculator context to the Anthropic API for analysis.
- * Returns a structured recommendation: IC / Put Spread / Call Spread / Sit Out.
+ * Sends images + current calculator context to Claude Opus 4.6 with extended thinking.
+ * Returns a comprehensive trading plan: structure, strikes, management, entries, hedges.
+ *
+ * Supports three modes:
+ *   - entry:   Pre-trade analysis (default)
+ *   - midday:  Mid-day re-analysis
+ *   - review:  End-of-day review
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Theme } from '../themes';
 import type { CalculationResults } from '../types';
 import { SectionBox } from './ui';
+
+// ============================================================
+// SUB-COMPONENTS
+// ============================================================
+
+const InfoCard = ({
+  title,
+  color,
+  textMuted,
+  children,
+}: {
+  title: string;
+  color?: string;
+  textMuted: string;
+  children: React.ReactNode;
+}) => (
+  <div className="bg-surface border-edge rounded-lg border p-3">
+    <div
+      className="mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase"
+      style={{ color: color ?? textMuted }}
+    >
+      {title}
+    </div>
+    {children}
+  </div>
+);
+
+const BulletList = ({
+  items,
+  icon,
+  color,
+  textMuted,
+}: {
+  items: string[];
+  icon?: string;
+  color?: string;
+  textMuted: string;
+}) => (
+  <div className="grid gap-1">
+    {items.map((item, i) => (
+      <div
+        key={i}
+        className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
+      >
+        <span className="shrink-0" style={{ color: color ?? textMuted }}>
+          {icon ?? '\u2022'}
+        </span>
+        <span>{item}</span>
+      </div>
+    ))}
+  </div>
+);
+
+// ============================================================
+// TYPES
+// ============================================================
 
 interface Props {
   readonly th: Theme;
@@ -46,30 +107,71 @@ interface UploadedImage {
   label: string;
 }
 
+type AnalysisMode = 'entry' | 'midday' | 'review';
+
+interface ChartSignal {
+  signal: string;
+  confidence: string;
+  note: string;
+}
+
+interface EntryStep {
+  timing?: string;
+  condition?: string;
+  sizePercent: number;
+  delta: number;
+  structure: string;
+  note: string;
+}
+
 interface AnalysisResult {
-  structure:
-    | 'IRON CONDOR'
-    | 'PUT CREDIT SPREAD'
-    | 'CALL CREDIT SPREAD'
-    | 'SIT OUT';
-  confidence: 'HIGH' | 'MODERATE' | 'LOW';
+  mode: AnalysisMode;
+  structure: string;
+  confidence: string;
   suggestedDelta: number;
   reasoning: string;
+  chartConfidence?: {
+    marketTide?: ChartSignal;
+    spyNetFlow?: ChartSignal;
+    qqqNetFlow?: ChartSignal;
+    periscope?: ChartSignal;
+  };
   observations: string[];
+  strikeGuidance?: {
+    putStrikeNote?: string;
+    callStrikeNote?: string;
+    straddleCone?: { upper: number; lower: number; priceRelation: string };
+    adjustments?: string[];
+  } | null;
+  managementRules?: {
+    profitTarget?: string;
+    stopConditions?: string[];
+    timeRules?: string;
+    flowReversalSignal?: string;
+  } | null;
+  entryPlan?: {
+    entry1?: EntryStep;
+    entry2?: EntryStep;
+    entry3?: EntryStep;
+    maxTotalSize?: string;
+    noEntryConditions?: string[];
+  } | null;
   risks: string[];
-  periscopeNotes?: string;
-  structureRationale: string;
   hedge?: {
-    recommendation:
-      | 'NO HEDGE'
-      | 'PROTECTIVE LONG'
-      | 'DEBIT SPREAD HEDGE'
-      | 'REDUCED SIZE'
-      | 'SKIP';
+    recommendation: string;
     description: string;
     rationale: string;
     estimatedCost: string;
-  };
+  } | null;
+  periscopeNotes?: string | null;
+  structureRationale: string;
+  review?: {
+    wasCorrect: boolean;
+    whatWorked: string;
+    whatMissed: string;
+    optimalTrade: string;
+    lessonsLearned: string[];
+  } | null;
   imageIssues?: Array<{
     imageIndex: number;
     label: string;
@@ -87,13 +189,33 @@ const CHART_LABELS = [
   'Other',
 ] as const;
 
+const MODE_LABELS: Record<AnalysisMode, { label: string; desc: string }> = {
+  entry: {
+    label: 'Pre-Trade',
+    desc: 'Full analysis before opening a position',
+  },
+  midday: { label: 'Mid-Day', desc: 'Check if conditions changed since entry' },
+  review: { label: 'Review', desc: 'End-of-day retrospective' },
+};
+
+// ============================================================
+// COMPONENT
+// ============================================================
+
 export default function ChartAnalysis({ th, results, context }: Props) {
   const [images, setImages] = useState<UploadedImage[]>([]);
+  const [mode, setMode] = useState<AnalysisMode>('entry');
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [rawResponse, setRawResponse] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [replaceTargetIndex, setReplaceTargetIndex] = useState<number | null>(
+    null,
+  );
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Image management ──────────────────────────────────────
 
   const addImage = useCallback(
     (file: File) => {
@@ -120,11 +242,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     setImages((prev) => prev.map((i) => (i.id === id ? { ...i, label } : i)));
   }, []);
 
-  const [replaceTargetIndex, setReplaceTargetIndex] = useState<number | null>(
-    null,
-  );
-  const replaceInputRef = useRef<HTMLInputElement>(null);
-
   const replaceImage = useCallback((index: number) => {
     setReplaceTargetIndex(index);
     replaceInputRef.current?.click();
@@ -134,9 +251,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file || replaceTargetIndex == null) return;
-
       setImages((prev) => {
-        // Find the image at the target index (1-based from the analysis)
         const targetIdx = replaceTargetIndex - 1;
         if (targetIdx < 0 || targetIdx >= prev.length) return prev;
         const old = prev[targetIdx]!;
@@ -153,7 +268,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           ...prev.slice(targetIdx + 1),
         ];
       });
-
       setReplaceTargetIndex(null);
       if (replaceInputRef.current) replaceInputRef.current.value = '';
     },
@@ -166,9 +280,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       const files = Array.from(e.dataTransfer.files).filter((f) =>
         f.type.startsWith('image/'),
       );
-      for (const f of files.slice(0, 5 - images.length)) {
-        addImage(f);
-      }
+      for (const f of files.slice(0, 5 - images.length)) addImage(f);
     },
     [addImage, images.length],
   );
@@ -176,9 +288,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
-      for (const f of files.slice(0, 5 - images.length)) {
-        addImage(f);
-      }
+      for (const f of files.slice(0, 5 - images.length)) addImage(f);
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
     [addImage, images.length],
@@ -198,11 +308,12 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     [addImage],
   );
 
-  // Listen for paste on the entire document so Ctrl+V works anywhere
   useEffect(() => {
     document.addEventListener('paste', handlePaste);
     return () => document.removeEventListener('paste', handlePaste);
   }, [handlePaste]);
+
+  // ── Analysis ──────────────────────────────────────────────
 
   const analyze = useCallback(async () => {
     if (images.length === 0) return;
@@ -212,7 +323,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     setRawResponse(null);
 
     try {
-      // Convert images to base64
       const imageData = await Promise.all(
         images.map(async (img) => {
           const buffer = await img.file.arrayBuffer();
@@ -234,6 +344,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           images: imageData,
           context: {
             ...context,
+            mode,
             sigma: results?.sigma,
             T: results?.T,
             hoursRemaining: results?.hoursRemaining,
@@ -250,27 +361,24 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       }
 
       const data = await res.json();
-      if (data.analysis) {
-        setAnalysis(data.analysis);
-      }
-      if (data.raw) {
-        setRawResponse(data.raw);
-      }
-      if (!data.analysis && data.raw) {
+      if (data.analysis) setAnalysis(data.analysis);
+      if (data.raw) setRawResponse(data.raw);
+      if (!data.analysis && data.raw)
         setError('Could not parse structured response. See raw output below.');
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
       setLoading(false);
     }
-  }, [images, context, results]);
+  }, [images, context, results, mode]);
+
+  // ── Color helpers ─────────────────────────────────────────
 
   const structureColor = (s: string) => {
     if (s === 'IRON CONDOR') return th.accent;
     if (s === 'PUT CREDIT SPREAD') return th.red;
     if (s === 'CALL CREDIT SPREAD') return th.green;
-    return '#E8A317'; // SIT OUT
+    return '#E8A317';
   };
 
   const confidenceColor = (c: string) => {
@@ -279,9 +387,42 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     return th.red;
   };
 
+  const signalColor = (s: string) => {
+    if (s === 'BEARISH' || s === 'CONTRADICTS' || s === 'UNFAVORABLE')
+      return th.red;
+    if (s === 'BULLISH' || s === 'CONFIRMS' || s === 'FAVORABLE')
+      return th.green;
+    if (s === 'NEUTRAL' || s === 'NOT PROVIDED') return th.textMuted;
+    return '#E8A317';
+  };
+
+  // ── Render ────────────────────────────────────────────────
+
   return (
     <SectionBox th={th} label="Chart Analysis">
       <div className="font-sans text-[11px] leading-relaxed">
+        {/* Mode selector */}
+        <div className="mb-3 flex gap-1.5">
+          {(Object.keys(MODE_LABELS) as AnalysisMode[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-all"
+              style={{
+                backgroundColor: mode === m ? th.accent + '18' : th.surfaceAlt,
+                color: mode === m ? th.accent : th.textMuted,
+                border: `1px solid ${mode === m ? th.accent + '40' : 'transparent'}`,
+              }}
+            >
+              {MODE_LABELS[m].label}
+            </button>
+          ))}
+          <span className="text-muted ml-2 self-center text-[10px] italic">
+            {MODE_LABELS[mode].desc}
+          </span>
+        </div>
+
         {/* Drop zone */}
         <button
           type="button"
@@ -339,6 +480,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                     ))}
                   </select>
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       removeImage(img.id);
@@ -357,17 +499,15 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         {/* Analyze button */}
         {images.length > 0 && (
           <button
+            type="button"
             onClick={analyze}
             disabled={loading}
             className="mb-3 w-full cursor-pointer rounded-lg px-4 py-2.5 font-sans text-[12px] font-bold tracking-wider uppercase transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
-            style={{
-              backgroundColor: th.accent,
-              color: '#fff',
-            }}
+            style={{ backgroundColor: th.accent, color: '#fff' }}
           >
             {loading
-              ? 'Analyzing charts...'
-              : `Analyze ${images.length} chart${images.length > 1 ? 's' : ''}`}
+              ? 'Analyzing charts with Opus...'
+              : `Analyze ${images.length} chart${images.length > 1 ? 's' : ''} \u2014 ${MODE_LABELS[mode].label}`}
           </button>
         )}
 
@@ -381,10 +521,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           </div>
         )}
 
-        {/* Results */}
+        {/* ════════════════════ RESULTS ════════════════════ */}
         {analysis && (
           <div className="grid gap-2.5">
-            {/* Primary recommendation */}
+            {/* ── 1. Primary Recommendation ── */}
             <div
               className="rounded-[10px] p-3.5"
               style={{
@@ -392,7 +532,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 border: `1.5px solid ${structureColor(analysis.structure)}30`,
               }}
             >
-              <div className="mb-1.5 flex items-center gap-2">
+              <div className="mb-1.5 flex flex-wrap items-center gap-2">
                 <span
                   className="font-sans text-[15px] font-bold"
                   style={{ color: structureColor(analysis.structure) }}
@@ -410,11 +550,20 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                   {analysis.confidence}
                 </span>
                 <span
-                  className="text-accent rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
-                  style={{ backgroundColor: th.accent + '18' }}
+                  className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
+                  style={{
+                    backgroundColor: th.accent + '18',
+                    color: th.accent,
+                  }}
                 >
                   {analysis.suggestedDelta}
                   {'\u0394'}
+                </span>
+                <span
+                  className="text-muted rounded-full px-2 py-0.5 font-mono text-[9px]"
+                  style={{ backgroundColor: th.surfaceAlt }}
+                >
+                  {MODE_LABELS[analysis.mode ?? mode].label}
                 </span>
               </div>
               <div className="text-secondary text-[11px] leading-relaxed">
@@ -422,25 +571,261 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               </div>
             </div>
 
-            {/* Observations */}
-            <div className="bg-surface border-edge rounded-lg border p-3">
-              <div className="text-muted mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase">
-                Key Observations
+            {/* ── 2. Per-Chart Confidence ── */}
+            {analysis.chartConfidence && (
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                {(
+                  [
+                    ['marketTide', 'Market Tide'],
+                    ['spyNetFlow', 'SPY Flow'],
+                    ['qqqNetFlow', 'QQQ Flow'],
+                    ['periscope', 'Periscope'],
+                  ] as const
+                ).map(([key, label]) => {
+                  const sig = analysis.chartConfidence?.[key];
+                  if (!sig || sig.signal === 'NOT PROVIDED') return null;
+                  return (
+                    <div
+                      key={key}
+                      className="bg-surface border-edge rounded-md border p-2"
+                    >
+                      <div className="text-muted mb-0.5 text-[8px] font-bold tracking-wider uppercase">
+                        {label}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="text-[11px] font-bold"
+                          style={{ color: signalColor(sig.signal) }}
+                        >
+                          {sig.signal}
+                        </span>
+                        <span
+                          className="text-[8px] font-semibold"
+                          style={{ color: confidenceColor(sig.confidence) }}
+                        >
+                          {sig.confidence}
+                        </span>
+                      </div>
+                      <div className="text-muted mt-0.5 text-[9px] leading-tight">
+                        {sig.note}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div className="grid gap-1">
-                {analysis.observations.map((obs, i) => (
-                  <div
-                    key={i}
-                    className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
-                  >
-                    <span className="text-muted shrink-0">{'\u2022'}</span>
-                    <span>{obs}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            )}
 
-            {/* Risks */}
+            {/* ── 3. Key Observations ── */}
+            <InfoCard textMuted={th.textMuted} title="Key Observations">
+              <BulletList
+                textMuted={th.textMuted}
+                items={analysis.observations}
+              />
+            </InfoCard>
+
+            {/* ── 4. Strike Guidance (from Periscope) ── */}
+            {analysis.strikeGuidance && (
+              <InfoCard
+                textMuted={th.textMuted}
+                title="Strike Placement Guidance"
+                color={th.accent}
+              >
+                <div className="grid gap-1.5">
+                  {analysis.strikeGuidance.putStrikeNote && (
+                    <div className="text-[11px] leading-relaxed">
+                      <span className="text-danger font-semibold">Put: </span>
+                      <span className="text-secondary">
+                        {analysis.strikeGuidance.putStrikeNote}
+                      </span>
+                    </div>
+                  )}
+                  {analysis.strikeGuidance.callStrikeNote && (
+                    <div className="text-[11px] leading-relaxed">
+                      <span className="text-success font-semibold">Call: </span>
+                      <span className="text-secondary">
+                        {analysis.strikeGuidance.callStrikeNote}
+                      </span>
+                    </div>
+                  )}
+                  {analysis.strikeGuidance.straddleCone && (
+                    <div
+                      className="text-muted mt-1 rounded-md px-2 py-1 text-[10px]"
+                      style={{ backgroundColor: th.surfaceAlt }}
+                    >
+                      Straddle cone:{' '}
+                      {analysis.strikeGuidance.straddleCone.lower} {'\u2013'}{' '}
+                      {analysis.strikeGuidance.straddleCone.upper}
+                      {' \u2022 '}
+                      {analysis.strikeGuidance.straddleCone.priceRelation}
+                    </div>
+                  )}
+                  {analysis.strikeGuidance.adjustments &&
+                    analysis.strikeGuidance.adjustments.length > 0 && (
+                      <div className="mt-1">
+                        <BulletList
+                          textMuted={th.textMuted}
+                          items={analysis.strikeGuidance.adjustments}
+                          icon={'\u2192'}
+                          color={th.accent}
+                        />
+                      </div>
+                    )}
+                </div>
+              </InfoCard>
+            )}
+
+            {/* ── 5. Entry Plan ── */}
+            {analysis.entryPlan && (
+              <InfoCard
+                textMuted={th.textMuted}
+                title="Entry Plan"
+                color={th.accent}
+              >
+                <div className="grid gap-2">
+                  {[
+                    analysis.entryPlan.entry1,
+                    analysis.entryPlan.entry2,
+                    analysis.entryPlan.entry3,
+                  ].map((entry, i) => {
+                    if (!entry) return null;
+                    return (
+                      <div
+                        key={i}
+                        className="bg-surface-alt flex items-start gap-2.5 rounded-md p-2"
+                      >
+                        <div
+                          className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-bold"
+                          style={{
+                            backgroundColor: th.accent + '18',
+                            color: th.accent,
+                          }}
+                        >
+                          {i + 1}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className="text-[11px] font-semibold"
+                              style={{ color: structureColor(entry.structure) }}
+                            >
+                              {entry.structure}
+                            </span>
+                            <span
+                              className="font-mono text-[10px] font-bold"
+                              style={{ color: th.accent }}
+                            >
+                              {entry.delta}
+                              {'\u0394'}
+                            </span>
+                            <span className="text-muted text-[9px]">
+                              {entry.sizePercent}% size
+                            </span>
+                          </div>
+                          <div className="text-muted text-[10px]">
+                            {entry.timing ?? entry.condition}
+                          </div>
+                          <div className="text-secondary mt-0.5 text-[10px] italic">
+                            {entry.note}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {analysis.entryPlan.maxTotalSize && (
+                    <div className="text-muted text-[10px]">
+                      Max size: {analysis.entryPlan.maxTotalSize}
+                    </div>
+                  )}
+                  {analysis.entryPlan.noEntryConditions &&
+                    analysis.entryPlan.noEntryConditions.length > 0 && (
+                      <div className="mt-1">
+                        <div
+                          className="mb-0.5 text-[9px] font-bold uppercase"
+                          style={{ color: th.red }}
+                        >
+                          Do NOT add entries if:
+                        </div>
+                        <BulletList
+                          textMuted={th.textMuted}
+                          items={analysis.entryPlan.noEntryConditions}
+                          icon={'\u2718'}
+                          color={th.red}
+                        />
+                      </div>
+                    )}
+                </div>
+              </InfoCard>
+            )}
+
+            {/* ── 6. Position Management Rules ── */}
+            {analysis.managementRules && (
+              <InfoCard
+                textMuted={th.textMuted}
+                title="Position Management Rules"
+                color="#E8A317"
+              >
+                <div className="grid gap-1.5">
+                  {analysis.managementRules.profitTarget && (
+                    <div className="text-[11px] leading-relaxed">
+                      <span
+                        className="font-semibold"
+                        style={{ color: th.green }}
+                      >
+                        Profit target:{' '}
+                      </span>
+                      <span className="text-secondary">
+                        {analysis.managementRules.profitTarget}
+                      </span>
+                    </div>
+                  )}
+                  {analysis.managementRules.stopConditions &&
+                    analysis.managementRules.stopConditions.length > 0 && (
+                      <div>
+                        <span
+                          className="text-[10px] font-semibold"
+                          style={{ color: th.red }}
+                        >
+                          Stop conditions:
+                        </span>
+                        <BulletList
+                          textMuted={th.textMuted}
+                          items={analysis.managementRules.stopConditions}
+                          icon={'\u26D4'}
+                          color={th.red}
+                        />
+                      </div>
+                    )}
+                  {analysis.managementRules.timeRules && (
+                    <div className="text-[11px] leading-relaxed">
+                      <span
+                        className="font-semibold"
+                        style={{ color: '#E8A317' }}
+                      >
+                        Time rule:{' '}
+                      </span>
+                      <span className="text-secondary">
+                        {analysis.managementRules.timeRules}
+                      </span>
+                    </div>
+                  )}
+                  {analysis.managementRules.flowReversalSignal && (
+                    <div className="text-[11px] leading-relaxed">
+                      <span
+                        className="font-semibold"
+                        style={{ color: '#E8A317' }}
+                      >
+                        Flow reversal:{' '}
+                      </span>
+                      <span className="text-secondary">
+                        {analysis.managementRules.flowReversalSignal}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </InfoCard>
+            )}
+
+            {/* ── 7. Risk Factors ── */}
             {analysis.risks.length > 0 && (
               <div
                 className="rounded-lg p-3"
@@ -455,35 +840,16 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 >
                   Risk Factors
                 </div>
-                <div className="grid gap-1">
-                  {analysis.risks.map((risk, i) => (
-                    <div
-                      key={i}
-                      className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
-                    >
-                      <span style={{ color: th.red }} className="shrink-0">
-                        {'\u26A0'}
-                      </span>
-                      <span>{risk}</span>
-                    </div>
-                  ))}
-                </div>
+                <BulletList
+                  textMuted={th.textMuted}
+                  items={analysis.risks}
+                  icon={'\u26A0'}
+                  color={th.red}
+                />
               </div>
             )}
 
-            {/* Periscope notes */}
-            {analysis.periscopeNotes && (
-              <div className="bg-surface border-edge rounded-lg border p-3">
-                <div className="text-muted mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase">
-                  Periscope Analysis
-                </div>
-                <div className="text-secondary text-[11px] leading-relaxed">
-                  {analysis.periscopeNotes}
-                </div>
-              </div>
-            )}
-
-            {/* Hedge recommendation */}
+            {/* ── 8. Hedge ── */}
             {analysis.hedge && (
               <div
                 className="rounded-lg p-3"
@@ -539,12 +905,95 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               </div>
             )}
 
-            {/* Structure rationale */}
+            {/* ── 9. Periscope Analysis ── */}
+            {analysis.periscopeNotes && (
+              <InfoCard textMuted={th.textMuted} title="Periscope Analysis">
+                <div className="text-secondary text-[11px] leading-relaxed">
+                  {analysis.periscopeNotes}
+                </div>
+              </InfoCard>
+            )}
+
+            {/* ── 10. End-of-Day Review ── */}
+            {analysis.review && (
+              <div
+                className="rounded-[10px] p-3.5"
+                style={{
+                  backgroundColor: analysis.review.wasCorrect
+                    ? th.green + '08'
+                    : th.red + '08',
+                  border: `1.5px solid ${analysis.review.wasCorrect ? th.green : th.red}20`,
+                }}
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <span
+                    className="font-sans text-[11px] font-bold"
+                    style={{
+                      color: analysis.review.wasCorrect ? th.green : th.red,
+                    }}
+                  >
+                    {analysis.review.wasCorrect
+                      ? '\u2713 Recommendation was correct'
+                      : '\u2717 Recommendation was incorrect'}
+                  </span>
+                </div>
+                <div className="grid gap-2">
+                  <div className="text-[11px] leading-relaxed">
+                    <span className="font-semibold" style={{ color: th.green }}>
+                      What worked:{' '}
+                    </span>
+                    <span className="text-secondary">
+                      {analysis.review.whatWorked}
+                    </span>
+                  </div>
+                  <div className="text-[11px] leading-relaxed">
+                    <span
+                      className="font-semibold"
+                      style={{ color: '#E8A317' }}
+                    >
+                      What was missed:{' '}
+                    </span>
+                    <span className="text-secondary">
+                      {analysis.review.whatMissed}
+                    </span>
+                  </div>
+                  <div className="text-[11px] leading-relaxed">
+                    <span
+                      className="font-semibold"
+                      style={{ color: th.accent }}
+                    >
+                      Optimal trade:{' '}
+                    </span>
+                    <span className="text-secondary">
+                      {analysis.review.optimalTrade}
+                    </span>
+                  </div>
+                  {analysis.review.lessonsLearned.length > 0 && (
+                    <div>
+                      <div
+                        className="mb-0.5 text-[9px] font-bold tracking-wider uppercase"
+                        style={{ color: th.accent }}
+                      >
+                        Lessons for next time
+                      </div>
+                      <BulletList
+                        textMuted={th.textMuted}
+                        items={analysis.review.lessonsLearned}
+                        icon={'\u{1F4A1}'}
+                        color={th.accent}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── 11. Structure Rationale ── */}
             <div className="text-muted text-[10px] leading-relaxed italic">
               {analysis.structureRationale}
             </div>
 
-            {/* Image issues — prompt to replace unreadable images */}
+            {/* ── 12. Image Issues ── */}
             {analysis.imageIssues && analysis.imageIssues.length > 0 && (
               <div
                 className="rounded-lg p-3"
@@ -599,7 +1048,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 <div className="text-muted mt-2 text-[10px]">
                   Replace the flagged image
                   {analysis.imageIssues.length > 1 ? 's' : ''}, then click{' '}
-                  <strong>Analyze</strong> again for an updated recommendation.
+                  <strong>Analyze</strong> again.
                 </div>
               </div>
             )}

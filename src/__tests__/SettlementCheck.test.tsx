@@ -420,11 +420,36 @@ describe('SettlementCheck', () => {
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
-          5: { callStrike: 5920, putStrike: 5680, callSnapped: 5920, putSnapped: 5680 },
-          8: { callStrike: 5900, putStrike: 5700, callSnapped: 5900, putSnapped: 5700 },
-          10: { callStrike: 5890, putStrike: 5710, callSnapped: 5890, putSnapped: 5710 },
-          12: { callStrike: 5885, putStrike: 5720, callSnapped: 5885, putSnapped: 5720 },
-          15: { callStrike: 5880, putStrike: 5730, callSnapped: 5880, putSnapped: 5730 },
+          5: {
+            callStrike: 5920,
+            putStrike: 5680,
+            callSnapped: 5920,
+            putSnapped: 5680,
+          },
+          8: {
+            callStrike: 5900,
+            putStrike: 5700,
+            callSnapped: 5900,
+            putSnapped: 5700,
+          },
+          10: {
+            callStrike: 5890,
+            putStrike: 5710,
+            callSnapped: 5890,
+            putSnapped: 5710,
+          },
+          12: {
+            callStrike: 5885,
+            putStrike: 5720,
+            callSnapped: 5885,
+            putSnapped: 5720,
+          },
+          15: {
+            callStrike: 5880,
+            putStrike: 5730,
+            callSnapped: 5880,
+            putSnapped: 5730,
+          },
         })}
       />,
     );
@@ -441,19 +466,48 @@ describe('SettlementCheck', () => {
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
-          5: { callStrike: 5900, putStrike: 5700, callSnapped: 5900, putSnapped: 5700 },
-          8: { callStrike: 5900, putStrike: 5700, callSnapped: 5900, putSnapped: 5700 },
-          10: { callStrike: 5900, putStrike: 5700, callSnapped: 5900, putSnapped: 5700 },
+          5: {
+            callStrike: 5900,
+            putStrike: 5700,
+            callSnapped: 5900,
+            putSnapped: 5700,
+          },
+          8: {
+            callStrike: 5900,
+            putStrike: 5700,
+            callSnapped: 5900,
+            putSnapped: 5700,
+          },
+          10: {
+            callStrike: 5900,
+            putStrike: 5700,
+            callSnapped: 5900,
+            putSnapped: 5700,
+          },
           // 12Δ: callSnapped=5828, high=5830 → breached, but settlement=5818 < 5828 → settledSafe
-          12: { callStrike: 5828, putStrike: 5700, callSnapped: 5828, putSnapped: 5700 },
+          12: {
+            callStrike: 5828,
+            putStrike: 5700,
+            callSnapped: 5828,
+            putSnapped: 5700,
+          },
           // 15Δ: callSnapped=5825, high=5830 → breached, but settlement=5818 < 5825 → settledSafe
-          15: { callStrike: 5825, putStrike: 5700, callSnapped: 5825, putSnapped: 5700 },
+          15: {
+            callStrike: 5825,
+            putStrike: 5700,
+            callSnapped: 5825,
+            putSnapped: 5700,
+          },
         })}
       />,
     );
-    expect(screen.getByText(/breached intraday, all settled safe/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/breached intraday, all settled safe/),
+    ).toBeInTheDocument();
     // DeltaRow for breached-but-safe should show "Breached intraday, settled safe"
-    expect(screen.getAllByText(/Breached intraday, settled safe/).length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(/Breached intraday, settled safe/).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('shows tooltip on bar hover and hides on mouse leave', () => {

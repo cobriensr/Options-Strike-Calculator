@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChartAnalysis from '../components/ChartAnalysis';
 import type { AnalysisContext } from '../components/ChartAnalysis';
@@ -132,7 +138,7 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       expect(
-        screen.getByRole('button', { name: /analyze 1 chart$/i }),
+        screen.getByRole('button', { name: /analyze 1 chart/i }),
       ).toBeInTheDocument();
     });
 
@@ -458,7 +464,9 @@ describe('ChartAnalysis', () => {
       await addImageViaInput(view.container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
       await waitFor(() => {
-        expect(screen.getByText(analysis.structure as string)).toBeInTheDocument();
+        expect(
+          screen.getByText(analysis.structure as string),
+        ).toBeInTheDocument();
       });
     }
 
@@ -473,8 +481,12 @@ describe('ChartAnalysis', () => {
         },
       });
       expect(screen.getByText(/Hedge: NO HEDGE/)).toBeInTheDocument();
-      expect(screen.getByText('Market conditions are favorable.')).toBeInTheDocument();
-      expect(screen.getByText('Low volatility environment.')).toBeInTheDocument();
+      expect(
+        screen.getByText('Market conditions are favorable.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Low volatility environment.'),
+      ).toBeInTheDocument();
       // estimatedCost should NOT be shown for NO HEDGE
       expect(screen.queryByText('$0')).not.toBeInTheDocument();
     });
@@ -555,13 +567,19 @@ describe('ChartAnalysis', () => {
     it('displays image issues section', async () => {
       await renderWithImageIssues();
       expect(screen.getByText(/Image Issues/)).toBeInTheDocument();
-      expect(screen.getByText(/Image is too blurry to read\./)).toBeInTheDocument();
-      expect(screen.getByText(/Take a higher resolution screenshot\./)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Image is too blurry to read\./),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Take a higher resolution screenshot\./),
+      ).toBeInTheDocument();
     });
 
     it('shows Replace button for flagged images', async () => {
       await renderWithImageIssues();
-      expect(screen.getByRole('button', { name: /replace/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /replace/i }),
+      ).toBeInTheDocument();
     });
 
     it('clicking Replace triggers the replace file input', async () => {
@@ -579,7 +597,6 @@ describe('ChartAnalysis', () => {
 
   describe('replace image flow', () => {
     it('replaces an image via the hidden replace input', async () => {
-      const user = userEvent.setup();
       vi.stubGlobal('fetch', vi.fn());
 
       const { container } = render(
@@ -701,10 +718,7 @@ describe('ChartAnalysis', () => {
 
     it('shows generic error for non-Error thrown values', async () => {
       const user = userEvent.setup();
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockRejectedValue('string error'),
-      );
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue('string error'));
 
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
@@ -726,7 +740,9 @@ describe('ChartAnalysis', () => {
     it('opens file picker when upload area is clicked', async () => {
       const user = userEvent.setup();
       render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
-      const uploadBtn = screen.getByRole('button', { name: /upload chart images/i });
+      const uploadBtn = screen.getByRole('button', {
+        name: /upload chart images/i,
+      });
       // Click the upload area — this triggers fileInputRef.current?.click()
       // We can't easily assert the file input was clicked, but we verify no errors
       await user.click(uploadBtn);
@@ -734,7 +750,9 @@ describe('ChartAnalysis', () => {
 
     it('handles dragOver by preventing default', () => {
       render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
-      const dropZone = screen.getByRole('button', { name: /upload chart images/i });
+      const dropZone = screen.getByRole('button', {
+        name: /upload chart images/i,
+      });
       const event = new Event('dragover', { bubbles: true });
       Object.defineProperty(event, 'preventDefault', { value: vi.fn() });
       dropZone.dispatchEvent(event);

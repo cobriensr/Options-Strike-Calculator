@@ -217,7 +217,9 @@ describe('schwab', () => {
       process.env.SCHWAB_CLIENT_ID = 'id';
       process.env.SCHWAB_CLIENT_SECRET = 'secret';
 
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
 
       // Return expired access token so refresh is triggered
       mockRedisGet.mockResolvedValue({

@@ -210,16 +210,51 @@ describe('MarketRegimeSection', () => {
       vix9d: 16,
       vvix: 90,
       previousClose: 5695,
-      candle: { datetime: 1710000000000, time: '10:00', open: 5695, high: 5705, low: 5690, close: 5700 },
+      candle: {
+        datetime: 1710000000000,
+        time: '10:00',
+        open: 5695,
+        high: 5705,
+        low: 5690,
+        close: 5700,
+      },
       candleIndex: 1,
       totalCandles: 4,
     };
 
     const candles: HistoryCandle[] = [
-      { datetime: 1710000000000, time: '09:30', open: 5690, high: 5700, low: 5685, close: 5695 },
-      { datetime: 1710000300000, time: '09:35', open: 5695, high: 5705, low: 5690, close: 5700 },
-      { datetime: 1710000600000, time: '09:40', open: 5700, high: 5710, low: 5695, close: 5705 },
-      { datetime: 1710000900000, time: '15:55', open: 5705, high: 5708, low: 5698, close: 5702 },
+      {
+        datetime: 1710000000000,
+        time: '09:30',
+        open: 5690,
+        high: 5700,
+        low: 5685,
+        close: 5695,
+      },
+      {
+        datetime: 1710000300000,
+        time: '09:35',
+        open: 5695,
+        high: 5705,
+        low: 5690,
+        close: 5700,
+      },
+      {
+        datetime: 1710000600000,
+        time: '09:40',
+        open: 5700,
+        high: 5710,
+        low: 5695,
+        close: 5705,
+      },
+      {
+        datetime: 1710000900000,
+        time: '15:55',
+        open: 5705,
+        high: 5708,
+        low: 5698,
+        close: 5702,
+      },
     ];
 
     render(
@@ -256,7 +291,14 @@ describe('MarketRegimeSection', () => {
       vix9d: 16,
       vvix: 90,
       previousClose: 5695,
-      candle: { datetime: 1710000000000, time: '10:00', open: 5695, high: 5705, low: 5690, close: 5700 },
+      candle: {
+        datetime: 1710000000000,
+        time: '10:00',
+        open: 5695,
+        high: 5705,
+        low: 5690,
+        close: 5700,
+      },
       candleIndex: 6,
       totalCandles: 78,
     };
