@@ -123,7 +123,9 @@ interface TargetDeltaMatch {
 // ============================================================
 
 function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
 }
 
 function flattenMap(
@@ -220,8 +222,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // range=ALL to avoid missing strikes near ATM on fast-moving days
   const result = await schwabFetch<SchwabChainResponse>(
     `/chains?symbol=$SPX&contractType=ALL&includeUnderlyingQuote=true` +
-    `&strategy=SINGLE&range=ALL&fromDate=${today}&toDate=${today}` +
-    `&strikeCount=${strikeCount}`,
+      `&strategy=SINGLE&range=ALL&fromDate=${today}&toDate=${today}` +
+      `&strikeCount=${strikeCount}`,
   );
 
   if ('error' in result) {
@@ -234,12 +236,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (rawPuts.length === 0 && rawCalls.length === 0) {
     return res.status(200).json({
-      error: 'No 0DTE contracts found. Market may be closed or chain not yet available.',
-      underlying: chain.underlying ? {
-        symbol: chain.underlying.symbol,
-        price: chain.underlying.last,
-        prevClose: chain.underlying.close,
-      } : null,
+      error:
+        'No 0DTE contracts found. Market may be closed or chain not yet available.',
+      underlying: chain.underlying
+        ? {
+            symbol: chain.underlying.symbol,
+            price: chain.underlying.last,
+            prevClose: chain.underlying.close,
+          }
+        : null,
       puts: [],
       calls: [],
       targetDeltas: {},
