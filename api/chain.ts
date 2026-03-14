@@ -214,13 +214,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (ownerCheck) return ownerCheck;
 
   const today = getTodayET();
-  const strikeCount = Number(req.query.strikeCount) || 40;
+  const strikeCount = Number(req.query.strikeCount) || 80;
 
   // Schwab uses $SPX for SPX options (SPXW weeklies for 0DTE)
-  // First try today's expiration, then next available trading day
+  // range=ALL to avoid missing strikes near ATM on fast-moving days
   const result = await schwabFetch<SchwabChainResponse>(
     `/chains?symbol=$SPX&contractType=ALL&includeUnderlyingQuote=true` +
-    `&strategy=SINGLE&range=OTM&fromDate=${today}&toDate=${today}` +
+    `&strategy=SINGLE&range=ALL&fromDate=${today}&toDate=${today}` +
     `&strikeCount=${strikeCount}`,
   );
 
