@@ -16,6 +16,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner } from './_lib/api-helpers.js';
 
+// Allow up to 5 minutes for Opus with extended thinking
+export const config = { maxDuration: 300 };
+
 // ============================================================
 // SYSTEM PROMPT
 // ============================================================
@@ -376,9 +379,10 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       },
       body: JSON.stringify({
         model: 'claude-opus-4-6',
-        max_tokens: 25000,
+        max_tokens: 16000,
         thinking: {
-          type: 'adaptive',
+          type: 'enabled',
+          budget_tokens: 11000,
         },
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content }],
