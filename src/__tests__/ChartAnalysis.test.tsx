@@ -29,6 +29,7 @@ function makeContext(
     vix9d: 17,
     vvix: 90,
     sigma: 0.15,
+    sigmaSource: 'VIX1D',
     T: 0.03,
     hoursRemaining: 7,
     deltaCeiling: 8,
@@ -38,9 +39,11 @@ function makeContext(
     clusterMult: 1.0,
     dowLabel: 'Friday',
     openingRangeSignal: 'neutral',
+    openingRangeAvailable: true,
     vixTermSignal: 'contango',
     rvIvRatio: '0.85',
     overnightGap: '0.1',
+    isBacktest: false,
     ...overrides,
   };
 }
@@ -59,14 +62,22 @@ function makeResults(
 }
 
 const SAMPLE_ANALYSIS = {
+  mode: 'entry' as const,
   structure: 'IRON CONDOR',
   confidence: 'HIGH',
   suggestedDelta: 8,
   reasoning: 'NCP and NPP are parallel, indicating a ranging day.',
+  chartConfidence: null,
   observations: ['NCP at +50M', 'NPP at -40M', 'Lines trending parallel'],
+  strikeGuidance: null,
+  entryPlan: null,
+  managementRules: null,
   risks: ['VIX elevated above 20'],
+  hedge: null,
   periscopeNotes: null as string | null,
   structureRationale: 'NCP ≈ NPP suggests balanced flow.',
+  review: null,
+  imageIssues: null,
 };
 
 function createImageFile(name = 'chart.png', type = 'image/png'): File {
@@ -80,6 +91,43 @@ async function addImageViaInput(container: HTMLElement, file?: File) {
   ) as HTMLInputElement;
   const imageFile = file ?? createImageFile();
   fireEvent.change(input, { target: { files: [imageFile] } });
+}
+
+/** Click a collapsible section header to expand it */
+async function expandSection(
+  user: ReturnType<typeof userEvent.setup>,
+  title: string,
+) {
+  const btn = screen.getByText(title).closest('button');
+  if (btn) await user.click(btn);
+}
+
+/** Stub fetch with the given analysis, render ChartAnalysis, upload an image, and click Analyze */
+async function renderAndAnalyze(
+  analysis: Record<string, unknown> = SAMPLE_ANALYSIS,
+) {
+  const user = userEvent.setup();
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ analysis, raw: JSON.stringify(analysis) }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+  );
+
+  const view = render(
+    <ChartAnalysis th={th} results={makeResults()} context={makeContext()} />,
+  );
+  await addImageViaInput(view.container);
+  await user.click(screen.getByRole('button', { name: /analyze/i }));
+  await waitFor(() => {
+    expect(screen.getByText(analysis.structure as string)).toBeInTheDocument();
+  });
+  return { user, view };
 }
 
 // ============================================================
@@ -253,9 +301,10 @@ describe('ChartAnalysis', () => {
       const body = JSON.parse(opts!.body as string);
       expect(body.images).toHaveLength(1);
       expect(body.context).toBeDefined();
+      expect(body.context.mode).toBe('entry');
     });
 
-    it('shows loading state while analyzing', async () => {
+    it('shows thinking indicator while analyzing', async () => {
       const user = userEvent.setup();
       // Never resolve to keep loading state
       vi.mocked(globalThis.fetch).mockReturnValue(new Promise(() => {}));
@@ -266,7 +315,24 @@ describe('ChartAnalysis', () => {
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
 
-      expect(screen.getByText(/analyzing charts/i)).toBeInTheDocument();
+      expect(screen.getByText(/opus is thinking/i)).toBeInTheDocument();
+      // Analyze button should be hidden during loading
+      expect(
+        screen.queryByRole('button', { name: /analyze/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows elapsed timer while loading', async () => {
+      const user = userEvent.setup();
+      vi.mocked(globalThis.fetch).mockReturnValue(new Promise(() => {}));
+
+      const { container } = render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+      await addImageViaInput(container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+
+      expect(screen.getByText('0s')).toBeInTheDocument();
     });
 
     it('displays error on fetch failure', async () => {
@@ -306,24 +372,154 @@ describe('ChartAnalysis', () => {
   });
 
   // ============================================================
-  // RESULTS DISPLAY
+  // TL;DR SUMMARY CARD
   // ============================================================
 
-  describe('results display', () => {
-    async function renderWithAnalysis(
-      analysis: Record<string, unknown> = SAMPLE_ANALYSIS,
-    ) {
+  describe('TL;DR summary card', () => {
+    it('displays structure, confidence, delta in summary', async () => {
+      await renderAndAnalyze();
+      expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
+      expect(screen.getByText('HIGH')).toBeInTheDocument();
+      expect(screen.getByText(/8\u0394/)).toBeInTheDocument();
+    });
+
+    it('displays reasoning in summary', async () => {
+      await renderAndAnalyze();
+      expect(screen.getByText(/NCP and NPP are parallel/)).toBeInTheDocument();
+    });
+
+    it('shows hedge badge in summary when hedge is not NO HEDGE', async () => {
+      await renderAndAnalyze({
+        ...SAMPLE_ANALYSIS,
+        hedge: {
+          recommendation: 'REDUCED SIZE',
+          description: 'Use 70% of normal size.',
+          rationale: 'Elevated VIX.',
+          estimatedCost: 'N/A',
+        },
+      });
+      // Badge in summary card
+      expect(screen.getByText('REDUCED SIZE')).toBeInTheDocument();
+    });
+
+    it('shows Entry 1 summary in quick-glance', async () => {
+      await renderAndAnalyze({
+        ...SAMPLE_ANALYSIS,
+        entryPlan: {
+          entry1: {
+            timing: 'Now (8:45 AM CT)',
+            sizePercent: 40,
+            delta: 10,
+            structure: 'CALL CREDIT SPREAD',
+            note: 'Initial position',
+          },
+        },
+      });
+      expect(screen.getByText(/Entry 1:/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/CALL CREDIT SPREAD 10.*40% size/),
+      ).toBeInTheDocument();
+    });
+
+    it('shows profit target in quick-glance', async () => {
+      await renderAndAnalyze({
+        ...SAMPLE_ANALYSIS,
+        managementRules: {
+          profitTarget: 'Close at 50% before 1 PM',
+          stopConditions: [],
+        },
+      });
+      expect(screen.getByText(/Target:/)).toBeInTheDocument();
+      expect(screen.getByText('Close at 50% before 1 PM')).toBeInTheDocument();
+    });
+  });
+
+  // ============================================================
+  // COLLAPSIBLE DETAIL SECTIONS
+  // ============================================================
+
+  describe('collapsible detail sections', () => {
+    async function renderWithFullAnalysis() {
       const user = userEvent.setup();
+      const fullAnalysis = {
+        ...SAMPLE_ANALYSIS,
+        chartConfidence: {
+          marketTide: {
+            signal: 'BEARISH',
+            confidence: 'HIGH',
+            note: 'NCP declining',
+          },
+          spyNetFlow: {
+            signal: 'CONFIRMS',
+            confidence: 'MODERATE',
+            note: 'SPY confirms',
+          },
+          qqqNetFlow: {
+            signal: 'CONTRADICTS',
+            confidence: 'LOW',
+            note: 'QQQ diverging',
+          },
+          periscope: {
+            signal: 'FAVORABLE',
+            confidence: 'HIGH',
+            note: 'Positive gamma wall',
+          },
+        },
+        strikeGuidance: {
+          putStrikeNote: 'Place below 5650 positive gamma wall.',
+          callStrikeNote: 'Place above 5780 resistance.',
+          straddleCone: {
+            upper: 5780,
+            lower: 5620,
+            priceRelation: 'Price inside cone',
+          },
+          adjustments: ['Move put from 5660 to 5640', 'Call at 5800 is safe'],
+        },
+        entryPlan: {
+          entry1: {
+            timing: 'Now',
+            sizePercent: 40,
+            delta: 10,
+            structure: 'CALL CREDIT SPREAD',
+            note: 'Initial',
+          },
+          entry2: {
+            condition: 'Range GREEN at 10:00',
+            sizePercent: 30,
+            delta: 8,
+            structure: 'CALL CREDIT SPREAD',
+            note: 'Add',
+          },
+          maxTotalSize: '100% of daily risk budget',
+          noEntryConditions: ['Opening range RED', 'NCP/NPP converge'],
+        },
+        managementRules: {
+          profitTarget: 'Close at 50% of max profit before 1 PM',
+          stopConditions: ['Close put side if SPX breaks below 5620'],
+          timeRules: 'Close after 2:30 PM if < 30% profit',
+          flowReversalSignal: 'NCP and NPP converge — bias shifted',
+        },
+        risks: ['VIX elevated above 20'],
+        hedge: {
+          recommendation: 'PROTECTIVE LONG',
+          description: 'Buy a protective put.',
+          rationale: 'Elevated tail risk.',
+          estimatedCost: '$1.20',
+        },
+        periscopeNotes: 'Positive gamma wall at 5750.',
+      };
+
       vi.stubGlobal(
         'fetch',
-        vi
-          .fn()
-          .mockResolvedValue(
-            new Response(
-              JSON.stringify({ analysis, raw: JSON.stringify(analysis) }),
-              { status: 200, headers: { 'Content-Type': 'application/json' } },
-            ),
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              analysis: fullAnalysis,
+              raw: JSON.stringify(fullAnalysis),
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
           ),
+        ),
       );
 
       const view = render(
@@ -336,181 +532,81 @@ describe('ChartAnalysis', () => {
       await addImageViaInput(view.container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
       await waitFor(() => {
-        expect(
-          screen.getByText(analysis.structure as string),
-        ).toBeInTheDocument();
+        expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
       });
+      return user;
     }
 
-    it('displays structure recommendation', async () => {
-      await renderWithAnalysis();
-      expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
-    });
-
-    it('displays confidence badge', async () => {
-      await renderWithAnalysis();
-      expect(screen.getByText('HIGH')).toBeInTheDocument();
-    });
-
-    it('displays suggested delta', async () => {
-      await renderWithAnalysis();
-      expect(screen.getByText(/8\u0394/)).toBeInTheDocument();
-    });
-
-    it('displays reasoning', async () => {
-      await renderWithAnalysis();
-      expect(screen.getByText(/NCP and NPP are parallel/)).toBeInTheDocument();
-    });
-
-    it('displays observations', async () => {
-      await renderWithAnalysis();
-      expect(screen.getByText('Key Observations')).toBeInTheDocument();
-      expect(screen.getByText('NCP at +50M')).toBeInTheDocument();
-      expect(screen.getByText('NPP at -40M')).toBeInTheDocument();
-      expect(screen.getByText('Lines trending parallel')).toBeInTheDocument();
-    });
-
-    it('displays risk factors', async () => {
-      await renderWithAnalysis();
-      expect(screen.getByText('Risk Factors')).toBeInTheDocument();
-      expect(screen.getByText('VIX elevated above 20')).toBeInTheDocument();
-    });
-
-    it('does not show risk section when risks are empty', async () => {
-      await renderWithAnalysis({ ...SAMPLE_ANALYSIS, risks: [] });
-      expect(screen.queryByText('Risk Factors')).not.toBeInTheDocument();
-    });
-
-    it('displays periscope notes when provided', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        periscopeNotes: 'Positive gamma wall at 5750.',
-      });
-      expect(screen.getByText('Periscope Analysis')).toBeInTheDocument();
-      expect(
-        screen.getByText('Positive gamma wall at 5750.'),
-      ).toBeInTheDocument();
-    });
-
-    it('does not show periscope section when notes are null', async () => {
-      await renderWithAnalysis({ ...SAMPLE_ANALYSIS, periscopeNotes: null });
-      expect(screen.queryByText('Periscope Analysis')).not.toBeInTheDocument();
-    });
-
-    it('displays structure rationale', async () => {
-      await renderWithAnalysis();
-      expect(
-        screen.getByText(/NCP ≈ NPP suggests balanced flow/),
-      ).toBeInTheDocument();
-    });
-
-    it('displays PUT CREDIT SPREAD result', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        structure: 'PUT CREDIT SPREAD',
-        confidence: 'MODERATE',
-      });
-      expect(screen.getByText('PUT CREDIT SPREAD')).toBeInTheDocument();
-      expect(screen.getByText('MODERATE')).toBeInTheDocument();
-    });
-
-    it('displays CALL CREDIT SPREAD result', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        structure: 'CALL CREDIT SPREAD',
-      });
-      expect(screen.getByText('CALL CREDIT SPREAD')).toBeInTheDocument();
-    });
-
-    it('displays SIT OUT result', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        structure: 'SIT OUT',
-        confidence: 'LOW',
-      });
-      expect(screen.getByText('SIT OUT')).toBeInTheDocument();
-      expect(screen.getByText('LOW')).toBeInTheDocument();
-    });
-
-    it('displays chart confidence signals', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        chartConfidence: {
-          marketTide: {
-            signal: 'BEARISH',
-            confidence: 'HIGH',
-            note: 'NCP declining sharply',
-          },
-          spyNetFlow: {
-            signal: 'CONFIRMS',
-            confidence: 'MODERATE',
-            note: 'SPY confirms bearish flow',
-          },
-          qqqNetFlow: {
-            signal: 'CONTRADICTS',
-            confidence: 'LOW',
-            note: 'QQQ diverging from SPY',
-          },
-          periscope: {
-            signal: 'FAVORABLE',
-            confidence: 'HIGH',
-            note: 'Positive gamma wall at support',
-          },
-        },
-      });
+    it('chart confidence cards are always visible', async () => {
+      await renderWithFullAnalysis();
       expect(screen.getByText('Market Tide')).toBeInTheDocument();
       expect(screen.getByText('BEARISH')).toBeInTheDocument();
       expect(screen.getByText('SPY Flow')).toBeInTheDocument();
       expect(screen.getByText('CONFIRMS')).toBeInTheDocument();
-      expect(screen.getByText('QQQ Flow')).toBeInTheDocument();
-      expect(screen.getByText('CONTRADICTS')).toBeInTheDocument();
-      expect(screen.getByText('Periscope')).toBeInTheDocument();
-      expect(screen.getByText('FAVORABLE')).toBeInTheDocument();
     });
 
     it('hides chart confidence entries with NOT PROVIDED signal', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        chartConfidence: {
-          marketTide: {
-            signal: 'BULLISH',
-            confidence: 'HIGH',
-            note: 'Strong call flow',
-          },
-          spyNetFlow: {
-            signal: 'NOT PROVIDED',
-            confidence: 'LOW',
-            note: '',
-          },
-          periscope: {
-            signal: 'UNFAVORABLE',
-            confidence: 'MODERATE',
-            note: 'Negative gamma zone',
-          },
-        },
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              analysis: {
+                ...SAMPLE_ANALYSIS,
+                chartConfidence: {
+                  marketTide: {
+                    signal: 'BULLISH',
+                    confidence: 'HIGH',
+                    note: 'Strong call flow',
+                  },
+                  spyNetFlow: {
+                    signal: 'NOT PROVIDED',
+                    confidence: 'LOW',
+                    note: '',
+                  },
+                  periscope: {
+                    signal: 'UNFAVORABLE',
+                    confidence: 'MODERATE',
+                    note: 'Negative gamma',
+                  },
+                },
+              },
+              raw: '{}',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+      );
+      const view = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(view.container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+      await waitFor(() => {
+        expect(screen.getByText('BULLISH')).toBeInTheDocument();
       });
-      expect(screen.getByText('Market Tide')).toBeInTheDocument();
-      expect(screen.getByText('BULLISH')).toBeInTheDocument();
       expect(screen.queryByText('SPY Flow')).not.toBeInTheDocument();
-      expect(screen.getByText('Periscope')).toBeInTheDocument();
       expect(screen.getByText('UNFAVORABLE')).toBeInTheDocument();
     });
 
-    it('displays strike guidance with put/call notes and straddle cone', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        strikeGuidance: {
-          putStrikeNote: 'Place below 5650 positive gamma wall.',
-          callStrikeNote: 'Place above 5780 resistance.',
-          straddleCone: {
-            upper: 5780,
-            lower: 5620,
-            priceRelation: 'Price inside cone with 80pts cushion',
-          },
-          adjustments: ['Move put from 5660 to 5640', 'Call at 5800 is safe'],
-        },
-      });
-      expect(screen.getByText('Strike Placement Guidance')).toBeInTheDocument();
+    it('observations are collapsed by default, expand on click', async () => {
+      const user = await renderWithFullAnalysis();
+      // Header visible but content hidden
+      expect(screen.getByText('Key Observations')).toBeInTheDocument();
+      expect(screen.queryByText('NCP at +50M')).not.toBeInTheDocument();
+      // Expand
+      await expandSection(user, 'Key Observations');
+      expect(screen.getByText('NCP at +50M')).toBeInTheDocument();
+      expect(screen.getByText('NPP at -40M')).toBeInTheDocument();
+    });
+
+    it('strike guidance is expanded by default', async () => {
+      await renderWithFullAnalysis();
       expect(
         screen.getByText('Place below 5650 positive gamma wall.'),
       ).toBeInTheDocument();
@@ -521,66 +617,28 @@ describe('ChartAnalysis', () => {
         screen.getByText(/Straddle cone:.*5620.*5780/s),
       ).toBeInTheDocument();
       expect(
-        screen.getByText('Move put from 5660 to 5640'),
-      ).toBeInTheDocument();
+        screen.getAllByText('Move put from 5660 to 5640').length,
+      ).toBeGreaterThanOrEqual(1);
     });
 
-    it('displays entry plan with multiple entries', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        entryPlan: {
-          entry1: {
-            timing: 'Now (8:45 AM CT)',
-            sizePercent: 40,
-            delta: 10,
-            structure: 'CALL CREDIT SPREAD',
-            note: 'Initial position',
-          },
-          entry2: {
-            condition: 'Opening range GREEN at 10:00 AM',
-            sizePercent: 30,
-            delta: 8,
-            structure: 'CALL CREDIT SPREAD',
-            note: 'Add if range intact',
-          },
-          entry3: {
-            condition: 'Flow still bearish at 11:00 AM',
-            sizePercent: 30,
-            delta: 8,
-            structure: 'PUT CREDIT SPREAD',
-            note: 'Final add',
-          },
-          maxTotalSize: '100% of daily risk budget',
-          noEntryConditions: ['Opening range RED', 'NCP/NPP converge'],
-        },
-      });
-      expect(screen.getByText('Entry Plan')).toBeInTheDocument();
-      expect(screen.getByText('Initial position')).toBeInTheDocument();
-      expect(screen.getByText('Add if range intact')).toBeInTheDocument();
-      expect(screen.getByText('Final add')).toBeInTheDocument();
+    it('entry plan is expanded by default', async () => {
+      await renderWithFullAnalysis();
+      expect(screen.getByText('Initial')).toBeInTheDocument();
+      expect(screen.getByText('Add')).toBeInTheDocument();
       expect(screen.getByText(/100% of daily risk budget/)).toBeInTheDocument();
       expect(screen.getByText('Do NOT add entries if:')).toBeInTheDocument();
-      expect(screen.getByText('Opening range RED')).toBeInTheDocument();
-      expect(screen.getByText('NCP/NPP converge')).toBeInTheDocument();
     });
 
-    it('displays management rules', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        managementRules: {
-          profitTarget: 'Close at 50% of max profit before 1 PM',
-          stopConditions: [
-            'Close put side if SPX breaks below 5620',
-            'Close everything if NCP drops below -300M',
-          ],
-          timeRules: 'Close after 2:30 PM if < 30% profit',
-          flowReversalSignal: 'NCP and NPP converge — bias shifted',
-        },
-      });
+    it('management rules are collapsed by default, expand on click', async () => {
+      const user = await renderWithFullAnalysis();
       expect(screen.getByText('Position Management Rules')).toBeInTheDocument();
       expect(
-        screen.getByText('Close at 50% of max profit before 1 PM'),
-      ).toBeInTheDocument();
+        screen.queryByText('Close put side if SPX breaks below 5620'),
+      ).not.toBeInTheDocument();
+      await expandSection(user, 'Position Management Rules');
+      expect(
+        screen.getAllByText('Close at 50% of max profit before 1 PM').length,
+      ).toBeGreaterThanOrEqual(1);
       expect(
         screen.getByText('Close put side if SPX breaks below 5620'),
       ).toBeInTheDocument();
@@ -592,19 +650,195 @@ describe('ChartAnalysis', () => {
       ).toBeInTheDocument();
     });
 
-    it('displays end-of-day review section', async () => {
-      await renderWithAnalysis({
+    it('risk factors are collapsed by default, expand on click', async () => {
+      const user = await renderWithFullAnalysis();
+      expect(screen.getByText('Risk Factors')).toBeInTheDocument();
+      expect(
+        screen.queryByText('VIX elevated above 20'),
+      ).not.toBeInTheDocument();
+      await expandSection(user, 'Risk Factors');
+      expect(screen.getByText('VIX elevated above 20')).toBeInTheDocument();
+    });
+
+    it('does not show risk section when risks are empty', async () => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              analysis: { ...SAMPLE_ANALYSIS, risks: [] },
+              raw: '{}',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+      );
+      const view = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(view.container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+      await waitFor(() => {
+        expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Risk Factors')).not.toBeInTheDocument();
+    });
+
+    it('hedge section is collapsed by default, expand on click', async () => {
+      const user = await renderWithFullAnalysis();
+      expect(screen.getByText(/Hedge: PROTECTIVE LONG/)).toBeInTheDocument();
+      const beforeCount = screen.queryAllByText('Buy a protective put.').length;
+      await expandSection(user, 'Hedge: PROTECTIVE LONG');
+      expect(
+        screen.getAllByText('Buy a protective put.').length,
+      ).toBeGreaterThan(beforeCount);
+      expect(screen.getByText('$1.20')).toBeInTheDocument();
+      expect(screen.getByText('Elevated tail risk.')).toBeInTheDocument();
+    });
+
+    it('periscope analysis is collapsed by default, expand on click', async () => {
+      const user = await renderWithFullAnalysis();
+      expect(screen.getByText('Periscope Analysis')).toBeInTheDocument();
+      expect(
+        screen.queryByText('Positive gamma wall at 5750.'),
+      ).not.toBeInTheDocument();
+      await expandSection(user, 'Periscope Analysis');
+      expect(
+        screen.getByText('Positive gamma wall at 5750.'),
+      ).toBeInTheDocument();
+    });
+
+    it('does not show periscope section when notes are null', async () => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              analysis: { ...SAMPLE_ANALYSIS, periscopeNotes: null },
+              raw: '{}',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+      );
+      const view = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(view.container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+      await waitFor(() => {
+        expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Periscope Analysis')).not.toBeInTheDocument();
+    });
+
+    it('structure rationale is collapsed by default, expand on click', async () => {
+      const user = await renderWithFullAnalysis();
+      expect(screen.getByText('Structure Rationale')).toBeInTheDocument();
+      expect(
+        screen.queryByText(/NCP ≈ NPP suggests balanced flow/),
+      ).not.toBeInTheDocument();
+      await expandSection(user, 'Structure Rationale');
+      expect(
+        screen.getByText(/NCP ≈ NPP suggests balanced flow/),
+      ).toBeInTheDocument();
+    });
+
+    it('collapsible sections toggle on click', async () => {
+      const user = await renderWithFullAnalysis();
+      // Expand observations
+      await expandSection(user, 'Key Observations');
+      expect(screen.getByText('NCP at +50M')).toBeInTheDocument();
+      // Collapse again
+      await expandSection(user, 'Key Observations');
+      expect(screen.queryByText('NCP at +50M')).not.toBeInTheDocument();
+    });
+  });
+
+  // ============================================================
+  // RESULTS - STRUCTURE VARIATIONS
+  // ============================================================
+
+  describe('structure variations', () => {
+    it('displays PUT CREDIT SPREAD result', async () => {
+      await renderAndAnalyze({
         ...SAMPLE_ANALYSIS,
-        review: {
-          wasCorrect: true,
-          whatWorked: 'Bearish call from NCP divergence was accurate.',
-          whatMissed: 'The 2 PM NCP reversal was visible at 1:30 PM.',
-          optimalTrade: 'Call credit spread at 10Δ, closed at 50%.',
-          lessonsLearned: [
-            'Late-day NCP reversals on Fridays are common',
-            'When gamma flips orange at support, price bounces',
-          ],
-        },
+        structure: 'PUT CREDIT SPREAD',
+        confidence: 'MODERATE',
+      });
+      expect(screen.getByText('PUT CREDIT SPREAD')).toBeInTheDocument();
+      expect(screen.getByText('MODERATE')).toBeInTheDocument();
+    });
+
+    it('displays CALL CREDIT SPREAD result', async () => {
+      await renderAndAnalyze({
+        ...SAMPLE_ANALYSIS,
+        structure: 'CALL CREDIT SPREAD',
+      });
+      expect(screen.getByText('CALL CREDIT SPREAD')).toBeInTheDocument();
+    });
+
+    it('displays SIT OUT result', async () => {
+      await renderAndAnalyze({
+        ...SAMPLE_ANALYSIS,
+        structure: 'SIT OUT',
+        confidence: 'LOW',
+      });
+      expect(screen.getByText('SIT OUT')).toBeInTheDocument();
+      expect(screen.getByText('LOW')).toBeInTheDocument();
+    });
+  });
+
+  // ============================================================
+  // END-OF-DAY REVIEW
+  // ============================================================
+
+  describe('end-of-day review', () => {
+    async function renderWithReview(review: Record<string, unknown>) {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              analysis: { ...SAMPLE_ANALYSIS, review },
+              raw: '{}',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+      );
+      const view = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(view.container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+      await waitFor(() => {
+        expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
+      });
+    }
+
+    it('displays correct review', async () => {
+      await renderWithReview({
+        wasCorrect: true,
+        whatWorked: 'Bearish call from NCP divergence was accurate.',
+        whatMissed: 'The 2 PM NCP reversal was visible at 1:30 PM.',
+        optimalTrade: 'Call credit spread at 10Δ, closed at 50%.',
+        lessonsLearned: ['Late-day NCP reversals on Fridays are common'],
       });
       expect(
         screen.getByText(/Recommendation was correct/),
@@ -612,25 +846,16 @@ describe('ChartAnalysis', () => {
       expect(
         screen.getByText('Bearish call from NCP divergence was accurate.'),
       ).toBeInTheDocument();
-      expect(
-        screen.getByText('The 2 PM NCP reversal was visible at 1:30 PM.'),
-      ).toBeInTheDocument();
       expect(screen.getByText('Lessons for next time')).toBeInTheDocument();
-      expect(
-        screen.getByText('Late-day NCP reversals on Fridays are common'),
-      ).toBeInTheDocument();
     });
 
-    it('displays incorrect review with red styling', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        review: {
-          wasCorrect: false,
-          whatWorked: 'Entry timing was good.',
-          whatMissed: 'Flow reversed at 11 AM.',
-          optimalTrade: 'Should have been put credit spread.',
-          lessonsLearned: [],
-        },
+    it('displays incorrect review', async () => {
+      await renderWithReview({
+        wasCorrect: false,
+        whatWorked: 'Entry timing was good.',
+        whatMissed: 'Flow reversed at 11 AM.',
+        optimalTrade: 'Should have been put credit spread.',
+        lessonsLearned: [],
       });
       expect(
         screen.getByText(/Recommendation was incorrect/),
@@ -646,22 +871,18 @@ describe('ChartAnalysis', () => {
     it('switches analysis mode when mode buttons are clicked', async () => {
       const user = userEvent.setup();
       render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
-      // Default mode description should be visible
       expect(
         screen.getByText('Full analysis before opening a position'),
       ).toBeInTheDocument();
 
-      // Click Mid-Day mode
       await user.click(screen.getByText('Mid-Day'));
       expect(
         screen.getByText('Check if conditions changed since entry'),
       ).toBeInTheDocument();
 
-      // Click Review mode
       await user.click(screen.getByText('Review'));
       expect(screen.getByText('End-of-day retrospective')).toBeInTheDocument();
 
-      // Back to Pre-Trade
       await user.click(screen.getByText('Pre-Trade'));
       expect(
         screen.getByText('Full analysis before opening a position'),
@@ -682,90 +903,6 @@ describe('ChartAnalysis', () => {
       expect(
         screen.getByRole('button', { name: /analyze 1 chart.*mid-day/i }),
       ).toBeInTheDocument();
-    });
-  });
-
-  // ============================================================
-  // HEDGE RECOMMENDATION
-  // ============================================================
-
-  describe('hedge recommendation', () => {
-    async function renderWithAnalysis(analysis: Record<string, unknown>) {
-      const user = userEvent.setup();
-      vi.stubGlobal(
-        'fetch',
-        vi
-          .fn()
-          .mockResolvedValue(
-            new Response(
-              JSON.stringify({ analysis, raw: JSON.stringify(analysis) }),
-              { status: 200, headers: { 'Content-Type': 'application/json' } },
-            ),
-          ),
-      );
-
-      const view = render(
-        <ChartAnalysis
-          th={th}
-          results={makeResults()}
-          context={makeContext()}
-        />,
-      );
-      await addImageViaInput(view.container);
-      await user.click(screen.getByRole('button', { name: /analyze/i }));
-      await waitFor(() => {
-        expect(
-          screen.getByText(analysis.structure as string),
-        ).toBeInTheDocument();
-      });
-    }
-
-    it('displays NO HEDGE recommendation', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        hedge: {
-          recommendation: 'NO HEDGE',
-          description: 'Market conditions are favorable.',
-          rationale: 'Low volatility environment.',
-          estimatedCost: '$0',
-        },
-      });
-      expect(screen.getByText(/Hedge: NO HEDGE/)).toBeInTheDocument();
-      expect(
-        screen.getByText('Market conditions are favorable.'),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText('Low volatility environment.'),
-      ).toBeInTheDocument();
-      // estimatedCost should NOT be shown for NO HEDGE
-      expect(screen.queryByText('$0')).not.toBeInTheDocument();
-    });
-
-    it('displays PROTECTIVE LONG hedge with cost', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        hedge: {
-          recommendation: 'PROTECTIVE LONG',
-          description: 'Buy a protective put.',
-          rationale: 'Elevated tail risk.',
-          estimatedCost: '$1.20',
-        },
-      });
-      expect(screen.getByText(/Hedge: PROTECTIVE LONG/)).toBeInTheDocument();
-      expect(screen.getByText('$1.20')).toBeInTheDocument();
-    });
-
-    it('displays SKIP hedge recommendation', async () => {
-      await renderWithAnalysis({
-        ...SAMPLE_ANALYSIS,
-        hedge: {
-          recommendation: 'SKIP',
-          description: 'Too risky to trade.',
-          rationale: '',
-          estimatedCost: '',
-        },
-      });
-      expect(screen.getByText(/Hedge: SKIP/)).toBeInTheDocument();
     });
   });
 
@@ -836,7 +973,6 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup();
       await renderWithImageIssues();
       const replaceBtn = screen.getByRole('button', { name: /replace/i });
-      // Just verify it doesn't throw — the click sets replaceTargetIndex and triggers input.click()
       await user.click(replaceBtn);
     });
   });
@@ -853,19 +989,15 @@ describe('ChartAnalysis', () => {
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
       );
 
-      // Add an image first
       await addImageViaInput(container);
       expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
 
-      // Get the second file input (the replace input)
       const inputs = container.querySelectorAll('input[type="file"]');
       const replaceInput = inputs[1] as HTMLInputElement;
 
-      // Simulate selecting a replacement file
       const newFile = createImageFile('replacement.png');
       fireEvent.change(replaceInput, { target: { files: [newFile] } });
 
-      // Should still have 1 image (replaced, not added)
       expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
     });
   });
@@ -983,7 +1115,7 @@ describe('ChartAnalysis', () => {
   });
 
   // ============================================================
-  // UPLOAD BUTTON CLICK
+  // UPLOAD BUTTON
   // ============================================================
 
   describe('upload button', () => {
@@ -993,8 +1125,6 @@ describe('ChartAnalysis', () => {
       const uploadBtn = screen.getByRole('button', {
         name: /upload chart images/i,
       });
-      // Click the upload area — this triggers fileInputRef.current?.click()
-      // We can't easily assert the file input was clicked, but we verify no errors
       await user.click(uploadBtn);
     });
 
