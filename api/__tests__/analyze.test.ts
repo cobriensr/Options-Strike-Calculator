@@ -172,7 +172,7 @@ describe('POST /api/analyze', () => {
 
     const sentBody = JSON.parse(opts.body);
     expect(sentBody.model).toBe('claude-opus-4-6');
-    expect(sentBody.max_tokens).toBe(16000);
+    expect(sentBody.max_tokens).toBe(20000);
     expect(sentBody.thinking).toEqual({
       type: 'enabled',
       budget_tokens: 11000,

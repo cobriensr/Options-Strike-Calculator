@@ -407,10 +407,11 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
 
     const data = await response.json();
     // Filter to text blocks only — thinking blocks are excluded
-    const text = data.content
-      ?.filter((c: { type: string }) => c.type === 'text')
-      .map((c: { text: string }) => c.text)
-      .join('') ?? '';
+    const text =
+      data.content
+        ?.filter((c: { type: string }) => c.type === 'text')
+        .map((c: { text: string }) => c.text)
+        .join('') ?? '';
 
     // Parse the JSON response
     try {
