@@ -286,4 +286,134 @@ describe('POST /api/analyze', () => {
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Analysis failed' });
   });
+
+  it('includes midday mode text in context', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue(makeAnthropicResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        mode: 'midday',
+        currentPosition: 'Short 10Δ IC at 5650/5750',
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const sentBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+    const contextBlock = sentBody.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('MID-DAY RE-ANALYSIS');
+    expect(contextBlock).toContain('Short 10Δ IC at 5650/5750');
+  });
+
+  it('includes review mode text and previous recommendation in context', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue(makeAnthropicResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        mode: 'review',
+        previousRecommendation: 'Iron condor at 8Δ',
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const sentBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+    const contextBlock = sentBody.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('END-OF-DAY REVIEW');
+    expect(contextBlock).toContain('Iron condor at 8Δ');
+  });
+
+  it('filters out thinking blocks from response', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          content: [
+            { type: 'thinking', thinking: 'internal reasoning...' },
+            { type: 'text', text: JSON.stringify(SAMPLE_ANALYSIS) },
+          ],
+        }),
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
+
+  it('uses image labels when provided', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue(makeAnthropicResponse(SAMPLE_ANALYSIS));
+
+    const images = [
+      { data: 'img1', mediaType: 'image/png', label: 'Market Tide (SPX)' },
+      { data: 'img2', mediaType: 'image/jpeg' },
+    ];
+    const req = mockRequest({ method: 'POST', body: makeBody({ images }) });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+    const content = sentBody.messages[0].content;
+    expect(content[0].text).toContain('Market Tide (SPX)');
+    expect(content[2].text).toContain('Unlabeled');
+  });
+
+  it('populates all context fields in the request', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue(makeAnthropicResponse(SAMPLE_ANALYSIS));
+
+    const ctx = {
+      mode: 'entry',
+      selectedDate: '2025-03-14',
+      entryTime: '8:45 AM CT',
+      spx: 5700,
+      spy: 550,
+      vix: 18,
+      vix1d: 15,
+      vix9d: 17,
+      vvix: 90,
+      sigma: 0.15,
+      T: 0.03,
+      hoursRemaining: 7,
+      deltaCeiling: 8,
+      putSpreadCeiling: 10,
+      callSpreadCeiling: 10,
+      regimeZone: 'GREEN',
+      clusterMult: 1.0,
+      dowLabel: 'Friday',
+      openingRangeSignal: 'neutral',
+      vixTermSignal: 'contango',
+      rvIvRatio: 0.85,
+      overnightGap: 0.1,
+    };
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({ context: ctx }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+    const contextBlock = sentBody.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('PRE-TRADE ENTRY');
+    expect(contextBlock).toContain('2025-03-14');
+    expect(contextBlock).toContain('8:45 AM CT');
+    expect(contextBlock).toContain('5700');
+    expect(contextBlock).toContain('GREEN');
+    expect(contextBlock).toContain('contango');
+  });
 });

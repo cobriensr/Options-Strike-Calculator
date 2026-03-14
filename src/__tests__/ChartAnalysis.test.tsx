@@ -311,7 +311,7 @@ describe('ChartAnalysis', () => {
 
   describe('results display', () => {
     async function renderWithAnalysis(
-      analysis: typeof SAMPLE_ANALYSIS = SAMPLE_ANALYSIS,
+      analysis: Record<string, unknown> = SAMPLE_ANALYSIS,
     ) {
       const user = userEvent.setup();
       vi.stubGlobal(
@@ -336,7 +336,7 @@ describe('ChartAnalysis', () => {
       await addImageViaInput(view.container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
       await waitFor(() => {
-        expect(screen.getByText(analysis.structure)).toBeInTheDocument();
+        expect(screen.getByText(analysis.structure as string)).toBeInTheDocument();
       });
     }
 
@@ -429,11 +429,287 @@ describe('ChartAnalysis', () => {
       expect(screen.getByText('SIT OUT')).toBeInTheDocument();
       expect(screen.getByText('LOW')).toBeInTheDocument();
     });
+
+    it('displays chart confidence signals', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        chartConfidence: {
+          marketTide: {
+            signal: 'BEARISH',
+            confidence: 'HIGH',
+            note: 'NCP declining sharply',
+          },
+          spyNetFlow: {
+            signal: 'CONFIRMS',
+            confidence: 'MODERATE',
+            note: 'SPY confirms bearish flow',
+          },
+          qqqNetFlow: {
+            signal: 'CONTRADICTS',
+            confidence: 'LOW',
+            note: 'QQQ diverging from SPY',
+          },
+          periscope: {
+            signal: 'FAVORABLE',
+            confidence: 'HIGH',
+            note: 'Positive gamma wall at support',
+          },
+        },
+      });
+      expect(screen.getByText('Market Tide')).toBeInTheDocument();
+      expect(screen.getByText('BEARISH')).toBeInTheDocument();
+      expect(screen.getByText('SPY Flow')).toBeInTheDocument();
+      expect(screen.getByText('CONFIRMS')).toBeInTheDocument();
+      expect(screen.getByText('QQQ Flow')).toBeInTheDocument();
+      expect(screen.getByText('CONTRADICTS')).toBeInTheDocument();
+      expect(screen.getByText('Periscope')).toBeInTheDocument();
+      expect(screen.getByText('FAVORABLE')).toBeInTheDocument();
+    });
+
+    it('hides chart confidence entries with NOT PROVIDED signal', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        chartConfidence: {
+          marketTide: {
+            signal: 'BULLISH',
+            confidence: 'HIGH',
+            note: 'Strong call flow',
+          },
+          spyNetFlow: {
+            signal: 'NOT PROVIDED',
+            confidence: 'LOW',
+            note: '',
+          },
+          periscope: {
+            signal: 'UNFAVORABLE',
+            confidence: 'MODERATE',
+            note: 'Negative gamma zone',
+          },
+        },
+      });
+      expect(screen.getByText('Market Tide')).toBeInTheDocument();
+      expect(screen.getByText('BULLISH')).toBeInTheDocument();
+      expect(screen.queryByText('SPY Flow')).not.toBeInTheDocument();
+      expect(screen.getByText('Periscope')).toBeInTheDocument();
+      expect(screen.getByText('UNFAVORABLE')).toBeInTheDocument();
+    });
+
+    it('displays strike guidance with put/call notes and straddle cone', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        strikeGuidance: {
+          putStrikeNote: 'Place below 5650 positive gamma wall.',
+          callStrikeNote: 'Place above 5780 resistance.',
+          straddleCone: {
+            upper: 5780,
+            lower: 5620,
+            priceRelation: 'Price inside cone with 80pts cushion',
+          },
+          adjustments: [
+            'Move put from 5660 to 5640',
+            'Call at 5800 is safe',
+          ],
+        },
+      });
+      expect(
+        screen.getByText('Strike Placement Guidance'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Place below 5650 positive gamma wall.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Place above 5780 resistance.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Straddle cone:.*5620.*5780/s),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Move put from 5660 to 5640'),
+      ).toBeInTheDocument();
+    });
+
+    it('displays entry plan with multiple entries', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        entryPlan: {
+          entry1: {
+            timing: 'Now (8:45 AM CT)',
+            sizePercent: 40,
+            delta: 10,
+            structure: 'CALL CREDIT SPREAD',
+            note: 'Initial position',
+          },
+          entry2: {
+            condition: 'Opening range GREEN at 10:00 AM',
+            sizePercent: 30,
+            delta: 8,
+            structure: 'CALL CREDIT SPREAD',
+            note: 'Add if range intact',
+          },
+          entry3: {
+            condition: 'Flow still bearish at 11:00 AM',
+            sizePercent: 30,
+            delta: 8,
+            structure: 'PUT CREDIT SPREAD',
+            note: 'Final add',
+          },
+          maxTotalSize: '100% of daily risk budget',
+          noEntryConditions: [
+            'Opening range RED',
+            'NCP/NPP converge',
+          ],
+        },
+      });
+      expect(screen.getByText('Entry Plan')).toBeInTheDocument();
+      expect(screen.getByText('Initial position')).toBeInTheDocument();
+      expect(screen.getByText('Add if range intact')).toBeInTheDocument();
+      expect(screen.getByText('Final add')).toBeInTheDocument();
+      expect(
+        screen.getByText(/100% of daily risk budget/),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Do NOT add entries if:'),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Opening range RED')).toBeInTheDocument();
+      expect(screen.getByText('NCP/NPP converge')).toBeInTheDocument();
+    });
+
+    it('displays management rules', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        managementRules: {
+          profitTarget: 'Close at 50% of max profit before 1 PM',
+          stopConditions: [
+            'Close put side if SPX breaks below 5620',
+            'Close everything if NCP drops below -300M',
+          ],
+          timeRules: 'Close after 2:30 PM if < 30% profit',
+          flowReversalSignal: 'NCP and NPP converge — bias shifted',
+        },
+      });
+      expect(
+        screen.getByText('Position Management Rules'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Close at 50% of max profit before 1 PM'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Close put side if SPX breaks below 5620'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Close after 2:30 PM if < 30% profit'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('NCP and NPP converge — bias shifted'),
+      ).toBeInTheDocument();
+    });
+
+    it('displays end-of-day review section', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        review: {
+          wasCorrect: true,
+          whatWorked: 'Bearish call from NCP divergence was accurate.',
+          whatMissed: 'The 2 PM NCP reversal was visible at 1:30 PM.',
+          optimalTrade: 'Call credit spread at 10Δ, closed at 50%.',
+          lessonsLearned: [
+            'Late-day NCP reversals on Fridays are common',
+            'When gamma flips orange at support, price bounces',
+          ],
+        },
+      });
+      expect(
+        screen.getByText(/Recommendation was correct/),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Bearish call from NCP divergence was accurate.',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'The 2 PM NCP reversal was visible at 1:30 PM.',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Lessons for next time'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Late-day NCP reversals on Fridays are common',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('displays incorrect review with red styling', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        review: {
+          wasCorrect: false,
+          whatWorked: 'Entry timing was good.',
+          whatMissed: 'Flow reversed at 11 AM.',
+          optimalTrade: 'Should have been put credit spread.',
+          lessonsLearned: [],
+        },
+      });
+      expect(
+        screen.getByText(/Recommendation was incorrect/),
+      ).toBeInTheDocument();
+    });
   });
 
   // ============================================================
-  // RAW RESPONSE FALLBACK
+  // MODE SELECTOR
   // ============================================================
+
+  describe('mode selector', () => {
+    it('switches analysis mode when mode buttons are clicked', async () => {
+      const user = userEvent.setup();
+      render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+      // Default mode description should be visible
+      expect(
+        screen.getByText('Full analysis before opening a position'),
+      ).toBeInTheDocument();
+
+      // Click Mid-Day mode
+      await user.click(screen.getByText('Mid-Day'));
+      expect(
+        screen.getByText(
+          'Check if conditions changed since entry',
+        ),
+      ).toBeInTheDocument();
+
+      // Click Review mode
+      await user.click(screen.getByText('Review'));
+      expect(
+        screen.getByText('End-of-day retrospective'),
+      ).toBeInTheDocument();
+
+      // Back to Pre-Trade
+      await user.click(screen.getByText('Pre-Trade'));
+      expect(
+        screen.getByText('Full analysis before opening a position'),
+      ).toBeInTheDocument();
+    });
+
+    it('includes mode in analyze button text', async () => {
+      const user = userEvent.setup();
+      const { container } = render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+      await addImageViaInput(container);
+      expect(
+        screen.getByRole('button', { name: /analyze 1 chart.*pre-trade/i }),
+      ).toBeInTheDocument();
+
+      await user.click(screen.getByText('Mid-Day'));
+      expect(
+        screen.getByRole('button', { name: /analyze 1 chart.*mid-day/i }),
+      ).toBeInTheDocument();
+    });
+  });
 
   // ============================================================
   // HEDGE RECOMMENDATION

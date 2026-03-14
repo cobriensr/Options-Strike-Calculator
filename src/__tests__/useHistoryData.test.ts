@@ -487,4 +487,73 @@ describe('useHistoryData: edge cases', () => {
     const snapshot = result.current.getStateAtTime(10, 0);
     expect(snapshot!.yesterday).toBeNull();
   });
+
+  it('returns null VIX values when symbol has empty candles', async () => {
+    const noVixCandles: HistoryResponse = {
+      ...mockHistory,
+      vix: { candles: [], previousClose: 0, previousDay: null },
+      vix1d: { candles: [], previousClose: 12, previousDay: null },
+      vix9d: { candles: [], previousClose: 0, previousDay: null },
+      vvix: { candles: [], previousClose: 85, previousDay: null },
+    };
+    mockHistoryFetch(noVixCandles);
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    const snapshot = result.current.getStateAtTime(10, 0);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.vix).toBeNull();
+    expect(snapshot!.vix1d).toBeNull();
+    expect(snapshot!.vix9d).toBeNull();
+    expect(snapshot!.vvix).toBeNull();
+    // previousClose of 0 should become null
+    expect(snapshot!.vixPrevClose).toBeNull();
+  });
+
+  it('returns error with HTTP status when response body has no error field', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes('/api/history')) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ message: 'Service unavailable' }),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: 'x' }),
+      });
+    });
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toBe('HTTP 503');
+  });
+
+  it('shows specific error when candleCount is 0', async () => {
+    const zeroCandles: HistoryResponse = {
+      ...mockHistory,
+      spx: { ...mockHistory.spx, candles: spxCandles },
+      candleCount: 0,
+    };
+    mockHistoryFetch(zeroCandles);
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toContain('No intraday data available');
+    expect(result.current.history).toBeNull();
+  });
 });
