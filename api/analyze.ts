@@ -195,7 +195,16 @@ Consider: VIX level, directional conviction, straddle cone proximity, gamma prof
 
 ## Image Readability
 
-Each image is labeled (e.g. "Image 1: Market Tide (SPX)"). If ANY image is too small, blurry, cropped, or unreadable — meaning you cannot confidently extract key data — report it in imageIssues. Be specific about what you can't read and what would help. Still provide the best analysis from readable images, but flag gaps.
+Each image is labeled (e.g. "Image 1: Market Tide (SPX)"). Only flag an image in imageIssues if it is GENUINELY UNREADABLE — meaning you cannot determine even the general direction of lines, approximate scale, or basic chart structure. 
+
+Do NOT flag images for:
+- Having to estimate values visually (that is normal chart reading)
+- Header values showing end-of-day instead of entry-time (you should read the chart lines at the entry time, not the header)
+- Vertical compression (if you can still see line directions and approximate values, it's fine)
+- Minor cropping that doesn't affect the analysis area
+- Not knowing the exact timestamp of a Periscope snapshot (note it as a caveat in your analysis, don't flag it as an issue)
+
+Only flag images where you literally cannot extract ANY useful information. Most Unusual Whales screenshots are perfectly adequate for analysis. Set imageIssues to an empty array [] if all images are usable.
 
 ## Response Format
 
@@ -379,7 +388,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       },
       body: JSON.stringify({
         model: 'claude-opus-4-6',
-        max_tokens: 16000,
+        max_tokens: 20000,
         thinking: {
           type: 'enabled',
           budget_tokens: 11000,
@@ -398,11 +407,10 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
 
     const data = await response.json();
     // Filter to text blocks only — thinking blocks are excluded
-    const text =
-      data.content
-        ?.filter((c: { type: string }) => c.type === 'text')
-        .map((c: { text: string }) => c.text)
-        .join('') ?? '';
+    const text = data.content
+      ?.filter((c: { type: string }) => c.type === 'text')
+      .map((c: { text: string }) => c.text)
+      .join('') ?? '';
 
     // Parse the JSON response
     try {
