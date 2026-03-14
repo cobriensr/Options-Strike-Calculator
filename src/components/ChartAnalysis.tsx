@@ -47,7 +47,11 @@ interface UploadedImage {
 }
 
 interface AnalysisResult {
-  structure: 'IRON CONDOR' | 'PUT CREDIT SPREAD' | 'CALL CREDIT SPREAD' | 'SIT OUT';
+  structure:
+    | 'IRON CONDOR'
+    | 'PUT CREDIT SPREAD'
+    | 'CALL CREDIT SPREAD'
+    | 'SIT OUT';
   confidence: 'HIGH' | 'MODERATE' | 'LOW';
   suggestedDelta: number;
   reasoning: string;
@@ -55,6 +59,23 @@ interface AnalysisResult {
   risks: string[];
   periscopeNotes?: string;
   structureRationale: string;
+  hedge?: {
+    recommendation:
+      | 'NO HEDGE'
+      | 'PROTECTIVE LONG'
+      | 'DEBIT SPREAD HEDGE'
+      | 'REDUCED SIZE'
+      | 'SKIP';
+    description: string;
+    rationale: string;
+    estimatedCost: string;
+  };
+  imageIssues?: Array<{
+    imageIndex: number;
+    label: string;
+    issue: string;
+    suggestion: string;
+  }>;
 }
 
 const CHART_LABELS = [
@@ -74,12 +95,18 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const addImage = useCallback((file: File) => {
-    if (images.length >= 5) return;
-    const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const preview = URL.createObjectURL(file);
-    setImages((prev) => [...prev, { id, file, preview, label: CHART_LABELS[0] }]);
-  }, [images.length]);
+  const addImage = useCallback(
+    (file: File) => {
+      if (images.length >= 5) return;
+      const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const preview = URL.createObjectURL(file);
+      setImages((prev) => [
+        ...prev,
+        { id, file, preview, label: CHART_LABELS[0] },
+      ]);
+    },
+    [images.length],
+  );
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
@@ -92,6 +119,46 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const updateLabel = useCallback((id: string, label: string) => {
     setImages((prev) => prev.map((i) => (i.id === id ? { ...i, label } : i)));
   }, []);
+
+  const [replaceTargetIndex, setReplaceTargetIndex] = useState<number | null>(
+    null,
+  );
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+
+  const replaceImage = useCallback((index: number) => {
+    setReplaceTargetIndex(index);
+    replaceInputRef.current?.click();
+  }, []);
+
+  const handleReplaceFile = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file || replaceTargetIndex == null) return;
+
+      setImages((prev) => {
+        // Find the image at the target index (1-based from the analysis)
+        const targetIdx = replaceTargetIndex - 1;
+        if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+        const old = prev[targetIdx]!;
+        URL.revokeObjectURL(old.preview);
+        const newImg: UploadedImage = {
+          id: `img-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          file,
+          preview: URL.createObjectURL(file),
+          label: old.label,
+        };
+        return [
+          ...prev.slice(0, targetIdx),
+          newImg,
+          ...prev.slice(targetIdx + 1),
+        ];
+      });
+
+      setReplaceTargetIndex(null);
+      if (replaceInputRef.current) replaceInputRef.current.value = '';
+    },
+    [replaceTargetIndex],
+  );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -176,7 +243,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       });
 
       if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: 'Request failed' }));
+        const body = await res
+          .json()
+          .catch(() => ({ error: 'Request failed' }));
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
@@ -230,6 +299,13 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             className="hidden"
             onChange={handleFileSelect}
           />
+          <input
+            ref={replaceInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleReplaceFile}
+          />
           <div className="text-muted text-[12px]">
             {images.length === 0
               ? 'Drop or click to upload, or paste (Ctrl+V) a screenshot from clipboard'
@@ -263,7 +339,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                     ))}
                   </select>
                   <button
-                    onClick={(e) => { e.stopPropagation(); removeImage(img.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeImage(img.id);
+                    }}
                     className="text-muted hover:text-danger text-[14px] leading-none"
                     aria-label="Remove image"
                   >
@@ -286,7 +365,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               color: '#fff',
             }}
           >
-            {loading ? 'Analyzing charts...' : `Analyze ${images.length} chart${images.length > 1 ? 's' : ''}`}
+            {loading
+              ? 'Analyzing charts...'
+              : `Analyze ${images.length} chart${images.length > 1 ? 's' : ''}`}
           </button>
         )}
 
@@ -321,7 +402,8 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 <span
                   className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
                   style={{
-                    backgroundColor: confidenceColor(analysis.confidence) + '18',
+                    backgroundColor:
+                      confidenceColor(analysis.confidence) + '18',
                     color: confidenceColor(analysis.confidence),
                   }}
                 >
@@ -331,7 +413,8 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                   className="text-accent rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
                   style={{ backgroundColor: th.accent + '18' }}
                 >
-                  {analysis.suggestedDelta}{'\u0394'}
+                  {analysis.suggestedDelta}
+                  {'\u0394'}
                 </span>
               </div>
               <div className="text-secondary text-[11px] leading-relaxed">
@@ -346,7 +429,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               </div>
               <div className="grid gap-1">
                 {analysis.observations.map((obs, i) => (
-                  <div key={i} className="text-secondary flex gap-1.5 text-[11px] leading-relaxed">
+                  <div
+                    key={i}
+                    className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
+                  >
                     <span className="text-muted shrink-0">{'\u2022'}</span>
                     <span>{obs}</span>
                   </div>
@@ -358,15 +444,26 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             {analysis.risks.length > 0 && (
               <div
                 className="rounded-lg p-3"
-                style={{ backgroundColor: th.red + '08', border: `1px solid ${th.red}15` }}
+                style={{
+                  backgroundColor: th.red + '08',
+                  border: `1px solid ${th.red}15`,
+                }}
               >
-                <div className="mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase" style={{ color: th.red }}>
+                <div
+                  className="mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase"
+                  style={{ color: th.red }}
+                >
                   Risk Factors
                 </div>
                 <div className="grid gap-1">
                   {analysis.risks.map((risk, i) => (
-                    <div key={i} className="text-secondary flex gap-1.5 text-[11px] leading-relaxed">
-                      <span style={{ color: th.red }} className="shrink-0">{'\u26A0'}</span>
+                    <div
+                      key={i}
+                      className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
+                    >
+                      <span style={{ color: th.red }} className="shrink-0">
+                        {'\u26A0'}
+                      </span>
                       <span>{risk}</span>
                     </div>
                   ))}
@@ -386,10 +483,126 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               </div>
             )}
 
+            {/* Hedge recommendation */}
+            {analysis.hedge && (
+              <div
+                className="rounded-lg p-3"
+                style={{
+                  backgroundColor:
+                    analysis.hedge.recommendation === 'NO HEDGE'
+                      ? th.green + '08'
+                      : analysis.hedge.recommendation === 'SKIP'
+                        ? th.red + '08'
+                        : '#E8A31708',
+                  border: `1px solid ${
+                    analysis.hedge.recommendation === 'NO HEDGE'
+                      ? th.green + '20'
+                      : analysis.hedge.recommendation === 'SKIP'
+                        ? th.red + '20'
+                        : '#E8A31720'
+                  }`,
+                }}
+              >
+                <div className="mb-1.5 flex items-center gap-2">
+                  <span
+                    className="font-sans text-[9px] font-bold tracking-wider uppercase"
+                    style={{
+                      color:
+                        analysis.hedge.recommendation === 'NO HEDGE'
+                          ? th.green
+                          : analysis.hedge.recommendation === 'SKIP'
+                            ? th.red
+                            : '#E8A317',
+                    }}
+                  >
+                    Hedge: {analysis.hedge.recommendation}
+                  </span>
+                  {analysis.hedge.estimatedCost &&
+                    analysis.hedge.recommendation !== 'NO HEDGE' &&
+                    analysis.hedge.recommendation !== 'SKIP' && (
+                      <span
+                        className="text-muted rounded-full px-1.5 py-0.5 font-mono text-[8px]"
+                        style={{ backgroundColor: th.surfaceAlt }}
+                      >
+                        {analysis.hedge.estimatedCost}
+                      </span>
+                    )}
+                </div>
+                <div className="text-secondary text-[11px] leading-relaxed">
+                  {analysis.hedge.description}
+                </div>
+                {analysis.hedge.rationale && (
+                  <div className="text-muted mt-1 text-[10px] leading-relaxed italic">
+                    {analysis.hedge.rationale}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Structure rationale */}
-            <div className="text-muted text-[10px] italic leading-relaxed">
+            <div className="text-muted text-[10px] leading-relaxed italic">
               {analysis.structureRationale}
             </div>
+
+            {/* Image issues — prompt to replace unreadable images */}
+            {analysis.imageIssues && analysis.imageIssues.length > 0 && (
+              <div
+                className="rounded-lg p-3"
+                style={{
+                  backgroundColor: '#E8A31708',
+                  border: '1px solid #E8A31720',
+                }}
+              >
+                <div
+                  className="mb-2 font-sans text-[9px] font-bold tracking-wider uppercase"
+                  style={{ color: '#E8A317' }}
+                >
+                  Image Issues {'\u2014'} {analysis.imageIssues.length} image
+                  {analysis.imageIssues.length > 1 ? 's' : ''} need
+                  {analysis.imageIssues.length === 1 ? 's' : ''} improvement
+                </div>
+                <div className="grid gap-2">
+                  {analysis.imageIssues.map((issue, i) => (
+                    <div
+                      key={i}
+                      className="bg-surface border-edge flex items-start gap-2.5 rounded-md border p-2.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div
+                          className="mb-0.5 font-sans text-[11px] font-semibold"
+                          style={{ color: '#E8A317' }}
+                        >
+                          Image {issue.imageIndex}: {issue.label}
+                        </div>
+                        <div className="text-secondary text-[10px] leading-relaxed">
+                          {issue.issue}
+                        </div>
+                        <div className="text-muted mt-0.5 text-[10px] italic">
+                          {'\u2192'} {issue.suggestion}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => replaceImage(issue.imageIndex)}
+                        className="shrink-0 cursor-pointer rounded-md px-2.5 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
+                        style={{
+                          backgroundColor: '#E8A31718',
+                          color: '#E8A317',
+                          border: '1px solid #E8A31730',
+                        }}
+                      >
+                        Replace
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="text-muted mt-2 text-[10px]">
+                  Replace the flagged image
+                  {analysis.imageIssues.length > 1 ? 's' : ''}, then click{' '}
+                  <strong>Analyze</strong> again for an updated recommendation.
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -399,7 +612,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             <div className="text-muted mb-1 font-sans text-[9px] font-bold tracking-wider uppercase">
               Raw Analysis
             </div>
-            <pre className="text-secondary max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed">
+            <pre className="text-secondary max-h-48 overflow-auto font-mono text-[10px] leading-relaxed whitespace-pre-wrap">
               {rawResponse}
             </pre>
           </div>

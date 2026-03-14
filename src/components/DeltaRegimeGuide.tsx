@@ -363,26 +363,33 @@ export default function DeltaRegimeGuide({
                       className="font-mono text-[28px] leading-none font-extrabold"
                       style={{ color: zoneColor }}
                     >
-                      {maxD}{'\u0394'}
+                      {maxD}
+                      {'\u0394'}
                     </div>
                   </div>
 
                   {/* Separator */}
                   {putSpreadCeiling != null && callSpreadCeiling != null && (
-                    <div className="text-muted mx-1 text-[20px] font-light opacity-30">|</div>
+                    <div className="text-muted mx-1 text-[20px] font-light opacity-30">
+                      |
+                    </div>
                   )}
 
                   {/* Put spread ceiling */}
                   {putSpreadCeiling != null && (
                     <div className="text-center">
-                      <div className="mb-0.5 font-sans text-[9px] font-semibold tracking-wider" style={{ color: th.red + 'CC' }}>
+                      <div
+                        className="mb-0.5 font-sans text-[9px] font-semibold tracking-wider"
+                        style={{ color: th.red + 'CC' }}
+                      >
                         PUT SPREAD
                       </div>
                       <div
                         className="font-mono text-[28px] leading-none font-extrabold"
                         style={{ color: th.red }}
                       >
-                        {putSpreadCeiling}{'\u0394'}
+                        {putSpreadCeiling}
+                        {'\u0394'}
                       </div>
                     </div>
                   )}
@@ -390,14 +397,18 @@ export default function DeltaRegimeGuide({
                   {/* Call spread ceiling */}
                   {callSpreadCeiling != null && (
                     <div className="text-center">
-                      <div className="mb-0.5 font-sans text-[9px] font-semibold tracking-wider" style={{ color: th.green + 'CC' }}>
+                      <div
+                        className="mb-0.5 font-sans text-[9px] font-semibold tracking-wider"
+                        style={{ color: th.green + 'CC' }}
+                      >
                         CALL SPREAD
                       </div>
                       <div
                         className="font-mono text-[28px] leading-none font-extrabold"
                         style={{ color: th.green }}
                       >
-                        {callSpreadCeiling}{'\u0394'}
+                        {callSpreadCeiling}
+                        {'\u0394'}
                       </div>
                     </div>
                   )}
@@ -591,8 +602,12 @@ export default function DeltaRegimeGuide({
                 {deltaRows.map((r, i) => {
                   // Use guide-consistent distances (VIX × 1.15 σ) for threshold comparison
                   const gd = guideDistances.get(r.delta);
-                  const putPct = gd ? Number.parseFloat(gd.putPct) : Number.parseFloat(r.putPct);
-                  const callPct = gd ? Number.parseFloat(gd.callPct) : Number.parseFloat(r.callPct);
+                  const putPct = gd
+                    ? Number.parseFloat(gd.putPct)
+                    : Number.parseFloat(r.putPct);
+                  const callPct = gd
+                    ? Number.parseFloat(gd.callPct)
+                    : Number.parseFloat(r.callPct);
                   return (
                     <tr
                       key={r.delta}
@@ -624,7 +639,10 @@ export default function DeltaRegimeGuide({
                                 {'\u2713'}
                               </span>
                             ) : putClears || callClears ? (
-                              <span className="text-[11px] font-semibold" style={{ color: '#E8A317' }}>
+                              <span
+                                className="text-[11px] font-semibold"
+                                style={{ color: '#E8A317' }}
+                              >
                                 {putClears ? 'P\u2713' : 'C\u2713'}
                               </span>
                             ) : (
@@ -644,10 +662,12 @@ export default function DeltaRegimeGuide({
 
           <p className="text-muted mt-1.5 text-[11px] italic">
             {'\u2713'} = both sides clear threshold (IC safe).{' '}
-            <span style={{ color: '#E8A317' }}>P{'\u2713'}</span> = only put side clears (put spread OK).{' '}
-            <span style={{ color: '#E8A317' }}>C{'\u2713'}</span> = only call side clears (call spread OK).{' '}
-            {'\u2717'} = neither side clears.
-            Put/Call % use VIX {'\u00D7'} 1.15 {'\u03C3'} to match the Guide{'\u2019'}s thresholds.
+            <span style={{ color: '#E8A317' }}>P{'\u2713'}</span> = only put
+            side clears (put spread OK).{' '}
+            <span style={{ color: '#E8A317' }}>C{'\u2713'}</span> = only call
+            side clears (call spread OK). {'\u2717'} = neither side clears.
+            Put/Call % use VIX {'\u00D7'} 1.15 {'\u03C3'} to match the Guide
+            {'\u2019'}s thresholds.
           </p>
         </>
       )}

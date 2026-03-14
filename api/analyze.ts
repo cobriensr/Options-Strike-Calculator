@@ -118,6 +118,32 @@ Given the chart(s) and calculator context, provide:
 5. **Risk Factors**: Any concerns or conflicting signals between the charts
 6. **Periscope Notes** (if Periscope image provided): Gamma levels at/near the calculator's suggested strikes, straddle cone status, whether strikes are in positive or negative gamma zones
 7. **Structure Rationale**: Why this structure specifically, referencing the NCP/NPP relationship
+8. **Hedge Recommendation**: Based on the risk level, suggest whether a hedge is warranted and what type:
+   - NO HEDGE: Low risk day, standard premium selling conditions
+   - PROTECTIVE LONG: Buy a long option beyond the short strike as disaster protection. Specify which side (put or call) and approximate delta (e.g. "Buy a 2Δ put ~50 pts below short put as crash protection")
+   - DEBIT SPREAD HEDGE: Convert the credit spread into an unbalanced butterfly by adding a debit spread on the vulnerable side
+   - REDUCED SIZE: Instead of hedging, cut contracts by a specific percentage (e.g. "Trade at 50% normal size")
+   - SKIP / SIT OUT: Risk is too high to hedge cost-effectively — better to not trade
+
+   Consider these factors when recommending hedges:
+   - VIX level: >25 = elevated, hedges are more expensive but more necessary
+   - Directional conviction: Strong trend days = hedge the side you're exposed to
+   - Straddle cone: If price is near the cone boundary, hedge the side it's approaching
+   - Gamma profile: Heavy negative gamma near your strikes = hedge that side
+   - Cost efficiency: A hedge that costs more than 30% of your credit may not be worth it — reduce size instead
+
+## Critical Accuracy Rules
+
+- **Never guess values.** If you cannot clearly read a number, line position, or scale from the chart, say so explicitly in your observations. Do not fabricate NCP/NPP values.
+- **State what you CAN'T see.** If a chart is low resolution, cropped, or the scale is unreadable, note it and reduce your confidence accordingly.
+- **Conflicting signals = LOW confidence.** If Market Tide says bullish but Periscope shows heavy negative gamma above price, or SPY and QQQ diverge significantly, set confidence to LOW and explain the conflict.
+- **When in doubt, recommend SIT OUT.** The trader's edge comes from selectivity. A missed trade costs $0. A bad trade costs thousands.
+- **Be specific with numbers.** Reference actual NCP/NPP values, gamma bar sizes relative to the scale, specific strike levels from Periscope, and exact straddle cone breakeven prices when visible.
+- **Distinguish between "the chart suggests" and "the chart clearly shows."** Use hedging language when reading approximate values from visual charts.
+
+## Image Readability
+
+Each image is labeled (e.g. "Image 1: Market Tide (SPX)"). If ANY image is too small, blurry, cropped, or otherwise unreadable — meaning you cannot confidently extract the key data (NCP/NPP values, line directions, gamma bar levels, straddle cone prices, etc.) — you MUST report it in the imageIssues array. Be specific about what you cannot read and what would help (e.g. "Need a closer crop of the gamma profile" or "Scale labels are too small to read NCP values"). Still provide the best analysis you can from the readable images, but flag the gaps so the trader can re-upload clearer versions.
 
 Respond in this exact JSON format (no markdown, no backticks, no preamble):
 {
@@ -128,7 +154,21 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
   "observations": ["point 1", "point 2", "point 3"],
   "risks": ["risk 1", "risk 2"],
   "periscopeNotes": "Optional: gamma/straddle cone analysis if Periscope image provided. null if not.",
-  "structureRationale": "Why this structure over alternatives, referencing NCP/NPP and flow data."
+  "structureRationale": "Why this structure over alternatives, referencing NCP/NPP and flow data.",
+  "hedge": {
+    "recommendation": "NO HEDGE" | "PROTECTIVE LONG" | "DEBIT SPREAD HEDGE" | "REDUCED SIZE" | "SKIP",
+    "description": "Specific hedge action, e.g. 'Buy a 2Δ put (~6400) as crash protection, ~$0.80 cost'",
+    "rationale": "Why this hedge type given today's conditions",
+    "estimatedCost": "Approximate cost as % of credit received, e.g. '~15% of credit'"
+  },
+  "imageIssues": [
+    {
+      "imageIndex": 1,
+      "label": "Market Tide (SPX)",
+      "issue": "Description of what's unreadable",
+      "suggestion": "What the trader should re-upload"
+    }
+  ]
 }`;
 
 // ============================================================
@@ -149,7 +189,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const { images, context } = req.body as {
-    images: Array<{ data: string; mediaType: string }>;
+    images: Array<{ data: string; mediaType: string; label?: string }>;
     context: Record<string, unknown>;
   };
 
@@ -164,16 +204,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Build the user message with images + context
   const content: Array<Record<string, unknown>> = [];
 
-  // Add each image
-  for (const img of images) {
-    content.push({
-      type: 'image',
-      source: {
-        type: 'base64',
-        media_type: img.mediaType,
-        data: img.data,
+  // Add each image with its label
+  for (let idx = 0; idx < images.length; idx++) {
+    const img = images[idx]!;
+    content.push(
+      {
+        type: 'text',
+        text: `[Image ${idx + 1}: ${img.label ?? 'Unlabeled'}]`,
       },
-    });
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: img.mediaType,
+          data: img.data,
+        },
+      },
+    );
   }
 
   // Add context as text
@@ -214,11 +261,15 @@ Analyze the uploaded chart(s) in the context of these signals and provide your s
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
+        'anthropic-version': '2025-04-15',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
+        model: 'claude-opus-4-6',
+        max_tokens: 16000,
+        thinking: {
+          type: 'enabled',
+          budget_tokens: 10000,
+        },
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content }],
       }),
@@ -232,14 +283,15 @@ Analyze the uploaded chart(s) in the context of these signals and provide your s
     }
 
     const data = await response.json();
-    const text = data.content
-      ?.filter((c: { type: string }) => c.type === 'text')
-      .map((c: { text: string }) => c.text)
-      .join('') ?? '';
+    const text =
+      data.content
+        ?.filter((c: { type: string }) => c.type === 'text')
+        .map((c: { text: string }) => c.text)
+        .join('') ?? '';
 
     // Parse the JSON response
     try {
-      const cleaned = text.replace(/```json\s*|```\s*/g, '').trim();
+      const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
       const analysis = JSON.parse(cleaned);
       return res.status(200).json({ analysis, raw: text });
     } catch {
