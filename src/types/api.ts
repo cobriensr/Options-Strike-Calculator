@@ -141,3 +141,55 @@ export interface HistoryResponse {
   readonly candleCount: number;
   readonly asOf: string;
 }
+
+// ============================================================
+// OPTION CHAIN (0DTE)
+// ============================================================
+
+export interface ChainStrike {
+  readonly strike: number;
+  readonly bid: number;
+  readonly ask: number;
+  readonly mid: number;
+  readonly delta: number;
+  readonly gamma: number;
+  readonly theta: number;
+  readonly vega: number;
+  readonly iv: number; // decimal (0.25 = 25%)
+  readonly volume: number;
+  readonly oi: number;
+  readonly itm: boolean;
+}
+
+export interface TargetDeltaMatch {
+  readonly putStrike: number;
+  readonly callStrike: number;
+  readonly putDelta: number;
+  readonly callDelta: number;
+  readonly putIV: number;
+  readonly callIV: number;
+  readonly putBid: number;
+  readonly putAsk: number;
+  readonly callBid: number;
+  readonly callAsk: number;
+  readonly putMid: number;
+  readonly callMid: number;
+  readonly icCredit: number;
+  readonly width: number;
+}
+
+export interface ChainResponse {
+  readonly underlying: {
+    readonly symbol: string;
+    readonly price: number;
+    readonly prevClose: number;
+  };
+  readonly expirationDate: string;
+  readonly daysToExpiration: number;
+  readonly contractCount: number;
+  readonly puts: readonly ChainStrike[];
+  readonly calls: readonly ChainStrike[];
+  readonly targetDeltas: Partial<Record<number, TargetDeltaMatch>>;
+  readonly asOf: string;
+  readonly error?: string;
+}
