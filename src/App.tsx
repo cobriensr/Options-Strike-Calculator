@@ -436,30 +436,21 @@ export default function StrikeCalculator() {
             <ChartAnalysis
               th={th}
               results={results}
-              context={
-                {
-                  spx: results?.spot,
-                  spy: Number.parseFloat(dSpot) || undefined,
-                  vix: Number.parseFloat(dVix) || undefined,
-                  vix1d:
-                    market.data.quotes?.vix1d?.price ??
-                    historySnapshot?.vix1d ??
-                    undefined,
-                  vix9d:
-                    market.data.quotes?.vix9d?.price ??
-                    historySnapshot?.vix9d ??
-                    undefined,
-                  vvix:
-                    market.data.quotes?.vvix?.price ??
-                    historySnapshot?.vvix ??
-                    undefined,
-                  sigma: results?.sigma,
-                  T: results?.T,
-                  hoursRemaining: results?.hoursRemaining,
-                  clusterMult,
-                  regimeZone: undefined,
-                } satisfies AnalysisContext
-              }
+              context={{
+                selectedDate: vix.selectedDate,
+                entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
+                spx: results?.spot,
+                spy: Number.parseFloat(dSpot) || undefined,
+                vix: Number.parseFloat(dVix) || undefined,
+                vix1d: market.data.quotes?.vix1d?.price ?? (historySnapshot?.vix1d ?? undefined),
+                vix9d: market.data.quotes?.vix9d?.price ?? (historySnapshot?.vix9d ?? undefined),
+                vvix: market.data.quotes?.vvix?.price ?? (historySnapshot?.vvix ?? undefined),
+                sigma: results?.sigma,
+                T: results?.T,
+                hoursRemaining: results?.hoursRemaining,
+                clusterMult,
+                regimeZone: undefined,
+              } satisfies AnalysisContext}
             />
 
             <ResultsSection

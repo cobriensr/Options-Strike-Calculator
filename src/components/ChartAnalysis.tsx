@@ -16,6 +16,8 @@ interface Props {
 }
 
 export interface AnalysisContext {
+  selectedDate?: string;
+  entryTime?: string;
   spx?: number;
   spy?: number;
   vix?: number;
@@ -45,11 +47,7 @@ interface UploadedImage {
 }
 
 interface AnalysisResult {
-  structure:
-    | 'IRON CONDOR'
-    | 'PUT CREDIT SPREAD'
-    | 'CALL CREDIT SPREAD'
-    | 'SIT OUT';
+  structure: 'IRON CONDOR' | 'PUT CREDIT SPREAD' | 'CALL CREDIT SPREAD' | 'SIT OUT';
   confidence: 'HIGH' | 'MODERATE' | 'LOW';
   suggestedDelta: number;
   reasoning: string;
@@ -76,18 +74,12 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const addImage = useCallback(
-    (file: File) => {
-      if (images.length >= 5) return;
-      const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const preview = URL.createObjectURL(file);
-      setImages((prev) => [
-        ...prev,
-        { id, file, preview, label: CHART_LABELS[0] },
-      ]);
-    },
-    [images.length],
-  );
+  const addImage = useCallback((file: File) => {
+    if (images.length >= 5) return;
+    const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const preview = URL.createObjectURL(file);
+    setImages((prev) => [...prev, { id, file, preview, label: CHART_LABELS[0] }]);
+  }, [images.length]);
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
@@ -184,9 +176,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       });
 
       if (!res.ok) {
-        const body = await res
-          .json()
-          .catch(() => ({ error: 'Request failed' }));
+        const body = await res.json().catch(() => ({ error: 'Request failed' }));
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
@@ -273,10 +263,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                     ))}
                   </select>
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeImage(img.id);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); removeImage(img.id); }}
                     className="text-muted hover:text-danger text-[14px] leading-none"
                     aria-label="Remove image"
                   >
@@ -299,9 +286,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               color: '#fff',
             }}
           >
-            {loading
-              ? 'Analyzing charts...'
-              : `Analyze ${images.length} chart${images.length > 1 ? 's' : ''}`}
+            {loading ? 'Analyzing charts...' : `Analyze ${images.length} chart${images.length > 1 ? 's' : ''}`}
           </button>
         )}
 
@@ -336,8 +321,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 <span
                   className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
                   style={{
-                    backgroundColor:
-                      confidenceColor(analysis.confidence) + '18',
+                    backgroundColor: confidenceColor(analysis.confidence) + '18',
                     color: confidenceColor(analysis.confidence),
                   }}
                 >
@@ -347,8 +331,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                   className="text-accent rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
                   style={{ backgroundColor: th.accent + '18' }}
                 >
-                  {analysis.suggestedDelta}
-                  {'\u0394'}
+                  {analysis.suggestedDelta}{'\u0394'}
                 </span>
               </div>
               <div className="text-secondary text-[11px] leading-relaxed">
@@ -363,10 +346,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               </div>
               <div className="grid gap-1">
                 {analysis.observations.map((obs, i) => (
-                  <div
-                    key={i}
-                    className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
-                  >
+                  <div key={i} className="text-secondary flex gap-1.5 text-[11px] leading-relaxed">
                     <span className="text-muted shrink-0">{'\u2022'}</span>
                     <span>{obs}</span>
                   </div>
@@ -378,26 +358,15 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             {analysis.risks.length > 0 && (
               <div
                 className="rounded-lg p-3"
-                style={{
-                  backgroundColor: th.red + '08',
-                  border: `1px solid ${th.red}15`,
-                }}
+                style={{ backgroundColor: th.red + '08', border: `1px solid ${th.red}15` }}
               >
-                <div
-                  className="mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase"
-                  style={{ color: th.red }}
-                >
+                <div className="mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase" style={{ color: th.red }}>
                   Risk Factors
                 </div>
                 <div className="grid gap-1">
                   {analysis.risks.map((risk, i) => (
-                    <div
-                      key={i}
-                      className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
-                    >
-                      <span style={{ color: th.red }} className="shrink-0">
-                        {'\u26A0'}
-                      </span>
+                    <div key={i} className="text-secondary flex gap-1.5 text-[11px] leading-relaxed">
+                      <span style={{ color: th.red }} className="shrink-0">{'\u26A0'}</span>
                       <span>{risk}</span>
                     </div>
                   ))}
@@ -418,7 +387,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             )}
 
             {/* Structure rationale */}
-            <div className="text-muted text-[10px] leading-relaxed italic">
+            <div className="text-muted text-[10px] italic leading-relaxed">
               {analysis.structureRationale}
             </div>
           </div>
@@ -430,7 +399,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             <div className="text-muted mb-1 font-sans text-[9px] font-bold tracking-wider uppercase">
               Raw Analysis
             </div>
-            <pre className="text-secondary max-h-48 overflow-auto font-mono text-[10px] leading-relaxed whitespace-pre-wrap">
+            <pre className="text-secondary max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed">
               {rawResponse}
             </pre>
           </div>

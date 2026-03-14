@@ -103,6 +103,10 @@ Periscope reveals actual Market Maker net positioning and net greek exposure in 
 - If the straddle cone breakevens are tighter than your short strikes, you have additional cushion.
 - If your short strikes are INSIDE the straddle cone, the market is pricing a move large enough to reach them — consider wider strikes or sitting out.
 
+## Critical: Time-Bounded Analysis
+
+The trader will specify an entry time. Chart screenshots may show the FULL trading day (especially when backtesting), but you must ONLY analyze what was visible at the entry time. Look at the x-axis timestamps on each chart and mentally draw a vertical line at the entry time — everything to the RIGHT of that line does not exist yet. This is essential for honest backtesting. Do not reference any price action, flow spikes, or volume that occurred after the entry time.
+
 ## Your Task
 
 Given the chart(s) and calculator context, provide:
@@ -176,6 +180,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const contextText = `
 ## Current Calculator Context
 
+- Date: ${context.selectedDate ?? 'today'}
+- Entry time: ${context.entryTime ?? 'N/A'} (analyze charts ONLY up to this time — ignore any data after it)
 - SPX: ${context.spx ?? 'N/A'}
 - SPY: ${context.spy ?? 'N/A'}
 - VIX: ${context.vix ?? 'N/A'}
@@ -195,6 +201,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 - VIX term structure signal: ${context.vixTermSignal ?? 'N/A'}
 - RV/IV ratio: ${context.rvIvRatio ?? 'N/A'}
 - Overnight gap: ${context.overnightGap ?? 'N/A'}
+
+IMPORTANT: The trader is evaluating entry at ${context.entryTime ?? 'the specified time'}. The chart screenshots may show the full trading day, but you must ONLY analyze data visible up to the entry time. Ignore any price action, flow, or volume that occurred AFTER the entry time. Base your recommendation solely on what was knowable at the moment of entry.
 
 Analyze the uploaded chart(s) in the context of these signals and provide your structured recommendation. Respond with JSON only.`;
 
@@ -224,15 +232,14 @@ Analyze the uploaded chart(s) in the context of these signals and provide your s
     }
 
     const data = await response.json();
-    const text =
-      data.content
-        ?.filter((c: { type: string }) => c.type === 'text')
-        .map((c: { text: string }) => c.text)
-        .join('') ?? '';
+    const text = data.content
+      ?.filter((c: { type: string }) => c.type === 'text')
+      .map((c: { text: string }) => c.text)
+      .join('') ?? '';
 
     // Parse the JSON response
     try {
-      const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
+      const cleaned = text.replace(/```json\s*|```\s*/g, '').trim();
       const analysis = JSON.parse(cleaned);
       return res.status(200).json({ analysis, raw: text });
     } catch {
