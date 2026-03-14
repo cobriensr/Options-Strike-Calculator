@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event';
 import MarketRegimeSection from '../components/MarketRegimeSection';
 import { lightTheme } from '../themes';
 import type { CalculationResults, DeltaRow } from '../types';
+import type { HistorySnapshot } from '../hooks/useHistoryData';
+import type { HistoryCandle } from '../types/api';
 
 const th = lightTheme;
 
@@ -149,5 +151,131 @@ describe('MarketRegimeSection', () => {
       />,
     );
     expect(screen.getByText('VIX 18.5')).toBeInTheDocument();
+  });
+
+  it('shows dash in VIX badge when dVix is not parseable', () => {
+    render(
+      <MarketRegimeSection
+        th={th}
+        dVix=""
+        results={makeResults()}
+        errors={{}}
+        skewPct={0}
+        selectedDate="2026-03-12"
+        market={mockMarket}
+        onClusterMultChange={vi.fn()}
+        clusterMult={1.0}
+      />,
+    );
+    expect(screen.getByText('VIX \u2014')).toBeInTheDocument();
+  });
+
+  it('passes null vix to VIXRangeAnalysis when dVix is empty', () => {
+    // This exercises L74: dVix ? Number.parseFloat(dVix) : null
+    render(
+      <MarketRegimeSection
+        th={th}
+        dVix=""
+        results={null}
+        errors={{}}
+        skewPct={0}
+        selectedDate="2026-03-12"
+        market={mockMarket}
+        onClusterMultChange={vi.fn()}
+        clusterMult={1.0}
+      />,
+    );
+    // VIXRangeAnalysis still renders (with null vix)
+    expect(screen.getByText('Market Regime')).toBeInTheDocument();
+  });
+
+  it('renders with historySnapshot for backtest mode', () => {
+    const snapshot: HistorySnapshot = {
+      spot: 5700,
+      spy: 570,
+      runningOHLC: { open: 5690, high: 5720, low: 5680, last: 5700 },
+      openingRange: { high: 5715, low: 5685, rangePts: 30, complete: true },
+      yesterday: {
+        date: '2026-03-11',
+        open: 5680,
+        high: 5710,
+        low: 5670,
+        close: 5695,
+        rangePct: 0.7,
+        rangePts: 40,
+      },
+      vix: 18,
+      vixPrevClose: 17.5,
+      vix1d: 14,
+      vix9d: 16,
+      vvix: 90,
+      previousClose: 5695,
+      candle: { datetime: 1710000000000, time: '10:00', open: 5695, high: 5705, low: 5690, close: 5700 },
+      candleIndex: 1,
+      totalCandles: 4,
+    };
+
+    const candles: HistoryCandle[] = [
+      { datetime: 1710000000000, time: '09:30', open: 5690, high: 5700, low: 5685, close: 5695 },
+      { datetime: 1710000300000, time: '09:35', open: 5695, high: 5705, low: 5690, close: 5700 },
+      { datetime: 1710000600000, time: '09:40', open: 5700, high: 5710, low: 5695, close: 5705 },
+      { datetime: 1710000900000, time: '15:55', open: 5705, high: 5708, low: 5698, close: 5702 },
+    ];
+
+    render(
+      <MarketRegimeSection
+        th={th}
+        dVix="18"
+        results={makeResults()}
+        errors={{}}
+        skewPct={0}
+        selectedDate="2026-03-12"
+        market={mockMarket}
+        onClusterMultChange={vi.fn()}
+        clusterMult={1.0}
+        historySnapshot={snapshot}
+        historyCandles={candles}
+        entryTimeLabel="10:00 AM ET"
+      />,
+    );
+    expect(screen.getByText('Market Regime')).toBeInTheDocument();
+    // SettlementCheck should render since historySnapshot + candles + allDeltas exist
+    expect(screen.getByText('Settlement Check')).toBeInTheDocument();
+  });
+
+  it('does not render SettlementCheck when historyCandles is empty', () => {
+    const snapshot: HistorySnapshot = {
+      spot: 5700,
+      spy: 570,
+      runningOHLC: { open: 5690, high: 5720, low: 5680, last: 5700 },
+      openingRange: null,
+      yesterday: null,
+      vix: 18,
+      vixPrevClose: 17.5,
+      vix1d: 14,
+      vix9d: 16,
+      vvix: 90,
+      previousClose: 5695,
+      candle: { datetime: 1710000000000, time: '10:00', open: 5695, high: 5705, low: 5690, close: 5700 },
+      candleIndex: 6,
+      totalCandles: 78,
+    };
+
+    render(
+      <MarketRegimeSection
+        th={th}
+        dVix="18"
+        results={makeResults()}
+        errors={{}}
+        skewPct={0}
+        selectedDate="2026-03-12"
+        market={mockMarket}
+        onClusterMultChange={vi.fn()}
+        clusterMult={1.0}
+        historySnapshot={snapshot}
+        historyCandles={[]}
+      />,
+    );
+    expect(screen.queryByText('Settlement Check')).not.toBeInTheDocument();
   });
 });

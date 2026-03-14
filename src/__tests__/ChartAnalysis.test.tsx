@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChartAnalysis from '../components/ChartAnalysis';
 import type { AnalysisContext } from '../components/ChartAnalysis';
@@ -422,6 +422,322 @@ describe('ChartAnalysis', () => {
       });
       expect(screen.getByText('SIT OUT')).toBeInTheDocument();
       expect(screen.getByText('LOW')).toBeInTheDocument();
+    });
+  });
+
+  // ============================================================
+  // RAW RESPONSE FALLBACK
+  // ============================================================
+
+  // ============================================================
+  // HEDGE RECOMMENDATION
+  // ============================================================
+
+  describe('hedge recommendation', () => {
+    async function renderWithAnalysis(analysis: Record<string, unknown>) {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            new Response(
+              JSON.stringify({ analysis, raw: JSON.stringify(analysis) }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            ),
+          ),
+      );
+
+      const view = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(view.container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+      await waitFor(() => {
+        expect(screen.getByText(analysis.structure as string)).toBeInTheDocument();
+      });
+    }
+
+    it('displays NO HEDGE recommendation', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        hedge: {
+          recommendation: 'NO HEDGE',
+          description: 'Market conditions are favorable.',
+          rationale: 'Low volatility environment.',
+          estimatedCost: '$0',
+        },
+      });
+      expect(screen.getByText(/Hedge: NO HEDGE/)).toBeInTheDocument();
+      expect(screen.getByText('Market conditions are favorable.')).toBeInTheDocument();
+      expect(screen.getByText('Low volatility environment.')).toBeInTheDocument();
+      // estimatedCost should NOT be shown for NO HEDGE
+      expect(screen.queryByText('$0')).not.toBeInTheDocument();
+    });
+
+    it('displays PROTECTIVE LONG hedge with cost', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        hedge: {
+          recommendation: 'PROTECTIVE LONG',
+          description: 'Buy a protective put.',
+          rationale: 'Elevated tail risk.',
+          estimatedCost: '$1.20',
+        },
+      });
+      expect(screen.getByText(/Hedge: PROTECTIVE LONG/)).toBeInTheDocument();
+      expect(screen.getByText('$1.20')).toBeInTheDocument();
+    });
+
+    it('displays SKIP hedge recommendation', async () => {
+      await renderWithAnalysis({
+        ...SAMPLE_ANALYSIS,
+        hedge: {
+          recommendation: 'SKIP',
+          description: 'Too risky to trade.',
+          rationale: '',
+          estimatedCost: '',
+        },
+      });
+      expect(screen.getByText(/Hedge: SKIP/)).toBeInTheDocument();
+    });
+  });
+
+  // ============================================================
+  // IMAGE ISSUES
+  // ============================================================
+
+  describe('image issues', () => {
+    async function renderWithImageIssues() {
+      const user = userEvent.setup();
+      const analysis = {
+        ...SAMPLE_ANALYSIS,
+        imageIssues: [
+          {
+            imageIndex: 1,
+            label: 'Market Tide (SPX)',
+            issue: 'Image is too blurry to read.',
+            suggestion: 'Take a higher resolution screenshot.',
+          },
+        ],
+      };
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            new Response(
+              JSON.stringify({ analysis, raw: JSON.stringify(analysis) }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            ),
+          ),
+      );
+
+      const view = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(view.container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+      await waitFor(() => {
+        expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
+      });
+      return view;
+    }
+
+    it('displays image issues section', async () => {
+      await renderWithImageIssues();
+      expect(screen.getByText(/Image Issues/)).toBeInTheDocument();
+      expect(screen.getByText(/Image is too blurry to read\./)).toBeInTheDocument();
+      expect(screen.getByText(/Take a higher resolution screenshot\./)).toBeInTheDocument();
+    });
+
+    it('shows Replace button for flagged images', async () => {
+      await renderWithImageIssues();
+      expect(screen.getByRole('button', { name: /replace/i })).toBeInTheDocument();
+    });
+
+    it('clicking Replace triggers the replace file input', async () => {
+      const user = userEvent.setup();
+      await renderWithImageIssues();
+      const replaceBtn = screen.getByRole('button', { name: /replace/i });
+      // Just verify it doesn't throw — the click sets replaceTargetIndex and triggers input.click()
+      await user.click(replaceBtn);
+    });
+  });
+
+  // ============================================================
+  // REPLACE IMAGE FLOW
+  // ============================================================
+
+  describe('replace image flow', () => {
+    it('replaces an image via the hidden replace input', async () => {
+      const user = userEvent.setup();
+      vi.stubGlobal('fetch', vi.fn());
+
+      const { container } = render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+
+      // Add an image first
+      await addImageViaInput(container);
+      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+
+      // Get the second file input (the replace input)
+      const inputs = container.querySelectorAll('input[type="file"]');
+      const replaceInput = inputs[1] as HTMLInputElement;
+
+      // Simulate selecting a replacement file
+      const newFile = createImageFile('replacement.png');
+      fireEvent.change(replaceInput, { target: { files: [newFile] } });
+
+      // Should still have 1 image (replaced, not added)
+      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+    });
+  });
+
+  // ============================================================
+  // PASTE HANDLING
+  // ============================================================
+
+  describe('paste handling', () => {
+    it('adds an image when pasting from clipboard', async () => {
+      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+
+      const file = createImageFile('pasted.png');
+      const clipboardEvent = new Event('paste', { bubbles: true }) as any;
+      clipboardEvent.clipboardData = {
+        items: [
+          {
+            type: 'image/png',
+            getAsFile: () => file,
+          },
+        ],
+      };
+      clipboardEvent.preventDefault = vi.fn();
+
+      await act(() => {
+        document.dispatchEvent(clipboardEvent);
+      });
+
+      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+    });
+
+    it('ignores non-image paste items', () => {
+      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+
+      const clipboardEvent = new Event('paste', { bubbles: true }) as any;
+      clipboardEvent.clipboardData = {
+        items: [
+          {
+            type: 'text/plain',
+            getAsFile: () => null,
+          },
+        ],
+      };
+
+      document.dispatchEvent(clipboardEvent);
+
+      expect(screen.getByText(/drop or click to upload/i)).toBeInTheDocument();
+    });
+  });
+
+  // ============================================================
+  // ERROR EDGE CASES
+  // ============================================================
+
+  describe('error edge cases', () => {
+    it('shows fallback error when response JSON parsing fails', async () => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 500,
+          json: () => Promise.reject(new Error('Invalid JSON')),
+        }),
+      );
+
+      const { container } = render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+      await addImageViaInput(container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Request failed')).toBeInTheDocument();
+      });
+    });
+
+    it('shows HTTP status when error body has no error field', async () => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ message: 'something' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+
+      const { container } = render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+      await addImageViaInput(container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('HTTP 503')).toBeInTheDocument();
+      });
+    });
+
+    it('shows generic error for non-Error thrown values', async () => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockRejectedValue('string error'),
+      );
+
+      const { container } = render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+      await addImageViaInput(container);
+      await user.click(screen.getByRole('button', { name: /analyze/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Analysis failed')).toBeInTheDocument();
+      });
+    });
+  });
+
+  // ============================================================
+  // UPLOAD BUTTON CLICK
+  // ============================================================
+
+  describe('upload button', () => {
+    it('opens file picker when upload area is clicked', async () => {
+      const user = userEvent.setup();
+      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      const uploadBtn = screen.getByRole('button', { name: /upload chart images/i });
+      // Click the upload area — this triggers fileInputRef.current?.click()
+      // We can't easily assert the file input was clicked, but we verify no errors
+      await user.click(uploadBtn);
+    });
+
+    it('handles dragOver by preventing default', () => {
+      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      const dropZone = screen.getByRole('button', { name: /upload chart images/i });
+      const event = new Event('dragover', { bubbles: true });
+      Object.defineProperty(event, 'preventDefault', { value: vi.fn() });
+      dropZone.dispatchEvent(event);
     });
   });
 

@@ -212,6 +212,250 @@ describe('schwab', () => {
         expect(result.error.type).toBe('expired_refresh');
       }
     });
+
+    it('handles Redis store failure gracefully during refresh', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      // Return expired access token so refresh is triggered
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'old-tok',
+        refreshToken: 'ref-tok',
+        expiresAt: Date.now() + 30_000,
+        refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+
+      // Lock acquisition succeeds
+      let setCallCount = 0;
+      mockRedisSet.mockImplementation(() => {
+        setCallCount++;
+        // First call is lock acquisition (succeeds)
+        if (setCallCount === 1) return Promise.resolve('OK');
+        // Second call is storeTokens (fails)
+        return Promise.reject(new Error('Redis write failed'));
+      });
+      mockRedisDel.mockResolvedValue(1);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'new-tok',
+              refresh_token: 'new-ref',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+
+      const result = await getAccessToken();
+      // Should still return the token even though storage failed
+      expect('token' in result).toBe(true);
+      if ('token' in result) {
+        expect(result.token).toBe('new-tok');
+      }
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to store tokens in Redis:',
+        expect.any(Error),
+      );
+
+      consoleError.mockRestore();
+      vi.unstubAllGlobals();
+    });
+
+    it('falls back when lock acquisition fails (Redis error)', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'old-tok',
+        refreshToken: 'ref-tok',
+        expiresAt: Date.now() + 30_000,
+        refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+
+      // Lock acquisition throws (Redis error) → acquireLock returns true (proceed anyway)
+      let setCallCount = 0;
+      mockRedisSet.mockImplementation(() => {
+        setCallCount++;
+        if (setCallCount === 1) return Promise.reject(new Error('Redis down'));
+        return Promise.resolve('OK');
+      });
+      mockRedisDel.mockResolvedValue(1);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'fallback-tok',
+              refresh_token: 'new-ref',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+
+      const result = await getAccessToken();
+      expect('token' in result).toBe(true);
+      if ('token' in result) {
+        expect(result.token).toBe('fallback-tok');
+      }
+
+      vi.unstubAllGlobals();
+    });
+
+    it('waits for lock release when another invocation is refreshing', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      mockRedisGet
+        // First call: getStoredTokens (expired access token)
+        .mockResolvedValueOnce({
+          accessToken: 'old-tok',
+          refreshToken: 'ref-tok',
+          expiresAt: Date.now() + 30_000,
+          refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        })
+        // Second call: acquireLock check — lock is held (returns non-null)
+        // Actually acquireLock uses set with NX, not get. Let me reconsider.
+        // waitForLockRelease calls redis.get(LOCK_KEY)
+        // First get in waitForLockRelease: lock still held
+        .mockResolvedValueOnce('1')
+        // Second get in waitForLockRelease: lock released
+        .mockResolvedValueOnce(null)
+        // Third call: getStoredTokens after lock release — fresh tokens
+        .mockResolvedValueOnce({
+          accessToken: 'fresh-tok',
+          refreshToken: 'fresh-ref',
+          expiresAt: Date.now() + 1_800_000,
+          refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        });
+
+      // Lock NOT acquired (NX fails — another process holds it)
+      mockRedisSet.mockResolvedValue(null);
+      mockRedisDel.mockResolvedValue(1);
+
+      // fetch should NOT be called since we read fresh tokens after lock release
+      const mockFetch = vi.fn();
+      vi.stubGlobal('fetch', mockFetch);
+
+      const result = await getAccessToken();
+      expect('token' in result).toBe(true);
+      if ('token' in result) {
+        expect(result.token).toBe('fresh-tok');
+      }
+      // Should not have called Schwab token endpoint
+      expect(mockFetch).not.toHaveBeenCalled();
+
+      vi.unstubAllGlobals();
+    });
+
+    it('proceeds with refresh when lock wait yields stale tokens', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      mockRedisGet
+        // getStoredTokens: expired access token
+        .mockResolvedValueOnce({
+          accessToken: 'old-tok',
+          refreshToken: 'ref-tok',
+          expiresAt: Date.now() + 30_000,
+          refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        })
+        // waitForLockRelease: lock released immediately
+        .mockResolvedValueOnce(null)
+        // getStoredTokens after lock release: still stale
+        .mockResolvedValueOnce({
+          accessToken: 'still-old',
+          refreshToken: 'ref-tok',
+          expiresAt: Date.now() + 30_000,
+          refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        });
+
+      // Lock NOT acquired
+      mockRedisSet.mockResolvedValueOnce(null).mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'finally-fresh',
+              refresh_token: 'new-ref',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+
+      const result = await getAccessToken();
+      expect('token' in result).toBe(true);
+      if ('token' in result) {
+        expect(result.token).toBe('finally-fresh');
+      }
+
+      vi.unstubAllGlobals();
+    });
+
+    it('handles waitForLockRelease Redis error gracefully', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      mockRedisGet
+        // getStoredTokens: expired access token
+        .mockResolvedValueOnce({
+          accessToken: 'old-tok',
+          refreshToken: 'ref-tok',
+          expiresAt: Date.now() + 30_000,
+          refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        })
+        // waitForLockRelease: Redis throws → returns early
+        .mockRejectedValueOnce(new Error('Redis down'))
+        // getStoredTokens after lock wait: returns null (stale)
+        .mockResolvedValueOnce(null);
+
+      // Lock NOT acquired
+      mockRedisSet.mockResolvedValueOnce(null).mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'recovered-tok',
+              refresh_token: 'new-ref',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+
+      const result = await getAccessToken();
+      expect('token' in result).toBe(true);
+      if ('token' in result) {
+        expect(result.token).toBe('recovered-tok');
+      }
+
+      vi.unstubAllGlobals();
+    });
   });
 
   // ============================================================

@@ -113,6 +113,40 @@ describe('IVInputSection', () => {
     expect(screen.getByText('0DTE IV Adjustment')).toBeInTheDocument();
   });
 
+  it('closes tooltip on outside click', async () => {
+    const user = userEvent.setup();
+    renderSection({ ivMode: 'vix' });
+    const btn = screen.getByRole('button', {
+      name: /what is the 0dte adjustment/i,
+    });
+    await user.click(btn);
+    expect(screen.getByRole('tooltip')).toBeInTheDocument();
+
+    // Click outside the tooltip
+    await user.click(document.body);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  });
+
+  it('closes tooltip on Escape key', async () => {
+    const user = userEvent.setup();
+    renderSection({ ivMode: 'vix' });
+    const btn = screen.getByRole('button', {
+      name: /what is the 0dte adjustment/i,
+    });
+    await user.click(btn);
+    expect(screen.getByRole('tooltip')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  });
+
+  it('calls onVixChange in direct IV mode (regime-only VIX input)', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSection({ ivMode: 'direct' });
+    await user.type(screen.getByLabelText('VIX (regime only)'), '2');
+    expect(props.onVixChange).toHaveBeenCalledWith('2');
+  });
+
   // ============================================================
   // ERRORS
   // ============================================================

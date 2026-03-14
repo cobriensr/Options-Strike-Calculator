@@ -151,7 +151,7 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
 
   it('shows ceiling not target messaging', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    expect(screen.getByText(/ceiling, not a target/i)).toBeInTheDocument();
+    expect(screen.getByText(/ceilings, not targets/i)).toBeInTheDocument();
   });
 
   it('shows the 90th percentile O→C info', () => {
@@ -161,11 +161,11 @@ describe('DeltaRegimeGuide: recommendation banner', () => {
 
   it('shows a delta number with Δ symbol', () => {
     render(<DeltaRegimeGuide {...makeProps()} />);
-    const banner = screen
+    const bannerRoot = screen
       .getByText(/maximum delta/i)
-      .closest('div')?.parentElement;
-    expect(banner).not.toBeNull();
-    expect(banner!.textContent).toMatch(/\d+\u0394/);
+      .closest('[class*="rounded"]');
+    expect(bannerRoot).not.toBeNull();
+    expect(bannerRoot!.textContent).toMatch(/\d+\u0394/);
   });
 
   it('shows guidance tiers when ceiling > 0', () => {

@@ -60,6 +60,26 @@ describe('VixUploadSection', () => {
     expect(onFileUpload).toHaveBeenCalledOnce();
   });
 
+  it('clicking the upload button triggers file input click', async () => {
+    const ref = createRef<HTMLInputElement>();
+    render(
+      <VixUploadSection
+        th={th}
+        vixDataLoaded={false}
+        vixDataSource=""
+        fileInputRef={ref}
+        onFileUpload={vi.fn()}
+      />,
+    );
+    // Spy on the file input's click method after render
+    const fileInput = screen.getByLabelText('Upload VIX OHLC CSV file');
+    const clickSpy = vi.spyOn(fileInput, 'click');
+
+    const btn = screen.getByText('Upload VIX OHLC CSV');
+    fireEvent.click(btn);
+    expect(clickSpy).toHaveBeenCalledOnce();
+  });
+
   it('shows CSV format hint', () => {
     renderSection();
     expect(

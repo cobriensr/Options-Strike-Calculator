@@ -168,4 +168,29 @@ describe('IronCondorSection', () => {
     // The "IC Delta" label only appears when icRows.length > 1
     expect(screen.queryByText('IC Delta')).not.toBeInTheDocument();
   });
+
+  it('clicking a delta chip selects it', async () => {
+    const user = userEvent.setup();
+    renderSection({
+      allDeltas: [makeDeltaRow(5), makeDeltaRow(10), makeDeltaRow(15)],
+    });
+
+    // Open hedge section
+    const btn = screen.getByRole('button', { name: /Hedge Calculator/i });
+    await user.click(btn);
+
+    // Scope to IC Delta chip container
+    const icLabel = screen.getByText('IC Delta');
+    const chipContainer = icLabel.parentElement!;
+    const chips = chipContainer.querySelectorAll('[role="radio"]');
+    expect(chips).toHaveLength(3);
+    // First chip is selected by default
+    expect(chips[0]!).toHaveAttribute('aria-checked', 'true');
+    expect(chips[1]!).toHaveAttribute('aria-checked', 'false');
+
+    // Click second chip
+    await user.click(chips[1]!);
+    expect(chips[1]!).toHaveAttribute('aria-checked', 'true');
+    expect(chips[0]!).toHaveAttribute('aria-checked', 'false');
+  });
 });

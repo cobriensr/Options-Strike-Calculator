@@ -317,3 +317,51 @@ describe('VIXTermStructure: auto-fill from live data', () => {
     expect(vix9dInput.value).toBe('');
   });
 });
+
+// ============================================================
+// VVIX CLASSIFICATION
+// ============================================================
+describe('VIXTermStructure: VVIX card', () => {
+  it('shows STABLE when VVIX < 80', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVvix={70} />);
+    expect(screen.getByText('STABLE')).toBeInTheDocument();
+    expect(screen.getByText(/unlikely to spike/i)).toBeInTheDocument();
+  });
+
+  it('shows NORMAL when VVIX is 80-100', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVvix={90} />);
+    expect(screen.getByText('NORMAL')).toBeInTheDocument();
+    expect(screen.getByText(/no additional signal/i)).toBeInTheDocument();
+  });
+
+  it('shows UNSTABLE when VVIX is 100-120', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVvix={110} />);
+    expect(screen.getByText('UNSTABLE')).toBeInTheDocument();
+    expect(screen.getByText(/tighten deltas/i)).toBeInTheDocument();
+  });
+
+  it('shows DANGER when VVIX >= 120', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVvix={130} />);
+    expect(screen.getByText('DANGER')).toBeInTheDocument();
+    expect(screen.getByText(/whipsaw risk/i)).toBeInTheDocument();
+  });
+
+  it('renders VVIX card with bar and value', () => {
+    render(<VIXTermStructure th={lightTheme} vix={20} initialVvix={95} />);
+    expect(screen.getByText('VVIX')).toBeInTheDocument();
+    expect(screen.getByText('Volatility of VIX')).toBeInTheDocument();
+  });
+
+  it('includes VVIX in combined signal (worst-of logic)', () => {
+    // VIX1D calm (15/20=0.75) but VVIX extreme (130) → combined should be HIGH ALERT
+    render(
+      <VIXTermStructure
+        th={lightTheme}
+        vix={20}
+        initialVix1d={15}
+        initialVvix={130}
+      />,
+    );
+    expect(screen.getByText('HIGH ALERT')).toBeInTheDocument();
+  });
+});
