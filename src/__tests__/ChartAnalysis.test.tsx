@@ -336,7 +336,9 @@ describe('ChartAnalysis', () => {
       await addImageViaInput(view.container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
       await waitFor(() => {
-        expect(screen.getByText(analysis.structure as string)).toBeInTheDocument();
+        expect(
+          screen.getByText(analysis.structure as string),
+        ).toBeInTheDocument();
       });
     }
 
@@ -505,15 +507,10 @@ describe('ChartAnalysis', () => {
             lower: 5620,
             priceRelation: 'Price inside cone with 80pts cushion',
           },
-          adjustments: [
-            'Move put from 5660 to 5640',
-            'Call at 5800 is safe',
-          ],
+          adjustments: ['Move put from 5660 to 5640', 'Call at 5800 is safe'],
         },
       });
-      expect(
-        screen.getByText('Strike Placement Guidance'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('Strike Placement Guidance')).toBeInTheDocument();
       expect(
         screen.getByText('Place below 5650 positive gamma wall.'),
       ).toBeInTheDocument();
@@ -554,22 +551,15 @@ describe('ChartAnalysis', () => {
             note: 'Final add',
           },
           maxTotalSize: '100% of daily risk budget',
-          noEntryConditions: [
-            'Opening range RED',
-            'NCP/NPP converge',
-          ],
+          noEntryConditions: ['Opening range RED', 'NCP/NPP converge'],
         },
       });
       expect(screen.getByText('Entry Plan')).toBeInTheDocument();
       expect(screen.getByText('Initial position')).toBeInTheDocument();
       expect(screen.getByText('Add if range intact')).toBeInTheDocument();
       expect(screen.getByText('Final add')).toBeInTheDocument();
-      expect(
-        screen.getByText(/100% of daily risk budget/),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText('Do NOT add entries if:'),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/100% of daily risk budget/)).toBeInTheDocument();
+      expect(screen.getByText('Do NOT add entries if:')).toBeInTheDocument();
       expect(screen.getByText('Opening range RED')).toBeInTheDocument();
       expect(screen.getByText('NCP/NPP converge')).toBeInTheDocument();
     });
@@ -587,9 +577,7 @@ describe('ChartAnalysis', () => {
           flowReversalSignal: 'NCP and NPP converge — bias shifted',
         },
       });
-      expect(
-        screen.getByText('Position Management Rules'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('Position Management Rules')).toBeInTheDocument();
       expect(
         screen.getByText('Close at 50% of max profit before 1 PM'),
       ).toBeInTheDocument();
@@ -622,22 +610,14 @@ describe('ChartAnalysis', () => {
         screen.getByText(/Recommendation was correct/),
       ).toBeInTheDocument();
       expect(
-        screen.getByText(
-          'Bearish call from NCP divergence was accurate.',
-        ),
+        screen.getByText('Bearish call from NCP divergence was accurate.'),
       ).toBeInTheDocument();
       expect(
-        screen.getByText(
-          'The 2 PM NCP reversal was visible at 1:30 PM.',
-        ),
+        screen.getByText('The 2 PM NCP reversal was visible at 1:30 PM.'),
       ).toBeInTheDocument();
+      expect(screen.getByText('Lessons for next time')).toBeInTheDocument();
       expect(
-        screen.getByText('Lessons for next time'),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          'Late-day NCP reversals on Fridays are common',
-        ),
+        screen.getByText('Late-day NCP reversals on Fridays are common'),
       ).toBeInTheDocument();
     });
 
@@ -665,9 +645,7 @@ describe('ChartAnalysis', () => {
   describe('mode selector', () => {
     it('switches analysis mode when mode buttons are clicked', async () => {
       const user = userEvent.setup();
-      render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
-      );
+      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
       // Default mode description should be visible
       expect(
         screen.getByText('Full analysis before opening a position'),
@@ -676,16 +654,12 @@ describe('ChartAnalysis', () => {
       // Click Mid-Day mode
       await user.click(screen.getByText('Mid-Day'));
       expect(
-        screen.getByText(
-          'Check if conditions changed since entry',
-        ),
+        screen.getByText('Check if conditions changed since entry'),
       ).toBeInTheDocument();
 
       // Click Review mode
       await user.click(screen.getByText('Review'));
-      expect(
-        screen.getByText('End-of-day retrospective'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('End-of-day retrospective')).toBeInTheDocument();
 
       // Back to Pre-Trade
       await user.click(screen.getByText('Pre-Trade'));

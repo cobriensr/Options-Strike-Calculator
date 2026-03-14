@@ -87,6 +87,27 @@ Periscope reveals actual Market Maker net positioning and net greek exposure in 
 - If straddle cone breakevens are tighter than your strikes = extra cushion.
 - If your strikes are INSIDE the cone = market expects a move that big — widen or sit out.
 
+## Handling Missing or Limited Data
+
+The calculator context includes a "DATA NOTES" field that flags known limitations. Adjust your analysis accordingly:
+
+**VIX1D unavailable (pre-May 2022 dates or data gap):**
+- σ will be derived from VIX × 1.15, which is a 35-year historical calibration — reasonable but imprecise.
+- On high-skew days, VIX-derived σ overstates OTM put IV and understates OTM call IV.
+- Note this limitation in your response and widen your confidence interval.
+- Use VIX as the regime indicator (it's always available).
+
+**Opening range not available (entry before 10:00 AM ET):**
+- The 30-minute opening range is the first 30 min of regular session (9:30–10:00 AM ET).
+- If entry is at 8:45 AM CT (9:45 AM ET), the range is 75% complete but not final.
+- If entry is at 8:30 AM CT (9:30 AM ET), NO range data exists yet.
+- When the opening range is unavailable: rely more heavily on Market Tide flow direction and Periscope gamma. Do NOT reference opening range signals in your management rules. Instead, suggest the trader check the opening range at 10:00 AM ET as a condition for their Entry 2.
+
+**Backtest mode:**
+- Historical data may have gaps (e.g., no intraday VIX1D, no Schwab candles beyond 60 days).
+- Chart screenshots may show the full day — be extra vigilant about time-bounding your analysis.
+- Settlement data is known in hindsight for review mode, but you should NOT use it for entry/midday analysis.
+
 ## Critical: Time-Bounded Analysis
 
 The trader specifies an entry time. Charts may show the full day (especially when backtesting). You MUST only analyze what was visible at the entry time. Draw a mental vertical line at the entry time — everything to the RIGHT does not exist yet. Do not reference any price action, flow, or volume after the entry time.
@@ -321,7 +342,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 - VIX1D: ${context.vix1d ?? 'N/A'}
 - VIX9D: ${context.vix9d ?? 'N/A'}
 - VVIX: ${context.vvix ?? 'N/A'}
-- σ (IV): ${context.sigma ?? 'N/A'}
+- σ (IV): ${context.sigma ?? 'N/A'} (source: ${context.sigmaSource ?? 'unknown'})
 - T (time to expiry): ${context.T ?? 'N/A'}
 - Hours remaining: ${context.hoursRemaining ?? 'N/A'}
 - Delta Guide ceiling (IC): ${context.deltaCeiling ?? 'N/A'}Δ
@@ -331,9 +352,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 - Clustering multiplier: ${context.clusterMult ?? 'N/A'}
 - Day of week: ${context.dowLabel ?? 'N/A'}
 - Opening range signal: ${context.openingRangeSignal ?? 'N/A'}
+- Opening range available: ${context.openingRangeAvailable ? 'YES (30-min data complete)' : 'NO (entry before 10:00 AM ET — range not yet established)'}
 - VIX term structure signal: ${context.vixTermSignal ?? 'N/A'}
 - RV/IV ratio: ${context.rvIvRatio ?? 'N/A'}
 - Overnight gap: ${context.overnightGap ?? 'N/A'}
+- Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
+${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
 ${context.currentPosition ? `\n## Current Position (for midday re-analysis)\n${context.currentPosition}\n` : ''}
 ${context.previousRecommendation ? `\n## Previous Recommendation (for review)\n${context.previousRecommendation}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.

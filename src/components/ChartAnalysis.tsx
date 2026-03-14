@@ -15,58 +15,6 @@ import type { CalculationResults } from '../types';
 import { SectionBox } from './ui';
 
 // ============================================================
-// SUB-COMPONENTS
-// ============================================================
-
-const InfoCard = ({
-  title,
-  color,
-  textMuted,
-  children,
-}: {
-  title: string;
-  color?: string;
-  textMuted: string;
-  children: React.ReactNode;
-}) => (
-  <div className="bg-surface border-edge rounded-lg border p-3">
-    <div
-      className="mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase"
-      style={{ color: color ?? textMuted }}
-    >
-      {title}
-    </div>
-    {children}
-  </div>
-);
-
-const BulletList = ({
-  items,
-  icon,
-  color,
-  textMuted,
-}: {
-  items: string[];
-  icon?: string;
-  color?: string;
-  textMuted: string;
-}) => (
-  <div className="grid gap-1">
-    {items.map((item, i) => (
-      <div
-        key={i}
-        className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
-      >
-        <span className="shrink-0" style={{ color: color ?? textMuted }}>
-          {icon ?? '\u2022'}
-        </span>
-        <span>{item}</span>
-      </div>
-    ))}
-  </div>
-);
-
-// ============================================================
 // TYPES
 // ============================================================
 
@@ -86,6 +34,7 @@ export interface AnalysisContext {
   vix9d?: number;
   vvix?: number;
   sigma?: number;
+  sigmaSource?: string; // 'VIX1D' | 'VIX × 1.15' | 'manual'
   T?: number;
   hoursRemaining?: number;
   deltaCeiling?: number;
@@ -95,9 +44,12 @@ export interface AnalysisContext {
   clusterMult?: number;
   dowLabel?: string;
   openingRangeSignal?: string;
+  openingRangeAvailable?: boolean; // false if before 10:00 AM ET
   vixTermSignal?: string;
   rvIvRatio?: string;
   overnightGap?: string;
+  isBacktest?: boolean;
+  dataNote?: string; // describes any missing data
 }
 
 interface UploadedImage {
@@ -197,6 +149,54 @@ const MODE_LABELS: Record<AnalysisMode, { label: string; desc: string }> = {
   midday: { label: 'Mid-Day', desc: 'Check if conditions changed since entry' },
   review: { label: 'Review', desc: 'End-of-day retrospective' },
 };
+
+// ============================================================
+// SUB-COMPONENTS
+// ============================================================
+
+const InfoCard = ({
+  title,
+  color,
+  children,
+}: {
+  title: string;
+  color?: string;
+  children: React.ReactNode;
+}) => (
+  <div className="bg-surface border-edge rounded-lg border p-3">
+    <div
+      className="mb-1.5 font-sans text-[9px] font-bold tracking-wider uppercase"
+      style={{ color }}
+    >
+      {title}
+    </div>
+    {children}
+  </div>
+);
+
+const BulletList = ({
+  items,
+  icon,
+  color,
+}: {
+  items: string[];
+  icon?: string;
+  color?: string;
+}) => (
+  <div className="grid gap-1">
+    {items.map((item, i) => (
+      <div
+        key={i}
+        className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
+      >
+        <span className="shrink-0" style={{ color }}>
+          {icon ?? '\u2022'}
+        </span>
+        <span>{item}</span>
+      </div>
+    ))}
+  </div>
+);
 
 // ============================================================
 // COMPONENT
@@ -616,20 +616,13 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             )}
 
             {/* ── 3. Key Observations ── */}
-            <InfoCard textMuted={th.textMuted} title="Key Observations">
-              <BulletList
-                textMuted={th.textMuted}
-                items={analysis.observations}
-              />
+            <InfoCard title="Key Observations" color={th.textMuted}>
+              <BulletList items={analysis.observations} color={th.textMuted} />
             </InfoCard>
 
             {/* ── 4. Strike Guidance (from Periscope) ── */}
             {analysis.strikeGuidance && (
-              <InfoCard
-                textMuted={th.textMuted}
-                title="Strike Placement Guidance"
-                color={th.accent}
-              >
+              <InfoCard title="Strike Placement Guidance" color={th.accent}>
                 <div className="grid gap-1.5">
                   {analysis.strikeGuidance.putStrikeNote && (
                     <div className="text-[11px] leading-relaxed">
@@ -663,7 +656,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                     analysis.strikeGuidance.adjustments.length > 0 && (
                       <div className="mt-1">
                         <BulletList
-                          textMuted={th.textMuted}
                           items={analysis.strikeGuidance.adjustments}
                           icon={'\u2192'}
                           color={th.accent}
@@ -676,11 +668,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
             {/* ── 5. Entry Plan ── */}
             {analysis.entryPlan && (
-              <InfoCard
-                textMuted={th.textMuted}
-                title="Entry Plan"
-                color={th.accent}
-              >
+              <InfoCard title="Entry Plan" color={th.accent}>
                 <div className="grid gap-2">
                   {[
                     analysis.entryPlan.entry1,
@@ -746,7 +734,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                           Do NOT add entries if:
                         </div>
                         <BulletList
-                          textMuted={th.textMuted}
                           items={analysis.entryPlan.noEntryConditions}
                           icon={'\u2718'}
                           color={th.red}
@@ -759,11 +746,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
             {/* ── 6. Position Management Rules ── */}
             {analysis.managementRules && (
-              <InfoCard
-                textMuted={th.textMuted}
-                title="Position Management Rules"
-                color="#E8A317"
-              >
+              <InfoCard title="Position Management Rules" color="#E8A317">
                 <div className="grid gap-1.5">
                   {analysis.managementRules.profitTarget && (
                     <div className="text-[11px] leading-relaxed">
@@ -788,7 +771,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                           Stop conditions:
                         </span>
                         <BulletList
-                          textMuted={th.textMuted}
                           items={analysis.managementRules.stopConditions}
                           icon={'\u26D4'}
                           color={th.red}
@@ -841,7 +823,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                   Risk Factors
                 </div>
                 <BulletList
-                  textMuted={th.textMuted}
                   items={analysis.risks}
                   icon={'\u26A0'}
                   color={th.red}
@@ -907,7 +888,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
             {/* ── 9. Periscope Analysis ── */}
             {analysis.periscopeNotes && (
-              <InfoCard textMuted={th.textMuted} title="Periscope Analysis">
+              <InfoCard title="Periscope Analysis" color={th.textMuted}>
                 <div className="text-secondary text-[11px] leading-relaxed">
                   {analysis.periscopeNotes}
                 </div>
@@ -977,7 +958,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                         Lessons for next time
                       </div>
                       <BulletList
-                        textMuted={th.textMuted}
                         items={analysis.review.lessonsLearned}
                         icon={'\u{1F4A1}'}
                         color={th.accent}
