@@ -1,0 +1,168 @@
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import IVInputSection from '../components/IVInputSection';
+import { lightTheme } from '../themes';
+
+const th = lightTheme;
+
+const mockMarket = {
+  data: {
+    quotes: null,
+    yesterday: null,
+    movers: null,
+    intraday: null,
+    events: null,
+  },
+  loading: false,
+  error: null,
+  hasData: false,
+  needsAuth: false,
+  refresh: async () => {},
+  lastUpdated: null,
+};
+
+function renderSection(overrides: Record<string, unknown> = {}) {
+  const defaults = {
+    th,
+    inputCls: 'test-input',
+    ivMode: 'vix' as const,
+    onIvModeChange: vi.fn(),
+    vixInput: '',
+    onVixChange: vi.fn(),
+    multiplier: '1.15',
+    onMultiplierChange: vi.fn(),
+    directIVInput: '',
+    onDirectIVChange: vi.fn(),
+    dVix: '',
+    results: null,
+    errors: {} as Record<string, string>,
+    market: mockMarket,
+    onUseVix1dAsSigma: vi.fn(),
+  };
+  const props = { ...defaults, ...overrides };
+  return { ...render(<IVInputSection {...props} />), props };
+}
+
+// ============================================================
+// RENDERING
+// ============================================================
+
+describe('IVInputSection', () => {
+  it('renders section heading "Implied Volatility"', () => {
+    renderSection();
+    expect(screen.getByText('Implied Volatility')).toBeInTheDocument();
+  });
+
+  it('renders VIX mode inputs when ivMode="vix"', () => {
+    renderSection({ ivMode: 'vix' });
+    expect(screen.getByLabelText('VIX Value')).toBeInTheDocument();
+    expect(screen.getByLabelText('0DTE Adj.')).toBeInTheDocument();
+  });
+
+  it('renders Direct IV mode inputs when ivMode="direct"', () => {
+    renderSection({ ivMode: 'direct' });
+    expect(screen.getByLabelText(/Direct IV/)).toBeInTheDocument();
+    expect(screen.getByLabelText('VIX (regime only)')).toBeInTheDocument();
+  });
+
+  // ============================================================
+  // CALLBACKS
+  // ============================================================
+
+  it('calls onVixChange when VIX input changes', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSection({ ivMode: 'vix' });
+    await user.type(screen.getByLabelText('VIX Value'), '2');
+    expect(props.onVixChange).toHaveBeenCalledWith('2');
+  });
+
+  it('calls onMultiplierChange when adj input changes', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSection({ ivMode: 'vix' });
+    await user.type(screen.getByLabelText('0DTE Adj.'), '5');
+    expect(props.onMultiplierChange).toHaveBeenCalled();
+  });
+
+  it('calls onDirectIVChange when direct IV input changes', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSection({ ivMode: 'direct' });
+    await user.type(screen.getByLabelText(/Direct IV/), '0');
+    expect(props.onDirectIVChange).toHaveBeenCalledWith('0');
+  });
+
+  it('calls onIvModeChange when mode chip clicked', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSection({ ivMode: 'vix' });
+    await user.click(screen.getByText('Direct IV'));
+    expect(props.onIvModeChange).toHaveBeenCalledWith('direct');
+  });
+
+  // ============================================================
+  // TOOLTIP
+  // ============================================================
+
+  it('shows tooltip when ? button clicked', async () => {
+    const user = userEvent.setup();
+    renderSection({ ivMode: 'vix' });
+    const btn = screen.getByRole('button', {
+      name: /what is the 0dte adjustment/i,
+    });
+    await user.click(btn);
+    expect(screen.getByRole('tooltip')).toBeInTheDocument();
+    expect(screen.getByText('0DTE IV Adjustment')).toBeInTheDocument();
+  });
+
+  // ============================================================
+  // ERRORS
+  // ============================================================
+
+  it('shows error for vix', () => {
+    renderSection({ errors: { vix: 'VIX is required' } });
+    expect(screen.getByText('VIX is required')).toBeInTheDocument();
+  });
+
+  it('shows error for multiplier', () => {
+    renderSection({ errors: { multiplier: 'Invalid multiplier' } });
+    expect(screen.getByText('Invalid multiplier')).toBeInTheDocument();
+  });
+
+  it('shows error for iv', () => {
+    renderSection({ ivMode: 'direct', errors: { iv: 'IV out of range' } });
+    expect(screen.getByText('IV out of range')).toBeInTheDocument();
+  });
+
+  it('does not show errors when none exist', () => {
+    const { container } = renderSection({ errors: {} });
+    // ErrorMsg components should not be present
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(
+      screen.queryByText(/required|invalid|out of range/i),
+    ).not.toBeInTheDocument();
+  });
+
+  // ============================================================
+  // SUB-COMPONENTS
+  // ============================================================
+
+  it('renders VIXRegimeCard when dVix is valid with results and no errors', () => {
+    renderSection({
+      dVix: '18',
+      results: {
+        allDeltas: [],
+        sigma: 0.15,
+        T: 0.03,
+        hoursRemaining: 7,
+        spot: 5700,
+      },
+      errors: {},
+    });
+    // VIXRegimeCard renders regime zone content
+    expect(screen.getByText(/regime/i)).toBeInTheDocument();
+  });
+
+  it('renders Term Structure section when dVix is valid', () => {
+    renderSection({ dVix: '18', errors: {} });
+    expect(screen.getByText('Term Structure')).toBeInTheDocument();
+  });
+});

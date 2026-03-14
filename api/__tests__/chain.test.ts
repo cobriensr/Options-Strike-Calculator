@@ -62,7 +62,12 @@ function makeContract(
 /**
  * Build a Schwab chain response with given puts and calls.
  */
-const DEFAULT_UNDERLYING = { symbol: '$SPX', last: 5700, close: 5690, change: 10 };
+const DEFAULT_UNDERLYING = {
+  symbol: '$SPX',
+  last: 5700,
+  close: 5690,
+  change: 10,
+};
 
 function makeSchwabChain(
   puts: ReturnType<typeof makeContract>[],
@@ -315,9 +320,7 @@ describe('GET /api/chain', () => {
       makeContract('PUT', 5700, { delta: 0.5, inTheMoney: true }),
       makeContract('PUT', 5600, { delta: -0.05 }),
     ];
-    const calls = [
-      makeContract('CALL', 5800, { delta: 0.05 }),
-    ];
+    const calls = [makeContract('CALL', 5800, { delta: 0.05 })];
 
     vi.mocked(schwabFetch).mockResolvedValue({
       data: makeSchwabChain(puts, calls),
@@ -337,9 +340,7 @@ describe('GET /api/chain', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
-    const puts = [
-      makeContract('PUT', 5600, { delta: -0.05 }),
-    ];
+    const puts = [makeContract('PUT', 5600, { delta: -0.05 })];
     const calls = [
       // ITM call with negative delta — should be skipped
       makeContract('CALL', 5600, { delta: -0.5, inTheMoney: true }),

@@ -19,6 +19,8 @@ import IVInputSection from './components/IVInputSection';
 import AdvancedSection from './components/AdvancedSection';
 import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
+import ChartAnalysis from './components/ChartAnalysis';
+import type { AnalysisContext } from './components/ChartAnalysis';
 import BacktestDiag from './components/BacktestDiag';
 import { Analytics } from '@vercel/analytics/react';
 
@@ -427,6 +429,36 @@ export default function StrikeCalculator() {
                 historySnapshot
                   ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
                   : undefined
+              }
+            />
+
+            {/* Chart Analysis — works in live and backtest mode */}
+            <ChartAnalysis
+              th={th}
+              results={results}
+              context={
+                {
+                  spx: results?.spot,
+                  spy: Number.parseFloat(dSpot) || undefined,
+                  vix: Number.parseFloat(dVix) || undefined,
+                  vix1d:
+                    market.data.quotes?.vix1d?.price ??
+                    historySnapshot?.vix1d ??
+                    undefined,
+                  vix9d:
+                    market.data.quotes?.vix9d?.price ??
+                    historySnapshot?.vix9d ??
+                    undefined,
+                  vvix:
+                    market.data.quotes?.vvix?.price ??
+                    historySnapshot?.vvix ??
+                    undefined,
+                  sigma: results?.sigma,
+                  T: results?.T,
+                  hoursRemaining: results?.hoursRemaining,
+                  clusterMult,
+                  regimeZone: undefined,
+                } satisfies AnalysisContext
               }
             />
 
