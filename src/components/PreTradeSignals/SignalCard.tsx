@@ -1,0 +1,48 @@
+import type { Theme } from '../../themes';
+import type { SignalResult } from './classifiers';
+
+interface Props {
+  th: Theme;
+  title: string;
+  subtitle: string;
+  result: SignalResult;
+}
+
+export default function SignalCard({ th, title, subtitle, result }: Props) {
+  const color =
+    result.signal === 'green'
+      ? th.green
+      : result.signal === 'yellow'
+        ? '#E8A317'
+        : th.red;
+
+  return (
+    <div className="bg-surface border-edge rounded-[10px] border p-3 sm:p-3.5">
+      <div className="mb-1.5 flex items-start justify-between">
+        <div>
+          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+            {title}
+          </div>
+          <div className="text-muted font-sans text-[9px]">{subtitle}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className="font-mono text-[15px] font-extrabold"
+            style={{ color }}
+          >
+            {result.value}
+          </span>
+          <span
+            className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
+            style={{ backgroundColor: color + '18', color }}
+          >
+            {result.label}
+          </span>
+        </div>
+      </div>
+      <div className="text-secondary font-sans text-[11px] leading-normal">
+        {result.detail}
+      </div>
+    </div>
+  );
+}

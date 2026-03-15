@@ -1,38 +1,33 @@
 import { useState, useEffect } from 'react';
-import type { Theme } from '../themes';
-import { tinyLbl } from '../utils/ui-utils';
+import type { Theme } from '../../themes';
+import { tinyLbl } from '../../utils/ui-utils';
 import {
   getClusterMultiplier,
   CLUSTER_THRESHOLDS,
-} from '../data/vixRangeStats';
+} from '../../data/vixRangeStats';
+import PercentileBar from './PercentileBar';
 
 interface Props {
   readonly th: Theme;
   readonly vix: number | null;
   readonly spot: number | null;
-  readonly onMultiplierChange?: (mult: number) => void; // Callback when clustering mult changes
+  readonly onMultiplierChange?: (mult: number) => void;
   readonly initialYesterday?: {
-    // Auto-fill from live data
     readonly open: number;
     readonly high: number;
     readonly low: number;
   };
 }
 
+const inputCls =
+  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
+
 /**
  * Volatility Clustering signal.
  * Takes yesterday's SPX high/low/open, computes the H-L range,
  * classifies it against VIX-regime percentile thresholds, and shows
  * the clustering multiplier for today's expected range.
- *
- * Based on 9,107 trading days of SPX data (1990–2026):
- * - After a p90 range day at VIX 25+, today's median range is 87% wider
- * - After a calm day at VIX <18, today's median range is 9% narrower
  */
-
-const inputCls =
-  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
-
 export default function VolatilityCluster({
   th,
   vix,
@@ -261,73 +256,12 @@ export default function VolatilityCluster({
 
           {/* Percentile reference bar */}
           {thresholds && (
-            <div className="bg-surface border-edge rounded-[10px] border p-3 sm:px-4 sm:py-3">
-              <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
-                Yesterday{'\u2019'}s range vs. regime percentiles
-              </div>
-
-              <div className="bg-surface-alt relative mb-5 h-3 overflow-visible rounded-md">
-                {/* Colored segments */}
-                <div
-                  className="absolute top-0 left-0 h-full w-1/2 rounded-l-md"
-                  style={{ backgroundColor: th.green + '30' }}
-                />
-                <div
-                  className="absolute top-0 left-1/2 h-full w-1/4"
-                  style={{ backgroundColor: th.accent + '20' }}
-                />
-                <div
-                  className="absolute top-0 left-3/4 h-full w-[15%]"
-                  style={{ backgroundColor: '#E8A31730' }}
-                />
-                <div
-                  className="absolute top-0 left-[90%] h-full w-[10%] rounded-r-md"
-                  style={{ backgroundColor: th.red + '30' }}
-                />
-
-                {/* Yesterday's position marker */}
-                {(() => {
-                  const maxRange = thresholds.p90 * 1.5;
-                  const pos = Math.min(yestRangePct / maxRange, 1) * 100;
-                  return (
-                    <div
-                      className="absolute -top-1 h-5 w-1 -translate-x-1/2 rounded-sm"
-                      style={{
-                        left: pos + '%',
-                        backgroundColor: signalColor,
-                        boxShadow: '0 0 6px ' + signalColor + '88',
-                      }}
-                    />
-                  );
-                })()}
-
-                {/* Threshold labels */}
-                <div
-                  className="text-muted absolute top-4 -translate-x-1/2 font-mono text-[8px]"
-                  style={{
-                    left: (thresholds.p50 / (thresholds.p90 * 1.5)) * 100 + '%',
-                  }}
-                >
-                  p50 ({thresholds.p50.toFixed(2)}%)
-                </div>
-                <div
-                  className="text-muted absolute top-4 -translate-x-1/2 font-mono text-[8px]"
-                  style={{
-                    left: (thresholds.p75 / (thresholds.p90 * 1.5)) * 100 + '%',
-                  }}
-                >
-                  p75 ({thresholds.p75.toFixed(2)}%)
-                </div>
-                <div
-                  className="text-muted absolute top-4 -translate-x-1/2 font-mono text-[8px]"
-                  style={{
-                    left: (thresholds.p90 / (thresholds.p90 * 1.5)) * 100 + '%',
-                  }}
-                >
-                  p90 ({thresholds.p90.toFixed(2)}%)
-                </div>
-              </div>
-            </div>
+            <PercentileBar
+              th={th}
+              thresholds={thresholds}
+              yestRangePct={yestRangePct}
+              signalColor={signalColor}
+            />
           )}
 
           <p className="text-muted mt-2 text-[11px] italic">

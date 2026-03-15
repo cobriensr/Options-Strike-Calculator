@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import type { Theme } from '../themes';
-import { tinyLbl } from '../utils/ui-utils';
-import { estimateRange, getDowMultiplier } from '../data/vixRangeStats';
+import type { Theme } from '../../themes';
+import { tinyLbl } from '../../utils/ui-utils';
+import { estimateRange, getDowMultiplier } from '../../data/vixRangeStats';
+import StatCell from './StatCell';
+import RangeConsumptionBar from './RangeConsumptionBar';
 
 interface Props {
   readonly th: Theme;
@@ -18,12 +20,12 @@ interface Props {
 type Signal = 'green' | 'yellow' | 'red';
 
 interface RangeAnalysis {
-  readonly openingRangePct: number; // First 30-min H-L as % of open
-  readonly openingRangePts: number; // First 30-min H-L in points
-  readonly expectedMedHL: number; // Expected median daily H-L %
-  readonly expectedP90HL: number; // Expected 90th pctile daily H-L %
-  readonly pctOfMedianUsed: number; // Opening range / median H-L (0-1+)
-  readonly pctOfP90Used: number; // Opening range / p90 H-L (0-1+)
+  readonly openingRangePct: number;
+  readonly openingRangePts: number;
+  readonly expectedMedHL: number;
+  readonly expectedP90HL: number;
+  readonly pctOfMedianUsed: number;
+  readonly pctOfP90Used: number;
   readonly signal: Signal;
   readonly label: string;
   readonly advice: string;
@@ -81,8 +83,7 @@ const inputCls =
 /**
  * Opening Range Check.
  * Compares the first ~30 minutes of trading range against the expected
- * daily range for the current VIX level. Helps decide whether to add
- * more positions later in the morning.
+ * daily range for the current VIX level.
  */
 export default function OpeningRangeCheck({
   th,
@@ -118,7 +119,7 @@ export default function OpeningRangeCheck({
   const analysis: RangeAnalysis | null = (() => {
     if (!hasVix || !hasRange || !vix) return null;
 
-    const openPrice = spot ?? (highVal + lowVal) / 2; // use spot if available, else midpoint
+    const openPrice = spot ?? (highVal + lowVal) / 2;
     const openingRangePts = highVal - lowVal;
     const openingRangePct = (openingRangePts / openPrice) * 100;
 
@@ -254,79 +255,12 @@ export default function OpeningRangeCheck({
           </div>
 
           {/* Range consumption bar */}
-          <div className="bg-surface border-edge rounded-[10px] border px-4 py-3.5">
-            <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
-              Range consumed vs. expected daily range
-            </div>
-
-            {/* Median bar */}
-            <div className="mb-2.5">
-              <div className="mb-1 flex items-center justify-between font-mono text-[11px]">
-                <span className="text-secondary">vs. Median H-L</span>
-                <span className="font-bold" style={{ color: signalColor }}>
-                  {(analysis.pctOfMedianUsed * 100).toFixed(0)}% consumed
-                </span>
-              </div>
-              <div className="bg-surface-alt relative h-2.5 overflow-hidden rounded-[5px]">
-                <div
-                  className="absolute top-0 left-0 h-full rounded-[5px] transition-[width] duration-300"
-                  style={{
-                    width:
-                      (Math.min(analysis.pctOfMedianUsed, 1.5) / 1.5) * 100 +
-                      '%',
-                    backgroundColor: signalColor,
-                  }}
-                />
-                {/* 100% marker */}
-                <div
-                  className="absolute -top-0.5 h-3.5 w-0.5"
-                  style={{
-                    left: (1 / 1.5) * 100 + '%',
-                    backgroundColor: th.text + '40',
-                  }}
-                />
-              </div>
-              <div className="text-muted mt-0.5 flex justify-between font-mono text-[8px]">
-                <span>0%</span>
-                <span>50%</span>
-                <span className="font-semibold">100%</span>
-                <span>150%</span>
-              </div>
-            </div>
-
-            {/* P90 bar */}
-            <div>
-              <div className="mb-1 flex items-center justify-between font-mono text-[11px]">
-                <span className="text-secondary">vs. 90th Pctile H-L</span>
-                <span className="text-secondary font-bold">
-                  {(analysis.pctOfP90Used * 100).toFixed(0)}% consumed
-                </span>
-              </div>
-              <div className="bg-surface-alt relative h-2.5 overflow-hidden rounded-[5px]">
-                <div
-                  className="absolute top-0 left-0 h-full rounded-[5px] transition-[width] duration-300"
-                  style={{
-                    width:
-                      (Math.min(analysis.pctOfP90Used, 1.5) / 1.5) * 100 + '%',
-                    backgroundColor: th.accent + '80',
-                  }}
-                />
-                <div
-                  className="absolute -top-0.5 h-3.5 w-0.5"
-                  style={{
-                    left: (1 / 1.5) * 100 + '%',
-                    backgroundColor: th.text + '40',
-                  }}
-                />
-              </div>
-              <div className="text-muted mt-0.5 flex justify-between font-mono text-[8px]">
-                <span>0%</span>
-                <span>50%</span>
-                <span className="font-semibold">100%</span>
-                <span>150%</span>
-              </div>
-            </div>
-          </div>
+          <RangeConsumptionBar
+            th={th}
+            pctOfMedianUsed={analysis.pctOfMedianUsed}
+            pctOfP90Used={analysis.pctOfP90Used}
+            signalColor={signalColor}
+          />
 
           <p className="text-muted mt-2 text-[11px] italic">
             {analysis.pctOfMedianUsed < 0.4
@@ -355,34 +289,6 @@ export default function OpeningRangeCheck({
           High must be greater than low.
         </p>
       )}
-    </div>
-  );
-}
-
-// ============================================================
-// SUB-COMPONENTS
-// ============================================================
-
-function StatCell({
-  label,
-  value,
-  sub,
-  color,
-}: {
-  label: string;
-  value: string;
-  sub: string;
-  color: string;
-}) {
-  return (
-    <div className="text-center">
-      <div className="text-tertiary font-sans text-[9px] font-bold tracking-[0.06em] uppercase">
-        {label}
-      </div>
-      <div className="mt-0.5 font-mono text-[17px] font-bold" style={{ color }}>
-        {value}
-      </div>
-      <div className="text-muted font-mono text-[10px]">{sub}</div>
     </div>
   );
 }
