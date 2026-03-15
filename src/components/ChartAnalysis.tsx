@@ -142,7 +142,10 @@ const CHART_LABELS = [
 ] as const;
 
 const MODE_LABELS: Record<AnalysisMode, { label: string; desc: string }> = {
-  entry: { label: 'Pre-Trade', desc: 'Full analysis before opening a position' },
+  entry: {
+    label: 'Pre-Trade',
+    desc: 'Full analysis before opening a position',
+  },
   midday: { label: 'Mid-Day', desc: 'Check if conditions changed since entry' },
   review: { label: 'Review', desc: 'End-of-day retrospective' },
 };
@@ -151,12 +154,27 @@ const MODE_LABELS: Record<AnalysisMode, { label: string; desc: string }> = {
 // SUB-COMPONENTS (top-level to satisfy react/no-unstable-nested-components)
 // ============================================================
 
-function BulletList({ items, icon, color, defaultColor }: { items: string[]; icon?: string; color?: string; defaultColor: string }) {
+function BulletList({
+  items,
+  icon,
+  color,
+  defaultColor,
+}: {
+  items: string[];
+  icon?: string;
+  color?: string;
+  defaultColor: string;
+}) {
   return (
     <div className="grid gap-1">
       {items.map((item, i) => (
-        <div key={i} className="text-secondary flex gap-1.5 text-[11px] leading-relaxed">
-          <span className="shrink-0" style={{ color: color ?? defaultColor }}>{icon ?? '\u2022'}</span>
+        <div
+          key={i}
+          className="text-secondary flex gap-1.5 text-[11px] leading-relaxed"
+        >
+          <span className="shrink-0" style={{ color: color ?? defaultColor }}>
+            {icon ?? '\u2022'}
+          </span>
           <span>{item}</span>
         </div>
       ))}
@@ -164,7 +182,17 @@ function BulletList({ items, icon, color, defaultColor }: { items: string[]; ico
   );
 }
 
-function Collapsible({ title, color, defaultOpen, children }: { title: string; color: string; defaultOpen?: boolean; children: React.ReactNode }) {
+function Collapsible({
+  title,
+  color,
+  defaultOpen,
+  children,
+}: {
+  title: string;
+  color: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
   const [open, setOpen] = useState(defaultOpen ?? false);
   return (
     <div className="border-edge overflow-hidden rounded-lg border">
@@ -174,14 +202,20 @@ function Collapsible({ title, color, defaultOpen, children }: { title: string; c
         className="flex w-full cursor-pointer items-center justify-between px-3 py-2 text-left"
         style={{ backgroundColor: color + '06' }}
       >
-        <span className="font-sans text-[9px] font-bold tracking-wider uppercase" style={{ color }}>
+        <span
+          className="font-sans text-[9px] font-bold tracking-wider uppercase"
+          style={{ color }}
+        >
           {title}
         </span>
-        <span className="text-muted text-[12px] transition-transform" style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+        <span
+          className="text-muted text-[12px] transition-transform"
+          style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
           {'\u25BE'}
         </span>
       </button>
-      {open && <div className="px-3 pb-3 pt-1.5">{children}</div>}
+      {open && <div className="px-3 pt-1.5 pb-3">{children}</div>}
     </div>
   );
 }
@@ -203,7 +237,9 @@ function buildPreviousRecommendation(prev: AnalysisResult): string {
   }
 
   if (prev.hedge) {
-    parts.push(`Hedge: ${prev.hedge.recommendation} — ${prev.hedge.description}`);
+    parts.push(
+      `Hedge: ${prev.hedge.recommendation} — ${prev.hedge.description}`,
+    );
   }
 
   if (prev.managementRules?.profitTarget) {
@@ -211,7 +247,9 @@ function buildPreviousRecommendation(prev: AnalysisResult): string {
   }
 
   if (prev.managementRules?.stopConditions) {
-    parts.push(`Stop conditions: ${prev.managementRules.stopConditions.join('; ')}`);
+    parts.push(
+      `Stop conditions: ${prev.managementRules.stopConditions.join('; ')}`,
+    );
   }
 
   return parts.join('. ');
@@ -230,7 +268,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [replaceTargetIndex, setReplaceTargetIndex] = useState<number | null>(null);
+  const [replaceTargetIndex, setReplaceTargetIndex] = useState<number | null>(
+    null,
+  );
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastAnalysisRef = useRef<AnalysisResult | null>(null);
@@ -245,12 +285,18 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
   // ── Image management ──────────────────────────────────────
 
-  const addImage = useCallback((file: File) => {
-    if (images.length >= 5) return;
-    const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const preview = URL.createObjectURL(file);
-    setImages((prev) => [...prev, { id, file, preview, label: CHART_LABELS[0] }]);
-  }, [images.length]);
+  const addImage = useCallback(
+    (file: File) => {
+      if (images.length >= 5) return;
+      const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const preview = URL.createObjectURL(file);
+      setImages((prev) => [
+        ...prev,
+        { id, file, preview, label: CHART_LABELS[0] },
+      ]);
+    },
+    [images.length],
+  );
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
@@ -284,7 +330,11 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           preview: URL.createObjectURL(file),
           label: old.label,
         };
-        return [...prev.slice(0, targetIdx), newImg, ...prev.slice(targetIdx + 1)];
+        return [
+          ...prev.slice(0, targetIdx),
+          newImg,
+          ...prev.slice(targetIdx + 1),
+        ];
       });
       setReplaceTargetIndex(null);
       if (replaceInputRef.current) replaceInputRef.current.value = '';
@@ -295,7 +345,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
-      const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+      const files = Array.from(e.dataTransfer.files).filter((f) =>
+        f.type.startsWith('image/'),
+      );
       for (const f of files.slice(0, 5 - images.length)) addImage(f);
     },
     [addImage, images.length],
@@ -331,7 +383,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
   // Elapsed timer while loading
   useEffect(() => {
-    if (!loading) { setElapsed(0); return; }
+    if (!loading) {
+      setElapsed(0);
+      return;
+    }
     setElapsed(0);
     const interval = setInterval(() => setElapsed((e) => e + 1), 1000);
     return () => clearInterval(interval);
@@ -365,7 +420,11 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           const bytes = new Uint8Array(buffer);
           let binary = '';
           for (const b of bytes) binary += String.fromCodePoint(b);
-          return { data: btoa(binary), mediaType: img.file.type, label: img.label };
+          return {
+            data: btoa(binary),
+            mediaType: img.file.type,
+            label: img.label,
+          };
         }),
       );
 
@@ -396,7 +455,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       clearTimeout(timeout);
 
       if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: 'Request failed' }));
+        const body = await res
+          .json()
+          .catch(() => ({ error: 'Request failed' }));
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
@@ -406,11 +467,15 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         lastAnalysisRef.current = data.analysis;
       }
       if (data.raw) setRawResponse(data.raw);
-      if (!data.analysis && data.raw) setError('Could not parse structured response. See raw output below.');
+      if (!data.analysis && data.raw)
+        setError('Could not parse structured response. See raw output below.');
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         // abortRef is null if cancelAnalysis was called (it clears it); non-null means timeout
-        if (abortRef.current) setError('Analysis timed out (>4 min). Try fewer images or simpler charts.');
+        if (abortRef.current)
+          setError(
+            'Analysis timed out (>4 min). Try fewer images or simpler charts.',
+          );
       } else {
         setError(err instanceof Error ? err.message : 'Analysis failed');
       }
@@ -436,8 +501,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   };
 
   const signalColor = (s: string) => {
-    if (s === 'BEARISH' || s === 'CONTRADICTS' || s === 'UNFAVORABLE') return th.red;
-    if (s === 'BULLISH' || s === 'CONFIRMS' || s === 'FAVORABLE') return th.green;
+    if (s === 'BEARISH' || s === 'CONTRADICTS' || s === 'UNFAVORABLE')
+      return th.red;
+    if (s === 'BULLISH' || s === 'CONFIRMS' || s === 'FAVORABLE')
+      return th.green;
     if (s === 'NEUTRAL' || s === 'NOT PROVIDED') return th.textMuted;
     return '#E8A317';
   };
@@ -478,8 +545,21 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           onClick={() => fileInputRef.current?.click()}
           aria-label="Upload chart images"
         >
-          <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileSelect} />
-          <input ref={replaceInputRef} type="file" accept="image/*" className="hidden" onChange={handleReplaceFile} />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+          <input
+            ref={replaceInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleReplaceFile}
+          />
           <div className="text-muted text-[12px]">
             {images.length === 0
               ? 'Drop or click to upload, or paste (Ctrl+V) a screenshot from clipboard'
@@ -491,8 +571,15 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         {images.length > 0 && (
           <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {images.map((img) => (
-              <div key={img.id} className="bg-surface border-edge relative overflow-hidden rounded-lg border">
-                <img src={img.preview} alt={img.label} className="h-24 w-full object-cover object-top" />
+              <div
+                key={img.id}
+                className="bg-surface border-edge relative overflow-hidden rounded-lg border"
+              >
+                <img
+                  src={img.preview}
+                  alt={img.label}
+                  className="h-24 w-full object-cover object-top"
+                />
                 <div className="flex items-center gap-1.5 p-1.5">
                   <select
                     value={img.label}
@@ -500,12 +587,17 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                     className="bg-surface-alt border-edge flex-1 rounded border px-1 py-0.5 font-sans text-[10px]"
                   >
                     {CHART_LABELS.map((l) => (
-                      <option key={l} value={l}>{l}</option>
+                      <option key={l} value={l}>
+                        {l}
+                      </option>
                     ))}
                   </select>
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); removeImage(img.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeImage(img.id);
+                    }}
                     className="text-muted hover:text-danger text-[14px] leading-none"
                     aria-label="Remove image"
                   >
@@ -532,17 +624,30 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         {confirming && !loading && (
           <div
             className="mb-3 flex items-center justify-between rounded-lg px-4 py-3"
-            style={{ backgroundColor: '#E8A31710', border: '1.5px solid #E8A31730' }}
+            style={{
+              backgroundColor: '#E8A31710',
+              border: '1.5px solid #E8A31730',
+            }}
           >
             <div>
-              <div className="font-sans text-[11px] font-semibold" style={{ color: '#E8A317' }}>
-                Send {images.length} image{images.length > 1 ? 's' : ''} to Opus? (~1{'\u20134'} min, billed on send)
+              <div
+                className="font-sans text-[11px] font-semibold"
+                style={{ color: '#E8A317' }}
+              >
+                Send {images.length} image{images.length > 1 ? 's' : ''} to
+                Opus? (~1{'\u20134'} min, billed on send)
               </div>
               <div className="text-muted mt-0.5 font-sans text-[10px]">
-                {MODE_LABELS[mode].label} {'\u2022'} {images.map((img) => img.label).join(', ')}
-                {lastAnalysisRef.current && (mode === 'midday' || mode === 'review') && (
-                  <span style={{ color: th.green }}> {'\u2022'} Includes previous {lastAnalysisRef.current.structure} recommendation</span>
-                )}
+                {MODE_LABELS[mode].label} {'\u2022'}{' '}
+                {images.map((img) => img.label).join(', ')}
+                {lastAnalysisRef.current &&
+                  (mode === 'midday' || mode === 'review') && (
+                    <span style={{ color: th.green }}>
+                      {' '}
+                      {'\u2022'} Includes previous{' '}
+                      {lastAnalysisRef.current.structure} recommendation
+                    </span>
+                  )}
               </div>
             </div>
             <div className="flex gap-2">
@@ -556,7 +661,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               </button>
               <button
                 type="button"
-                onClick={() => { setConfirming(false); analyze(); }}
+                onClick={() => {
+                  setConfirming(false);
+                  analyze();
+                }}
                 className="cursor-pointer rounded-md px-4 py-1.5 font-sans text-[10px] font-bold tracking-wider uppercase transition-opacity hover:opacity-90"
                 style={{ backgroundColor: th.accent, color: '#fff' }}
               >
@@ -567,9 +675,15 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         )}
 
         {loading && (
-          <div className="border-edge mb-3 overflow-hidden rounded-lg border p-4" style={{ backgroundColor: th.surfaceAlt }}>
+          <div
+            className="border-edge mb-3 overflow-hidden rounded-lg border p-4"
+            style={{ backgroundColor: th.surfaceAlt }}
+          >
             {/* Pulsing bar */}
-            <div className="mb-3 h-1 w-full overflow-hidden rounded-full" style={{ backgroundColor: th.accent + '20' }}>
+            <div
+              className="mb-3 h-1 w-full overflow-hidden rounded-full"
+              style={{ backgroundColor: th.accent + '20' }}
+            >
               <div
                 className="h-full rounded-full"
                 style={{
@@ -582,22 +696,39 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
             <div className="flex items-center justify-between">
               <div>
-                <div className="mb-0.5 font-sans text-[11px] font-semibold" style={{ color: th.accent }}>
+                <div
+                  className="mb-0.5 font-sans text-[11px] font-semibold"
+                  style={{ color: th.accent }}
+                >
                   Opus is thinking...
                 </div>
                 <div className="text-muted font-sans text-[10px]">
-                  {THINKING_MESSAGES[Math.min(Math.floor(elapsed / 8), THINKING_MESSAGES.length - 1)]}
+                  {
+                    THINKING_MESSAGES[
+                      Math.min(
+                        Math.floor(elapsed / 8),
+                        THINKING_MESSAGES.length - 1,
+                      )
+                    ]
+                  }
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <div className="font-mono text-[12px] font-bold" style={{ color: th.textMuted }}>
+                <div
+                  className="font-mono text-[12px] font-bold"
+                  style={{ color: th.textMuted }}
+                >
                   {elapsed}s
                 </div>
                 <button
                   type="button"
                   onClick={cancelAnalysis}
                   className="cursor-pointer rounded-md px-3 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
-                  style={{ backgroundColor: th.red + '18', color: th.red, border: `1px solid ${th.red}30` }}
+                  style={{
+                    backgroundColor: th.red + '18',
+                    color: th.red,
+                    border: `1px solid ${th.red}30`,
+                  }}
                 >
                   Cancel
                 </button>
@@ -608,7 +739,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
         {/* Error */}
         {error && (
-          <div className="mb-3 rounded-lg px-3 py-2 text-[11px]" style={{ backgroundColor: th.red + '12', color: th.red }}>
+          <div
+            className="mb-3 rounded-lg px-3 py-2 text-[11px]"
+            style={{ backgroundColor: th.red + '12', color: th.red }}
+          >
             {error}
           </div>
         )}
@@ -616,7 +750,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         {/* ════════════════════ RESULTS ════════════════════ */}
         {analysis && (
           <div className="grid gap-2.5">
-
             {/* ── TL;DR SUMMARY CARD (always visible) ── */}
             <div
               className="rounded-[10px] p-3.5"
@@ -626,62 +759,120 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               }}
             >
               <div className="mb-2 flex flex-wrap items-center gap-2">
-                <span className="font-sans text-[15px] font-bold" style={{ color: structureColor(analysis.structure) }}>
+                <span
+                  className="font-sans text-[15px] font-bold"
+                  style={{ color: structureColor(analysis.structure) }}
+                >
                   {analysis.structure}
                 </span>
                 <span
                   className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
-                  style={{ backgroundColor: confidenceColor(analysis.confidence) + '18', color: confidenceColor(analysis.confidence) }}
+                  style={{
+                    backgroundColor:
+                      confidenceColor(analysis.confidence) + '18',
+                    color: confidenceColor(analysis.confidence),
+                  }}
                 >
                   {analysis.confidence}
                 </span>
-                <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold" style={{ backgroundColor: th.accent + '18', color: th.accent }}>
-                  {analysis.suggestedDelta}{'\u0394'}
+                <span
+                  className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
+                  style={{
+                    backgroundColor: th.accent + '18',
+                    color: th.accent,
+                  }}
+                >
+                  {analysis.suggestedDelta}
+                  {'\u0394'}
                 </span>
-                {analysis.hedge && analysis.hedge.recommendation !== 'NO HEDGE' && (
-                  <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold" style={{ backgroundColor: '#E8A31718', color: '#E8A317' }}>
-                    {analysis.hedge.recommendation}
-                  </span>
-                )}
-                <span className="text-muted rounded-full px-2 py-0.5 font-mono text-[9px]" style={{ backgroundColor: th.surfaceAlt }}>
+                {analysis.hedge &&
+                  analysis.hedge.recommendation !== 'NO HEDGE' && (
+                    <span
+                      className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
+                      style={{ backgroundColor: '#E8A31718', color: '#E8A317' }}
+                    >
+                      {analysis.hedge.recommendation}
+                    </span>
+                  )}
+                <span
+                  className="text-muted rounded-full px-2 py-0.5 font-mono text-[9px]"
+                  style={{ backgroundColor: th.surfaceAlt }}
+                >
                   {MODE_LABELS[analysis.mode ?? mode].label}
                 </span>
               </div>
 
               {/* One-line reasoning */}
-              <div className="text-secondary mb-2 text-[11px] leading-relaxed">{analysis.reasoning}</div>
+              <div className="text-secondary mb-2 text-[11px] leading-relaxed">
+                {analysis.reasoning}
+              </div>
 
               {/* Quick-glance: Entry 1 + Hedge + Profit target */}
-              <div className="grid gap-1 border-t pt-2" style={{ borderColor: structureColor(analysis.structure) + '20' }}>
+              <div
+                className="grid gap-1 border-t pt-2"
+                style={{
+                  borderColor: structureColor(analysis.structure) + '20',
+                }}
+              >
                 {analysis.entryPlan?.entry1 && (
                   <div className="flex items-center gap-2 text-[10px]">
-                    <span className="font-semibold" style={{ color: th.accent }}>Entry 1:</span>
+                    <span
+                      className="font-semibold"
+                      style={{ color: th.accent }}
+                    >
+                      Entry 1:
+                    </span>
                     <span className="text-secondary">
-                      {analysis.entryPlan.entry1.structure} {analysis.entryPlan.entry1.delta}{'\u0394'}{' '}
-                      at {analysis.entryPlan.entry1.sizePercent}% size
+                      {analysis.entryPlan.entry1.structure}{' '}
+                      {analysis.entryPlan.entry1.delta}
+                      {'\u0394'} at {analysis.entryPlan.entry1.sizePercent}%
+                      size
                     </span>
                     <span className="text-muted">{'\u2022'}</span>
-                    <span className="text-muted italic">{analysis.entryPlan.entry1.timing ?? analysis.entryPlan.entry1.condition}</span>
+                    <span className="text-muted italic">
+                      {analysis.entryPlan.entry1.timing ??
+                        analysis.entryPlan.entry1.condition}
+                    </span>
                   </div>
                 )}
-                {analysis.strikeGuidance?.adjustments && analysis.strikeGuidance.adjustments.length > 0 && (
-                  <div className="flex items-center gap-2 text-[10px]">
-                    <span className="font-semibold" style={{ color: th.accent }}>Strike:</span>
-                    <span className="text-secondary">{analysis.strikeGuidance.adjustments[0]}</span>
-                  </div>
-                )}
+                {analysis.strikeGuidance?.adjustments &&
+                  analysis.strikeGuidance.adjustments.length > 0 && (
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <span
+                        className="font-semibold"
+                        style={{ color: th.accent }}
+                      >
+                        Strike:
+                      </span>
+                      <span className="text-secondary">
+                        {analysis.strikeGuidance.adjustments[0]}
+                      </span>
+                    </div>
+                  )}
                 {analysis.managementRules?.profitTarget && (
                   <div className="flex items-center gap-2 text-[10px]">
-                    <span className="font-semibold" style={{ color: th.green }}>Target:</span>
-                    <span className="text-secondary">{analysis.managementRules.profitTarget}</span>
+                    <span className="font-semibold" style={{ color: th.green }}>
+                      Target:
+                    </span>
+                    <span className="text-secondary">
+                      {analysis.managementRules.profitTarget}
+                    </span>
                   </div>
                 )}
-                {analysis.hedge && analysis.hedge.recommendation !== 'NO HEDGE' && (
-                  <div className="flex items-center gap-2 text-[10px]">
-                    <span className="font-semibold" style={{ color: '#E8A317' }}>Hedge:</span>
-                    <span className="text-secondary">{analysis.hedge.description}</span>
-                  </div>
-                )}
+                {analysis.hedge &&
+                  analysis.hedge.recommendation !== 'NO HEDGE' && (
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <span
+                        className="font-semibold"
+                        style={{ color: '#E8A317' }}
+                      >
+                        Hedge:
+                      </span>
+                      <span className="text-secondary">
+                        {analysis.hedge.description}
+                      </span>
+                    </div>
+                  )}
               </div>
             </div>
 
@@ -699,17 +890,30 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                   const sig = analysis.chartConfidence?.[key];
                   if (!sig || sig.signal === 'NOT PROVIDED') return null;
                   return (
-                    <div key={key} className="bg-surface border-edge rounded-md border p-2">
-                      <div className="text-muted mb-0.5 text-[8px] font-bold tracking-wider uppercase">{label}</div>
+                    <div
+                      key={key}
+                      className="bg-surface border-edge rounded-md border p-2"
+                    >
+                      <div className="text-muted mb-0.5 text-[8px] font-bold tracking-wider uppercase">
+                        {label}
+                      </div>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[11px] font-bold" style={{ color: signalColor(sig.signal) }}>
+                        <span
+                          className="text-[11px] font-bold"
+                          style={{ color: signalColor(sig.signal) }}
+                        >
                           {sig.signal}
                         </span>
-                        <span className="text-[8px] font-semibold" style={{ color: confidenceColor(sig.confidence) }}>
+                        <span
+                          className="text-[8px] font-semibold"
+                          style={{ color: confidenceColor(sig.confidence) }}
+                        >
                           {sig.confidence}
                         </span>
                       </div>
-                      <div className="text-muted mt-0.5 text-[9px] leading-tight">{sig.note}</div>
+                      <div className="text-muted mt-0.5 text-[9px] leading-tight">
+                        {sig.note}
+                      </div>
                     </div>
                   );
                 })}
@@ -720,36 +924,59 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
             {/* Observations */}
             <Collapsible title="Key Observations" color={th.textMuted}>
-              <BulletList defaultColor={th.textMuted} items={analysis.observations} />
+              <BulletList
+                defaultColor={th.textMuted}
+                items={analysis.observations}
+              />
             </Collapsible>
 
             {/* Strike Guidance */}
             {analysis.strikeGuidance && (
-              <Collapsible title="Strike Placement Guidance" color={th.accent} defaultOpen>
+              <Collapsible
+                title="Strike Placement Guidance"
+                color={th.accent}
+                defaultOpen
+              >
                 <div className="grid gap-1.5">
                   {analysis.strikeGuidance.putStrikeNote && (
                     <div className="text-[11px] leading-relaxed">
                       <span className="text-danger font-semibold">Put: </span>
-                      <span className="text-secondary">{analysis.strikeGuidance.putStrikeNote}</span>
+                      <span className="text-secondary">
+                        {analysis.strikeGuidance.putStrikeNote}
+                      </span>
                     </div>
                   )}
                   {analysis.strikeGuidance.callStrikeNote && (
                     <div className="text-[11px] leading-relaxed">
                       <span className="text-success font-semibold">Call: </span>
-                      <span className="text-secondary">{analysis.strikeGuidance.callStrikeNote}</span>
+                      <span className="text-secondary">
+                        {analysis.strikeGuidance.callStrikeNote}
+                      </span>
                     </div>
                   )}
                   {analysis.strikeGuidance.straddleCone && (
-                    <div className="text-muted mt-1 rounded-md px-2 py-1 text-[10px]" style={{ backgroundColor: th.surfaceAlt }}>
-                      Straddle cone: {analysis.strikeGuidance.straddleCone.lower} {'\u2013'} {analysis.strikeGuidance.straddleCone.upper}
-                      {' \u2022 '}{analysis.strikeGuidance.straddleCone.priceRelation}
+                    <div
+                      className="text-muted mt-1 rounded-md px-2 py-1 text-[10px]"
+                      style={{ backgroundColor: th.surfaceAlt }}
+                    >
+                      Straddle cone:{' '}
+                      {analysis.strikeGuidance.straddleCone.lower} {'\u2013'}{' '}
+                      {analysis.strikeGuidance.straddleCone.upper}
+                      {' \u2022 '}
+                      {analysis.strikeGuidance.straddleCone.priceRelation}
                     </div>
                   )}
-                  {analysis.strikeGuidance.adjustments && analysis.strikeGuidance.adjustments.length > 0 && (
-                    <div className="mt-1">
-                      <BulletList defaultColor={th.textMuted} items={analysis.strikeGuidance.adjustments} icon={'\u2192'} color={th.accent} />
-                    </div>
-                  )}
+                  {analysis.strikeGuidance.adjustments &&
+                    analysis.strikeGuidance.adjustments.length > 0 && (
+                      <div className="mt-1">
+                        <BulletList
+                          defaultColor={th.textMuted}
+                          items={analysis.strikeGuidance.adjustments}
+                          icon={'\u2192'}
+                          color={th.accent}
+                        />
+                      </div>
+                    )}
                 </div>
               </Collapsible>
             )}
@@ -758,43 +985,77 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             {analysis.entryPlan && (
               <Collapsible title="Entry Plan" color={th.accent} defaultOpen>
                 <div className="grid gap-2">
-                  {([analysis.entryPlan.entry1, analysis.entryPlan.entry2, analysis.entryPlan.entry3]).map((entry, i) => {
+                  {[
+                    analysis.entryPlan.entry1,
+                    analysis.entryPlan.entry2,
+                    analysis.entryPlan.entry3,
+                  ].map((entry, i) => {
                     if (!entry) return null;
                     return (
-                      <div key={i} className="bg-surface-alt flex items-start gap-2.5 rounded-md p-2">
+                      <div
+                        key={i}
+                        className="bg-surface-alt flex items-start gap-2.5 rounded-md p-2"
+                      >
                         <div
                           className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-bold"
-                          style={{ backgroundColor: th.accent + '18', color: th.accent }}
+                          style={{
+                            backgroundColor: th.accent + '18',
+                            color: th.accent,
+                          }}
                         >
                           {i + 1}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[11px] font-semibold" style={{ color: structureColor(entry.structure) }}>
+                            <span
+                              className="text-[11px] font-semibold"
+                              style={{ color: structureColor(entry.structure) }}
+                            >
                               {entry.structure}
                             </span>
-                            <span className="font-mono text-[10px] font-bold" style={{ color: th.accent }}>
-                              {entry.delta}{'\u0394'}
+                            <span
+                              className="font-mono text-[10px] font-bold"
+                              style={{ color: th.accent }}
+                            >
+                              {entry.delta}
+                              {'\u0394'}
                             </span>
-                            <span className="text-muted text-[9px]">{entry.sizePercent}% size</span>
+                            <span className="text-muted text-[9px]">
+                              {entry.sizePercent}% size
+                            </span>
                           </div>
                           <div className="text-muted text-[10px]">
                             {entry.timing ?? entry.condition}
                           </div>
-                          <div className="text-secondary mt-0.5 text-[10px] italic">{entry.note}</div>
+                          <div className="text-secondary mt-0.5 text-[10px] italic">
+                            {entry.note}
+                          </div>
                         </div>
                       </div>
                     );
                   })}
                   {analysis.entryPlan.maxTotalSize && (
-                    <div className="text-muted text-[10px]">Max size: {analysis.entryPlan.maxTotalSize}</div>
-                  )}
-                  {analysis.entryPlan.noEntryConditions && analysis.entryPlan.noEntryConditions.length > 0 && (
-                    <div className="mt-1">
-                      <div className="mb-0.5 text-[9px] font-bold uppercase" style={{ color: th.red }}>Do NOT add entries if:</div>
-                      <BulletList defaultColor={th.textMuted} items={analysis.entryPlan.noEntryConditions} icon={'\u2718'} color={th.red} />
+                    <div className="text-muted text-[10px]">
+                      Max size: {analysis.entryPlan.maxTotalSize}
                     </div>
                   )}
+                  {analysis.entryPlan.noEntryConditions &&
+                    analysis.entryPlan.noEntryConditions.length > 0 && (
+                      <div className="mt-1">
+                        <div
+                          className="mb-0.5 text-[9px] font-bold uppercase"
+                          style={{ color: th.red }}
+                        >
+                          Do NOT add entries if:
+                        </div>
+                        <BulletList
+                          defaultColor={th.textMuted}
+                          items={analysis.entryPlan.noEntryConditions}
+                          icon={'\u2718'}
+                          color={th.red}
+                        />
+                      </div>
+                    )}
                 </div>
               </Collapsible>
             )}
@@ -805,26 +1066,58 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 <div className="grid gap-1.5">
                   {analysis.managementRules.profitTarget && (
                     <div className="text-[11px] leading-relaxed">
-                      <span className="font-semibold" style={{ color: th.green }}>Profit target: </span>
-                      <span className="text-secondary">{analysis.managementRules.profitTarget}</span>
+                      <span
+                        className="font-semibold"
+                        style={{ color: th.green }}
+                      >
+                        Profit target:{' '}
+                      </span>
+                      <span className="text-secondary">
+                        {analysis.managementRules.profitTarget}
+                      </span>
                     </div>
                   )}
-                  {analysis.managementRules.stopConditions && analysis.managementRules.stopConditions.length > 0 && (
-                    <div>
-                      <span className="text-[10px] font-semibold" style={{ color: th.red }}>Stop conditions:</span>
-                      <BulletList defaultColor={th.textMuted} items={analysis.managementRules.stopConditions} icon={'\u26D4'} color={th.red} />
-                    </div>
-                  )}
+                  {analysis.managementRules.stopConditions &&
+                    analysis.managementRules.stopConditions.length > 0 && (
+                      <div>
+                        <span
+                          className="text-[10px] font-semibold"
+                          style={{ color: th.red }}
+                        >
+                          Stop conditions:
+                        </span>
+                        <BulletList
+                          defaultColor={th.textMuted}
+                          items={analysis.managementRules.stopConditions}
+                          icon={'\u26D4'}
+                          color={th.red}
+                        />
+                      </div>
+                    )}
                   {analysis.managementRules.timeRules && (
                     <div className="text-[11px] leading-relaxed">
-                      <span className="font-semibold" style={{ color: '#E8A317' }}>Time rule: </span>
-                      <span className="text-secondary">{analysis.managementRules.timeRules}</span>
+                      <span
+                        className="font-semibold"
+                        style={{ color: '#E8A317' }}
+                      >
+                        Time rule:{' '}
+                      </span>
+                      <span className="text-secondary">
+                        {analysis.managementRules.timeRules}
+                      </span>
                     </div>
                   )}
                   {analysis.managementRules.flowReversalSignal && (
                     <div className="text-[11px] leading-relaxed">
-                      <span className="font-semibold" style={{ color: '#E8A317' }}>Flow reversal: </span>
-                      <span className="text-secondary">{analysis.managementRules.flowReversalSignal}</span>
+                      <span
+                        className="font-semibold"
+                        style={{ color: '#E8A317' }}
+                      >
+                        Flow reversal:{' '}
+                      </span>
+                      <span className="text-secondary">
+                        {analysis.managementRules.flowReversalSignal}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -834,26 +1127,45 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             {/* Risk Factors */}
             {analysis.risks.length > 0 && (
               <Collapsible title="Risk Factors" color={th.red}>
-                <BulletList defaultColor={th.textMuted} items={analysis.risks} icon={'\u26A0'} color={th.red} />
+                <BulletList
+                  defaultColor={th.textMuted}
+                  items={analysis.risks}
+                  icon={'\u26A0'}
+                  color={th.red}
+                />
               </Collapsible>
             )}
 
             {/* Hedge */}
             {analysis.hedge && (
-              <Collapsible title={`Hedge: ${analysis.hedge.recommendation}`} color={
-                analysis.hedge.recommendation === 'NO HEDGE' ? th.green
-                : analysis.hedge.recommendation === 'SKIP' ? th.red
-                : '#E8A317'
-              }>
+              <Collapsible
+                title={`Hedge: ${analysis.hedge.recommendation}`}
+                color={
+                  analysis.hedge.recommendation === 'NO HEDGE'
+                    ? th.green
+                    : analysis.hedge.recommendation === 'SKIP'
+                      ? th.red
+                      : '#E8A317'
+                }
+              >
                 <div>
-                  {analysis.hedge.estimatedCost && analysis.hedge.recommendation !== 'NO HEDGE' && analysis.hedge.recommendation !== 'SKIP' && (
-                    <span className="text-muted mb-1.5 inline-block rounded-full px-1.5 py-0.5 font-mono text-[8px]" style={{ backgroundColor: th.surfaceAlt }}>
-                      {analysis.hedge.estimatedCost}
-                    </span>
-                  )}
-                  <div className="text-secondary text-[11px] leading-relaxed">{analysis.hedge.description}</div>
+                  {analysis.hedge.estimatedCost &&
+                    analysis.hedge.recommendation !== 'NO HEDGE' &&
+                    analysis.hedge.recommendation !== 'SKIP' && (
+                      <span
+                        className="text-muted mb-1.5 inline-block rounded-full px-1.5 py-0.5 font-mono text-[8px]"
+                        style={{ backgroundColor: th.surfaceAlt }}
+                      >
+                        {analysis.hedge.estimatedCost}
+                      </span>
+                    )}
+                  <div className="text-secondary text-[11px] leading-relaxed">
+                    {analysis.hedge.description}
+                  </div>
                   {analysis.hedge.rationale && (
-                    <div className="text-muted mt-1 text-[10px] italic leading-relaxed">{analysis.hedge.rationale}</div>
+                    <div className="text-muted mt-1 text-[10px] leading-relaxed italic">
+                      {analysis.hedge.rationale}
+                    </div>
                   )}
                 </div>
               </Collapsible>
@@ -862,7 +1174,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             {/* Periscope Analysis */}
             {analysis.periscopeNotes && (
               <Collapsible title="Periscope Analysis" color={th.textMuted}>
-                <div className="text-secondary text-[11px] leading-relaxed">{analysis.periscopeNotes}</div>
+                <div className="text-secondary text-[11px] leading-relaxed">
+                  {analysis.periscopeNotes}
+                </div>
               </Collapsible>
             )}
 
@@ -871,34 +1185,69 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               <div
                 className="rounded-[10px] p-3.5"
                 style={{
-                  backgroundColor: analysis.review.wasCorrect ? th.green + '08' : th.red + '08',
+                  backgroundColor: analysis.review.wasCorrect
+                    ? th.green + '08'
+                    : th.red + '08',
                   border: `1.5px solid ${analysis.review.wasCorrect ? th.green : th.red}20`,
                 }}
               >
                 <div className="mb-2 flex items-center gap-2">
-                  <span className="font-sans text-[11px] font-bold" style={{ color: analysis.review.wasCorrect ? th.green : th.red }}>
-                    {analysis.review.wasCorrect ? '\u2713 Recommendation was correct' : '\u2717 Recommendation was incorrect'}
+                  <span
+                    className="font-sans text-[11px] font-bold"
+                    style={{
+                      color: analysis.review.wasCorrect ? th.green : th.red,
+                    }}
+                  >
+                    {analysis.review.wasCorrect
+                      ? '\u2713 Recommendation was correct'
+                      : '\u2717 Recommendation was incorrect'}
                   </span>
                 </div>
                 <div className="grid gap-2">
                   <div className="text-[11px] leading-relaxed">
-                    <span className="font-semibold" style={{ color: th.green }}>What worked: </span>
-                    <span className="text-secondary">{analysis.review.whatWorked}</span>
+                    <span className="font-semibold" style={{ color: th.green }}>
+                      What worked:{' '}
+                    </span>
+                    <span className="text-secondary">
+                      {analysis.review.whatWorked}
+                    </span>
                   </div>
                   <div className="text-[11px] leading-relaxed">
-                    <span className="font-semibold" style={{ color: '#E8A317' }}>What was missed: </span>
-                    <span className="text-secondary">{analysis.review.whatMissed}</span>
+                    <span
+                      className="font-semibold"
+                      style={{ color: '#E8A317' }}
+                    >
+                      What was missed:{' '}
+                    </span>
+                    <span className="text-secondary">
+                      {analysis.review.whatMissed}
+                    </span>
                   </div>
                   <div className="text-[11px] leading-relaxed">
-                    <span className="font-semibold" style={{ color: th.accent }}>Optimal trade: </span>
-                    <span className="text-secondary">{analysis.review.optimalTrade}</span>
+                    <span
+                      className="font-semibold"
+                      style={{ color: th.accent }}
+                    >
+                      Optimal trade:{' '}
+                    </span>
+                    <span className="text-secondary">
+                      {analysis.review.optimalTrade}
+                    </span>
                   </div>
                   {analysis.review.lessonsLearned.length > 0 && (
                     <div>
-                      <div className="mb-0.5 text-[9px] font-bold tracking-wider uppercase" style={{ color: th.accent }}>
+                      <div
+                        className="mb-0.5 text-[9px] font-bold tracking-wider uppercase"
+                        style={{ color: th.accent }}
+                      >
                         Lessons for next time
                       </div>
-                      <BulletList defaultColor={th.textMuted} items={analysis.review.lessonsLearned} icon={'\u{1F4A1}'} color={th.accent} />
+                      <BulletList
+                        defaultColor={th.textMuted}
+                        items={analysis.review.lessonsLearned}
+                        icon={'\u{1F4A1}'}
+                        color={th.accent}
+                      />
                     </div>
                   )}
                 </div>
@@ -907,30 +1256,57 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
             {/* Structure Rationale */}
             <Collapsible title="Structure Rationale" color={th.textMuted}>
-              <div className="text-secondary text-[11px] italic leading-relaxed">{analysis.structureRationale}</div>
+              <div className="text-secondary text-[11px] leading-relaxed italic">
+                {analysis.structureRationale}
+              </div>
             </Collapsible>
 
             {/* Image Issues (always visible — actionable) */}
             {analysis.imageIssues && analysis.imageIssues.length > 0 && (
-              <div className="rounded-lg p-3" style={{ backgroundColor: '#E8A31708', border: '1px solid #E8A31720' }}>
-                <div className="mb-2 font-sans text-[9px] font-bold tracking-wider uppercase" style={{ color: '#E8A317' }}>
-                  Image Issues {'\u2014'} {analysis.imageIssues.length} image{analysis.imageIssues.length > 1 ? 's' : ''} need{analysis.imageIssues.length === 1 ? 's' : ''} improvement
+              <div
+                className="rounded-lg p-3"
+                style={{
+                  backgroundColor: '#E8A31708',
+                  border: '1px solid #E8A31720',
+                }}
+              >
+                <div
+                  className="mb-2 font-sans text-[9px] font-bold tracking-wider uppercase"
+                  style={{ color: '#E8A317' }}
+                >
+                  Image Issues {'\u2014'} {analysis.imageIssues.length} image
+                  {analysis.imageIssues.length > 1 ? 's' : ''} need
+                  {analysis.imageIssues.length === 1 ? 's' : ''} improvement
                 </div>
                 <div className="grid gap-2">
                   {analysis.imageIssues.map((issue, i) => (
-                    <div key={i} className="bg-surface border-edge flex items-start gap-2.5 rounded-md border p-2.5">
+                    <div
+                      key={i}
+                      className="bg-surface border-edge flex items-start gap-2.5 rounded-md border p-2.5"
+                    >
                       <div className="min-w-0 flex-1">
-                        <div className="mb-0.5 font-sans text-[11px] font-semibold" style={{ color: '#E8A317' }}>
+                        <div
+                          className="mb-0.5 font-sans text-[11px] font-semibold"
+                          style={{ color: '#E8A317' }}
+                        >
                           Image {issue.imageIndex}: {issue.label}
                         </div>
-                        <div className="text-secondary text-[10px] leading-relaxed">{issue.issue}</div>
-                        <div className="text-muted mt-0.5 text-[10px] italic">{'\u2192'} {issue.suggestion}</div>
+                        <div className="text-secondary text-[10px] leading-relaxed">
+                          {issue.issue}
+                        </div>
+                        <div className="text-muted mt-0.5 text-[10px] italic">
+                          {'\u2192'} {issue.suggestion}
+                        </div>
                       </div>
                       <button
                         type="button"
                         onClick={() => replaceImage(issue.imageIndex)}
                         className="shrink-0 cursor-pointer rounded-md px-2.5 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
-                        style={{ backgroundColor: '#E8A31718', color: '#E8A317', border: '1px solid #E8A31730' }}
+                        style={{
+                          backgroundColor: '#E8A31718',
+                          color: '#E8A317',
+                          border: '1px solid #E8A31730',
+                        }}
                       >
                         Replace
                       </button>
@@ -938,7 +1314,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                   ))}
                 </div>
                 <div className="text-muted mt-2 text-[10px]">
-                  Replace the flagged image{analysis.imageIssues.length > 1 ? 's' : ''}, then click <strong>Analyze</strong> again.
+                  Replace the flagged image
+                  {analysis.imageIssues.length > 1 ? 's' : ''}, then click{' '}
+                  <strong>Analyze</strong> again.
                 </div>
               </div>
             )}
@@ -948,8 +1326,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         {/* Raw response fallback */}
         {!analysis && rawResponse && (
           <div className="bg-surface-alt border-edge rounded-lg border p-3">
-            <div className="text-muted mb-1 font-sans text-[9px] font-bold tracking-wider uppercase">Raw Analysis</div>
-            <pre className="text-secondary max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed">
+            <div className="text-muted mb-1 font-sans text-[9px] font-bold tracking-wider uppercase">
+              Raw Analysis
+            </div>
+            <pre className="text-secondary max-h-48 overflow-auto font-mono text-[10px] leading-relaxed whitespace-pre-wrap">
               {rawResponse}
             </pre>
           </div>

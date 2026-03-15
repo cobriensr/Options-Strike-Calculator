@@ -16,6 +16,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
     "@upstash/redis": "^1.36.4",
     "@vercel/analytics": "^2.0.0",
     "react": "^19.2.4",

@@ -14,7 +14,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner } from './_lib/api-helpers.js';
+import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
+import { saveAnalysis, getDb } from './_lib/db.js';
 
 // Allow up to 5 minutes for Opus with extended thinking
 export const config = { maxDuration: 300 };
@@ -299,9 +300,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ownerCheck = rejectIfNotOwner(req, res);
   if (ownerCheck) return ownerCheck;
 
+  // Rate limit: max 10 analyses per minute (prevents runaway costs)
+  const rateLimited = await rejectIfRateLimited(req, res, 'analyze', 10);
+  if (rateLimited) return;
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+    return res.status(500).json({ error: 'Server configuration error' });
   }
 
   const { images, context } = req.body as {
@@ -315,6 +320,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (images.length > 5) {
     return res.status(400).json({ error: 'Maximum 5 images allowed' });
+  }
+
+  // Payload size check: each base64 image should be < 5MB
+  const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB in base64 chars
+  for (const img of images) {
+    if (img.data.length > MAX_IMAGE_SIZE) {
+      return res
+        .status(400)
+        .json({ error: 'Image too large. Maximum 5MB per image.' });
+    }
   }
 
   // Build the user message with images + context
@@ -400,9 +415,15 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
 
     if (!response.ok) {
       const errBody = await response.text();
-      return res.status(502).json({
-        error: `Anthropic API error (${response.status}): ${errBody}`,
-      });
+      console.error(`Anthropic API error (${response.status}):`, errBody);
+      // Don't leak Anthropic error details to the client
+      const clientMsg =
+        response.status === 429
+          ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
+          : response.status === 401
+            ? 'Anthropic API authentication error. Check API key.'
+            : `Analysis service error (${response.status}). Please retry.`;
+      return res.status(502).json({ error: clientMsg });
     }
 
     const data = await response.json();
@@ -417,6 +438,32 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     try {
       const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
       const analysis = JSON.parse(cleaned);
+
+      // Fire-and-forget: save to Postgres for future backtesting
+      const snapshotLookup = async () => {
+        try {
+          const db = getDb();
+          const date =
+            context.selectedDate ??
+            new Date().toLocaleDateString('en-CA', {
+              timeZone: 'America/New_York',
+            });
+          const entryTime = context.entryTime ?? 'unknown';
+          const rows = await db`
+            SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
+          `;
+          return rows.length > 0 ? (rows[0]!.id as number) : null;
+        } catch {
+          return null;
+        }
+      };
+
+      snapshotLookup().then((snapshotId) => {
+        saveAnalysis(context, analysis, snapshotId).catch((dbErr) => {
+          console.error('Failed to save analysis to DB:', dbErr);
+        });
+      });
+
       return res.status(200).json({ analysis, raw: text });
     } catch {
       // Return raw text if JSON parse fails
