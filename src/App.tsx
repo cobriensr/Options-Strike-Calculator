@@ -214,20 +214,39 @@ export default function StrikeCalculator() {
   })();
 
   // Auto-save market snapshot for authenticated owner (fire-and-forget)
-  useSnapshotSave(results, {
-    selectedDate: vix.selectedDate,
-    entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
-    isBacktest: !!historySnapshot,
-    spy: Number.parseFloat(dSpot) || undefined,
-    vix: Number.parseFloat(dVix) || undefined,
-    vix1d: market.data.quotes?.vix1d?.price ?? (historySnapshot?.vix1d ?? undefined),
-    vix9d: market.data.quotes?.vix9d?.price ?? (historySnapshot?.vix9d ?? undefined),
-    vvix: market.data.quotes?.vvix?.price ?? (historySnapshot?.vvix ?? undefined),
-    sigmaSource: (market.data.quotes?.vix1d?.price ?? historySnapshot?.vix1d)
-      ? 'VIX1D' : ivMode === IV_MODES.VIX ? 'VIX × 1.15' : 'manual',
-    skewPct: skewPct,
-    clusterMult,
-  }, market.hasData);
+  useSnapshotSave(
+    results,
+    {
+      selectedDate: vix.selectedDate,
+      entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
+      isBacktest: !!historySnapshot,
+      spy: Number.parseFloat(dSpot) || undefined,
+      vix: Number.parseFloat(dVix) || undefined,
+      vix1d: historySnapshot
+        ? (historySnapshot.vix1d ?? undefined)
+        : (market.data.quotes?.vix1d?.price ?? undefined),
+      vix9d: historySnapshot
+        ? (historySnapshot.vix9d ?? undefined)
+        : (market.data.quotes?.vix9d?.price ?? undefined),
+      vvix: historySnapshot
+        ? (historySnapshot.vvix ?? undefined)
+        : (market.data.quotes?.vvix?.price ?? undefined),
+      sigmaSource: historySnapshot
+        ? historySnapshot.vix1d
+          ? 'VIX1D'
+          : ivMode === IV_MODES.VIX
+            ? 'VIX × 1.15'
+            : 'manual'
+        : market.data.quotes?.vix1d?.price
+          ? 'VIX1D'
+          : ivMode === IV_MODES.VIX
+            ? 'VIX × 1.15'
+            : 'manual',
+      skewPct: skewPct,
+      clusterMult,
+    },
+    market.hasData,
+  );
 
   // Shared CSS classes
   const chevronUrl = buildChevronUrl(th.chevronColor);
@@ -450,53 +469,83 @@ export default function StrikeCalculator() {
             />
 
             {/* Chart Analysis — owner-only (requires authenticated session) */}
-            {market.hasData && (() => {
-              // Compute opening range availability: 30 min after open = 10:00 AM ET
-              const h24 = Number.parseInt(timeHour) + (timeAmPm === 'PM' && timeHour !== '12' ? 12 : 0) - (timeAmPm === 'AM' && timeHour === '12' ? 12 : 0);
-              const etHour = timezone === 'CT' ? h24 + 1 : h24;
-              const etMinute = Number.parseInt(timeMinute) || 0;
-              const etMinutes = etHour * 60 + etMinute;
-              const openingRangeAvailable = etMinutes >= 600; // 10:00 AM ET
+            {market.hasData &&
+              (() => {
+                // Compute opening range availability: 30 min after open = 10:00 AM ET
+                const h24 =
+                  Number.parseInt(timeHour) +
+                  (timeAmPm === 'PM' && timeHour !== '12' ? 12 : 0) -
+                  (timeAmPm === 'AM' && timeHour === '12' ? 12 : 0);
+                const etHour = timezone === 'CT' ? h24 + 1 : h24;
+                const etMinute = Number.parseInt(timeMinute) || 0;
+                const etMinutes = etHour * 60 + etMinute;
+                const openingRangeAvailable = etMinutes >= 600; // 10:00 AM ET
 
-              // VIX1D with fallback logic
-              const vix1dVal = market.data.quotes?.vix1d?.price ?? (historySnapshot?.vix1d ?? undefined);
-              const vixVal = Number.parseFloat(dVix) || undefined;
+                // VIX1D with correct priority: snapshot first when backtesting, live otherwise
+                const vix1dVal = historySnapshot
+                  ? (historySnapshot.vix1d ?? undefined)
+                  : (market.data.quotes?.vix1d?.price ?? undefined);
+                const vix9dVal = historySnapshot
+                  ? (historySnapshot.vix9d ?? undefined)
+                  : (market.data.quotes?.vix9d?.price ?? undefined);
+                const vvixVal = historySnapshot
+                  ? (historySnapshot.vvix ?? undefined)
+                  : (market.data.quotes?.vvix?.price ?? undefined);
+                const vixVal = Number.parseFloat(dVix) || undefined;
 
-              // Build data availability note
-              const dataNotes: string[] = [];
-              if (!vix1dVal && vixVal) dataNotes.push('VIX1D unavailable — σ derived from VIX × 1.15. Actual per-strike IV may differ.');
-              if (!openingRangeAvailable) dataNotes.push('Entry is before 10:00 AM ET — 30-min opening range not yet complete. Opening range signals are unavailable.');
-              if (historySnapshot) dataNotes.push('Backtesting: data is from historical candles, not live quotes.');
+                // Build data availability note
+                const dataNotes: string[] = [];
+                if (!vix1dVal && vixVal)
+                  dataNotes.push(
+                    'VIX1D unavailable — σ derived from VIX × 1.15. Actual per-strike IV may differ.',
+                  );
+                if (!openingRangeAvailable)
+                  dataNotes.push(
+                    'Entry is before 10:00 AM ET — 30-min opening range not yet complete. Opening range signals are unavailable.',
+                  );
+                if (historySnapshot)
+                  dataNotes.push(
+                    'Backtesting: data is from historical candles, not live quotes.',
+                  );
 
-              // Sigma source
-              const sigmaSource = vix1dVal ? 'VIX1D' : ivMode === IV_MODES.VIX ? 'VIX × 1.15' : 'manual';
+                // Sigma source
+                const sigmaSource = vix1dVal
+                  ? 'VIX1D'
+                  : ivMode === IV_MODES.VIX
+                    ? 'VIX × 1.15'
+                    : 'manual';
 
-              return (
-                <ChartAnalysis
-                  th={th}
-                  results={results}
-                  context={{
-                    selectedDate: vix.selectedDate,
-                    entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
-                    spx: results?.spot,
-                    spy: Number.parseFloat(dSpot) || undefined,
-                    vix: vixVal,
-                    vix1d: vix1dVal,
-                    vix9d: market.data.quotes?.vix9d?.price ?? (historySnapshot?.vix9d ?? undefined),
-                    vvix: market.data.quotes?.vvix?.price ?? (historySnapshot?.vvix ?? undefined),
-                    sigma: results?.sigma,
-                    sigmaSource,
-                    T: results?.T,
-                    hoursRemaining: results?.hoursRemaining,
-                    clusterMult,
-                    regimeZone: undefined,
-                    openingRangeAvailable,
-                    isBacktest: !!historySnapshot,
-                    dataNote: dataNotes.length > 0 ? dataNotes.join(' | ') : undefined,
-                  } satisfies AnalysisContext}
-                />
-              );
-            })()}
+                return (
+                  <ChartAnalysis
+                    th={th}
+                    results={results}
+                    context={
+                      {
+                        selectedDate: vix.selectedDate,
+                        entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
+                        spx: results?.spot,
+                        spy: Number.parseFloat(dSpot) || undefined,
+                        vix: vixVal,
+                        vix1d: vix1dVal,
+                        vix9d: vix9dVal,
+                        vvix: vvixVal,
+                        sigma: results?.sigma,
+                        sigmaSource,
+                        T: results?.T,
+                        hoursRemaining: results?.hoursRemaining,
+                        clusterMult,
+                        regimeZone: undefined,
+                        openingRangeAvailable,
+                        isBacktest: !!historySnapshot,
+                        dataNote:
+                          dataNotes.length > 0
+                            ? dataNotes.join(' | ')
+                            : undefined,
+                      } satisfies AnalysisContext
+                    }
+                  />
+                );
+              })()}
 
             <ResultsSection
               th={th}

@@ -284,7 +284,9 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
-      expect(screen.getByText(/Market Tide \(SPX\)/)).toBeInTheDocument();
+      expect(
+        screen.getAllByText(/Market Tide \(SPX\)/).length,
+      ).toBeGreaterThanOrEqual(1);
     });
 
     it('returns to normal state when Go Back is clicked', async () => {
@@ -774,11 +776,11 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       expect(
-        screen.getByRole('button', { name: /pre-trade/i }),
+        screen.getByRole('button', { name: /^analyze.*pre-trade/i }),
       ).toBeInTheDocument();
       await user.click(screen.getByText('Mid-Day'));
       expect(
-        screen.getByRole('button', { name: /mid-day/i }),
+        screen.getByRole('button', { name: /^analyze.*mid-day/i }),
       ).toBeInTheDocument();
     });
   });
@@ -857,13 +859,11 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup();
       vi.stubGlobal(
         'fetch',
-        vi
-          .fn()
-          .mockResolvedValue({
-            ok: false,
-            status: 500,
-            json: () => Promise.reject(new Error('bad')),
-          }),
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 500,
+          json: () => Promise.reject(new Error('bad')),
+        }),
       );
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
@@ -879,14 +879,12 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup();
       vi.stubGlobal(
         'fetch',
-        vi
-          .fn()
-          .mockResolvedValue(
-            new Response(JSON.stringify({ message: 'x' }), {
-              status: 503,
-              headers: { 'Content-Type': 'application/json' },
-            }),
-          ),
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ message: 'x' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
       );
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
@@ -954,14 +952,12 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup();
       vi.stubGlobal(
         'fetch',
-        vi
-          .fn()
-          .mockResolvedValue(
-            new Response(JSON.stringify({ analysis: null, raw: 'text' }), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            }),
-          ),
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ analysis: null, raw: 'text' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
       );
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,

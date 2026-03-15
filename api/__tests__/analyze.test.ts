@@ -5,6 +5,7 @@ import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfNotOwner: vi.fn(),
+  rejectIfRateLimited: vi.fn().mockResolvedValue(false),
 }));
 
 import handler from '../analyze.js';
@@ -108,7 +109,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'ANTHROPIC_API_KEY not configured' });
+    expect(res._json).toEqual({ error: 'Server configuration error' });
   });
 
   it('returns 400 when no images provided', async () => {
@@ -218,8 +219,7 @@ describe('POST /api/analyze', () => {
 
     expect(res._status).toBe(502);
     const json = res._json as { error: string };
-    expect(json.error).toContain('Anthropic API error (429)');
-    expect(json.error).toContain('Rate limited');
+    expect(json.error).toContain('Anthropic rate limit exceeded');
   });
 
   it('returns raw text when Claude response is not valid JSON', async () => {
