@@ -86,7 +86,7 @@ describe('POST /api/snapshot', () => {
     );
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({ id: 'abc-123', saved: true });
+    expect(res._json).toEqual({ id: 123, saved: true });
     expect(saveSnapshot).toHaveBeenCalledWith({
       date: '2026-03-10',
       entryTime: '09:35',

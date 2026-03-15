@@ -439,30 +439,23 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
       const analysis = JSON.parse(cleaned);
 
-      // Fire-and-forget: save to Postgres for future backtesting
-      const snapshotLookup = async () => {
-        try {
-          const db = getDb();
-          const date =
-            context.selectedDate ??
-            new Date().toLocaleDateString('en-CA', {
-              timeZone: 'America/New_York',
-            });
-          const entryTime = context.entryTime ?? 'unknown';
-          const rows = await db`
-            SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
-          `;
-          return rows.length > 0 ? (rows[0]?.id as number) : null;
-        } catch {
-          return null;
-        }
-      };
-
-      snapshotLookup().then((snapshotId) => {
-        saveAnalysis(context, analysis, snapshotId).catch((dbErr) => {
-          console.error('Failed to save analysis to DB:', dbErr);
-        });
-      });
+      // Save to Postgres before responding (must await — Vercel kills the function after res.json)
+      try {
+        const db = getDb();
+        const date =
+          context.selectedDate ??
+          new Date().toLocaleDateString('en-CA', {
+            timeZone: 'America/New_York',
+          });
+        const entryTime = context.entryTime ?? 'unknown';
+        const rows = await db`
+          SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
+        `;
+        const snapshotId = rows.length > 0 ? (rows[0]!.id as number) : null;
+        await saveAnalysis(context, analysis, snapshotId);
+      } catch (dbErr) {
+        console.error('Failed to save analysis to DB:', dbErr);
+      }
 
       return res.status(200).json({ analysis, raw: text });
     } catch {
