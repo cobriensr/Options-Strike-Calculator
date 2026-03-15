@@ -155,11 +155,11 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 
 ### Three Analysis Modes
 
-| Mode | When | What it produces |
-| --- | --- | --- |
-| Pre-Trade | Before entry (~8:45 AM CT) | Full plan: structure, delta, 3 laddered entries, strike placement from gamma zones, management rules, hedge, risks |
-| Mid-Day | During position (~10:00–11:00 AM CT) | Update: has flow shifted, should you close legs, is it safe to add Entry 2/3 |
-| Review | After close (~4:00 PM ET) | Retrospective: was the structure correct, what signals predicted the outcome, lessons learned |
+| Mode      | When                                 | What it produces                                                                                                   |
+| --------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Pre-Trade | Before entry (~8:45 AM CT)           | Full plan: structure, delta, 3 laddered entries, strike placement from gamma zones, management rules, hedge, risks |
+| Mid-Day   | During position (~10:00–11:00 AM CT) | Update: has flow shifted, should you close legs, is it safe to add Entry 2/3                                       |
+| Review    | After close (~4:00 PM ET)            | Retrospective: was the structure correct, what signals predicted the outcome, lessons learned                      |
 
 ### What Claude Receives
 
@@ -207,14 +207,14 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 
 Compares theoretical calculator strikes to actual Schwab option chain data:
 
-| Feature | Detail |
-| --- | --- |
-| Endpoint | `GET /api/chain` |
-| Symbol | `$SPX`, range=ALL, strikeCount=80 |
-| Target deltas | 5, 8, 10, 12, 15, 20 |
-| Returns | Nearest chain strike to each target delta with actual put/call delta, IV, credit |
-| Divergence alert | Flags when theoretical vs chain strikes diverge >10 pts |
-| Cache | 30 seconds during market hours |
+| Feature          | Detail                                                                           |
+| ---------------- | -------------------------------------------------------------------------------- |
+| Endpoint         | `GET /api/chain`                                                                 |
+| Symbol           | `$SPX`, range=ALL, strikeCount=80                                                |
+| Target deltas    | 5, 8, 10, 12, 15, 20                                                             |
+| Returns          | Nearest chain strike to each target delta with actual put/call delta, IV, credit |
+| Divergence alert | Flags when theoretical vs chain strikes diverge >10 pts                          |
+| Cache            | 30 seconds during market hours                                                   |
 
 This addresses the single-σ model limitation: VIX1D is aggregate IV across the entire strip, but on high-skew days OTM put IV ≠ VIX1D. The chain endpoint shows per-strike deltas directly from Schwab.
 
@@ -244,39 +244,39 @@ Three Postgres tables automatically collect data for future ML training:
 
 **`market_snapshots`** — Complete calculator state at each date+time (40+ features):
 
-| Category | Fields |
-| --- | --- |
-| Prices | SPX, SPY, open, high, low, prev close |
-| Volatility surface | VIX, VIX1D, VIX9D, VVIX, VIX1D/VIX ratio, VIX/VIX9D ratio |
-| Calculator | σ, sigma source, T, hours remaining, skew |
-| Regime | zone (go/caution/stop/danger), cluster multiplier, DOW multipliers |
-| Delta guide | IC ceiling, put/call spread ceilings, moderate/conservative deltas |
-| Range thresholds | median O→C %, median H-L %, P90 O→C %, P90 H-L %, P90 points |
-| Opening range | available flag, high, low, % consumed, signal (GREEN/MODERATE/RED) |
-| Term structure | combined signal (calm/normal/elevated/extreme) |
-| Strikes | JSONB with put/call at every delta (5/8/10/12/15/20) |
-| Events | early close flag, event day flag, event names array |
-| Metadata | is_backtest flag, created_at timestamp |
+| Category           | Fields                                                             |
+| ------------------ | ------------------------------------------------------------------ |
+| Prices             | SPX, SPY, open, high, low, prev close                              |
+| Volatility surface | VIX, VIX1D, VIX9D, VVIX, VIX1D/VIX ratio, VIX/VIX9D ratio          |
+| Calculator         | σ, sigma source, T, hours remaining, skew                          |
+| Regime             | zone (go/caution/stop/danger), cluster multiplier, DOW multipliers |
+| Delta guide        | IC ceiling, put/call spread ceilings, moderate/conservative deltas |
+| Range thresholds   | median O→C %, median H-L %, P90 O→C %, P90 H-L %, P90 points       |
+| Opening range      | available flag, high, low, % consumed, signal (GREEN/MODERATE/RED) |
+| Term structure     | combined signal (calm/normal/elevated/extreme)                     |
+| Strikes            | JSONB with put/call at every delta (5/8/10/12/15/20)               |
+| Events             | early close flag, event day flag, event names array                |
+| Metadata           | is_backtest flag, created_at timestamp                             |
 
 Uniqueness: `UNIQUE(date, entry_time)` with `ON CONFLICT DO NOTHING` — duplicate submissions silently skipped.
 
 **`analyses`** — Claude chart analysis responses:
 
-| Column | Purpose |
-| --- | --- |
-| snapshot_id | FK to market_snapshots (linked at save time) |
-| structure, confidence, suggested_delta | Queryable recommendation fields |
-| hedge | NO HEDGE, REDUCED SIZE, PROTECTIVE LONG, SKIP |
-| full_response | Complete JSON response for replay |
+| Column                                 | Purpose                                       |
+| -------------------------------------- | --------------------------------------------- |
+| snapshot_id                            | FK to market_snapshots (linked at save time)  |
+| structure, confidence, suggested_delta | Queryable recommendation fields               |
+| hedge                                  | NO HEDGE, REDUCED SIZE, PROTECTIVE LONG, SKIP |
+| full_response                          | Complete JSON response for replay             |
 
 **`outcomes`** — End-of-day settlement data:
 
-| Column | Purpose |
-| --- | --- |
-| settlement, day_open, day_high, day_low | SPX OHLC |
-| day_range_pts, day_range_pct | Realized range |
-| close_vs_open | Directional move (positive = up day) |
-| vix_close, vix1d_close | Closing vol values |
+| Column                                  | Purpose                              |
+| --------------------------------------- | ------------------------------------ |
+| settlement, day_open, day_high, day_low | SPX OHLC                             |
+| day_range_pts, day_range_pct            | Realized range                       |
+| close_vs_open                           | Directional move (positive = up day) |
+| vix_close, vix1d_close                  | Closing vol values                   |
 
 Uniqueness: `UNIQUE(date)` with `ON CONFLICT DO UPDATE`.
 
@@ -298,12 +298,12 @@ GET /api/journal/status                       → DB connection test + table cou
 
 ### ML Roadmap
 
-| Days of data | Value | Method |
-| --- | --- | --- |
-| 30–50 | Pattern spotting | SQL queries: win rate by structure, VIX level, opening range |
-| 50–100 | Simple prediction | Logistic regression on snapshot features → survival probability |
-| 100–200 | Non-obvious interactions | XGBoost on 40+ features: gamma wall × VIX × opening range |
-| 200+ | LLM fine-tuning viable | Input/output pairs for fine-tuning a smaller model |
+| Days of data | Value                    | Method                                                          |
+| ------------ | ------------------------ | --------------------------------------------------------------- |
+| 30–50        | Pattern spotting         | SQL queries: win rate by structure, VIX level, opening range    |
+| 50–100       | Simple prediction        | Logistic regression on snapshot features → survival probability |
+| 100–200      | Non-obvious interactions | XGBoost on 40+ features: gamma wall × VIX × opening range       |
+| 200+         | LLM fine-tuning viable   | Input/output pairs for fine-tuning a smaller model              |
 
 ---
 
@@ -352,20 +352,20 @@ Static calendar of FOMC (8/year), CPI (12/year), NFP (12/year), GDP (4/year) for
 
 ### Architecture
 
-| Endpoint | Schwab Call | Returns | Cache (market) | Cache (closed) |
-| --- | --- | --- | --- | --- |
-| `GET /api/quotes` | `getQuotes(SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX)` | Real-time spot prices | 60s | 5 min |
-| `GET /api/intraday` | `priceHistory($SPX, 5-min, 1 day)` | Today's OHLC + 30-min opening range | 2 min | 10 min |
-| `GET /api/yesterday` | `priceHistory($SPX, daily, 1 month)` | Prior day SPX OHLC for clustering | 1 hour | 1 day |
-| `GET /api/chain` | `chains($SPX, 0DTE)` | Live option chain with per-strike deltas | 30s | — |
-| `GET /api/events` | FRED API | Economic calendar events | 1 hour | 1 day |
-| `GET /api/history` | `priceHistory($SPX+$VIX+$VIX1D+$VIX9D)` | Historical candles for backtesting | 1 hour | 1 day |
-| `GET /api/movers` | `movers($SPX)` | Market movers | 5 min | 10 min |
-| `POST /api/analyze` | Anthropic Messages API | Claude chart analysis | — | — |
-| `POST /api/snapshot` | Neon Postgres | Save market snapshot | — | — |
-| `GET /api/journal` | Neon Postgres | Query saved analyses | — | — |
-| `GET /api/journal/status` | Neon Postgres | DB connection + table counts | — | — |
-| `POST /api/journal/init` | Neon Postgres | Create tables (one-time) | — | — |
+| Endpoint                  | Schwab Call                                    | Returns                                  | Cache (market) | Cache (closed) |
+| ------------------------- | ---------------------------------------------- | ---------------------------------------- | -------------- | -------------- |
+| `GET /api/quotes`         | `getQuotes(SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX)` | Real-time spot prices                    | 60s            | 5 min          |
+| `GET /api/intraday`       | `priceHistory($SPX, 5-min, 1 day)`             | Today's OHLC + 30-min opening range      | 2 min          | 10 min         |
+| `GET /api/yesterday`      | `priceHistory($SPX, daily, 1 month)`           | Prior day SPX OHLC for clustering        | 1 hour         | 1 day          |
+| `GET /api/chain`          | `chains($SPX, 0DTE)`                           | Live option chain with per-strike deltas | 30s            | —              |
+| `GET /api/events`         | FRED API                                       | Economic calendar events                 | 1 hour         | 1 day          |
+| `GET /api/history`        | `priceHistory($SPX+$VIX+$VIX1D+$VIX9D)`        | Historical candles for backtesting       | 1 hour         | 1 day          |
+| `GET /api/movers`         | `movers($SPX)`                                 | Market movers                            | 5 min          | 10 min         |
+| `POST /api/analyze`       | Anthropic Messages API                         | Claude chart analysis                    | —              | —              |
+| `POST /api/snapshot`      | Neon Postgres                                  | Save market snapshot                     | —              | —              |
+| `GET /api/journal`        | Neon Postgres                                  | Query saved analyses                     | —              | —              |
+| `GET /api/journal/status` | Neon Postgres                                  | DB connection + table counts             | —              | —              |
+| `POST /api/journal/init`  | Neon Postgres                                  | Create tables (one-time)                 | —              | —              |
 
 ### Owner Gating
 
@@ -473,16 +473,16 @@ vercel dev           # Frontend + API functions (localhost:3000)
 
 ### Environment Variables
 
-| Variable | Source | Purpose |
-| --- | --- | --- |
-| `SCHWAB_CLIENT_ID` | developer.schwab.com | Schwab API app key |
-| `SCHWAB_CLIENT_SECRET` | developer.schwab.com | Schwab API app secret |
-| `SCHWAB_REDIRECT_URI` | Your Schwab app settings | OAuth callback URL |
-| `OWNER_SECRET` | `openssl rand -hex 32` | Owner session cookie value |
-| `KV_REST_API_URL` | Auto-set by Vercel (Upstash) | Redis REST endpoint |
-| `KV_REST_API_TOKEN` | Auto-set by Vercel (Upstash) | Redis auth token |
-| `ANTHROPIC_API_KEY` | console.anthropic.com | Claude API key for chart analysis |
-| `DATABASE_URL` | Auto-set by Vercel (Neon) | Postgres connection string |
+| Variable               | Source                       | Purpose                           |
+| ---------------------- | ---------------------------- | --------------------------------- |
+| `SCHWAB_CLIENT_ID`     | developer.schwab.com         | Schwab API app key                |
+| `SCHWAB_CLIENT_SECRET` | developer.schwab.com         | Schwab API app secret             |
+| `SCHWAB_REDIRECT_URI`  | Your Schwab app settings     | OAuth callback URL                |
+| `OWNER_SECRET`         | `openssl rand -hex 32`       | Owner session cookie value        |
+| `KV_REST_API_URL`      | Auto-set by Vercel (Upstash) | Redis REST endpoint               |
+| `KV_REST_API_TOKEN`    | Auto-set by Vercel (Upstash) | Redis auth token                  |
+| `ANTHROPIC_API_KEY`    | console.anthropic.com        | Claude API key for chart analysis |
+| `DATABASE_URL`         | Auto-set by Vercel (Neon)    | Postgres connection string        |
 
 ### Database Setup
 
@@ -646,12 +646,12 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
 
 All owner-gated endpoints are rate-limited via Upstash Redis:
 
-| Endpoint | Limit | Purpose |
-| --- | --- | --- |
-| `/api/analyze` | 10/min | Prevent Opus cost abuse (~$0.30/call) |
-| `/api/snapshot` | 30/min | Generous for normal use |
-| `/api/journal` | 20/min | Query endpoint |
-| Auth endpoints | 5/min | Brute-force protection |
+| Endpoint        | Limit  | Purpose                               |
+| --------------- | ------ | ------------------------------------- |
+| `/api/analyze`  | 10/min | Prevent Opus cost abuse (~$0.30/call) |
+| `/api/snapshot` | 30/min | Generous for normal use               |
+| `/api/journal`  | 20/min | Query endpoint                        |
+| Auth endpoints  | 5/min  | Brute-force protection                |
 
 ### Input Validation
 
@@ -680,13 +680,13 @@ One-click XLSX with three sheets: P&L Comparison (7 wing widths × 6 deltas × 3
 
 800+ tests across 14+ test files, all passing with TypeScript strict mode. Key test files:
 
-| File | Focus |
-| --- | --- |
-| `ChartAnalysis.test.tsx` | 57 tests: image management, confirmation step, cancel, analyze flow, TL;DR card, collapsible sections, modes, error handling |
-| `DeltaRegimeGuide.test.tsx` | 51+ tests: ceiling, thresholds, delta matrix, DOW, clustering |
-| `App.test.tsx` | 55 tests: rendering, mode switching, validation, CSV upload |
-| `SettlementCheck.test.tsx` | Backtest settlement verification |
-| `api.test.ts` | API data processing, owner gating, token logic |
+| File                        | Focus                                                                                                                        |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `ChartAnalysis.test.tsx`    | 57 tests: image management, confirmation step, cancel, analyze flow, TL;DR card, collapsible sections, modes, error handling |
+| `DeltaRegimeGuide.test.tsx` | 51+ tests: ceiling, thresholds, delta matrix, DOW, clustering                                                                |
+| `App.test.tsx`              | 55 tests: rendering, mode switching, validation, CSV upload                                                                  |
+| `SettlementCheck.test.tsx`  | Backtest settlement verification                                                                                             |
+| `api.test.ts`               | API data processing, owner gating, token logic                                                                               |
 
 ```bash
 npm test                 # Watch mode
@@ -727,16 +727,16 @@ Section 508 / WCAG AA: semantic HTML, ARIA attributes, focus management, 4.5:1 c
 
 ## Scripts Reference
 
-| Command | Description |
-| --- | --- |
-| `npm run dev` | Vite dev server with HMR |
-| `npm run build` | TypeScript check + production build |
-| `npm test` | Vitest watch mode |
-| `npm run test:run` | Single test run (CI) |
-| `npm run test:coverage` | v8 coverage report |
-| `npm run lint` | TypeScript type check |
-| `npx tsx scripts/backfill-outcomes.ts` | Populate outcomes table from CSVs |
-| `npx tsx scripts/entry-time-analysis.ts` | Entry timing study (8:45 vs 9:00) |
+| Command                                  | Description                         |
+| ---------------------------------------- | ----------------------------------- |
+| `npm run dev`                            | Vite dev server with HMR            |
+| `npm run build`                          | TypeScript check + production build |
+| `npm test`                               | Vitest watch mode                   |
+| `npm run test:run`                       | Single test run (CI)                |
+| `npm run test:coverage`                  | v8 coverage report                  |
+| `npm run lint`                           | TypeScript type check               |
+| `npx tsx scripts/backfill-outcomes.ts`   | Populate outcomes table from CSVs   |
+| `npx tsx scripts/entry-time-analysis.ts` | Entry timing study (8:45 vs 9:00)   |
 
 ---
 
@@ -779,12 +779,12 @@ Section 508 / WCAG AA: semantic HTML, ARIA attributes, focus management, 4.5:1 c
 
 ### Structure Selection (from Chart Analysis)
 
-| Market Tide Signal | Structure | Why |
-| --- | --- | --- |
-| NCP ≈ NPP (parallel) | Iron Condor | Ranging day, collect both sides |
-| NCP >> NPP (diverging up) | Put Credit Spread | Bullish, no call exposure |
-| NPP >> NCP (diverging up) | Call Credit Spread | Bearish, no put exposure |
-| Both declining sharply | Sit out | High uncertainty |
+| Market Tide Signal        | Structure          | Why                             |
+| ------------------------- | ------------------ | ------------------------------- |
+| NCP ≈ NPP (parallel)      | Iron Condor        | Ranging day, collect both sides |
+| NCP >> NPP (diverging up) | Put Credit Spread  | Bullish, no call exposure       |
+| NPP >> NCP (diverging up) | Call Credit Spread | Bearish, no put exposure        |
+| Both declining sharply    | Sit out            | High uncertainty                |
 
 ---
 
