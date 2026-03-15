@@ -39,14 +39,29 @@ interface SnapshotContext {
   regimeZone?: string;
   clusterMult?: number;
   dowLabel?: string;
+  dowMultHL?: number;
+  dowMultOC?: number;
 
-  // Delta guide (these come from results or parent)
+  // Delta guide
   icCeiling?: number;
   putSpreadCeiling?: number;
   callSpreadCeiling?: number;
+  moderateDelta?: number;
+  conservativeDelta?: number;
+
+  // Range thresholds
+  medianOcPct?: number;
+  medianHlPct?: number;
+  p90OcPct?: number;
+  p90HlPct?: number;
+  p90OcPts?: number;
+  p90HlPts?: number;
 
   // Opening range
   openingRangeAvailable?: boolean;
+  openingRangeHigh?: number;
+  openingRangeLow?: number;
+  openingRangePctConsumed?: number;
   openingRangeSignal?: string;
 
   // Term structure
@@ -118,12 +133,26 @@ export function useSnapshotSave(
       regimeZone: context.regimeZone,
       clusterMult: context.clusterMult,
       dowLabel: context.dowLabel,
+      dowMultHL: context.dowMultHL,
+      dowMultOC: context.dowMultOC,
 
       icCeiling: context.icCeiling,
       putSpreadCeiling: context.putSpreadCeiling,
       callSpreadCeiling: context.callSpreadCeiling,
+      moderateDelta: context.moderateDelta,
+      conservativeDelta: context.conservativeDelta,
+
+      medianOcPct: context.medianOcPct,
+      medianHlPct: context.medianHlPct,
+      p90OcPct: context.p90OcPct,
+      p90HlPct: context.p90HlPct,
+      p90OcPts: context.p90OcPts,
+      p90HlPts: context.p90HlPts,
 
       openingRangeAvailable: context.openingRangeAvailable,
+      openingRangeHigh: context.openingRangeHigh,
+      openingRangeLow: context.openingRangeLow,
+      openingRangePctConsumed: context.openingRangePctConsumed,
       openingRangeSignal: context.openingRangeSignal,
 
       vixTermSignal: context.vixTermSignal,

@@ -10,6 +10,7 @@ import { useMarketData } from './hooks/useMarketData';
 import { useHistoryData } from './hooks/useHistoryData';
 import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
+import { useComputedSignals } from './hooks/useComputedSignals';
 import { to24Hour } from './utils/calculator';
 import { getEarlyCloseHourET } from './data/eventCalendar';
 import VixUploadSection from './components/VixUploadSection';
@@ -214,6 +215,26 @@ export default function StrikeCalculator() {
   })();
 
   // Auto-save market snapshot for authenticated owner (fire-and-forget)
+  const signals = useComputedSignals({
+    vix: Number.parseFloat(dVix) || undefined,
+    spot: results?.spot,
+    T: results?.T,
+    skewPct,
+    clusterMult,
+    selectedDate: vix.selectedDate,
+    timeHour,
+    timeMinute,
+    timeAmPm,
+    timezone,
+    ivMode,
+    ivModeVix: IV_MODES.VIX,
+    liveVix1d: market.data.quotes?.vix1d?.price ?? undefined,
+    liveVix9d: market.data.quotes?.vix9d?.price ?? undefined,
+    liveVvix: market.data.quotes?.vvix?.price ?? undefined,
+    liveOpeningRange: market.data.intraday?.openingRange ?? undefined,
+    historySnapshot,
+  });
+
   useSnapshotSave(
     results,
     {
@@ -222,28 +243,48 @@ export default function StrikeCalculator() {
       isBacktest: !!historySnapshot,
       spy: Number.parseFloat(dSpot) || undefined,
       vix: Number.parseFloat(dVix) || undefined,
-      vix1d: historySnapshot
-        ? (historySnapshot.vix1d ?? undefined)
-        : (market.data.quotes?.vix1d?.price ?? undefined),
-      vix9d: historySnapshot
-        ? (historySnapshot.vix9d ?? undefined)
-        : (market.data.quotes?.vix9d?.price ?? undefined),
-      vvix: historySnapshot
-        ? (historySnapshot.vvix ?? undefined)
-        : (market.data.quotes?.vvix?.price ?? undefined),
-      sigmaSource: historySnapshot
-        ? historySnapshot.vix1d
-          ? 'VIX1D'
-          : ivMode === IV_MODES.VIX
-            ? 'VIX × 1.15'
-            : 'manual'
-        : market.data.quotes?.vix1d?.price
-          ? 'VIX1D'
-          : ivMode === IV_MODES.VIX
-            ? 'VIX × 1.15'
-            : 'manual',
-      skewPct: skewPct,
+      vix1d: signals.vix1d,
+      vix9d: signals.vix9d,
+      vvix: signals.vvix,
+      sigmaSource: signals.sigmaSource,
+      skewPct,
       clusterMult,
+      // Regime & DOW
+      regimeZone: signals.regimeZone ?? undefined,
+      dowLabel: signals.dowLabel ?? undefined,
+      dowMultHL: signals.dowMultHL ?? undefined,
+      dowMultOC: signals.dowMultOC ?? undefined,
+      // Delta guide
+      icCeiling: signals.icCeiling ?? undefined,
+      putSpreadCeiling: signals.putSpreadCeiling ?? undefined,
+      callSpreadCeiling: signals.callSpreadCeiling ?? undefined,
+      moderateDelta: signals.moderateDelta ?? undefined,
+      conservativeDelta: signals.conservativeDelta ?? undefined,
+      // Range thresholds
+      medianOcPct: signals.medianOcPct ?? undefined,
+      medianHlPct: signals.medianHlPct ?? undefined,
+      p90OcPct: signals.p90OcPct ?? undefined,
+      p90HlPct: signals.p90HlPct ?? undefined,
+      p90OcPts: signals.p90OcPts ?? undefined,
+      p90HlPts: signals.p90HlPts ?? undefined,
+      // Opening range
+      openingRangeAvailable: signals.openingRangeAvailable,
+      openingRangeHigh: signals.openingRangeHigh ?? undefined,
+      openingRangeLow: signals.openingRangeLow ?? undefined,
+      openingRangePctConsumed: signals.openingRangePctConsumed ?? undefined,
+      openingRangeSignal: signals.openingRangeSignal ?? undefined,
+      // Term structure & overnight
+      vixTermSignal: signals.vixTermSignal ?? undefined,
+      overnightGap: signals.overnightGap ?? undefined,
+      // Price context
+      spxOpen: signals.spxOpen ?? undefined,
+      spxHigh: signals.spxHigh ?? undefined,
+      spxLow: signals.spxLow ?? undefined,
+      prevClose: signals.prevClose ?? undefined,
+      // Events
+      isEarlyClose: signals.isEarlyClose,
+      isEventDay: signals.isEventDay,
+      eventNames: signals.eventNames,
     },
     market.hasData || !!historySnapshot,
   );
@@ -469,83 +510,43 @@ export default function StrikeCalculator() {
             />
 
             {/* Chart Analysis — owner-only (requires auth session or backtest with results) */}
-            {(market.hasData || !!historySnapshot) &&
-              (() => {
-                // Compute opening range availability: 30 min after open = 10:00 AM ET
-                const h24 =
-                  Number.parseInt(timeHour) +
-                  (timeAmPm === 'PM' && timeHour !== '12' ? 12 : 0) -
-                  (timeAmPm === 'AM' && timeHour === '12' ? 12 : 0);
-                const etHour = timezone === 'CT' ? h24 + 1 : h24;
-                const etMinute = Number.parseInt(timeMinute) || 0;
-                const etMinutes = etHour * 60 + etMinute;
-                const openingRangeAvailable = etMinutes >= 600; // 10:00 AM ET
-
-                // VIX1D with correct priority: snapshot first when backtesting, live otherwise
-                const vix1dVal = historySnapshot
-                  ? (historySnapshot.vix1d ?? undefined)
-                  : (market.data.quotes?.vix1d?.price ?? undefined);
-                const vix9dVal = historySnapshot
-                  ? (historySnapshot.vix9d ?? undefined)
-                  : (market.data.quotes?.vix9d?.price ?? undefined);
-                const vvixVal = historySnapshot
-                  ? (historySnapshot.vvix ?? undefined)
-                  : (market.data.quotes?.vvix?.price ?? undefined);
-                const vixVal = Number.parseFloat(dVix) || undefined;
-
-                // Build data availability note
-                const dataNotes: string[] = [];
-                if (!vix1dVal && vixVal)
-                  dataNotes.push(
-                    'VIX1D unavailable — σ derived from VIX × 1.15. Actual per-strike IV may differ.',
-                  );
-                if (!openingRangeAvailable)
-                  dataNotes.push(
-                    'Entry is before 10:00 AM ET — 30-min opening range not yet complete. Opening range signals are unavailable.',
-                  );
-                if (historySnapshot)
-                  dataNotes.push(
-                    'Backtesting: data is from historical candles, not live quotes.',
-                  );
-
-                // Sigma source
-                const sigmaSource = vix1dVal
-                  ? 'VIX1D'
-                  : ivMode === IV_MODES.VIX
-                    ? 'VIX × 1.15'
-                    : 'manual';
-
-                return (
-                  <ChartAnalysis
-                    th={th}
-                    results={results}
-                    context={
-                      {
-                        selectedDate: vix.selectedDate,
-                        entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
-                        spx: results?.spot,
-                        spy: Number.parseFloat(dSpot) || undefined,
-                        vix: vixVal,
-                        vix1d: vix1dVal,
-                        vix9d: vix9dVal,
-                        vvix: vvixVal,
-                        sigma: results?.sigma,
-                        sigmaSource,
-                        T: results?.T,
-                        hoursRemaining: results?.hoursRemaining,
-                        clusterMult,
-                        regimeZone: undefined,
-                        openingRangeAvailable,
-                        isBacktest: !!historySnapshot,
-                        dataNote:
-                          dataNotes.length > 0
-                            ? dataNotes.join(' | ')
-                            : undefined,
-                      } satisfies AnalysisContext
-                    }
-                  />
-                );
-              })()}
+            {(market.hasData || !!historySnapshot) && (
+              <ChartAnalysis
+                th={th}
+                results={results}
+                context={
+                  {
+                    selectedDate: vix.selectedDate,
+                    entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
+                    spx: results?.spot,
+                    spy: Number.parseFloat(dSpot) || undefined,
+                    vix: Number.parseFloat(dVix) || undefined,
+                    vix1d: signals.vix1d,
+                    vix9d: signals.vix9d,
+                    vvix: signals.vvix,
+                    sigma: results?.sigma,
+                    sigmaSource: signals.sigmaSource,
+                    T: results?.T,
+                    hoursRemaining: results?.hoursRemaining,
+                    deltaCeiling: signals.icCeiling ?? undefined,
+                    putSpreadCeiling: signals.putSpreadCeiling ?? undefined,
+                    callSpreadCeiling: signals.callSpreadCeiling ?? undefined,
+                    regimeZone: signals.regimeZone ?? undefined,
+                    clusterMult,
+                    dowLabel: signals.dowLabel ?? undefined,
+                    openingRangeSignal: signals.openingRangeSignal ?? undefined,
+                    openingRangeAvailable: signals.openingRangeAvailable,
+                    vixTermSignal: signals.vixTermSignal ?? undefined,
+                    overnightGap:
+                      signals.overnightGap == null
+                        ? undefined
+                        : String(signals.overnightGap),
+                    isBacktest: !!historySnapshot,
+                    dataNote: signals.dataNote,
+                  } satisfies AnalysisContext
+                }
+              />
+            )}
 
             <ResultsSection
               th={th}

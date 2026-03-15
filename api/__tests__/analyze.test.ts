@@ -8,6 +8,12 @@ vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
 }));
 
+vi.mock('../_lib/db.js', () => ({
+  getDb: vi.fn(() => async () => []),
+  saveAnalysis: vi.fn().mockResolvedValue(undefined),
+  saveSnapshot: vi.fn().mockResolvedValue(null),
+}));
+
 import handler from '../analyze.js';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 
