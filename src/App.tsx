@@ -245,7 +245,7 @@ export default function StrikeCalculator() {
       skewPct: skewPct,
       clusterMult,
     },
-    market.hasData,
+    market.hasData || !!historySnapshot,
   );
 
   // Shared CSS classes
@@ -468,8 +468,8 @@ export default function StrikeCalculator() {
               }
             />
 
-            {/* Chart Analysis — owner-only (requires authenticated session) */}
-            {market.hasData &&
+            {/* Chart Analysis — owner-only (requires auth session or backtest with results) */}
+            {(market.hasData || !!historySnapshot) &&
               (() => {
                 // Compute opening range availability: 30 min after open = 10:00 AM ET
                 const h24 =

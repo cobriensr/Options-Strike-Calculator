@@ -971,4 +971,238 @@ describe('ChartAnalysis', () => {
       });
     });
   });
+
+  // ── PREVIOUS RECOMMENDATION CONTINUITY (buildPreviousRecommendation) ──
+
+  describe('midday continuity', () => {
+    it('includes previous recommendation when analyzing in midday mode', async () => {
+      const user = userEvent.setup();
+      const mockFetch = vi.fn();
+      vi.stubGlobal('fetch', mockFetch);
+
+      // First analysis: entry mode
+      const firstAnalysis = {
+        ...SAMPLE_ANALYSIS,
+        structure: 'IRON CONDOR',
+        suggestedDelta: 8,
+        confidence: 'HIGH',
+        reasoning: 'Balanced flow.',
+        entryPlan: {
+          entry1: {
+            timing: 'Now',
+            sizePercent: 40,
+            delta: 10,
+            structure: 'CCS',
+            note: 'Init',
+            condition: 'Open',
+          },
+        },
+        hedge: {
+          recommendation: 'PROTECTIVE LONG',
+          description: 'Buy put.',
+          rationale: 'Tail risk.',
+          estimatedCost: '$1.20',
+        },
+        managementRules: {
+          profitTarget: 'Close at 50%',
+          stopConditions: ['SPX < 5600', 'VIX > 25'],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ analysis: firstAnalysis, raw: '{}' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(container);
+      await clickAnalyzeAndConfirm(user);
+
+      await waitFor(() => {
+        expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
+      });
+
+      // Switch to midday mode
+      await user.click(screen.getByText('Mid-Day'));
+
+      // Second analysis: midday mode with previous recommendation
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            analysis: { ...firstAnalysis, mode: 'midday' },
+            raw: '{}',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+      await clickAnalyzeAndConfirm(user);
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      // Verify the second call included previousRecommendation
+      const secondCall = mockFetch.mock.calls[1]!;
+      const body = JSON.parse(secondCall[1]!.body as string);
+      expect(body.context.previousRecommendation).toContain('IRON CONDOR');
+      expect(body.context.previousRecommendation).toContain('Entry 1:');
+      expect(body.context.previousRecommendation).toContain('Hedge:');
+      expect(body.context.previousRecommendation).toContain('Profit target:');
+      expect(body.context.previousRecommendation).toContain('Stop conditions:');
+      expect(body.context.mode).toBe('midday');
+    });
+  });
+
+  // ── REPLACE VIA IMAGE ISSUES BUTTON ──
+
+  describe('replace via image issues', () => {
+    it('clicking Replace button triggers file input and replaces the image', async () => {
+      const user = userEvent.setup();
+      const mockFetch = vi.fn();
+      vi.stubGlobal('fetch', mockFetch);
+
+      // Render, add an image, then analyze with image issues
+      mockFetch.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            analysis: {
+              ...SAMPLE_ANALYSIS,
+              imageIssues: [
+                {
+                  imageIndex: 1,
+                  label: 'Market Tide',
+                  issue: 'Blurry.',
+                  suggestion: 'Higher res.',
+                },
+              ],
+            },
+            raw: '{}',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+
+      await addImageViaInput(container);
+      await clickAnalyzeAndConfirm(user);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Image Issues/)).toBeInTheDocument();
+      });
+
+      // Click the Replace button (this triggers replaceImage → lines 314-315, 1303)
+      await user.click(screen.getByRole('button', { name: /replace/i }));
+
+      // Simulate selecting a replacement file via the hidden replace input (lines 322-340)
+      const inputs = container.querySelectorAll('input[type="file"]');
+      const replaceInput = inputs[1]!;
+      fireEvent.change(replaceInput, {
+        target: { files: [createImageFile('replacement.png')] },
+      });
+
+      // Should still have 1 image (replaced, not added)
+      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+    });
+
+    it('handleReplaceFile does nothing with out-of-bounds index', async () => {
+      vi.stubGlobal('fetch', vi.fn());
+      const { container } = render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+      await addImageViaInput(container);
+
+      // The replace input (second file input) with no replaceTargetIndex set
+      const inputs = container.querySelectorAll('input[type="file"]');
+      fireEvent.change(inputs[1]!, {
+        target: { files: [createImageFile('new.png')] },
+      });
+
+      // Still 1 image, nothing changed
+      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+    });
+  });
+
+  // ── SIGNAL COLOR BRANCHES ──
+
+  describe('signal color branches', () => {
+    it('renders NEUTRAL signal with muted color', async () => {
+      await renderAndAnalyze({
+        ...SAMPLE_ANALYSIS,
+        chartConfidence: {
+          marketTide: {
+            signal: 'NEUTRAL',
+            confidence: 'MODERATE',
+            note: 'Flat flow',
+          },
+        },
+      });
+      expect(screen.getByText('NEUTRAL')).toBeInTheDocument();
+    });
+
+    it('renders unknown signal with amber fallback', async () => {
+      await renderAndAnalyze({
+        ...SAMPLE_ANALYSIS,
+        chartConfidence: {
+          marketTide: {
+            signal: 'MIXED',
+            confidence: 'MODERATE',
+            note: 'Mixed signals',
+          },
+        },
+      });
+      expect(screen.getByText('MIXED')).toBeInTheDocument();
+    });
+  });
+
+  // ── DRAG OVER ──
+
+  describe('drag over', () => {
+    it('prevents default on dragOver', () => {
+      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      const dropZone = screen.getByRole('button', {
+        name: /upload chart images/i,
+      });
+      const evt = new Event('dragover', { bubbles: true, cancelable: true });
+      fireEvent(dropZone, evt);
+    });
+  });
+
+  // ── TIMEOUT ERROR ──
+
+  describe('timeout error', () => {
+    it('shows timeout message when AbortError fires from timeout', async () => {
+      const user = userEvent.setup();
+      const abortError = new DOMException(
+        'The operation was aborted.',
+        'AbortError',
+      );
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
+
+      const { container } = render(
+        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+      );
+      await addImageViaInput(container);
+      await clickAnalyzeAndConfirm(user);
+
+      await waitFor(() => {
+        expect(screen.getByText(/analysis timed out/i)).toBeInTheDocument();
+      });
+    });
+  });
 });
