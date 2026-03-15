@@ -14,7 +14,10 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
+import {
+  rejectIfNotOwner,
+  rejectIfRateLimited,
+} from './_lib/api-helpers.js';
 import { saveAnalysis, getDb } from './_lib/db.js';
 
 // Allow up to 5 minutes for Opus with extended thinking
@@ -326,9 +329,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB in base64 chars
   for (const img of images) {
     if (img.data.length > MAX_IMAGE_SIZE) {
-      return res
-        .status(400)
-        .json({ error: 'Image too large. Maximum 5MB per image.' });
+      return res.status(400).json({ error: 'Image too large. Maximum 5MB per image.' });
     }
   }
 
@@ -417,22 +418,20 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       const errBody = await response.text();
       console.error(`Anthropic API error (${response.status}):`, errBody);
       // Don't leak Anthropic error details to the client
-      const clientMsg =
-        response.status === 429
-          ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
-          : response.status === 401
-            ? 'Anthropic API authentication error. Check API key.'
-            : `Analysis service error (${response.status}). Please retry.`;
+      const clientMsg = response.status === 429
+        ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
+        : response.status === 401
+          ? 'Anthropic API authentication error. Check API key.'
+          : `Analysis service error (${response.status}). Please retry.`;
       return res.status(502).json({ error: clientMsg });
     }
 
     const data = await response.json();
     // Filter to text blocks only — thinking blocks are excluded
-    const text =
-      data.content
-        ?.filter((c: { type: string }) => c.type === 'text')
-        .map((c: { text: string }) => c.text)
-        .join('') ?? '';
+    const text = data.content
+      ?.filter((c: { type: string }) => c.type === 'text')
+      .map((c: { text: string }) => c.text)
+      .join('') ?? '';
 
     // Parse the JSON response
     try {
@@ -443,16 +442,13 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       const snapshotLookup = async () => {
         try {
           const db = getDb();
-          const date =
-            context.selectedDate ??
-            new Date().toLocaleDateString('en-CA', {
-              timeZone: 'America/New_York',
-            });
+          const date = context.selectedDate
+            ?? new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
           const entryTime = context.entryTime ?? 'unknown';
           const rows = await db`
             SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
           `;
-          return rows.length > 0 ? (rows[0]!.id as number) : null;
+          return rows.length > 0 ? (rows[0]?.id as number) : null;
         } catch {
           return null;
         }

@@ -16,8 +16,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner, rejectIfRateLimited } from '../_lib/api-helpers.js';
-import { getDb } from '../_lib/db.js';
+import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
+import { getDb } from './_lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });

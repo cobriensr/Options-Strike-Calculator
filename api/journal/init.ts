@@ -15,8 +15,7 @@ import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { initDb } from '../_lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST')
-    return res.status(405).json({ error: 'POST only' });
+  if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
   const ownerCheck = rejectIfNotOwner(req, res);
   if (ownerCheck) return ownerCheck;
 

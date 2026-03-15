@@ -237,17 +237,15 @@ export interface SnapshotInput {
  * date+time combinations are silently skipped.
  * Returns the snapshot ID (existing or new).
  */
-export async function saveSnapshot(
-  input: SnapshotInput,
-): Promise<number | null> {
+export async function saveSnapshot(input: SnapshotInput): Promise<number | null> {
   const sql = getDb();
 
-  const vix1dVixRatio =
-    input.vix1d && input.vix && input.vix > 0 ? input.vix1d / input.vix : null;
-  const vixVix9dRatio =
-    input.vix && input.vix9d && input.vix9d > 0
-      ? input.vix / input.vix9d
-      : null;
+  const vix1dVixRatio = (input.vix1d && input.vix && input.vix > 0)
+    ? input.vix1d / input.vix
+    : null;
+  const vixVix9dRatio = (input.vix && input.vix9d && input.vix9d > 0)
+    ? input.vix / input.vix9d
+    : null;
 
   const result = await sql`
     INSERT INTO market_snapshots (
@@ -297,15 +295,17 @@ export async function saveSnapshot(
     RETURNING id
   `;
 
-  if (result.length > 0) {
-    return result[0]!.id as number;
+  const inserted = result[0];
+  if (inserted) {
+    return inserted.id as number;
   }
 
   // Already existed — look up the ID
   const existing = await sql`
     SELECT id FROM market_snapshots WHERE date = ${input.date} AND entry_time = ${input.entryTime}
   `;
-  return existing.length > 0 ? (existing[0]!.id as number) : null;
+  const found = existing[0];
+  return found ? (found.id as number) : null;
 }
 
 // ============================================================
@@ -335,9 +335,8 @@ export async function saveAnalysis(
 ) {
   const sql = getDb();
 
-  const date =
-    context.selectedDate ??
-    new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const date = context.selectedDate
+    ?? new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   const entryTime = context.entryTime ?? 'unknown';
   const mode = analysis.mode ?? 'entry';
 
@@ -372,8 +371,9 @@ export async function saveOutcome(input: {
 }) {
   const sql = getDb();
   const rangePts = Math.round(input.dayHigh - input.dayLow);
-  const rangePct =
-    input.dayOpen > 0 ? (input.dayHigh - input.dayLow) / input.dayOpen : null;
+  const rangePct = input.dayOpen > 0
+    ? (input.dayHigh - input.dayLow) / input.dayOpen
+    : null;
   const closeVsOpen = input.settlement - input.dayOpen;
 
   await sql`
