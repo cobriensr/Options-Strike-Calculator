@@ -90,13 +90,16 @@ All financial calculations run client-side with zero external dependencies. For 
 You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1D and VIX9D), and the time — and it gives you:
 
 - A complete strike table across 6 delta targets (5Δ through 20Δ) with theoretical put and call premiums
-- A full iron condor breakdown split into put spread, call spread, and combined IC — with credit, max loss, buying power, return on risk, probability of profit, and breakevens in both SPX and SPY terms
-- A Delta Guide with a ceiling recommendation based on 9,102 days of historical VIX-to-SPX range data, adjusted for day-of-week effects and volatility clustering
+- A full iron condor breakdown split into put spread, call spread, and combined IC — with credit, max loss, buying power, return on risk, fat-tail adjusted probability of profit, and breakevens in both SPX and SPY terms
+- A hedge calculator with DTE selection (1-21 days), extrinsic value modeling at EOD close, net cost breakdown, and crash/rally scenario tables
+- A Delta Guide with a ceiling recommendation based on 9,102 days of historical VIX-to-SPX range data, adjusted for day-of-week effects and directional volatility clustering
 - AI-powered chart analysis that reads Market Tide, Net Flow, and Periscope screenshots to recommend structure, delta, strike placement, entry plan, management rules, and hedge
 - Live option chain verification comparing theoretical strikes to actual Schwab chain deltas
-- VIX term structure signals (VIX1D/VIX and VIX9D/VIX ratios) for pre-market risk assessment
+- VIX term structure signals with curve shape classification (contango, fear-spike, backwardation, flat)
+- Realized vs implied volatility ratio showing whether IV is rich or cheap relative to yesterday's actual range
+- Settlement pin risk analysis with OI heatmap from live Schwab chain data
 - Opening range check comparing the first 30 minutes of trading against the expected daily range
-- Volatility clustering analysis showing how yesterday's range predicts today's range
+- Volatility clustering analysis with directional asymmetry (bigger put-side expansion after down days)
 - Event day warnings for FOMC, CPI, NFP, and GDP release days with severity-coded alerts and actionable advice
 - Historical backtesting with full candle-by-candle replay and settlement verification
 - Automatic data collection to Postgres for ML training pipeline
@@ -109,7 +112,8 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 
 - All 6 delta targets simultaneously: 5Δ, 8Δ, 10Δ, 12Δ, 15Δ, 20Δ
 - SPX and SPY strikes: Both calculated and displayed, with SPX snapped to nearest 5-pt and SPY snapped to nearest $1
-- Put skew adjustment: Configurable 0–8% IV asymmetry between puts and calls to model the volatility smile
+- Convex put skew: Power-curve model where further OTM puts get disproportionately more IV (convexity = 1.35), matching real SPX volatility smile behavior. Call skew is dampened at high z-scores to reflect how call skew flattens or inverts on rally days.
+- Intraday IV acceleration: σ multiplier increases as session progresses (1.0× at open → 1.12× at 2 PM → 1.56× at 3:30 PM), reflecting gamma acceleration. Strikes use base σ for placement stability; premiums and Greeks use accelerated σ for realistic pricing.
 - Theoretical option premiums: Black-Scholes pricing for puts and calls at every delta
 
 ### SPY/SPX Conversion
@@ -138,6 +142,26 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 - Iron condor PoP: Uses the correct formula `P(S_T > BE_low) + P(S_T < BE_high) − 1`, NOT the product of individual spread PoPs
 - Individual spread PoPs: Single-tail probabilities for each side — always higher than the combined IC PoP
 - Skew-adjusted: Put-side uses `putSigma` for lower breakeven, call-side uses `callSigma` for upper breakeven
+- Fat-tail kurtosis adjustment: Breach probabilities inflated by 2× to account for leptokurtic SPX intraday returns. Adjusted PoP shown as primary value; log-normal PoP displayed struck-through underneath for reference. At 10Δ, this reduces IC PoP from ~82% to ~65% — matching empirical breach rates from 9,102 days of data.
+
+### Hedge Calculator (Reinsurance)
+
+- DTE selector: 1d, 7d, 14d, or 21d hedge options (default 7d). Longer-dated hedges lose minimal theta during a single session.
+- Extrinsic value modeling: Hedge scenario table values hedges at (DTE − 1 day) remaining using Black-Scholes, not intrinsic-only. A 7DTE hedge sold to close at EOD recovers 70-90% of purchase price if OTM.
+- Net daily cost: Entry premium minus estimated EOD recovery, shown with gross → recovery → net breakdown.
+- Sizing: Uses net payout (BS value at target minus entry premium) per contract for correct contract recommendations.
+
+### Realized vs Implied Volatility
+
+- Parkinson RV: Yesterday's SPX high-low range annualized via `σ = sqrt(1/(4·ln2)) × |ln(H/L)| × sqrt(252)`
+- RV/IV ratio: Compares yesterday's realized vol against today's IV (VIX1D preferred, VIX × 1.15 fallback)
+- Classification: < 0.8 = IV Rich (favorable for selling), 0.8–1.2 = Fair Value, > 1.2 = IV Cheap (unfavorable)
+
+### Settlement Pin Risk
+
+- OI heatmap: Top 8 strikes by combined put+call open interest from live Schwab chain data
+- Pin risk warning: Flags high-OI strikes within 0.5% of spot — MMs delta-hedging can pin price at settlement
+- Directional breakdown: Shows whether OI concentration is put-dominated, call-dominated, or balanced
 
 ### UI
 
@@ -164,7 +188,7 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 ### What Claude Receives
 
 - All uploaded chart images (up to 5) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Periscope Delta Flow, Periscope Gamma)
-- Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier, DOW label, opening range signal, term structure signal, overnight gap
+- Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier (symmetric + directional put/call), DOW label, opening range signal, term structure signal + curve shape, RV/IV ratio, IV acceleration multiplier, overnight gap
 - Previous recommendation (for mid-day/review continuity via `lastAnalysisRef`)
 - Data availability notes (VIX1D missing, pre-10AM opening range, backtest mode)
 
@@ -242,21 +266,24 @@ Three Postgres tables automatically collect data for future ML training:
 
 ### Tables
 
-**`market_snapshots`** — Complete calculator state at each date+time (40+ features):
+**`market_snapshots`** — Complete calculator state at each date+time (50+ features):
 
-| Category           | Fields                                                             |
-| ------------------ | ------------------------------------------------------------------ |
-| Prices             | SPX, SPY, open, high, low, prev close                              |
-| Volatility surface | VIX, VIX1D, VIX9D, VVIX, VIX1D/VIX ratio, VIX/VIX9D ratio          |
-| Calculator         | σ, sigma source, T, hours remaining, skew                          |
-| Regime             | zone (go/caution/stop/danger), cluster multiplier, DOW multipliers |
-| Delta guide        | IC ceiling, put/call spread ceilings, moderate/conservative deltas |
-| Range thresholds   | median O→C %, median H-L %, P90 O→C %, P90 H-L %, P90 points       |
-| Opening range      | available flag, high, low, % consumed, signal (GREEN/MODERATE/RED) |
-| Term structure     | combined signal (calm/normal/elevated/extreme)                     |
-| Strikes            | JSONB with put/call at every delta (5/8/10/12/15/20)               |
-| Events             | early close flag, event day flag, event names array                |
-| Metadata           | is_backtest flag, created_at timestamp                             |
+| Category | Fields |
+| --- | --- |
+| Prices | SPX, SPY, open, high, low, prev close |
+| Volatility surface | VIX, VIX1D, VIX9D, VVIX, VIX1D/VIX ratio, VIX/VIX9D ratio |
+| Calculator | σ, sigma source, T, hours remaining, skew |
+| Regime | zone (go/caution/stop/danger), cluster multiplier, DOW multipliers |
+| Directional cluster | cluster_put_mult, cluster_call_mult (asymmetric after up/down days) |
+| Delta guide | IC ceiling, put/call spread ceilings, moderate/conservative deltas |
+| Range thresholds | median O→C %, median H-L %, P90 O→C %, P90 H-L %, P90 points |
+| Opening range | available flag, high, low, % consumed, signal (GREEN/MODERATE/RED) |
+| Term structure | combined signal, curve shape (contango/fear-spike/flat/etc.) |
+| RV/IV | rv_iv_ratio, rv_iv_label (IV Rich/Fair/Cheap), rv_annualized |
+| IV acceleration | iv_accel_mult (intraday σ multiplier at entry time) |
+| Strikes | JSONB with put/call at every delta (5/8/10/12/15/20) |
+| Events | early close flag, event day flag, event names array |
+| Metadata | is_backtest flag, created_at timestamp |
 
 Uniqueness: `UNIQUE(date, entry_time)` with `ON CONFLICT DO NOTHING` — duplicate submissions silently skipped.
 
@@ -333,6 +360,12 @@ The core decision tool. Given today's VIX, entry time, and historical range data
 - VIX9D/VIX ratio: CONTANGO, FLAT, INVERTED, STEEP INVERSION
 - VVIX classification: CALM, NORMAL, ELEVATED, EXTREME
 - Combined worst-of signal
+- **Curve shape classification**: Identifies 5 distinct term structure shapes with actionable advice:
+  - **Contango** (VIX1D < VIX < VIX9D): Premium selling sweet spot — near-term calm
+  - **Fear spike** (VIX1D > VIX > VIX9D): Event-driven near-term fear — IC dangerous, mean-reversion opportunity
+  - **Backwardation** (VIX1D > VIX): Short-term stress — reduce size or widen
+  - **Front calm** (VIX1D < VIX, VIX9D < VIX): Transitional environment
+  - **Flat** (all within ±5%): No edge from term structure
 
 ### Opening Range Check
 
@@ -341,6 +374,8 @@ First 30 minutes of SPX trading vs expected daily range: GREEN (<40% consumed), 
 ### Volatility Clustering
 
 Yesterday's range percentile → today's range multiplier. Up to 1.87× at high VIX after a P90 day.
+
+- **Directional asymmetry**: After a big down day, put-side range expands 40% more than call-side (e.g., cluster mult 1.15 → put 1.21×, call 1.09×). After a big up day, the asymmetry is weaker (call 1.18×, put 1.12×). Flat days and tailwinds (mult < 1) are symmetric. Separate put/call multipliers displayed and passed to Claude.
 
 ### Event Day Warning
 
@@ -352,20 +387,21 @@ Static calendar of FOMC (8/year), CPI (12/year), NFP (12/year), GDP (4/year) for
 
 ### Architecture
 
-| Endpoint                  | Schwab Call                                    | Returns                                  | Cache (market) | Cache (closed) |
-| ------------------------- | ---------------------------------------------- | ---------------------------------------- | -------------- | -------------- |
-| `GET /api/quotes`         | `getQuotes(SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX)` | Real-time spot prices                    | 60s            | 5 min          |
-| `GET /api/intraday`       | `priceHistory($SPX, 5-min, 1 day)`             | Today's OHLC + 30-min opening range      | 2 min          | 10 min         |
-| `GET /api/yesterday`      | `priceHistory($SPX, daily, 1 month)`           | Prior day SPX OHLC for clustering        | 1 hour         | 1 day          |
-| `GET /api/chain`          | `chains($SPX, 0DTE)`                           | Live option chain with per-strike deltas | 30s            | —              |
-| `GET /api/events`         | FRED API                                       | Economic calendar events                 | 1 hour         | 1 day          |
-| `GET /api/history`        | `priceHistory($SPX+$VIX+$VIX1D+$VIX9D)`        | Historical candles for backtesting       | 1 hour         | 1 day          |
-| `GET /api/movers`         | `movers($SPX)`                                 | Market movers                            | 5 min          | 10 min         |
-| `POST /api/analyze`       | Anthropic Messages API                         | Claude chart analysis                    | —              | —              |
-| `POST /api/snapshot`      | Neon Postgres                                  | Save market snapshot                     | —              | —              |
-| `GET /api/journal`        | Neon Postgres                                  | Query saved analyses                     | —              | —              |
-| `GET /api/journal/status` | Neon Postgres                                  | DB connection + table counts             | —              | —              |
-| `POST /api/journal/init`  | Neon Postgres                                  | Create tables (one-time)                 | —              | —              |
+| Endpoint | Schwab Call | Returns | Cache (market) | Cache (closed) |
+| --- | --- | --- | --- | --- |
+| `GET /api/quotes` | `getQuotes(SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX)` | Real-time spot prices | 60s | 5 min |
+| `GET /api/intraday` | `priceHistory($SPX, 5-min, 1 day)` | Today's OHLC + 30-min opening range | 2 min | 10 min |
+| `GET /api/yesterday` | `priceHistory($SPX, daily, 1 month)` | Prior day SPX OHLC for clustering | 1 hour | 1 day |
+| `GET /api/chain` | `chains($SPX, 0DTE)` | Live option chain with per-strike deltas | 30s | — |
+| `GET /api/events` | FRED API | Economic calendar events | 1 hour | 1 day |
+| `GET /api/history` | `priceHistory($SPX+$VIX+$VIX1D+$VIX9D)` | Historical candles for backtesting | 1 hour | 1 day |
+| `GET /api/movers` | `movers($SPX)` | Market movers | 5 min | 10 min |
+| `POST /api/analyze` | Anthropic Messages API | Claude chart analysis | — | — |
+| `POST /api/snapshot` | Neon Postgres | Save market snapshot | — | — |
+| `GET /api/journal` | Neon Postgres | Query saved analyses | — | — |
+| `GET /api/journal/status` | Neon Postgres | DB connection + table counts | — | — |
+| `POST /api/journal/init` | Neon Postgres | Create tables + run migrations | — | — |
+| `POST /api/journal/migrate` | Neon Postgres | Add new columns to existing tables | — | — |
 
 ### Owner Gating
 
@@ -395,7 +431,21 @@ K_put  = S × e^(−z × σ_put  × √T)
 K_call = S × e^(+z × σ_call × √T)
 ```
 
-Where S = SPX spot, σ_put = σ × (1 + skew), σ_call = σ × (1 − skew), T = hours remaining ÷ 1638, r = 0.
+Where S = SPX spot, T = hours remaining ÷ 1638, r = 0.
+
+Skew model (convex put, dampened call):
+
+```text
+σ_put  = σ × (1 + skew × (z / z_ref)^1.35)     # convex: far OTM puts get disproportionately more IV
+σ_call = σ × (1 − skew × (z / z_ref) × dampen)  # dampened: call skew flattens further OTM
+dampen = 1 / (1 + 0.5 × max(0, z/z_ref − 1))
+```
+
+IV acceleration (applied to premiums and Greeks, not strike placement):
+
+```text
+σ_effective = σ × (1 + 0.6 × (1/hours_remaining − 1/6.5))   # capped at 1.8×
+```
 
 ### Option Pricing (Black-Scholes)
 
@@ -417,6 +467,11 @@ Max Loss   = wing_width − credit
 BE Low     = short_put − credit
 BE High    = short_call + credit
 PoP        = P(S_T > BE_low) + P(S_T < BE_high) − 1
+
+Fat-tail adjustment (kurtosis = 2.0):
+  P_adj(breach_low)  = min(1, P(S_T < BE_low)  × 2.0)
+  P_adj(breach_high) = min(1, P(S_T > BE_high) × 2.0)
+  PoP_adjusted       = 1 − P_adj(breach_low) − P_adj(breach_high)
 ```
 
 ### Delta Guide — Range-to-Delta Mapping
@@ -491,8 +546,12 @@ vercel dev           # Frontend + API functions (localhost:3000)
 # 2. Pull env vars
 vercel env pull .env.local
 
-# 3. Deploy and initialize tables (one-time)
+# 3. Deploy and initialize tables (one-time, also runs migrations)
 curl -X POST https://theta-options.com/api/journal/init \
+  -b "sc-owner=YOUR_COOKIE_VALUE"
+
+# 3b. Or run migrations only (safe to repeat — adds new columns to existing tables)
+curl -X POST https://theta-options.com/api/journal/migrate \
   -b "sc-owner=YOUR_COOKIE_VALUE"
 
 # 4. Backfill historical outcomes
@@ -515,7 +574,8 @@ npx tsx scripts/backfill-outcomes.ts
 │   │   ├── init.ts                    # GET /api/auth/init → redirect to Schwab login
 │   │   └── callback.ts               # GET /api/auth/callback → exchange code for tokens
 │   ├── journal/
-│   │   ├── init.ts                    # POST /api/journal/init → create all tables
+│   │   ├── init.ts                    # POST /api/journal/init → create tables + run migrations
+│   │   ├── migrate.ts                 # POST /api/journal/migrate → add new columns (idempotent)
 │   │   └── status.ts                  # GET /api/journal/status → DB connection diagnostics
 │   ├── analyze.ts                     # POST /api/analyze → Claude Opus 4.6 chart analysis
 │   ├── chain.ts                       # GET /api/chain → live option chain with per-strike deltas
@@ -534,7 +594,7 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── backfill-outcomes.ts           # Populate outcomes table from historical CSVs
 │   └── entry-time-analysis.ts         # 8:45 vs 9:00 AM CT entry timing study
 ├── src/
-│   ├── __tests__/                     # 800+ tests across 14+ test files
+│   ├── __tests__/                     # 1550+ tests across 67 test files
 │   ├── components/
 │   │   ├── BacktestDiag.tsx           # Backtest diagnostic panel
 │   │   ├── ChainVerification.tsx      # Theoretical vs live chain strike comparison
@@ -546,7 +606,9 @@ npx tsx scripts/backfill-outcomes.ts
 │   │   ├── IVInputSection.tsx         # IV mode selection + VIX term structure
 │   │   ├── MarketRegimeSection.tsx    # Container for all regime analysis components
 │   │   ├── OpeningRangeCheck.tsx      # First-30-min range signal
+│   │   ├── PinRiskAnalysis.tsx        # Settlement pin risk OI heatmap
 │   │   ├── PreTradeSignals.tsx        # Pre-trade signal summary
+│   │   ├── RvIvCard.tsx               # Realized vs implied volatility card
 │   │   ├── SettlementCheck.tsx        # Backtest: which deltas survived at settlement
 │   │   ├── VIXRangeAnalysis.tsx       # Full range analysis with survival heatmap
 │   │   ├── VIXRegimeCard.tsx          # Compact regime context card
@@ -618,7 +680,7 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
 
 ### Key Design Patterns
 
-- **`useComputedSignals`**: Single hook that computes ALL derived signals (regime zone, DOW multipliers, delta ceilings, range thresholds, opening range, term structure, price context, events). Feeds both display components and database writer from one source of truth.
+- **`useComputedSignals`**: Single hook that computes ALL derived signals (regime zone, DOW multipliers, delta ceilings, range thresholds, opening range, term structure + curve shape, directional cluster multipliers, RV/IV ratio, price context, events). Feeds display components, Claude analysis context, and database writer from one source of truth.
 - **Backtest isolation**: When `historySnapshot` exists, all volatility values (VIX1D, VIX9D, VVIX) come from historical data, never from live quotes. Prevents data contamination.
 - **Fire-and-forget snapshots**: `useSnapshotSave` sends snapshots via fetch with error-caught promises. UI never blocks on DB writes. Deduplication via `savedRef` + DB UNIQUE constraint.
 - **Awaited analysis saves**: Unlike snapshots, analysis saves are `await`ed before `res.json()` because Vercel kills functions after response.
@@ -678,20 +740,43 @@ One-click XLSX with three sheets: P&L Comparison (7 wing widths × 6 deltas × 3
 
 ## Testing
 
-800+ tests across 14+ test files, all passing with TypeScript strict mode. Key test files:
+1,550+ unit tests across 67 test files + 71 Playwright E2E tests across 12 spec files, all passing with TypeScript strict mode. Overall coverage: 97.5% statements, 91% branches.
 
-| File                        | Focus                                                                                                                        |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `ChartAnalysis.test.tsx`    | 57 tests: image management, confirmation step, cancel, analyze flow, TL;DR card, collapsible sections, modes, error handling |
-| `DeltaRegimeGuide.test.tsx` | 51+ tests: ceiling, thresholds, delta matrix, DOW, clustering                                                                |
-| `App.test.tsx`              | 55 tests: rendering, mode switching, validation, CSV upload                                                                  |
-| `SettlementCheck.test.tsx`  | Backtest settlement verification                                                                                             |
-| `api.test.ts`               | API data processing, owner gating, token logic                                                                               |
+### Unit Tests (Vitest)
+
+| File | Focus |
+| --- | --- |
+| `calculator.test.ts` | 150+ tests: BS pricing, delta, gamma, strikes, IV acceleration, fat-tail kurtosis, convex skew |
+| `ChartAnalysis.test.tsx` | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling |
+| `useComputedSignals.test.ts` | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering |
+| `skewAndIC.test.ts` | 63 tests: convex skew, IC legs, per-side PoP, breakevens |
+| `hedge.test.tsx` | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario |
+| `PinRiskAnalysis.test.tsx` | 7 tests: OI table, pin risk warning, empty state, K formatting |
+| `RvIvCard.test.tsx` | 6 tests: ratio display, all 3 labels, RV/IV percentages |
+| `journal-migrate.test.ts` | 5 tests: migration endpoint, idempotency, error handling |
+
+### E2E Tests (Playwright)
+
+| File | Tests | Coverage |
+| --- | --- | --- |
+| `calculator-flow.spec.ts` | 9 | Full calculation flow, mode switching, dark mode |
+| `strike-table.spec.ts` | 6 | Delta rows, ordering invariants, VIX sensitivity |
+| `iron-condor.spec.ts` | 5 | IC legs, hedge toggle, contracts, hide/show |
+| `hedge-dte.spec.ts` | 9 | DTE selector, EOD recovery, net cost labels, scenarios |
+| `iv-acceleration.spec.ts` | 4 | σ multiplier at different times, late session warning |
+| `fat-tail-pop.spec.ts` | 3 | Adjusted PoP display, struck-through log-normal |
+| `market-regime-new.spec.ts` | 11 | Clustering, term structure shapes (contango/fear-spike/flat) |
+| `entry-time.spec.ts` | 4 | Time selects, AM/PM, timezone, recalculation |
+| `advanced-section.spec.ts` | 5 | Skew slider, wing width, contracts counter |
+| `chart-analysis.spec.ts` | 4 | Mode selector, drop zone, mocked analysis |
+| `validation-errors.spec.ts` | 5 | Input validation, error states, clearing |
+| `responsive.spec.ts` | 6 | iPhone, iPad, desktop viewports |
 
 ```bash
 npm test                 # Watch mode
 npm run test:run         # Single run (CI)
-npm run test:coverage    # Coverage report
+npm run test:coverage    # v8 coverage report
+npm run test:e2e         # Playwright E2E tests
 ```
 
 ---
@@ -734,7 +819,8 @@ Section 508 / WCAG AA: semantic HTML, ARIA attributes, focus management, 4.5:1 c
 | `npm test`                               | Vitest watch mode                   |
 | `npm run test:run`                       | Single test run (CI)                |
 | `npm run test:coverage`                  | v8 coverage report                  |
-| `npm run lint`                           | TypeScript type check               |
+| `npm run lint`                           | TypeScript + ESLint check           |
+| `npm run test:e2e`                       | Playwright E2E tests (71 specs)     |
 | `npx tsx scripts/backfill-outcomes.ts`   | Populate outcomes table from CSVs   |
 | `npx tsx scripts/entry-time-analysis.ts` | Entry timing study (8:45 vs 9:00)   |
 
@@ -799,9 +885,12 @@ Multiple positions on the same underlying and expiration are NOT diversified —
 ## Accuracy & Limitations
 
 1. **VIX vs actual 0DTE IV**: VIX1D auto-apply mitigates this; chain verification shows actual per-strike deltas
-2. **Single-σ model**: Calculator uses one σ for all strikes; real skew varies by strike distance. Chain endpoint addresses this.
-3. **Put/call skew**: Linear model is a simplification of the real volatility smile
-4. **Theoretical vs market premiums**: Black-Scholes assumes continuous hedging; real prices include bid/ask spreads
-5. **Chart analysis limitations**: Claude reads charts visually — it estimates NCP/NPP values from line positions, not exact data. Image quality affects accuracy.
-6. **Backtest limitations**: Periscope gamma profiles are point-in-time screenshots; historical gamma data is not available programmatically
-7. **Database coverage**: VIX1D data available from May 2022 only; earlier outcomes have VIX close but not VIX1D close
+2. **IV acceleration is empirical**: The intraday σ multiplier (0.6 coefficient) is calibrated from observed behavior, not derived from a formal model. Actual gamma acceleration varies by VIX regime and market structure. The multiplier is capped at 1.8× to prevent extreme values near close.
+3. **Fat-tail kurtosis is a constant**: The 2× kurtosis factor is calibrated from 9,102 days of SPX data. Real kurtosis varies by VIX level (higher VIX = fatter tails) and time of day. A VIX-dependent kurtosis curve would be more accurate.
+4. **Convex skew exponent is static**: The 1.35 put convexity is empirically reasonable for typical VIX 15-25 days. On extreme fear days (VIX 35+), real put skew can be significantly steeper. The chain endpoint shows actual per-strike IV for comparison.
+5. **Theoretical vs market premiums**: Black-Scholes assumes continuous hedging; real prices include bid/ask spreads
+6. **Parkinson RV estimator**: Uses only yesterday's single-day high-low range. A multi-day rolling RV (5-20 days) would be smoother but requires more historical data access.
+7. **Chart analysis limitations**: Claude reads charts visually — it estimates NCP/NPP values from line positions, not exact data. Image quality affects accuracy.
+8. **Backtest limitations**: Periscope gamma profiles are point-in-time screenshots; historical gamma data is not available programmatically
+9. **Database coverage**: VIX1D data available from May 2022 only; earlier outcomes have VIX close but not VIX1D close
+10. **Pin risk requires live chain**: OI heatmap only available during market hours with authenticated Schwab session. Historical OI data is not persisted.
