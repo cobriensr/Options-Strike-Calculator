@@ -26,37 +26,6 @@ interface Props {
   readonly context: import('./types').AnalysisContext;
 }
 
-function buildPreviousRecommendation(prev: AnalysisResult): string {
-  const parts = [
-    `Structure: ${prev.structure}, Delta: ${prev.suggestedDelta}, Confidence: ${prev.confidence}`,
-    `Reasoning: ${prev.reasoning}`,
-  ];
-
-  const e1 = prev.entryPlan?.entry1;
-  if (e1) {
-    const timing = e1.timing ?? e1.condition ?? '';
-    parts.push(`Entry 1: ${e1.structure} ${String(e1.delta)}Δ at ${timing}`);
-  }
-
-  if (prev.hedge) {
-    parts.push(
-      `Hedge: ${prev.hedge.recommendation} — ${prev.hedge.description}`,
-    );
-  }
-
-  if (prev.managementRules?.profitTarget) {
-    parts.push(`Profit target: ${prev.managementRules.profitTarget}`);
-  }
-
-  if (prev.managementRules?.stopConditions) {
-    parts.push(
-      `Stop conditions: ${prev.managementRules.stopConditions.join('; ')}`,
-    );
-  }
-
-  return parts.join('. ');
-}
-
 export default function ChartAnalysis({ th, results, context }: Props) {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [mode, setMode] = useState<AnalysisMode>('entry');
@@ -194,6 +163,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
   const THINKING_MESSAGES = [
     'Reading chart data...',
+    'Fetching open positions...',
     'Analyzing Market Tide flow...',
     'Checking Net Flow confirmation...',
     'Evaluating gamma exposure...',
@@ -201,7 +171,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     'Building entry plan...',
     'Assessing hedge options...',
     'Formulating management rules...',
-    'Finalizing recommendation...',
   ];
 
   // ── Analysis ──────────────────────────────────────────────
@@ -228,6 +197,21 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         }),
       );
 
+      // Fetch live positions from Schwab before analysis (fire-and-forget save to DB)
+      // The /api/analyze endpoint auto-reads positions from DB, so this just ensures they're fresh
+      if (!context.isBacktest && results?.spot) {
+        try {
+          await fetch(`/api/positions?spx=${results.spot}`, {
+            credentials: 'include',
+          });
+        } catch {
+          // Positions are optional — analysis still works without them
+          console.warn(
+            'Failed to fetch positions — analysis will proceed without them',
+          );
+        }
+      }
+
       const controller = new AbortController();
       abortRef.current = controller;
       const timeout = setTimeout(() => controller.abort(), 240_000); // 4 min
@@ -246,13 +230,18 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             T: results?.T,
             hoursRemaining: results?.hoursRemaining,
             spx: results?.spot,
-            // Pass previous recommendation for mid-day/review continuity
-            previousRecommendation: lastAnalysisRef.current
-              ? buildPreviousRecommendation(lastAnalysisRef.current)
-              : undefined,
+            // Previous recommendation is now auto-fetched from DB by the backend.
+            // Keep the client-side fallback for cases where DB hasn't been populated yet
+            // (e.g., first analysis of the day, or backtesting without saved analyses).
+            previousRecommendation:
+              lastAnalysisRef.current &&
+              (mode === 'midday' || mode === 'review')
+                ? buildPreviousRecommendation(lastAnalysisRef.current)
+                : undefined,
           },
         }),
       });
+
       clearTimeout(timeout);
 
       if (!res.ok) {
@@ -421,6 +410,11 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               <div className="text-muted mt-0.5 font-sans text-[10px]">
                 {MODE_LABELS[mode].label} {'\u2022'}{' '}
                 {images.map((img) => img.label).join(', ')}
+                {!context.isBacktest && (
+                  <span style={{ color: th.accent }}>
+                    {' \u2022'} Will fetch live positions from Schwab
+                  </span>
+                )}
                 {lastAnalysisRef.current &&
                   (mode === 'midday' || mode === 'review') && (
                     <span style={{ color: th.green }}>
@@ -474,7 +468,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 }}
               />
             </div>
-
             <div className="flex items-center justify-between">
               <div>
                 <div
@@ -552,4 +545,37 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       </div>
     </SectionBox>
   );
+}
+
+/**
+ * Build a concise previous recommendation string from a client-side analysis result.
+ * This is a FALLBACK — the backend now auto-fetches from DB via getPreviousRecommendation().
+ * This client-side version is used when:
+ *   - DB doesn't have the previous analysis yet (first run, no save)
+ *   - Backtesting mode where analyses may not be saved
+ */
+function buildPreviousRecommendation(prev: AnalysisResult): string {
+  const parts = [
+    `Structure: ${prev.structure}, Delta: ${prev.suggestedDelta}, Confidence: ${prev.confidence}`,
+    `Reasoning: ${prev.reasoning}`,
+  ];
+  const e1 = prev.entryPlan?.entry1;
+  if (e1) {
+    const timing = e1.timing ?? e1.condition ?? '';
+    parts.push(`Entry 1: ${e1.structure} ${String(e1.delta)}Δ at ${timing}`);
+  }
+  if (prev.hedge) {
+    parts.push(
+      `Hedge: ${prev.hedge.recommendation} — ${prev.hedge.description}`,
+    );
+  }
+  if (prev.managementRules?.profitTarget) {
+    parts.push(`Profit target: ${prev.managementRules.profitTarget}`);
+  }
+  if (prev.managementRules?.stopConditions) {
+    parts.push(
+      `Stop conditions: ${prev.managementRules.stopConditions.join('; ')}`,
+    );
+  }
+  return parts.join('. ');
 }

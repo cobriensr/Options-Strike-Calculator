@@ -14,11 +14,13 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
 import {
-  rejectIfNotOwner,
-  rejectIfRateLimited,
-} from './_lib/api-helpers.js';
-import { saveAnalysis, getDb } from './_lib/db.js';
+  saveAnalysis,
+  getDb,
+  getLatestPositions,
+  getPreviousRecommendation,
+} from './_lib/db.js';
 
 // Allow up to 5 minutes for Opus with extended thinking
 export const config = { maxDuration: 300 };
@@ -180,11 +182,12 @@ The trader specifies an entry time. Charts may show the full day (especially whe
 Full pre-trade recommendation. Provide ALL output fields.
 
 ### Mode: "midday" (Mid-Day Re-Analysis)
-The trader is already in a position and wants to check if conditions have changed. The context will include their current position details. Focus on:
+The trader is already in a position and wants to check if conditions have changed. The context may include their actual open positions from Schwab. Focus on:
 - Has the flow direction shifted since entry?
 - Should they close any legs early?
 - Is it safe to add another entry?
 - Any new risks that emerged?
+- If positions are provided: reference the trader's ACTUAL short strikes when discussing gamma zones, cushion distances, and stop levels. Do NOT estimate strikes — use the real ones.
 
 ### Mode: "review" (End-of-Day Review)
 After market close, the trader uploads full-day charts to learn what happened vs what was recommended. Focus on:
@@ -194,6 +197,27 @@ After market close, the trader uploads full-day charts to learn what happened vs
 - Were there earlier exit opportunities?
 - What would the optimal trade have been with perfect hindsight?
 - Key lessons for similar setups in the future.
+
+## Using Live Position Data
+
+When the "Current Open Positions" section is present in the context, the trader's ACTUAL open SPX 0DTE positions from Schwab are provided. Use this data to:
+
+1. **Reference real strikes, not estimates.** Instead of "your short call is likely near 6740," say "your 6740 short call has 34 pts of cushion to the gamma wall."
+2. **Calculate actual cushion distances.** Map each short strike against the Periscope gamma profile and straddle cone boundaries using the exact strikes shown.
+3. **Assess position-specific risk.** If the trader has 3 call credit spreads at different strikes, evaluate each independently against the gamma profile.
+4. **Tailor management rules.** Stop levels should reference the trader's actual nearest short strike, not a theoretical estimate.
+5. **Identify new entry opportunities relative to existing exposure.** If the trader already has CCS positions, recommend whether adding more CCS, adding put legs (to create ICs), or sitting on existing positions is the best action.
+6. **Note P&L context.** If unrealized P&L data is available, reference it when recommending profit-taking vs holding.
+
+## Recommendation Continuity
+
+When a "Previous Recommendation" section is present in the context, it contains YOUR earlier analysis from today. You MUST maintain consistency:
+
+1. **Do NOT contradict yourself without explanation.** If you recommended CCS at entry and now the midday review is being run, your midday should reference that CCS recommendation and assess whether conditions still support it — not start from scratch.
+2. **If changing structure, state what changed.** Example: "The entry analysis recommended CCS based on bearish flow. Since then, NCP has reversed from -175M to +50M and SPY flow has turned bullish — the bearish thesis is no longer supported. Converting recommendation to PCS."
+3. **Reference the previous analysis explicitly.** Use phrases like "consistent with the entry analysis," "the stop condition from the earlier recommendation has NOT been triggered," or "the entry plan called for Entry 2 at 11:00 AM if NCP exceeded -100M — this condition is now met."
+4. **Carry forward management rules that are still valid.** If the entry analysis set a stop at "close if SPX breaks above 6735," the midday should note whether that stop is still appropriate or needs adjustment.
+5. **Track entry plan progress.** If the entry analysis planned 3 entries, the midday should note which entries have been filled, which conditions remain outstanding, and whether the trader should still add.
 
 ## Your Complete Output
 
@@ -387,7 +411,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB in base64 chars
   for (const img of images) {
     if (img.data.length > MAX_IMAGE_SIZE) {
-      return res.status(400).json({ error: 'Image too large. Maximum 5MB per image.' });
+      return res
+        .status(400)
+        .json({ error: 'Image too large. Maximum 5MB per image.' });
     }
   }
 
@@ -415,6 +441,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Add context as text
   const mode = context.mode ?? 'entry';
+
+  // Auto-fetch open positions from DB for this date (if any)
+  let positionSummary: string | null = null;
+  // Auto-fetch previous recommendation from DB for continuity
+  let previousRec: string | null = null;
+
+  const analysisDate =
+    (context.selectedDate as string | undefined) ??
+    new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+  if (!context.isBacktest) {
+    try {
+      const posData = await getLatestPositions(analysisDate);
+      if (posData && posData.summary !== 'No open SPX 0DTE positions.') {
+        positionSummary = posData.summary;
+      }
+    } catch (posErr) {
+      console.error('Failed to fetch positions for analysis:', posErr);
+    }
+  }
+
+  // Always fetch previous recommendation (works for both live and backtest)
+  if (mode === 'midday' || mode === 'review') {
+    try {
+      previousRec = await getPreviousRecommendation(analysisDate, mode);
+    } catch (recErr) {
+      console.error('Failed to fetch previous recommendation:', recErr);
+    }
+  }
+
+  // Use DB positions if available, fall back to manually provided currentPosition
+  const positionContext =
+    positionSummary ?? (context.currentPosition as string | undefined) ?? null;
+  // Use DB previous recommendation if available, fall back to manually provided
+  const previousContext =
+    previousRec ??
+    (context.previousRecommendation as string | undefined) ??
+    null;
+
   const contextText = `
 ## Analysis Mode: ${mode === 'review' ? 'END-OF-DAY REVIEW' : mode === 'midday' ? 'MID-DAY RE-ANALYSIS' : 'PRE-TRADE ENTRY'}
 
@@ -444,8 +509,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 - Overnight gap: ${context.overnightGap ?? 'N/A'}
 - Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
-${context.currentPosition ? `\n## Current Position (for midday re-analysis)\n${context.currentPosition}\n` : ''}
-${context.previousRecommendation ? `\n## Previous Recommendation (for review)\n${context.previousRecommendation}\n` : ''}
+${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
+${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
 
 Provide your complete analysis as JSON. Mode is "${mode}".`;
@@ -482,20 +547,22 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       const errBody = await response.text();
       console.error(`Anthropic API error (${response.status}):`, errBody);
       // Don't leak Anthropic error details to the client
-      const clientMsg = response.status === 429
-        ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
-        : response.status === 401
-          ? 'Anthropic API authentication error. Check API key.'
-          : `Analysis service error (${response.status}). Please retry.`;
+      const clientMsg =
+        response.status === 429
+          ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
+          : response.status === 401
+            ? 'Anthropic API authentication error. Check API key.'
+            : `Analysis service error (${response.status}). Please retry.`;
       return res.status(502).json({ error: clientMsg });
     }
 
     const data = await response.json();
     // Filter to text blocks only — thinking blocks are excluded
-    const text = data.content
-      ?.filter((c: { type: string }) => c.type === 'text')
-      .map((c: { text: string }) => c.text)
-      .join('') ?? '';
+    const text =
+      data.content
+        ?.filter((c: { type: string }) => c.type === 'text')
+        .map((c: { text: string }) => c.text)
+        .join('') ?? '';
 
     // Parse the JSON response
     try {
@@ -505,8 +572,11 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       // Save to Postgres before responding (must await — Vercel kills the function after res.json)
       try {
         const db = getDb();
-        const date = context.selectedDate
-          ?? new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const date =
+          context.selectedDate ??
+          new Date().toLocaleDateString('en-CA', {
+            timeZone: 'America/New_York',
+          });
         const entryTime = context.entryTime ?? 'unknown';
         const rows = await db`
           SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}

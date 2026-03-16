@@ -5,6 +5,7 @@
  *   - market_snapshots (calculator state at each date+time)
  *   - analyses (Claude chart analysis responses)
  *   - outcomes (end-of-day settlement data)
+ *   - positions (live Schwab SPX 0DTE positions)
  *
  * Call once after setting up the Neon database.
  * Safe to call multiple times (uses IF NOT EXISTS).
@@ -25,7 +26,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const migrated = await migrateDb();
     return res.status(200).json({
       success: true,
-      tables: ['market_snapshots', 'analyses', 'outcomes'],
+      tables: ['market_snapshots', 'analyses', 'outcomes', 'positions'],
       migrated,
       message: 'All tables created and migrations applied',
     });

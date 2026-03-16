@@ -26,6 +26,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const analyses = await sql`SELECT COUNT(*)::int as count FROM analyses`;
     const outcomes = await sql`SELECT COUNT(*)::int as count FROM outcomes`;
 
+    // Positions table may not exist yet — handle gracefully
+    let positionsCount = 0;
+    try {
+      const positions = await sql`SELECT COUNT(*)::int as count FROM positions`;
+      positionsCount = positions[0]?.count ?? 0;
+    } catch {
+      // Table doesn't exist yet — that's fine
+    }
+
     // Check which env vars are set (names only, not values)
     const envVars = [
       'DATABASE_URL',
@@ -43,6 +52,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         market_snapshots: snapshots[0]?.count,
         analyses: analyses[0]?.count,
         outcomes: outcomes[0]?.count,
+        positions: positionsCount,
       },
     });
   } catch (err) {

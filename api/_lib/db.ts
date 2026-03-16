@@ -1,10 +1,11 @@
 /**
  * Postgres database helper using Neon serverless driver.
  *
- * Three tables:
+ * Four tables:
  *   market_snapshots — complete calculator state at each date+time (UNIQUE)
  *   analyses         — Claude chart analysis responses (linked to snapshots)
  *   outcomes         — end-of-day settlement data (for future backtesting)
+ *   positions        — live Schwab SPX 0DTE positions (linked to snapshots)
  *
  * Setup:
  *   1. Add Neon Postgres from Vercel Marketplace (Storage tab → Connect Database → Neon)
@@ -91,19 +92,6 @@ export async function initDb() {
 
       -- VIX term structure
       vix_term_signal           TEXT,
-      vix_term_shape            TEXT,
-
-      -- Volatility clustering (directional)
-      cluster_put_mult          DECIMAL(6,4),
-      cluster_call_mult         DECIMAL(6,4),
-
-      -- Realized vs implied volatility
-      rv_iv_ratio               DECIMAL(6,4),
-      rv_iv_label               TEXT,
-      rv_annualized             DECIMAL(8,6),
-
-      -- IV acceleration
-      iv_accel_mult             DECIMAL(6,4),
 
       -- Overnight context
       overnight_gap             DECIMAL(6,2),
@@ -161,6 +149,38 @@ export async function initDb() {
     )
   `;
 
+  // ── Positions (live Schwab 0DTE SPX positions) ─────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS positions (
+      id              SERIAL PRIMARY KEY,
+      snapshot_id     INTEGER REFERENCES market_snapshots(id),
+      date            DATE NOT NULL,
+      fetch_time      TEXT NOT NULL,
+      account_hash    TEXT NOT NULL,
+      spx_price       DECIMAL(10,2),
+
+      -- Structured summary for prompt injection
+      summary         TEXT NOT NULL,
+
+      -- Raw position legs as JSONB array
+      legs            JSONB NOT NULL,
+
+      -- Aggregate stats
+      total_spreads   INTEGER DEFAULT 0,
+      call_spreads    INTEGER DEFAULT 0,
+      put_spreads     INTEGER DEFAULT 0,
+      net_delta       DECIMAL(8,4),
+      net_theta       DECIMAL(8,4),
+      net_gamma       DECIMAL(8,6),
+      total_credit    DECIMAL(10,2),
+      current_value   DECIMAL(10,2),
+      unrealized_pnl  DECIMAL(10,2),
+
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(date, fetch_time)
+    )
+  `;
+
   // ── Indexes ───────────────────────────────────────────────
   await sql`CREATE INDEX IF NOT EXISTS idx_snapshots_date ON market_snapshots (date)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_analyses_date ON analyses (date)`;
@@ -168,39 +188,61 @@ export async function initDb() {
   await sql`CREATE INDEX IF NOT EXISTS idx_analyses_confidence ON analyses (confidence)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_analyses_snapshot ON analyses (snapshot_id)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_outcomes_date ON outcomes (date)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_positions_date ON positions (date)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_positions_snapshot ON positions (snapshot_id)`;
 }
 
 // ============================================================
-// MIGRATIONS (safe to run repeatedly — all use IF NOT EXISTS)
+// MIGRATIONS (add columns to existing tables)
 // ============================================================
 
 /**
- * Adds columns introduced after the initial schema.
- * Each ALTER uses ADD COLUMN IF NOT EXISTS so it's idempotent.
- * Call after initDb() or standalone via POST /api/journal/migrate.
+ * Run database migrations to add new columns/tables.
+ * Safe to call multiple times — all operations use IF NOT EXISTS.
+ * Returns an array of migration descriptions that were applied.
  */
 export async function migrateDb(): Promise<string[]> {
   const sql = getDb();
   const applied: string[] = [];
 
-  // ── 2026-03 batch: term structure shape, directional clustering,
-  //    RV/IV, IV acceleration ─────────────────────────────────────
-  // ── 2026-03: term structure shape, directional clustering,
-  //    RV/IV, IV acceleration ─────────────────────────────────────
-  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS vix_term_shape TEXT`;
-  applied.push('vix_term_shape');
-  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS cluster_put_mult DECIMAL(6,4)`;
-  applied.push('cluster_put_mult');
-  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS cluster_call_mult DECIMAL(6,4)`;
-  applied.push('cluster_call_mult');
-  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS rv_iv_ratio DECIMAL(6,4)`;
-  applied.push('rv_iv_ratio');
-  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS rv_iv_label TEXT`;
-  applied.push('rv_iv_label');
-  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS rv_annualized DECIMAL(8,6)`;
-  applied.push('rv_annualized');
-  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS iv_accel_mult DECIMAL(6,4)`;
-  applied.push('iv_accel_mult');
+  // Add any new columns to market_snapshots here using ALTER TABLE IF NOT EXISTS pattern
+  // Example:
+  // try {
+  //   await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS new_col TEXT`;
+  //   applied.push('market_snapshots.new_col');
+  // } catch { /* column might already exist */ }
+
+  // Ensure positions table exists (for upgrades from before positions were added)
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS positions (
+        id              SERIAL PRIMARY KEY,
+        snapshot_id     INTEGER REFERENCES market_snapshots(id),
+        date            DATE NOT NULL,
+        fetch_time      TEXT NOT NULL,
+        account_hash    TEXT NOT NULL,
+        spx_price       DECIMAL(10,2),
+        summary         TEXT NOT NULL,
+        legs            JSONB NOT NULL,
+        total_spreads   INTEGER DEFAULT 0,
+        call_spreads    INTEGER DEFAULT 0,
+        put_spreads     INTEGER DEFAULT 0,
+        net_delta       DECIMAL(8,4),
+        net_theta       DECIMAL(8,4),
+        net_gamma       DECIMAL(8,6),
+        total_credit    DECIMAL(10,2),
+        current_value   DECIMAL(10,2),
+        unrealized_pnl  DECIMAL(10,2),
+        created_at      TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(date, fetch_time)
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_positions_date ON positions (date)`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_positions_snapshot ON positions (snapshot_id)`;
+    applied.push('positions table ensured');
+  } catch {
+    // Table already exists — fine
+  }
 
   return applied;
 }
@@ -265,19 +307,6 @@ export interface SnapshotInput {
 
   // Term structure
   vixTermSignal?: string;
-  vixTermShape?: string;
-
-  // Clustering (directional)
-  clusterPutMult?: number;
-  clusterCallMult?: number;
-
-  // Realized vs implied
-  rvIvRatio?: number;
-  rvIvLabel?: string;
-  rvAnnualized?: number;
-
-  // IV acceleration
-  ivAccelMult?: number;
 
   // Overnight
   overnightGap?: number;
@@ -321,11 +350,7 @@ export async function saveSnapshot(
       median_oc_pct, median_hl_pct, p90_oc_pct, p90_hl_pct, p90_oc_pts, p90_hl_pts,
       opening_range_available, opening_range_high, opening_range_low,
       opening_range_pct_consumed, opening_range_signal,
-      vix_term_signal, vix_term_shape,
-      cluster_put_mult, cluster_call_mult,
-      rv_iv_ratio, rv_iv_label, rv_annualized,
-      iv_accel_mult,
-      overnight_gap,
+      vix_term_signal, overnight_gap,
       strikes,
       is_early_close, is_event_day, event_names,
       is_backtest
@@ -352,11 +377,7 @@ export async function saveSnapshot(
       ${input.openingRangeAvailable ?? null},
       ${input.openingRangeHigh ?? null}, ${input.openingRangeLow ?? null},
       ${input.openingRangePctConsumed ?? null}, ${input.openingRangeSignal ?? null},
-      ${input.vixTermSignal ?? null}, ${input.vixTermShape ?? null},
-      ${input.clusterPutMult ?? null}, ${input.clusterCallMult ?? null},
-      ${input.rvIvRatio ?? null}, ${input.rvIvLabel ?? null}, ${input.rvAnnualized ?? null},
-      ${input.ivAccelMult ?? null},
-      ${input.overnightGap ?? null},
+      ${input.vixTermSignal ?? null}, ${input.overnightGap ?? null},
       ${input.strikes ? JSON.stringify(input.strikes) : null},
       ${input.isEarlyClose ?? false}, ${input.isEventDay ?? false},
       ${input.eventNames ?? null},
@@ -366,17 +387,15 @@ export async function saveSnapshot(
     RETURNING id
   `;
 
-  const inserted = result[0];
-  if (inserted) {
-    return inserted.id as number;
+  if (result.length > 0) {
+    return (result[0]?.id as number) ?? null;
   }
 
   // Already existed — look up the ID
   const existing = await sql`
     SELECT id FROM market_snapshots WHERE date = ${input.date} AND entry_time = ${input.entryTime}
   `;
-  const found = existing[0];
-  return found ? (found.id as number) : null;
+  return existing.length > 0 ? ((existing[0]?.id as number) ?? null) : null;
 }
 
 // ============================================================
@@ -469,4 +488,266 @@ export async function saveOutcome(input: {
       vix_close = EXCLUDED.vix_close,
       vix1d_close = EXCLUDED.vix1d_close
   `;
+}
+
+// ============================================================
+// POSITIONS (live Schwab 0DTE SPX)
+// ============================================================
+
+export interface PositionLeg {
+  putCall: 'PUT' | 'CALL';
+  symbol: string;
+  strike: number;
+  expiration: string;
+  quantity: number;
+  averagePrice: number;
+  marketValue: number;
+  delta?: number;
+  theta?: number;
+  gamma?: number;
+}
+
+export interface PositionInput {
+  date: string;
+  fetchTime: string;
+  accountHash: string;
+  spxPrice?: number;
+  summary: string;
+  legs: PositionLeg[];
+  totalSpreads?: number;
+  callSpreads?: number;
+  putSpreads?: number;
+  netDelta?: number;
+  netTheta?: number;
+  netGamma?: number;
+  totalCredit?: number;
+  currentValue?: number;
+  unrealizedPnl?: number;
+  snapshotId?: number | null;
+}
+
+/**
+ * Save current positions. Uses ON CONFLICT DO UPDATE so re-fetching
+ * the same date+time replaces the previous snapshot.
+ */
+export async function savePositions(
+  input: PositionInput,
+): Promise<number | null> {
+  const sql = getDb();
+
+  const result = await sql`
+    INSERT INTO positions (
+      snapshot_id, date, fetch_time, account_hash, spx_price,
+      summary, legs,
+      total_spreads, call_spreads, put_spreads,
+      net_delta, net_theta, net_gamma,
+      total_credit, current_value, unrealized_pnl
+    ) VALUES (
+      ${input.snapshotId ?? null},
+      ${input.date}, ${input.fetchTime}, ${input.accountHash},
+      ${input.spxPrice ?? null},
+      ${input.summary}, ${JSON.stringify(input.legs)},
+      ${input.totalSpreads ?? 0}, ${input.callSpreads ?? 0}, ${input.putSpreads ?? 0},
+      ${input.netDelta ?? null}, ${input.netTheta ?? null}, ${input.netGamma ?? null},
+      ${input.totalCredit ?? null}, ${input.currentValue ?? null}, ${input.unrealizedPnl ?? null}
+    )
+    ON CONFLICT (date, fetch_time) DO UPDATE SET
+      snapshot_id = EXCLUDED.snapshot_id,
+      account_hash = EXCLUDED.account_hash,
+      spx_price = EXCLUDED.spx_price,
+      summary = EXCLUDED.summary,
+      legs = EXCLUDED.legs,
+      total_spreads = EXCLUDED.total_spreads,
+      call_spreads = EXCLUDED.call_spreads,
+      put_spreads = EXCLUDED.put_spreads,
+      net_delta = EXCLUDED.net_delta,
+      net_theta = EXCLUDED.net_theta,
+      net_gamma = EXCLUDED.net_gamma,
+      total_credit = EXCLUDED.total_credit,
+      current_value = EXCLUDED.current_value,
+      unrealized_pnl = EXCLUDED.unrealized_pnl
+    RETURNING id
+  `;
+
+  return result.length > 0 ? ((result[0]?.id as number) ?? null) : null;
+}
+
+/**
+ * Get the most recent positions for a given date.
+ * Returns the summary string for prompt injection and the full legs for display.
+ */
+export async function getLatestPositions(date: string): Promise<{
+  summary: string;
+  legs: PositionLeg[];
+  fetchTime: string;
+  stats: {
+    totalSpreads: number;
+    callSpreads: number;
+    putSpreads: number;
+    netDelta: number | null;
+    netTheta: number | null;
+    unrealizedPnl: number | null;
+  };
+} | null> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT summary, legs, fetch_time,
+           total_spreads, call_spreads, put_spreads,
+           net_delta, net_theta, unrealized_pnl
+    FROM positions
+    WHERE date = ${date}
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+
+  if (rows.length === 0) return null;
+  const row = rows[0]!;
+  return {
+    summary: row.summary as string,
+    legs: (typeof row.legs === 'string'
+      ? JSON.parse(row.legs)
+      : row.legs) as PositionLeg[],
+    fetchTime: row.fetch_time as string,
+    stats: {
+      totalSpreads: row.total_spreads as number,
+      callSpreads: row.call_spreads as number,
+      putSpreads: row.put_spreads as number,
+      netDelta: row.net_delta as number | null,
+      netTheta: row.net_theta as number | null,
+      unrealizedPnl: row.unrealized_pnl as number | null,
+    },
+  };
+}
+
+// ============================================================
+// PREVIOUS RECOMMENDATION (for analysis continuity)
+// ============================================================
+
+/**
+ * Fetch the previous recommendation for a given date based on the current mode.
+ *
+ * Logic:
+ *   - "entry" mode: No previous recommendation needed (returns null)
+ *   - "midday" mode: Get the most recent analysis for this date
+ *     (could be an entry or a previous midday — whatever came last)
+ *   - "review" mode: Get the most recent midday analysis for this date,
+ *     falling back to the most recent entry if no midday exists
+ *
+ * Returns a formatted string for prompt injection, or null if nothing found.
+ */
+export async function getPreviousRecommendation(
+  date: string,
+  currentMode: string,
+): Promise<string | null> {
+  if (currentMode === 'entry') return null;
+
+  const sql = getDb();
+
+  let rows;
+
+  if (currentMode === 'midday') {
+    // Get the most recent analysis for this date (any mode)
+    rows = await sql`
+      SELECT mode, entry_time, structure, confidence, suggested_delta, hedge,
+             spx, vix, vix1d, full_response, created_at
+      FROM analyses
+      WHERE date = ${date}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+  } else if (currentMode === 'review') {
+    // Prefer the most recent midday, fall back to most recent entry
+    rows = await sql`
+      SELECT mode, entry_time, structure, confidence, suggested_delta, hedge,
+             spx, vix, vix1d, full_response, created_at
+      FROM analyses
+      WHERE date = ${date}
+        AND mode IN ('midday', 'entry')
+      ORDER BY
+        CASE WHEN mode = 'midday' THEN 0 ELSE 1 END,
+        created_at DESC
+      LIMIT 1
+    `;
+  } else {
+    return null;
+  }
+
+  if (!rows || rows.length === 0) return null;
+
+  const row = rows[0]!;
+  const fullResponse = (
+    typeof row.full_response === 'string'
+      ? JSON.parse(row.full_response as string)
+      : row.full_response
+  ) as Record<string, unknown>;
+
+  // Build a concise summary of the previous recommendation
+  const lines: string[] = [
+    `=== Previous ${(row.mode as string).toUpperCase()} Analysis (${row.entry_time}) ===`,
+    `Structure: ${row.structure} | Confidence: ${row.confidence} | Delta: ${row.suggested_delta}Δ`,
+    `SPX at analysis: ${row.spx} | VIX: ${row.vix} | VIX1D: ${row.vix1d}`,
+    `Hedge: ${row.hedge ?? 'N/A'}`,
+  ];
+
+  // Include the reasoning
+  if (fullResponse.reasoning) {
+    lines.push(`Reasoning: ${fullResponse.reasoning}`);
+  }
+
+  // Include structure rationale for full context
+  if (fullResponse.structureRationale) {
+    lines.push(`Structure rationale: ${fullResponse.structureRationale}`);
+  }
+
+  // Include key management rules
+  const mgmt = fullResponse.managementRules as
+    | Record<string, unknown>
+    | undefined;
+  if (mgmt) {
+    if (mgmt.profitTarget) lines.push(`Profit target: ${mgmt.profitTarget}`);
+    if (Array.isArray(mgmt.stopConditions)) {
+      lines.push('Stop conditions:');
+      for (const stop of mgmt.stopConditions) {
+        lines.push(`  - ${stop}`);
+      }
+    }
+    if (mgmt.flowReversalSignal)
+      lines.push(`Flow reversal signal: ${mgmt.flowReversalSignal}`);
+  }
+
+  // Include entry plan status
+  const plan = fullResponse.entryPlan as Record<string, unknown> | undefined;
+  if (plan) {
+    if (plan.maxTotalSize) lines.push(`Max total size: ${plan.maxTotalSize}`);
+    const e1 = plan.entry1 as Record<string, unknown> | undefined;
+    const e2 = plan.entry2 as Record<string, unknown> | undefined;
+    const e3 = plan.entry3 as Record<string, unknown> | undefined;
+    if (e1?.sizePercent)
+      lines.push(
+        `Entry 1: ${e1.structure} ${e1.delta}Δ at ${e1.sizePercent}% — ${e1.note ?? ''}`,
+      );
+    if (e2?.condition) lines.push(`Entry 2 condition: ${e2.condition}`);
+    if (e3?.condition) lines.push(`Entry 3 condition: ${e3.condition}`);
+  }
+
+  // Include observations (top 3 for context)
+  if (Array.isArray(fullResponse.observations)) {
+    lines.push('Key observations at that time:');
+    for (const obs of fullResponse.observations.slice(0, 3)) {
+      lines.push(`  - ${obs}`);
+    }
+  }
+
+  // Include strike guidance
+  const strikes = fullResponse.strikeGuidance as
+    | Record<string, unknown>
+    | undefined;
+  if (strikes) {
+    if (strikes.putStrikeNote)
+      lines.push(`Put strike guidance: ${strikes.putStrikeNote}`);
+    if (strikes.callStrikeNote)
+      lines.push(`Call strike guidance: ${strikes.callStrikeNote}`);
+  }
+
+  return lines.join('\n');
 }

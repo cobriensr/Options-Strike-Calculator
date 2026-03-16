@@ -334,7 +334,8 @@ describe('ChartAnalysis', () => {
       expect(mockFetch).not.toHaveBeenCalled();
       await user.click(screen.getByRole('button', { name: /confirm/i }));
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledOnce();
+        // 2 calls: /api/positions (pre-fetch) + /api/analyze
+        expect(mockFetch).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -365,9 +366,11 @@ describe('ChartAnalysis', () => {
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledOnce();
+        // 2 calls: /api/positions (pre-fetch) + /api/analyze
+        expect(mockFetch).toHaveBeenCalledTimes(2);
       });
-      const [url, opts] = mockFetch.mock.calls[0]!;
+      // First call is positions pre-fetch, second is the analyze call
+      const [url, opts] = mockFetch.mock.calls[1]!;
       expect(url).toBe('/api/analyze');
       expect(opts!.method).toBe('POST');
       const body = JSON.parse(opts!.body as string);
@@ -1015,12 +1018,15 @@ describe('ChartAnalysis', () => {
         },
       };
 
-      mockFetch.mockResolvedValueOnce(
-        new Response(JSON.stringify({ analysis: firstAnalysis, raw: '{}' }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      );
+      // First analyze: positions pre-fetch + /api/analyze
+      mockFetch
+        .mockResolvedValueOnce(new Response('{}', { status: 200 })) // positions pre-fetch
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ analysis: firstAnalysis, raw: '{}' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
 
       const { container } = render(
         <ChartAnalysis
@@ -1039,25 +1045,28 @@ describe('ChartAnalysis', () => {
       // Switch to midday mode
       await user.click(screen.getByText('Mid-Day'));
 
-      // Second analysis: midday mode with previous recommendation
-      mockFetch.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            analysis: { ...firstAnalysis, mode: 'midday' },
-            raw: '{}',
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
-      );
+      // Second analyze: positions pre-fetch + /api/analyze
+      mockFetch
+        .mockResolvedValueOnce(new Response('{}', { status: 200 })) // positions pre-fetch
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              analysis: { ...firstAnalysis, mode: 'midday' },
+              raw: '{}',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        );
 
       await clickAnalyzeAndConfirm(user);
 
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledTimes(2);
+        // 4 calls: 2 per analyze (positions + analyze) × 2 analyses
+        expect(mockFetch).toHaveBeenCalledTimes(4);
       });
 
-      // Verify the second call included previousRecommendation
-      const secondCall = mockFetch.mock.calls[1]!;
+      // Verify the second analyze call (index 3) included previousRecommendation
+      const secondCall = mockFetch.mock.calls[3]!;
       const body = JSON.parse(secondCall[1]!.body as string);
       expect(body.context.previousRecommendation).toContain('IRON CONDOR');
       expect(body.context.previousRecommendation).toContain('Entry 1:');

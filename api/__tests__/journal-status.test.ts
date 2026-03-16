@@ -54,7 +54,8 @@ describe('GET /api/journal/status', () => {
       .mockResolvedValueOnce([{ now }]) // SELECT NOW()
       .mockResolvedValueOnce([{ count: 10 }]) // snapshots
       .mockResolvedValueOnce([{ count: 5 }]) // analyses
-      .mockResolvedValueOnce([{ count: 2 }]); // outcomes
+      .mockResolvedValueOnce([{ count: 2 }]) // outcomes
+      .mockResolvedValueOnce([{ count: 0 }]); // positions
     vi.mocked(getDb).mockReturnValue(mockSql as never);
 
     const res = mockResponse();
@@ -68,6 +69,7 @@ describe('GET /api/journal/status', () => {
       market_snapshots: 10,
       analyses: 5,
       outcomes: 2,
+      positions: 0,
     });
     expect((json.envVarsFound as string[]).includes('DATABASE_URL')).toBe(true);
   });
@@ -83,6 +85,7 @@ describe('GET /api/journal/status', () => {
     const mockSql = vi
       .fn()
       .mockResolvedValueOnce([{ now: '' }])
+      .mockResolvedValueOnce([{ count: 0 }])
       .mockResolvedValueOnce([{ count: 0 }])
       .mockResolvedValueOnce([{ count: 0 }])
       .mockResolvedValueOnce([{ count: 0 }]);

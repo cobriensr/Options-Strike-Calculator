@@ -1,6 +1,6 @@
 # 0DTE Options Strike Calculator
 
-A Black-Scholes-based calculator for determining delta-targeted strike prices, theoretical option premiums, credit spread P&L, iron condor profiles, and VIX regime-aware position guidance for same-day (0DTE) SPX and SPY options. Includes AI-powered chart analysis via Claude Opus 4.6, live option chain verification via Schwab API, historical backtesting, and a Postgres database for ML-ready data collection.
+A Black-Scholes-based calculator for determining delta-targeted strike prices, theoretical option premiums, credit spread P&L, iron condor profiles, and VIX regime-aware position guidance for same-day (0DTE) SPX and SPY options. Includes AI-powered chart analysis via Claude Opus 4.6, live position tracking via Schwab Trader API, live option chain verification via Schwab API, historical backtesting, and a Postgres database for ML-ready data collection.
 
 Built with React 19, TypeScript (strict mode), and Vite. Deployed on Vercel with Neon Postgres, Upstash Redis, Schwab API, and Anthropic API integrations.
 
@@ -26,6 +26,7 @@ Live at: [theta-options.com](https://theta-options.com)
     - [Technical Details](#technical-details)
   - [Live Option Chain Verification](#live-option-chain-verification)
   - [Backtesting System](#backtesting-system)
+  - [Live Position Tracking](#live-position-tracking)
   - [Data Collection \& ML Pipeline](#data-collection--ml-pipeline)
     - [Tables](#tables)
     - [Data Flow](#data-flow)
@@ -189,7 +190,8 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 
 - All uploaded chart images (up to 5) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Periscope Delta Flow, Periscope Gamma)
 - Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier (symmetric + directional put/call), DOW label, opening range signal, term structure signal + curve shape, RV/IV ratio, IV acceleration multiplier, overnight gap
-- Previous recommendation (for mid-day/review continuity via `lastAnalysisRef`)
+- Live Schwab positions: Current SPX 0DTE spreads with strikes, credits, P&L, cushion distances, and net greeks — auto-fetched before each analysis so Claude knows what's already open
+- Previous recommendation (for mid-day/review continuity — auto-fetched from DB via `getPreviousRecommendation()`, with client-side `lastAnalysisRef` fallback for first-run or backtest scenarios)
 - Data availability notes (VIX1D missing, pre-10AM opening range, backtest mode)
 
 ### What Claude Returns
@@ -260,30 +262,71 @@ Full historical replay using 5-minute SPX candles from the Schwab API:
 
 ---
 
+## Live Position Tracking
+
+Real-time SPX 0DTE position awareness via the Schwab Trader API. Before each chart analysis, the frontend auto-fetches current positions so Claude can factor in what's already open.
+
+| Feature              | Detail                                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------------------- |
+| Endpoint             | `GET /api/positions?spx=5700&date=2026-03-16`                                                      |
+| Data source          | Schwab Trader API (`/accounts/{hash}?fields=positions`)                                            |
+| Filtering            | SPX options only (`$SPX` underlying), expiring today (0DTE), non-zero quantity                     |
+| Spread grouping      | Matches short + long legs by put/call type and closest strike (max 50-pt width)                    |
+| Spread types         | `CALL CREDIT SPREAD`, `PUT CREDIT SPREAD`, `SINGLE` (unpaired naked short)                         |
+| Summary for Claude   | Human-readable text with strikes, contracts, credit, width, cushion from SPX, and aggregate greeks |
+| DB persistence       | Saved to `positions` table with snapshot linkage, ON CONFLICT DO UPDATE for re-fetches             |
+| Rate limit           | 20/min via Upstash Redis                                                                           |
+| Graceful degradation | Positions are optional — if the fetch fails, analysis proceeds without them                        |
+
+### What Claude Sees
+
+When positions exist, the analysis prompt includes a structured summary like:
+
+```text
+=== Open SPX 0DTE Positions (2 spreads) ===
+SPX at fetch time: 5700
+
+PUT CREDIT SPREADS (1):
+  Short 5600P / Long 5575P | 1 contracts | Credit: $1.50 | Width: 25 pts | Cushion: 100 pts below SPX
+
+CALL CREDIT SPREADS (1):
+  Short 5800C / Long 5825C | 1 contracts | Credit: $1.20 | Width: 25 pts | Cushion: 100 pts above SPX
+
+AGGREGATE:
+  Net delta: -0.012 | Net theta: 0.45
+  Total unrealized P&L: $85.00
+  Nearest short call: 5800 (100 pts above SPX)
+  Nearest short put: 5600 (100 pts below SPX)
+```
+
+This lets Claude make position-aware recommendations — e.g., "You already have a put spread at 5600, don't add more put-side risk" or "Your call spread is being tested, consider closing the short call leg."
+
+---
+
 ## Data Collection & ML Pipeline
 
-Three Postgres tables automatically collect data for future ML training:
+Four Postgres tables automatically collect data for future ML training:
 
 ### Tables
 
 **`market_snapshots`** — Complete calculator state at each date+time (50+ features):
 
-| Category | Fields |
-| --- | --- |
-| Prices | SPX, SPY, open, high, low, prev close |
-| Volatility surface | VIX, VIX1D, VIX9D, VVIX, VIX1D/VIX ratio, VIX/VIX9D ratio |
-| Calculator | σ, sigma source, T, hours remaining, skew |
-| Regime | zone (go/caution/stop/danger), cluster multiplier, DOW multipliers |
+| Category            | Fields                                                              |
+| ------------------- | ------------------------------------------------------------------- |
+| Prices              | SPX, SPY, open, high, low, prev close                               |
+| Volatility surface  | VIX, VIX1D, VIX9D, VVIX, VIX1D/VIX ratio, VIX/VIX9D ratio           |
+| Calculator          | σ, sigma source, T, hours remaining, skew                           |
+| Regime              | zone (go/caution/stop/danger), cluster multiplier, DOW multipliers  |
 | Directional cluster | cluster_put_mult, cluster_call_mult (asymmetric after up/down days) |
-| Delta guide | IC ceiling, put/call spread ceilings, moderate/conservative deltas |
-| Range thresholds | median O→C %, median H-L %, P90 O→C %, P90 H-L %, P90 points |
-| Opening range | available flag, high, low, % consumed, signal (GREEN/MODERATE/RED) |
-| Term structure | combined signal, curve shape (contango/fear-spike/flat/etc.) |
-| RV/IV | rv_iv_ratio, rv_iv_label (IV Rich/Fair/Cheap), rv_annualized |
-| IV acceleration | iv_accel_mult (intraday σ multiplier at entry time) |
-| Strikes | JSONB with put/call at every delta (5/8/10/12/15/20) |
-| Events | early close flag, event day flag, event names array |
-| Metadata | is_backtest flag, created_at timestamp |
+| Delta guide         | IC ceiling, put/call spread ceilings, moderate/conservative deltas  |
+| Range thresholds    | median O→C %, median H-L %, P90 O→C %, P90 H-L %, P90 points        |
+| Opening range       | available flag, high, low, % consumed, signal (GREEN/MODERATE/RED)  |
+| Term structure      | combined signal, curve shape (contango/fear-spike/flat/etc.)        |
+| RV/IV               | rv_iv_ratio, rv_iv_label (IV Rich/Fair/Cheap), rv_annualized        |
+| IV acceleration     | iv_accel_mult (intraday σ multiplier at entry time)                 |
+| Strikes             | JSONB with put/call at every delta (5/8/10/12/15/20)                |
+| Events              | early close flag, event day flag, event names array                 |
+| Metadata            | is_backtest flag, created_at timestamp                              |
 
 Uniqueness: `UNIQUE(date, entry_time)` with `ON CONFLICT DO NOTHING` — duplicate submissions silently skipped.
 
@@ -307,11 +350,28 @@ Uniqueness: `UNIQUE(date, entry_time)` with `ON CONFLICT DO NOTHING` — duplica
 
 Uniqueness: `UNIQUE(date)` with `ON CONFLICT DO UPDATE`.
 
+**`positions`** — Live Schwab SPX 0DTE positions:
+
+| Column                                      | Purpose                                         |
+| ------------------------------------------- | ----------------------------------------------- |
+| snapshot_id                                 | FK to market_snapshots (linked at fetch time)   |
+| date, fetch_time                            | When positions were fetched                     |
+| account_hash                                | Schwab account identifier                       |
+| spx_price                                   | SPX spot at fetch time                          |
+| summary                                     | Human-readable text for Claude prompt injection |
+| legs                                        | JSONB array of individual option legs           |
+| total_spreads, call_spreads, put_spreads    | Spread counts by type                           |
+| net_delta, net_theta, net_gamma             | Aggregate portfolio greeks                      |
+| total_credit, current_value, unrealized_pnl | P&L tracking                                    |
+
+Uniqueness: `UNIQUE(date, fetch_time)` with `ON CONFLICT DO UPDATE`.
+
 ### Data Flow
 
 - **Snapshots**: Auto-save via `useSnapshotSave` hook whenever results compute with a new date+time. All 40+ fields populated from `useComputedSignals` hook which lifts derived values from child components.
 - **Analyses**: Saved server-side in the analyze endpoint (awaited before response) with snapshot_id lookup.
 - **Outcomes**: Backfilled from historical CSVs via `scripts/backfill-outcomes.ts`. ~960 days with VIX1D coverage (May 2022+).
+- **Positions**: Auto-fetched from Schwab Trader API before each chart analysis. Saved with snapshot linkage. Previous analyses auto-fetched from DB for mid-day/review continuity via `getPreviousRecommendation()`.
 
 ### Querying
 
@@ -387,21 +447,22 @@ Static calendar of FOMC (8/year), CPI (12/year), NFP (12/year), GDP (4/year) for
 
 ### Architecture
 
-| Endpoint | Schwab Call | Returns | Cache (market) | Cache (closed) |
-| --- | --- | --- | --- | --- |
-| `GET /api/quotes` | `getQuotes(SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX)` | Real-time spot prices | 60s | 5 min |
-| `GET /api/intraday` | `priceHistory($SPX, 5-min, 1 day)` | Today's OHLC + 30-min opening range | 2 min | 10 min |
-| `GET /api/yesterday` | `priceHistory($SPX, daily, 1 month)` | Prior day SPX OHLC for clustering | 1 hour | 1 day |
-| `GET /api/chain` | `chains($SPX, 0DTE)` | Live option chain with per-strike deltas | 30s | — |
-| `GET /api/events` | FRED API | Economic calendar events | 1 hour | 1 day |
-| `GET /api/history` | `priceHistory($SPX+$VIX+$VIX1D+$VIX9D)` | Historical candles for backtesting | 1 hour | 1 day |
-| `GET /api/movers` | `movers($SPX)` | Market movers | 5 min | 10 min |
-| `POST /api/analyze` | Anthropic Messages API | Claude chart analysis | — | — |
-| `POST /api/snapshot` | Neon Postgres | Save market snapshot | — | — |
-| `GET /api/journal` | Neon Postgres | Query saved analyses | — | — |
-| `GET /api/journal/status` | Neon Postgres | DB connection + table counts | — | — |
-| `POST /api/journal/init` | Neon Postgres | Create tables + run migrations | — | — |
-| `POST /api/journal/migrate` | Neon Postgres | Add new columns to existing tables | — | — |
+| Endpoint                    | Schwab Call                                    | Returns                                  | Cache (market) | Cache (closed) |
+| --------------------------- | ---------------------------------------------- | ---------------------------------------- | -------------- | -------------- |
+| `GET /api/quotes`           | `getQuotes(SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX)` | Real-time spot prices                    | 60s            | 5 min          |
+| `GET /api/intraday`         | `priceHistory($SPX, 5-min, 1 day)`             | Today's OHLC + 30-min opening range      | 2 min          | 10 min         |
+| `GET /api/yesterday`        | `priceHistory($SPX, daily, 1 month)`           | Prior day SPX OHLC for clustering        | 1 hour         | 1 day          |
+| `GET /api/chain`            | `chains($SPX, 0DTE)`                           | Live option chain with per-strike deltas | 30s            | —              |
+| `GET /api/events`           | FRED API                                       | Economic calendar events                 | 1 hour         | 1 day          |
+| `GET /api/history`          | `priceHistory($SPX+$VIX+$VIX1D+$VIX9D)`        | Historical candles for backtesting       | 1 hour         | 1 day          |
+| `GET /api/movers`           | `movers($SPX)`                                 | Market movers                            | 5 min          | 10 min         |
+| `GET /api/positions`        | Schwab Trader API                              | Live SPX 0DTE positions + spreads        | —              | —              |
+| `POST /api/analyze`         | Anthropic Messages API                         | Claude chart analysis                    | —              | —              |
+| `POST /api/snapshot`        | Neon Postgres                                  | Save market snapshot                     | —              | —              |
+| `GET /api/journal`          | Neon Postgres                                  | Query saved analyses                     | —              | —              |
+| `GET /api/journal/status`   | Neon Postgres                                  | DB connection + table counts             | —              | —              |
+| `POST /api/journal/init`    | Neon Postgres                                  | Create tables + run migrations           | —              | —              |
+| `POST /api/journal/migrate` | Neon Postgres                                  | Add new columns to existing tables       | —              | —              |
 
 ### Owner Gating
 
@@ -569,7 +630,7 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── _lib/
 │   │   ├── schwab.ts                  # Schwab OAuth token management (Upstash Redis)
 │   │   ├── api-helpers.ts             # Shared fetch, cache, owner-gate, rate limiting
-│   │   └── db.ts                      # Neon Postgres: schema, snapshots, analyses, outcomes
+│   │   └── db.ts                      # Neon Postgres: schema, snapshots, analyses, outcomes, positions
 │   ├── auth/
 │   │   ├── init.ts                    # GET /api/auth/init → redirect to Schwab login
 │   │   └── callback.ts               # GET /api/auth/callback → exchange code for tokens
@@ -584,6 +645,7 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── intraday.ts                    # GET /api/intraday → today's OHLC + opening range
 │   ├── journal.ts                     # GET /api/journal → query saved analyses
 │   ├── movers.ts                      # GET /api/movers → market movers
+│   ├── positions.ts                   # GET /api/positions → live Schwab SPX 0DTE positions
 │   ├── quotes.ts                      # GET /api/quotes → SPY, SPX, VIX, VIX1D, VIX9D, VVIX
 │   ├── snapshot.ts                    # POST /api/snapshot → save market snapshot to Postgres
 │   └── yesterday.ts                   # GET /api/yesterday → prior day SPX OHLC
@@ -594,7 +656,7 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── backfill-outcomes.ts           # Populate outcomes table from historical CSVs
 │   └── entry-time-analysis.ts         # 8:45 vs 9:00 AM CT entry timing study
 ├── src/
-│   ├── __tests__/                     # 1550+ tests across 67 test files
+│   ├── __tests__/                     # 1584+ tests across 68 test files
 │   ├── components/
 │   │   ├── BacktestDiag.tsx           # Backtest diagnostic panel
 │   │   ├── ChainVerification.tsx      # Theoretical vs live chain strike comparison
@@ -652,6 +714,7 @@ npx tsx scripts/backfill-outcomes.ts
                     │  /api/yesterday → prior day OHLC             │
                     │  /api/chain → live option chain deltas        │
                     │  /api/history → historical candles            │
+                    │  /api/positions → live SPX 0DTE positions     │
                     └──────────────────┬───────────────────────────┘
                                        │ (auto-populate)
                                        ▼
@@ -661,9 +724,11 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
                     │                       │
                     ├──→ useSnapshotSave() ──→ POST /api/snapshot ──→ Neon Postgres
                     │                       │
-                    ├──→ ChartAnalysis ──→ POST /api/analyze ──→ Claude Opus 4.6
-                    │        context           │                      │
-                    │                          └─── save analysis ───→ Neon Postgres
+                    ├──→ ChartAnalysis ──→ GET /api/positions ──→ Schwab Trader API
+                    │        context      │                           │
+                    │                     └──→ POST /api/analyze ──→ Claude Opus 4.6
+                    │                              │                      │
+                    │                              └─── save analysis ───→ Neon Postgres
                     │
                     └──→ Display components (DeltaRegimeGuide, OpeningRangeCheck, etc.)
 
@@ -708,12 +773,13 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
 
 All owner-gated endpoints are rate-limited via Upstash Redis:
 
-| Endpoint        | Limit  | Purpose                               |
-| --------------- | ------ | ------------------------------------- |
-| `/api/analyze`  | 10/min | Prevent Opus cost abuse (~$0.30/call) |
-| `/api/snapshot` | 30/min | Generous for normal use               |
-| `/api/journal`  | 20/min | Query endpoint                        |
-| Auth endpoints  | 5/min  | Brute-force protection                |
+| Endpoint         | Limit  | Purpose                               |
+| ---------------- | ------ | ------------------------------------- |
+| `/api/analyze`   | 10/min | Prevent Opus cost abuse (~$0.30/call) |
+| `/api/positions` | 20/min | Auto-fetched before each analysis     |
+| `/api/snapshot`  | 30/min | Generous for normal use               |
+| `/api/journal`   | 20/min | Query endpoint                        |
+| Auth endpoints   | 5/min  | Brute-force protection                |
 
 ### Input Validation
 
@@ -740,37 +806,39 @@ One-click XLSX with three sheets: P&L Comparison (7 wing widths × 6 deltas × 3
 
 ## Testing
 
-1,550+ unit tests across 67 test files + 71 Playwright E2E tests across 12 spec files, all passing with TypeScript strict mode. Overall coverage: 97.5% statements, 91% branches.
+1,584+ unit tests across 68 test files + 71 Playwright E2E tests across 12 spec files, all passing with TypeScript strict mode. Overall coverage: 97.8% statements, 91% branches.
 
 ### Unit Tests (Vitest)
 
-| File | Focus |
-| --- | --- |
-| `calculator.test.ts` | 150+ tests: BS pricing, delta, gamma, strikes, IV acceleration, fat-tail kurtosis, convex skew |
-| `ChartAnalysis.test.tsx` | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling |
-| `useComputedSignals.test.ts` | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering |
-| `skewAndIC.test.ts` | 63 tests: convex skew, IC legs, per-side PoP, breakevens |
-| `hedge.test.tsx` | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario |
-| `PinRiskAnalysis.test.tsx` | 7 tests: OI table, pin risk warning, empty state, K formatting |
-| `RvIvCard.test.tsx` | 6 tests: ratio display, all 3 labels, RV/IV percentages |
-| `journal-migrate.test.ts` | 5 tests: migration endpoint, idempotency, error handling |
+| File                         | Focus                                                                                          |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| `calculator.test.ts`         | 150+ tests: BS pricing, delta, gamma, strikes, IV acceleration, fat-tail kurtosis, convex skew |
+| `ChartAnalysis.test.tsx`     | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling          |
+| `useComputedSignals.test.ts` | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering         |
+| `skewAndIC.test.ts`          | 63 tests: convex skew, IC legs, per-side PoP, breakevens                                       |
+| `hedge.test.tsx`             | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario                |
+| `PinRiskAnalysis.test.tsx`   | 7 tests: OI table, pin risk warning, empty state, K formatting                                 |
+| `RvIvCard.test.tsx`          | 6 tests: ratio display, all 3 labels, RV/IV percentages                                        |
+| `positions.test.ts`          | 17 tests: handler, spread grouping, summary building, DB save, error paths                     |
+| `db.test.ts`                 | 34 tests: schema init, migrations, snapshots, analyses, outcomes, positions, previous recs     |
+| `journal-migrate.test.ts`    | 5 tests: migration endpoint, idempotency, error handling                                       |
 
 ### E2E Tests (Playwright)
 
-| File | Tests | Coverage |
-| --- | --- | --- |
-| `calculator-flow.spec.ts` | 9 | Full calculation flow, mode switching, dark mode |
-| `strike-table.spec.ts` | 6 | Delta rows, ordering invariants, VIX sensitivity |
-| `iron-condor.spec.ts` | 5 | IC legs, hedge toggle, contracts, hide/show |
-| `hedge-dte.spec.ts` | 9 | DTE selector, EOD recovery, net cost labels, scenarios |
-| `iv-acceleration.spec.ts` | 4 | σ multiplier at different times, late session warning |
-| `fat-tail-pop.spec.ts` | 3 | Adjusted PoP display, struck-through log-normal |
-| `market-regime-new.spec.ts` | 11 | Clustering, term structure shapes (contango/fear-spike/flat) |
-| `entry-time.spec.ts` | 4 | Time selects, AM/PM, timezone, recalculation |
-| `advanced-section.spec.ts` | 5 | Skew slider, wing width, contracts counter |
-| `chart-analysis.spec.ts` | 4 | Mode selector, drop zone, mocked analysis |
-| `validation-errors.spec.ts` | 5 | Input validation, error states, clearing |
-| `responsive.spec.ts` | 6 | iPhone, iPad, desktop viewports |
+| File                        | Tests | Coverage                                                     |
+| --------------------------- | ----- | ------------------------------------------------------------ |
+| `calculator-flow.spec.ts`   | 9     | Full calculation flow, mode switching, dark mode             |
+| `strike-table.spec.ts`      | 6     | Delta rows, ordering invariants, VIX sensitivity             |
+| `iron-condor.spec.ts`       | 5     | IC legs, hedge toggle, contracts, hide/show                  |
+| `hedge-dte.spec.ts`         | 9     | DTE selector, EOD recovery, net cost labels, scenarios       |
+| `iv-acceleration.spec.ts`   | 4     | σ multiplier at different times, late session warning        |
+| `fat-tail-pop.spec.ts`      | 3     | Adjusted PoP display, struck-through log-normal              |
+| `market-regime-new.spec.ts` | 11    | Clustering, term structure shapes (contango/fear-spike/flat) |
+| `entry-time.spec.ts`        | 4     | Time selects, AM/PM, timezone, recalculation                 |
+| `advanced-section.spec.ts`  | 5     | Skew slider, wing width, contracts counter                   |
+| `chart-analysis.spec.ts`    | 4     | Mode selector, drop zone, mocked analysis                    |
+| `validation-errors.spec.ts` | 5     | Input validation, error states, clearing                     |
+| `responsive.spec.ts`        | 6     | iPhone, iPad, desktop viewports                              |
 
 ```bash
 npm test                 # Watch mode

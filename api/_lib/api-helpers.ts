@@ -11,6 +11,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getAccessToken, redis } from './schwab.js';
 
 const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
+const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
 
 // ============================================================
 // OWNER VERIFICATION
@@ -166,6 +167,40 @@ export async function schwabFetch<T>(
     const body = await res.text();
     return {
       error: `Schwab API error (${res.status}): ${body}`,
+      status: res.status === 401 ? 401 : 502,
+    };
+  }
+
+  const data: T = await res.json();
+  return { data };
+}
+
+/**
+ * Make an authenticated GET request to the Schwab Trader API (accounts, orders, positions).
+ * Same auth pattern as schwabFetch but uses the trader base URL.
+ */
+export async function schwabTraderFetch<T>(
+  path: string,
+): Promise<{ data: T } | { error: string; status: number }> {
+  const authResult = await getAccessToken();
+
+  if ('error' in authResult) {
+    const status = authResult.error.type === 'expired_refresh' ? 401 : 500;
+    return { error: authResult.error.message, status };
+  }
+
+  const url = `${SCHWAB_TRADER_BASE}${path}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${authResult.token}`,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    return {
+      error: `Schwab Trader API error (${res.status}): ${body}`,
       status: res.status === 401 ? 401 : 502,
     };
   }

@@ -11,9 +11,13 @@ vi.mock('@neondatabase/serverless', () => ({
 import {
   getDb,
   initDb,
+  migrateDb,
   saveSnapshot,
   saveAnalysis,
   saveOutcome,
+  savePositions,
+  getLatestPositions,
+  getPreviousRecommendation,
 } from '../_lib/db.js';
 import { neon } from '@neondatabase/serverless';
 
@@ -56,8 +60,8 @@ describe('db.ts', () => {
 
       await initDb();
 
-      // 3 CREATE TABLEs + 6 CREATE INDEXes = 9 calls
-      expect(mockSql).toHaveBeenCalledTimes(9);
+      // 4 CREATE TABLEs + 8 CREATE INDEXes = 12 calls
+      expect(mockSql).toHaveBeenCalledTimes(12);
     });
   });
 
@@ -325,6 +329,348 @@ describe('db.ts', () => {
       });
 
       expect(mockSql).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ============================================================
+  // migrateDb
+  // ============================================================
+  describe('migrateDb', () => {
+    it('runs positions table migration and returns applied list', async () => {
+      mockSql.mockResolvedValue([]);
+
+      const applied = await migrateDb();
+
+      expect(applied).toContain('positions table ensured');
+      // CREATE TABLE + 2 CREATE INDEXes = 3 calls
+      expect(mockSql).toHaveBeenCalledTimes(3);
+    });
+
+    it('returns applied list even if positions table already exists', async () => {
+      // Simulate table already exists — still resolves fine with IF NOT EXISTS
+      mockSql.mockResolvedValue([]);
+
+      const applied = await migrateDb();
+
+      expect(applied).toEqual(['positions table ensured']);
+    });
+
+    it('handles error when positions migration throws', async () => {
+      mockSql.mockRejectedValue(new Error('relation already exists'));
+
+      const applied = await migrateDb();
+
+      // Error is caught, nothing added to applied
+      expect(applied).toEqual([]);
+    });
+  });
+
+  // ============================================================
+  // savePositions
+  // ============================================================
+  describe('savePositions', () => {
+    it('inserts and returns the new id', async () => {
+      mockSql.mockResolvedValueOnce([{ id: 99 }]);
+
+      const id = await savePositions({
+        date: '2026-03-16',
+        fetchTime: '09:35',
+        accountHash: 'abc123',
+        spxPrice: 5700,
+        summary: 'No open positions.',
+        legs: [],
+        totalSpreads: 0,
+        callSpreads: 0,
+        putSpreads: 0,
+      });
+
+      expect(id).toBe(99);
+      expect(mockSql).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null when insert returns empty', async () => {
+      mockSql.mockResolvedValueOnce([]);
+
+      const id = await savePositions({
+        date: '2026-03-16',
+        fetchTime: '09:35',
+        accountHash: 'abc123',
+        summary: 'No open positions.',
+        legs: [],
+      });
+
+      expect(id).toBeNull();
+    });
+
+    it('serializes legs as JSON', async () => {
+      mockSql.mockResolvedValueOnce([{ id: 1 }]);
+
+      const legs = [
+        {
+          putCall: 'PUT' as const,
+          symbol: 'SPXW260316P05600',
+          strike: 5600,
+          expiration: '2026-03-16',
+          quantity: -1,
+          averagePrice: 2.5,
+          marketValue: -150,
+        },
+      ];
+
+      const id = await savePositions({
+        date: '2026-03-16',
+        fetchTime: '09:35',
+        accountHash: 'abc123',
+        summary: '1 put spread',
+        legs,
+        snapshotId: 42,
+      });
+
+      expect(id).toBe(1);
+    });
+
+    it('passes null for optional numeric fields when not provided', async () => {
+      mockSql.mockResolvedValueOnce([{ id: 1 }]);
+
+      await savePositions({
+        date: '2026-03-16',
+        fetchTime: '09:35',
+        accountHash: 'abc123',
+        summary: 'test',
+        legs: [],
+      });
+
+      expect(mockSql).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ============================================================
+  // getLatestPositions
+  // ============================================================
+  describe('getLatestPositions', () => {
+    it('returns latest positions for a date', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          summary: '1 put spread',
+          legs: JSON.stringify([{ putCall: 'PUT', strike: 5600 }]),
+          fetch_time: '09:35',
+          total_spreads: 1,
+          call_spreads: 0,
+          put_spreads: 1,
+          net_delta: -0.05,
+          net_theta: 0.12,
+          unrealized_pnl: 50,
+        },
+      ]);
+
+      const result = await getLatestPositions('2026-03-16');
+
+      expect(result).not.toBeNull();
+      expect(result!.summary).toBe('1 put spread');
+      expect(result!.legs).toEqual([{ putCall: 'PUT', strike: 5600 }]);
+      expect(result!.fetchTime).toBe('09:35');
+      expect(result!.stats.totalSpreads).toBe(1);
+      expect(result!.stats.putSpreads).toBe(1);
+      expect(result!.stats.netDelta).toBe(-0.05);
+    });
+
+    it('returns null when no positions found', async () => {
+      mockSql.mockResolvedValueOnce([]);
+
+      const result = await getLatestPositions('2026-03-16');
+
+      expect(result).toBeNull();
+    });
+
+    it('handles legs already parsed as object (not string)', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          summary: 'No positions.',
+          legs: [{ putCall: 'CALL', strike: 5800 }],
+          fetch_time: '10:00',
+          total_spreads: 0,
+          call_spreads: 0,
+          put_spreads: 0,
+          net_delta: null,
+          net_theta: null,
+          unrealized_pnl: null,
+        },
+      ]);
+
+      const result = await getLatestPositions('2026-03-16');
+
+      expect(result!.legs).toEqual([{ putCall: 'CALL', strike: 5800 }]);
+      expect(result!.stats.netDelta).toBeNull();
+    });
+  });
+
+  // ============================================================
+  // getPreviousRecommendation
+  // ============================================================
+  describe('getPreviousRecommendation', () => {
+    it('returns null for entry mode', async () => {
+      const result = await getPreviousRecommendation('2026-03-16', 'entry');
+
+      expect(result).toBeNull();
+      expect(mockSql).not.toHaveBeenCalled();
+    });
+
+    it('returns null for unknown mode', async () => {
+      const result = await getPreviousRecommendation('2026-03-16', 'unknown');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when no previous analyses exist (midday)', async () => {
+      mockSql.mockResolvedValueOnce([]);
+
+      const result = await getPreviousRecommendation('2026-03-16', 'midday');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns formatted recommendation for midday mode', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          mode: 'entry',
+          entry_time: '09:35',
+          structure: 'IRON CONDOR',
+          confidence: 'HIGH',
+          suggested_delta: 8,
+          hedge: 'Buy 1 VIX call',
+          spx: 5700,
+          vix: 18,
+          vix1d: 15,
+          full_response: JSON.stringify({
+            reasoning: 'Balanced flow detected.',
+            structureRationale: 'NCP ≈ NPP',
+            managementRules: {
+              profitTarget: 'Close at 50%',
+              stopConditions: ['SPX < 5600', 'VIX > 25'],
+              flowReversalSignal: 'NCP diverges from NPP',
+            },
+            entryPlan: {
+              maxTotalSize: '3 spreads',
+              entry1: {
+                structure: 'PCS',
+                delta: 5,
+                sizePercent: 40,
+                note: 'Initial',
+              },
+              entry2: { condition: 'Pullback to support' },
+              entry3: { condition: 'Breakout confirmation' },
+            },
+            observations: [
+              'NCP at +50M',
+              'NPP at -40M',
+              'Parallel lines',
+              'Extra obs',
+            ],
+            strikeGuidance: {
+              putStrikeNote: 'Below 5600',
+              callStrikeNote: 'Above 5800',
+            },
+          }),
+          created_at: '2026-03-16T14:35:00Z',
+        },
+      ]);
+
+      const result = await getPreviousRecommendation('2026-03-16', 'midday');
+
+      expect(result).not.toBeNull();
+      expect(result).toContain('Previous ENTRY Analysis (09:35)');
+      expect(result).toContain('IRON CONDOR');
+      expect(result).toContain('Confidence: HIGH');
+      expect(result).toContain('Delta: 8');
+      expect(result).toContain('Balanced flow detected.');
+      expect(result).toContain('NCP ≈ NPP');
+      expect(result).toContain('Close at 50%');
+      expect(result).toContain('SPX < 5600');
+      expect(result).toContain('NCP diverges from NPP');
+      expect(result).toContain('3 spreads');
+      expect(result).toContain('Entry 1: PCS 5Δ at 40%');
+      expect(result).toContain('Entry 2 condition: Pullback to support');
+      expect(result).toContain('Entry 3 condition: Breakout confirmation');
+      // Only top 3 observations
+      expect(result).toContain('NCP at +50M');
+      expect(result).toContain('Parallel lines');
+      expect(result).not.toContain('Extra obs');
+      expect(result).toContain('Put strike guidance: Below 5600');
+      expect(result).toContain('Call strike guidance: Above 5800');
+    });
+
+    it('queries review mode with midday preference', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          mode: 'midday',
+          entry_time: '11:30',
+          structure: 'PUT CREDIT SPREAD',
+          confidence: 'MODERATE',
+          suggested_delta: 6,
+          hedge: null,
+          spx: 5710,
+          vix: 17.5,
+          vix1d: 14.8,
+          full_response: {
+            reasoning: 'Continued selling.',
+          },
+          created_at: '2026-03-16T16:30:00Z',
+        },
+      ]);
+
+      const result = await getPreviousRecommendation('2026-03-16', 'review');
+
+      expect(result).toContain('Previous MIDDAY Analysis (11:30)');
+      expect(result).toContain('PUT CREDIT SPREAD');
+      expect(result).toContain('Hedge: N/A');
+      expect(result).toContain('Continued selling.');
+    });
+
+    it('handles full_response already parsed as object', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          mode: 'entry',
+          entry_time: '09:35',
+          structure: 'IRON CONDOR',
+          confidence: 'HIGH',
+          suggested_delta: 8,
+          hedge: null,
+          spx: 5700,
+          vix: 18,
+          vix1d: 15,
+          full_response: { reasoning: 'Already parsed.' },
+          created_at: '2026-03-16T14:35:00Z',
+        },
+      ]);
+
+      const result = await getPreviousRecommendation('2026-03-16', 'midday');
+
+      expect(result).toContain('Already parsed.');
+    });
+
+    it('handles minimal full_response with no optional fields', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          mode: 'entry',
+          entry_time: '09:35',
+          structure: 'SIT OUT',
+          confidence: 'LOW',
+          suggested_delta: 0,
+          hedge: null,
+          spx: 5700,
+          vix: 30,
+          vix1d: 28,
+          full_response: JSON.stringify({}),
+          created_at: '2026-03-16T14:35:00Z',
+        },
+      ]);
+
+      const result = await getPreviousRecommendation('2026-03-16', 'midday');
+
+      expect(result).toContain('SIT OUT');
+      expect(result).toContain('Confidence: LOW');
+      // Should not crash when no optional fields exist
+      expect(result).not.toContain('undefined');
     });
   });
 });
