@@ -14,7 +14,10 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
+import {
+  rejectIfNotOwner,
+  rejectIfRateLimited,
+} from './_lib/api-helpers.js';
 import { saveAnalysis, getDb } from './_lib/db.js';
 
 // Allow up to 5 minutes for Opus with extended thinking
@@ -170,13 +173,16 @@ The trader ladders entries. Provide a plan:
 - Conditions where NO additional entries should be made
 
 ### 5. Hedge Recommendation
-- NO HEDGE: Low risk, standard conditions
-- PROTECTIVE LONG: Specific strike and approximate cost
-- DEBIT SPREAD HEDGE: Convert to butterfly on vulnerable side
-- REDUCED SIZE: Cut contracts by specific percentage
-- SKIP: Risk too high to hedge cost-effectively
 
-Consider: VIX level, directional conviction, straddle cone proximity, gamma profile, hedge cost vs credit received.
+CRITICAL: When recommending a PROTECTIVE LONG option, always specify a 7–14 DTE expiration, NOT 0DTE. Both are closed at end of day, but a 0DTE protective long loses most of its value to theta decay during the session — by 2 PM ET it's nearly worthless even if the underlying hasn't moved. A 7–14 DTE protective long has minimal theta decay during a single session, so the trader can close it at EOD and recover 70–90% of the purchase price if it wasn't needed. The net cost of renting a 7–14 DTE hedge for one day is typically 10–30% of its purchase price, vs 80–100% for a 0DTE hedge.
+
+- NO HEDGE: Low risk, standard conditions, unanimous flow alignment
+- PROTECTIVE LONG (7–14 DTE): Buy a protective option at 7–14 DTE. Close at end of day. Specify the strike, approximate DTE, and estimated cost. Example: "Buy a 7DTE 6850 put for ~$8.00 — if not needed, sell to close at EOD and recover ~$6.00–7.00. Net hedge cost: ~$1.00–2.00."
+- DEBIT SPREAD HEDGE: Convert to butterfly on vulnerable side using 0DTE options (these are structural adjustments, not insurance)
+- REDUCED SIZE: Cut contracts by specific percentage — this is free and often the best hedge
+- SKIP: Risk too high to hedge cost-effectively — recommend sitting out entirely
+
+Consider: VIX level, directional conviction, straddle cone proximity, gamma profile, hedge cost vs credit received. When flow signals are unanimous and all charts align, hedges typically waste premium — prefer REDUCED SIZE or NO HEDGE. Reserve PROTECTIVE LONG for days with conflicting signals or when price is near a straddle cone boundary.
 
 ### 6. End-of-Day Review (mode: "review" only)
 - Was the recommendation correct?
@@ -252,9 +258,9 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
 
   "hedge": {
     "recommendation": "NO HEDGE" | "PROTECTIVE LONG" | "DEBIT SPREAD HEDGE" | "REDUCED SIZE" | "SKIP",
-    "description": "Specific hedge action with strike and cost",
+    "description": "Specific hedge action with strike, DTE, and cost. For PROTECTIVE LONG, always specify 7-14 DTE.",
     "rationale": "Why this hedge given today's conditions",
-    "estimatedCost": "~15% of credit"
+    "estimatedCost": "~$8.00 purchase, ~$6.00-7.00 recovered at EOD close, net cost ~$1.50"
   },
 
   "periscopeNotes": "Detailed gamma/straddle analysis. null if no Periscope image.",
@@ -326,9 +332,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB in base64 chars
   for (const img of images) {
     if (img.data.length > MAX_IMAGE_SIZE) {
-      return res
-        .status(400)
-        .json({ error: 'Image too large. Maximum 5MB per image.' });
+      return res.status(400).json({ error: 'Image too large. Maximum 5MB per image.' });
     }
   }
 
@@ -417,22 +421,20 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       const errBody = await response.text();
       console.error(`Anthropic API error (${response.status}):`, errBody);
       // Don't leak Anthropic error details to the client
-      const clientMsg =
-        response.status === 429
-          ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
-          : response.status === 401
-            ? 'Anthropic API authentication error. Check API key.'
-            : `Analysis service error (${response.status}). Please retry.`;
+      const clientMsg = response.status === 429
+        ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
+        : response.status === 401
+          ? 'Anthropic API authentication error. Check API key.'
+          : `Analysis service error (${response.status}). Please retry.`;
       return res.status(502).json({ error: clientMsg });
     }
 
     const data = await response.json();
     // Filter to text blocks only — thinking blocks are excluded
-    const text =
-      data.content
-        ?.filter((c: { type: string }) => c.type === 'text')
-        .map((c: { text: string }) => c.text)
-        .join('') ?? '';
+    const text = data.content
+      ?.filter((c: { type: string }) => c.type === 'text')
+      .map((c: { text: string }) => c.text)
+      .join('') ?? '';
 
     // Parse the JSON response
     try {
@@ -442,16 +444,13 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       // Save to Postgres before responding (must await — Vercel kills the function after res.json)
       try {
         const db = getDb();
-        const date =
-          context.selectedDate ??
-          new Date().toLocaleDateString('en-CA', {
-            timeZone: 'America/New_York',
-          });
+        const date = context.selectedDate
+          ?? new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
         const entryTime = context.entryTime ?? 'unknown';
         const rows = await db`
           SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
         `;
-        const snapshotId = rows.length > 0 ? (rows[0]!.id as number) : null;
+        const snapshotId = rows.length > 0 ? (rows[0]?.id as number) : null;
         await saveAnalysis(context, analysis, snapshotId);
       } catch (dbErr) {
         console.error('Failed to save analysis to DB:', dbErr);
