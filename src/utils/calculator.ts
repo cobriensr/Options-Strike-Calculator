@@ -143,6 +143,90 @@ export function blackScholesPrice(
 }
 
 /**
+ * Computes the intraday IV acceleration multiplier.
+ * As the 0DTE session progresses, gamma acceleration causes realized IV
+ * to increase. This function returns a multiplier on σ that accounts for
+ * this empirically observed behavior.
+ *
+ * Model: mult = 1 + coeff × (1/hoursRemaining - 1/6.5)
+ * At open (6.5h): 1.0x. At 2h: ~1.12x. At 1h: ~1.28x. At 0.5h: ~1.56x.
+ *
+ * The multiplier is capped to prevent extreme values near close.
+ */
+export function calcIVAcceleration(hoursRemaining: number): number {
+  if (hoursRemaining >= MARKET.HOURS_PER_DAY) return 1;
+  if (hoursRemaining <= 0) return DEFAULTS.IV_ACCEL_MAX;
+
+  const baseRate = 1 / MARKET.HOURS_PER_DAY; // ~0.154
+  const currentRate = 1 / hoursRemaining;
+  const mult = 1 + DEFAULTS.IV_ACCEL_COEFF * (currentRate - baseRate);
+
+  return Math.min(mult, DEFAULTS.IV_ACCEL_MAX);
+}
+
+/**
+ * Adjusts a log-normal PoP for fat-tailed (leptokurtic) intraday returns.
+ *
+ * SPX intraday returns have excess kurtosis ~3-5, meaning tail events
+ * happen 2-3× more often than the log-normal model predicts. This function
+ * inflates the breach probability on each tail by the kurtosis factor,
+ * then recomputes PoP.
+ *
+ * For an iron condor with breakevens BE_low and BE_high:
+ *   P(breach_low) = 1 - P(S_T > BE_low)  → inflated by kurtosis
+ *   P(breach_high) = 1 - P(S_T < BE_high) → inflated by kurtosis
+ *   PoP_adjusted = 1 - P_adj(breach_low) - P_adj(breach_high)
+ *
+ * For a single spread:
+ *   PoP_adjusted = 1 - min(1, (1 - PoP_lognormal) × kurtosis_factor)
+ */
+export function adjustPoPForKurtosis(
+  popLogNormal: number,
+  kurtosis: number = DEFAULTS.KURTOSIS_FACTOR,
+): number {
+  if (kurtosis <= 1) return popLogNormal;
+  // Breach probability = 1 - PoP
+  const breachProb = 1 - popLogNormal;
+  // Inflate breach probability by kurtosis factor
+  const adjustedBreach = Math.min(1, breachProb * kurtosis);
+  return Math.max(0, 1 - adjustedBreach);
+}
+
+/**
+ * Adjusts iron condor PoP for fat tails by inflating each tail independently.
+ * This is more accurate than adjusting the combined PoP because IC has two
+ * independent breach regions (below put BE and above call BE).
+ */
+export function adjustICPoPForKurtosis(
+  spot: number,
+  beLow: number,
+  beHigh: number,
+  putSigma: number,
+  callSigma: number,
+  T: number,
+  kurtosis: number = DEFAULTS.KURTOSIS_FACTOR,
+): number {
+  if (kurtosis <= 1 || T <= 0)
+    return calcPoP(spot, beLow, beHigh, putSigma, callSigma, T);
+
+  const sqrtT = Math.sqrt(T);
+
+  // Put-side breach: P(S_T < BE_low)
+  const d2Low =
+    (Math.log(spot / beLow) - ((putSigma * putSigma) / 2) * T) /
+    (putSigma * sqrtT);
+  const pBreachLow = Math.min(1, normalCDF(-d2Low) * kurtosis);
+
+  // Call-side breach: P(S_T > BE_high)
+  const d2High =
+    (Math.log(spot / beHigh) - ((callSigma * callSigma) / 2) * T) /
+    (callSigma * sqrtT);
+  const pBreachHigh = Math.min(1, normalCDF(d2High) * kurtosis);
+
+  return Math.max(0, Math.min(1, 1 - pBreachLow - pBreachHigh));
+}
+
+/**
  * Validates that a given time (in ET, 24h format) falls within market hours.
  * Returns hours remaining if valid, error message if not.
  */
@@ -232,19 +316,39 @@ export function snapToIncrement(
 }
 
 /**
- * Calculates the skew-adjusted sigma for a given z-score.
- * Skew is scaled proportionally to z relative to the reference z-score (10Δ).
- * Further OTM strikes (higher z) get more skew, nearer OTM (lower z) get less.
- * This models the real volatility smile where far OTM puts have steeper skew.
+ * Calculates the skew-adjusted sigma for puts at a given z-score.
+ * Uses a convex (power) curve: further OTM puts get disproportionately
+ * more skew, matching real SPX volatility smile behavior.
  *
- * Example with 3% skew at 10Δ reference:
- *   5Δ (z=1.645): put σ = σ × (1 + 0.03 × 1.645/1.28) = σ × 1.0386
- *  10Δ (z=1.280): put σ = σ × (1 + 0.03 × 1.280/1.28) = σ × 1.03    (reference)
- *  20Δ (z=0.842): put σ = σ × (1 + 0.03 × 0.842/1.28) = σ × 1.0197
+ * Put skew: skew × (z / z_ref)^convexity
+ *   convexity > 1 → steeper far OTM (5Δ gets ~35% more skew than linear)
+ *
+ * Example with 3% skew at 10Δ reference (convexity = 1.35):
+ *   5Δ (z=1.645): put skew = 0.03 × (1.645/1.28)^1.35 = 0.03 × 1.38 = 4.15%
+ *  10Δ (z=1.280): put skew = 0.03 × 1.00                            = 3.00%
+ *  20Δ (z=0.842): put skew = 0.03 × (0.842/1.28)^1.35 = 0.03 × 0.56 = 1.69%
  */
 export function calcScaledSkew(skew: number, z: number): number {
-  if (skew === 0 || !Number.isFinite(z)) return 0;
-  return skew * (z / DEFAULTS.SKEW_REFERENCE_Z);
+  if (skew === 0 || !Number.isFinite(z) || z <= 0) return 0;
+  const ratio = z / DEFAULTS.SKEW_REFERENCE_Z;
+  return skew * Math.pow(ratio, DEFAULTS.SKEW_PUT_CONVEXITY);
+}
+
+/**
+ * Calculates the skew-adjusted sigma for calls at a given z-score.
+ * Call skew flattens further OTM (and sometimes inverts on rally days),
+ * so we dampen the skew at high z-scores.
+ *
+ * Call skew: skew × (z / z_ref) × dampening_factor
+ *   dampening = 1 / (1 + CALL_DAMPENING × max(0, z/z_ref - 1))
+ *   At 10Δ: no dampening. At 5Δ: ~15-20% less skew than linear.
+ */
+export function calcScaledCallSkew(skew: number, z: number): number {
+  if (skew === 0 || !Number.isFinite(z) || z <= 0) return 0;
+  const ratio = z / DEFAULTS.SKEW_REFERENCE_Z;
+  const dampening =
+    1 / (1 + DEFAULTS.SKEW_CALL_DAMPENING * Math.max(0, ratio - 1));
+  return skew * ratio * dampening;
 }
 
 /**
@@ -258,8 +362,8 @@ export function calcScaledSkew(skew: number, z: number): number {
  * Without it, strikes are placed ~0.5 SPX points too far OTM. Small for 0DTE
  * but mathematically correct.
  *
- * Skew is z-scaled: further OTM strikes get proportionally more skew,
- * modeling the real volatility smile shape.
+ * Skew uses convex put curve and dampened call curve to match
+ * the real SPX volatility smile shape.
  */
 export function calcStrikes(
   spotPrice: number,
@@ -274,9 +378,10 @@ export function calcStrikes(
   }
 
   const sqrtT = Math.sqrt(T);
-  const scaledSkew = calcScaledSkew(skew, z);
-  const putSigma = sigma * (1 + scaledSkew);
-  const callSigma = sigma * (1 - scaledSkew);
+  const putSkew = calcScaledSkew(skew, z);
+  const callSkew = calcScaledCallSkew(skew, z);
+  const putSigma = sigma * (1 + putSkew);
+  const callSigma = sigma * (1 - callSkew);
 
   // Drift correction: (σ²/2) × T
   const putDrift = ((putSigma * putSigma) / 2) * T;
@@ -309,6 +414,12 @@ export function isStrikeError(
 /**
  * Calculates strikes and theoretical premiums for all delta targets.
  * spxToSpyRatio is used for SPY equivalents (default 10).
+ * hoursRemaining is used for IV acceleration (default: derive from T).
+ *
+ * Strike placement uses the base σ (no acceleration) because strikes
+ * are chosen based on the full-session probability of the move.
+ * Premium pricing uses accelerated σ because it reflects current market
+ * conditions and what you'd actually pay/receive now.
  */
 export function calcAllDeltas(
   spotPrice: number,
@@ -317,15 +428,23 @@ export function calcAllDeltas(
   skew: number = 0,
   spxToSpyRatio: number = 10,
 ): ReadonlyArray<DeltaRow | DeltaRowError> {
+  // IV acceleration based on time remaining
+  const hoursRemaining = T * MARKET.ANNUAL_TRADING_HOURS;
+  const ivAccelMult = calcIVAcceleration(hoursRemaining);
+
   return DELTA_OPTIONS.map((d: DeltaTarget): DeltaRow | DeltaRowError => {
+    // Strikes placed using base σ (full-session probability)
     const result = calcStrikes(spotPrice, sigma, T, d, skew);
 
     if (isStrikeError(result)) {
       return { delta: d, error: result.error };
     }
 
-    const putSigma = sigma * (1 + calcScaledSkew(skew, DELTA_Z_SCORES[d]));
-    const callSigma = sigma * (1 - calcScaledSkew(skew, DELTA_Z_SCORES[d]));
+    // Premiums and Greeks use accelerated σ (current market conditions)
+    const accelSigma = sigma * ivAccelMult;
+    const putSigma = accelSigma * (1 + calcScaledSkew(skew, DELTA_Z_SCORES[d]));
+    const callSigma =
+      accelSigma * (1 - calcScaledCallSkew(skew, DELTA_Z_SCORES[d]));
     const spyPutRaw = result.putStrike / spxToSpyRatio;
     const spyCallRaw = result.callStrike / spxToSpyRatio;
 
@@ -344,7 +463,7 @@ export function calcAllDeltas(
       'call',
     );
 
-    // Actual BS Greeks at the snapped strikes
+    // Actual BS Greeks at the snapped strikes (using accelerated σ)
     const putActualDelta = calcBSDelta(
       spotPrice,
       result.putStrikeSnapped,
@@ -395,6 +514,7 @@ export function calcAllDeltas(
       callActualDelta,
       putGamma,
       callGamma,
+      ivAccelMult,
     };
   });
 }
@@ -597,6 +717,17 @@ export function buildIronCondor(
     callSpreadRoR,
     putSpreadPoP,
     callSpreadPoP,
+    // Fat-tail adjusted PoPs (account for leptokurtic intraday returns)
+    adjustedPoP: adjustICPoPForKurtosis(
+      spotPrice,
+      breakEvenLow,
+      breakEvenHigh,
+      row.putSigma,
+      row.callSigma,
+      T,
+    ),
+    adjustedPutSpreadPoP: adjustPoPForKurtosis(putSpreadPoP),
+    adjustedCallSpreadPoP: adjustPoPForKurtosis(callSpreadPoP),
   };
 }
 
@@ -622,7 +753,11 @@ export function to24Hour(hour: number, ampm: 'AM' | 'PM'): number {
 /**
  * Computes P&L for an IC + hedge position at a given SPX move.
  * movePoints > 0 = crash (SPX drops), movePoints < 0 = rally (SPX rises).
- * Returns P&L in dollars.
+ *
+ * Hedge valuation uses Black-Scholes with remaining DTE (hedgeDte - 1 day)
+ * to model the extrinsic value retained when closing a 7-14 DTE hedge at EOD.
+ * This is much more accurate than intrinsic-only, since a 7DTE hedge still has
+ * ~85-95% of its theta value at EOD close.
  */
 function computeScenarioPnL(params: {
   spot: number;
@@ -639,6 +774,9 @@ function computeScenarioPnL(params: {
   hedgeCallPremium: number;
   hedgePuts: number;
   hedgeCalls: number;
+  hedgePutSigma: number;
+  hedgeCallSigma: number;
+  hedgeTRemaining: number; // T for hedge at EOD close (hedgeDte - 1 day, annualized)
 }): {
   icPnL: number;
   hedgePutPnL: number;
@@ -673,14 +811,33 @@ function computeScenarioPnL(params: {
   const icPnLDollars =
     (params.icCreditPts + icPutPnL + icCallPnL) * 100 * icContracts;
 
-  // Hedge put payout (per hedge contract, in points)
-  const hedgePutIntrinsic = Math.max(0, params.hedgePutStrike - sFinal);
-  const hedgePutPnLPts = hedgePutIntrinsic - params.hedgePutPremium;
+  // Hedge put value at EOD: BS price with remaining DTE (not intrinsic-only)
+  // This models "sell to close at EOD" — the hedge retains extrinsic value
+  const hedgePutEodValue =
+    params.hedgeTRemaining > 0
+      ? blackScholesPrice(
+          sFinal,
+          params.hedgePutStrike,
+          params.hedgePutSigma,
+          params.hedgeTRemaining,
+          'put',
+        )
+      : Math.max(0, params.hedgePutStrike - sFinal); // fallback to intrinsic for 0DTE
+  const hedgePutPnLPts = hedgePutEodValue - params.hedgePutPremium;
   const hedgePutDollars = hedgePutPnLPts * 100 * hedgePuts;
 
-  // Hedge call payout (per hedge contract, in points)
-  const hedgeCallIntrinsic = Math.max(0, sFinal - params.hedgeCallStrike);
-  const hedgeCallPnLPts = hedgeCallIntrinsic - params.hedgeCallPremium;
+  // Hedge call value at EOD: BS price with remaining DTE
+  const hedgeCallEodValue =
+    params.hedgeTRemaining > 0
+      ? blackScholesPrice(
+          sFinal,
+          params.hedgeCallStrike,
+          params.hedgeCallSigma,
+          params.hedgeTRemaining,
+          'call',
+        )
+      : Math.max(0, sFinal - params.hedgeCallStrike);
+  const hedgeCallPnLPts = hedgeCallEodValue - params.hedgeCallPremium;
   const hedgeCallDollars = hedgeCallPnLPts * 100 * hedgeCalls;
 
   // Total hedge cost (premium paid, regardless of payout — for display)
@@ -691,8 +848,8 @@ function computeScenarioPnL(params: {
 
   return {
     icPnL: Math.round(icPnLDollars),
-    hedgePutPnL: Math.round(hedgePutIntrinsic * 100 * hedgePuts),
-    hedgeCallPnL: Math.round(hedgeCallIntrinsic * 100 * hedgeCalls),
+    hedgePutPnL: Math.round(hedgePutEodValue * 100 * hedgePuts),
+    hedgeCallPnL: Math.round(hedgeCallEodValue * 100 * hedgeCalls),
     hedgeCost: Math.round(hedgeCostDollars),
     netPnL: Math.round(icPnLDollars + hedgePutDollars + hedgeCallDollars),
   };
@@ -728,6 +885,10 @@ function findBreakEven(
  * - At 1×: hedge is ATM (starts paying)
  * - At 1.5×: hedge covers the full IC max loss (target)
  * - Above 1.5×: hedge exceeds IC loss (profit on catastrophe)
+ *
+ * Hedge pricing uses the specified DTE (default 7 days). The scenario
+ * table values hedges at (DTE - 1 day) remaining to model "sell to close
+ * at EOD" — capturing the extrinsic value a longer-dated hedge retains.
  */
 export function calcHedge(params: {
   spot: number;
@@ -742,6 +903,7 @@ export function calcHedge(params: {
   icShortCall: number;
   icLongCall: number;
   hedgeDelta: HedgeDelta;
+  hedgeDte?: number;
 }): HedgeResult {
   const {
     spot,
@@ -752,14 +914,17 @@ export function calcHedge(params: {
     icCreditPts,
     icMaxLossPts,
     hedgeDelta,
+    hedgeDte = DEFAULTS.HEDGE_DTE,
   } = params;
   const z = HEDGE_Z_SCORES[hedgeDelta];
   const sqrtT = Math.sqrt(T);
 
   // Calculate hedge strikes using same formula as main calculator
-  const scaledSkew = calcScaledSkew(skew, z);
-  const putSigma = sigma * (1 + scaledSkew);
-  const callSigma = sigma * (1 - scaledSkew);
+  // (strikes are placed at the 0DTE equivalent distance)
+  const putSkew = calcScaledSkew(skew, z);
+  const callSkew = calcScaledCallSkew(skew, z);
+  const putSigma = sigma * (1 + putSkew);
+  const callSigma = sigma * (1 - callSkew);
   const putDrift = ((putSigma * putSigma) / 2) * T;
   const callDrift = ((callSigma * callSigma) / 2) * T;
 
@@ -772,21 +937,27 @@ export function calcHedge(params: {
   const putStrikeSnapped = snapToIncrement(putStrike);
   const callStrikeSnapped = snapToIncrement(callStrike);
 
-  // Price the hedge options
+  // Price the hedge options at the specified DTE
+  // T_hedge = hedgeDte trading days, annualized
+  const tHedgeEntry = hedgeDte / MARKET.TRADING_DAYS_PER_YEAR;
   const putPremium = blackScholesPrice(
     spot,
     putStrikeSnapped,
     putSigma,
-    T,
+    tHedgeEntry,
     'put',
   );
   const callPremium = blackScholesPrice(
     spot,
     callStrikeSnapped,
     callSigma,
-    T,
+    tHedgeEntry,
     'call',
   );
+
+  // T remaining at EOD close: (hedgeDte - 1) trading days
+  // This is the time value the hedge retains when sold to close
+  const tHedgeEod = Math.max(0, (hedgeDte - 1) / MARKET.TRADING_DAYS_PER_YEAR);
 
   // IC max loss in dollars (total position)
   const icMaxLossDollars = icMaxLossPts * 100 * icContracts;
@@ -796,12 +967,34 @@ export function calcHedge(params: {
   const distToCallHedge = callStrikeSnapped - spot;
 
   // Target crash: 1.5× distance to hedge strike
-  // At this crash, hedge is ITM by 0.5× distance
-  const putPayoutAtTarget = distToPutHedge * 0.5 * 100;
-  const callPayoutAtTarget = distToCallHedge * 0.5 * 100;
+  // Size using NET payout (BS value at EOD minus entry premium) per contract,
+  // since that's the actual P&L each contract generates at the target move
+  const targetPutSpot = spot - distToPutHedge * 1.5;
+  const targetCallSpot = spot + distToCallHedge * 1.5;
+  const putValueAtTarget =
+    tHedgeEod > 0
+      ? blackScholesPrice(
+          targetPutSpot,
+          putStrikeSnapped,
+          putSigma,
+          tHedgeEod,
+          'put',
+        )
+      : Math.max(0, putStrikeSnapped - targetPutSpot);
+  const callValueAtTarget =
+    tHedgeEod > 0
+      ? blackScholesPrice(
+          targetCallSpot,
+          callStrikeSnapped,
+          callSigma,
+          tHedgeEod,
+          'call',
+        )
+      : Math.max(0, targetCallSpot - callStrikeSnapped);
+  const putPayoutAtTarget = Math.max(0, putValueAtTarget - putPremium) * 100;
+  const callPayoutAtTarget = Math.max(0, callValueAtTarget - callPremium) * 100;
 
   // Recommended contracts: enough to approximately cover IC max loss at target crash
-  // N × payoutPerContract ≈ icMaxLossDollars (rounded to nearest, minimum 1)
   const recommendedPuts =
     putPayoutAtTarget > 0
       ? Math.max(1, Math.round(icMaxLossDollars / putPayoutAtTarget))
@@ -811,9 +1004,20 @@ export function calcHedge(params: {
       ? Math.max(1, Math.round(icMaxLossDollars / callPayoutAtTarget))
       : 1;
 
-  // Total daily cost
+  // Total daily cost = premium paid - estimated EOD recovery (when OTM)
+  // If the hedge isn't needed (price stays flat), we recover most of the premium
+  const putRecovery =
+    tHedgeEod > 0
+      ? blackScholesPrice(spot, putStrikeSnapped, putSigma, tHedgeEod, 'put')
+      : 0;
+  const callRecovery =
+    tHedgeEod > 0
+      ? blackScholesPrice(spot, callStrikeSnapped, callSigma, tHedgeEod, 'call')
+      : 0;
+  const netPutCostPts = putPremium - putRecovery;
+  const netCallCostPts = callPremium - callRecovery;
   const dailyCostPts =
-    putPremium * recommendedPuts + callPremium * recommendedCalls;
+    netPutCostPts * recommendedPuts + netCallCostPts * recommendedCalls;
   const dailyCostDollars = Math.round(dailyCostPts * 100);
   const netCreditAfterHedge = Math.round(
     icCreditPts * 100 * icContracts - dailyCostDollars,
@@ -834,6 +1038,9 @@ export function calcHedge(params: {
     hedgeCallPremium: callPremium,
     hedgePuts: recommendedPuts,
     hedgeCalls: recommendedCalls,
+    hedgePutSigma: putSigma,
+    hedgeCallSigma: callSigma,
+    hedgeTRemaining: tHedgeEod,
   };
 
   const netPnLAtCrash = (pts: number) =>
@@ -892,12 +1099,15 @@ export function calcHedge(params: {
 
   return {
     hedgeDelta,
+    hedgeDte,
     putStrike,
     callStrike,
     putStrikeSnapped,
     callStrikeSnapped,
     putPremium: Math.round(putPremium * 100) / 100,
     callPremium: Math.round(callPremium * 100) / 100,
+    putRecovery: Math.round(putRecovery * 100) / 100,
+    callRecovery: Math.round(callRecovery * 100) / 100,
     recommendedPuts,
     recommendedCalls,
     dailyCostPts: Math.round(dailyCostPts * 100) / 100,
