@@ -243,7 +243,7 @@ export function snapToIncrement(
  *  20Δ (z=0.842): put σ = σ × (1 + 0.03 × 0.842/1.28) = σ × 1.0197
  */
 export function calcScaledSkew(skew: number, z: number): number {
-  if (skew === 0) return 0;
+  if (skew === 0 || !Number.isFinite(z)) return 0;
   return skew * (z / DEFAULTS.SKEW_REFERENCE_Z);
 }
 

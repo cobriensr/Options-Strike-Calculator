@@ -7,6 +7,12 @@ import {
   act,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+// Bypass retry logic in component tests — retry is tested separately
+vi.mock('../utils/fetchWithRetry', () => ({
+  fetchWithRetry: (...args: Parameters<typeof fetch>) => fetch(...args),
+}));
+
 import ChartAnalysis from '../components/ChartAnalysis';
 import type { AnalysisContext } from '../components/ChartAnalysis';
 import { lightTheme } from '../themes';

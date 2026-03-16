@@ -1,9 +1,21 @@
 import type { VIXDataMap } from '../types';
 
+/** Maximum rows to parse (35+ years of daily data) */
+const MAX_ROWS = 15_000;
+
+/** VIX values outside this range are treated as invalid */
+const MIN_VIX = 0;
+const MAX_VIX = 200;
+
 /**
  * Parses a VIX OHLC CSV string into a date-keyed map.
  * Handles both YYYY-MM-DD and MM/DD/YYYY date formats.
  * Expects columns: Date, Open, High, Low, Close (case-insensitive).
+ *
+ * Guards:
+ *   - Caps at MAX_ROWS (15,000) to prevent memory issues
+ *   - Rejects values outside [0, 200] (historical VIX max ~82)
+ *   - Rejects Infinity values from malformed numeric strings
  */
 export function parseVixCSV(csvText: string): VIXDataMap {
   const lines = csvText.trim().split('\n');
@@ -36,7 +48,8 @@ export function parseVixCSV(csvText: string): VIXDataMap {
     }
   > = {};
 
-  for (let i = 1; i < lines.length; i++) {
+  const rowLimit = Math.min(lines.length, MAX_ROWS + 1); // +1 for header
+  for (let i = 1; i < rowLimit; i++) {
     const line = lines[i];
     if (!line) continue;
 
@@ -63,7 +76,9 @@ export function parseVixCSV(csvText: string): VIXDataMap {
       const val = parts[idx];
       if (val === undefined || val === '') return null;
       const num = Number.parseFloat(val);
-      return Number.isNaN(num) ? null : num;
+      if (!Number.isFinite(num)) return null;
+      if (num < MIN_VIX || num > MAX_VIX) return null;
+      return num;
     };
 
     data[dateKey] = {

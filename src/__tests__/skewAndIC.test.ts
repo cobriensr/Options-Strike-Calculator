@@ -145,6 +145,15 @@ describe('calcScaledSkew', () => {
     const s2 = calcScaledSkew(0.05, 2);
     expect(s2 / s1).toBeCloseTo(2, 6);
   });
+
+  it('returns 0 when z is NaN', () => {
+    expect(calcScaledSkew(0.03, Number.NaN)).toBe(0);
+  });
+
+  it('returns 0 when z is Infinity', () => {
+    expect(calcScaledSkew(0.03, Infinity)).toBe(0);
+    expect(calcScaledSkew(0.03, -Infinity)).toBe(0);
+  });
 });
 
 describe('calcStrikes: drift correction', () => {
@@ -402,6 +411,37 @@ describe('calcPoP', () => {
 
   it('returns 0 for σ=0', () => {
     expect(calcPoP(spot, 5700, 5900, 0, 0, T)).toBe(0);
+  });
+
+  it('spot === beLow → PoP well below 1 (not degenerate)', () => {
+    const pop = calcPoP(spot, spot, 6100, sigma, sigma, T);
+    // When spot is right at the lower breakeven, roughly 50% chance of finishing above
+    expect(pop).toBeGreaterThan(0.3);
+    expect(pop).toBeLessThan(0.7);
+  });
+
+  it('spot === beHigh → PoP well below 1 (not degenerate)', () => {
+    const pop = calcPoP(spot, 5500, spot, sigma, sigma, T);
+    expect(pop).toBeGreaterThan(0.3);
+    expect(pop).toBeLessThan(0.7);
+  });
+
+  it('spot === both breakevens → PoP near 0', () => {
+    const pop = calcPoP(spot, spot, spot, sigma, sigma, T);
+    // Both breakevens at spot = zero-width range, ~0% chance
+    expect(pop).toBeLessThan(0.05);
+  });
+
+  it('very small T (near expiry) with wide breakevens → high PoP', () => {
+    const tinyT = calcTimeToExpiry(0.1); // 6 minutes left
+    const pop = calcPoP(spot, 5500, 6100, sigma, sigma, tinyT);
+    expect(pop).toBeGreaterThan(0.99);
+  });
+
+  it('returns value in [0, 1] for extreme sigma', () => {
+    const pop = calcPoP(spot, 5700, 5900, 2.0, 2.0, T);
+    expect(pop).toBeGreaterThanOrEqual(0);
+    expect(pop).toBeLessThanOrEqual(1);
   });
 });
 

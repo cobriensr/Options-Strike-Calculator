@@ -16,6 +16,7 @@ import { SectionBox } from '../ui';
 import type { AnalysisMode, AnalysisResult, UploadedImage } from './types';
 import { CHART_LABELS, MODE_LABELS } from './types';
 import AnalysisResultsView from './AnalysisResults';
+import { fetchWithRetry } from '../../utils/fetchWithRetry';
 
 export type { AnalysisContext } from './types';
 
@@ -229,10 +230,11 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       abortRef.current = controller;
       const timeout = setTimeout(() => controller.abort(), 240_000); // 4 min
 
-      const res = await fetch('/api/analyze', {
+      const res = await fetchWithRetry('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
+        maxRetries: 2,
         body: JSON.stringify({
           images: imageData,
           context: {

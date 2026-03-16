@@ -110,6 +110,8 @@ export function useVixData(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
+      // Guard: reject files larger than 10MB to prevent browser freeze
+      if (file.size > 10 * 1024 * 1024) return;
       const text = await file.text();
       const parsed = parseVixCSV(text);
       const count = Object.keys(parsed).length;

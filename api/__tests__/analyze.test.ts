@@ -423,4 +423,95 @@ describe('POST /api/analyze', () => {
     expect(contextBlock).toContain('GREEN');
     expect(contextBlock).toContain('contango');
   });
+
+  it('returns 400 when an image exceeds 5MB', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+
+    const oversized = 'x'.repeat(5 * 1024 * 1024 + 1);
+    const images = [{ data: oversized, mediaType: 'image/png' }];
+    const req = mockRequest({ method: 'POST', body: makeBody({ images }) });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toEqual({
+      error: 'Image too large. Maximum 5MB per image.',
+    });
+  });
+
+  it('returns correct client message for Anthropic 401', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('Invalid API key'),
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(502);
+    const json = res._json as { error: string };
+    expect(json.error).toContain('Anthropic API authentication error');
+    // Must not leak the raw Anthropic error
+    expect(json.error).not.toContain('Invalid API key');
+  });
+
+  it('returns correct client message for Anthropic 500', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: () => Promise.resolve('Internal server error'),
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(502);
+    const json = res._json as { error: string };
+    expect(json.error).toContain('Analysis service error (500)');
+    expect(json.error).not.toContain('Internal server error');
+  });
+
+  it('still returns analysis when DB save fails', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue(makeAnthropicResponse(SAMPLE_ANALYSIS));
+
+    // Make DB throw
+    const { saveAnalysis } = await import('../_lib/db.js');
+    vi.mocked(saveAnalysis).mockRejectedValueOnce(new Error('DB down'));
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Response should still succeed
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
+
+  it('handles response with only thinking blocks (no text)', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          content: [{ type: 'thinking', thinking: 'internal only...' }],
+        }),
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: null; raw: string };
+    expect(json.analysis).toBeNull();
+    expect(json.raw).toBe('');
+  });
 });
