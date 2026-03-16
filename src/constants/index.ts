@@ -122,6 +122,48 @@ export const DEFAULTS = {
   HEDGE_DTE_MAX: 21,
 } as const;
 
+/** Trading model parameters for regime classification and signal computation */
+export const SIGNALS = {
+  /** Minimum absolute daily return to classify as a directional day */
+  CLUSTER_DIRECTION_THRESHOLD: 0.003,
+  /** Down-day cluster: put-side weight (70% of excess → 1.4×) */
+  CLUSTER_DOWN_PUT_WEIGHT: 1.4,
+  /** Down-day cluster: call-side weight (30% of excess → 0.6×) */
+  CLUSTER_DOWN_CALL_WEIGHT: 0.6,
+  /** Up-day cluster: put-side weight (40% of excess → 0.8×) */
+  CLUSTER_UP_PUT_WEIGHT: 0.8,
+  /** Up-day cluster: call-side weight (60% of excess → 1.2×) */
+  CLUSTER_UP_CALL_WEIGHT: 1.2,
+
+  /** VIX1D/VIX ratio thresholds for term structure classification */
+  VIX1D_RATIO_CALM: 0.75,
+  VIX1D_RATIO_NORMAL: 1.0,
+  VIX1D_RATIO_ELEVATED: 1.25,
+
+  /** VIX9D/VIX ratio thresholds (inverted: higher ratio = calmer) */
+  VIX9D_RATIO_CALM: 1.1,
+  VIX9D_RATIO_NORMAL: 0.95,
+  VIX9D_RATIO_ELEVATED: 0.85,
+
+  /** VVIX absolute thresholds */
+  VVIX_CALM: 85,
+  VVIX_NORMAL: 100,
+  VVIX_ELEVATED: 120,
+
+  /** Opening range consumption thresholds (fraction of median H-L) */
+  OPENING_RANGE_GREEN: 0.4,
+  OPENING_RANGE_MODERATE: 0.65,
+
+  /** Term structure shape threshold (ratio distance from 1.0 for contango/backwardation) */
+  TERM_SHAPE_THRESHOLD: 0.03,
+  /** Term structure flat threshold (all ratios within ±5% of 1.0) */
+  TERM_FLAT_THRESHOLD: 0.05,
+
+  /** RV/IV ratio classification thresholds */
+  RVIV_RICH_BELOW: 0.8,
+  RVIV_CHEAP_ABOVE: 1.2,
+} as const;
+
 /** IV input mode identifiers */
 export const IV_MODES = {
   VIX: 'vix',

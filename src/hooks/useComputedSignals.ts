@@ -16,7 +16,9 @@ import {
   calcBSDelta,
   calcScaledSkew,
   calcScaledCallSkew,
+  toETTime,
 } from '../utils/calculator';
+import { SIGNALS } from '../constants';
 import {
   findBucket,
   estimateRange,
@@ -168,10 +170,13 @@ function classifyTermShape(
 
   const r1d = vix1d / vix;
   const r9d = vix9d ? vix9d / vix : null;
+  const lo = 1 - SIGNALS.TERM_SHAPE_THRESHOLD; // 0.97
+  const hi = 1 + SIGNALS.TERM_SHAPE_THRESHOLD; // 1.03
 
-  // Check for flat first: all ratios within ±5%
-  const isFlat1d = Math.abs(r1d - 1) < 0.05;
-  const isFlat9d = r9d == null || Math.abs(r9d - 1) < 0.05;
+  // Check for flat first: all ratios within ±TERM_FLAT_THRESHOLD
+  const isFlat1d = Math.abs(r1d - 1) < SIGNALS.TERM_FLAT_THRESHOLD;
+  const isFlat9d =
+    r9d == null || Math.abs(r9d - 1) < SIGNALS.TERM_FLAT_THRESHOLD;
   if (isFlat1d && isFlat9d) {
     return {
       shape: 'flat',
@@ -183,7 +188,7 @@ function classifyTermShape(
   // With both VIX1D and VIX9D
   if (r9d != null) {
     // Contango: VIX1D < VIX < VIX9D (or VIX1D < VIX and VIX9D > VIX)
-    if (r1d < 0.97 && r9d > 1.03) {
+    if (r1d < lo && r9d > hi) {
       return {
         shape: 'contango',
         advice:
@@ -191,7 +196,7 @@ function classifyTermShape(
       };
     }
     // Fear spike: VIX1D > VIX > VIX9D (or VIX1D > VIX and VIX9D < VIX)
-    if (r1d > 1.03 && r9d < 0.97) {
+    if (r1d > hi && r9d < lo) {
       return {
         shape: 'fear-spike',
         advice:
@@ -199,7 +204,7 @@ function classifyTermShape(
       };
     }
     // Backwardation: VIX1D > VIX, VIX9D ≈ VIX or > VIX
-    if (r1d > 1.03) {
+    if (r1d > hi) {
       return {
         shape: 'backwardation',
         advice:
@@ -207,7 +212,7 @@ function classifyTermShape(
       };
     }
     // Front-calm: VIX1D < VIX, VIX9D < VIX
-    if (r1d < 0.97 && r9d < 0.97) {
+    if (r1d < lo && r9d < lo) {
       return {
         shape: 'front-calm',
         advice:
@@ -217,14 +222,14 @@ function classifyTermShape(
   }
 
   // VIX1D only (no VIX9D)
-  if (r1d > 1.03) {
+  if (r1d > hi) {
     return {
       shape: 'backwardation',
       advice:
         'VIX1D above VIX — today expected hotter than average. Widen deltas or reduce size.',
     };
   }
-  if (r1d < 0.97) {
+  if (r1d < lo) {
     return {
       shape: 'contango',
       advice:
@@ -240,8 +245,8 @@ function classifyTermShape(
 }
 
 function classifyOpeningRange(pctOfMedian: number): string {
-  if (pctOfMedian < 0.4) return 'GREEN';
-  if (pctOfMedian < 0.65) return 'MODERATE';
+  if (pctOfMedian < SIGNALS.OPENING_RANGE_GREEN) return 'GREEN';
+  if (pctOfMedian < SIGNALS.OPENING_RANGE_MODERATE) return 'MODERATE';
   return 'RED';
 }
 
@@ -255,24 +260,24 @@ function classifyTermStructure(
 
   if (vix1d && vix > 0) {
     const ratio = vix1d / vix;
-    if (ratio < 0.75) signals.push('calm');
-    else if (ratio < 1.0) signals.push('normal');
-    else if (ratio < 1.25) signals.push('elevated');
+    if (ratio < SIGNALS.VIX1D_RATIO_CALM) signals.push('calm');
+    else if (ratio < SIGNALS.VIX1D_RATIO_NORMAL) signals.push('normal');
+    else if (ratio < SIGNALS.VIX1D_RATIO_ELEVATED) signals.push('elevated');
     else signals.push('extreme');
   }
 
   if (vix9d && vix > 0) {
     const ratio = vix9d / vix;
-    if (ratio > 1.1) signals.push('calm');
-    else if (ratio > 0.95) signals.push('normal');
-    else if (ratio > 0.85) signals.push('elevated');
+    if (ratio > SIGNALS.VIX9D_RATIO_CALM) signals.push('calm');
+    else if (ratio > SIGNALS.VIX9D_RATIO_NORMAL) signals.push('normal');
+    else if (ratio > SIGNALS.VIX9D_RATIO_ELEVATED) signals.push('elevated');
     else signals.push('extreme');
   }
 
   if (vvix) {
-    if (vvix < 85) signals.push('calm');
-    else if (vvix < 100) signals.push('normal');
-    else if (vvix < 120) signals.push('elevated');
+    if (vvix < SIGNALS.VVIX_CALM) signals.push('calm');
+    else if (vvix < SIGNALS.VVIX_NORMAL) signals.push('normal');
+    else if (vvix < SIGNALS.VVIX_ELEVATED) signals.push('elevated');
     else signals.push('extreme');
   }
 
@@ -325,38 +330,38 @@ interface HookInputs {
 }
 
 export function useComputedSignals(inputs: HookInputs): ComputedSignals {
+  const {
+    vix,
+    spot,
+    T,
+    skewPct,
+    clusterMult,
+    selectedDate,
+    timeHour,
+    timeMinute,
+    timeAmPm,
+    timezone,
+    ivMode,
+    ivModeVix,
+    liveVix1d,
+    liveVix9d,
+    liveVvix,
+    liveOpeningRange,
+    liveYesterdayHigh,
+    liveYesterdayLow,
+    liveYesterdayOpen,
+    liveYesterdayClose,
+    historySnapshot,
+  } = inputs;
+
   return useMemo(() => {
-    const {
-      vix,
-      spot,
-      T,
-      skewPct,
-      clusterMult,
-      selectedDate,
+    // ── ET time (computed once) ──────────────────────────────
+    const { etHour, etMinute } = toETTime(
       timeHour,
       timeMinute,
-      timeAmPm,
-      timezone,
-      ivMode,
-      ivModeVix,
-      liveVix1d,
-      liveVix9d,
-      liveVvix,
-      liveOpeningRange,
-      liveYesterdayHigh,
-      liveYesterdayLow,
-      liveYesterdayOpen,
-      liveYesterdayClose,
-      historySnapshot,
-    } = inputs;
-
-    // ── ET time (computed once) ──────────────────────────────
-    const h24raw =
-      Number.parseInt(timeHour) +
-      (timeAmPm === 'PM' && timeHour !== '12' ? 12 : 0) -
-      (timeAmPm === 'AM' && timeHour === '12' ? 12 : 0);
-    const etHour = timezone === 'CT' ? h24raw + 1 : h24raw;
-    const etMinute = Number.parseInt(timeMinute) || 0;
+      timeAmPm as 'AM' | 'PM',
+      timezone as 'ET' | 'CT',
+    );
 
     // ── Resolve volatility (backtest vs live) ────────────────
     const vix1d = historySnapshot
@@ -493,14 +498,15 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       const excess = cMult - 1; // how much above/below 1.0 (e.g. 0.15 for 1.15x)
       if (excess > 0) {
         // Clustering is active (mult > 1)
-        if (ydayReturn < -0.003) {
+        if (ydayReturn < -SIGNALS.CLUSTER_DIRECTION_THRESHOLD) {
           // Down day: put side gets 70% of excess, call side 30%
-          result.clusterPutMult = 1 + excess * 1.4;
-          result.clusterCallMult = 1 + excess * 0.6;
-        } else if (ydayReturn > 0.003) {
+          result.clusterPutMult = 1 + excess * SIGNALS.CLUSTER_DOWN_PUT_WEIGHT;
+          result.clusterCallMult =
+            1 + excess * SIGNALS.CLUSTER_DOWN_CALL_WEIGHT;
+        } else if (ydayReturn > SIGNALS.CLUSTER_DIRECTION_THRESHOLD) {
           // Up day: call side gets 60% of excess, put side 40% (weaker asymmetry)
-          result.clusterPutMult = 1 + excess * 0.8;
-          result.clusterCallMult = 1 + excess * 1.2;
+          result.clusterPutMult = 1 + excess * SIGNALS.CLUSTER_UP_PUT_WEIGHT;
+          result.clusterCallMult = 1 + excess * SIGNALS.CLUSTER_UP_CALL_WEIGHT;
         } else {
           // Flat day: symmetric
           result.clusterPutMult = cMult;
@@ -615,9 +621,9 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       if (iv > 0) {
         result.rvAnnualized = Math.round(rv * 10000) / 10000;
         result.rvIvRatio = Math.round((rv / iv) * 100) / 100;
-        if (result.rvIvRatio < 0.8) {
+        if (result.rvIvRatio < SIGNALS.RVIV_RICH_BELOW) {
           result.rvIvLabel = 'IV Rich';
-        } else if (result.rvIvRatio > 1.2) {
+        } else if (result.rvIvRatio > SIGNALS.RVIV_CHEAP_ABOVE) {
           result.rvIvLabel = 'IV Cheap';
         } else {
           result.rvIvLabel = 'Fair Value';
@@ -634,7 +640,29 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     );
 
     return result;
-  }, [inputs]);
+  }, [
+    vix,
+    spot,
+    T,
+    skewPct,
+    clusterMult,
+    selectedDate,
+    timeHour,
+    timeMinute,
+    timeAmPm,
+    timezone,
+    ivMode,
+    ivModeVix,
+    liveVix1d,
+    liveVix9d,
+    liveVvix,
+    liveOpeningRange,
+    liveYesterdayHigh,
+    liveYesterdayLow,
+    liveYesterdayOpen,
+    liveYesterdayClose,
+    historySnapshot,
+  ]);
 }
 
 function buildDataNote(

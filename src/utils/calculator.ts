@@ -746,6 +746,22 @@ export function to24Hour(hour: number, ampm: 'AM' | 'PM'): number {
   return hour === 12 ? 12 : hour + 12;
 }
 
+/**
+ * Converts UI time inputs (12-hour + timezone) to ET hour and minute.
+ * Single source of truth for this conversion — used by App.tsx and hooks.
+ */
+export function toETTime(
+  timeHour: string,
+  timeMinute: string,
+  timeAmPm: 'AM' | 'PM',
+  timezone: 'ET' | 'CT',
+): { etHour: number; etMinute: number } {
+  const h24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
+  const etHour = timezone === 'CT' ? h24 + 1 : h24;
+  const etMinute = Number.parseInt(timeMinute) || 0;
+  return { etHour, etMinute };
+}
+
 // ============================================================
 // HEDGE (REINSURANCE) CALCULATOR
 // ============================================================

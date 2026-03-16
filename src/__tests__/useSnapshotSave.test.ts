@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useSnapshotSave } from '../hooks/useSnapshotSave';
 import type { CalculationResults, DeltaRow } from '../types';
+import type { ComputedSignals } from '../hooks/useComputedSignals';
 
 // ============================================================
 // MOCK DATA
@@ -28,7 +29,53 @@ function makeResults(
   };
 }
 
-const baseContext = {
+const defaultSignals: ComputedSignals = {
+  vix1d: undefined,
+  vix9d: undefined,
+  vvix: undefined,
+  sigmaSource: 'VIX × 1.15',
+  etHour: 9,
+  etMinute: 35,
+  regimeZone: null,
+  dowLabel: null,
+  dowMultHL: null,
+  dowMultOC: null,
+  icCeiling: null,
+  putSpreadCeiling: null,
+  callSpreadCeiling: null,
+  moderateDelta: null,
+  conservativeDelta: null,
+  medianOcPct: null,
+  medianHlPct: null,
+  p90OcPct: null,
+  p90HlPct: null,
+  p90OcPts: null,
+  p90HlPts: null,
+  openingRangeAvailable: false,
+  openingRangeHigh: null,
+  openingRangeLow: null,
+  openingRangePctConsumed: null,
+  openingRangeSignal: null,
+  vixTermSignal: null,
+  vixTermShape: null,
+  vixTermShapeAdvice: null,
+  clusterPutMult: null,
+  clusterCallMult: null,
+  rvIvRatio: null,
+  rvIvLabel: null,
+  rvAnnualized: null,
+  spxOpen: null,
+  spxHigh: null,
+  spxLow: null,
+  prevClose: null,
+  overnightGap: null,
+  isEarlyClose: false,
+  isEventDay: false,
+  eventNames: [],
+  dataNote: undefined,
+};
+
+const baseMeta = {
   selectedDate: '2026-03-10',
   entryTime: '09:35',
   spy: 550,
@@ -59,12 +106,14 @@ afterEach(() => {
 
 describe('useSnapshotSave', () => {
   it('does not fire when results is null', () => {
-    renderHook(() => useSnapshotSave(null, baseContext, true));
+    renderHook(() => useSnapshotSave(null, defaultSignals, baseMeta, true));
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('does not fire when isOwner is false', () => {
-    renderHook(() => useSnapshotSave(makeResults(), baseContext, false));
+    renderHook(() =>
+      useSnapshotSave(makeResults(), defaultSignals, baseMeta, false),
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -72,7 +121,8 @@ describe('useSnapshotSave', () => {
     renderHook(() =>
       useSnapshotSave(
         makeResults(),
-        { ...baseContext, selectedDate: undefined },
+        defaultSignals,
+        { ...baseMeta, selectedDate: undefined },
         true,
       ),
     );
@@ -83,7 +133,8 @@ describe('useSnapshotSave', () => {
     renderHook(() =>
       useSnapshotSave(
         makeResults(),
-        { ...baseContext, entryTime: undefined },
+        defaultSignals,
+        { ...baseMeta, entryTime: undefined },
         true,
       ),
     );
@@ -91,7 +142,9 @@ describe('useSnapshotSave', () => {
   });
 
   it('fires POST to /api/snapshot with correct payload', () => {
-    renderHook(() => useSnapshotSave(makeResults(), baseContext, true));
+    renderHook(() =>
+      useSnapshotSave(makeResults(), defaultSignals, baseMeta, true),
+    );
 
     expect(fetchSpy).toHaveBeenCalledWith('/api/snapshot', {
       method: 'POST',
@@ -117,7 +170,7 @@ describe('useSnapshotSave', () => {
   it('does not fire duplicate requests for same date+time', () => {
     const results = makeResults();
     const { rerender } = renderHook(() =>
-      useSnapshotSave(results, baseContext, true),
+      useSnapshotSave(results, defaultSignals, baseMeta, true),
     );
 
     rerender();
@@ -129,11 +182,11 @@ describe('useSnapshotSave', () => {
   it('fires again for a different date+time combination', () => {
     const results = makeResults();
     const { rerender } = renderHook(
-      ({ ctx }) => useSnapshotSave(results, ctx, true),
-      { initialProps: { ctx: baseContext } },
+      ({ meta }) => useSnapshotSave(results, defaultSignals, meta, true),
+      { initialProps: { meta: baseMeta } },
     );
 
-    rerender({ ctx: { ...baseContext, entryTime: '10:00' } });
+    rerender({ meta: { ...baseMeta, entryTime: '10:00' } });
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
@@ -142,7 +195,7 @@ describe('useSnapshotSave', () => {
     fetchSpy.mockRejectedValueOnce(new Error('Network error'));
 
     const results = makeResults();
-    renderHook(() => useSnapshotSave(results, baseContext, true));
+    renderHook(() => useSnapshotSave(results, defaultSignals, baseMeta, true));
 
     // Wait for the rejected promise to settle
     await vi.waitFor(() => {
@@ -168,7 +221,7 @@ describe('useSnapshotSave', () => {
       ],
     });
 
-    renderHook(() => useSnapshotSave(results, baseContext, true));
+    renderHook(() => useSnapshotSave(results, defaultSignals, baseMeta, true));
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string);
     expect(body.strikes['5']).toBeUndefined();

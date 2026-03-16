@@ -6,6 +6,7 @@ import {
   snapToIncrement,
   spxToSpy,
   to24Hour,
+  toETTime,
   isStrikeError,
   calcIVAcceleration,
   adjustPoPForKurtosis,
@@ -258,6 +259,51 @@ describe('to24Hour', () => {
 
   it('converts 12 PM to 12 (noon)', () => {
     expect(to24Hour(12, 'PM')).toBe(12);
+  });
+});
+
+describe('toETTime', () => {
+  it('returns ET hour unchanged when timezone is ET', () => {
+    expect(toETTime('9', '30', 'AM', 'ET')).toEqual({
+      etHour: 9,
+      etMinute: 30,
+    });
+  });
+
+  it('adds 1 hour when timezone is CT', () => {
+    expect(toETTime('8', '30', 'AM', 'CT')).toEqual({
+      etHour: 9,
+      etMinute: 30,
+    });
+  });
+
+  it('handles PM correctly', () => {
+    expect(toETTime('2', '15', 'PM', 'ET')).toEqual({
+      etHour: 14,
+      etMinute: 15,
+    });
+    expect(toETTime('1', '15', 'PM', 'CT')).toEqual({
+      etHour: 14,
+      etMinute: 15,
+    });
+  });
+
+  it('handles 12 AM (midnight) correctly', () => {
+    expect(toETTime('12', '00', 'AM', 'ET')).toEqual({
+      etHour: 0,
+      etMinute: 0,
+    });
+  });
+
+  it('handles 12 PM (noon) correctly', () => {
+    expect(toETTime('12', '00', 'PM', 'CT')).toEqual({
+      etHour: 13,
+      etMinute: 0,
+    });
+  });
+
+  it('defaults minute to 0 for invalid input', () => {
+    expect(toETTime('9', '', 'AM', 'ET')).toEqual({ etHour: 9, etMinute: 0 });
   });
 });
 

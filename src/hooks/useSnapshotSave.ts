@@ -11,82 +11,16 @@
 
 import { useEffect, useRef } from 'react';
 import type { CalculationResults } from '../types';
+import type { ComputedSignals } from './useComputedSignals';
 
-interface SnapshotContext {
-  // Identifiers
+export interface SnapshotMeta {
   selectedDate?: string;
   entryTime?: string;
   isBacktest?: boolean;
-
-  // Prices
   spy?: number;
-  spxOpen?: number;
-  spxHigh?: number;
-  spxLow?: number;
-  prevClose?: number;
-
-  // Volatility
   vix?: number;
-  vix1d?: number;
-  vix9d?: number;
-  vvix?: number;
-
-  // Calculator
-  sigmaSource?: string;
   skewPct?: number;
-
-  // Regime
-  regimeZone?: string;
   clusterMult?: number;
-  dowLabel?: string;
-  dowMultHL?: number;
-  dowMultOC?: number;
-
-  // Delta guide
-  icCeiling?: number;
-  putSpreadCeiling?: number;
-  callSpreadCeiling?: number;
-  moderateDelta?: number;
-  conservativeDelta?: number;
-
-  // Range thresholds
-  medianOcPct?: number;
-  medianHlPct?: number;
-  p90OcPct?: number;
-  p90HlPct?: number;
-  p90OcPts?: number;
-  p90HlPts?: number;
-
-  // Opening range
-  openingRangeAvailable?: boolean;
-  openingRangeHigh?: number;
-  openingRangeLow?: number;
-  openingRangePctConsumed?: number;
-  openingRangeSignal?: string;
-
-  // Term structure
-  vixTermSignal?: string;
-  vixTermShape?: string;
-
-  // Clustering (directional)
-  clusterPutMult?: number;
-  clusterCallMult?: number;
-
-  // Realized vs implied
-  rvIvRatio?: number;
-  rvIvLabel?: string;
-  rvAnnualized?: number;
-
-  // IV acceleration
-  ivAccelMult?: number;
-
-  // Overnight
-  overnightGap?: number;
-
-  // Events
-  isEarlyClose?: boolean;
-  isEventDay?: boolean;
-  eventNames?: string[];
 }
 
 /**
@@ -95,7 +29,8 @@ interface SnapshotContext {
  */
 export function useSnapshotSave(
   results: CalculationResults | null,
-  context: SnapshotContext,
+  signals: ComputedSignals,
+  meta: SnapshotMeta,
   isOwner: boolean,
 ) {
   // Track what we've already saved to avoid redundant requests
@@ -103,9 +38,9 @@ export function useSnapshotSave(
 
   useEffect(() => {
     if (!results || !isOwner) return;
-    if (!context.selectedDate || !context.entryTime) return;
+    if (!meta.selectedDate || !meta.entryTime) return;
 
-    const key = `${context.selectedDate}|${context.entryTime}`;
+    const key = `${meta.selectedDate}|${meta.entryTime}`;
     if (savedRef.current.has(key)) return;
     savedRef.current.add(key);
 
@@ -121,70 +56,71 @@ export function useSnapshotSave(
       };
     }
 
+    // Derive ivAccelMult from first valid delta row
+    const firstRow = results.allDeltas.find((r) => !('error' in r));
+    const ivAccelMult =
+      firstRow && !('error' in firstRow) ? firstRow.ivAccelMult : undefined;
+
     const payload = {
-      date: context.selectedDate,
-      entryTime: context.entryTime,
+      date: meta.selectedDate,
+      entryTime: meta.entryTime,
 
+      // From results
       spx: results.spot,
-      spy: context.spy,
-      spxOpen: context.spxOpen,
-      spxHigh: context.spxHigh,
-      spxLow: context.spxLow,
-      prevClose: context.prevClose,
-
-      vix: context.vix,
-      vix1d: context.vix1d,
-      vix9d: context.vix9d,
-      vvix: context.vvix,
-
       sigma: results.sigma,
-      sigmaSource: context.sigmaSource,
       tYears: results.T,
       hoursRemaining: results.hoursRemaining,
-      skewPct: context.skewPct,
 
-      regimeZone: context.regimeZone,
-      clusterMult: context.clusterMult,
-      dowLabel: context.dowLabel,
-      dowMultHL: context.dowMultHL,
-      dowMultOC: context.dowMultOC,
+      // From meta (App-level state not in signals)
+      spy: meta.spy,
+      vix: meta.vix,
+      skewPct: meta.skewPct,
+      clusterMult: meta.clusterMult,
+      isBacktest: meta.isBacktest,
 
-      icCeiling: context.icCeiling,
-      putSpreadCeiling: context.putSpreadCeiling,
-      callSpreadCeiling: context.callSpreadCeiling,
-      moderateDelta: context.moderateDelta,
-      conservativeDelta: context.conservativeDelta,
-
-      medianOcPct: context.medianOcPct,
-      medianHlPct: context.medianHlPct,
-      p90OcPct: context.p90OcPct,
-      p90HlPct: context.p90HlPct,
-      p90OcPts: context.p90OcPts,
-      p90HlPts: context.p90HlPts,
-
-      openingRangeAvailable: context.openingRangeAvailable,
-      openingRangeHigh: context.openingRangeHigh,
-      openingRangeLow: context.openingRangeLow,
-      openingRangePctConsumed: context.openingRangePctConsumed,
-      openingRangeSignal: context.openingRangeSignal,
-
-      vixTermSignal: context.vixTermSignal,
-      vixTermShape: context.vixTermShape,
-      clusterPutMult: context.clusterPutMult,
-      clusterCallMult: context.clusterCallMult,
-      rvIvRatio: context.rvIvRatio,
-      rvIvLabel: context.rvIvLabel,
-      rvAnnualized: context.rvAnnualized,
-      ivAccelMult: context.ivAccelMult,
-      overnightGap: context.overnightGap,
+      // From signals (all computed trading signals)
+      spxOpen: signals.spxOpen,
+      spxHigh: signals.spxHigh,
+      spxLow: signals.spxLow,
+      prevClose: signals.prevClose,
+      vix1d: signals.vix1d,
+      vix9d: signals.vix9d,
+      vvix: signals.vvix,
+      sigmaSource: signals.sigmaSource,
+      regimeZone: signals.regimeZone,
+      dowLabel: signals.dowLabel,
+      dowMultHL: signals.dowMultHL,
+      dowMultOC: signals.dowMultOC,
+      icCeiling: signals.icCeiling,
+      putSpreadCeiling: signals.putSpreadCeiling,
+      callSpreadCeiling: signals.callSpreadCeiling,
+      moderateDelta: signals.moderateDelta,
+      conservativeDelta: signals.conservativeDelta,
+      medianOcPct: signals.medianOcPct,
+      medianHlPct: signals.medianHlPct,
+      p90OcPct: signals.p90OcPct,
+      p90HlPct: signals.p90HlPct,
+      p90OcPts: signals.p90OcPts,
+      p90HlPts: signals.p90HlPts,
+      openingRangeAvailable: signals.openingRangeAvailable,
+      openingRangeHigh: signals.openingRangeHigh,
+      openingRangeLow: signals.openingRangeLow,
+      openingRangePctConsumed: signals.openingRangePctConsumed,
+      openingRangeSignal: signals.openingRangeSignal,
+      vixTermSignal: signals.vixTermSignal,
+      vixTermShape: signals.vixTermShape,
+      clusterPutMult: signals.clusterPutMult,
+      clusterCallMult: signals.clusterCallMult,
+      rvIvRatio: signals.rvIvRatio,
+      rvIvLabel: signals.rvIvLabel,
+      rvAnnualized: signals.rvAnnualized,
+      ivAccelMult,
+      overnightGap: signals.overnightGap,
+      isEarlyClose: signals.isEarlyClose,
+      isEventDay: signals.isEventDay,
+      eventNames: signals.eventNames,
 
       strikes,
-
-      isEarlyClose: context.isEarlyClose,
-      isEventDay: context.isEventDay,
-      eventNames: context.eventNames,
-
-      isBacktest: context.isBacktest,
     };
 
     // Fire-and-forget — don't block the UI
@@ -197,5 +133,16 @@ export function useSnapshotSave(
       // Remove from saved set so it retries next render
       savedRef.current.delete(key);
     });
-  }, [results, context, isOwner]);
+  }, [
+    results,
+    signals,
+    meta.selectedDate,
+    meta.entryTime,
+    meta.isBacktest,
+    meta.spy,
+    meta.vix,
+    meta.skewPct,
+    meta.clusterMult,
+    isOwner,
+  ]);
 }

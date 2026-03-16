@@ -158,15 +158,16 @@ export function useMarketData(): MarketDataState {
       return next;
     });
 
-    isOwnerRef.current = anySuccess;
-
     // Only show needsAuth if the user previously had data (was authenticated)
     // but now gets 401s. Don't show it for public visitors who never auth'd.
+    // Check the ref BEFORE updating it so we can detect the transition.
     if (anyAuthError && !anySuccess && isOwnerRef.current) {
       setNeedsAuth(true);
     } else {
       setNeedsAuth(false);
     }
+
+    if (anySuccess) isOwnerRef.current = true;
 
     setLoading(false);
     if (anySuccess) {
@@ -179,15 +180,34 @@ export function useMarketData(): MarketDataState {
     fetchAll();
   }, [fetchAll]);
 
-  // Auto-refresh quotes during market hours (only if owner is authenticated)
+  // Auto-refresh during market hours (only if owner is authenticated)
+  // Quotes refresh every cycle; intraday also refreshes until opening range is complete.
+  const openingRangeComplete = data.intraday?.openingRange?.complete ?? false;
+
   useEffect(() => {
     if (isOwnerRef.current && data.quotes?.marketOpen) {
       intervalRef.current = setInterval(() => {
-        fetchJson<QuotesResponse>('/api/quotes').then((result) => {
-          if ('data' in result) {
-            setData((prev) => ({ ...prev, quotes: result.data }));
-            setLastUpdated(new Date().toISOString());
-          }
+        const fetches: Promise<void>[] = [
+          fetchJson<QuotesResponse>('/api/quotes').then((result) => {
+            if ('data' in result) {
+              setData((prev) => ({ ...prev, quotes: result.data }));
+            }
+          }),
+        ];
+
+        // Keep refreshing intraday until the 30-min opening range is complete
+        if (!openingRangeComplete) {
+          fetches.push(
+            fetchJson<IntradayResponse>('/api/intraday').then((result) => {
+              if ('data' in result) {
+                setData((prev) => ({ ...prev, intraday: result.data }));
+              }
+            }),
+          );
+        }
+
+        Promise.all(fetches).then(() => {
+          setLastUpdated(new Date().toISOString());
         });
       }, REFRESH_INTERVAL_MS);
     }
@@ -198,7 +218,7 @@ export function useMarketData(): MarketDataState {
         intervalRef.current = null;
       }
     };
-  }, [data.quotes?.marketOpen]);
+  }, [data.quotes?.marketOpen, openingRangeComplete]);
 
   const hasData =
     data.quotes != null || data.intraday != null || data.yesterday != null;

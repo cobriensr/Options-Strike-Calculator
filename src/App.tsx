@@ -12,7 +12,7 @@ import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
-import { to24Hour } from './utils/calculator';
+import { toETTime } from './utils/calculator';
 import { getEarlyCloseHourET } from './data/eventCalendar';
 import VixUploadSection from './components/VixUploadSection';
 import DateLookupSection from './components/DateLookupSection';
@@ -145,16 +145,31 @@ export default function StrikeCalculator() {
       setTimeAmPm(ampm);
       setTimezone('CT');
     }
-  }, [market.data.quotes]); // eslint-disable-line react-hooks/exhaustive-deps
+    // vix.selectedDate and vix.setSelectedDate are the only properties used;
+    // including the full vix object would re-run on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    market.data.quotes,
+    spotPrice,
+    spxDirect,
+    vixInput,
+    vix.selectedDate,
+    vix.setSelectedDate,
+    timeHour,
+    timeMinute,
+  ]);
 
   // Auto-fill from historical data when a past date is selected,
   // or restore live data when switching back to today
   useEffect(() => {
     if (historyData.hasHistory) {
       // Past date: fill from historical candles
-      const h24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
-      const etHour = timezone === 'CT' ? h24 + 1 : h24;
-      const etMinute = Number.parseInt(timeMinute) || 0;
+      const { etHour, etMinute } = toETTime(
+        timeHour,
+        timeMinute,
+        timeAmPm,
+        timezone,
+      );
 
       const snapshot = historyData.getStateAtTime(etHour, etMinute);
       if (!snapshot) return;
@@ -200,9 +215,12 @@ export default function StrikeCalculator() {
   // Compute current history snapshot for downstream components
   const historySnapshot = (() => {
     if (!historyData.hasHistory) return null;
-    const h24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
-    const etHour = timezone === 'CT' ? h24 + 1 : h24;
-    const etMinute = Number.parseInt(timeMinute) || 0;
+    const { etHour, etMinute } = toETTime(
+      timeHour,
+      timeMinute,
+      timeAmPm,
+      timezone,
+    );
     const snapshot = historyData.getStateAtTime(etHour, etMinute);
     if (!snapshot) return null;
 
@@ -243,69 +261,15 @@ export default function StrikeCalculator() {
 
   useSnapshotSave(
     results,
+    signals,
     {
       selectedDate: vix.selectedDate,
       entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
       isBacktest: !!historySnapshot,
       spy: Number.parseFloat(dSpot) || undefined,
       vix: Number.parseFloat(dVix) || undefined,
-      vix1d: signals.vix1d,
-      vix9d: signals.vix9d,
-      vvix: signals.vvix,
-      sigmaSource: signals.sigmaSource,
       skewPct,
       clusterMult,
-      // Regime & DOW
-      regimeZone: signals.regimeZone ?? undefined,
-      dowLabel: signals.dowLabel ?? undefined,
-      dowMultHL: signals.dowMultHL ?? undefined,
-      dowMultOC: signals.dowMultOC ?? undefined,
-      // Delta guide
-      icCeiling: signals.icCeiling ?? undefined,
-      putSpreadCeiling: signals.putSpreadCeiling ?? undefined,
-      callSpreadCeiling: signals.callSpreadCeiling ?? undefined,
-      moderateDelta: signals.moderateDelta ?? undefined,
-      conservativeDelta: signals.conservativeDelta ?? undefined,
-      // Range thresholds
-      medianOcPct: signals.medianOcPct ?? undefined,
-      medianHlPct: signals.medianHlPct ?? undefined,
-      p90OcPct: signals.p90OcPct ?? undefined,
-      p90HlPct: signals.p90HlPct ?? undefined,
-      p90OcPts: signals.p90OcPts ?? undefined,
-      p90HlPts: signals.p90HlPts ?? undefined,
-      // Opening range
-      openingRangeAvailable: signals.openingRangeAvailable,
-      openingRangeHigh: signals.openingRangeHigh ?? undefined,
-      openingRangeLow: signals.openingRangeLow ?? undefined,
-      openingRangePctConsumed: signals.openingRangePctConsumed ?? undefined,
-      openingRangeSignal: signals.openingRangeSignal ?? undefined,
-      // Term structure & overnight
-      vixTermSignal: signals.vixTermSignal ?? undefined,
-      vixTermShape: signals.vixTermShape ?? undefined,
-      // Clustering (directional)
-      clusterPutMult: signals.clusterPutMult ?? undefined,
-      clusterCallMult: signals.clusterCallMult ?? undefined,
-      // Realized vs implied
-      rvIvRatio: signals.rvIvRatio ?? undefined,
-      rvIvLabel: signals.rvIvLabel ?? undefined,
-      rvAnnualized: signals.rvAnnualized ?? undefined,
-      // IV acceleration (from first delta row)
-      ivAccelMult: (() => {
-        const firstRow = results?.allDeltas.find((r) => !('error' in r));
-        return firstRow && !('error' in firstRow)
-          ? firstRow.ivAccelMult
-          : undefined;
-      })(),
-      overnightGap: signals.overnightGap ?? undefined,
-      // Price context
-      spxOpen: signals.spxOpen ?? undefined,
-      spxHigh: signals.spxHigh ?? undefined,
-      spxLow: signals.spxLow ?? undefined,
-      prevClose: signals.prevClose ?? undefined,
-      // Events
-      isEarlyClose: signals.isEarlyClose,
-      isEventDay: signals.isEventDay,
-      eventNames: signals.eventNames,
     },
     market.hasData || !!historySnapshot,
   );

@@ -9,6 +9,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getAccessToken, redis } from './schwab.js';
+import { getMarketCloseHourET } from '../../src/data/eventCalendar.js';
 
 const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
@@ -142,10 +143,11 @@ export async function rejectIfRateLimited(
 // ============================================================
 
 /**
- * Make an authenticated GET request to the Schwab Market Data API.
+ * Make an authenticated GET request to a Schwab API endpoint.
  * Handles token retrieval and error responses.
  */
-export async function schwabFetch<T>(
+async function schwabApiFetch<T>(
+  base: string,
   path: string,
 ): Promise<{ data: T } | { error: string; status: number }> {
   const authResult = await getAccessToken();
@@ -155,7 +157,7 @@ export async function schwabFetch<T>(
     return { error: authResult.error.message, status };
   }
 
-  const url = `${SCHWAB_BASE}${path}`;
+  const url = `${base}${path}`;
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${authResult.token}`,
@@ -175,38 +177,18 @@ export async function schwabFetch<T>(
   return { data };
 }
 
-/**
- * Make an authenticated GET request to the Schwab Trader API (accounts, orders, positions).
- * Same auth pattern as schwabFetch but uses the trader base URL.
- */
-export async function schwabTraderFetch<T>(
+/** Authenticated GET to the Schwab Market Data API. */
+export function schwabFetch<T>(
   path: string,
 ): Promise<{ data: T } | { error: string; status: number }> {
-  const authResult = await getAccessToken();
+  return schwabApiFetch(SCHWAB_BASE, path);
+}
 
-  if ('error' in authResult) {
-    const status = authResult.error.type === 'expired_refresh' ? 401 : 500;
-    return { error: authResult.error.message, status };
-  }
-
-  const url = `${SCHWAB_TRADER_BASE}${path}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${authResult.token}`,
-      Accept: 'application/json',
-    },
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    return {
-      error: `Schwab Trader API error (${res.status}): ${body}`,
-      status: res.status === 401 ? 401 : 502,
-    };
-  }
-
-  const data: T = await res.json();
-  return { data };
+/** Authenticated GET to the Schwab Trader API (accounts, orders, positions). */
+export function schwabTraderFetch<T>(
+  path: string,
+): Promise<{ data: T } | { error: string; status: number }> {
+  return schwabApiFetch(SCHWAB_TRADER_BASE, path);
 }
 
 // ============================================================
@@ -237,8 +219,8 @@ export function setCacheHeaders(
 
 /**
  * Check if US equity markets are currently open.
- * Simple heuristic — doesn't account for holidays.
- * Used to adjust cache durations.
+ * Accounts for weekends, holidays, and early-close days
+ * using the event calendar. Used to adjust cache durations.
  */
 export function isMarketOpen(): boolean {
   const now = new Date();
@@ -247,9 +229,16 @@ export function isMarketOpen(): boolean {
   );
   const day = et.getDay();
   if (day === 0 || day === 6) return false;
+
+  // Check holidays and early closes via event calendar
+  const dateStr = et.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const closeHour = getMarketCloseHourET(dateStr);
+  if (closeHour == null) return false; // market closed (holiday)
+
   const hour = et.getHours();
   const min = et.getMinutes();
   const totalMin = hour * 60 + min;
-  // Market: 9:30 AM (570) to 4:00 PM (960) ET
-  return totalMin >= 570 && totalMin <= 960;
+  const closeMin = closeHour * 60;
+  // Market: 9:30 AM (570) to close (960 normal, 780 early)
+  return totalMin >= 570 && totalMin <= closeMin;
 }
