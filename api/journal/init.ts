@@ -12,7 +12,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
-import { initDb } from '../_lib/db.js';
+import { initDb, migrateDb } from '../_lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST')
@@ -22,10 +22,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     await initDb();
+    const migrated = await migrateDb();
     return res.status(200).json({
       success: true,
       tables: ['market_snapshots', 'analyses', 'outcomes'],
-      message: 'All tables created successfully',
+      migrated,
+      message: 'All tables created and migrations applied',
     });
   } catch (err) {
     return res.status(500).json({
