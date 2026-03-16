@@ -91,6 +91,19 @@ export async function initDb() {
 
       -- VIX term structure
       vix_term_signal           TEXT,
+      vix_term_shape            TEXT,
+
+      -- Volatility clustering (directional)
+      cluster_put_mult          DECIMAL(6,4),
+      cluster_call_mult         DECIMAL(6,4),
+
+      -- Realized vs implied volatility
+      rv_iv_ratio               DECIMAL(6,4),
+      rv_iv_label               TEXT,
+      rv_annualized             DECIMAL(8,6),
+
+      -- IV acceleration
+      iv_accel_mult             DECIMAL(6,4),
 
       -- Overnight context
       overnight_gap             DECIMAL(6,2),
@@ -158,6 +171,41 @@ export async function initDb() {
 }
 
 // ============================================================
+// MIGRATIONS (safe to run repeatedly — all use IF NOT EXISTS)
+// ============================================================
+
+/**
+ * Adds columns introduced after the initial schema.
+ * Each ALTER uses ADD COLUMN IF NOT EXISTS so it's idempotent.
+ * Call after initDb() or standalone via POST /api/journal/migrate.
+ */
+export async function migrateDb(): Promise<string[]> {
+  const sql = getDb();
+  const applied: string[] = [];
+
+  // ── 2026-03 batch: term structure shape, directional clustering,
+  //    RV/IV, IV acceleration ─────────────────────────────────────
+  // ── 2026-03: term structure shape, directional clustering,
+  //    RV/IV, IV acceleration ─────────────────────────────────────
+  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS vix_term_shape TEXT`;
+  applied.push('vix_term_shape');
+  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS cluster_put_mult DECIMAL(6,4)`;
+  applied.push('cluster_put_mult');
+  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS cluster_call_mult DECIMAL(6,4)`;
+  applied.push('cluster_call_mult');
+  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS rv_iv_ratio DECIMAL(6,4)`;
+  applied.push('rv_iv_ratio');
+  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS rv_iv_label TEXT`;
+  applied.push('rv_iv_label');
+  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS rv_annualized DECIMAL(8,6)`;
+  applied.push('rv_annualized');
+  await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS iv_accel_mult DECIMAL(6,4)`;
+  applied.push('iv_accel_mult');
+
+  return applied;
+}
+
+// ============================================================
 // MARKET SNAPSHOT
 // ============================================================
 
@@ -217,6 +265,19 @@ export interface SnapshotInput {
 
   // Term structure
   vixTermSignal?: string;
+  vixTermShape?: string;
+
+  // Clustering (directional)
+  clusterPutMult?: number;
+  clusterCallMult?: number;
+
+  // Realized vs implied
+  rvIvRatio?: number;
+  rvIvLabel?: string;
+  rvAnnualized?: number;
+
+  // IV acceleration
+  ivAccelMult?: number;
 
   // Overnight
   overnightGap?: number;
@@ -260,7 +321,11 @@ export async function saveSnapshot(
       median_oc_pct, median_hl_pct, p90_oc_pct, p90_hl_pct, p90_oc_pts, p90_hl_pts,
       opening_range_available, opening_range_high, opening_range_low,
       opening_range_pct_consumed, opening_range_signal,
-      vix_term_signal, overnight_gap,
+      vix_term_signal, vix_term_shape,
+      cluster_put_mult, cluster_call_mult,
+      rv_iv_ratio, rv_iv_label, rv_annualized,
+      iv_accel_mult,
+      overnight_gap,
       strikes,
       is_early_close, is_event_day, event_names,
       is_backtest
@@ -287,7 +352,11 @@ export async function saveSnapshot(
       ${input.openingRangeAvailable ?? null},
       ${input.openingRangeHigh ?? null}, ${input.openingRangeLow ?? null},
       ${input.openingRangePctConsumed ?? null}, ${input.openingRangeSignal ?? null},
-      ${input.vixTermSignal ?? null}, ${input.overnightGap ?? null},
+      ${input.vixTermSignal ?? null}, ${input.vixTermShape ?? null},
+      ${input.clusterPutMult ?? null}, ${input.clusterCallMult ?? null},
+      ${input.rvIvRatio ?? null}, ${input.rvIvLabel ?? null}, ${input.rvAnnualized ?? null},
+      ${input.ivAccelMult ?? null},
+      ${input.overnightGap ?? null},
       ${input.strikes ? JSON.stringify(input.strikes) : null},
       ${input.isEarlyClose ?? false}, ${input.isEventDay ?? false},
       ${input.eventNames ?? null},
