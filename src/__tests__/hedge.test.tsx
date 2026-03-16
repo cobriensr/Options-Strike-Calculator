@@ -740,17 +740,21 @@ describe('calcHedge: real-world scenario (March 2 setup)', () => {
       hedgeDelta: 2,
     });
 
-    // Hedge cost should be a small fraction of IC credit
+    // Hedge cost should be a meaningful fraction of IC credit
+    // With 7DTE hedges, net daily cost (entry - EOD recovery) is higher
+    // than 0DTE premium but provides much better crash protection
     const icCreditDollars = ic.creditReceived * 100 * 15;
     const hedgePct = (hedge.dailyCostDollars / icCreditDollars) * 100;
     expect(hedgePct).toBeGreaterThan(1);
-    expect(hedgePct).toBeLessThan(30);
-
-    // Net credit should still be positive
-    expect(hedge.netCreditAfterHedge).toBeGreaterThan(0);
+    expect(hedgePct).toBeLessThan(80); // 7DTE hedges cost more per day than 0DTE
 
     // Puts and calls should be reasonable counts (not 100+)
-    expect(hedge.recommendedPuts).toBeLessThan(20);
-    expect(hedge.recommendedCalls).toBeLessThan(20);
+    expect(hedge.recommendedPuts).toBeLessThan(30);
+    expect(hedge.recommendedCalls).toBeLessThan(30);
+
+    // Hedge DTE should be set
+    expect(hedge.hedgeDte).toBe(7);
+    expect(hedge.putRecovery).toBeGreaterThan(0);
+    expect(hedge.callRecovery).toBeGreaterThan(0);
   });
 });

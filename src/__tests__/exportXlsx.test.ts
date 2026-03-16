@@ -517,6 +517,9 @@ describe('exportPnLComparison', () => {
         callSpreadRoR: 0,
         putSpreadPoP: 0.7,
         callSpreadPoP: 0.7,
+        adjustedPoP: 0.75,
+        adjustedPutSpreadPoP: 0.85,
+        adjustedCallSpreadPoP: 0.85,
       };
 
       vi.spyOn(calculator, 'buildIronCondor').mockReturnValue(mockIc);

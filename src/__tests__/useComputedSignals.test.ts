@@ -561,4 +561,171 @@ describe('useComputedSignals', () => {
       expect(s.dataNote).toBeUndefined();
     });
   });
+
+  // ── VIX term structure shape ──────────────────────────────
+
+  describe('vixTermShape', () => {
+    it('identifies contango (VIX1D < VIX)', () => {
+      const s = compute({ liveVix1d: 13, liveVix9d: 20, vix: 18 });
+      expect(s.vixTermShape).toBe('contango');
+    });
+
+    it('identifies fear-spike (VIX1D > VIX > VIX9D)', () => {
+      const s = compute({ liveVix1d: 25, liveVix9d: 15, vix: 18 });
+      expect(s.vixTermShape).toBe('fear-spike');
+    });
+
+    it('identifies flat when all within 5%', () => {
+      const s = compute({ liveVix1d: 17.5, liveVix9d: 18.5, vix: 18 });
+      expect(s.vixTermShape).toBe('flat');
+    });
+
+    it('identifies backwardation (VIX1D > VIX, VIX9D ~ VIX)', () => {
+      const s = compute({ liveVix1d: 22, liveVix9d: 18, vix: 18 });
+      expect(s.vixTermShape).toBe('backwardation');
+    });
+
+    it('returns null without VIX1D', () => {
+      const s = compute({ liveVix1d: undefined, vix: 18 });
+      expect(s.vixTermShape).toBeNull();
+    });
+
+    it('includes advice for each shape', () => {
+      const contango = compute({ liveVix1d: 13, liveVix9d: 20, vix: 18 });
+      expect(contango.vixTermShapeAdvice).toContain('sweet spot');
+
+      const fear = compute({ liveVix1d: 25, liveVix9d: 15, vix: 18 });
+      expect(fear.vixTermShapeAdvice).toContain('event-driven');
+    });
+  });
+
+  // ── RV/IV ratio ───────────────────────────────────────────
+
+  describe('rvIvRatio', () => {
+    it('computes ratio from yesterday high/low vs VIX1D', () => {
+      const s = compute({
+        liveYesterdayHigh: 5750,
+        liveYesterdayLow: 5650,
+        liveVix1d: 20,
+        vix: 18,
+      });
+      expect(s.rvIvRatio).toBeTypeOf('number');
+      expect(s.rvAnnualized).toBeTypeOf('number');
+      expect(s.rvIvLabel).toMatch(/^(IV Rich|Fair Value|IV Cheap)$/);
+    });
+
+    it('labels IV Rich when ratio < 0.8', () => {
+      // Narrow yesterday range (low RV) vs high IV
+      const s = compute({
+        liveYesterdayHigh: 5710,
+        liveYesterdayLow: 5700,
+        liveVix1d: 25,
+        vix: 25,
+      });
+      expect(s.rvIvRatio).toBeLessThan(0.8);
+      expect(s.rvIvLabel).toBe('IV Rich');
+    });
+
+    it('labels IV Cheap when ratio > 1.2', () => {
+      // Wide yesterday range (high RV) vs low IV
+      const s = compute({
+        liveYesterdayHigh: 5900,
+        liveYesterdayLow: 5600,
+        liveVix1d: 12,
+        vix: 12,
+      });
+      expect(s.rvIvRatio).toBeGreaterThan(1.2);
+      expect(s.rvIvLabel).toBe('IV Cheap');
+    });
+
+    it('returns null without yesterday data', () => {
+      const s = compute({
+        liveYesterdayHigh: undefined,
+        liveYesterdayLow: undefined,
+      });
+      expect(s.rvIvRatio).toBeNull();
+    });
+
+    it('falls back to VIX × 1.15 when VIX1D unavailable', () => {
+      const s = compute({
+        liveYesterdayHigh: 5750,
+        liveYesterdayLow: 5650,
+        liveVix1d: undefined,
+        vix: 18,
+      });
+      expect(s.rvIvRatio).toBeTypeOf('number');
+    });
+  });
+
+  // ── Directional cluster multipliers ───────────────────────
+
+  describe('clusterPutMult / clusterCallMult', () => {
+    it('returns symmetric mults when clusterMult is 1 (no clustering)', () => {
+      const s = compute({
+        clusterMult: 1,
+        liveYesterdayOpen: 5700,
+        liveYesterdayClose: 5650,
+      });
+      expect(s.clusterPutMult).toBe(1);
+      expect(s.clusterCallMult).toBe(1);
+    });
+
+    it('tilts put side higher after a down day', () => {
+      const s = compute({
+        clusterMult: 1.15,
+        liveYesterdayOpen: 5700,
+        liveYesterdayClose: 5650, // down ~0.9%
+      });
+      expect(s.clusterPutMult).toBeGreaterThan(s.clusterCallMult!);
+    });
+
+    it('tilts call side higher after an up day', () => {
+      const s = compute({
+        clusterMult: 1.15,
+        liveYesterdayOpen: 5700,
+        liveYesterdayClose: 5760, // up ~1%
+      });
+      expect(s.clusterCallMult).toBeGreaterThan(s.clusterPutMult!);
+    });
+
+    it('is symmetric on a flat day', () => {
+      const s = compute({
+        clusterMult: 1.15,
+        liveYesterdayOpen: 5700,
+        liveYesterdayClose: 5701, // barely moved
+      });
+      expect(s.clusterPutMult).toBe(s.clusterCallMult);
+    });
+
+    it('is symmetric for tailwind (mult < 1)', () => {
+      const s = compute({
+        clusterMult: 0.9,
+        liveYesterdayOpen: 5700,
+        liveYesterdayClose: 5600, // big down day
+      });
+      expect(s.clusterPutMult).toBe(0.9);
+      expect(s.clusterCallMult).toBe(0.9);
+    });
+
+    it('uses history snapshot yesterday data', () => {
+      const s = compute({
+        clusterMult: 1.2,
+        historySnapshot: {
+          yesterday: {
+            open: 5700,
+            close: 5630,
+            high: 5720,
+            low: 5610,
+            date: '2026-03-11',
+            rangePct: 1.9,
+            rangePts: 110,
+          },
+          vix1d: 15,
+          vix9d: 17,
+          vvix: 90,
+        } as never,
+      });
+      expect(s.clusterPutMult).toBeGreaterThan(s.clusterCallMult!);
+    });
+  });
 });

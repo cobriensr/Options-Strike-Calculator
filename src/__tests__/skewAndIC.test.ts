@@ -128,22 +128,28 @@ describe('calcScaledSkew', () => {
     expect(closer).toBeLessThan(atRef);
   });
 
-  it('5Δ skew is about 29% more than reference', () => {
-    // 1.645 / 1.28 = 1.285
+  it('5Δ skew is convex — more than linear extrapolation from reference', () => {
+    // With convexity 1.35: (1.645/1.28)^1.35 ≈ 1.40 (vs 1.29 linear)
     const scaled = calcScaledSkew(0.03, 1.645);
-    expect(scaled).toBeCloseTo((0.03 * 1.645) / 1.28, 6);
+    const linear = (0.03 * 1.645) / 1.28;
+    expect(scaled).toBeGreaterThan(linear); // convex > linear
+    expect(scaled).toBeCloseTo(0.03 * Math.pow(1.645 / 1.28, 1.35), 6);
   });
 
-  it('20Δ skew is about 34% less than reference', () => {
-    // 0.842 / 1.28 = 0.658
+  it('20Δ skew is less than reference (convex curve)', () => {
+    // With convexity 1.35: (0.842/1.28)^1.35 ≈ 0.57 (vs 0.66 linear)
     const scaled = calcScaledSkew(0.03, 0.842);
-    expect(scaled).toBeCloseTo((0.03 * 0.842) / 1.28, 6);
+    const linear = (0.03 * 0.842) / 1.28;
+    expect(scaled).toBeLessThan(linear); // convex compresses near-ATM
+    expect(scaled).toBeCloseTo(0.03 * Math.pow(0.842 / 1.28, 1.35), 6);
   });
 
-  it('scaling is proportional to z', () => {
+  it('scaling is convex (superlinear) with z', () => {
     const s1 = calcScaledSkew(0.05, 1);
     const s2 = calcScaledSkew(0.05, 2);
-    expect(s2 / s1).toBeCloseTo(2, 6);
+    // With convexity 1.35: ratio = (2/1)^1.35 = 2^1.35 ≈ 2.55
+    expect(s2 / s1).toBeGreaterThan(2); // convex > linear
+    expect(s2 / s1).toBeCloseTo(Math.pow(2, 1.35), 4);
   });
 
   it('returns 0 when z is NaN', () => {

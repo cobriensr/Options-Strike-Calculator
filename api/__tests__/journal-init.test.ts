@@ -9,11 +9,12 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 vi.mock('../_lib/db.js', () => ({
   initDb: vi.fn(),
+  migrateDb: vi.fn(),
 }));
 
 import handler from '../journal/init.js';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
-import { initDb } from '../_lib/db.js';
+import { initDb, migrateDb } from '../_lib/db.js';
 
 describe('POST /api/journal/init', () => {
   beforeEach(() => {
@@ -40,6 +41,7 @@ describe('POST /api/journal/init', () => {
   it('creates tables and returns success', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(initDb).mockResolvedValue(undefined);
+    vi.mocked(migrateDb).mockResolvedValue(['vix_term_shape', 'rv_iv_ratio']);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST' }), res);
@@ -48,9 +50,11 @@ describe('POST /api/journal/init', () => {
     expect(res._json).toEqual({
       success: true,
       tables: ['market_snapshots', 'analyses', 'outcomes'],
-      message: 'All tables created successfully',
+      migrated: ['vix_term_shape', 'rv_iv_ratio'],
+      message: 'All tables created and migrations applied',
     });
     expect(initDb).toHaveBeenCalled();
+    expect(migrateDb).toHaveBeenCalled();
   });
 
   it('returns 500 with error message on failure', async () => {

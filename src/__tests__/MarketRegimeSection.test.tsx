@@ -5,9 +5,56 @@ import MarketRegimeSection from '../components/MarketRegimeSection';
 import { lightTheme } from '../themes';
 import type { CalculationResults, DeltaRow } from '../types';
 import type { HistorySnapshot } from '../hooks/useHistoryData';
+import type { ComputedSignals } from '../hooks/useComputedSignals';
 import type { HistoryCandle } from '../types/api';
 
 const th = lightTheme;
+
+const defaultSignals: ComputedSignals = {
+  vix1d: undefined,
+  vix9d: undefined,
+  vvix: undefined,
+  sigmaSource: 'VIX × 1.15',
+  etHour: 10,
+  etMinute: 0,
+  regimeZone: null,
+  dowLabel: null,
+  dowMultHL: null,
+  dowMultOC: null,
+  icCeiling: null,
+  putSpreadCeiling: null,
+  callSpreadCeiling: null,
+  moderateDelta: null,
+  conservativeDelta: null,
+  medianOcPct: null,
+  medianHlPct: null,
+  p90OcPct: null,
+  p90HlPct: null,
+  p90OcPts: null,
+  p90HlPts: null,
+  openingRangeAvailable: false,
+  openingRangeHigh: null,
+  openingRangeLow: null,
+  openingRangePctConsumed: null,
+  openingRangeSignal: null,
+  vixTermSignal: null,
+  vixTermShape: null,
+  vixTermShapeAdvice: null,
+  clusterPutMult: null,
+  clusterCallMult: null,
+  rvIvRatio: null,
+  rvIvLabel: null,
+  rvAnnualized: null,
+  spxOpen: null,
+  spxHigh: null,
+  spxLow: null,
+  prevClose: null,
+  overnightGap: null,
+  isEarlyClose: false,
+  isEventDay: false,
+  eventNames: [],
+  dataNote: undefined,
+};
 
 function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
   return {
@@ -33,6 +80,7 @@ function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
     callActualDelta: 0.095,
     putGamma: 0.0012,
     callGamma: 0.0011,
+    ivAccelMult: 1,
   };
 }
 
@@ -75,6 +123,8 @@ describe('MarketRegimeSection', () => {
         market={mockMarket}
         onClusterMultChange={vi.fn()}
         clusterMult={1.0}
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     expect(screen.getByText('Market Regime')).toBeInTheDocument();
@@ -92,6 +142,8 @@ describe('MarketRegimeSection', () => {
         market={mockMarket}
         onClusterMultChange={vi.fn()}
         clusterMult={1.0}
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     expect(
@@ -111,6 +163,8 @@ describe('MarketRegimeSection', () => {
         market={mockMarket}
         onClusterMultChange={vi.fn()}
         clusterMult={1.0}
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     // Default is showRegime=true so button says "Hide Analysis"
@@ -130,6 +184,8 @@ describe('MarketRegimeSection', () => {
         market={mockMarket}
         onClusterMultChange={vi.fn()}
         clusterMult={1.0}
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     await user.click(screen.getByText('Hide Analysis'));
@@ -148,6 +204,8 @@ describe('MarketRegimeSection', () => {
         market={mockMarket}
         onClusterMultChange={vi.fn()}
         clusterMult={1.0}
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     expect(screen.getByText('VIX 18.5')).toBeInTheDocument();
@@ -165,6 +223,8 @@ describe('MarketRegimeSection', () => {
         market={mockMarket}
         onClusterMultChange={vi.fn()}
         clusterMult={1.0}
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     expect(screen.getByText('VIX \u2014')).toBeInTheDocument();
@@ -183,6 +243,8 @@ describe('MarketRegimeSection', () => {
         market={mockMarket}
         onClusterMultChange={vi.fn()}
         clusterMult={1.0}
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     // VIXRangeAnalysis still renders (with null vix)
@@ -271,6 +333,8 @@ describe('MarketRegimeSection', () => {
         historySnapshot={snapshot}
         historyCandles={candles}
         entryTimeLabel="10:00 AM ET"
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     expect(screen.getByText('Market Regime')).toBeInTheDocument();
@@ -316,6 +380,8 @@ describe('MarketRegimeSection', () => {
         clusterMult={1.0}
         historySnapshot={snapshot}
         historyCandles={[]}
+        signals={defaultSignals}
+        chain={null}
       />,
     );
     expect(screen.queryByText('Settlement Check')).not.toBeInTheDocument();

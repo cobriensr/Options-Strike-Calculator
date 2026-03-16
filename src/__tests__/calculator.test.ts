@@ -7,6 +7,12 @@ import {
   spxToSpy,
   to24Hour,
   isStrikeError,
+  calcIVAcceleration,
+  adjustPoPForKurtosis,
+  adjustICPoPForKurtosis,
+  calcScaledSkew,
+  calcScaledCallSkew,
+  calcPoP,
 } from '../utils/calculator';
 import { DELTA_OPTIONS, MARKET } from '../constants';
 import type { DeltaTarget } from '../types';
@@ -271,5 +277,204 @@ describe('calcTimeToExpiry', () => {
     const t1 = calcTimeToExpiry(1);
     const t3 = calcTimeToExpiry(3);
     expect(t3).toBeCloseTo(t1 * 3, 10);
+  });
+});
+
+// ============================================================
+// IV ACCELERATION
+// ============================================================
+
+describe('calcIVAcceleration', () => {
+  it('returns 1.0 at market open (6.5h remaining)', () => {
+    expect(calcIVAcceleration(6.5)).toBe(1);
+  });
+
+  it('returns 1.0 when hours >= full day', () => {
+    expect(calcIVAcceleration(7)).toBe(1);
+    expect(calcIVAcceleration(10)).toBe(1);
+  });
+
+  it('returns > 1 with less time remaining', () => {
+    expect(calcIVAcceleration(4)).toBeGreaterThan(1);
+    expect(calcIVAcceleration(2)).toBeGreaterThan(1.1);
+    expect(calcIVAcceleration(1)).toBeGreaterThan(1.2);
+  });
+
+  it('increases monotonically as time decreases', () => {
+    const at4 = calcIVAcceleration(4);
+    const at2 = calcIVAcceleration(2);
+    const at1 = calcIVAcceleration(1);
+    const at05 = calcIVAcceleration(0.5);
+    expect(at2).toBeGreaterThan(at4);
+    expect(at1).toBeGreaterThan(at2);
+    expect(at05).toBeGreaterThan(at1);
+  });
+
+  it('is capped at max value', () => {
+    expect(calcIVAcceleration(0.01)).toBeLessThanOrEqual(1.8);
+    expect(calcIVAcceleration(0.001)).toBeLessThanOrEqual(1.8);
+  });
+
+  it('returns max when hours <= 0', () => {
+    expect(calcIVAcceleration(0)).toBe(1.8);
+    expect(calcIVAcceleration(-1)).toBe(1.8);
+  });
+});
+
+// ============================================================
+// FAT-TAIL KURTOSIS ADJUSTMENT
+// ============================================================
+
+describe('adjustPoPForKurtosis', () => {
+  it('returns original PoP when kurtosis <= 1', () => {
+    expect(adjustPoPForKurtosis(0.9, 1)).toBe(0.9);
+    expect(adjustPoPForKurtosis(0.9, 0.5)).toBe(0.9);
+  });
+
+  it('reduces PoP by inflating breach probability', () => {
+    const adjusted = adjustPoPForKurtosis(0.9, 2.0);
+    expect(adjusted).toBeLessThan(0.9);
+    // breach = 0.1, adjusted breach = 0.2, adjusted PoP = 0.8
+    expect(adjusted).toBeCloseTo(0.8, 6);
+  });
+
+  it('never goes below 0', () => {
+    expect(adjustPoPForKurtosis(0.3, 5)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('handles PoP = 1 (no breach)', () => {
+    expect(adjustPoPForKurtosis(1.0, 2.0)).toBe(1);
+  });
+
+  it('handles PoP = 0 (full breach)', () => {
+    expect(adjustPoPForKurtosis(0, 2.0)).toBe(0);
+  });
+
+  it('with default kurtosis factor of 2.0', () => {
+    const pop = adjustPoPForKurtosis(0.85);
+    // breach = 0.15, adjusted = 0.30, pop = 0.70
+    expect(pop).toBeCloseTo(0.7, 6);
+  });
+});
+
+describe('adjustICPoPForKurtosis', () => {
+  const spot = 5700;
+  const beLow = 5630;
+  const beHigh = 5770;
+  const putSigma = 0.2;
+  const callSigma = 0.18;
+  const T = 0.003;
+
+  it('returns lower PoP than log-normal calcPoP', () => {
+    const logNormal = calcPoP(spot, beLow, beHigh, putSigma, callSigma, T);
+    const adjusted = adjustICPoPForKurtosis(
+      spot,
+      beLow,
+      beHigh,
+      putSigma,
+      callSigma,
+      T,
+    );
+    expect(adjusted).toBeLessThan(logNormal);
+  });
+
+  it('returns calcPoP when kurtosis <= 1', () => {
+    const logNormal = calcPoP(spot, beLow, beHigh, putSigma, callSigma, T);
+    const noAdj = adjustICPoPForKurtosis(
+      spot,
+      beLow,
+      beHigh,
+      putSigma,
+      callSigma,
+      T,
+      1,
+    );
+    expect(noAdj).toBeCloseTo(logNormal, 6);
+  });
+
+  it('returns calcPoP when T <= 0', () => {
+    const result = adjustICPoPForKurtosis(
+      spot,
+      beLow,
+      beHigh,
+      putSigma,
+      callSigma,
+      0,
+      2,
+    );
+    expect(result).toBe(0); // calcPoP returns 0 for T <= 0
+  });
+
+  it('is bounded between 0 and 1', () => {
+    const result = adjustICPoPForKurtosis(
+      spot,
+      beLow,
+      beHigh,
+      putSigma,
+      callSigma,
+      T,
+      5,
+    );
+    expect(result).toBeGreaterThanOrEqual(0);
+    expect(result).toBeLessThanOrEqual(1);
+  });
+});
+
+// ============================================================
+// CONVEX SKEW & CALL DAMPENING
+// ============================================================
+
+describe('calcScaledCallSkew', () => {
+  it('returns 0 when skew is 0', () => {
+    expect(calcScaledCallSkew(0, 1.645)).toBe(0);
+  });
+
+  it('at reference z (1.28), equals input skew (no dampening)', () => {
+    // At z = z_ref, ratio = 1, dampening = 1/(1 + 0.5 * 0) = 1
+    expect(calcScaledCallSkew(0.03, 1.28)).toBeCloseTo(0.03, 6);
+  });
+
+  it('is less than put skew at same z for far OTM (z > z_ref)', () => {
+    const putSkew = calcScaledSkew(0.03, 1.645);
+    const callSkew = calcScaledCallSkew(0.03, 1.645);
+    expect(callSkew).toBeLessThan(putSkew);
+  });
+
+  it('call skew increases less steeply than linear at high z', () => {
+    const linear = (0.03 * 1.645) / 1.28;
+    const dampened = calcScaledCallSkew(0.03, 1.645);
+    expect(dampened).toBeLessThan(linear);
+  });
+
+  it('returns 0 for z <= 0', () => {
+    expect(calcScaledCallSkew(0.03, 0)).toBe(0);
+    expect(calcScaledCallSkew(0.03, -1)).toBe(0);
+  });
+
+  it('returns 0 for non-finite z', () => {
+    expect(calcScaledCallSkew(0.03, Number.NaN)).toBe(0);
+    expect(calcScaledCallSkew(0.03, Infinity)).toBe(0);
+  });
+});
+
+describe('calcAllDeltas: ivAccelMult', () => {
+  it('includes ivAccelMult in output rows', () => {
+    const T = calcTimeToExpiry(4); // 4 hours remaining
+    const rows = calcAllDeltas(5700, 0.2, T, 0.03);
+    for (const row of rows) {
+      if (!('error' in row)) {
+        expect(row.ivAccelMult).toBeGreaterThan(1);
+      }
+    }
+  });
+
+  it('ivAccelMult is 1.0 at market open', () => {
+    const T = calcTimeToExpiry(6.5);
+    const rows = calcAllDeltas(5700, 0.2, T, 0.03);
+    for (const row of rows) {
+      if (!('error' in row)) {
+        expect(row.ivAccelMult).toBe(1);
+      }
+    }
   });
 });

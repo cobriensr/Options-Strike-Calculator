@@ -30,6 +30,7 @@ function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
     callActualDelta: 0.095,
     putGamma: 0.0012,
     callGamma: 0.0011,
+    ivAccelMult: 1,
   };
 }
 
@@ -117,5 +118,49 @@ describe('DeltaStrikesTable', () => {
     expect(
       screen.getByRole('table', { name: 'Strike prices by delta' }),
     ).toBeInTheDocument();
+  });
+
+  // ── IV acceleration indicator ─────────────────────────────
+
+  it('does not show IV acceleration indicator when ivAccelMult is 1.0', () => {
+    render(
+      <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow()]} spot={5700} />,
+    );
+    expect(screen.queryByText(/IV acceleration/)).not.toBeInTheDocument();
+  });
+
+  it('does not show IV acceleration indicator when ivAccelMult is barely above 1', () => {
+    const row = { ...makeDeltaRow(), ivAccelMult: 1.005 };
+    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    expect(screen.queryByText(/IV acceleration/)).not.toBeInTheDocument();
+  });
+
+  it('shows IV acceleration indicator for mild acceleration (1.01 < mult <= 1.08)', () => {
+    const row = { ...makeDeltaRow(), ivAccelMult: 1.05 };
+    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    expect(screen.getByText(/IV acceleration/)).toBeInTheDocument();
+    expect(screen.getByText(/1\.05/)).toBeInTheDocument();
+  });
+
+  it('shows IV acceleration indicator for moderate acceleration (1.08 < mult <= 1.2)', () => {
+    const row = { ...makeDeltaRow(), ivAccelMult: 1.15 };
+    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    expect(screen.getByText(/IV acceleration/)).toBeInTheDocument();
+    expect(screen.getByText(/1\.15/)).toBeInTheDocument();
+  });
+
+  it('shows late session warning for high acceleration (mult > 1.2)', () => {
+    const row = { ...makeDeltaRow(), ivAccelMult: 1.45 };
+    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    expect(screen.getByText(/IV acceleration/)).toBeInTheDocument();
+    expect(screen.getByText(/Late session/)).toBeInTheDocument();
+    expect(screen.getByText(/1\.45/)).toBeInTheDocument();
+  });
+
+  it('does not show late session text for moderate acceleration', () => {
+    const row = { ...makeDeltaRow(), ivAccelMult: 1.1 };
+    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    expect(screen.getByText(/IV acceleration/)).toBeInTheDocument();
+    expect(screen.queryByText(/Late session/)).not.toBeInTheDocument();
   });
 });

@@ -57,6 +57,9 @@ function makeIC(): IronCondorLegs {
     callSpreadRoR: 0.0917,
     putSpreadPoP: 0.92,
     callSpreadPoP: 0.91,
+    adjustedPoP: 0.75,
+    adjustedPutSpreadPoP: 0.85,
+    adjustedCallSpreadPoP: 0.85,
   };
 }
 
@@ -121,7 +124,7 @@ describe('HedgeSection', () => {
 
   it('shows summary stats', () => {
     renderHedge();
-    expect(screen.getByText('Daily Hedge Cost')).toBeInTheDocument();
+    expect(screen.getByText('Net Daily Cost')).toBeInTheDocument();
     expect(screen.getByText('IC Credit')).toBeInTheDocument();
     expect(screen.getByText('Net Credit After Hedge')).toBeInTheDocument();
     expect(screen.getByText('Hedge % of Credit')).toBeInTheDocument();
