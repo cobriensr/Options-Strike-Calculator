@@ -132,6 +132,23 @@ When a single positive gamma concentration at or near current price is 10x+ larg
 - Consider widening delta by 1-2Δ beyond the calculator ceiling — the positive gamma suppression provides structural protection that the straddle cone alone does not capture.
 - Place IC stops at the straddle cone boundary, NOT at intermediate negative gamma levels — small negative gamma creates minor acceleration that is immediately absorbed by the dominant positive gamma wall.
 
+### RULE 7: Stop Placement Must Avoid Negative Gamma Zones
+Never place stops AT or INSIDE negative gamma zones. MM delta hedging creates brief price spikes through negative gamma zones that trigger stops before the dominant structure (positive gamma wall, flow direction) reasserts control. This has caused premature exits on winning trades repeatedly.
+
+**Where NOT to place stops:**
+- At a negative gamma bar level (e.g., "close if SPX hits 6870" when 6855-6870 is a negative gamma cluster)
+- At arbitrary fixed-point distances from entry (e.g., "close if SPX drops 30 pts")
+
+**Where TO place stops:**
+- At the straddle cone boundary — this is the market's own expected range and the true risk threshold
+- At a positive gamma wall — if a positive gamma wall breaks, the structural thesis is genuinely failing
+- At flow-based thresholds — "close if NCP drops below X" or "close if NCP/NPP converge"
+
+**On high-volatility mornings (first-hour range > 60 pts):**
+- Expect temporary price spikes through negative gamma zones that reverse within 15-30 minutes
+- Widen stops to the straddle cone boundary or use flow-based stops exclusively
+- If all flow charts still agree on direction during a pullback, the pullback is mechanical (gamma-driven), not directional — do NOT exit
+
 ## Handling Missing or Limited Data
 
 The calculator context includes a "DATA NOTES" field that flags known limitations. Adjust your analysis accordingly:
@@ -445,7 +462,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       },
       body: JSON.stringify({
         model: 'claude-opus-4-6',
-        max_tokens: 25000,
+        max_tokens: 20000,
         thinking: {
           type: 'enabled',
           budget_tokens: 11000,
@@ -494,7 +511,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         const rows = await db`
           SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
         `;
-        const snapshotId = rows.length > 0 ? (rows[0]?.id as number) : null;
+        const snapshotId = rows.length > 0 ? (rows[0]!.id as number) : null;
         await saveAnalysis(context, analysis, snapshotId);
       } catch (dbErr) {
         console.error('Failed to save analysis to DB:', dbErr);
