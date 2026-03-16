@@ -88,10 +88,12 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       if (images.length >= 5) return;
       const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const preview = URL.createObjectURL(file);
-      setImages((prev) => [
-        ...prev,
-        { id, file, preview, label: CHART_LABELS[0] },
-      ]);
+      setImages((prev) => {
+        const usedLabels = new Set(prev.map((i) => i.label));
+        const nextLabel =
+          CHART_LABELS.find((l) => !usedLabels.has(l)) ?? CHART_LABELS[0];
+        return [...prev, { id, file, preview, label: nextLabel }];
+      });
     },
     [images.length],
   );
@@ -361,7 +363,11 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                     onChange={(e) => updateLabel(img.id, e.target.value)}
                     className="bg-surface-alt border-edge flex-1 rounded border px-1 py-0.5 font-sans text-[10px]"
                   >
-                    {CHART_LABELS.map((l) => (
+                    {CHART_LABELS.filter(
+                      (l) =>
+                        l === img.label ||
+                        !images.some((o) => o.id !== img.id && o.label === l),
+                    ).map((l) => (
                       <option key={l} value={l}>
                         {l}
                       </option>
