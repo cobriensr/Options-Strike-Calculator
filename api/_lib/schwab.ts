@@ -200,7 +200,7 @@ async function refreshAccessTokenOnce(
   clientId: string,
   clientSecret: string,
 ): Promise<SchwabTokens> {
-  if (refreshInFlight) return refreshInFlight;
+  if (refreshInFlight !== null) return refreshInFlight;
 
   refreshInFlight = (async () => {
     const gotLock = await acquireLock();

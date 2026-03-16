@@ -121,7 +121,7 @@ describe('GET /api/journal/status', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
     vi.mocked(getDb).mockImplementation(() => {
-      throw 'weird error';
+      throw 'weird error'; // NOSONAR -- intentionally testing non-Error throw
     });
 
     const res = mockResponse();

@@ -157,7 +157,7 @@ describe('GET /api/positions', () => {
                 marketValue: 200,
                 instrument: {
                   assetType: 'OPTION',
-                  symbol: `SPXW${today.replace(/-/g, '')}P05600`,
+                  symbol: `SPXW${today.replaceAll('-', '')}P05600`,
                   putCall: 'PUT',
                   underlyingSymbol: '$SPX',
                   strikePrice: 5600,
@@ -174,7 +174,7 @@ describe('GET /api/positions', () => {
                 marketValue: 80,
                 instrument: {
                   assetType: 'OPTION',
-                  symbol: `SPXW${today.replace(/-/g, '')}P05575`,
+                  symbol: `SPXW${today.replaceAll('-', '')}P05575`,
                   putCall: 'PUT',
                   underlyingSymbol: '$SPX',
                   strikePrice: 5575,
@@ -208,7 +208,7 @@ describe('GET /api/positions', () => {
                 marketValue: 0,
                 instrument: {
                   assetType: 'OPTION',
-                  symbol: `SPXW${today.replace(/-/g, '')}P05500`,
+                  symbol: `SPXW${today.replaceAll('-', '')}P05500`,
                   putCall: 'PUT',
                   underlyingSymbol: '$SPX',
                   strikePrice: 5500,
@@ -381,7 +381,7 @@ describe('GET /api/positions', () => {
                 marketValue: 400,
                 instrument: {
                   assetType: 'OPTION',
-                  symbol: `SPXW${today.replace(/-/g, '')}C05800`,
+                  symbol: `SPXW${today.replaceAll('-', '')}C05800`,
                   putCall: 'CALL',
                   underlyingSymbol: '$SPX',
                   strikePrice: 5800,
@@ -398,7 +398,7 @@ describe('GET /api/positions', () => {
                 marketValue: 120,
                 instrument: {
                   assetType: 'OPTION',
-                  symbol: `SPXW${today.replace(/-/g, '')}C05825`,
+                  symbol: `SPXW${today.replaceAll('-', '')}C05825`,
                   putCall: 'CALL',
                   underlyingSymbol: '$SPX',
                   strikePrice: 5825,
@@ -454,7 +454,7 @@ describe('GET /api/positions', () => {
                 marketValue: 300,
                 instrument: {
                   assetType: 'OPTION',
-                  symbol: `SPXW${today.replace(/-/g, '')}P05600`,
+                  symbol: `SPXW${today.replaceAll('-', '')}P05600`,
                   putCall: 'PUT',
                   underlyingSymbol: '$SPX',
                   strikePrice: 5600,
@@ -500,7 +500,7 @@ describe('GET /api/positions', () => {
                 marketValue: 200,
                 instrument: {
                   assetType: 'OPTION',
-                  symbol: `SPXW${today.replace(/-/g, '')}P05600`,
+                  symbol: `SPXW${today.replaceAll('-', '')}P05600`,
                   putCall: 'PUT',
                   underlyingSymbol: '$SPX',
                   strikePrice: 5600,
@@ -516,7 +516,7 @@ describe('GET /api/positions', () => {
                 marketValue: 80,
                 instrument: {
                   assetType: 'OPTION',
-                  symbol: `SPXW${today.replace(/-/g, '')}P05575`,
+                  symbol: `SPXW${today.replaceAll('-', '')}P05575`,
                   putCall: 'PUT',
                   underlyingSymbol: '$SPX',
                   strikePrice: 5575,
