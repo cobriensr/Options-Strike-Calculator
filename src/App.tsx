@@ -11,6 +11,7 @@ import { useHistoryData } from './hooks/useHistoryData';
 import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
+import { useChainData } from './hooks/useChainData';
 import { to24Hour } from './utils/calculator';
 import { getEarlyCloseHourET } from './data/eventCalendar';
 import VixUploadSection from './components/VixUploadSection';
@@ -83,6 +84,7 @@ export default function StrikeCalculator() {
   const vix = useVixData(ivMode, timeHour, timeAmPm, timezone, setVixInput);
   const historyData = useHistoryData(vix.selectedDate);
   const vix1dStatic = useVix1dData();
+  const chainData = useChainData(market.hasData && !historyData.hasHistory);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -232,6 +234,10 @@ export default function StrikeCalculator() {
     liveVix9d: market.data.quotes?.vix9d?.price ?? undefined,
     liveVvix: market.data.quotes?.vvix?.price ?? undefined,
     liveOpeningRange: market.data.intraday?.openingRange ?? undefined,
+    liveYesterdayHigh: market.data.yesterday?.yesterday?.high ?? undefined,
+    liveYesterdayLow: market.data.yesterday?.yesterday?.low ?? undefined,
+    liveYesterdayOpen: market.data.yesterday?.yesterday?.open ?? undefined,
+    liveYesterdayClose: market.data.yesterday?.yesterday?.close ?? undefined,
     historySnapshot,
   });
 
@@ -275,6 +281,21 @@ export default function StrikeCalculator() {
       openingRangeSignal: signals.openingRangeSignal ?? undefined,
       // Term structure & overnight
       vixTermSignal: signals.vixTermSignal ?? undefined,
+      vixTermShape: signals.vixTermShape ?? undefined,
+      // Clustering (directional)
+      clusterPutMult: signals.clusterPutMult ?? undefined,
+      clusterCallMult: signals.clusterCallMult ?? undefined,
+      // Realized vs implied
+      rvIvRatio: signals.rvIvRatio ?? undefined,
+      rvIvLabel: signals.rvIvLabel ?? undefined,
+      rvAnnualized: signals.rvAnnualized ?? undefined,
+      // IV acceleration (from first delta row)
+      ivAccelMult: (() => {
+        const firstRow = results?.allDeltas.find((r) => !('error' in r));
+        return firstRow && !('error' in firstRow)
+          ? firstRow.ivAccelMult
+          : undefined;
+      })(),
       overnightGap: signals.overnightGap ?? undefined,
       // Price context
       spxOpen: signals.spxOpen ?? undefined,
@@ -476,6 +497,8 @@ export default function StrikeCalculator() {
                 setIvMode(IV_MODES.DIRECT);
                 setDirectIVInput(sigma.toFixed(4));
               }}
+              termShape={signals.vixTermShape}
+              termShapeAdvice={signals.vixTermShapeAdvice}
             />
 
             <AdvancedSection
@@ -507,6 +530,8 @@ export default function StrikeCalculator() {
                   ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
                   : undefined
               }
+              signals={signals}
+              chain={chainData.chain}
             />
 
             {/* Chart Analysis — owner-only (requires auth session or backtest with results) */}
@@ -537,6 +562,22 @@ export default function StrikeCalculator() {
                     openingRangeSignal: signals.openingRangeSignal ?? undefined,
                     openingRangeAvailable: signals.openingRangeAvailable,
                     vixTermSignal: signals.vixTermSignal ?? undefined,
+                    vixTermShape: signals.vixTermShape ?? undefined,
+                    clusterPutMult: signals.clusterPutMult ?? undefined,
+                    clusterCallMult: signals.clusterCallMult ?? undefined,
+                    rvIvRatio:
+                      signals.rvIvRatio == null
+                        ? undefined
+                        : `${signals.rvIvRatio.toFixed(2)} (${signals.rvIvLabel})`,
+                    rvAnnualized: signals.rvAnnualized ?? undefined,
+                    ivAccelMult: (() => {
+                      const row = results?.allDeltas.find(
+                        (r) => !('error' in r),
+                      );
+                      return row && !('error' in row)
+                        ? row.ivAccelMult
+                        : undefined;
+                    })(),
                     overnightGap:
                       signals.overnightGap == null
                         ? undefined

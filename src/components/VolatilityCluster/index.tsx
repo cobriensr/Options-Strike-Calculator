@@ -17,6 +17,8 @@ interface Props {
     readonly high: number;
     readonly low: number;
   };
+  readonly clusterPutMult?: number | null;
+  readonly clusterCallMult?: number | null;
 }
 
 const inputCls =
@@ -34,6 +36,8 @@ export default function VolatilityCluster({
   spot,
   onMultiplierChange,
   initialYesterday,
+  clusterPutMult,
+  clusterCallMult,
 }: Props) {
   const [yestHigh, setYestHigh] = useState('');
   const [yestLow, setYestLow] = useState('');
@@ -253,6 +257,80 @@ export default function VolatilityCluster({
               </div>
             </div>
           </div>
+
+          {/* Directional asymmetry indicator */}
+          {clusterPutMult != null &&
+            clusterCallMult != null &&
+            Math.abs(clusterPutMult - clusterCallMult) > 0.01 && (
+              <div className="bg-surface border-edge mb-3 rounded-[10px] border p-3">
+                <div className="text-tertiary mb-1.5 font-sans text-[9px] font-bold tracking-[0.08em] uppercase">
+                  Directional Tilt
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex-1">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-danger font-sans text-[10px] font-bold">
+                        Put side
+                      </span>
+                      <span
+                        className="font-mono text-[13px] font-bold"
+                        style={{
+                          color:
+                            clusterPutMult > clusterCallMult
+                              ? th.red
+                              : th.textMuted,
+                        }}
+                      >
+                        {clusterPutMult.toFixed(3)}x
+                      </span>
+                    </div>
+                    <div className="bg-surface-alt relative h-1.5 overflow-hidden rounded-[3px]">
+                      <div
+                        className="absolute top-0 left-0 h-full rounded-[3px]"
+                        style={{
+                          width: Math.min(clusterPutMult / 1.5, 1) * 100 + '%',
+                          backgroundColor: th.red,
+                          opacity: 0.6,
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-success font-sans text-[10px] font-bold">
+                        Call side
+                      </span>
+                      <span
+                        className="font-mono text-[13px] font-bold"
+                        style={{
+                          color:
+                            clusterCallMult > clusterPutMult
+                              ? th.green
+                              : th.textMuted,
+                        }}
+                      >
+                        {clusterCallMult.toFixed(3)}x
+                      </span>
+                    </div>
+                    <div className="bg-surface-alt relative h-1.5 overflow-hidden rounded-[3px]">
+                      <div
+                        className="absolute top-0 left-0 h-full rounded-[3px]"
+                        style={{
+                          width: Math.min(clusterCallMult / 1.5, 1) * 100 + '%',
+                          backgroundColor: th.green,
+                          opacity: 0.6,
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="text-muted mt-1.5 font-sans text-[10px]">
+                  {clusterPutMult > clusterCallMult
+                    ? 'Yesterday closed lower — downside range expanded more. Consider wider put strikes or tighter call strikes.'
+                    : 'Yesterday closed higher — upside range expanded slightly more. Mild asymmetry; both sides affected.'}
+                </div>
+              </div>
+            )}
 
           {/* Percentile reference bar */}
           {thresholds && (

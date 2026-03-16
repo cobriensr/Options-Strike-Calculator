@@ -82,6 +82,8 @@ export interface DeltaRow {
   readonly putGamma: number;
   /** Gamma of the snapped call strike (delta change per $1 SPX move) */
   readonly callGamma: number;
+  /** IV acceleration multiplier applied to σ (1.0 at open, increases toward close) */
+  readonly ivAccelMult: number;
 }
 
 /** Iron condor legs for a single delta */
@@ -138,6 +140,12 @@ export interface IronCondorLegs {
   readonly putSpreadPoP: number;
   /** Call spread PoP = P(S_T < call BE) */
   readonly callSpreadPoP: number;
+  /** Fat-tail adjusted IC PoP (accounts for leptokurtic intraday returns) */
+  readonly adjustedPoP: number;
+  /** Fat-tail adjusted put spread PoP */
+  readonly adjustedPutSpreadPoP: number;
+  /** Fat-tail adjusted call spread PoP */
+  readonly adjustedCallSpreadPoP: number;
 }
 
 /** Error delta row */
@@ -193,6 +201,8 @@ export interface HedgeScenario {
 /** Complete hedge recommendation for a given IC position */
 export interface HedgeResult {
   readonly hedgeDelta: HedgeDelta;
+  /** Hedge DTE (days to expiration for the hedge options) */
+  readonly hedgeDte: number;
   /** Raw 2Δ put strike */
   readonly putStrike: number;
   /** Raw 2Δ call strike */
@@ -201,23 +211,27 @@ export interface HedgeResult {
   readonly putStrikeSnapped: number;
   /** Snapped to nearest 5-pt increment */
   readonly callStrikeSnapped: number;
-  /** Theoretical put premium per contract (points) */
+  /** Theoretical put premium per contract (points, at hedge DTE) */
   readonly putPremium: number;
-  /** Theoretical call premium per contract (points) */
+  /** Theoretical call premium per contract (points, at hedge DTE) */
   readonly callPremium: number;
+  /** Estimated put recovery at EOD if OTM (points, at hedge DTE - 1 day) */
+  readonly putRecovery: number;
+  /** Estimated call recovery at EOD if OTM (points, at hedge DTE - 1 day) */
+  readonly callRecovery: number;
   /** Recommended number of hedge put contracts */
   readonly recommendedPuts: number;
   /** Recommended number of hedge call contracts */
   readonly recommendedCalls: number;
-  /** Total daily hedge cost in points */
+  /** Net daily hedge cost in points (entry - EOD recovery) */
   readonly dailyCostPts: number;
-  /** Total daily hedge cost in dollars */
+  /** Net daily hedge cost in dollars (entry - EOD recovery) */
   readonly dailyCostDollars: number;
   /** SPX crash size (pts) where net P&L ≈ 0 with recommended puts */
   readonly breakEvenCrashPts: number;
   /** SPX rally size (pts) where net P&L ≈ 0 with recommended calls */
   readonly breakEvenRallyPts: number;
-  /** IC credit minus hedge cost in dollars */
+  /** IC credit minus net hedge cost in dollars */
   readonly netCreditAfterHedge: number;
   /** P&L scenarios at various crash/rally sizes */
   readonly scenarios: readonly HedgeScenario[];

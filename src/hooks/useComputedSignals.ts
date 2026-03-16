@@ -12,7 +12,11 @@
  */
 
 import { useMemo } from 'react';
-import { calcBSDelta, calcScaledSkew } from '../utils/calculator';
+import {
+  calcBSDelta,
+  calcScaledSkew,
+  calcScaledCallSkew,
+} from '../utils/calculator';
 import {
   findBucket,
   estimateRange,
@@ -68,6 +72,19 @@ export interface ComputedSignals {
 
   // VIX term structure
   vixTermSignal: string | null;
+  /** Shape of the VIX term structure curve */
+  vixTermShape: string | null; // 'contango' | 'fear-spike' | 'flat' | 'backwardation' | 'front-calm'
+  /** Actionable advice based on term structure shape */
+  vixTermShapeAdvice: string | null;
+
+  // Directional cluster multipliers (asymmetric put/call)
+  clusterPutMult: number | null;
+  clusterCallMult: number | null;
+
+  // Realized vol vs implied vol
+  rvIvRatio: number | null;
+  rvIvLabel: string | null; // 'IV Rich' | 'Fair Value' | 'IV Cheap'
+  rvAnnualized: number | null; // yesterday's Parkinson RV (annualized decimal)
 
   // Price context
   spxOpen: number | null;
@@ -91,6 +108,17 @@ export interface ComputedSignals {
 
 const DOW_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const VIX_TO_SIGMA_MULT = 1.15;
+
+/**
+ * Parkinson realized volatility estimator (single day, annualized).
+ * Uses high-low range which is ~5× more efficient than close-to-close.
+ * σ_parkinson = sqrt(1 / (4·ln2)) × |ln(H/L)| × sqrt(252)
+ */
+function parkinsonRV(high: number, low: number): number {
+  if (high <= 0 || low <= 0 || high <= low) return 0;
+  const logHL = Math.log(high / low);
+  return Math.sqrt(1 / (4 * Math.LN2)) * logHL * Math.sqrt(252);
+}
 
 function parseDow(selectedDate?: string): number | null {
   if (selectedDate) {
@@ -117,6 +145,98 @@ function parseDow(selectedDate?: string): number | null {
     Friday: 4,
   };
   return dayMap[etStr] ?? null;
+}
+
+/**
+ * Classifies the VIX term structure shape from the three-point curve.
+ * Returns both the shape name and actionable trading advice.
+ *
+ * Shapes:
+ *   contango:       VIX1D < VIX < VIX9D  → near-term calm, premium selling sweet spot
+ *   fear-spike:     VIX1D > VIX > VIX9D  → near-term fear, event-driven, IC dangerous
+ *   flat:           all within ±5%       → no edge from term structure
+ *   backwardation:  VIX1D > VIX          → near-term stress but longer-term calm
+ *   front-calm:     VIX1D < VIX, 9D < VIX → near-term relief, longer-term worry
+ */
+function classifyTermShape(
+  vix1d: number | undefined,
+  vix9d: number | undefined,
+  vix: number,
+): { shape: string; advice: string } | null {
+  // Need at least VIX1D to determine shape
+  if (!vix1d || vix <= 0) return null;
+
+  const r1d = vix1d / vix;
+  const r9d = vix9d ? vix9d / vix : null;
+
+  // Check for flat first: all ratios within ±5%
+  const isFlat1d = Math.abs(r1d - 1) < 0.05;
+  const isFlat9d = r9d == null || Math.abs(r9d - 1) < 0.05;
+  if (isFlat1d && isFlat9d) {
+    return {
+      shape: 'flat',
+      advice:
+        'Term structure is flat — no directional edge from vol curve. Follow standard delta guide.',
+    };
+  }
+
+  // With both VIX1D and VIX9D
+  if (r9d != null) {
+    // Contango: VIX1D < VIX < VIX9D (or VIX1D < VIX and VIX9D > VIX)
+    if (r1d < 0.97 && r9d > 1.03) {
+      return {
+        shape: 'contango',
+        advice:
+          'Full contango — near-term calm with longer-term uncertainty. Premium selling sweet spot. Full position size.',
+      };
+    }
+    // Fear spike: VIX1D > VIX > VIX9D (or VIX1D > VIX and VIX9D < VIX)
+    if (r1d > 1.03 && r9d < 0.97) {
+      return {
+        shape: 'fear-spike',
+        advice:
+          'Near-term fear spike — likely event-driven. IC dangerous, but if the event passes, rapid mean-reversion creates opportunity. Wait for resolution or use single-side spreads only.',
+      };
+    }
+    // Backwardation: VIX1D > VIX, VIX9D ≈ VIX or > VIX
+    if (r1d > 1.03) {
+      return {
+        shape: 'backwardation',
+        advice:
+          'Short-term stress exceeding 30-day — elevated intraday risk. Reduce size or widen deltas. Watch for mean-reversion after event clears.',
+      };
+    }
+    // Front-calm: VIX1D < VIX, VIX9D < VIX
+    if (r1d < 0.97 && r9d < 0.97) {
+      return {
+        shape: 'front-calm',
+        advice:
+          'Near-term calm but longer-term worry easing — transitional environment. Standard positioning with slight bullish tilt.',
+      };
+    }
+  }
+
+  // VIX1D only (no VIX9D)
+  if (r1d > 1.03) {
+    return {
+      shape: 'backwardation',
+      advice:
+        'VIX1D above VIX — today expected hotter than average. Widen deltas or reduce size.',
+    };
+  }
+  if (r1d < 0.97) {
+    return {
+      shape: 'contango',
+      advice:
+        'VIX1D below VIX — today expected calmer than average. Favorable for selling premium.',
+    };
+  }
+
+  return {
+    shape: 'flat',
+    advice:
+      'Term structure is roughly flat — no strong directional signal from vol curve.',
+  };
 }
 
 function classifyOpeningRange(pctOfMedian: number): string {
@@ -194,6 +314,12 @@ interface HookInputs {
   liveVvix: number | undefined;
   liveOpeningRange: { high: number; low: number } | undefined;
 
+  // Yesterday's SPX OHLC for RV/IV and clustering (live mode)
+  liveYesterdayHigh?: number;
+  liveYesterdayLow?: number;
+  liveYesterdayOpen?: number;
+  liveYesterdayClose?: number;
+
   // History (null when viewing today)
   historySnapshot: HistorySnapshot | null;
 }
@@ -217,6 +343,10 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       liveVix9d,
       liveVvix,
       liveOpeningRange,
+      liveYesterdayHigh,
+      liveYesterdayLow,
+      liveYesterdayOpen,
+      liveYesterdayClose,
       historySnapshot,
     } = inputs;
 
@@ -274,6 +404,13 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       openingRangePctConsumed: null,
       openingRangeSignal: null,
       vixTermSignal: null,
+      vixTermShape: null,
+      vixTermShapeAdvice: null,
+      clusterPutMult: null,
+      clusterCallMult: null,
+      rvIvRatio: null,
+      rvIvLabel: null,
+      rvAnnualized: null,
       spxOpen: null,
       spxHigh: null,
       spxLow: null,
@@ -345,6 +482,40 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     result.p90OcPts = Math.round((result.p90OcPct / 100) * spot);
     result.p90HlPts = Math.round((result.p90HlPct / 100) * spot);
 
+    // ── Directional cluster multipliers ───────────────────────
+    // After a big down day, put-side range expands more than call-side.
+    // After a big up day, the asymmetry is weaker (upside rallies cluster less).
+    // When cluster mult ≈ 1 (no clustering), both sides are equal.
+    const ydayOpen = historySnapshot?.yesterday?.open ?? liveYesterdayOpen;
+    const ydayClose = historySnapshot?.yesterday?.close ?? liveYesterdayClose;
+    if (cMult !== 1 && ydayOpen && ydayClose && ydayOpen > 0) {
+      const ydayReturn = (ydayClose - ydayOpen) / ydayOpen;
+      const excess = cMult - 1; // how much above/below 1.0 (e.g. 0.15 for 1.15x)
+      if (excess > 0) {
+        // Clustering is active (mult > 1)
+        if (ydayReturn < -0.003) {
+          // Down day: put side gets 70% of excess, call side 30%
+          result.clusterPutMult = 1 + excess * 1.4;
+          result.clusterCallMult = 1 + excess * 0.6;
+        } else if (ydayReturn > 0.003) {
+          // Up day: call side gets 60% of excess, put side 40% (weaker asymmetry)
+          result.clusterPutMult = 1 + excess * 0.8;
+          result.clusterCallMult = 1 + excess * 1.2;
+        } else {
+          // Flat day: symmetric
+          result.clusterPutMult = cMult;
+          result.clusterCallMult = cMult;
+        }
+      } else {
+        // Tailwind (mult < 1): symmetric — calm days don't have directional bias
+        result.clusterPutMult = cMult;
+        result.clusterCallMult = cMult;
+      }
+    } else {
+      result.clusterPutMult = cMult;
+      result.clusterCallMult = cMult;
+    }
+
     // ── Delta guide ceilings ─────────────────────────────────
     // Uses VIX × 1.15 for consistency with historical calibration
     const sigma = (vix * VIX_TO_SIGMA_MULT) / 100;
@@ -357,11 +528,23 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       const putStrike = spot * (1 - p90OcDist);
       const callStrike = spot * (1 + p90OcDist);
       const approxZ = p90OcDist / (sigma * sqrtT);
-      const sk = calcScaledSkew(skew, Math.min(approxZ, 3));
+      const cappedZ = Math.min(approxZ, 3);
       const putDelta =
-        calcBSDelta(spot, putStrike, sigma * (1 + sk), T, 'put') * 100;
+        calcBSDelta(
+          spot,
+          putStrike,
+          sigma * (1 + calcScaledSkew(skew, cappedZ)),
+          T,
+          'put',
+        ) * 100;
       const callDelta =
-        calcBSDelta(spot, callStrike, sigma * (1 - sk), T, 'call') * 100;
+        calcBSDelta(
+          spot,
+          callStrike,
+          sigma * (1 - calcScaledCallSkew(skew, cappedZ)),
+          T,
+          'call',
+        ) * 100;
       result.icCeiling = Math.floor(Math.min(putDelta, callDelta));
       result.putSpreadCeiling = Math.floor(putDelta);
       result.callSpreadCeiling = Math.floor(callDelta);
@@ -377,11 +560,23 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       const putStrike = spot * (1 - p90HlDist);
       const callStrike = spot * (1 + p90HlDist);
       const approxZ = p90HlDist / (sigma * sqrtT);
-      const sk = calcScaledSkew(skew, Math.min(approxZ, 3));
+      const cappedZhl = Math.min(approxZ, 3);
       const putDelta =
-        calcBSDelta(spot, putStrike, sigma * (1 + sk), T, 'put') * 100;
+        calcBSDelta(
+          spot,
+          putStrike,
+          sigma * (1 + calcScaledSkew(skew, cappedZhl)),
+          T,
+          'put',
+        ) * 100;
       const callDelta =
-        calcBSDelta(spot, callStrike, sigma * (1 - sk), T, 'call') * 100;
+        calcBSDelta(
+          spot,
+          callStrike,
+          sigma * (1 - calcScaledCallSkew(skew, cappedZhl)),
+          T,
+          'call',
+        ) * 100;
       result.moderateDelta = Math.floor(Math.min(putDelta, callDelta));
     }
 
@@ -403,6 +598,32 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
 
     // ── VIX term structure ───────────────────────────────────
     result.vixTermSignal = classifyTermStructure(vix1d, vix9d, vvix, vix);
+    const termShape = classifyTermShape(vix1d, vix9d, vix);
+    if (termShape) {
+      result.vixTermShape = termShape.shape;
+      result.vixTermShapeAdvice = termShape.advice;
+    }
+
+    // ── RV/IV ratio ──────────────────────────────────────────
+    // Parkinson RV from yesterday's SPX high-low vs today's IV
+    const ydayHigh = historySnapshot?.yesterday?.high ?? liveYesterdayHigh;
+    const ydayLow = historySnapshot?.yesterday?.low ?? liveYesterdayLow;
+    if (ydayHigh && ydayLow && ydayHigh > ydayLow) {
+      const rv = parkinsonRV(ydayHigh, ydayLow);
+      // IV: prefer VIX1D, fall back to VIX × 1.15
+      const iv = vix1d ? vix1d / 100 : (vix * VIX_TO_SIGMA_MULT) / 100;
+      if (iv > 0) {
+        result.rvAnnualized = Math.round(rv * 10000) / 10000;
+        result.rvIvRatio = Math.round((rv / iv) * 100) / 100;
+        if (result.rvIvRatio < 0.8) {
+          result.rvIvLabel = 'IV Rich';
+        } else if (result.rvIvRatio > 1.2) {
+          result.rvIvLabel = 'IV Cheap';
+        } else {
+          result.rvIvLabel = 'Fair Value';
+        }
+      }
+    }
 
     // ── Data note ────────────────────────────────────────────
     result.dataNote = buildDataNote(

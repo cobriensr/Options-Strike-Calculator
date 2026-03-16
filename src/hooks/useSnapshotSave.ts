@@ -66,6 +66,19 @@ interface SnapshotContext {
 
   // Term structure
   vixTermSignal?: string;
+  vixTermShape?: string;
+
+  // Clustering (directional)
+  clusterPutMult?: number;
+  clusterCallMult?: number;
+
+  // Realized vs implied
+  rvIvRatio?: number;
+  rvIvLabel?: string;
+  rvAnnualized?: number;
+
+  // IV acceleration
+  ivAccelMult?: number;
 
   // Overnight
   overnightGap?: number;
@@ -156,6 +169,13 @@ export function useSnapshotSave(
       openingRangeSignal: context.openingRangeSignal,
 
       vixTermSignal: context.vixTermSignal,
+      vixTermShape: context.vixTermShape,
+      clusterPutMult: context.clusterPutMult,
+      clusterCallMult: context.clusterCallMult,
+      rvIvRatio: context.rvIvRatio,
+      rvIvLabel: context.rvIvLabel,
+      rvAnnualized: context.rvAnnualized,
+      ivAccelMult: context.ivAccelMult,
       overnightGap: context.overnightGap,
 
       strikes,

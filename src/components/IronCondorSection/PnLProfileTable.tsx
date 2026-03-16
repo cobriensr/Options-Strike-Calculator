@@ -55,6 +55,7 @@ export default function PnLProfileTable({
                   maxLoss: ic.putSpreadMaxLoss,
                   ror: ic.putSpreadRoR,
                   pop: ic.putSpreadPoP,
+                  adjPop: ic.adjustedPutSpreadPoP,
                   be: ic.putSpreadBE.toFixed(0),
                   spyBe: Math.round(ic.putSpreadBE / effectiveRatio).toString(),
                   isFirst: true,
@@ -68,6 +69,7 @@ export default function PnLProfileTable({
                   maxLoss: ic.callSpreadMaxLoss,
                   ror: ic.callSpreadRoR,
                   pop: ic.callSpreadPoP,
+                  adjPop: ic.adjustedCallSpreadPoP,
                   be: ic.callSpreadBE.toFixed(0),
                   spyBe: Math.round(
                     ic.callSpreadBE / effectiveRatio,
@@ -83,6 +85,7 @@ export default function PnLProfileTable({
                   maxLoss: ic.maxLoss,
                   ror: ic.returnOnRisk,
                   pop: ic.probabilityOfProfit,
+                  adjPop: ic.adjustedPoP,
                   be:
                     ic.breakEvenLow.toFixed(0) +
                     '\u2013' +
@@ -170,14 +173,22 @@ export default function PnLProfileTable({
                     {(r.ror * 100).toFixed(1)}%
                   </td>
                   <td
-                    className={`${mkTd()} text-success text-right ${r.isLast ? 'font-bold' : 'font-semibold'}`}
+                    className={`${mkTd()} text-right ${r.isLast ? 'font-bold' : 'font-semibold'}`}
                     style={{
                       borderBottom: r.isLast
                         ? borderStyle
                         : '1px solid var(--th-border)',
                     }}
                   >
-                    {(r.pop * 100).toFixed(1)}%
+                    <span style={{ color: th.green }}>
+                      {(r.adjPop * 100).toFixed(1)}%
+                    </span>
+                    <div
+                      className="text-[9px] font-normal line-through opacity-50"
+                      title="Log-normal PoP (without fat-tail adjustment)"
+                    >
+                      {(r.pop * 100).toFixed(1)}%
+                    </div>
                   </td>
                   <td
                     className={`${mkTd()} text-secondary text-right`}

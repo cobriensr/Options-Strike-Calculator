@@ -27,6 +27,8 @@ interface Props {
   market: MarketDataState;
   historySnapshot?: HistorySnapshot | null;
   onUseVix1dAsSigma: (sigma: number) => void;
+  termShape?: string | null;
+  termShapeAdvice?: string | null;
 }
 
 export default function IVInputSection({
@@ -46,6 +48,8 @@ export default function IVInputSection({
   market,
   historySnapshot,
   onUseVix1dAsSigma,
+  termShape,
+  termShapeAdvice,
 }: Props) {
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -228,6 +232,8 @@ export default function IVInputSection({
             initialVvix={
               historySnapshot?.vvix ?? market.data.quotes?.vvix?.price
             }
+            termShape={termShape}
+            termShapeAdvice={termShapeAdvice}
           />
         </div>
       )}

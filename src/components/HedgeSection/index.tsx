@@ -6,7 +6,7 @@ import type {
   HedgeDelta,
 } from '../../types';
 import { calcHedge } from '../../utils/calculator';
-import { HEDGE_DELTA_OPTIONS } from '../../constants';
+import { HEDGE_DELTA_OPTIONS, DEFAULTS } from '../../constants';
 import { fmtDollar } from '../../utils/ui-utils';
 import StatBox from './StatBox';
 import ScenarioTable from './ScenarioTable';
@@ -27,6 +27,7 @@ export default function HedgeSection({
   skew,
 }: Props) {
   const [hedgeDelta, setHedgeDelta] = useState<HedgeDelta>(2);
+  const [hedgeDte, setHedgeDte] = useState<number>(DEFAULTS.HEDGE_DTE);
   const [showScenarios, setShowScenarios] = useState(false);
 
   const hedge = calcHedge({
@@ -42,6 +43,7 @@ export default function HedgeSection({
     icShortCall: ic.shortCall,
     icLongCall: ic.longCall,
     hedgeDelta,
+    hedgeDte,
   });
 
   const crashScenarios = hedge.scenarios.filter((s) => s.direction === 'crash');
@@ -49,31 +51,54 @@ export default function HedgeSection({
 
   return (
     <div className="mt-4.5">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-accent font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
           Hedge Calculator (Reinsurance)
         </div>
-        <div className="flex items-center gap-1">
-          <span className="text-tertiary mr-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-            Hedge {'\u0394'}
-          </span>
-          {HEDGE_DELTA_OPTIONS.map((d) => (
-            <button
-              key={d}
-              onClick={() => setHedgeDelta(d)}
-              role="radio"
-              aria-checked={hedgeDelta === d}
-              className={
-                'cursor-pointer rounded-full border-[1.5px] px-2.5 py-0.5 font-mono text-xs font-medium transition-all duration-100 ' +
-                (hedgeDelta === d
-                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                  : 'border-chip-border bg-chip-bg text-chip-text')
-              }
-            >
-              {d}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1">
+            <span className="text-tertiary mr-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
               {'\u0394'}
-            </button>
-          ))}
+            </span>
+            {HEDGE_DELTA_OPTIONS.map((d) => (
+              <button
+                key={d}
+                onClick={() => setHedgeDelta(d)}
+                role="radio"
+                aria-checked={hedgeDelta === d}
+                className={
+                  'cursor-pointer rounded-full border-[1.5px] px-2.5 py-0.5 font-mono text-xs font-medium transition-all duration-100 ' +
+                  (hedgeDelta === d
+                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                    : 'border-chip-border bg-chip-bg text-chip-text')
+                }
+              >
+                {d}
+                {'\u0394'}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-tertiary mr-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              DTE
+            </span>
+            {[1, 7, 14, 21].map((d) => (
+              <button
+                key={d}
+                onClick={() => setHedgeDte(d)}
+                role="radio"
+                aria-checked={hedgeDte === d}
+                className={
+                  'cursor-pointer rounded-full border-[1.5px] px-2.5 py-0.5 font-mono text-xs font-medium transition-all duration-100 ' +
+                  (hedgeDte === d
+                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                    : 'border-chip-border bg-chip-bg text-chip-text')
+                }
+              >
+                {d}d
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -148,7 +173,7 @@ export default function HedgeSection({
         {/* Total Summary */}
         <div className="border-edge mt-3 grid grid-cols-2 gap-2 border-t pt-3 md:grid-cols-4">
           <StatBox
-            label="Daily Hedge Cost"
+            label={hedgeDte > 1 ? 'Net Daily Cost' : 'Daily Hedge Cost'}
             value={'$' + fmtDollar(hedge.dailyCostDollars)}
             accent={th.red}
           />
@@ -173,6 +198,37 @@ export default function HedgeSection({
             }
           />
         </div>
+        {/* EOD recovery breakdown for longer-dated hedges */}
+        {hedgeDte > 1 && (
+          <div className="text-muted mt-2 font-mono text-[10px] leading-relaxed">
+            {hedgeDte}DTE hedge: buy for{' '}
+            <span className="text-danger font-semibold">
+              $
+              {fmtDollar(
+                Math.round(
+                  (hedge.putPremium * hedge.recommendedPuts +
+                    hedge.callPremium * hedge.recommendedCalls) *
+                    100,
+                ),
+              )}
+            </span>{' '}
+            {'\u2192'} sell to close at EOD for est.{' '}
+            <span className="text-success font-semibold">
+              $
+              {fmtDollar(
+                Math.round(
+                  (hedge.putRecovery * hedge.recommendedPuts +
+                    hedge.callRecovery * hedge.recommendedCalls) *
+                    100,
+                ),
+              )}
+            </span>{' '}
+            if OTM {'\u2192'} net cost{' '}
+            <span className="font-semibold">
+              ${fmtDollar(hedge.dailyCostDollars)}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Scenario Toggle */}
@@ -215,9 +271,13 @@ export default function HedgeSection({
         Hedge sized for breakeven at 1.5{'\u00D7'} distance to hedge strike. Buy{' '}
         {hedge.recommendedPuts} put{hedge.recommendedPuts === 1 ? '' : 's'} +{' '}
         {hedge.recommendedCalls} call{hedge.recommendedCalls === 1 ? '' : 's'}{' '}
-        as a 0DTE strangle at {hedgeDelta}
-        {'\u0394'}. All values theoretical (Black-Scholes, r=0). Actual fill
-        prices may differ.
+        at {hedgeDelta}
+        {'\u0394'} ({hedgeDte}DTE).
+        {hedgeDte > 1
+          ? ` Scenario P&L values hedge at ${hedgeDte - 1}DTE remaining (sell to close at EOD).`
+          : ''}{' '}
+        All values theoretical (Black-Scholes, r=0). Actual fill prices may
+        differ.
       </p>
     </div>
   );

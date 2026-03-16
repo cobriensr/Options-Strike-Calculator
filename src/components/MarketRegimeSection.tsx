@@ -8,9 +8,12 @@ import DeltaRegimeGuide from './DeltaRegimeGuide';
 import OpeningRangeCheck from './OpeningRangeCheck';
 import PreTradeSignals from './PreTradeSignals';
 import SettlementCheck from './SettlementCheck';
+import RvIvCard from './RvIvCard';
+import PinRiskAnalysis from './PinRiskAnalysis';
 import type { MarketDataState } from '../hooks/useMarketData';
 import type { HistorySnapshot } from '../hooks/useHistoryData';
-import type { HistoryCandle } from '../types/api';
+import type { ChainResponse, HistoryCandle } from '../types/api';
+import type { ComputedSignals } from '../hooks/useComputedSignals';
 
 interface Props {
   th: Theme;
@@ -25,6 +28,8 @@ interface Props {
   historySnapshot?: HistorySnapshot | null;
   historyCandles?: readonly HistoryCandle[];
   entryTimeLabel?: string;
+  signals: ComputedSignals;
+  chain: ChainResponse | null;
 }
 
 export default function MarketRegimeSection({
@@ -40,6 +45,8 @@ export default function MarketRegimeSection({
   historySnapshot,
   historyCandles,
   entryTimeLabel,
+  signals,
+  chain,
 }: Props) {
   const [showRegime, setShowRegime] = useState(true);
 
@@ -92,6 +99,8 @@ export default function MarketRegimeSection({
                     market.data.yesterday?.yesterday ??
                     undefined
                   }
+                  clusterPutMult={signals.clusterPutMult}
+                  clusterCallMult={signals.clusterCallMult}
                 />
               </div>
               <DeltaRegimeGuide
@@ -141,6 +150,38 @@ export default function MarketRegimeSection({
                   spxPrevClose={historySnapshot?.previousClose ?? undefined}
                 />
               </div>
+              {/* RV/IV Ratio */}
+              {signals.rvIvRatio != null &&
+                signals.rvIvLabel != null &&
+                signals.rvAnnualized != null && (
+                  <div className="mt-5">
+                    <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.12em] uppercase">
+                      Realized vs Implied Volatility
+                    </div>
+                    <RvIvCard
+                      th={th}
+                      ratio={signals.rvIvRatio}
+                      label={signals.rvIvLabel}
+                      rvAnnualized={signals.rvAnnualized}
+                      iv={
+                        signals.vix1d
+                          ? signals.vix1d / 100
+                          : ((Number.parseFloat(dVix) || 0) * 1.15) / 100
+                      }
+                    />
+                  </div>
+                )}
+
+              {/* Pin Risk / OI Analysis (live chain only) */}
+              {chain && chain.puts.length > 0 && (
+                <div className="mt-5">
+                  <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.12em] uppercase">
+                    Settlement Pin Risk
+                  </div>
+                  <PinRiskAnalysis th={th} chain={chain} spot={results.spot} />
+                </div>
+              )}
+
               {historySnapshot &&
                 historyCandles &&
                 historyCandles.length > 0 &&

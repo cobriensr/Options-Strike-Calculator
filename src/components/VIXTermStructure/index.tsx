@@ -18,6 +18,8 @@ interface Props {
   readonly initialVix1d?: number; // Auto-fill from live data
   readonly initialVix9d?: number; // Auto-fill from live data
   readonly initialVvix?: number; // Auto-fill from live data
+  readonly termShape?: string | null; // Term structure shape from useComputedSignals
+  readonly termShapeAdvice?: string | null;
 }
 
 const inputCls =
@@ -36,6 +38,8 @@ export default function VIXTermStructure({
   initialVix1d,
   initialVix9d,
   initialVvix,
+  termShape,
+  termShapeAdvice,
 }: Props) {
   const [vix1dInput, setVix1dInput] = useState('');
   const [vix9dInput, setVix9dInput] = useState('');
@@ -178,6 +182,56 @@ export default function VIXTermStructure({
                   {combinedSignal === 'extreme' &&
                     'Significant event risk \u2014 consider sitting out'}
                 </span>
+              </div>
+            </div>
+          )}
+
+          {/* Term structure shape */}
+          {termShape && termShapeAdvice && (
+            <div className="bg-surface border-edge mb-2.5 rounded-[10px] border p-3 sm:p-3.5">
+              <div className="mb-1.5 flex items-start justify-between">
+                <div>
+                  <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+                    Curve Shape
+                  </div>
+                  <div className="text-muted font-sans text-[9px]">
+                    VIX1D {'\u2194'} VIX {'\u2194'} VIX9D relationship
+                  </div>
+                </div>
+                <span
+                  className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
+                  style={{
+                    backgroundColor:
+                      (termShape === 'contango'
+                        ? th.green
+                        : termShape === 'fear-spike'
+                          ? th.red
+                          : termShape === 'backwardation'
+                            ? '#E8A317'
+                            : th.accent) + '18',
+                    color:
+                      termShape === 'contango'
+                        ? th.green
+                        : termShape === 'fear-spike'
+                          ? th.red
+                          : termShape === 'backwardation'
+                            ? '#E8A317'
+                            : th.accent,
+                  }}
+                >
+                  {termShape === 'contango'
+                    ? 'CONTANGO'
+                    : termShape === 'fear-spike'
+                      ? 'FEAR SPIKE'
+                      : termShape === 'backwardation'
+                        ? 'BACKWARDATION'
+                        : termShape === 'front-calm'
+                          ? 'FRONT CALM'
+                          : 'FLAT'}
+                </span>
+              </div>
+              <div className="text-secondary font-sans text-[11px] leading-normal">
+                {termShapeAdvice}
               </div>
             </div>
           )}

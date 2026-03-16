@@ -22,7 +22,12 @@ export interface AnalysisContext {
   openingRangeSignal?: string;
   openingRangeAvailable?: boolean; // false if before 10:00 AM ET
   vixTermSignal?: string;
+  vixTermShape?: string;
+  clusterPutMult?: number;
+  clusterCallMult?: number;
   rvIvRatio?: string;
+  rvAnnualized?: number;
+  ivAccelMult?: number;
   overnightGap?: string;
   isBacktest?: boolean;
   dataNote?: string; // describes any missing data

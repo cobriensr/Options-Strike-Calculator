@@ -1,6 +1,10 @@
 import type { Theme } from '../../themes';
 import type { DeltaRow, DeltaRowError } from '../../types';
-import { calcBSDelta, calcScaledSkew } from '../../utils/calculator';
+import {
+  calcBSDelta,
+  calcScaledSkew,
+  calcScaledCallSkew,
+} from '../../utils/calculator';
 import { DELTA_Z_SCORES, DELTA_OPTIONS } from '../../constants';
 import {
   findBucket,
@@ -135,9 +139,9 @@ export default function DeltaRegimeGuide({
     // Approximate z for skew scaling: z ≈ distance / (sigma * sqrt(T))
     const sqrtT = Math.sqrt(T);
     const approxZ = t.pct / 100 / (sigma * sqrtT);
-    const scaledSkew = calcScaledSkew(skew, Math.min(approxZ, 3)); // cap at z=3
-    const putSigma = sigma * (1 + scaledSkew);
-    const callSigma = sigma * (1 - scaledSkew);
+    const cappedZ = Math.min(approxZ, 3);
+    const putSigma = sigma * (1 + calcScaledSkew(skew, cappedZ));
+    const callSigma = sigma * (1 - calcScaledCallSkew(skew, cappedZ));
 
     const putDelta = calcBSDelta(spot, putStrike, putSigma, T, 'put') * 100;
     const callDelta = calcBSDelta(spot, callStrike, callSigma, T, 'call') * 100;
@@ -176,9 +180,8 @@ export default function DeltaRegimeGuide({
   for (const d of DELTA_OPTIONS) {
     const z = DELTA_Z_SCORES[d];
     if (z == null) continue;
-    const sk = calcScaledSkew(skew, z);
-    const pSigma = sigma * (1 + sk);
-    const cSigma = sigma * (1 - sk);
+    const pSigma = sigma * (1 + calcScaledSkew(skew, z));
+    const cSigma = sigma * (1 - calcScaledCallSkew(skew, z));
     const pDrift = -(pSigma * pSigma * T) / 2;
     const cDrift = -(cSigma * cSigma * T) / 2;
     const putStrike = spot * Math.exp(-z * pSigma * sqrtT + pDrift);
