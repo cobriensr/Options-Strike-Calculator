@@ -36,11 +36,11 @@ describe('GET /api/positions', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('returns 405 for non-GET methods', async () => {
+  it('returns 405 for unsupported methods', async () => {
     const res = mockResponse();
-    await handler(mockRequest({ method: 'POST' }), res);
+    await handler(mockRequest({ method: 'PUT' }), res);
     expect(res._status).toBe(405);
-    expect(res._json).toEqual({ error: 'GET only' });
+    expect(res._json).toEqual({ error: 'GET or POST only' });
   });
 
   it('returns 401 for non-owner', async () => {

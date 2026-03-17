@@ -41,6 +41,12 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const abortRef = useRef<AbortController | null>(null);
   const lastAnalysisRef = useRef<AnalysisResult | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  const [positionUpload, setPositionUpload] = useState<{
+    status: 'idle' | 'uploading' | 'success' | 'error';
+    message?: string;
+    spreadCount?: number;
+  }>({ status: 'idle' });
 
   const cancelAnalysis = useCallback(() => {
     abortRef.current?.abort();
@@ -148,6 +154,47 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     document.addEventListener('paste', handlePaste);
     return () => document.removeEventListener('paste', handlePaste);
   }, [handlePaste]);
+
+  const handleCSVUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      if (csvInputRef.current) csvInputRef.current.value = '';
+
+      setPositionUpload({ status: 'uploading' });
+      try {
+        const csvText = await file.text();
+        const spxParam = results?.spot ? `?spx=${results.spot}` : '';
+        const res = await fetch(`/api/positions${spxParam}`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csv: csvText }),
+        });
+
+        if (!res.ok) {
+          const body = await res
+            .json()
+            .catch(() => ({ error: 'Upload failed' }));
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const count = data.positions?.stats?.totalSpreads ?? 0;
+        setPositionUpload({
+          status: 'success',
+          message: `${count} spread${count !== 1 ? 's' : ''} loaded from paperMoney`,
+          spreadCount: count,
+        });
+      } catch (err) {
+        setPositionUpload({
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Upload failed',
+        });
+      }
+    },
+    [results?.spot],
+  );
 
   // Elapsed timer while loading
   useEffect(() => {
@@ -430,6 +477,45 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* PaperMoney CSV upload */}
+        {images.length > 0 && !loading && (
+          <div className="mb-3 flex items-center gap-2">
+            <input
+              ref={csvInputRef}
+              type="file"
+              accept=".csv"
+              className="hidden"
+              onChange={handleCSVUpload}
+              aria-label="Upload paperMoney CSV"
+            />
+            <button
+              type="button"
+              onClick={() => csvInputRef.current?.click()}
+              disabled={positionUpload.status === 'uploading'}
+              className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
+              style={{
+                backgroundColor: th.surfaceAlt,
+                color: th.textMuted,
+                border: `1px solid ${th.accent}30`,
+              }}
+            >
+              {positionUpload.status === 'uploading'
+                ? 'Uploading...'
+                : 'Upload paperMoney Positions (.csv)'}
+            </button>
+            {positionUpload.status === 'success' && (
+              <span className="text-[10px]" style={{ color: th.green }}>
+                {positionUpload.message}
+              </span>
+            )}
+            {positionUpload.status === 'error' && (
+              <span className="text-[10px]" style={{ color: th.red }}>
+                {positionUpload.message}
+              </span>
+            )}
           </div>
         )}
 
