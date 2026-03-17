@@ -299,75 +299,77 @@ export async function migrateDb(): Promise<string[]> {
 // MARKET SNAPSHOT
 // ============================================================
 
+type Maybe<T> = T | null | undefined;
+
 export interface SnapshotInput {
   date: string;
   entryTime: string;
 
   // Prices
-  spx?: number;
-  spy?: number;
-  spxOpen?: number;
-  spxHigh?: number;
-  spxLow?: number;
-  prevClose?: number;
+  spx?: Maybe<number>;
+  spy?: Maybe<number>;
+  spxOpen?: Maybe<number>;
+  spxHigh?: Maybe<number>;
+  spxLow?: Maybe<number>;
+  prevClose?: Maybe<number>;
 
   // Volatility
-  vix?: number;
-  vix1d?: number;
-  vix9d?: number;
-  vvix?: number;
+  vix?: Maybe<number>;
+  vix1d?: Maybe<number>;
+  vix9d?: Maybe<number>;
+  vvix?: Maybe<number>;
 
   // Calculator
-  sigma?: number;
-  sigmaSource?: string;
-  tYears?: number;
-  hoursRemaining?: number;
-  skewPct?: number;
+  sigma?: Maybe<number>;
+  sigmaSource?: Maybe<string>;
+  tYears?: Maybe<number>;
+  hoursRemaining?: Maybe<number>;
+  skewPct?: Maybe<number>;
 
   // Regime
-  regimeZone?: string;
-  clusterMult?: number;
-  dowMultHL?: number;
-  dowMultOC?: number;
-  dowLabel?: string;
+  regimeZone?: Maybe<string>;
+  clusterMult?: Maybe<number>;
+  dowMultHL?: Maybe<number>;
+  dowMultOC?: Maybe<number>;
+  dowLabel?: Maybe<string>;
 
   // Delta guide
-  icCeiling?: number;
-  putSpreadCeiling?: number;
-  callSpreadCeiling?: number;
-  moderateDelta?: number;
-  conservativeDelta?: number;
+  icCeiling?: Maybe<number>;
+  putSpreadCeiling?: Maybe<number>;
+  callSpreadCeiling?: Maybe<number>;
+  moderateDelta?: Maybe<number>;
+  conservativeDelta?: Maybe<number>;
 
   // Range thresholds
-  medianOcPct?: number;
-  medianHlPct?: number;
-  p90OcPct?: number;
-  p90HlPct?: number;
-  p90OcPts?: number;
-  p90HlPts?: number;
+  medianOcPct?: Maybe<number>;
+  medianHlPct?: Maybe<number>;
+  p90OcPct?: Maybe<number>;
+  p90HlPct?: Maybe<number>;
+  p90OcPts?: Maybe<number>;
+  p90HlPts?: Maybe<number>;
 
   // Opening range
-  openingRangeAvailable?: boolean;
-  openingRangeHigh?: number;
-  openingRangeLow?: number;
-  openingRangePctConsumed?: number;
-  openingRangeSignal?: string;
+  openingRangeAvailable?: Maybe<boolean>;
+  openingRangeHigh?: Maybe<number>;
+  openingRangeLow?: Maybe<number>;
+  openingRangePctConsumed?: Maybe<number>;
+  openingRangeSignal?: Maybe<string>;
 
   // Term structure
-  vixTermSignal?: string;
+  vixTermSignal?: Maybe<string>;
 
   // Overnight
-  overnightGap?: number;
+  overnightGap?: Maybe<number>;
 
   // Strikes
-  strikes?: Record<string, unknown>;
+  strikes?: Maybe<Record<string, unknown>>;
 
   // Events
-  isEarlyClose?: boolean;
-  isEventDay?: boolean;
-  eventNames?: string[];
+  isEarlyClose?: Maybe<boolean>;
+  isEventDay?: Maybe<boolean>;
+  eventNames?: Maybe<string[]>;
 
-  isBacktest?: boolean;
+  isBacktest?: Maybe<boolean>;
 }
 
 /**

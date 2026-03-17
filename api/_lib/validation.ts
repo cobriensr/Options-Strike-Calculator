@@ -37,75 +37,81 @@ export type AnalyzeBody = z.infer<typeof analyzeBodySchema>;
 // /api/snapshot
 // ============================================================
 
+// Helper: fields from ComputedSignals are often `T | null`, and
+// JSON.stringify preserves null (unlike undefined). Accept both.
+const num = z.number().nullable().optional();
+const str = z.string().nullable().optional();
+const bool = z.boolean().nullable().optional();
+
 export const snapshotBodySchema = z.object({
   date: z.string().min(1, 'date is required'),
   entryTime: z.string().min(1, 'entryTime is required'),
 
   // Prices
-  spx: z.number().optional(),
-  spy: z.number().optional(),
-  spxOpen: z.number().optional(),
-  spxHigh: z.number().optional(),
-  spxLow: z.number().optional(),
-  prevClose: z.number().optional(),
+  spx: num,
+  spy: num,
+  spxOpen: num,
+  spxHigh: num,
+  spxLow: num,
+  prevClose: num,
 
   // Volatility
-  vix: z.number().optional(),
-  vix1d: z.number().optional(),
-  vix9d: z.number().optional(),
-  vvix: z.number().optional(),
+  vix: num,
+  vix1d: num,
+  vix9d: num,
+  vvix: num,
 
   // Calculator
-  sigma: z.number().optional(),
-  sigmaSource: z.string().optional(),
-  tYears: z.number().optional(),
-  hoursRemaining: z.number().optional(),
-  skewPct: z.number().optional(),
+  sigma: num,
+  sigmaSource: str,
+  tYears: num,
+  hoursRemaining: num,
+  skewPct: num,
 
   // Regime
-  regimeZone: z.string().optional(),
-  clusterMult: z.number().optional(),
-  dowMultHL: z.number().optional(),
-  dowMultOC: z.number().optional(),
-  dowLabel: z.string().optional(),
+  regimeZone: str,
+  clusterMult: num,
+  dowMultHL: num,
+  dowMultOC: num,
+  dowLabel: str,
 
   // Delta guide
-  icCeiling: z.number().optional(),
-  putSpreadCeiling: z.number().optional(),
-  callSpreadCeiling: z.number().optional(),
-  moderateDelta: z.number().optional(),
-  conservativeDelta: z.number().optional(),
+  icCeiling: num,
+  putSpreadCeiling: num,
+  callSpreadCeiling: num,
+  moderateDelta: num,
+  conservativeDelta: num,
 
   // Range thresholds
-  medianOcPct: z.number().optional(),
-  medianHlPct: z.number().optional(),
-  p90OcPct: z.number().optional(),
-  p90HlPct: z.number().optional(),
-  p90OcPts: z.number().optional(),
-  p90HlPts: z.number().optional(),
+  medianOcPct: num,
+  medianHlPct: num,
+  p90OcPct: num,
+  p90HlPct: num,
+  p90OcPts: num,
+  p90HlPts: num,
 
   // Opening range
-  openingRangeAvailable: z.boolean().optional(),
-  openingRangeHigh: z.number().optional(),
-  openingRangeLow: z.number().optional(),
-  openingRangePctConsumed: z.number().optional(),
-  openingRangeSignal: z.string().optional(),
+  openingRangeAvailable: bool,
+  openingRangeHigh: num,
+  openingRangeLow: num,
+  openingRangePctConsumed: num,
+  openingRangeSignal: str,
 
   // Term structure
-  vixTermSignal: z.string().optional(),
+  vixTermSignal: str,
 
   // Overnight
-  overnightGap: z.number().optional(),
+  overnightGap: num,
 
   // Strikes
-  strikes: z.record(z.string(), z.unknown()).optional(),
+  strikes: z.record(z.string(), z.unknown()).nullable().optional(),
 
   // Events
-  isEarlyClose: z.boolean().optional(),
-  isEventDay: z.boolean().optional(),
-  eventNames: z.array(z.string()).optional(),
+  isEarlyClose: bool,
+  isEventDay: bool,
+  eventNames: z.array(z.string()).nullable().optional(),
 
-  isBacktest: z.boolean().optional(),
+  isBacktest: bool,
 });
 
 export type SnapshotBody = z.infer<typeof snapshotBodySchema>;
