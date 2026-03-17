@@ -308,6 +308,11 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           }
 
           const data = await res.json();
+
+          // Clear any interim retry message now that we have a response
+          lastError = null;
+          setError(null);
+
           if (data.analysis) {
             setAnalysis(data.analysis);
             lastAnalysisRef.current = data.analysis;
@@ -318,8 +323,6 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               'Could not parse structured response. See raw output below.',
             );
 
-          // Success — break out of retry loop
-          lastError = null;
           break;
         } catch (err) {
           clearTimeout(timeout);
@@ -480,9 +483,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           </div>
         )}
 
-        {/* PaperMoney CSV upload */}
-        {images.length > 0 && !loading && (
-          <div className="mb-4 flex items-center gap-3">
+        {/* PaperMoney CSV upload — hidden in review mode (review evaluates the recommendation, not positions) */}
+        {images.length > 0 && !loading && mode !== 'review' && (
+          <div className="mb-4 flex items-center justify-center gap-3">
             <input
               ref={csvInputRef}
               type="file"

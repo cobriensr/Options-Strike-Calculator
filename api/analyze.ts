@@ -535,7 +535,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     (context.selectedDate as string | undefined) ??
     new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-  if (!context.isBacktest) {
+  if (!context.isBacktest && mode !== 'review') {
     try {
       const posData = await getLatestPositions(analysisDate);
       if (posData && posData.summary !== 'No open SPX 0DTE positions.') {
@@ -556,8 +556,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Use DB positions if available, fall back to manually provided currentPosition
+  // Review mode doesn't need positions — it evaluates the recommendation, not trades
   const positionContext =
-    positionSummary ?? (context.currentPosition as string | undefined) ?? null;
+    mode === 'review'
+      ? null
+      : (positionSummary ??
+        (context.currentPosition as string | undefined) ??
+        null);
   // Use DB previous recommendation if available, fall back to manually provided
   const previousContext =
     previousRec ??
