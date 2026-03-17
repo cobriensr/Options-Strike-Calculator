@@ -88,6 +88,25 @@ describe('ErrorBoundary', () => {
     expect(reloadMock).toHaveBeenCalledOnce();
   });
 
+  it('renders compact inline fallback when label prop is provided', () => {
+    render(
+      <ErrorBoundary label="Market Regime">
+        <ThrowingChild message="segment fault" />
+      </ErrorBoundary>,
+    );
+
+    expect(
+      screen.getByText('Market Regime failed to render.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText('segment fault')).toBeInTheDocument();
+    // Should NOT show the full-page fallback
+    expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Reload Page' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('logs error via componentDidCatch', () => {
     render(
       <ErrorBoundary>

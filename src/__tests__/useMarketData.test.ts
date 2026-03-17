@@ -522,3 +522,128 @@ describe('useMarketData: events and movers', () => {
     expect(result.current.hasData).toBe(true); // Other endpoints succeeded
   });
 });
+
+// ============================================================
+// ABORT / TIMEOUT ERROR BRANCHES (lines 88, 91)
+// ============================================================
+
+describe('useMarketData: AbortError and TimeoutError branches', () => {
+  it('handles AbortError from fetch (line 88)', async () => {
+    globalThis.fetch = vi.fn(() => {
+      const err = new DOMException('The operation was aborted.', 'AbortError');
+      return Promise.reject(err);
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.hasData).toBe(false);
+    expect(result.current.data.quotes).toBeNull();
+    expect(result.current.data.intraday).toBeNull();
+    expect(result.current.data.yesterday).toBeNull();
+  });
+
+  it('handles TimeoutError from fetch (line 91)', async () => {
+    globalThis.fetch = vi.fn(() => {
+      const err = new DOMException('The operation timed out.', 'TimeoutError');
+      return Promise.reject(err);
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.hasData).toBe(false);
+    expect(result.current.data.quotes).toBeNull();
+    expect(result.current.data.intraday).toBeNull();
+    expect(result.current.data.yesterday).toBeNull();
+  });
+});
+
+// ============================================================
+// NEEDS AUTH BRANCH (line 185)
+// ============================================================
+
+describe('useMarketData: needsAuth transition (line 185)', () => {
+  it('sets needsAuth when owner was previously authenticated but now gets 401s', async () => {
+    // Set sc-hint cookie so isOwnerRef starts as true (simulates prior auth session)
+    Object.defineProperty(document, 'cookie', {
+      value: 'sc-hint=1',
+      writable: true,
+      configurable: true,
+    });
+
+    // All owner-gated endpoints return 401, events returns 200 (public)
+    const fetchMock = mockFetchResponses({
+      quotes: { status: 401, body: { error: 'Not authenticated' } },
+      intraday: { status: 401, body: { error: 'Not authenticated' } },
+      yesterday: { status: 401, body: { error: 'Not authenticated' } },
+      movers: { status: 401, body: { error: 'Not authenticated' } },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // isOwnerRef was true from cookie, all gated endpoints 401'd, no success
+    expect(result.current.needsAuth).toBe(true);
+
+    // Clean up cookie
+    Object.defineProperty(document, 'cookie', {
+      value: '',
+      writable: true,
+      configurable: true,
+    });
+  });
+});
+
+// ============================================================
+// INTERVAL INTRADAY REFRESH (lines 220-223)
+// ============================================================
+
+describe('useMarketData: interval intraday refresh (lines 220-223)', () => {
+  it('refreshes intraday during interval when openingRange is not complete', async () => {
+    const mockIntradayIncomplete = {
+      ...mockIntraday,
+      openingRange: { ...mockIntraday.openingRange, complete: false },
+    };
+    const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
+    const fetchMock = mockFetchResponses({
+      quotes: {
+        status: 200,
+        body: mockQuotesOpen as unknown as Record<string, unknown>,
+      },
+      intraday: {
+        status: 200,
+        body: mockIntradayIncomplete as unknown as Record<string, unknown>,
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Initial: 5 calls (quotes, intraday, yesterday, events, movers)
+    const initialCalls = fetchMock.mock.calls.length;
+    expect(initialCalls).toBe(5);
+
+    // Advance past the refresh interval
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // Should have fetched both quotes AND intraday in the interval
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(
+        initialCalls + 2,
+      ),
+    );
+
+    // Verify that both /api/quotes and /api/intraday were called in the interval
+    const intervalCalls = fetchMock.mock.calls.slice(initialCalls);
+    const intervalUrls = intervalCalls.map(
+      (call: [string, ...unknown[]]) => call[0],
+    );
+    expect(intervalUrls).toContain('/api/quotes');
+    expect(intervalUrls).toContain('/api/intraday');
+  });
+});

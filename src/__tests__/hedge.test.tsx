@@ -826,6 +826,170 @@ describe('calcHedge: vega exposure', () => {
   });
 });
 
+describe('calcHedge: 0DTE hedge (hedgeDte=1, intrinsic fallback)', () => {
+  // When hedgeDte=1, tHedgeEod = max(0, (1-1)/252) = 0, so all hedge
+  // valuations fall back to intrinsic value instead of Black-Scholes.
+  // This covers lines 106-120 (computeScenarioPnL) and 264-305 (calcHedge sizing).
+
+  it('returns valid result with hedgeDte=1', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const hedge = calcHedge({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2,
+      hedgeDte: 1,
+    });
+
+    expect(hedge.hedgeDte).toBe(1);
+    expect(hedge.putStrikeSnapped).toBeGreaterThan(0);
+    expect(hedge.callStrikeSnapped).toBeGreaterThan(0);
+    expect(hedge.recommendedPuts).toBeGreaterThanOrEqual(1);
+    expect(hedge.recommendedCalls).toBeGreaterThanOrEqual(1);
+    expect(hedge.scenarios.length).toBe(18);
+  });
+
+  it('recovery is 0 when tHedgeEod=0 (no time value to recover)', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const hedge = calcHedge({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2,
+      hedgeDte: 1,
+    });
+
+    // With tHedgeEod=0, recovery branches return 0 (lines 300-307)
+    expect(hedge.putRecovery).toBe(0);
+    expect(hedge.callRecovery).toBe(0);
+  });
+
+  it('daily cost equals full premium when tHedgeEod=0 (no recovery)', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const hedge = calcHedge({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2,
+      hedgeDte: 1,
+    });
+
+    // With no recovery, daily cost = full premium for all contracts
+    const expectedCostPts =
+      hedge.putPremium * hedge.recommendedPuts +
+      hedge.callPremium * hedge.recommendedCalls;
+    expect(hedge.dailyCostPts).toBeCloseTo(expectedCostPts, 1);
+  });
+
+  it('hedge put payout uses intrinsic value in crash scenarios', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const hedge = calcHedge({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2,
+      hedgeDte: 1,
+    });
+
+    // Large crash: hedge puts should pay out (intrinsic value)
+    const crashes = hedge.scenarios.filter((s) => s.direction === 'crash');
+    const largeCrash = crashes.at(-1)!;
+    expect(largeCrash.hedgePutPnL).toBeGreaterThan(0);
+  });
+
+  it('hedge call payout uses intrinsic value in rally scenarios', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const hedge = calcHedge({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2,
+      hedgeDte: 1,
+    });
+
+    // Large rally: hedge calls should pay out (intrinsic value)
+    const rallies = hedge.scenarios.filter((s) => s.direction === 'rally');
+    const largeRally = rallies.at(-1)!;
+    expect(largeRally.hedgeCallPnL).toBeGreaterThan(0);
+  });
+
+  it('0DTE hedge loses 100% of premium (no recovery) vs 7DTE partial recovery', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const params = {
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2 as HedgeDelta,
+    };
+
+    const hedge0dte = calcHedge({ ...params, hedgeDte: 1 });
+    const hedge7dte = calcHedge({ ...params, hedgeDte: 7 });
+
+    // 0DTE: daily cost = full premium (no recovery), so dailyCostPts equals
+    // putPremium * puts + callPremium * calls exactly
+    const expectedFullCost =
+      hedge0dte.putPremium * hedge0dte.recommendedPuts +
+      hedge0dte.callPremium * hedge0dte.recommendedCalls;
+    expect(hedge0dte.dailyCostPts).toBeCloseTo(expectedFullCost, 1);
+
+    // 7DTE: recovery is positive, so daily cost is less than full premium
+    const fullPremium7dte =
+      hedge7dte.putPremium * hedge7dte.recommendedPuts +
+      hedge7dte.callPremium * hedge7dte.recommendedCalls;
+    expect(hedge7dte.dailyCostPts).toBeLessThan(fullPremium7dte);
+    expect(hedge7dte.putRecovery).toBeGreaterThan(0);
+    expect(hedge7dte.callRecovery).toBeGreaterThan(0);
+  });
+});
+
 describe('stressedSigma: vol expansion under stress', () => {
   it('returns base sigma when move is zero', () => {
     expect(stressedSigma(0.2, 0)).toBe(0.2);

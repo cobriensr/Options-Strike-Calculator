@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   getETTime,
   getCTTime,
@@ -80,6 +80,29 @@ describe('timezone utilities', () => {
     it('returns Saturday as 6', () => {
       const saturday = new Date('2026-03-14T15:00:00Z');
       expect(getETDayOfWeek(saturday)).toBe(6);
+    });
+
+    it('falls back to date.getDay() when formatToParts returns unrecognized weekday', () => {
+      const tuesday = new Date('2026-03-17T15:30:00Z');
+      const originalFormatToParts = Intl.DateTimeFormat.prototype.formatToParts;
+
+      vi.spyOn(
+        Intl.DateTimeFormat.prototype,
+        'formatToParts',
+      ).mockImplementation(function (
+        this: Intl.DateTimeFormat,
+        date?: Date | number,
+      ) {
+        const parts = originalFormatToParts.call(this, date);
+        return parts.map((part) =>
+          part.type === 'weekday' ? { ...part, value: 'Unk' } : part,
+        );
+      });
+
+      // Should fall back to date.getDay() which returns the local day
+      expect(getETDayOfWeek(tuesday)).toBe(tuesday.getDay());
+
+      vi.restoreAllMocks();
     });
   });
 
