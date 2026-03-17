@@ -609,11 +609,11 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
 
     // Stream the response — Anthropic sends headers immediately with streaming,
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
-    // Retry once on transient stream failures (Anthropic 200 → mid-stream error).
-    const streamRequest = () =>
+    // Retry once on transient stream failures, then fall back to Sonnet if Opus is down.
+    const streamRequest = (model: string) =>
       anthropic.messages
         .stream({
-          model: 'claude-opus-4-6',
+          model,
           max_tokens: 25000,
           thinking: { type: 'adaptive' },
           output_config: { effort: 'high' },
@@ -628,17 +628,32 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         } as unknown as Parameters<typeof anthropic.messages.stream>[0])
         .finalMessage();
 
+    const isServerError = (err: unknown): boolean => {
+      if (!(err instanceof Error)) return false;
+      // Match 5xx status codes or known Anthropic error types
+      if (/api_error|overloaded|internal.server/i.test(err.message)) return true;
+      if ('status' in err && typeof err.status === 'number' && err.status >= 500)
+        return true;
+      return false;
+    };
+
     let data: Awaited<ReturnType<typeof streamRequest>>;
+    let usedModel = 'claude-opus-4-6';
     try {
-      data = await streamRequest();
-    } catch (streamErr) {
-      // Retry once on transient Anthropic stream errors (api_error / overloaded)
-      const isTransient =
-        streamErr instanceof Error &&
-        /api_error|overloaded|internal.server/i.test(streamErr.message);
-      if (!isTransient) throw streamErr;
-      logger.info('Anthropic stream failed, retrying once...');
-      data = await streamRequest();
+      data = await streamRequest('claude-opus-4-6');
+    } catch (opusErr1) {
+      if (!isServerError(opusErr1)) throw opusErr1;
+      // Retry Opus once
+      logger.info('Opus stream failed, retrying once...');
+      try {
+        data = await streamRequest('claude-opus-4-6');
+      } catch (opusErr2) {
+        if (!isServerError(opusErr2)) throw opusErr2;
+        // Opus is down — fall back to Sonnet
+        logger.info('Opus unavailable, falling back to Sonnet 4.6...');
+        usedModel = 'claude-sonnet-4-6';
+        data = await streamRequest('claude-sonnet-4-6');
+      }
     }
 
     // Log usage for cost monitoring
@@ -646,6 +661,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       const u = data.usage;
       logger.info(
         {
+          model: usedModel,
           mode: String(mode),
           input: u.input_tokens ?? 0,
           output: u.output_tokens ?? 0,
@@ -697,7 +713,11 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       }
     }
 
-    return res.status(200).json({ analysis, raw: text });
+    return res.status(200).json({
+      analysis,
+      raw: text,
+      model: usedModel,
+    });
   } catch (err) {
     logger.error({ err }, 'analyze unhandled error');
 
