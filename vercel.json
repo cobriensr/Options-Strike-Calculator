@@ -1,12 +1,4 @@
 {
-  "$comment-csp": [
-    "CSP script-src hashes allow inline scripts injected at build time.",
-    "sha256-ieoeWczDHkReVBsRBqaal5AFMlBtNjMzgwKvLqi/tSU= → vite-plugin-pwa service worker registration",
-    "sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM= → Vercel Analytics inline loader",
-    "These MUST be regenerated when vite-plugin-pwa or @vercel/analytics are upgraded.",
-    "To regenerate: deploy, check browser console for CSP violations, hash the blocked script:",
-    "  echo -n '<script content>' | openssl dgst -sha256 -binary | openssl base64"
-  ],
   "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }],
   "headers": [
     {
