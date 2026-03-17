@@ -573,11 +573,14 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         thinking: {
           type: 'adaptive',
         },
+        output_config: {
+          effort: 'high',
+        },
         system: [
           {
             type: 'text',
             text: SYSTEM_PROMPT,
-            cache_control: { type: 'ephemeral' },
+            cache_control: { type: 'ephemeral', ttl: '1h' },
           },
         ],
         messages: [{ role: 'user', content }],
