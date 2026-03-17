@@ -507,11 +507,9 @@ async function handleCSVUpload(
     } else if (req.body?.csv && typeof req.body.csv === 'string') {
       csv = req.body.csv;
     } else {
-      return res
-        .status(400)
-        .json({
-          error: 'Request body must be CSV text or JSON { csv: "..." }',
-        });
+      return res.status(400).json({
+        error: 'Request body must be CSV text or JSON { csv: "..." }',
+      });
     }
 
     if (!csv.trim()) {
@@ -520,12 +518,10 @@ async function handleCSVUpload(
 
     const spxLegs = parsePaperMoneyCSV(csv);
     if (spxLegs.length === 0) {
-      return res
-        .status(400)
-        .json({
-          error:
-            'No SPX options found in CSV. Ensure the file contains an "Options" section.',
-        });
+      return res.status(400).json({
+        error:
+          'No SPX options found in CSV. Ensure the file contains an "Options" section.',
+      });
     }
 
     const spxPrice = req.query.spx

@@ -309,18 +309,18 @@ Real-time SPX 0DTE position awareness via the Schwab Trader API or manual CSV up
 
 Schwab's Trader API doesn't expose thinkorswim paperMoney positions. To work around this, you can export an account statement CSV from paperMoney and upload it directly.
 
-| Feature            | Detail                                                                                      |
-| ------------------ | ------------------------------------------------------------------------------------------- |
-| Endpoint           | `POST /api/positions?spx=5700`                                                              |
-| Data source        | thinkorswim paperMoney account statement CSV export                                         |
-| Body format        | Raw CSV text or JSON `{ csv: "..." }`                                                       |
-| CSV parsing        | Extracts the "Options" section, filters for SPX, parses strikes/qty/prices/mark values      |
-| Date parsing       | Converts thinkorswim format (`17 MAR 26`) to ISO (`2026-03-17`)                             |
-| Value parsing      | Handles `$450.00` and parenthesized negatives `($1,050.00)`                                 |
-| Spread grouping    | Same logic as live — matches short + long legs by closest strike                            |
-| DB persistence     | Saved with `accountHash: 'paperMoney'`, same pipeline as live positions                     |
-| UI                 | "Upload paperMoney Positions (.csv)" button in the Chart Analysis section                   |
-| Feedback           | Shows spread count on success or error message on failure                                   |
+| Feature         | Detail                                                                                 |
+| --------------- | -------------------------------------------------------------------------------------- |
+| Endpoint        | `POST /api/positions?spx=5700`                                                         |
+| Data source     | thinkorswim paperMoney account statement CSV export                                    |
+| Body format     | Raw CSV text or JSON `{ csv: "..." }`                                                  |
+| CSV parsing     | Extracts the "Options" section, filters for SPX, parses strikes/qty/prices/mark values |
+| Date parsing    | Converts thinkorswim format (`17 MAR 26`) to ISO (`2026-03-17`)                        |
+| Value parsing   | Handles `$450.00` and parenthesized negatives `($1,050.00)`                            |
+| Spread grouping | Same logic as live — matches short + long legs by closest strike                       |
+| DB persistence  | Saved with `accountHash: 'paperMoney'`, same pipeline as live positions                |
+| UI              | "Upload paperMoney Positions (.csv)" button in the Chart Analysis section              |
+| Feedback        | Shows spread count on success or error message on failure                              |
 
 **How to use:**
 
