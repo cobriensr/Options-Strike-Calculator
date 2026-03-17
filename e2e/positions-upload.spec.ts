@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as os from 'os';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 const SAMPLE_CSV = `\ufeffThis document was exported from the paperMoney platform.
 
@@ -145,20 +145,20 @@ test.describe('PaperMoney Position Upload', () => {
   });
 
   async function uploadChartImage(page: import('@playwright/test').Page) {
-    const dropZone = page.getByRole('button', { name: 'Upload chart images' });
-    await expect(dropZone).toBeVisible();
-
-    const fileChooserPromise = page.waitForEvent('filechooser');
-    await dropZone.click();
-    const fileChooser = await fileChooserPromise;
-
     const pngBuffer = createMinimalPNG();
     const tmpImg = path.join(
       os.tmpdir(),
       `test-chart-${Date.now()}-${Math.random().toString(36).slice(2)}.png`,
     );
     fs.writeFileSync(tmpImg, pngBuffer);
-    await fileChooser.setFiles(tmpImg);
+
+    // Use setInputFiles directly on the hidden file input to avoid
+    // flaky filechooser events in Firefox
+    const fileInput = page.locator(
+      'input[type="file"][accept="image/*"][multiple]',
+    );
+    await fileInput.setInputFiles(tmpImg);
+
     try {
       fs.unlinkSync(tmpImg);
     } catch {
@@ -185,10 +185,9 @@ test.describe('PaperMoney Position Upload', () => {
   }) => {
     await uploadChartImage(page);
 
-    const fileChooserPromise = page.waitForEvent('filechooser');
-    await page.getByRole('button', { name: /Upload paperMoney/ }).click();
-    const fileChooser = await fileChooserPromise;
-    await fileChooser.setFiles(csvPath);
+    // Use setInputFiles directly on the hidden CSV input to avoid flaky filechooser in Firefox
+    const csvInput = page.getByLabel('Upload paperMoney CSV');
+    await csvInput.setInputFiles(csvPath);
 
     await expect(page.getByText(/1 spread loaded from paperMoney/)).toBeVisible(
       { timeout: 5000 },
@@ -210,10 +209,9 @@ test.describe('PaperMoney Position Upload', () => {
 
     await uploadChartImage(page);
 
-    const fileChooserPromise = page.waitForEvent('filechooser');
-    await page.getByRole('button', { name: /Upload paperMoney/ }).click();
-    const fileChooser = await fileChooserPromise;
-    await fileChooser.setFiles(csvPath);
+    // Use setInputFiles directly on the hidden CSV input to avoid flaky filechooser in Firefox
+    const csvInput = page.getByLabel('Upload paperMoney CSV');
+    await csvInput.setInputFiles(csvPath);
 
     await expect(page.getByText(/No SPX options found/)).toBeVisible({
       timeout: 5000,

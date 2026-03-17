@@ -211,12 +211,10 @@ test.describe('Cross-Section Input Cascades', () => {
     const hoursText = params.getByText(/h$/).first();
     const ctHoursText = await hoursText.textContent();
 
-    // Switch to ET
+    // Switch to ET — hours remaining should change (ET is 1 hour ahead)
     await page.getByRole('radio', { name: 'ET', exact: true }).click();
-    await page.waitForTimeout(400); // debounce
 
-    // Hours remaining should change (ET is 1 hour ahead, so fewer hours left)
-    const etHoursText = await hoursText.textContent();
-    expect(etHoursText).not.toBe(ctHoursText);
+    // Wait for the text to actually change rather than relying on a fixed timeout
+    await expect(hoursText).not.toHaveText(ctHoursText!, { timeout: 5000 });
   });
 });

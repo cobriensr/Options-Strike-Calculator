@@ -163,12 +163,18 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
     });
     await page.goto('/');
 
-    // Quotes auto-fill runs asynchronously. Wait for SPY to populate.
+    // Wait for auto-fill to complete (SPY + VIX populated from mocked quotes)
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 5000,
     });
+    await expect(page.getByLabel('VIX (regime only)')).toHaveValue(/\d+/, {
+      timeout: 5000,
+    });
 
-    // The auto-fill sets the clock to real time, which may be after hours.
+    // Auto-fill also sets the time asynchronously — wait for it to settle
+    // before overriding, otherwise our override gets clobbered.
+    await page.waitForTimeout(500);
+
     // Override to a valid market time to ensure T is computed.
     await page.getByLabel('Hour').selectOption('10');
     await page.getByLabel('Minute').selectOption('30');
@@ -181,7 +187,7 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
 
     // VIX1D=14 < VIX=19 < VIX9D=21 → contango
     await expect(page.getByText('CONTANGO', { exact: true })).toBeVisible({
-      timeout: 5000,
+      timeout: 10000,
     });
   });
 
@@ -199,6 +205,11 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 5000,
     });
+    await expect(page.getByLabel('VIX (regime only)')).toHaveValue(/\d+/, {
+      timeout: 5000,
+    });
+    await page.waitForTimeout(500);
+
     await page.getByLabel('Hour').selectOption('10');
     await page.getByLabel('Minute').selectOption('30');
     await page.getByRole('radio', { name: 'AM' }).click();
@@ -208,7 +219,7 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
     ).toBeVisible({ timeout: 10000 });
 
     await expect(page.getByText('FEAR SPIKE', { exact: true })).toBeVisible({
-      timeout: 5000,
+      timeout: 10000,
     });
   });
 

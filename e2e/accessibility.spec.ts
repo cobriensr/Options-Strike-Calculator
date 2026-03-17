@@ -6,7 +6,15 @@ test.describe('Keyboard Navigation & Accessibility', () => {
     await page.goto('/');
   });
 
-  test('skip to results link is keyboard accessible', async ({ page }) => {
+  // WebKit on macOS doesn't Tab-focus links by default (system-level setting)
+  test('skip to results link is keyboard accessible', async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(
+      browserName === 'webkit',
+      'WebKit/macOS does not Tab-focus links by default',
+    );
     const skipLink = page.getByRole('link', { name: 'Skip to results' });
 
     // The skip link starts off-screen

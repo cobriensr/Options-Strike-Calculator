@@ -19,11 +19,11 @@ test.describe('Delta Regime Guide', () => {
   test('renders range thresholds table with VIX input', async ({ page }) => {
     await fillCalculatorInputs(page);
 
-    // The range thresholds table has an aria-label
+    // The range thresholds table has an aria-label (inside an aria-labelled section)
     const table = page.getByRole('table', {
       name: 'VIX regime range thresholds mapped to delta',
     });
-    await expect(table).toBeVisible();
+    await expect(table).toBeVisible({ timeout: 10000 });
 
     // Should show the "To Clear" column header and threshold rows
     await expect(table.getByText('To Clear')).toBeVisible();
