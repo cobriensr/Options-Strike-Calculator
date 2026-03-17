@@ -3,10 +3,10 @@
 The `Content-Security-Policy` header in `vercel.json` includes two `sha256-` hashes
 that allow inline scripts injected at build time:
 
-| Hash | Script |
-|------|--------|
+| Hash                                                  | Script                                      |
+| ----------------------------------------------------- | ------------------------------------------- |
 | `sha256-ieoeWczDHkReVBsRBqaal5AFMlBtNjMzgwKvLqi/tSU=` | vite-plugin-pwa service worker registration |
-| `sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=` | Vercel Analytics inline loader |
+| `sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=` | Vercel Analytics inline loader              |
 
 These **must be regenerated** when `vite-plugin-pwa` or `@vercel/analytics` are upgraded.
 

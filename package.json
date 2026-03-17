@@ -18,6 +18,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.79.0",
     "@neondatabase/serverless": "^1.0.2",
     "@upstash/redis": "^1.36.4",
     "@vercel/analytics": "^2.0.0",

@@ -14,6 +14,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import Anthropic from '@anthropic-ai/sdk';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
 import {
   saveAnalysis,
@@ -600,50 +601,26 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
   content.push({ type: 'text', text: contextText });
 
   try {
-    // Opus with adaptive thinking can take 5+ minutes; extend the
-    // undici headers timeout so Node doesn't abort the request early.
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      signal: AbortSignal.timeout(720_000), // 12 minutes
-      body: JSON.stringify({
-        model: 'claude-opus-4-6',
-        max_tokens: 25000,
-        thinking: {
-          type: 'adaptive',
-        },
-        output_config: {
-          effort: 'high',
-        },
-        system: [
-          {
-            type: 'text',
-            text: SYSTEM_PROMPT,
-            cache_control: { type: 'ephemeral', ttl: '1h' },
-          },
-        ],
-        messages: [{ role: 'user', content }],
-      }),
+    const anthropic = new Anthropic({
+      apiKey,
+      timeout: 720_000, // 12 minutes — Opus with adaptive thinking can take 5+ min
     });
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.error(`Anthropic API error (${response.status}):`, errBody);
-      // Don't leak Anthropic error details to the client
-      const clientMsg =
-        response.status === 429
-          ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
-          : response.status === 401
-            ? 'Anthropic API authentication error. Check API key.'
-            : `Analysis service error (${response.status}). Please retry.`;
-      return res.status(502).json({ error: clientMsg });
-    }
-
-    const data = await response.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK types lag behind API features (adaptive thinking, output_config, cache_control ttl)
+    const data: any = await anthropic.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 25000,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+      system: [
+        {
+          type: 'text' as const,
+          text: SYSTEM_PROMPT,
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ],
+      messages: [{ role: 'user' as const, content }],
+    } as unknown as Parameters<typeof anthropic.messages.create>[0]);
 
     // Log usage for cost monitoring
     if (data.usage) {
@@ -682,12 +659,17 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
           new Date().toLocaleDateString('en-CA', {
             timeZone: 'America/New_York',
           });
-        const entryTime = (context.entryTime as string | undefined) ?? 'unknown';
+        const entryTime =
+          (context.entryTime as string | undefined) ?? 'unknown';
         const rows = await db`
           SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
         `;
         const snapshotId = rows.length > 0 ? (rows[0]!.id as number) : null;
-        await saveAnalysis(context, analysis as Parameters<typeof saveAnalysis>[1], snapshotId);
+        await saveAnalysis(
+          context,
+          analysis as Parameters<typeof saveAnalysis>[1],
+          snapshotId,
+        );
       } catch (dbErr) {
         console.error('[analyze] DB save failed:', dbErr);
       }
@@ -696,6 +678,23 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     return res.status(200).json({ analysis, raw: text });
   } catch (err) {
     console.error('[analyze] unhandled error:', err);
+
+    // Map Anthropic SDK errors to client-friendly messages
+    if (
+      err instanceof Error &&
+      'status' in err &&
+      typeof (err as Record<string, unknown>).status === 'number'
+    ) {
+      const status = (err as Record<string, unknown>).status as number;
+      const clientMsg =
+        status === 429
+          ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
+          : status === 401
+            ? 'Anthropic API authentication error. Check API key.'
+            : `Analysis service error (${status}). Please retry.`;
+      return res.status(502).json({ error: clientMsg });
+    }
+
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Analysis failed',
     });
