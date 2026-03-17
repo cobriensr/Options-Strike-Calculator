@@ -608,7 +608,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
           type: 'adaptive',
         },
         output_config: {
-          effort: 'high',
+          effort: 'medium',
         },
         system: [
           {
