@@ -88,13 +88,15 @@ describe('GET /api/auth/callback', () => {
     );
 
     expect(res._status).toBe(200);
-    // Check cookie was set
-    const cookie = res._headers['Set-Cookie'];
-    expect(cookie).toContain('sc-owner=my-secret');
-    expect(cookie).toContain('HttpOnly');
-    expect(cookie).toContain('SameSite=Strict');
-    expect(cookie).toContain('Secure');
-    expect(cookie).toContain('Max-Age=604800');
+    // Check cookie was set — Set-Cookie is an array (owner + hint cookies)
+    const cookies = res._headers['Set-Cookie'] as unknown as string[];
+    const ownerCookie = cookies.find((c: string) => c.startsWith('sc-owner='));
+    expect(ownerCookie).toBeDefined();
+    expect(ownerCookie).toContain('sc-owner=my-secret');
+    expect(ownerCookie).toContain('HttpOnly');
+    expect(ownerCookie).toContain('SameSite=Strict');
+    expect(ownerCookie).toContain('Secure');
+    expect(ownerCookie).toContain('Max-Age=604800');
     // Should return HTML
     expect(res._headers['Content-Type']).toBe('text/html');
     expect(res._body).toContain('Authenticated');
@@ -114,8 +116,9 @@ describe('GET /api/auth/callback', () => {
     );
 
     expect(res._status).toBe(200);
-    const cookie = res._headers['Set-Cookie'];
-    expect(cookie).not.toContain('Secure');
+    const cookies = res._headers['Set-Cookie'] as unknown as string[];
+    const ownerCookie = cookies.find((c: string) => c.startsWith('sc-owner='));
+    expect(ownerCookie).not.toContain('Secure');
   });
 
   it('passes correct redirect URI to storeInitialTokens', async () => {

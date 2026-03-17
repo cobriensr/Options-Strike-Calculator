@@ -62,10 +62,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   ];
   if (!isLocal) hintParts.push('Secure');
 
-  res.setHeader('Set-Cookie', [
-    cookieParts.join('; '),
-    hintParts.join('; '),
-  ]);
+  res.setHeader('Set-Cookie', [cookieParts.join('; '), hintParts.join('; ')]);
 
   // Return a simple success page
   res.setHeader('Content-Type', 'text/html');
