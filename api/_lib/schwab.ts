@@ -16,6 +16,7 @@
  */
 
 import { Redis } from '@upstash/redis';
+import logger from './logger.js';
 
 // ============================================================
 // REDIS CLIENT
@@ -104,7 +105,7 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
     const ttlSec = Math.max(Math.floor(ttlMs / 1000), 3600);
     await redis.set(KV_KEY, tokens, { ex: ttlSec });
   } catch (err) {
-    console.error('Failed to store tokens in Redis:', err);
+    logger.error({ err }, 'Failed to store tokens in Redis');
   }
 }
 

@@ -22,6 +22,7 @@ import {
 } from './_lib/api-helpers.js';
 import { redis } from './_lib/schwab.js';
 import { getETTotalMinutes } from '../src/utils/timezone.js';
+import logger from './_lib/logger.js';
 
 // ============================================================
 // TYPES
@@ -166,7 +167,7 @@ async function fetchSymbolHistory(
   );
 
   if ('error' in result) {
-    console.error(`History fetch failed for ${symbol}: ${result.error}`);
+    logger.error({ symbol, error: result.error }, 'History fetch failed');
     return empty;
   }
 
@@ -282,7 +283,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await redis.set(cacheKey, response, { ex: PAST_CACHE_TTL });
     }
   } catch (err) {
-    console.error('Failed to cache history:', err);
+    logger.error({ err }, 'Failed to cache history');
   }
 
   setCacheHeaders(res, isToday ? 120 : 86400, isToday ? 60 : 3600);

@@ -13,6 +13,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { saveSnapshot } from './_lib/db.js';
 import { snapshotBodySchema } from './_lib/validation.js';
+import logger from './_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST')
@@ -39,7 +40,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ id, saved: id != null });
   } catch (err) {
     // Don't fail the user experience or leak DB details
-    console.error('Snapshot save error:', err);
+    logger.error({ err }, 'Snapshot save error');
     return res.status(200).json({ id: null, saved: false });
   }
 }

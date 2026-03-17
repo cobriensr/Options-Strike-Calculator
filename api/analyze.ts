@@ -23,6 +23,7 @@ import {
   getPreviousRecommendation,
 } from './_lib/db.js';
 import { analyzeBodySchema } from './_lib/validation.js';
+import logger from './_lib/logger.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -541,7 +542,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         positionSummary = posData.summary;
       }
     } catch (posErr) {
-      console.error('Failed to fetch positions for analysis:', posErr);
+      logger.error({ err: posErr }, 'Failed to fetch positions for analysis');
     }
   }
 
@@ -550,7 +551,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       previousRec = await getPreviousRecommendation(analysisDate, mode);
     } catch (recErr) {
-      console.error('Failed to fetch previous recommendation:', recErr);
+      logger.error({ err: recErr }, 'Failed to fetch previous recommendation');
     }
   }
 
@@ -629,12 +630,15 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     // Log usage for cost monitoring
     if (data.usage) {
       const u = data.usage;
-      console.log(
-        `[analyze] mode=${String(mode)} | ` +
-          `input=${u.input_tokens ?? 0} | ` +
-          `output=${u.output_tokens ?? 0} | ` +
-          `cache_write=${u.cache_creation_input_tokens ?? 0} | ` +
-          `cache_read=${u.cache_read_input_tokens ?? 0}`,
+      logger.info(
+        {
+          mode: String(mode),
+          input: u.input_tokens ?? 0,
+          output: u.output_tokens ?? 0,
+          cache_write: u.cache_creation_input_tokens ?? 0,
+          cache_read: u.cache_read_input_tokens ?? 0,
+        },
+        'analyze usage',
       );
     }
 
@@ -675,13 +679,13 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
           snapshotId,
         );
       } catch (dbErr) {
-        console.error('[analyze] DB save failed:', dbErr);
+        logger.error({ err: dbErr }, 'analyze DB save failed');
       }
     }
 
     return res.status(200).json({ analysis, raw: text });
   } catch (err) {
-    console.error('[analyze] unhandled error:', err);
+    logger.error({ err }, 'analyze unhandled error');
 
     // Map Anthropic SDK errors to client-friendly messages
     if (

@@ -20,6 +20,7 @@ import {
   schwabTraderFetch,
 } from './_lib/api-helpers.js';
 import { savePositions, getDb, type PositionLeg } from './_lib/db.js';
+import logger from './_lib/logger.js';
 
 // ============================================================
 // TYPES for Schwab Trader API responses
@@ -418,7 +419,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       saved = true;
     } catch (dbErr) {
-      console.error('Failed to save positions:', dbErr);
+      logger.error({ err: dbErr }, 'Failed to save positions');
     }
 
     return res.status(200).json({
@@ -442,7 +443,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       fetchTime,
     });
   } catch (err) {
-    console.error('Positions fetch error:', err);
+    logger.error({ err }, 'Positions fetch error');
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to fetch positions',
     });

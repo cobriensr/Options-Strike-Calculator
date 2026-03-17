@@ -19,6 +19,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { redis } from './_lib/schwab.js';
+import logger from './_lib/logger.js';
 
 // ============================================================
 // FRED RELEASE IDS → EVENT MAPPING
@@ -248,7 +249,7 @@ async function fetchMegaCapEarnings(
     const res = await fetch(url);
 
     if (!res.ok) {
-      console.error(`Finnhub earnings API error: ${res.status}`);
+      logger.error({ status: res.status }, 'Finnhub earnings API error');
       return [];
     }
 
@@ -276,7 +277,7 @@ async function fetchMegaCapEarnings(
       });
     }
   } catch (err) {
-    console.error('Finnhub earnings fetch failed:', err);
+    logger.error({ err }, 'Finnhub earnings fetch failed');
   }
 
   return events;
@@ -331,7 +332,7 @@ async function fetchReleaseDates(
   const res = await fetch(url);
 
   if (!res.ok) {
-    console.error(`FRED API error for release ${releaseId}: ${res.status}`);
+    logger.error({ releaseId, status: res.status }, 'FRED API error');
     return [];
   }
 
@@ -497,7 +498,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     await redis.set(cacheKey, events, { ex: CACHE_TTL_SEC });
   } catch (err) {
-    console.error('Failed to cache events in Redis:', err);
+    logger.error({ err }, 'Failed to cache events in Redis');
   }
 
   // Edge cache: 12 hours
