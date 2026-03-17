@@ -631,8 +631,13 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     const isServerError = (err: unknown): boolean => {
       if (!(err instanceof Error)) return false;
       // Match 5xx status codes or known Anthropic error types
-      if (/api_error|overloaded|internal.server/i.test(err.message)) return true;
-      if ('status' in err && typeof err.status === 'number' && err.status >= 500)
+      if (/api_error|overloaded|internal.server/i.test(err.message))
+        return true;
+      if (
+        'status' in err &&
+        typeof err.status === 'number' &&
+        err.status >= 500
+      )
         return true;
       return false;
     };
