@@ -8,11 +8,6 @@ import {
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-// Bypass retry logic in component tests — retry is tested separately
-vi.mock('../utils/fetchWithRetry', () => ({
-  fetchWithRetry: (...args: Parameters<typeof fetch>) => fetch(...args),
-}));
-
 import ChartAnalysis from '../components/ChartAnalysis';
 import type { AnalysisContext } from '../components/ChartAnalysis';
 import { lightTheme } from '../themes';
@@ -122,11 +117,12 @@ async function renderAndAnalyze(
     'fetch',
     vi
       .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({ analysis, raw: JSON.stringify(analysis) }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
+      .mockImplementation(
+        () =>
+          new Response(
+            JSON.stringify({ analysis, raw: JSON.stringify(analysis) }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
       ),
   );
   const view = render(
@@ -431,25 +427,31 @@ describe('ChartAnalysis', () => {
     });
 
     it('displays error on fetch failure', async () => {
-      const user = userEvent.setup();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       vi.mocked(globalThis.fetch).mockRejectedValue(new Error('Network error'));
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
+      // Fast-forward through retry backoff delays (1s + 2s)
+      await vi.advanceTimersByTimeAsync(5000);
       await waitFor(() => {
         expect(screen.getByText('Network error')).toBeInTheDocument();
       });
+      vi.useRealTimers();
     });
 
     it('displays error on non-ok response', async () => {
       const user = userEvent.setup();
-      vi.mocked(globalThis.fetch).mockResolvedValue(
-        new Response(JSON.stringify({ error: 'Not authenticated' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' },
-        }),
+      vi.mocked(globalThis.fetch).mockImplementation(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: 'Not authenticated' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
       );
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
@@ -867,7 +869,8 @@ describe('ChartAnalysis', () => {
 
   describe('error edge cases', () => {
     it('fallback error on JSON parse failure', async () => {
-      const user = userEvent.setup();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
@@ -881,20 +884,24 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
+      await vi.advanceTimersByTimeAsync(5000);
       await waitFor(() => {
         expect(screen.getByText('Request failed')).toBeInTheDocument();
       });
+      vi.useRealTimers();
     });
 
     it('HTTP status when no error field', async () => {
-      const user = userEvent.setup();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockResolvedValue(
-          new Response(JSON.stringify({ message: 'x' }), {
-            status: 503,
-            headers: { 'Content-Type': 'application/json' },
-          }),
+        vi.fn().mockImplementation(
+          () =>
+            new Response(JSON.stringify({ message: 'x' }), {
+              status: 503,
+              headers: { 'Content-Type': 'application/json' },
+            }),
         ),
       );
       const { container } = render(
@@ -902,22 +909,27 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
+      await vi.advanceTimersByTimeAsync(5000);
       await waitFor(() => {
         expect(screen.getByText('HTTP 503')).toBeInTheDocument();
       });
+      vi.useRealTimers();
     });
 
     it('generic error for non-Error throws', async () => {
-      const user = userEvent.setup();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue('string'));
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
+      await vi.advanceTimersByTimeAsync(5000);
       await waitFor(() => {
         expect(screen.getByText('Analysis failed')).toBeInTheDocument();
       });
+      vi.useRealTimers();
     });
   });
 
