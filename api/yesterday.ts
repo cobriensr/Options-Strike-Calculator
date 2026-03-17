@@ -136,6 +136,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const twoDaysAgo =
     completed.length > 1 ? toDaySummary(completed.at(-2)!) : null;
 
+  // Last 5 completed trading days (for rolling Parkinson RV)
+  const priorDays = completed.slice(-5).map(toDaySummary);
+
   const marketOpen = isMarketOpen();
 
   // Yesterday's data never changes once the day is over
@@ -144,6 +147,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.status(200).json({
     yesterday,
     twoDaysAgo,
+    priorDays,
     asOf: new Date().toISOString(),
   });
 }

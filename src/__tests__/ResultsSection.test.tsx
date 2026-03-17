@@ -26,10 +26,14 @@ function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
     callPremium: 1.72,
     putSigma: 0.2,
     callSigma: 0.18,
+    basePutSigma: 0.19,
+    baseCallSigma: 0.17,
     putActualDelta: 0.098,
     callActualDelta: 0.095,
     putGamma: 0.0012,
     callGamma: 0.0011,
+    putTheta: -1500,
+    callTheta: -1400,
     ivAccelMult: 1,
   };
 }

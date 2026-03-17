@@ -115,7 +115,9 @@ export function useCalculation(
           skewPct / 100,
           effectiveRatio,
         );
-        setResults({ allDeltas, sigma, T, hoursRemaining, spot });
+        const vixVal = dVix ? Number.parseFloat(dVix) : undefined;
+        const vix = vixVal && !Number.isNaN(vixVal) ? vixVal : undefined;
+        setResults({ allDeltas, sigma, T, hoursRemaining, spot, vix });
       }
     } else {
       setResults(null);

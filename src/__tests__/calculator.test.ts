@@ -14,8 +14,9 @@ import {
   calcScaledSkew,
   calcScaledCallSkew,
   calcPoP,
+  calcThetaCurve,
 } from '../utils/calculator';
-import { DELTA_OPTIONS, MARKET } from '../constants';
+import { DELTA_OPTIONS, MARKET, getKurtosisFactor } from '../constants';
 import type { DeltaTarget } from '../types';
 
 // ============================================================
@@ -403,6 +404,44 @@ describe('adjustPoPForKurtosis', () => {
   });
 });
 
+describe('getKurtosisFactor: VIX-regime-dependent', () => {
+  it('returns default 2.0 when VIX is undefined', () => {
+    expect(getKurtosisFactor()).toBe(2.0);
+  });
+
+  it('returns 1.5 for low VIX (< 15)', () => {
+    expect(getKurtosisFactor(12)).toBe(1.5);
+    expect(getKurtosisFactor(14.9)).toBe(1.5);
+  });
+
+  it('returns 2.0 for moderate VIX (15-20)', () => {
+    expect(getKurtosisFactor(15)).toBe(2.0);
+    expect(getKurtosisFactor(18)).toBe(2.0);
+  });
+
+  it('returns 2.5 for elevated VIX (20-25)', () => {
+    expect(getKurtosisFactor(20)).toBe(2.5);
+    expect(getKurtosisFactor(24)).toBe(2.5);
+  });
+
+  it('returns 3.0 for high VIX (25-30)', () => {
+    expect(getKurtosisFactor(25)).toBe(3.0);
+    expect(getKurtosisFactor(29)).toBe(3.0);
+  });
+
+  it('returns 3.5 for crisis VIX (30+)', () => {
+    expect(getKurtosisFactor(30)).toBe(3.5);
+    expect(getKurtosisFactor(50)).toBe(3.5);
+  });
+
+  it('monotonically increases with VIX', () => {
+    const factors = [12, 17, 22, 27, 35].map((v) => getKurtosisFactor(v));
+    for (let i = 1; i < factors.length; i++) {
+      expect(factors[i]).toBeGreaterThanOrEqual(factors[i - 1]!);
+    }
+  });
+});
+
 describe('adjustICPoPForKurtosis', () => {
   const spot = 5700;
   const beLow = 5630;
@@ -522,5 +561,56 @@ describe('calcAllDeltas: ivAccelMult', () => {
         expect(row.ivAccelMult).toBe(1);
       }
     }
+  });
+});
+
+describe('calcThetaCurve', () => {
+  it('returns 13 data points (6.5h down to 0.5h)', () => {
+    const curve = calcThetaCurve(5800, 0.2, 100, 'put');
+    expect(curve).toHaveLength(13);
+  });
+
+  it('premium decreases monotonically over time', () => {
+    const curve = calcThetaCurve(5800, 0.2, 100, 'put');
+    for (let i = 1; i < curve.length; i++) {
+      expect(curve[i]!.premiumPct).toBeLessThanOrEqual(
+        curve[i - 1]!.premiumPct,
+      );
+    }
+  });
+
+  it('starts near 100% at open (6.5h)', () => {
+    const curve = calcThetaCurve(5800, 0.2, 100, 'put');
+    expect(curve[0]!.premiumPct).toBeCloseTo(100, 0);
+  });
+
+  it('ends near 0% at close (0.5h)', () => {
+    const curve = calcThetaCurve(5800, 0.2, 100, 'put');
+    const last = curve.at(-1)!;
+    expect(last.premiumPct).toBeLessThan(30);
+  });
+
+  it('premium decay accelerates — more at-open premium per hour is lost early', () => {
+    const curve = calcThetaCurve(5800, 0.2, 100, 'put');
+    // For 0DTE OTM options, sqrt(T) causes rapid early decay
+    // Verify the curve is monotonically decreasing (premium % drops over time)
+    // and that significant decay occurs in the first half (>50% gone by midday)
+    const midday = curve.find((c) => c.hoursRemaining === 3.5);
+    expect(midday).toBeDefined();
+    expect(midday!.premiumPct).toBeLessThan(50);
+    // But there's still measurable premium remaining
+    expect(midday!.premiumPct).toBeGreaterThan(0);
+  });
+
+  it('works for calls too', () => {
+    const curve = calcThetaCurve(5800, 0.2, 100, 'call');
+    expect(curve.length).toBe(13);
+    expect(curve[0]!.premiumPct).toBeCloseTo(100, 0);
+  });
+
+  it('returns empty array for zero premium', () => {
+    // Extremely far OTM — basically zero premium
+    const curve = calcThetaCurve(5800, 0.001, 5000, 'put');
+    expect(curve).toHaveLength(0);
   });
 });

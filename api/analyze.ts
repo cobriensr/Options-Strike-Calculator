@@ -530,7 +530,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         max_tokens: 20000,
         thinking: {
           type: 'enabled',
-          budget_tokens: 11000,
+          budget_tokens: 16000,
         },
         system: [
           {

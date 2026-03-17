@@ -29,7 +29,14 @@ export default function IronCondorSection({
   const icRows = results.allDeltas
     .filter((row): row is DeltaRow => !('error' in row))
     .map((r) =>
-      buildIronCondor(r, wingWidth, results.spot, results.T, effectiveRatio),
+      buildIronCondor(
+        r,
+        wingWidth,
+        results.spot,
+        results.T,
+        effectiveRatio,
+        results.vix,
+      ),
     );
 
   // For hedge: use the selected IC row (default to first / lowest delta = most conservative)

@@ -122,6 +122,30 @@ function parkinsonRV(high: number, low: number): number {
   return Math.sqrt(1 / (4 * Math.LN2)) * logHL * Math.sqrt(252);
 }
 
+/**
+ * N-day rolling Parkinson RV estimator (annualized).
+ * Averages the variance (not σ) across days, then takes the square root.
+ * This is the correct way to combine Parkinson estimates — averaging σ
+ * directly would underweight high-vol days.
+ */
+function rollingParkinsonRV(
+  days: ReadonlyArray<{ high: number; low: number }>,
+): number {
+  if (days.length === 0) return 0;
+  const factor = 1 / (4 * Math.LN2);
+  let sumVariance = 0;
+  let validDays = 0;
+  for (const d of days) {
+    if (d.high > 0 && d.low > 0 && d.high > d.low) {
+      const logHL = Math.log(d.high / d.low);
+      sumVariance += factor * logHL * logHL;
+      validDays++;
+    }
+  }
+  if (validDays === 0) return 0;
+  return Math.sqrt((sumVariance / validDays) * 252);
+}
+
 function parseDow(selectedDate?: string): number | null {
   if (selectedDate) {
     const parts = selectedDate.split('-');
@@ -211,12 +235,21 @@ function classifyTermShape(
           'Short-term stress exceeding 30-day — elevated intraday risk. Reduce size or widen deltas. Watch for mean-reversion after event clears.',
       };
     }
-    // Front-calm: VIX1D < VIX, VIX9D < VIX
+    // Inverted hump: VIX1D < VIX > VIX9D (both near-term and 9-day below 30-day)
+    // Often appears around FOMC — event vol is priced into 30-day but not near-term
     if (r1d < lo && r9d < lo) {
+      return {
+        shape: 'hump',
+        advice:
+          'Inverted hump — VIX elevated above both VIX1D and VIX9D. Likely event-driven (FOMC/CPI priced into 30-day). Near-term is calm but 30-day IV is inflated. Premium selling is attractive if the event has passed or is priced in. If the event is upcoming, IV crush post-event creates opportunity but pre-event risk is asymmetric.',
+      };
+    }
+    // Front-calm: VIX1D < VIX, VIX9D ≈ VIX or > VIX (not both below)
+    if (r1d < lo) {
       return {
         shape: 'front-calm',
         advice:
-          'Near-term calm but longer-term worry easing — transitional environment. Standard positioning with slight bullish tilt.',
+          'Near-term calm but longer-term worry persists — transitional environment. Standard positioning with slight bullish tilt.',
       };
     }
   }
@@ -325,6 +358,9 @@ interface HookInputs {
   liveYesterdayOpen?: number;
   liveYesterdayClose?: number;
 
+  // Prior 5 trading days (for rolling Parkinson RV)
+  livePriorDays?: ReadonlyArray<{ high: number; low: number }>;
+
   // History (null when viewing today)
   historySnapshot: HistorySnapshot | null;
 }
@@ -351,6 +387,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     liveYesterdayLow,
     liveYesterdayOpen,
     liveYesterdayClose,
+    livePriorDays,
     historySnapshot,
   } = inputs;
 
@@ -611,11 +648,15 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     }
 
     // ── RV/IV ratio ──────────────────────────────────────────
-    // Parkinson RV from yesterday's SPX high-low vs today's IV
+    // 5-day rolling Parkinson RV (more stable than single-day estimate)
+    // Falls back to single-day when prior days data is unavailable
     const ydayHigh = historySnapshot?.yesterday?.high ?? liveYesterdayHigh;
     const ydayLow = historySnapshot?.yesterday?.low ?? liveYesterdayLow;
     if (ydayHigh && ydayLow && ydayHigh > ydayLow) {
-      const rv = parkinsonRV(ydayHigh, ydayLow);
+      const rv =
+        livePriorDays && livePriorDays.length >= 2
+          ? rollingParkinsonRV(livePriorDays)
+          : parkinsonRV(ydayHigh, ydayLow);
       // IV: prefer VIX1D, fall back to VIX × 1.15
       const iv = vix1d ? vix1d / 100 : (vix * VIX_TO_SIGMA_MULT) / 100;
       if (iv > 0) {
@@ -661,6 +702,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     liveYesterdayLow,
     liveYesterdayOpen,
     liveYesterdayClose,
+    livePriorDays,
     historySnapshot,
   ]);
 }

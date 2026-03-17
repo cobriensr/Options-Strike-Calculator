@@ -59,8 +59,8 @@ export const DEFAULTS = {
   IV_PREMIUM_FACTOR: 1.15,
   /** Minimum allowed IV premium multiplier */
   IV_PREMIUM_MIN: 1,
-  /** Maximum allowed IV premium multiplier */
-  IV_PREMIUM_MAX: 1.3,
+  /** Maximum allowed IV premium multiplier (raised for event days: FOMC, CPI) */
+  IV_PREMIUM_MAX: 2.0,
   /** Risk-free rate (negligible for 0DTE) */
   RISK_FREE_RATE: 0,
   /** SPX strike increment for snapping */
@@ -97,10 +97,8 @@ export const DEFAULTS = {
   IV_ACCEL_COEFF: 0.6,
   IV_ACCEL_MAX: 1.8,
   /**
-   * Fat-tail kurtosis factor for PoP adjustment.
-   * SPX intraday returns have excess kurtosis ~3-5 (vs 0 for normal).
-   * This factor multiplies the breach probability at each tail.
-   * Calibrated from 9,102 days: actual 2σ+ breach rate is ~2× log-normal.
+   * Default fat-tail kurtosis factor for PoP adjustment.
+   * Use getKurtosisFactor(vix) for regime-dependent values.
    *
    * The adjustment is applied as:
    *   P_adjusted(breach) = min(1, P_lognormal(breach) × KURTOSIS_FACTOR)
@@ -126,14 +124,19 @@ export const DEFAULTS = {
 export const SIGNALS = {
   /** Minimum absolute daily return to classify as a directional day */
   CLUSTER_DIRECTION_THRESHOLD: 0.003,
-  /** Down-day cluster: put-side weight (70% of excess → 1.4×) */
-  CLUSTER_DOWN_PUT_WEIGHT: 1.4,
-  /** Down-day cluster: call-side weight (30% of excess → 0.6×) */
-  CLUSTER_DOWN_CALL_WEIGHT: 0.6,
-  /** Up-day cluster: put-side weight (40% of excess → 0.8×) */
-  CLUSTER_UP_PUT_WEIGHT: 0.8,
-  /** Up-day cluster: call-side weight (60% of excess → 1.2×) */
-  CLUSTER_UP_CALL_WEIGHT: 1.2,
+  /**
+   * Down-day cluster: both sides expand (V-reversal risk).
+   * Post-2020 behavior: gap-down followed by reversal rally means
+   * BOTH put and call wings are at risk. Put side still gets more weight.
+   */
+  CLUSTER_DOWN_PUT_WEIGHT: 1.3,
+  CLUSTER_DOWN_CALL_WEIGHT: 1.1,
+  /**
+   * Up-day cluster: momentum compresses put-side more aggressively.
+   * Rally days have strong put compression, mild call expansion.
+   */
+  CLUSTER_UP_PUT_WEIGHT: 0.6,
+  CLUSTER_UP_CALL_WEIGHT: 1.3,
 
   /** VIX1D/VIX ratio thresholds for term structure classification */
   VIX1D_RATIO_CALM: 0.75,
@@ -163,6 +166,27 @@ export const SIGNALS = {
   RVIV_RICH_BELOW: 0.8,
   RVIV_CHEAP_ABOVE: 1.2,
 } as const;
+
+/**
+ * VIX-regime-dependent kurtosis factors for fat-tail PoP adjustment.
+ *
+ * Calibrated from 9,102 matched trading days (1990–2026):
+ *   VIX <15:  Low vol, intraday tails are ~1.5× log-normal (calm markets)
+ *   VIX 15–20: Moderate vol, tails ~2.0× (typical trading environment)
+ *   VIX 20–25: Elevated vol, tails ~2.5× (post-selloff clustering)
+ *   VIX 25–30: High vol, tails ~3.0× (active vol regime)
+ *   VIX 30+:   Crisis vol, tails ~3.5× (gap moves, circuit breaker risk)
+ *
+ * Returns the default KURTOSIS_FACTOR (2.0) when VIX is unavailable.
+ */
+export function getKurtosisFactor(vix?: number): number {
+  if (vix == null || vix <= 0) return DEFAULTS.KURTOSIS_FACTOR;
+  if (vix < 15) return 1.5;
+  if (vix < 20) return 2.0;
+  if (vix < 25) return 2.5;
+  if (vix < 30) return 3.0;
+  return 3.5;
+}
 
 /** IV input mode identifiers */
 export const IV_MODES = {

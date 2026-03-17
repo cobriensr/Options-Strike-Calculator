@@ -688,6 +688,30 @@ describe('useComputedSignals', () => {
       expect(s.clusterCallMult).toBeGreaterThan(s.clusterPutMult!);
     });
 
+    it('both sides expand after a down day (V-reversal risk)', () => {
+      const s = compute({
+        clusterMult: 1.15,
+        liveYesterdayOpen: 5700,
+        liveYesterdayClose: 5650, // down ~0.9%
+      });
+      // Post-2020: both sides should be > 1 after a down day
+      expect(s.clusterPutMult).toBeGreaterThan(1);
+      expect(s.clusterCallMult).toBeGreaterThan(1);
+    });
+
+    it('put side gets less excess than call side after an up day', () => {
+      const s = compute({
+        clusterMult: 1.15,
+        liveYesterdayOpen: 5700,
+        liveYesterdayClose: 5760, // up ~1%
+      });
+      // Up-day: calls get more of the clustering excess than puts
+      // Put weight (0.6) < Call weight (1.3), so call expansion dominates
+      expect(s.clusterCallMult! - 1).toBeGreaterThan(
+        (s.clusterPutMult! - 1) * 1.5,
+      );
+    });
+
     it('is symmetric on a flat day', () => {
       const s = compute({
         clusterMult: 1.15,

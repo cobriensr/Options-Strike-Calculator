@@ -12,6 +12,8 @@ vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => async () => []),
   saveAnalysis: vi.fn().mockResolvedValue(undefined),
   saveSnapshot: vi.fn().mockResolvedValue(null),
+  getLatestPositions: vi.fn().mockResolvedValue(null),
+  getPreviousRecommendation: vi.fn().mockResolvedValue(null),
 }));
 
 import handler from '../analyze.js';
@@ -182,7 +184,7 @@ describe('POST /api/analyze', () => {
     expect(sentBody.max_tokens).toBe(20000);
     expect(sentBody.thinking).toEqual({
       type: 'enabled',
-      budget_tokens: 11000,
+      budget_tokens: 16000,
     });
     expect(sentBody.messages).toHaveLength(1);
     // Should have 1 text label + 1 image block + 1 context text block

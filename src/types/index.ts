@@ -70,10 +70,14 @@ export interface DeltaRow {
   readonly putPremium: number;
   /** Theoretical call premium (per 1 share of underlying) */
   readonly callPremium: number;
-  /** σ used for put (includes skew) */
+  /** σ used for put pricing (includes skew + IV acceleration) */
   readonly putSigma: number;
-  /** σ used for call (includes skew) */
+  /** σ used for call pricing (includes skew + IV acceleration) */
   readonly callSigma: number;
+  /** Base σ for put (skew only, no IV acceleration) — used for settlement PoP */
+  readonly basePutSigma: number;
+  /** Base σ for call (skew only, no IV acceleration) — used for settlement PoP */
+  readonly baseCallSigma: number;
   /** Actual BS delta of the snapped put strike (absolute value, 0–1) */
   readonly putActualDelta: number;
   /** Actual BS delta of the snapped call strike (absolute value, 0–1) */
@@ -82,6 +86,10 @@ export interface DeltaRow {
   readonly putGamma: number;
   /** Gamma of the snapped call strike (delta change per $1 SPX move) */
   readonly callGamma: number;
+  /** Theta of the snapped put strike (annualized; divide by 252 for daily) */
+  readonly putTheta: number;
+  /** Theta of the snapped call strike (annualized; divide by 252 for daily) */
+  readonly callTheta: number;
   /** IV acceleration multiplier applied to σ (1.0 at open, increases toward close) */
   readonly ivAccelMult: number;
 }
@@ -172,6 +180,8 @@ export interface CalculationResults {
   readonly T: number;
   readonly hoursRemaining: number;
   readonly spot: number;
+  /** VIX level (when available) — used for regime-dependent kurtosis */
+  readonly vix?: number;
 }
 
 // ============================================================
@@ -233,6 +243,12 @@ export interface HedgeResult {
   readonly breakEvenRallyPts: number;
   /** IC credit minus net hedge cost in dollars */
   readonly netCreditAfterHedge: number;
+  /** Vega of a single hedge put ($ change per 1% IV move) */
+  readonly putVegaPer1Pct: number;
+  /** Vega of a single hedge call ($ change per 1% IV move) */
+  readonly callVegaPer1Pct: number;
+  /** Total vega exposure of all hedge contracts ($ per 1% IV move) */
+  readonly totalVegaPer1Pct: number;
   /** P&L scenarios at various crash/rally sizes */
   readonly scenarios: readonly HedgeScenario[];
 }

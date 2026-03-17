@@ -5,6 +5,8 @@ import {
   blackScholesPrice,
   calcBSDelta,
   calcBSGamma,
+  calcBSTheta,
+  calcBSVega,
   calcTimeToExpiry,
 } from '../utils/calculator';
 
@@ -239,5 +241,89 @@ describe('calcBSGamma', () => {
     const zeroDTE = calcBSGamma(5800, 5800, sigma, calcTimeToExpiry(4));
     const thirtyDTE = calcBSGamma(5800, 5800, sigma, 30 / 365);
     expect(zeroDTE).toBeGreaterThan(thirtyDTE * 5);
+  });
+});
+
+describe('calcBSTheta', () => {
+  const T = calcTimeToExpiry(4);
+  const sigma = 0.2;
+
+  it('theta is negative (time decay)', () => {
+    expect(calcBSTheta(5800, 5800, sigma, T)).toBeLessThan(0);
+    expect(calcBSTheta(5800, 5700, sigma, T)).toBeLessThan(0);
+  });
+
+  it('ATM theta has highest magnitude', () => {
+    const atm = Math.abs(calcBSTheta(5800, 5800, sigma, T));
+    const otm = Math.abs(calcBSTheta(5800, 5700, sigma, T));
+    expect(atm).toBeGreaterThan(otm);
+  });
+
+  it('theta magnitude increases as T decreases (accelerating decay)', () => {
+    const earlyTheta = Math.abs(
+      calcBSTheta(5800, 5800, sigma, calcTimeToExpiry(5)),
+    );
+    const lateTheta = Math.abs(
+      calcBSTheta(5800, 5800, sigma, calcTimeToExpiry(1)),
+    );
+    expect(lateTheta).toBeGreaterThan(earlyTheta);
+  });
+
+  it('higher IV = higher theta magnitude', () => {
+    const lowIV = Math.abs(calcBSTheta(5800, 5800, 0.15, T));
+    const highIV = Math.abs(calcBSTheta(5800, 5800, 0.3, T));
+    expect(highIV).toBeGreaterThan(lowIV);
+  });
+
+  it('returns 0 for T=0', () => {
+    expect(calcBSTheta(5800, 5800, sigma, 0)).toBe(0);
+  });
+
+  it('returns 0 for σ=0', () => {
+    expect(calcBSTheta(5800, 5800, 0, T)).toBe(0);
+  });
+
+  it('0DTE theta is much larger in magnitude than 30DTE', () => {
+    const zeroDTE = Math.abs(
+      calcBSTheta(5800, 5800, sigma, calcTimeToExpiry(4)),
+    );
+    const thirtyDTE = Math.abs(calcBSTheta(5800, 5800, sigma, 30 / 365));
+    expect(zeroDTE).toBeGreaterThan(thirtyDTE * 3);
+  });
+});
+
+describe('calcBSVega', () => {
+  const T = calcTimeToExpiry(4);
+  const sigma = 0.2;
+
+  it('vega is positive', () => {
+    expect(calcBSVega(5800, 5800, sigma, T)).toBeGreaterThan(0);
+    expect(calcBSVega(5800, 5700, sigma, T)).toBeGreaterThan(0);
+  });
+
+  it('ATM vega is highest', () => {
+    const atm = calcBSVega(5800, 5800, sigma, T);
+    const otm = calcBSVega(5800, 5700, sigma, T);
+    expect(atm).toBeGreaterThan(otm);
+  });
+
+  it('more time = higher vega', () => {
+    const shortT = calcBSVega(5800, 5800, sigma, calcTimeToExpiry(1));
+    const longT = calcBSVega(5800, 5800, sigma, 30 / 365);
+    expect(longT).toBeGreaterThan(shortT);
+  });
+
+  it('0DTE vega is much smaller than 7DTE vega', () => {
+    const zeroDTE = calcBSVega(5800, 5800, sigma, calcTimeToExpiry(4));
+    const sevenDTE = calcBSVega(5800, 5800, sigma, 7 / 252);
+    expect(sevenDTE).toBeGreaterThan(zeroDTE * 2);
+  });
+
+  it('returns 0 for T=0', () => {
+    expect(calcBSVega(5800, 5800, sigma, 0)).toBe(0);
+  });
+
+  it('returns 0 for σ=0', () => {
+    expect(calcBSVega(5800, 5800, 0, T)).toBe(0);
   });
 });

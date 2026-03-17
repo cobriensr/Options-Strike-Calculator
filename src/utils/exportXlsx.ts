@@ -67,6 +67,7 @@ export async function exportPnLComparison({
         results.spot,
         results.T,
         effectiveRatio,
+        results.vix,
       );
 
       const addRow = (
@@ -195,6 +196,7 @@ export async function exportPnLComparison({
         results.spot,
         results.T,
         effectiveRatio,
+        results.vix,
       );
       const winsToRecover =
         ic.creditReceived > 0 ? round1(ic.maxLoss / ic.creditReceived) : 0;

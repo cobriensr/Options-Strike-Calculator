@@ -61,7 +61,7 @@ describe('resolveIV: VIX mode', () => {
   });
 
   it('rejects multiplier above maximum', () => {
-    const result = resolveIV('vix', { vix: 20, multiplier: 1.5 });
+    const result = resolveIV('vix', { vix: 20, multiplier: 2.5 });
     expect(result.sigma).toBeNull();
     expect(result.error).toContain(String(DEFAULTS.IV_PREMIUM_MAX));
   });
@@ -80,7 +80,8 @@ describe('resolveIV: VIX mode', () => {
       vix: 20,
       multiplier: DEFAULTS.IV_PREMIUM_MAX,
     });
-    expect(result.sigma).toBeCloseTo(0.26, 6);
+    // 20 * 2.0 / 100 = 0.40
+    expect(result.sigma).toBeCloseTo(0.4, 6);
     expect(result.error).toBeUndefined();
   });
 

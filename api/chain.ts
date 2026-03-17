@@ -255,6 +255,83 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   return buildResponse(res, chain, rawPuts, rawCalls, today);
 }
 
+/**
+ * Calculates max pain strike and pin risk metrics.
+ *
+ * Max pain = the strike where total option holder payout (OI × intrinsic) is minimized.
+ * This is the price at which market makers lose the least, so MMs have incentive
+ * to pin price near this level — especially in the final 90 minutes of 0DTE.
+ *
+ * Also returns the top OI strikes on each side (put/call walls).
+ */
+function calcMaxPain(
+  puts: ChainStrike[],
+  calls: ChainStrike[],
+  currentPrice: number,
+): {
+  maxPainStrike: number;
+  maxPainDistance: number;
+  maxPainDistancePct: string;
+  topPutOI: { strike: number; oi: number }[];
+  topCallOI: { strike: number; oi: number }[];
+} | null {
+  // Collect all unique strikes
+  const strikeSet = new Set<number>();
+  for (const p of puts) strikeSet.add(p.strike);
+  for (const c of calls) strikeSet.add(c.strike);
+
+  const strikes = [...strikeSet].sort((a, b) => a - b);
+  if (strikes.length === 0) return null;
+
+  // Build OI maps
+  const putOI = new Map<number, number>();
+  const callOI = new Map<number, number>();
+  for (const p of puts) putOI.set(p.strike, (putOI.get(p.strike) ?? 0) + p.oi);
+  for (const c of calls)
+    callOI.set(c.strike, (callOI.get(c.strike) ?? 0) + c.oi);
+
+  // For each candidate settlement price, compute total payout
+  let minPayout = Infinity;
+  let maxPainStrike = strikes[0]!;
+
+  for (const settlement of strikes) {
+    let totalPayout = 0;
+    // Put holders get paid when settlement < strike
+    for (const [strike, oi] of putOI) {
+      if (settlement < strike) totalPayout += (strike - settlement) * oi;
+    }
+    // Call holders get paid when settlement > strike
+    for (const [strike, oi] of callOI) {
+      if (settlement > strike) totalPayout += (settlement - strike) * oi;
+    }
+    if (totalPayout < minPayout) {
+      minPayout = totalPayout;
+      maxPainStrike = settlement;
+    }
+  }
+
+  // Top 3 OI strikes on each side (put/call walls)
+  const putEntries = [...putOI.entries()]
+    .filter(([, oi]) => oi > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([strike, oi]) => ({ strike, oi }));
+  const callEntries = [...callOI.entries()]
+    .filter(([, oi]) => oi > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([strike, oi]) => ({ strike, oi }));
+
+  const distance = Math.abs(currentPrice - maxPainStrike);
+  return {
+    maxPainStrike,
+    maxPainDistance: Math.round(distance),
+    maxPainDistancePct: ((distance / currentPrice) * 100).toFixed(2),
+    topPutOI: putEntries,
+    topCallOI: callEntries,
+  };
+}
+
 function buildResponse(
   res: VercelResponse,
   chain: SchwabChainResponse,
@@ -262,8 +339,17 @@ function buildResponse(
   rawCalls: SchwabOptionContract[],
   today: string,
 ) {
-  const puts = rawPuts.map(toChainStrike);
-  const calls = rawCalls.map(toChainStrike);
+  // Filter stale quotes: bid=0 or extremely wide spread (>50% of mid)
+  const isLiveQuote = (s: ChainStrike): boolean => {
+    if (s.bid <= 0) return false;
+    if (s.mid > 0 && (s.ask - s.bid) / s.mid > 0.5) return false;
+    return true;
+  };
+
+  const allPuts = rawPuts.map(toChainStrike);
+  const allCalls = rawCalls.map(toChainStrike);
+  const puts = allPuts.filter(isLiveQuote);
+  const calls = allCalls.filter(isLiveQuote);
 
   // Find the expiration date string (first key in either map)
   const expDate =
@@ -298,6 +384,11 @@ function buildResponse(
     }
   }
 
+  // Max pain: the strike where total OI-weighted intrinsic payout is minimized
+  // (the strike at which option writers lose the least money at expiration)
+  // Max pain uses all strikes (including stale) since OI matters regardless of quote quality
+  const pinRisk = calcMaxPain(allPuts, allCalls, chain.underlying?.last ?? 0);
+
   // Cache: 30s during market, 5 min after
   const open = isMarketOpen();
   setCacheHeaders(res, open ? 30 : 300, open ? 15 : 60);
@@ -314,6 +405,7 @@ function buildResponse(
     puts,
     calls,
     targetDeltas,
+    pinRisk,
     asOf: new Date().toISOString(),
   });
 }

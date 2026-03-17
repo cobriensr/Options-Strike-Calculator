@@ -19,6 +19,7 @@ import {
   DEFAULTS,
   IV_MODES,
   HEDGE_Z_SCORES,
+  getKurtosisFactor,
 } from '../constants';
 
 // ============================================================
@@ -109,6 +110,56 @@ export function calcBSGamma(
   const d1 = (Math.log(spot / strike) + ((sigma * sigma) / 2) * T) / sigmaRootT;
 
   return normalPDF(d1) / (spot * sigmaRootT);
+}
+
+/**
+ * Black-Scholes vega for a European option.
+ * r is assumed 0 for 0DTE.
+ *
+ * Vega = S × N'(d1) × √T
+ *
+ * Returns vega per 1.0 change in σ (multiply by 0.01 for per-1%-vol-point).
+ * Vega is the same for both puts and calls.
+ */
+export function calcBSVega(
+  spot: number,
+  strike: number,
+  sigma: number,
+  T: number,
+): number {
+  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+
+  const sqrtT = Math.sqrt(T);
+  const sigmaRootT = sigma * sqrtT;
+  const d1 = (Math.log(spot / strike) + ((sigma * sigma) / 2) * T) / sigmaRootT;
+
+  return spot * normalPDF(d1) * sqrtT;
+}
+
+/**
+ * Black-Scholes theta for a European option.
+ * r is assumed 0 for 0DTE.
+ *
+ * Theta = -[S × N'(d1) × σ] / (2 × √T)
+ *
+ * For r=0 put and call theta are identical.
+ * Returns theta per year; divide by 252 for daily, or by (252×6.5) for per-hour.
+ * Returned as negative (time decay costs the option holder).
+ */
+export function calcBSTheta(
+  spot: number,
+  strike: number,
+  sigma: number,
+  T: number,
+): number {
+  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+
+  const sqrtT = Math.sqrt(T);
+  const sigmaRootT = sigma * sqrtT;
+  const d1 = (Math.log(spot / strike) + ((sigma * sigma) / 2) * T) / sigmaRootT;
+
+  // Theta per year (negative value = time decay)
+  return -(spot * normalPDF(d1) * sigma) / (2 * sqrtT);
 }
 
 /**
@@ -224,6 +275,61 @@ export function adjustICPoPForKurtosis(
   const pBreachHigh = Math.min(1, normalCDF(d2High) * kurtosis);
 
   return Math.max(0, Math.min(1, 1 - pBreachLow - pBreachHigh));
+}
+
+/**
+ * Computes the theta decay curve for a given OTM option across the trading day.
+ * Returns an array of { hoursRemaining, premiumPct, thetaPerHour } objects
+ * showing what % of the at-open premium remains at each hour.
+ *
+ * This helps determine optimal entry timing:
+ * - Enter too early: sit through high-range morning with low theta
+ * - Enter too late: premium already decayed, gamma risk > theta edge
+ * - Sweet spot: where thetaPerHour is maximized (premium is decaying fastest)
+ */
+export function calcThetaCurve(
+  spot: number,
+  sigma: number,
+  strikeDistance: number,
+  type: 'put' | 'call',
+): ReadonlyArray<{
+  hoursRemaining: number;
+  premiumPct: number;
+  thetaPerHour: number;
+}> {
+  const strike = type === 'put' ? spot - strikeDistance : spot + strikeDistance;
+  const hours = [6.5, 6, 5.5, 5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1, 0.5];
+
+  // Premium at market open (6.5h) is the reference (100%)
+  const openT = calcTimeToExpiry(6.5);
+  const openPremium = blackScholesPrice(spot, strike, sigma, openT, type);
+  if (openPremium <= 0) return [];
+
+  const result: Array<{
+    hoursRemaining: number;
+    premiumPct: number;
+    thetaPerHour: number;
+  }> = [];
+
+  let prevPremium = openPremium;
+  let prevHours = 6.5;
+
+  for (const h of hours) {
+    const T = calcTimeToExpiry(h);
+    const premium = blackScholesPrice(spot, strike, sigma, T, type);
+    const pct = Math.round((premium / openPremium) * 1000) / 10; // e.g. 85.3%
+    const decay = prevPremium - premium;
+    const elapsed = prevHours - h;
+    const thetaPerHour =
+      elapsed > 0 ? Math.round((decay / openPremium) * 1000) / 10 : 0;
+
+    result.push({ hoursRemaining: h, premiumPct: pct, thetaPerHour });
+
+    prevPremium = premium;
+    prevHours = h;
+  }
+
+  return result;
 }
 
 /**
@@ -356,11 +462,13 @@ export function calcScaledCallSkew(skew: number, z: number): number {
  *
  * Exact delta-targeted strike formula (with log-normal drift correction):
  *   K_put  = S × e^(-z × σ_put × √T + (σ_put²/2) × T)
- *   K_call = S × e^(+z × σ_call × √T + (σ_call²/2) × T)
+ *   K_call = S × e^(+z × σ_call × √T - (σ_call²/2) × T)
  *
- * The (σ²/2)T term is the drift correction from the log-normal distribution.
- * Without it, strikes are placed ~0.5 SPX points too far OTM. Small for 0DTE
- * but mathematically correct.
+ * The (σ²/2)T drift correction accounts for the convexity adjustment in the
+ * log-normal distribution. For puts it brings the strike closer to spot (+ sign),
+ * for calls it also brings the strike closer to spot (- sign). Without it,
+ * strikes are placed ~0.5 SPX points too far OTM. Small for 0DTE but
+ * mathematically correct.
  *
  * Skew uses convex put curve and dampened call curve to match
  * the real SPX volatility smile shape.
@@ -371,6 +479,7 @@ export function calcStrikes(
   T: number,
   delta: DeltaTarget,
   skew: number = 0,
+  callSkewOverride?: number,
 ): StrikeResult | StrikeError {
   const z = DELTA_Z_SCORES[delta];
   if (z === undefined) {
@@ -379,7 +488,11 @@ export function calcStrikes(
 
   const sqrtT = Math.sqrt(T);
   const putSkew = calcScaledSkew(skew, z);
-  const callSkew = calcScaledCallSkew(skew, z);
+  // When callSkewOverride is provided, use it independently; otherwise derive from put skew
+  const callSkew =
+    callSkewOverride != null
+      ? calcScaledCallSkew(callSkewOverride, z)
+      : calcScaledCallSkew(skew, z);
   const putSigma = sigma * (1 + putSkew);
   const callSigma = sigma * (1 - callSkew);
 
@@ -391,7 +504,7 @@ export function calcStrikes(
     spotPrice * Math.exp(-z * putSigma * sqrtT + putDrift),
   );
   const callStrike = Math.round(
-    spotPrice * Math.exp(z * callSigma * sqrtT + callDrift),
+    spotPrice * Math.exp(z * callSigma * sqrtT - callDrift),
   );
 
   return {
@@ -427,24 +540,33 @@ export function calcAllDeltas(
   T: number,
   skew: number = 0,
   spxToSpyRatio: number = 10,
+  callSkewOverride?: number,
 ): ReadonlyArray<DeltaRow | DeltaRowError> {
   // IV acceleration based on time remaining
   const hoursRemaining = T * MARKET.ANNUAL_TRADING_HOURS;
   const ivAccelMult = calcIVAcceleration(hoursRemaining);
+  // Effective call skew: independent override or derived from put skew
+  const effectiveCallSkew = callSkewOverride ?? skew;
 
   return DELTA_OPTIONS.map((d: DeltaTarget): DeltaRow | DeltaRowError => {
     // Strikes placed using base σ (full-session probability)
-    const result = calcStrikes(spotPrice, sigma, T, d, skew);
+    const result = calcStrikes(spotPrice, sigma, T, d, skew, callSkewOverride);
 
     if (isStrikeError(result)) {
       return { delta: d, error: result.error };
     }
 
+    // Base σ (skew only, no acceleration) — used for settlement PoP
+    const basePutSigma = sigma * (1 + calcScaledSkew(skew, DELTA_Z_SCORES[d]));
+    const baseCallSigma =
+      sigma * (1 - calcScaledCallSkew(effectiveCallSkew, DELTA_Z_SCORES[d]));
+
     // Premiums and Greeks use accelerated σ (current market conditions)
     const accelSigma = sigma * ivAccelMult;
     const putSigma = accelSigma * (1 + calcScaledSkew(skew, DELTA_Z_SCORES[d]));
     const callSigma =
-      accelSigma * (1 - calcScaledCallSkew(skew, DELTA_Z_SCORES[d]));
+      accelSigma *
+      (1 - calcScaledCallSkew(effectiveCallSkew, DELTA_Z_SCORES[d]));
     const spyPutRaw = result.putStrike / spxToSpyRatio;
     const spyCallRaw = result.callStrike / spxToSpyRatio;
 
@@ -490,6 +612,18 @@ export function calcAllDeltas(
       callSigma,
       T,
     );
+    const putTheta = calcBSTheta(
+      spotPrice,
+      result.putStrikeSnapped,
+      putSigma,
+      T,
+    );
+    const callTheta = calcBSTheta(
+      spotPrice,
+      result.callStrikeSnapped,
+      callSigma,
+      T,
+    );
 
     return {
       delta: d,
@@ -498,8 +632,8 @@ export function calcAllDeltas(
       callStrike: result.callStrike,
       putSnapped: result.putStrikeSnapped,
       callSnapped: result.callStrikeSnapped,
-      putSpySnapped: Math.round(spyPutRaw),
-      callSpySnapped: Math.round(spyCallRaw),
+      putSpySnapped: Math.round(spyPutRaw * 2) / 2,
+      callSpySnapped: Math.round(spyCallRaw * 2) / 2,
       spyPut: spyPutRaw.toFixed(2),
       spyCall: spyCallRaw.toFixed(2),
       putDistance: spotPrice - result.putStrike,
@@ -510,10 +644,14 @@ export function calcAllDeltas(
       callPremium,
       putSigma,
       callSigma,
+      basePutSigma,
+      baseCallSigma,
       putActualDelta,
       callActualDelta,
       putGamma,
       callGamma,
+      putTheta,
+      callTheta,
       ivAccelMult,
     };
   });
@@ -598,6 +736,7 @@ export function calcSpreadPoP(
  * Prices all four legs via Black-Scholes.
  * Includes per-side (put spread / call spread) breakdowns.
  * Uses SPX snapped strikes as the short strikes.
+ * When vix is provided, uses regime-dependent kurtosis for fat-tail adjustment.
  */
 export function buildIronCondor(
   row: DeltaRow,
@@ -605,6 +744,7 @@ export function buildIronCondor(
   spotPrice: number,
   T: number,
   spxToSpyRatio: number = 10,
+  vix?: number,
 ): IronCondorLegs {
   const shortPut = row.putSnapped;
   const longPut = shortPut - wingWidthSpx;
@@ -640,25 +780,31 @@ export function buildIronCondor(
     'call',
   );
 
+  // Per-side credits (needed for breakevens)
+  const putSpreadCredit = shortPutPremium - longPutPremium;
+  const callSpreadCredit = shortCallPremium - longCallPremium;
+
   // Combined IC
-  const creditReceived =
-    shortPutPremium - longPutPremium + (shortCallPremium - longCallPremium);
+  const creditReceived = putSpreadCredit + callSpreadCredit;
   const maxProfit = creditReceived;
   const maxLoss = wingWidthSpx - creditReceived;
-  const breakEvenLow = shortPut - creditReceived;
-  const breakEvenHigh = shortCall + creditReceived;
+  // Each side's breakeven uses only that side's credit
+  const breakEvenLow = shortPut - putSpreadCredit;
+  const breakEvenHigh = shortCall + callSpreadCredit;
   const returnOnRisk = maxLoss > 0 ? creditReceived / maxLoss : 0;
+  // PoP uses base σ (no IV acceleration) — measures full-session settlement probability
+  const popPutSigma = row.basePutSigma ?? row.putSigma;
+  const popCallSigma = row.baseCallSigma ?? row.callSigma;
   const probabilityOfProfit = calcPoP(
     spotPrice,
     breakEvenLow,
     breakEvenHigh,
-    row.putSigma,
-    row.callSigma,
+    popPutSigma,
+    popCallSigma,
     T,
   );
 
   // Per-side: put credit spread
-  const putSpreadCredit = shortPutPremium - longPutPremium;
   const putSpreadMaxLoss = wingWidthSpx - putSpreadCredit;
   const putSpreadBE = shortPut - putSpreadCredit;
   const putSpreadRoR =
@@ -666,13 +812,12 @@ export function buildIronCondor(
   const putSpreadPoP = calcSpreadPoP(
     spotPrice,
     putSpreadBE,
-    row.putSigma,
+    popPutSigma,
     T,
     'put',
   );
 
   // Per-side: call credit spread
-  const callSpreadCredit = shortCallPremium - longCallPremium;
   const callSpreadMaxLoss = wingWidthSpx - callSpreadCredit;
   const callSpreadBE = shortCall + callSpreadCredit;
   const callSpreadRoR =
@@ -680,7 +825,7 @@ export function buildIronCondor(
   const callSpreadPoP = calcSpreadPoP(
     spotPrice,
     callSpreadBE,
-    row.callSigma,
+    popCallSigma,
     T,
     'call',
   );
@@ -691,10 +836,10 @@ export function buildIronCondor(
     longPut,
     shortCall,
     longCall,
-    shortPutSpy: Math.round(shortPut / spxToSpyRatio),
-    longPutSpy: Math.round(longPut / spxToSpyRatio),
-    shortCallSpy: Math.round(shortCall / spxToSpyRatio),
-    longCallSpy: Math.round(longCall / spxToSpyRatio),
+    shortPutSpy: Math.round((shortPut / spxToSpyRatio) * 2) / 2,
+    longPutSpy: Math.round((longPut / spxToSpyRatio) * 2) / 2,
+    shortCallSpy: Math.round((shortCall / spxToSpyRatio) * 2) / 2,
+    longCallSpy: Math.round((longCall / spxToSpyRatio) * 2) / 2,
     wingWidthSpx,
     shortPutPremium,
     longPutPremium,
@@ -717,17 +862,24 @@ export function buildIronCondor(
     callSpreadRoR,
     putSpreadPoP,
     callSpreadPoP,
-    // Fat-tail adjusted PoPs (account for leptokurtic intraday returns)
+    // Fat-tail adjusted PoPs (regime-dependent kurtosis)
     adjustedPoP: adjustICPoPForKurtosis(
       spotPrice,
       breakEvenLow,
       breakEvenHigh,
-      row.putSigma,
-      row.callSigma,
+      popPutSigma,
+      popCallSigma,
       T,
+      getKurtosisFactor(vix),
     ),
-    adjustedPutSpreadPoP: adjustPoPForKurtosis(putSpreadPoP),
-    adjustedCallSpreadPoP: adjustPoPForKurtosis(callSpreadPoP),
+    adjustedPutSpreadPoP: adjustPoPForKurtosis(
+      putSpreadPoP,
+      getKurtosisFactor(vix),
+    ),
+    adjustedCallSpreadPoP: adjustPoPForKurtosis(
+      callSpreadPoP,
+      getKurtosisFactor(vix),
+    ),
   };
 }
 
@@ -767,11 +919,32 @@ export function toETTime(
 // ============================================================
 
 /**
+ * Estimates the IV multiplier under stress for hedge repricing.
+ *
+ * Empirically, VIX increases roughly 3-5 points per 1% SPX decline
+ * (the "leverage effect"). For a 2% crash, VIX might go from 18 to 26-28,
+ * a ~50% increase. For rallies the effect is weaker (~1-2 pts per 1%).
+ *
+ * Model: σ_stressed = σ × (1 + sensitivity × movePct)
+ *   Crash (movePct > 0): sensitivity = 4.0 (VIX rises ~4 pts per 1% SPX drop)
+ *   Rally (movePct < 0): sensitivity = 1.5 (VIX drops ~1.5 pts per 1% SPX rise)
+ * Capped at 3× to avoid extreme values.
+ */
+export function stressedSigma(baseSigma: number, movePct: number): number {
+  const absPct = Math.abs(movePct);
+  // Crash: strong IV expansion; Rally: mild IV compression
+  const sensitivity = movePct > 0 ? 4.0 : 1.5;
+  const mult = 1 + sensitivity * absPct;
+  return baseSigma * Math.min(mult, 3.0);
+}
+
+/**
  * Computes P&L for an IC + hedge position at a given SPX move.
  * movePoints > 0 = crash (SPX drops), movePoints < 0 = rally (SPX rises).
  *
  * Hedge valuation uses Black-Scholes with remaining DTE (hedgeDte - 1 day)
  * to model the extrinsic value retained when closing a 7-14 DTE hedge at EOD.
+ * Sigma is scaled by the stress model to account for IV expansion during crashes.
  * This is much more accurate than intrinsic-only, since a 7DTE hedge still has
  * ~85-95% of its theta value at EOD close.
  */
@@ -802,6 +975,7 @@ function computeScenarioPnL(params: {
 } {
   const { spot, movePoints, icContracts, hedgePuts, hedgeCalls } = params;
   const sFinal = spot - movePoints; // positive movePoints = crash
+  const movePct = movePoints / spot; // signed: positive = crash
 
   // IC put side P&L (per contract, in points)
   let icPutPnL: number;
@@ -827,14 +1001,18 @@ function computeScenarioPnL(params: {
   const icPnLDollars =
     (params.icCreditPts + icPutPnL + icCallPnL) * 100 * icContracts;
 
-  // Hedge put value at EOD: BS price with remaining DTE (not intrinsic-only)
+  // Stress-adjusted sigma: IV expands on crashes, compresses on rallies
+  const stressedPutSigma = stressedSigma(params.hedgePutSigma, movePct);
+  const stressedCallSigma = stressedSigma(params.hedgeCallSigma, -movePct);
+
+  // Hedge put value at EOD: BS price with remaining DTE and stressed IV
   // This models "sell to close at EOD" — the hedge retains extrinsic value
   const hedgePutEodValue =
     params.hedgeTRemaining > 0
       ? blackScholesPrice(
           sFinal,
           params.hedgePutStrike,
-          params.hedgePutSigma,
+          stressedPutSigma,
           params.hedgeTRemaining,
           'put',
         )
@@ -842,13 +1020,13 @@ function computeScenarioPnL(params: {
   const hedgePutPnLPts = hedgePutEodValue - params.hedgePutPremium;
   const hedgePutDollars = hedgePutPnLPts * 100 * hedgePuts;
 
-  // Hedge call value at EOD: BS price with remaining DTE
+  // Hedge call value at EOD: BS price with remaining DTE and stressed IV
   const hedgeCallEodValue =
     params.hedgeTRemaining > 0
       ? blackScholesPrice(
           sFinal,
           params.hedgeCallStrike,
-          params.hedgeCallSigma,
+          stressedCallSigma,
           params.hedgeTRemaining,
           'call',
         )
@@ -948,7 +1126,7 @@ export function calcHedge(params: {
     spot * Math.exp(-z * putSigma * sqrtT + putDrift),
   );
   const callStrike = Math.round(
-    spot * Math.exp(z * callSigma * sqrtT + callDrift),
+    spot * Math.exp(z * callSigma * sqrtT - callDrift),
   );
   const putStrikeSnapped = snapToIncrement(putStrike);
   const callStrikeSnapped = snapToIncrement(callStrike);
@@ -1039,6 +1217,24 @@ export function calcHedge(params: {
     icCreditPts * 100 * icContracts - dailyCostDollars,
   );
 
+  // Vega: $ change per 1% IV move (0.01 sigma change) for each hedge contract
+  // Computed at entry DTE for the full hedge position
+  const putVegaRaw = calcBSVega(spot, putStrikeSnapped, putSigma, tHedgeEntry);
+  const callVegaRaw = calcBSVega(
+    spot,
+    callStrikeSnapped,
+    callSigma,
+    tHedgeEntry,
+  );
+  // Convert: vega per 1.0 σ → per 0.01 σ (1 vol point), × $100 multiplier
+  const putVegaPer1Pct = Math.round(putVegaRaw * 0.01 * 100 * 100) / 100;
+  const callVegaPer1Pct = Math.round(callVegaRaw * 0.01 * 100 * 100) / 100;
+  const totalVegaPer1Pct =
+    Math.round(
+      (putVegaPer1Pct * recommendedPuts + callVegaPer1Pct * recommendedCalls) *
+        100,
+    ) / 100;
+
   // Helper to compute net P&L at a given crash/rally size
   const scenarioParams = {
     spot,
@@ -1081,8 +1277,9 @@ export function calcHedge(params: {
     spot * 0.15,
   );
 
-  // Build scenario table: crashes and rallies at key levels
-  const crashLevels = [100, 150, 200, 250, 300, 350, 400, 450, 500];
+  // Build scenario table: percentage-based levels scaled to current spot
+  const crashPcts = [0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.1];
+  const crashLevels = crashPcts.map((pct) => Math.round(spot * pct));
   const scenarios: HedgeScenario[] = [];
 
   for (const pts of crashLevels) {
@@ -1131,6 +1328,9 @@ export function calcHedge(params: {
     breakEvenCrashPts,
     breakEvenRallyPts,
     netCreditAfterHedge,
+    putVegaPer1Pct,
+    callVegaPer1Pct,
+    totalVegaPer1Pct,
     scenarios,
   };
 }
