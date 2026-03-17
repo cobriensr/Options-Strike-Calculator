@@ -2,7 +2,7 @@
 
 A Black-Scholes-based calculator for determining delta-targeted strike prices, theoretical option premiums, credit spread P&L, iron condor profiles, and VIX regime-aware position guidance for same-day (0DTE) SPX and SPY options. Includes AI-powered chart analysis via Claude Opus 4.6, live position tracking via Schwab Trader API, live option chain verification via Schwab API, historical backtesting, and a Postgres database for ML-ready data collection.
 
-Built with React 19, TypeScript (strict mode), and Vite. Deployed on Vercel with Neon Postgres, Upstash Redis, Schwab API, and Anthropic API integrations.
+Built with React 19, TypeScript (strict mode), and Vite. Deployed on Vercel with Neon Postgres, Upstash Redis, Schwab API, Anthropic API, and Sentry integrations.
 
 Live at: [theta-options.com](https://theta-options.com)
 
@@ -56,7 +56,6 @@ Live at: [theta-options.com](https://theta-options.com)
   - [Getting Started](#getting-started)
     - [Prerequisites](#prerequisites)
     - [Installation](#installation)
-    - [Required Packages](#required-packages)
     - [Development](#development)
     - [Environment Variables](#environment-variables)
     - [Database Setup](#database-setup)
@@ -71,6 +70,11 @@ Live at: [theta-options.com](https://theta-options.com)
     - [Input Validation](#input-validation)
   - [VIX Data Management](#vix-data-management)
   - [Excel Export](#excel-export)
+  - [Observability](#observability)
+    - [Structured Logging](#structured-logging)
+    - [Error Tracking (Sentry)](#error-tracking-sentry)
+    - [Performance Analytics](#performance-analytics)
+    - [Bundle Analysis](#bundle-analysis)
   - [Testing](#testing)
   - [Deployment](#deployment)
     - [Vercel (Production)](#vercel-production)
@@ -585,7 +589,7 @@ Early close days use reduced hours (e.g., 3.5 hours on day-before-holiday sessio
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 24+ (see `.nvmrc`)
 - npm 9+
 - Vercel CLI (`npm i -g vercel`) — for local development with serverless functions
 
@@ -594,14 +598,8 @@ Early close days use reduced hours (e.g., 3.5 hours on day-before-holiday sessio
 ```bash
 git clone https://github.com/cobriensr/Options-Strike-Calculator.git
 cd Options-Strike-Calculator
+cp .env.example .env.local   # Fill in your values
 npm install
-```
-
-### Required Packages
-
-```bash
-# Core app dependencies (already in package.json)
-npm install @neondatabase/serverless  # Neon Postgres
 ```
 
 ### Development
@@ -613,16 +611,21 @@ vercel dev           # Frontend + API functions (localhost:3000)
 
 ### Environment Variables
 
-| Variable               | Source                       | Purpose                           |
-| ---------------------- | ---------------------------- | --------------------------------- |
-| `SCHWAB_CLIENT_ID`     | developer.schwab.com         | Schwab API app key                |
-| `SCHWAB_CLIENT_SECRET` | developer.schwab.com         | Schwab API app secret             |
-| `SCHWAB_REDIRECT_URI`  | Your Schwab app settings     | OAuth callback URL                |
-| `OWNER_SECRET`         | `openssl rand -hex 32`       | Owner session cookie value        |
-| `KV_REST_API_URL`      | Auto-set by Vercel (Upstash) | Redis REST endpoint               |
-| `KV_REST_API_TOKEN`    | Auto-set by Vercel (Upstash) | Redis auth token                  |
-| `ANTHROPIC_API_KEY`    | console.anthropic.com        | Claude API key for chart analysis |
-| `DATABASE_URL`         | Auto-set by Vercel (Neon)    | Postgres connection string        |
+See [.env.example](.env.example) for a copy-paste template with descriptions.
+
+| Variable                  | Source                        | Purpose                           |
+| ------------------------- | ----------------------------- | --------------------------------- |
+| `SCHWAB_CLIENT_ID`        | developer.schwab.com          | Schwab API app key                |
+| `SCHWAB_CLIENT_SECRET`    | developer.schwab.com          | Schwab API app secret             |
+| `SCHWAB_REDIRECT_URI`     | Your Schwab app settings      | OAuth callback URL                |
+| `OWNER_SECRET`            | `openssl rand -hex 32`        | Owner session cookie value        |
+| `UPSTASH_REDIS_REST_URL`  | Auto-set by Vercel (Upstash)  | Redis REST endpoint               |
+| `UPSTASH_REDIS_REST_TOKEN`| Auto-set by Vercel (Upstash)  | Redis auth token                  |
+| `ANTHROPIC_API_KEY`       | console.anthropic.com         | Claude API key for chart analysis |
+| `DATABASE_URL`            | Auto-set by Vercel (Neon)     | Postgres connection string        |
+| `SENTRY_DSN`              | Auto-set by Vercel (Sentry)   | Sentry error tracking DSN         |
+| `FRED_API_KEY`            | fred.stlouisfed.org           | Economic calendar data (optional) |
+| `FINNHUB_API_KEY`         | finnhub.io                    | Mega-cap earnings data (optional) |
 
 ### Database Setup
 
@@ -654,7 +657,8 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── _lib/
 │   │   ├── schwab.ts                  # Schwab OAuth token management (Upstash Redis)
 │   │   ├── api-helpers.ts             # Shared fetch, cache, owner-gate, rate limiting
-│   │   └── db.ts                      # Neon Postgres: schema, snapshots, analyses, outcomes, positions
+│   │   ├── db.ts                      # Neon Postgres: schema, snapshots, analyses, outcomes, positions
+│   │   └── logger.ts                  # Structured JSON logger (pino)
 │   ├── auth/
 │   │   ├── init.ts                    # GET /api/auth/init → redirect to Schwab login
 │   │   └── callback.ts               # GET /api/auth/callback → exchange code for tokens
@@ -680,7 +684,7 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── backfill-outcomes.ts           # Populate outcomes table from historical CSVs
 │   └── entry-time-analysis.ts         # 8:45 vs 9:00 AM CT entry timing study
 ├── src/
-│   ├── __tests__/                     # 1639 tests across 68 test files
+│   ├── __tests__/                     # 1700 tests across 71 test files
 │   ├── components/
 │   │   ├── BacktestDiag.tsx           # Backtest diagnostic panel
 │   │   ├── ChainVerification.tsx      # Theoretical vs live chain strike comparison
@@ -720,9 +724,12 @@ npx tsx scripts/backfill-outcomes.ts
 │   │   ├── exportXlsx.ts              # Excel export (multi-sheet wing width comparison)
 │   │   └── vixStorage.ts              # localStorage cache + static JSON loader
 │   ├── App.tsx                        # Root component: state, hooks, layout
-│   └── main.tsx                       # React entry point
+│   └── main.tsx                       # React entry point + Sentry init
+├── e2e/                               # Playwright E2E tests (22 spec files)
+├── .env.example                       # Environment variable template
+├── .nvmrc                             # Node 24 version pin
 ├── vercel.json                        # Rewrites + security headers + CSP
-└── vite.config.ts                     # Vite + Vitest + PWA config
+└── vite.config.ts                     # Vite + Vitest + PWA + bundle analysis config
 ```
 
 ---
@@ -785,7 +792,7 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
 - `Referrer-Policy: strict-origin-when-cross-origin`
 - `Permissions-Policy: camera=(), microphone=(), geolocation=()`
 - `X-XSS-Protection: 1; mode=block`
-- `Content-Security-Policy`: `default-src 'self'`, strict `script-src`, `frame-ancestors 'none'`, `connect-src` limited to self + Schwab + Vercel Analytics
+- `Content-Security-Policy`: `default-src 'self'`, strict `script-src` (with Sentry CDN), `frame-ancestors 'none'`, `connect-src` limited to self + Schwab + Vercel Analytics + Sentry ingest
 
 ### Authentication
 
@@ -828,9 +835,39 @@ One-click XLSX with three sheets: P&L Comparison (7 wing widths × 6 deltas × 3
 
 ---
 
+## Observability
+
+### Structured Logging
+
+All API routes use [pino](https://github.com/pinojs/pino) for structured JSON logging. Each log entry includes severity level, timestamp, and contextual fields (error objects, request metadata, usage metrics). Logs are searchable and filterable in Vercel function logs.
+
+For local development with human-readable output, pipe through `pino-pretty`:
+
+```bash
+vercel dev 2>&1 | npx pino-pretty
+```
+
+### Error Tracking (Sentry)
+
+Client-side errors are automatically captured via `@sentry/react` with browser tracing (20% sample rate, production only). The `ErrorBoundary` component forwards caught errors to Sentry with component stack traces. Requires `SENTRY_DSN` environment variable (auto-set via Vercel Sentry integration).
+
+### Performance Analytics
+
+Core Web Vitals (LCP, FID, CLS, TTFB) are reported to the Vercel dashboard via `@vercel/speed-insights`, alongside page view analytics from `@vercel/analytics`.
+
+### Bundle Analysis
+
+Generate an interactive treemap of the production bundle:
+
+```bash
+npm run build:analyze    # Opens dist/bundle-stats.html
+```
+
+---
+
 ## Testing
 
-1,639 unit tests across 68 test files + 88 Playwright E2E tests across 16 spec files, all passing with TypeScript strict mode.
+1,700 unit tests across 71 test files + Playwright E2E tests across 22 spec files (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode.
 
 ### Unit Tests (Vitest)
 
@@ -847,28 +884,39 @@ One-click XLSX with three sheets: P&L Comparison (7 wing widths × 6 deltas × 3
 | `db.test.ts`                 | 34 tests: schema init, migrations, snapshots, analyses, outcomes, positions, previous recs |
 | `journal-migrate.test.ts`    | 5 tests: migration endpoint, idempotency, error handling                                   |
 
-### E2E Tests (Playwright)
+### E2E Tests (Playwright — Chromium, Firefox, WebKit)
 
-| File                        | Tests | Coverage                                                     |
-| --------------------------- | ----- | ------------------------------------------------------------ |
-| `calculator-flow.spec.ts`   | 9     | Full calculation flow, mode switching, dark mode             |
-| `strike-table.spec.ts`      | 6     | Delta rows, ordering invariants, VIX sensitivity             |
-| `iron-condor.spec.ts`       | 5     | IC legs, hedge toggle, contracts, hide/show                  |
-| `hedge-dte.spec.ts`         | 9     | DTE selector, EOD recovery, net cost labels, scenarios       |
-| `iv-acceleration.spec.ts`   | 4     | σ multiplier at different times, late session warning        |
-| `fat-tail-pop.spec.ts`      | 3     | Adjusted PoP display, struck-through log-normal              |
-| `market-regime-new.spec.ts` | 11    | Clustering, term structure shapes (contango/fear-spike/flat) |
-| `entry-time.spec.ts`        | 4     | Time selects, AM/PM, timezone, recalculation                 |
-| `advanced-section.spec.ts`  | 5     | Skew slider, wing width, contracts counter                   |
-| `chart-analysis.spec.ts`    | 4     | Mode selector, drop zone, mocked analysis                    |
-| `validation-errors.spec.ts` | 5     | Input validation, error states, clearing                     |
-| `responsive.spec.ts`        | 6     | iPhone, iPad, desktop viewports                              |
+| File                          | Coverage                                                     |
+| ----------------------------- | ------------------------------------------------------------ |
+| `calculator-flow.spec.ts`     | Full calculation flow, mode switching, dark mode             |
+| `strike-table.spec.ts`        | Delta rows, ordering invariants, VIX sensitivity             |
+| `iron-condor.spec.ts`         | IC legs, hedge toggle, contracts, hide/show                  |
+| `hedge-dte.spec.ts`           | DTE selector, EOD recovery, net cost labels, scenarios       |
+| `iv-acceleration.spec.ts`     | σ multiplier at different times, late session warning        |
+| `fat-tail-pop.spec.ts`        | Adjusted PoP display, struck-through log-normal              |
+| `market-regime-new.spec.ts`   | Clustering, term structure shapes (contango/fear-spike/flat) |
+| `entry-time.spec.ts`          | Time selects, AM/PM, timezone, recalculation                 |
+| `advanced-section.spec.ts`    | Skew slider, wing width, contracts counter                   |
+| `chart-analysis.spec.ts`      | Mode selector, drop zone, mocked analysis                    |
+| `validation-errors.spec.ts`   | Input validation, error states, clearing                     |
+| `responsive.spec.ts`          | iPhone, iPad, desktop viewports                              |
+| `a11y-automated.spec.ts`      | Axe-core WCAG 2.1 AA scans (home, results, dark mode)        |
+| `accessibility.spec.ts`       | Keyboard navigation, ARIA attributes, focus management       |
+| `cross-section.spec.ts`       | Cross-section interaction flows                              |
+| `export-download.spec.ts`     | CSV and Excel export/download verification                   |
+| `extreme-inputs.spec.ts`      | Edge cases: extreme values, boundary inputs                  |
+| `theme-persistence.spec.ts`   | Dark mode persistence across page reloads                    |
+| `date-lookup.spec.ts`         | Date picker with event day integration                       |
+| `delta-regime-guide.spec.ts`  | Delta guide ceiling and regime badges                        |
+| `opening-range.spec.ts`       | Opening range check signals                                  |
+| `parameter-summary.spec.ts`   | Parameter summary display                                    |
 
 ```bash
 npm test                 # Watch mode
 npm run test:run         # Single run (CI)
 npm run test:coverage    # v8 coverage report
-npm run test:e2e         # Playwright E2E tests
+npm run test:e2e         # Playwright E2E tests (all browsers)
+npm run test:e2e:ui      # Playwright interactive UI mode
 ```
 
 ---
@@ -889,32 +937,37 @@ vercel deploy --prod     # Or push to main for auto-deploy
 
 1. Add Neon Postgres: Vercel Storage → Connect Database → Neon
 2. Add Upstash Redis: Vercel Storage → Connect Database → Upstash for Redis
-3. Set environment variables: `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, `OWNER_SECRET`, `ANTHROPIC_API_KEY`
-4. Initialize tables: `POST /api/journal/init`
-5. Authenticate: Visit `/api/auth/init` → Schwab login
-6. Backfill outcomes: `npx tsx scripts/backfill-outcomes.ts`
+3. Add Sentry: Vercel Integrations → Sentry (auto-sets `SENTRY_DSN`)
+4. Set environment variables: `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, `OWNER_SECRET`, `ANTHROPIC_API_KEY`
+5. Initialize tables: `POST /api/journal/init`
+6. Authenticate: Visit `/api/auth/init` → Schwab login
+7. Backfill outcomes: `npx tsx scripts/backfill-outcomes.ts`
 
 ---
 
 ## Accessibility
 
-Section 508 / WCAG AA: semantic HTML, ARIA attributes, focus management, 4.5:1 contrast, `prefers-reduced-motion`, labeled inputs, `role="alert"` for errors.
+Section 508 / WCAG 2.1 AA: semantic HTML, ARIA attributes, focus management, 4.5:1 contrast, `prefers-reduced-motion`, labeled inputs, `role="alert"` for errors. Automated accessibility scanning via `@axe-core/playwright` runs against home, results, and dark mode views on every E2E test run.
 
 ---
 
 ## Scripts Reference
 
-| Command                                  | Description                         |
-| ---------------------------------------- | ----------------------------------- |
-| `npm run dev`                            | Vite dev server with HMR            |
-| `npm run build`                          | TypeScript check + production build |
-| `npm test`                               | Vitest watch mode                   |
-| `npm run test:run`                       | Single test run (CI)                |
-| `npm run test:coverage`                  | v8 coverage report                  |
-| `npm run lint`                           | TypeScript + ESLint check           |
-| `npm run test:e2e`                       | Playwright E2E tests (88 specs)     |
-| `npx tsx scripts/backfill-outcomes.ts`   | Populate outcomes table from CSVs   |
-| `npx tsx scripts/entry-time-analysis.ts` | Entry timing study (8:45 vs 9:00)   |
+| Command                                  | Description                                      |
+| ---------------------------------------- | ------------------------------------------------ |
+| `npm run dev`                            | Vite dev server with HMR                         |
+| `npm run build`                          | TypeScript check + production build              |
+| `npm run build:analyze`                  | Production build + interactive bundle treemap    |
+| `npm test`                               | Vitest watch mode                                |
+| `npm run test:run`                       | Single test run (CI)                             |
+| `npm run test:coverage`                  | v8 coverage report                               |
+| `npm run lint`                           | TypeScript + ESLint check                        |
+| `npm run test:e2e`                       | Playwright E2E tests (Chromium, Firefox, WebKit) |
+| `npm run test:e2e:ui`                    | Playwright interactive UI mode                   |
+| `npm run format`                         | Prettier format all files                        |
+| `npm run format:check`                   | Prettier check (CI)                              |
+| `npx tsx scripts/backfill-outcomes.ts`   | Populate outcomes table from CSVs                |
+| `npx tsx scripts/entry-time-analysis.ts` | Entry timing study (8:45 vs 9:00)                |
 
 ---
 
