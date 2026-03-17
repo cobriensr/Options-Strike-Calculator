@@ -16,8 +16,22 @@ import { DEFAULTS, IV_MODES } from '../constants';
 import { useDebounced } from './useDebounced';
 
 export function useAppState() {
-  // Theme
-  const [darkMode, setDarkMode] = useState(false);
+  // Theme — persist preference in localStorage
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      return localStorage.getItem('darkMode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const setDarkModeAndPersist = (value: boolean) => {
+    setDarkMode(value);
+    try {
+      localStorage.setItem('darkMode', String(value));
+    } catch {
+      // ignore
+    }
+  };
 
   // Spot price state
   const [spotPrice, setSpotPrice] = useState('');
@@ -66,7 +80,7 @@ export function useAppState() {
   return {
     // Theme
     darkMode,
-    setDarkMode,
+    setDarkMode: setDarkModeAndPersist,
 
     // Spot
     spotPrice,
