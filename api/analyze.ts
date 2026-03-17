@@ -610,7 +610,6 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     // Stream the response — Anthropic sends headers immediately with streaming,
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
     // Retry once on transient stream failures (Anthropic 200 → mid-stream error).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK types lag behind API features (adaptive thinking, output_config, cache_control ttl)
     const streamRequest = () =>
       anthropic.messages
         .stream({
@@ -629,7 +628,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         } as unknown as Parameters<typeof anthropic.messages.stream>[0])
         .finalMessage();
 
-    let data: any;
+    let data: Awaited<ReturnType<typeof streamRequest>>;
     try {
       data = await streamRequest();
     } catch (streamErr) {
@@ -660,8 +659,8 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     // Filter to text blocks only — thinking blocks are excluded
     const text =
       data.content
-        ?.filter((c: { type: string }) => c.type === 'text')
-        .map((c: { text: string }) => c.text)
+        ?.filter((c) => c.type === 'text')
+        .map((c) => ('text' in c ? c.text : ''))
         .join('') ?? '';
 
     // Parse the JSON response
