@@ -9,6 +9,14 @@ const { mockRedisGet, mockRedisSet, mockRedisDel } = vi.hoisted(() => ({
   mockRedisDel: vi.fn(),
 }));
 
+const mockLogger = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
+vi.mock('../_lib/logger.js', () => ({ default: mockLogger }));
+
 vi.mock('@upstash/redis', () => {
   return {
     Redis: class MockRedis {
@@ -217,9 +225,7 @@ describe('schwab', () => {
       process.env.SCHWAB_CLIENT_ID = 'id';
       process.env.SCHWAB_CLIENT_SECRET = 'secret';
 
-      const consoleError = vi
-        .spyOn(console, 'error')
-        .mockImplementation(() => {});
+      mockLogger.error.mockReset();
 
       // Return expired access token so refresh is triggered
       mockRedisGet.mockResolvedValue({
@@ -262,12 +268,11 @@ describe('schwab', () => {
       if ('token' in result) {
         expect(result.token).toBe('new-tok');
       }
-      expect(consoleError).toHaveBeenCalledWith(
-        'Failed to store tokens in Redis:',
-        expect.any(Error),
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        { err: expect.any(Error) },
+        'Failed to store tokens in Redis',
       );
 
-      consoleError.mockRestore();
       vi.unstubAllGlobals();
     });
 

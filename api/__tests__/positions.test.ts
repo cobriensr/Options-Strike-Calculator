@@ -32,6 +32,8 @@ describe('GET /api/positions', () => {
     vi.mocked(getDb).mockReturnValue(mockSql as never);
     mockSql.mockResolvedValue([]);
     vi.mocked(savePositions).mockResolvedValue(1);
+    // Silence expected console.error from error-path tests
+    vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   it('returns 405 for non-GET methods', async () => {

@@ -99,6 +99,9 @@ describe('POST /api/analyze', () => {
     mockStream.mockReset().mockReturnValue({ finalMessage: mockFinalMessage });
     mockFinalMessage.mockReset();
     process.env.ANTHROPIC_API_KEY = 'test-key';
+    // Silence expected console.error/log from error-path tests
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   it('returns 405 for non-POST requests', async () => {
