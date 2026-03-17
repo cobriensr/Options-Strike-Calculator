@@ -683,7 +683,9 @@ export async function getLatestPositions(date: string): Promise<{
            net_delta, net_theta, unrealized_pnl
     FROM positions
     WHERE date = ${date}
-    ORDER BY created_at DESC
+    ORDER BY
+      CASE WHEN total_spreads > 0 THEN 0 ELSE 1 END,
+      created_at DESC
     LIMIT 1
   `;
 
