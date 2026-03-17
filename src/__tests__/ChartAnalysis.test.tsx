@@ -436,7 +436,7 @@ describe('ChartAnalysis', () => {
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
       // Fast-forward through retry backoff delays (1s + 2s)
-      await vi.advanceTimersByTimeAsync(5000);
+      await act(() => vi.advanceTimersByTimeAsync(5000));
       await waitFor(() => {
         expect(screen.getByText('Network error')).toBeInTheDocument();
       });
@@ -884,7 +884,7 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
-      await vi.advanceTimersByTimeAsync(5000);
+      await act(() => vi.advanceTimersByTimeAsync(5000));
       await waitFor(() => {
         expect(screen.getByText('Request failed')).toBeInTheDocument();
       });
@@ -909,7 +909,7 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
-      await vi.advanceTimersByTimeAsync(5000);
+      await act(() => vi.advanceTimersByTimeAsync(5000));
       await waitFor(() => {
         expect(screen.getByText('HTTP 503')).toBeInTheDocument();
       });
@@ -925,7 +925,7 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
-      await vi.advanceTimersByTimeAsync(5000);
+      await act(() => vi.advanceTimersByTimeAsync(5000));
       await waitFor(() => {
         expect(screen.getByText('Analysis failed')).toBeInTheDocument();
       });
