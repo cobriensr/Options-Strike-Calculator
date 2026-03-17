@@ -420,7 +420,8 @@ export default function StrikeCalculator() {
                       regimeZone: signals.regimeZone ?? undefined,
                       clusterMult,
                       dowLabel: signals.dowLabel ?? undefined,
-                      openingRangeSignal: signals.openingRangeSignal ?? undefined,
+                      openingRangeSignal:
+                        signals.openingRangeSignal ?? undefined,
                       openingRangeAvailable: signals.openingRangeAvailable,
                       vixTermSignal: signals.vixTermSignal ?? undefined,
                       vixTermShape: signals.vixTermShape ?? undefined,

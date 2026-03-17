@@ -1,9 +1,11 @@
-import { MARKET, DEFAULTS, HEDGE_Z_SCORES, SPX_MULTIPLIER, STRESS } from '../constants';
-import type {
-  HedgeDelta,
-  HedgeResult,
-  HedgeScenario,
-} from '../types';
+import {
+  MARKET,
+  DEFAULTS,
+  HEDGE_Z_SCORES,
+  SPX_MULTIPLIER,
+  STRESS,
+} from '../constants';
+import type { HedgeDelta, HedgeResult, HedgeScenario } from '../types';
 import { blackScholesPrice, calcBSVega } from './black-scholes';
 import { snapToIncrement, calcScaledSkew, calcScaledCallSkew } from './strikes';
 
@@ -278,8 +280,10 @@ export function calcHedge(params: {
           'call',
         )
       : Math.max(0, targetCallSpot - callStrikeSnapped);
-  const putPayoutAtTarget = Math.max(0, putValueAtTarget - putPremium) * SPX_MULTIPLIER;
-  const callPayoutAtTarget = Math.max(0, callValueAtTarget - callPremium) * SPX_MULTIPLIER;
+  const putPayoutAtTarget =
+    Math.max(0, putValueAtTarget - putPremium) * SPX_MULTIPLIER;
+  const callPayoutAtTarget =
+    Math.max(0, callValueAtTarget - callPremium) * SPX_MULTIPLIER;
 
   // Recommended contracts: enough to approximately cover IC max loss at target crash
   const recommendedPuts =

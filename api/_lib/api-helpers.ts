@@ -10,7 +10,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getAccessToken, redis } from './schwab.js';
 import { getMarketCloseHourET } from '../../src/data/eventCalendar.js';
-import { getETTime, getETDayOfWeek, getETDateStr } from '../../src/utils/timezone.js';
+import {
+  getETTime,
+  getETDayOfWeek,
+  getETDateStr,
+} from '../../src/utils/timezone.js';
 
 const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';

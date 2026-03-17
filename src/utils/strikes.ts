@@ -1,4 +1,10 @@
-import { DELTA_Z_SCORES, DELTA_OPTIONS, DEFAULTS, MARKET, DEFAULT_SPX_SPY_RATIO } from '../constants';
+import {
+  DELTA_Z_SCORES,
+  DELTA_OPTIONS,
+  DEFAULTS,
+  MARKET,
+  DEFAULT_SPX_SPY_RATIO,
+} from '../constants';
 import type {
   DeltaTarget,
   StrikeResult,

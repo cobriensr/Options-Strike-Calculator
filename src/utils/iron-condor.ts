@@ -1,4 +1,8 @@
-import { DEFAULTS, DEFAULT_SPX_SPY_RATIO, getKurtosisFactor } from '../constants';
+import {
+  DEFAULTS,
+  DEFAULT_SPX_SPY_RATIO,
+  getKurtosisFactor,
+} from '../constants';
 import type { DeltaRow, IronCondorLegs } from '../types';
 import { normalCDF, blackScholesPrice } from './black-scholes';
 import { calcTimeToExpiry } from './time';
