@@ -192,6 +192,11 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     timeAmPm,
     timezone,
     vix1dStatic,
+    setSpotPrice,
+    setSpxDirect,
+    setVixInput,
+    setIvMode,
+    setDirectIVInput,
     market.data.quotes,
   ]);
 
