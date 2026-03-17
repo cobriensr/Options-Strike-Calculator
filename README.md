@@ -249,17 +249,17 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 
 Compares theoretical calculator strikes to actual Schwab option chain data:
 
-| Feature | Detail |
-| --- | --- |
-| Endpoint | `GET /api/chain` |
-| Symbol | `$SPX`, range=ALL, strikeCount=80 |
-| Target deltas | 5, 8, 10, 12, 15, 20 |
-| Returns | Nearest chain strike to each target delta with actual put/call delta, IV, credit, theta, vega |
-| Stale filtering | Excludes quotes with bid <= 0 or spread > 50% of mid price |
-| Max pain | `calcMaxPain()` -- strike minimizing total OI-weighted payout, with distance from spot |
-| Pin risk | Top 3 put/call OI walls returned for gamma pinning analysis |
-| Divergence alert | Flags when theoretical vs chain strikes diverge >10 pts |
-| Cache | 30 seconds during market hours |
+| Feature          | Detail                                                                                        |
+| ---------------- | --------------------------------------------------------------------------------------------- |
+| Endpoint         | `GET /api/chain`                                                                              |
+| Symbol           | `$SPX`, range=ALL, strikeCount=80                                                             |
+| Target deltas    | 5, 8, 10, 12, 15, 20                                                                          |
+| Returns          | Nearest chain strike to each target delta with actual put/call delta, IV, credit, theta, vega |
+| Stale filtering  | Excludes quotes with bid <= 0 or spread > 50% of mid price                                    |
+| Max pain         | `calcMaxPain()` -- strike minimizing total OI-weighted payout, with distance from spot        |
+| Pin risk         | Top 3 put/call OI walls returned for gamma pinning analysis                                   |
+| Divergence alert | Flags when theoretical vs chain strikes diverge >10 pts                                       |
+| Cache            | 30 seconds during market hours                                                                |
 
 This addresses the single-σ model limitation: VIX1D is aggregate IV across the entire strip, but on high-skew days OTM put IV ≠ VIX1D. The chain endpoint shows per-strike deltas directly from Schwab.
 
@@ -834,18 +834,18 @@ One-click XLSX with three sheets: P&L Comparison (7 wing widths × 6 deltas × 3
 
 ### Unit Tests (Vitest)
 
-| File | Focus |
-| --- | --- |
-| `calculator.test.ts` | 150+ tests: BS pricing, Greeks (delta/gamma/theta/vega), strikes, kurtosis, stressed sigma |
-| `ChartAnalysis.test.tsx` | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling |
-| `useComputedSignals.test.ts` | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering |
-| `skewAndIC.test.ts` | 63 tests: convex skew, IC legs, per-side PoP, breakevens |
-| `hedge.test.tsx` | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario |
-| `PinRiskAnalysis.test.tsx` | 7 tests: OI table, pin risk warning, empty state, K formatting |
-| `RvIvCard.test.tsx` | 6 tests: ratio display, all 3 labels, RV/IV percentages |
-| `positions.test.ts` | 17 tests: handler, spread grouping, summary building, DB save, error paths |
-| `db.test.ts` | 34 tests: schema init, migrations, snapshots, analyses, outcomes, positions, previous recs |
-| `journal-migrate.test.ts` | 5 tests: migration endpoint, idempotency, error handling |
+| File                         | Focus                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------ |
+| `calculator.test.ts`         | 150+ tests: BS pricing, Greeks (delta/gamma/theta/vega), strikes, kurtosis, stressed sigma |
+| `ChartAnalysis.test.tsx`     | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling      |
+| `useComputedSignals.test.ts` | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering     |
+| `skewAndIC.test.ts`          | 63 tests: convex skew, IC legs, per-side PoP, breakevens                                   |
+| `hedge.test.tsx`             | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario            |
+| `PinRiskAnalysis.test.tsx`   | 7 tests: OI table, pin risk warning, empty state, K formatting                             |
+| `RvIvCard.test.tsx`          | 6 tests: ratio display, all 3 labels, RV/IV percentages                                    |
+| `positions.test.ts`          | 17 tests: handler, spread grouping, summary building, DB save, error paths                 |
+| `db.test.ts`                 | 34 tests: schema init, migrations, snapshots, analyses, outcomes, positions, previous recs |
+| `journal-migrate.test.ts`    | 5 tests: migration endpoint, idempotency, error handling                                   |
 
 ### E2E Tests (Playwright)
 
