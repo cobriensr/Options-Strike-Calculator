@@ -613,19 +613,19 @@ vercel dev           # Frontend + API functions (localhost:3000)
 
 See [.env.example](.env.example) for a copy-paste template with descriptions.
 
-| Variable                  | Source                        | Purpose                           |
-| ------------------------- | ----------------------------- | --------------------------------- |
-| `SCHWAB_CLIENT_ID`        | developer.schwab.com          | Schwab API app key                |
-| `SCHWAB_CLIENT_SECRET`    | developer.schwab.com          | Schwab API app secret             |
-| `SCHWAB_REDIRECT_URI`     | Your Schwab app settings      | OAuth callback URL                |
-| `OWNER_SECRET`            | `openssl rand -hex 32`        | Owner session cookie value        |
-| `UPSTASH_REDIS_REST_URL`  | Auto-set by Vercel (Upstash)  | Redis REST endpoint               |
-| `UPSTASH_REDIS_REST_TOKEN`| Auto-set by Vercel (Upstash)  | Redis auth token                  |
-| `ANTHROPIC_API_KEY`       | console.anthropic.com         | Claude API key for chart analysis |
-| `DATABASE_URL`            | Auto-set by Vercel (Neon)     | Postgres connection string        |
-| `SENTRY_DSN`              | Auto-set by Vercel (Sentry)   | Sentry error tracking DSN         |
-| `FRED_API_KEY`            | fred.stlouisfed.org           | Economic calendar data (optional) |
-| `FINNHUB_API_KEY`         | finnhub.io                    | Mega-cap earnings data (optional) |
+| Variable                   | Source                       | Purpose                           |
+| -------------------------- | ---------------------------- | --------------------------------- |
+| `SCHWAB_CLIENT_ID`         | developer.schwab.com         | Schwab API app key                |
+| `SCHWAB_CLIENT_SECRET`     | developer.schwab.com         | Schwab API app secret             |
+| `SCHWAB_REDIRECT_URI`      | Your Schwab app settings     | OAuth callback URL                |
+| `OWNER_SECRET`             | `openssl rand -hex 32`       | Owner session cookie value        |
+| `UPSTASH_REDIS_REST_URL`   | Auto-set by Vercel (Upstash) | Redis REST endpoint               |
+| `UPSTASH_REDIS_REST_TOKEN` | Auto-set by Vercel (Upstash) | Redis auth token                  |
+| `ANTHROPIC_API_KEY`        | console.anthropic.com        | Claude API key for chart analysis |
+| `DATABASE_URL`             | Auto-set by Vercel (Neon)    | Postgres connection string        |
+| `SENTRY_DSN`               | Auto-set by Vercel (Sentry)  | Sentry error tracking DSN         |
+| `FRED_API_KEY`             | fred.stlouisfed.org          | Economic calendar data (optional) |
+| `FINNHUB_API_KEY`          | finnhub.io                   | Mega-cap earnings data (optional) |
 
 ### Database Setup
 
@@ -886,30 +886,30 @@ npm run build:analyze    # Opens dist/bundle-stats.html
 
 ### E2E Tests (Playwright — Chromium, Firefox, WebKit)
 
-| File                          | Coverage                                                     |
-| ----------------------------- | ------------------------------------------------------------ |
-| `calculator-flow.spec.ts`     | Full calculation flow, mode switching, dark mode             |
-| `strike-table.spec.ts`        | Delta rows, ordering invariants, VIX sensitivity             |
-| `iron-condor.spec.ts`         | IC legs, hedge toggle, contracts, hide/show                  |
-| `hedge-dte.spec.ts`           | DTE selector, EOD recovery, net cost labels, scenarios       |
-| `iv-acceleration.spec.ts`     | σ multiplier at different times, late session warning        |
-| `fat-tail-pop.spec.ts`        | Adjusted PoP display, struck-through log-normal              |
-| `market-regime-new.spec.ts`   | Clustering, term structure shapes (contango/fear-spike/flat) |
-| `entry-time.spec.ts`          | Time selects, AM/PM, timezone, recalculation                 |
-| `advanced-section.spec.ts`    | Skew slider, wing width, contracts counter                   |
-| `chart-analysis.spec.ts`      | Mode selector, drop zone, mocked analysis                    |
-| `validation-errors.spec.ts`   | Input validation, error states, clearing                     |
-| `responsive.spec.ts`          | iPhone, iPad, desktop viewports                              |
-| `a11y-automated.spec.ts`      | Axe-core WCAG 2.1 AA scans (home, results, dark mode)        |
-| `accessibility.spec.ts`       | Keyboard navigation, ARIA attributes, focus management       |
-| `cross-section.spec.ts`       | Cross-section interaction flows                              |
-| `export-download.spec.ts`     | CSV and Excel export/download verification                   |
-| `extreme-inputs.spec.ts`      | Edge cases: extreme values, boundary inputs                  |
-| `theme-persistence.spec.ts`   | Dark mode persistence across page reloads                    |
-| `date-lookup.spec.ts`         | Date picker with event day integration                       |
-| `delta-regime-guide.spec.ts`  | Delta guide ceiling and regime badges                        |
-| `opening-range.spec.ts`       | Opening range check signals                                  |
-| `parameter-summary.spec.ts`   | Parameter summary display                                    |
+| File                         | Coverage                                                     |
+| ---------------------------- | ------------------------------------------------------------ |
+| `calculator-flow.spec.ts`    | Full calculation flow, mode switching, dark mode             |
+| `strike-table.spec.ts`       | Delta rows, ordering invariants, VIX sensitivity             |
+| `iron-condor.spec.ts`        | IC legs, hedge toggle, contracts, hide/show                  |
+| `hedge-dte.spec.ts`          | DTE selector, EOD recovery, net cost labels, scenarios       |
+| `iv-acceleration.spec.ts`    | σ multiplier at different times, late session warning        |
+| `fat-tail-pop.spec.ts`       | Adjusted PoP display, struck-through log-normal              |
+| `market-regime-new.spec.ts`  | Clustering, term structure shapes (contango/fear-spike/flat) |
+| `entry-time.spec.ts`         | Time selects, AM/PM, timezone, recalculation                 |
+| `advanced-section.spec.ts`   | Skew slider, wing width, contracts counter                   |
+| `chart-analysis.spec.ts`     | Mode selector, drop zone, mocked analysis                    |
+| `validation-errors.spec.ts`  | Input validation, error states, clearing                     |
+| `responsive.spec.ts`         | iPhone, iPad, desktop viewports                              |
+| `a11y-automated.spec.ts`     | Axe-core WCAG 2.1 AA scans (home, results, dark mode)        |
+| `accessibility.spec.ts`      | Keyboard navigation, ARIA attributes, focus management       |
+| `cross-section.spec.ts`      | Cross-section interaction flows                              |
+| `export-download.spec.ts`    | CSV and Excel export/download verification                   |
+| `extreme-inputs.spec.ts`     | Edge cases: extreme values, boundary inputs                  |
+| `theme-persistence.spec.ts`  | Dark mode persistence across page reloads                    |
+| `date-lookup.spec.ts`        | Date picker with event day integration                       |
+| `delta-regime-guide.spec.ts` | Delta guide ceiling and regime badges                        |
+| `opening-range.spec.ts`      | Opening range check signals                                  |
+| `parameter-summary.spec.ts`  | Parameter summary display                                    |
 
 ```bash
 npm test                 # Watch mode
