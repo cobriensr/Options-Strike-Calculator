@@ -160,6 +160,7 @@ export default function AnalysisResults({
           {(
             [
               ['marketTide', 'Market Tide'],
+              ['spxNetFlow', 'SPX Flow'],
               ['spyNetFlow', 'SPY Flow'],
               ['qqqNetFlow', 'QQQ Flow'],
               ['periscope', 'Periscope'],

@@ -54,7 +54,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
   const addImage = useCallback(
     (file: File) => {
-      if (images.length >= 5) return;
+      if (images.length >= 6) return;
       const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const preview = URL.createObjectURL(file);
       setImages((prev) => {
@@ -117,7 +117,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       const files = Array.from(e.dataTransfer.files).filter((f) =>
         f.type.startsWith('image/'),
       );
-      for (const f of files.slice(0, 5 - images.length)) addImage(f);
+      for (const f of files.slice(0, 6 - images.length)) addImage(f);
     },
     [addImage, images.length],
   );
@@ -125,7 +125,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
-      for (const f of files.slice(0, 5 - images.length)) addImage(f);
+      for (const f of files.slice(0, 6 - images.length)) addImage(f);
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
     [addImage, images.length],
@@ -165,6 +165,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     'Reading chart data...',
     'Fetching open positions...',
     'Analyzing Market Tide flow...',
+    'Checking SPX Net Flow...',
     'Checking Net Flow confirmation...',
     'Evaluating gamma exposure...',
     'Mapping strikes to gamma zones...',
@@ -329,7 +330,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           <div className="text-muted text-[12px]">
             {images.length === 0
               ? 'Drop or click to upload, or paste (Ctrl+V) a screenshot from clipboard'
-              : `${images.length}/5 images \u2014 drop, click, or paste more`}
+              : `${images.length}/6 images \u2014 drop, click, or paste more`}
           </div>
         </button>
 
@@ -463,7 +464,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 className="h-full rounded-full"
                 style={{
                   backgroundColor: th.accent,
-                  width: `${Math.min(95, (elapsed / 120) * 100)}%`,
+                  width: `${Math.min(95, (elapsed / 140) * 100)}%`,
                   transition: 'width 1s linear',
                 }}
               />

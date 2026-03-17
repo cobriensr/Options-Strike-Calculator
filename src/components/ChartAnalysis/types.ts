@@ -63,6 +63,7 @@ export interface AnalysisResult {
   reasoning: string;
   chartConfidence?: {
     marketTide?: ChartSignal;
+    spxNetFlow?: ChartSignal;
     spyNetFlow?: ChartSignal;
     qqqNetFlow?: ChartSignal;
     periscope?: ChartSignal;
@@ -112,11 +113,12 @@ export interface AnalysisResult {
 }
 
 export const CHART_LABELS = [
-  'Market Tide (SPX)',
+  'Market Tide',
   'Net Flow (SPY)',
   'Net Flow (QQQ)',
-  'Periscope (Gamma)',
+  'Net Flow (SPX)',
   'Periscope (Delta Flow)',
+  'Periscope (Gamma)',
   'Other',
 ] as const;
 
