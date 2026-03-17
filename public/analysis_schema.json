@@ -1,0 +1,392 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AnalysisResult",
+  "description": "0DTE SPX options analysis output from Claude Opus 4.6. Supports entry, midday, and review modes.",
+  "type": "object",
+  "required": [
+    "mode",
+    "structure",
+    "confidence",
+    "suggestedDelta",
+    "reasoning",
+    "chartConfidence",
+    "observations",
+    "strikeGuidance",
+    "managementRules",
+    "entryPlan",
+    "risks",
+    "hedge",
+    "periscopeNotes",
+    "structureRationale",
+    "review",
+    "imageIssues"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["entry", "midday", "review"]
+    },
+    "structure": {
+      "type": "string",
+      "enum": ["IRON CONDOR", "PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "SIT OUT"]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["HIGH", "MODERATE", "LOW"]
+    },
+    "suggestedDelta": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "One sentence summary of the primary signal driving the recommendation."
+    },
+    "chartConfidence": {
+      "type": "object",
+      "required": ["marketTide", "spxNetFlow", "spyNetFlow", "qqqNetFlow", "periscope"],
+      "additionalProperties": false,
+      "properties": {
+        "marketTide": {
+          "$ref": "#/$defs/chartSignalDirectional"
+        },
+        "spxNetFlow": {
+          "$ref": "#/$defs/chartSignalDirectionalOrNotProvided"
+        },
+        "spyNetFlow": {
+          "$ref": "#/$defs/chartSignalConfirmation"
+        },
+        "qqqNetFlow": {
+          "$ref": "#/$defs/chartSignalConfirmation"
+        },
+        "periscope": {
+          "$ref": "#/$defs/chartSignalPeriscope"
+        }
+      }
+    },
+    "observations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 3,
+      "maxItems": 8,
+      "description": "Key observations from the charts and context, each a substantive paragraph."
+    },
+    "strikeGuidance": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["putStrikeNote", "callStrikeNote", "straddleCone", "adjustments"],
+          "additionalProperties": false,
+          "properties": {
+            "putStrikeNote": {
+              "type": ["string", "null"],
+              "description": "Specific guidance on put strike placement relative to gamma zones."
+            },
+            "callStrikeNote": {
+              "type": ["string", "null"],
+              "description": "Specific guidance on call strike placement relative to gamma zones."
+            },
+            "straddleCone": {
+              "oneOf": [
+                { "type": "null" },
+                {
+                  "type": "object",
+                  "required": ["upper", "lower", "priceRelation"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "upper": {
+                      "type": "number",
+                      "description": "Straddle cone upper breakeven price."
+                    },
+                    "lower": {
+                      "type": "number",
+                      "description": "Straddle cone lower breakeven price."
+                    },
+                    "priceRelation": {
+                      "type": "string",
+                      "description": "Description of current price position relative to the cone boundaries."
+                    }
+                  }
+                }
+              ]
+            },
+            "adjustments": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Specific strike adjustment recommendations referencing SPX price levels."
+            }
+          }
+        }
+      ]
+    },
+    "managementRules": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["profitTarget", "stopConditions", "timeRules", "flowReversalSignal"],
+          "additionalProperties": false,
+          "properties": {
+            "profitTarget": {
+              "type": ["string", "null"],
+              "description": "When to take profit, with time and percentage thresholds."
+            },
+            "stopConditions": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Specific if/then stop conditions the trader can follow mechanically."
+            },
+            "timeRules": {
+              "type": ["string", "null"],
+              "description": "Time-based position management rules."
+            },
+            "flowReversalSignal": {
+              "type": ["string", "null"],
+              "description": "Flow conditions that signal the directional thesis has reversed."
+            }
+          }
+        }
+      ]
+    },
+    "entryPlan": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["entry1", "entry2", "entry3", "maxTotalSize", "noEntryConditions"],
+          "additionalProperties": false,
+          "properties": {
+            "entry1": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/entryStep" }
+              ]
+            },
+            "entry2": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/entryStep" }
+              ]
+            },
+            "entry3": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/entryStep" }
+              ]
+            },
+            "maxTotalSize": {
+              "type": ["string", "null"],
+              "description": "Maximum total position size as percentage of daily risk budget."
+            },
+            "noEntryConditions": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Conditions under which NO additional entries should be made."
+            }
+          }
+        }
+      ]
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "maxItems": 5,
+      "description": "Key risk factors, each a substantive paragraph."
+    },
+    "hedge": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["recommendation", "description", "rationale", "estimatedCost"],
+          "additionalProperties": false,
+          "properties": {
+            "recommendation": {
+              "type": "string",
+              "enum": ["NO HEDGE", "PROTECTIVE LONG", "DEBIT SPREAD HEDGE", "REDUCED SIZE", "SKIP"]
+            },
+            "description": {
+              "type": "string",
+              "description": "Specific hedge action. For PROTECTIVE LONG, includes strike, DTE, and cost."
+            },
+            "rationale": {
+              "type": "string",
+              "description": "Why this hedge given today's conditions."
+            },
+            "estimatedCost": {
+              "type": "string",
+              "description": "Estimated cost including recovery at EOD for protective longs."
+            }
+          }
+        }
+      ]
+    },
+    "periscopeNotes": {
+      "type": ["string", "null"],
+      "description": "Detailed gamma and straddle cone analysis. Null if no Periscope image provided."
+    },
+    "structureRationale": {
+      "type": "string",
+      "description": "Why this structure was selected, referencing NCP/NPP relationship and all confirming/contradicting signals."
+    },
+    "review": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["wasCorrect", "whatWorked", "whatMissed", "optimalTrade", "lessonsLearned"],
+          "additionalProperties": false,
+          "properties": {
+            "wasCorrect": {
+              "type": "boolean",
+              "description": "Whether the recommendation (entry or midday) was correct."
+            },
+            "whatWorked": {
+              "type": "string",
+              "description": "What signals and decisions were correct."
+            },
+            "whatMissed": {
+              "type": "string",
+              "description": "What could have been done better with the information available."
+            },
+            "optimalTrade": {
+              "type": "string",
+              "description": "The best possible trade with perfect hindsight."
+            },
+            "lessonsLearned": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1,
+              "maxItems": 8,
+              "description": "Key takeaways for future similar setups."
+            }
+          }
+        }
+      ]
+    },
+    "imageIssues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["imageIndex", "label", "issue", "suggestion"],
+        "additionalProperties": false,
+        "properties": {
+          "imageIndex": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6
+          },
+          "label": {
+            "type": "string",
+            "description": "The chart label (e.g. 'Market Tide', 'Net Flow (SPX)')."
+          },
+          "issue": {
+            "type": "string",
+            "description": "What is wrong with the image."
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "How to fix it for re-upload."
+          }
+        }
+      },
+      "description": "Only populated for genuinely unreadable images. Empty array if all images are usable."
+    }
+  },
+  "$defs": {
+    "confidenceLevel": {
+      "type": "string",
+      "enum": ["HIGH", "MODERATE", "LOW"]
+    },
+    "chartSignalDirectional": {
+      "type": "object",
+      "required": ["signal", "confidence", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "type": "string",
+          "enum": ["BEARISH", "BULLISH", "NEUTRAL", "CONFLICTED"]
+        },
+        "confidence": { "$ref": "#/$defs/confidenceLevel" },
+        "note": { "type": "string" }
+      }
+    },
+    "chartSignalDirectionalOrNotProvided": {
+      "type": "object",
+      "required": ["signal", "confidence", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "type": "string",
+          "enum": ["BEARISH", "BULLISH", "NEUTRAL", "CONFLICTED", "NOT PROVIDED"]
+        },
+        "confidence": { "$ref": "#/$defs/confidenceLevel" },
+        "note": { "type": "string" }
+      }
+    },
+    "chartSignalConfirmation": {
+      "type": "object",
+      "required": ["signal", "confidence", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "type": "string",
+          "enum": ["CONFIRMS", "CONTRADICTS", "NEUTRAL", "NOT PROVIDED"]
+        },
+        "confidence": { "$ref": "#/$defs/confidenceLevel" },
+        "note": { "type": "string" }
+      }
+    },
+    "chartSignalPeriscope": {
+      "type": "object",
+      "required": ["signal", "confidence", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "type": "string",
+          "enum": ["FAVORABLE", "UNFAVORABLE", "MIXED", "NOT PROVIDED"]
+        },
+        "confidence": { "$ref": "#/$defs/confidenceLevel" },
+        "note": { "type": "string" }
+      }
+    },
+    "entryStep": {
+      "type": "object",
+      "required": ["delta", "structure", "sizePercent", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "timing": {
+          "type": ["string", "null"],
+          "description": "When to enter (for immediate entries, e.g. 'Now (9:05 AM CT / 10:05 AM ET)')."
+        },
+        "condition": {
+          "type": ["string", "null"],
+          "description": "Condition that must be met before entering (for conditional entries)."
+        },
+        "delta": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "structure": {
+          "type": "string",
+          "enum": ["IRON CONDOR", "PUT CREDIT SPREAD", "CALL CREDIT SPREAD"]
+        },
+        "sizePercent": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 100,
+          "description": "Position size as percentage of daily risk budget for this entry."
+        },
+        "note": {
+          "type": "string",
+          "description": "Rationale for this specific entry's timing, delta, and size."
+        }
+      }
+    }
+  }
+}
