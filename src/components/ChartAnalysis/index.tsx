@@ -16,7 +16,6 @@ import { SectionBox } from '../ui';
 import type { AnalysisMode, AnalysisResult, UploadedImage } from './types';
 import { CHART_LABELS, MODE_LABELS } from './types';
 import AnalysisResultsView from './AnalysisResults';
-import { fetchWithRetry } from '../../utils/fetchWithRetry';
 
 export type { AnalysisContext } from './types';
 
@@ -213,63 +212,117 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         }
       }
 
-      const controller = new AbortController();
-      abortRef.current = controller;
-      const timeout = setTimeout(() => controller.abort(), 750_000); // 12 min 30s
-
-      const res = await fetchWithRetry('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        maxRetries: 2,
-        body: JSON.stringify({
-          images: imageData,
-          context: {
-            ...context,
-            mode,
-            sigma: results?.sigma,
-            T: results?.T,
-            hoursRemaining: results?.hoursRemaining,
-            spx: results?.spot,
-            // Previous recommendation is now auto-fetched from DB by the backend.
-            // Keep the client-side fallback for cases where DB hasn't been populated yet
-            // (e.g., first analysis of the day, or backtesting without saved analyses).
-            previousRecommendation:
-              lastAnalysisRef.current &&
-              (mode === 'midday' || mode === 'review')
-                ? buildPreviousRecommendation(lastAnalysisRef.current)
-                : undefined,
-          },
-        }),
+      const payload = JSON.stringify({
+        images: imageData,
+        context: {
+          ...context,
+          mode,
+          sigma: results?.sigma,
+          T: results?.T,
+          hoursRemaining: results?.hoursRemaining,
+          spx: results?.spot,
+          // Previous recommendation is now auto-fetched from DB by the backend.
+          // Keep the client-side fallback for cases where DB hasn't been populated yet
+          // (e.g., first analysis of the day, or backtesting without saved analyses).
+          previousRecommendation:
+            lastAnalysisRef.current && (mode === 'midday' || mode === 'review')
+              ? buildPreviousRecommendation(lastAnalysisRef.current)
+              : undefined,
+        },
       });
 
-      clearTimeout(timeout);
+      const MAX_ATTEMPTS = 3;
+      let lastError: unknown = null;
 
-      if (!res.ok) {
-        const body = await res
-          .json()
-          .catch(() => ({ error: 'Request failed' }));
-        throw new Error(body.error || `HTTP ${res.status}`);
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        // Fresh controller per attempt so a timeout on attempt N
+        // doesn't poison attempt N+1
+        const controller = new AbortController();
+        abortRef.current = controller;
+        const timeout = setTimeout(() => controller.abort(), 750_000); // 12 min 30s
+
+        try {
+          const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: payload,
+          });
+
+          clearTimeout(timeout);
+
+          if (!res.ok) {
+            const body = await res
+              .json()
+              .catch(() => ({ error: 'Request failed' }));
+            const httpErr = new Error(body.error || `HTTP ${res.status}`);
+            (httpErr as Error & { status: number }).status = res.status;
+            throw httpErr;
+          }
+
+          const data = await res.json();
+          if (data.analysis) {
+            setAnalysis(data.analysis);
+            lastAnalysisRef.current = data.analysis;
+          }
+          if (data.raw) setRawResponse(data.raw);
+          if (!data.analysis && data.raw)
+            setError(
+              'Could not parse structured response. See raw output below.',
+            );
+
+          // Success — break out of retry loop
+          lastError = null;
+          break;
+        } catch (err) {
+          clearTimeout(timeout);
+          lastError = err;
+
+          // User manually cancelled — don't retry
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            if (!abortRef.current) break; // manual cancel (abortRef cleared)
+            // Timeout-triggered abort — retry if attempts remain
+            if (attempt === MAX_ATTEMPTS) break;
+            setError(
+              `Attempt ${attempt}/${MAX_ATTEMPTS} timed out — retrying...`,
+            );
+            continue;
+          }
+
+          // Non-retryable client errors (auth, validation, bad request)
+          const status = (err as Error & { status?: number }).status;
+          if (status && status >= 400 && status < 500) {
+            break;
+          }
+
+          // Retryable failure — back off then retry
+          if (attempt < MAX_ATTEMPTS) {
+            const delaySec = 2 ** (attempt - 1); // 1s, 2s
+            setError(
+              `Attempt ${attempt}/${MAX_ATTEMPTS} failed — retrying in ${delaySec}s...`,
+            );
+            await new Promise((r) => setTimeout(r, delaySec * 1000));
+          }
+        }
       }
 
-      const data = await res.json();
-      if (data.analysis) {
-        setAnalysis(data.analysis);
-        lastAnalysisRef.current = data.analysis;
-      }
-      if (data.raw) setRawResponse(data.raw);
-      if (!data.analysis && data.raw)
-        setError('Could not parse structured response. See raw output below.');
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        // abortRef is null if cancelAnalysis was called (it clears it); non-null means timeout
-        if (abortRef.current)
+      if (lastError) {
+        if (
+          lastError instanceof DOMException &&
+          lastError.name === 'AbortError'
+        ) {
+          if (abortRef.current)
+            setError(
+              `Analysis timed out after ${MAX_ATTEMPTS} attempts. Try fewer images or simpler charts.`,
+            );
+        } else {
           setError(
-            'Analysis timed out (>12 min). Try fewer images or simpler charts.',
+            lastError instanceof Error ? lastError.message : 'Analysis failed',
           );
-      } else {
-        setError(err instanceof Error ? err.message : 'Analysis failed');
+        }
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
       abortRef.current = null;
       setLoading(false);

@@ -45,6 +45,19 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,png,woff2}'],
         runtimeCaching: [
           {
+            // Bypass the service worker entirely for API calls.
+            // Without this, Chrome's 5-min SW fetch-event timeout kills
+            // long-running requests (like Claude Opus analysis) at 300s.
+            urlPattern: /^\/api\//,
+            handler: 'NetworkOnly',
+            method: 'POST',
+          },
+          {
+            urlPattern: /^\/api\//,
+            handler: 'NetworkOnly',
+            method: 'GET',
+          },
+          {
             urlPattern: /\/vix-data\.json$/,
             handler: 'StaleWhileRevalidate',
             options: {
