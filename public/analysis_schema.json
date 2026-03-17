@@ -29,7 +29,12 @@
     },
     "structure": {
       "type": "string",
-      "enum": ["IRON CONDOR", "PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "SIT OUT"]
+      "enum": [
+        "IRON CONDOR",
+        "PUT CREDIT SPREAD",
+        "CALL CREDIT SPREAD",
+        "SIT OUT"
+      ]
     },
     "confidence": {
       "type": "string",
@@ -46,7 +51,13 @@
     },
     "chartConfidence": {
       "type": "object",
-      "required": ["marketTide", "spxNetFlow", "spyNetFlow", "qqqNetFlow", "periscope"],
+      "required": [
+        "marketTide",
+        "spxNetFlow",
+        "spyNetFlow",
+        "qqqNetFlow",
+        "periscope"
+      ],
       "additionalProperties": false,
       "properties": {
         "marketTide": {
@@ -78,7 +89,12 @@
         { "type": "null" },
         {
           "type": "object",
-          "required": ["putStrikeNote", "callStrikeNote", "straddleCone", "adjustments"],
+          "required": [
+            "putStrikeNote",
+            "callStrikeNote",
+            "straddleCone",
+            "adjustments"
+          ],
           "additionalProperties": false,
           "properties": {
             "putStrikeNote": {
@@ -127,7 +143,12 @@
         { "type": "null" },
         {
           "type": "object",
-          "required": ["profitTarget", "stopConditions", "timeRules", "flowReversalSignal"],
+          "required": [
+            "profitTarget",
+            "stopConditions",
+            "timeRules",
+            "flowReversalSignal"
+          ],
           "additionalProperties": false,
           "properties": {
             "profitTarget": {
@@ -156,26 +177,23 @@
         { "type": "null" },
         {
           "type": "object",
-          "required": ["entry1", "entry2", "entry3", "maxTotalSize", "noEntryConditions"],
+          "required": [
+            "entry1",
+            "entry2",
+            "entry3",
+            "maxTotalSize",
+            "noEntryConditions"
+          ],
           "additionalProperties": false,
           "properties": {
             "entry1": {
-              "oneOf": [
-                { "type": "null" },
-                { "$ref": "#/$defs/entryStep" }
-              ]
+              "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/entryStep" }]
             },
             "entry2": {
-              "oneOf": [
-                { "type": "null" },
-                { "$ref": "#/$defs/entryStep" }
-              ]
+              "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/entryStep" }]
             },
             "entry3": {
-              "oneOf": [
-                { "type": "null" },
-                { "$ref": "#/$defs/entryStep" }
-              ]
+              "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/entryStep" }]
             },
             "maxTotalSize": {
               "type": ["string", "null"],
@@ -202,12 +220,23 @@
         { "type": "null" },
         {
           "type": "object",
-          "required": ["recommendation", "description", "rationale", "estimatedCost"],
+          "required": [
+            "recommendation",
+            "description",
+            "rationale",
+            "estimatedCost"
+          ],
           "additionalProperties": false,
           "properties": {
             "recommendation": {
               "type": "string",
-              "enum": ["NO HEDGE", "PROTECTIVE LONG", "DEBIT SPREAD HEDGE", "REDUCED SIZE", "SKIP"]
+              "enum": [
+                "NO HEDGE",
+                "PROTECTIVE LONG",
+                "DEBIT SPREAD HEDGE",
+                "REDUCED SIZE",
+                "SKIP"
+              ]
             },
             "description": {
               "type": "string",
@@ -238,7 +267,13 @@
         { "type": "null" },
         {
           "type": "object",
-          "required": ["wasCorrect", "whatWorked", "whatMissed", "optimalTrade", "lessonsLearned"],
+          "required": [
+            "wasCorrect",
+            "whatWorked",
+            "whatMissed",
+            "optimalTrade",
+            "lessonsLearned"
+          ],
           "additionalProperties": false,
           "properties": {
             "wasCorrect": {
@@ -322,7 +357,13 @@
       "properties": {
         "signal": {
           "type": "string",
-          "enum": ["BEARISH", "BULLISH", "NEUTRAL", "CONFLICTED", "NOT PROVIDED"]
+          "enum": [
+            "BEARISH",
+            "BULLISH",
+            "NEUTRAL",
+            "CONFLICTED",
+            "NOT PROVIDED"
+          ]
         },
         "confidence": { "$ref": "#/$defs/confidenceLevel" },
         "note": { "type": "string" }

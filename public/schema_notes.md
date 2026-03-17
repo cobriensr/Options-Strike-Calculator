@@ -8,26 +8,26 @@ JSON Schema for the `full_response` JSONB column in PostgreSQL, derived from act
 
 All 17 top-level fields are always present in the JSON. Nullability varies by mode:
 
-| Field | entry | midday | review |
-| ----- | ----- | ------ | ------ |
-| `entryPlan` | object | object | **null** |
-| `review` | **null** | **null** | object |
-| `strikeGuidance` | object (if Periscope) | object (if Periscope) | object |
-| `managementRules` | object | object | object (retrospective) |
-| `periscopeNotes` | string (if Periscope) | string (if Periscope) | string |
-| `hedge` | object | object | object |
+| Field             | entry                 | midday                | review                 |
+| ----------------- | --------------------- | --------------------- | ---------------------- |
+| `entryPlan`       | object                | object                | **null**               |
+| `review`          | **null**              | **null**              | object                 |
+| `strikeGuidance`  | object (if Periscope) | object (if Periscope) | object                 |
+| `managementRules` | object                | object                | object (retrospective) |
+| `periscopeNotes`  | string (if Periscope) | string (if Periscope) | string                 |
+| `hedge`           | object                | object                | object                 |
 
 ## chartConfidence Signal Types
 
 Different charts use different signal vocabularies:
 
-| Key | Signals | Why |
-| --- | ------- | --- |
-| `marketTide` | BEARISH, BULLISH, NEUTRAL, CONFLICTED | Directional — this is the broad market signal |
-| `spxNetFlow` | Same + NOT PROVIDED | Directional — primary instrument, may not be uploaded |
+| Key          | Signals                                      | Why                                                    |
+| ------------ | -------------------------------------------- | ------------------------------------------------------ |
+| `marketTide` | BEARISH, BULLISH, NEUTRAL, CONFLICTED        | Directional — this is the broad market signal          |
+| `spxNetFlow` | Same + NOT PROVIDED                          | Directional — primary instrument, may not be uploaded  |
 | `spyNetFlow` | CONFIRMS, CONTRADICTS, NEUTRAL, NOT PROVIDED | Confirmation role — measured against Market Tide + SPX |
-| `qqqNetFlow` | CONFIRMS, CONTRADICTS, NEUTRAL, NOT PROVIDED | Confirmation role — tech sector divergence check |
-| `periscope` | FAVORABLE, UNFAVORABLE, MIXED, NOT PROVIDED | Structural — gamma positioning, not directional |
+| `qqqNetFlow` | CONFIRMS, CONTRADICTS, NEUTRAL, NOT PROVIDED | Confirmation role — tech sector divergence check       |
+| `periscope`  | FAVORABLE, UNFAVORABLE, MIXED, NOT PROVIDED  | Structural — gamma positioning, not directional        |
 
 ## entryStep Schema
 
