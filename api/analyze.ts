@@ -137,6 +137,8 @@ For strike selection using Periscope:
 - Avoid short strikes in heavy negative gamma zones (price acceleration risk).
 - If straddle cone breakevens are tighter than your strikes = extra cushion.
 - If your strikes are INSIDE the cone = market expects a move that big — widen or sit out.
+ 
+Gamma time decay: Positive gamma walls weaken in the final 2 hours as 0DTE gamma concentrates near the money. A wall that suppressed price movement all morning may break in the afternoon as the options creating that wall lose their gamma. Do not rely on morning Periscope readings for afternoon management — re-check gamma after 1:00 PM ET.
 </periscope>
  
 </chart_types>
