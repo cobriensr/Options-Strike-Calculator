@@ -66,9 +66,10 @@ export default defineConfig({
           },
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/,
-            handler: 'StaleWhileRevalidate',
+            handler: 'NetworkFirst',
             options: {
               cacheName: 'google-fonts-stylesheets',
+              networkTimeoutSeconds: 5,
               expiration: {
                 maxEntries: 10,
                 maxAgeSeconds: 60 * 60 * 24 * 365,
