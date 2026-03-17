@@ -1,6 +1,6 @@
 /**
  * ChartAnalysis — Upload Market Tide, Net Flow, and/or Periscope screenshots.
- * Sends images + current calculator context to Claude Opus 4.6 with extended thinking.
+ * Sends images + current calculator context to Claude Opus 4.6 with adaptive thinking.
  * Returns a comprehensive trading plan: structure, strikes, management, entries, hedges.
  *
  * Supports three modes:
