@@ -25,6 +25,7 @@ import type { AnalysisContext } from './components/ChartAnalysis';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Analytics } from '@vercel/analytics/react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 // ============================================================
 // SHARED CSS CLASSES (static — no per-render cost)
@@ -476,6 +477,7 @@ export default function StrikeCalculator() {
         timezone={timezone}
       />
       <Analytics />
+      <SpeedInsights />
     </div>
   );
 }
