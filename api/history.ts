@@ -21,6 +21,7 @@ import {
   rejectIfNotOwner,
 } from './_lib/api-helpers.js';
 import { redis } from './_lib/schwab.js';
+import { getETTotalMinutes } from '../src/utils/timezone.js';
 
 // ============================================================
 // TYPES
@@ -100,10 +101,7 @@ function getETDate(ms: number): string {
 }
 
 function isRegularHours(ms: number): boolean {
-  const d = new Date(ms);
-  const etStr = d.toLocaleString('en-US', { timeZone: 'America/New_York' });
-  const etDate = new Date(etStr);
-  const totalMin = etDate.getHours() * 60 + etDate.getMinutes();
+  const totalMin = getETTotalMinutes(new Date(ms));
   return totalMin >= 570 && totalMin < 960; // 9:30 AM to 4:00 PM
 }
 

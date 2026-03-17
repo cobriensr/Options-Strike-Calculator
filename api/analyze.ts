@@ -21,6 +21,7 @@ import {
   getLatestPositions,
   getPreviousRecommendation,
 } from './_lib/db.js';
+import { analyzeBodySchema } from './_lib/validation.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -479,8 +480,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const ownerCheck = rejectIfNotOwner(req, res);
   if (ownerCheck) return ownerCheck;
 
-  // Rate limit: max 10 analyses per minute (prevents runaway costs)
-  const rateLimited = await rejectIfRateLimited(req, res, 'analyze', 10);
+  // Rate limit: max 3 analyses per minute (each call hits Claude Opus with images)
+  const rateLimited = await rejectIfRateLimited(req, res, 'analyze', 3);
   if (rateLimited) return;
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -488,28 +489,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'Server configuration error' });
   }
 
-  const { images, context } = req.body as {
-    images: Array<{ data: string; mediaType: string; label?: string }>;
-    context: Record<string, unknown>;
-  };
-
-  if (!images || images.length === 0) {
-    return res.status(400).json({ error: 'At least one image is required' });
+  const parsed = analyzeBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    const firstError = parsed.error.issues[0];
+    return res.status(400).json({
+      error: firstError?.message ?? 'Invalid request body',
+    });
   }
 
-  if (images.length > 6) {
-    return res.status(400).json({ error: 'Maximum 6 images allowed' });
-  }
-
-  // Payload size check: each base64 image should be < 5MB
-  const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB in base64 chars
-  for (const img of images) {
-    if (img.data.length > MAX_IMAGE_SIZE) {
-      return res
-        .status(400)
-        .json({ error: 'Image too large. Maximum 5MB per image.' });
-    }
-  }
+  const { images, context } = parsed.data;
 
   // Build the user message with images + context
   const content: Array<Record<string, unknown>> = [];
@@ -657,23 +645,12 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     // Log usage for cost monitoring
     if (data.usage) {
       const u = data.usage;
-      const inputCost = ((u.input_tokens ?? 0) / 1_000_000) * 5;
-      const outputCost = ((u.output_tokens ?? 0) / 1_000_000) * 25;
-      const cacheWriteCost =
-        ((u.cache_creation_input_tokens ?? 0) / 1_000_000) * 10;
-      const cacheReadCost =
-        ((u.cache_read_input_tokens ?? 0) / 1_000_000) * 0.5;
-      const totalCost = inputCost + outputCost + cacheWriteCost + cacheReadCost;
-
       console.log(
         `[analyze] mode=${String(mode)} | ` +
           `input=${u.input_tokens ?? 0} | ` +
           `output=${u.output_tokens ?? 0} | ` +
           `cache_write=${u.cache_creation_input_tokens ?? 0} | ` +
-          `cache_read=${u.cache_read_input_tokens ?? 0} | ` +
-          `est_cost=$${totalCost.toFixed(4)} ` +
-          `(in=$${inputCost.toFixed(4)} out=$${outputCost.toFixed(4)} ` +
-          `cw=$${cacheWriteCost.toFixed(4)} cr=$${cacheReadCost.toFixed(4)})`,
+          `cache_read=${u.cache_read_input_tokens ?? 0}`,
       );
     }
 

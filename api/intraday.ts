@@ -28,6 +28,7 @@ import {
   isMarketOpen,
   rejectIfNotOwner,
 } from './_lib/api-helpers.js';
+import { getETTotalMinutes } from '../src/utils/timezone.js';
 
 // ============================================================
 // TYPES
@@ -162,18 +163,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // match the actual regular session open shown on TradingView/brokers.
   const todayCandles = result.data.candles.filter((c) => {
     const d = new Date(c.datetime);
-    const etStr = d.toLocaleString('en-US', { timeZone: 'America/New_York' });
     const etDate = d.toLocaleDateString('en-CA', {
       timeZone: 'America/New_York',
     });
     if (etDate !== todayET) return false;
 
-    // Parse the ET time — only keep candles from 9:30 AM onward
-    const etTime = new Date(etStr);
-    const hours = etTime.getHours();
-    const minutes = etTime.getMinutes();
-    const totalMinutes = hours * 60 + minutes;
-    return totalMinutes >= 570; // 9:30 AM = 9*60 + 30 = 570
+    // Only keep candles from 9:30 AM onward
+    return getETTotalMinutes(d) >= 570; // 9:30 AM = 9*60 + 30 = 570
   });
 
   // Cache: 2 min during hours (opening range doesn't change after 10 AM),

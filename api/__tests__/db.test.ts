@@ -10,6 +10,7 @@ vi.mock('@neondatabase/serverless', () => ({
 
 import {
   getDb,
+  _resetDb,
   initDb,
   migrateDb,
   saveSnapshot,
@@ -29,6 +30,7 @@ describe('db.ts', () => {
     vi.restoreAllMocks();
     mockSql.mockReset();
     vi.mocked(neon).mockReturnValue(mockSql as never);
+    _resetDb();
   });
 
   afterEach(() => {
@@ -85,10 +87,8 @@ describe('db.ts', () => {
       expect(mockSql).toHaveBeenCalledTimes(1);
     });
 
-    it('looks up existing id on conflict (empty RETURNING)', async () => {
-      mockSql
-        .mockResolvedValueOnce([]) // INSERT returns nothing (conflict)
-        .mockResolvedValueOnce([{ id: 7 }]); // SELECT existing
+    it('upserts and returns id on conflict', async () => {
+      mockSql.mockResolvedValueOnce([{ id: 7 }]);
 
       const id = await saveSnapshot({
         date: '2026-03-10',
@@ -96,13 +96,11 @@ describe('db.ts', () => {
       });
 
       expect(id).toBe(7);
-      expect(mockSql).toHaveBeenCalledTimes(2);
+      expect(mockSql).toHaveBeenCalledTimes(1);
     });
 
-    it('returns null when neither insert nor lookup finds a row', async () => {
-      mockSql
-        .mockResolvedValueOnce([]) // INSERT returns nothing
-        .mockResolvedValueOnce([]); // SELECT also empty
+    it('returns null when upsert returns empty', async () => {
+      mockSql.mockResolvedValueOnce([]);
 
       const id = await saveSnapshot({
         date: '2026-03-10',
@@ -336,32 +334,37 @@ describe('db.ts', () => {
   // migrateDb
   // ============================================================
   describe('migrateDb', () => {
-    it('runs positions table migration and returns applied list', async () => {
+    it('runs pending migrations and returns applied list', async () => {
+      // CREATE TABLE schema_migrations, SELECT applied, then migration #1 (CREATE TABLE + 2 INDEXes + INSERT)
       mockSql.mockResolvedValue([]);
 
       const applied = await migrateDb();
 
-      expect(applied).toContain('positions table ensured');
-      // CREATE TABLE + 2 CREATE INDEXes = 3 calls
-      expect(mockSql).toHaveBeenCalledTimes(3);
+      expect(applied.length).toBeGreaterThan(0);
+      expect(applied[0]).toContain('#1');
+      expect(applied[0]).toContain('positions');
     });
 
-    it('returns applied list even if positions table already exists', async () => {
-      // Simulate table already exists — still resolves fine with IF NOT EXISTS
-      mockSql.mockResolvedValue([]);
+    it('skips already-applied migrations', async () => {
+      // CREATE TABLE schema_migrations
+      mockSql.mockResolvedValueOnce([]);
+      // SELECT returns migration #1 as already applied
+      mockSql.mockResolvedValueOnce([{ id: 1 }]);
 
       const applied = await migrateDb();
 
-      expect(applied).toEqual(['positions table ensured']);
-    });
-
-    it('handles error when positions migration throws', async () => {
-      mockSql.mockRejectedValue(new Error('relation already exists'));
-
-      const applied = await migrateDb();
-
-      // Error is caught, nothing added to applied
       expect(applied).toEqual([]);
+    });
+
+    it('propagates errors from migration SQL', async () => {
+      // CREATE TABLE schema_migrations succeeds
+      mockSql.mockResolvedValueOnce([]);
+      // SELECT applied succeeds (empty)
+      mockSql.mockResolvedValueOnce([]);
+      // Migration #1 throws
+      mockSql.mockRejectedValueOnce(new Error('DB error'));
+
+      await expect(migrateDb()).rejects.toThrow('DB error');
     });
   });
 

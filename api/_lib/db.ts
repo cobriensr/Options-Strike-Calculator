@@ -16,12 +16,22 @@
  * Install: npm install @neondatabase/serverless
  */
 
-import { neon } from '@neondatabase/serverless';
+import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
+
+let _db: NeonQueryFunction<false, false> | null = null;
 
 export function getDb() {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL not configured');
-  return neon(url);
+  if (!_db) {
+    const url = process.env.DATABASE_URL;
+    if (!url) throw new Error('DATABASE_URL not configured');
+    _db = neon(url);
+  }
+  return _db;
+}
+
+/** Reset the cached client. Exported for tests only. */
+export function _resetDb() {
+  _db = null;
 }
 
 // ============================================================
@@ -159,7 +169,7 @@ export async function initDb() {
       account_hash    TEXT NOT NULL,
       spx_price       DECIMAL(10,2),
 
-      -- Structured summary for prompt injection
+      -- Structured summary for Claude prompt context
       summary         TEXT NOT NULL,
 
       -- Raw position legs as JSONB array
@@ -193,55 +203,93 @@ export async function initDb() {
 }
 
 // ============================================================
-// MIGRATIONS (add columns to existing tables)
+// MIGRATIONS
 // ============================================================
 
 /**
- * Run database migrations to add new columns/tables.
- * Safe to call multiple times — all operations use IF NOT EXISTS.
- * Returns an array of migration descriptions that were applied.
+ * Each migration is a numbered entry with a description and SQL function.
+ * Migrations run in order and are tracked in a `schema_migrations` table
+ * so each is applied at most once. Add new migrations to the end of the array.
+ */
+interface Migration {
+  id: number;
+  description: string;
+  run: (sql: ReturnType<typeof getDb>) => Promise<void>;
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    id: 1,
+    description: 'Create positions table and indexes',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS positions (
+          id              SERIAL PRIMARY KEY,
+          snapshot_id     INTEGER REFERENCES market_snapshots(id),
+          date            DATE NOT NULL,
+          fetch_time      TEXT NOT NULL,
+          account_hash    TEXT NOT NULL,
+          spx_price       DECIMAL(10,2),
+          summary         TEXT NOT NULL,
+          legs            JSONB NOT NULL,
+          total_spreads   INTEGER DEFAULT 0,
+          call_spreads    INTEGER DEFAULT 0,
+          put_spreads     INTEGER DEFAULT 0,
+          net_delta       DECIMAL(8,4),
+          net_theta       DECIMAL(8,4),
+          net_gamma       DECIMAL(8,6),
+          total_credit    DECIMAL(10,2),
+          current_value   DECIMAL(10,2),
+          unrealized_pnl  DECIMAL(10,2),
+          created_at      TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(date, fetch_time)
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_positions_date ON positions (date)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_positions_snapshot ON positions (snapshot_id)`;
+    },
+  },
+  // Add new migrations here:
+  // {
+  //   id: 2,
+  //   description: 'Add new_column to market_snapshots',
+  //   run: async (sql) => {
+  //     await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS new_column TEXT`;
+  //   },
+  // },
+];
+
+/**
+ * Run pending database migrations.
+ * Creates a `schema_migrations` table to track applied migrations.
+ * Safe to call multiple times — already-applied migrations are skipped.
+ * Returns an array of descriptions for newly applied migrations.
  */
 export async function migrateDb(): Promise<string[]> {
   const sql = getDb();
+
+  // Ensure the tracking table exists
+  await sql`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id          INTEGER PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+
+  // Find which migrations have already been applied
+  const rows = await sql`SELECT id FROM schema_migrations`;
+  const appliedIds = new Set(rows.map((r) => r.id as number));
+
   const applied: string[] = [];
+  for (const migration of MIGRATIONS) {
+    if (appliedIds.has(migration.id)) continue;
 
-  // Add any new columns to market_snapshots here using ALTER TABLE IF NOT EXISTS pattern
-  // Example:
-  // try {
-  //   await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS new_col TEXT`;
-  //   applied.push('market_snapshots.new_col');
-  // } catch { /* column might already exist */ }
-
-  // Ensure positions table exists (for upgrades from before positions were added)
-  try {
+    await migration.run(sql);
     await sql`
-      CREATE TABLE IF NOT EXISTS positions (
-        id              SERIAL PRIMARY KEY,
-        snapshot_id     INTEGER REFERENCES market_snapshots(id),
-        date            DATE NOT NULL,
-        fetch_time      TEXT NOT NULL,
-        account_hash    TEXT NOT NULL,
-        spx_price       DECIMAL(10,2),
-        summary         TEXT NOT NULL,
-        legs            JSONB NOT NULL,
-        total_spreads   INTEGER DEFAULT 0,
-        call_spreads    INTEGER DEFAULT 0,
-        put_spreads     INTEGER DEFAULT 0,
-        net_delta       DECIMAL(8,4),
-        net_theta       DECIMAL(8,4),
-        net_gamma       DECIMAL(8,6),
-        total_credit    DECIMAL(10,2),
-        current_value   DECIMAL(10,2),
-        unrealized_pnl  DECIMAL(10,2),
-        created_at      TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(date, fetch_time)
-      )
+      INSERT INTO schema_migrations (id, description) VALUES (${migration.id}, ${migration.description})
     `;
-    await sql`CREATE INDEX IF NOT EXISTS idx_positions_date ON positions (date)`;
-    await sql`CREATE INDEX IF NOT EXISTS idx_positions_snapshot ON positions (snapshot_id)`;
-    applied.push('positions table ensured');
-  } catch {
-    // Table already exists — fine
+    applied.push(`#${migration.id}: ${migration.description}`);
   }
 
   return applied;
@@ -323,9 +371,9 @@ export interface SnapshotInput {
 }
 
 /**
- * Save a market snapshot. Uses ON CONFLICT DO NOTHING so duplicate
- * date+time combinations are silently skipped.
- * Returns the snapshot ID (existing or new).
+ * Save a market snapshot. Uses ON CONFLICT DO UPDATE so re-saves at the
+ * same date+time overwrite with the latest calculator state.
+ * Returns the snapshot ID (new or updated).
  */
 export async function saveSnapshot(
   input: SnapshotInput,
@@ -383,19 +431,56 @@ export async function saveSnapshot(
       ${input.eventNames ?? null},
       ${input.isBacktest ?? false}
     )
-    ON CONFLICT (date, entry_time) DO NOTHING
+    ON CONFLICT (date, entry_time) DO UPDATE SET
+      spx = EXCLUDED.spx,
+      spy = EXCLUDED.spy,
+      spx_open = EXCLUDED.spx_open,
+      spx_high = EXCLUDED.spx_high,
+      spx_low = EXCLUDED.spx_low,
+      prev_close = EXCLUDED.prev_close,
+      vix = EXCLUDED.vix,
+      vix1d = EXCLUDED.vix1d,
+      vix9d = EXCLUDED.vix9d,
+      vvix = EXCLUDED.vvix,
+      vix1d_vix_ratio = EXCLUDED.vix1d_vix_ratio,
+      vix_vix9d_ratio = EXCLUDED.vix_vix9d_ratio,
+      sigma = EXCLUDED.sigma,
+      sigma_source = EXCLUDED.sigma_source,
+      t_years = EXCLUDED.t_years,
+      hours_remaining = EXCLUDED.hours_remaining,
+      skew_pct = EXCLUDED.skew_pct,
+      regime_zone = EXCLUDED.regime_zone,
+      cluster_mult = EXCLUDED.cluster_mult,
+      dow_mult_hl = EXCLUDED.dow_mult_hl,
+      dow_mult_oc = EXCLUDED.dow_mult_oc,
+      dow_label = EXCLUDED.dow_label,
+      ic_ceiling = EXCLUDED.ic_ceiling,
+      put_spread_ceiling = EXCLUDED.put_spread_ceiling,
+      call_spread_ceiling = EXCLUDED.call_spread_ceiling,
+      moderate_delta = EXCLUDED.moderate_delta,
+      conservative_delta = EXCLUDED.conservative_delta,
+      median_oc_pct = EXCLUDED.median_oc_pct,
+      median_hl_pct = EXCLUDED.median_hl_pct,
+      p90_oc_pct = EXCLUDED.p90_oc_pct,
+      p90_hl_pct = EXCLUDED.p90_hl_pct,
+      p90_oc_pts = EXCLUDED.p90_oc_pts,
+      p90_hl_pts = EXCLUDED.p90_hl_pts,
+      opening_range_available = EXCLUDED.opening_range_available,
+      opening_range_high = EXCLUDED.opening_range_high,
+      opening_range_low = EXCLUDED.opening_range_low,
+      opening_range_pct_consumed = EXCLUDED.opening_range_pct_consumed,
+      opening_range_signal = EXCLUDED.opening_range_signal,
+      vix_term_signal = EXCLUDED.vix_term_signal,
+      overnight_gap = EXCLUDED.overnight_gap,
+      strikes = EXCLUDED.strikes,
+      is_early_close = EXCLUDED.is_early_close,
+      is_event_day = EXCLUDED.is_event_day,
+      event_names = EXCLUDED.event_names,
+      is_backtest = EXCLUDED.is_backtest
     RETURNING id
   `;
 
-  if (result.length > 0) {
-    return (result[0]?.id as number) ?? null;
-  }
-
-  // Already existed — look up the ID
-  const existing = await sql`
-    SELECT id FROM market_snapshots WHERE date = ${input.date} AND entry_time = ${input.entryTime}
-  `;
-  return existing.length > 0 ? ((existing[0]?.id as number) ?? null) : null;
+  return result.length > 0 ? ((result[0]?.id as number) ?? null) : null;
 }
 
 // ============================================================
@@ -574,7 +659,7 @@ export async function savePositions(
 
 /**
  * Get the most recent positions for a given date.
- * Returns the summary string for prompt injection and the full legs for display.
+ * Returns the summary string for Claude prompt context and the full legs for display.
  */
 export async function getLatestPositions(date: string): Promise<{
   summary: string;
@@ -633,7 +718,7 @@ export async function getLatestPositions(date: string): Promise<{
  *   - "review" mode: Get the most recent midday analysis for this date,
  *     falling back to the most recent entry if no midday exists
  *
- * Returns a formatted string for prompt injection, or null if nothing found.
+ * Returns a formatted string for Claude prompt context, or null if nothing found.
  */
 export async function getPreviousRecommendation(
   date: string,

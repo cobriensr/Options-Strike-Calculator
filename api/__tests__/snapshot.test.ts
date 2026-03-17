@@ -58,7 +58,7 @@ describe('POST /api/snapshot', () => {
       res,
     );
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'date and entryTime are required' });
+    expect((res._json as { error: string }).error).toBeDefined();
   });
 
   it('returns 400 when entryTime is missing', async () => {
@@ -69,7 +69,7 @@ describe('POST /api/snapshot', () => {
       res,
     );
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'date and entryTime are required' });
+    expect((res._json as { error: string }).error).toBeDefined();
   });
 
   it('saves snapshot and returns id', async () => {

@@ -10,6 +10,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getAccessToken, redis } from './schwab.js';
 import { getMarketCloseHourET } from '../../src/data/eventCalendar.js';
+import { getETTime, getETDayOfWeek, getETDateStr } from '../../src/utils/timezone.js';
 
 const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
@@ -224,20 +225,16 @@ export function setCacheHeaders(
  */
 export function isMarketOpen(): boolean {
   const now = new Date();
-  const et = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
-  );
-  const day = et.getDay();
+  const day = getETDayOfWeek(now);
   if (day === 0 || day === 6) return false;
 
   // Check holidays and early closes via event calendar
-  const dateStr = et.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const dateStr = getETDateStr(now);
   const closeHour = getMarketCloseHourET(dateStr);
   if (closeHour == null) return false; // market closed (holiday)
 
-  const hour = et.getHours();
-  const min = et.getMinutes();
-  const totalMin = hour * 60 + min;
+  const { hour, minute } = getETTime(now);
+  const totalMin = hour * 60 + minute;
   const closeMin = closeHour * 60;
   // Market: 9:30 AM (570) to close (960 normal, 780 early)
   return totalMin >= 570 && totalMin <= closeMin;

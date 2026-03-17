@@ -13,6 +13,7 @@ import type {
   HistoryCandle,
   SymbolDayData,
 } from '../types/api';
+import { getETTotalMinutes } from '../utils/timezone';
 
 // ============================================================
 // TYPES
@@ -117,9 +118,7 @@ function findCandleAtTime(
   for (let i = candles.length - 1; i >= 0; i--) {
     const c = candles[i]!;
     const d = new Date(c.datetime);
-    const etStr = d.toLocaleString('en-US', { timeZone: 'America/New_York' });
-    const etDate = new Date(etStr);
-    const candleMin = etDate.getHours() * 60 + etDate.getMinutes();
+    const candleMin = getETTotalMinutes(d);
 
     if (candleMin <= targetMin) {
       return { candle: c, index: i };

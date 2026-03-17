@@ -53,6 +53,24 @@ export const DELTA_OPTIONS: readonly DeltaTarget[] = [
 /** Available hedge delta options */
 export const HEDGE_DELTA_OPTIONS: readonly HedgeDelta[] = [1, 2, 3, 5] as const;
 
+/** SPX contract multiplier (each point = $100) */
+export const SPX_MULTIPLIER = 100;
+
+/** Default SPX-to-SPY price ratio */
+export const DEFAULT_SPX_SPY_RATIO = 10;
+
+/** IV stress model parameters for hedge repricing */
+export const STRESS = {
+  /** IV sensitivity to SPX declines (VIX pts per 1% SPX drop) */
+  CRASH_SENSITIVITY: 4.0,
+  /** IV sensitivity to SPX rallies (VIX pts per 1% SPX rise) */
+  RALLY_SENSITIVITY: 1.5,
+  /** Maximum stressed sigma multiplier (cap) */
+  MAX_MULT: 3.0,
+  /** Hedge breakeven target as multiple of spot-to-hedge distance */
+  BREAKEVEN_TARGET: 1.5,
+} as const;
+
 /** Default values and configurable limits */
 export const DEFAULTS = {
   /** Default 0DTE IV premium multiplier over VIX */

@@ -1,9 +1,8 @@
-import { useState, useEffect } from 'react';
-import type { IVMode, AmPm, Timezone } from './types';
-import { DEFAULTS, IV_MODES } from './constants';
+import { IV_MODES } from './constants';
 import { lightTheme, darkTheme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
-import { useDebounced } from './hooks/useDebounced';
+import { useAppState } from './hooks/useAppState';
+import { useAutoFill } from './hooks/useAutoFill';
 import { useVixData } from './hooks/useVixData';
 import { useCalculation } from './hooks/useCalculation';
 import { useMarketData } from './hooks/useMarketData';
@@ -12,7 +11,6 @@ import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
-import { toETTime } from './utils/calculator';
 import { getEarlyCloseHourET } from './data/eventCalendar';
 import VixUploadSection from './components/VixUploadSection';
 import DateLookupSection from './components/DateLookupSection';
@@ -25,61 +23,72 @@ import ResultsSection from './components/ResultsSection';
 import ChartAnalysis from './components/ChartAnalysis';
 import type { AnalysisContext } from './components/ChartAnalysis';
 import BacktestDiag from './components/BacktestDiag';
+import ErrorBoundary from './components/ErrorBoundary';
 import { Analytics } from '@vercel/analytics/react';
+
+// ============================================================
+// SHARED CSS CLASSES (static — no per-render cost)
+// ============================================================
+const INPUT_CLS =
+  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary p-[11px_14px] text-base font-mono outline-none w-full box-border transition-[border-color] duration-150';
+const SELECT_CLS =
+  INPUT_CLS +
+  ' cursor-pointer appearance-none bg-no-repeat bg-[length:14px_14px] bg-[position:right_12px_center] pr-[34px]';
 
 // ============================================================
 // MAIN COMPONENT
 // ============================================================
 export default function StrikeCalculator() {
-  // Theme
-  const [darkMode, setDarkMode] = useState(false);
+  // Consolidated UI state (inputs, debounced values, derived ratio)
+  const state = useAppState();
+  const {
+    darkMode,
+    setDarkMode,
+    spotPrice,
+    setSpotPrice,
+    spxDirect,
+    setSpxDirect,
+    spxRatio,
+    setSpxRatio,
+    ivMode,
+    setIvMode,
+    vixInput,
+    setVixInput,
+    multiplier,
+    setMultiplier,
+    directIVInput,
+    setDirectIVInput,
+    timeHour,
+    setTimeHour,
+    timeMinute,
+    setTimeMinute,
+    timeAmPm,
+    setTimeAmPm,
+    timezone,
+    setTimezone,
+    wingWidth,
+    setWingWidth,
+    showIC,
+    setShowIC,
+    contracts,
+    setContracts,
+    skewPct,
+    setSkewPct,
+    clusterMult,
+    setClusterMult,
+    dSpot,
+    dSpx,
+    dVix,
+    dIV,
+    dMult,
+    spyVal,
+    spxVal,
+    spxDirectActive,
+    effectiveRatio,
+  } = state;
   const th = darkMode ? darkTheme : lightTheme;
 
-  // Spot price state
-  const [spotPrice, setSpotPrice] = useState('');
-  const [spxDirect, setSpxDirect] = useState('');
-  const [spxRatio, setSpxRatio] = useState(10);
-
-  // IV state
-  const [ivMode, setIvMode] = useState<IVMode>(IV_MODES.VIX);
-  const [vixInput, setVixInput] = useState('');
-  const [multiplier, setMultiplier] = useState(
-    String(DEFAULTS.IV_PREMIUM_FACTOR),
-  );
-  const [directIVInput, setDirectIVInput] = useState('');
-
-  // Time state
-  const [timeHour, setTimeHour] = useState('10');
-  const [timeMinute, setTimeMinute] = useState('00');
-  const [timeAmPm, setTimeAmPm] = useState<AmPm>('AM');
-  const [timezone, setTimezone] = useState<Timezone>('CT');
-
-  // IC & skew state
-  const [wingWidth, setWingWidth] = useState(20);
-  const [showIC, setShowIC] = useState(true);
-  const [contracts, setContracts] = useState(20);
-  const [skewPct, setSkewPct] = useState(3);
-  const [clusterMult, setClusterMult] = useState(1);
-
-  // Debounced values
-  const dSpot = useDebounced(spotPrice);
-  const dSpx = useDebounced(spxDirect);
-  const dVix = useDebounced(vixInput);
-  const dIV = useDebounced(directIVInput);
-  const dMult = useDebounced(multiplier);
-
-  // Derived SPX ratio
-  const spyVal = Number.parseFloat(dSpot);
-  const spxVal = Number.parseFloat(dSpx);
-  const spxDirectActive =
-    !!dSpx &&
-    !Number.isNaN(spxVal) &&
-    spxVal > 0 &&
-    !Number.isNaN(spyVal) &&
-    spyVal > 0;
-  const effectiveRatio = spxDirectActive ? spxVal / spyVal : spxRatio;
-
-  // Hooks
+  // Data hooks
   const market = useMarketData();
   const vix = useVixData(ivMode, timeHour, timeAmPm, timezone, setVixInput);
   const historyData = useHistoryData(vix.selectedDate);
@@ -101,138 +110,29 @@ export default function StrikeCalculator() {
     getEarlyCloseHourET(vix.selectedDate),
   );
 
-  // Auto-fill from live Schwab data (owner-only, silently skipped for public)
-  useEffect(() => {
-    if (!market.data.quotes) return;
-    const q = market.data.quotes;
-
-    // Only auto-fill empty fields — never overwrite user input
-    if (!spotPrice && q.spy) setSpotPrice(q.spy.price.toFixed(2));
-    if (!spxDirect && q.spx) setSpxDirect(q.spx.price.toFixed(0));
-
-    // VIX always populates the VIX field (regime analysis needs it)
-    if (!vixInput && q.vix) setVixInput(q.vix.price.toFixed(2));
-
-    // Auto-use VIX1D as σ when available (most accurate 0DTE IV).
-    // Updates on every quote refresh — VIX1D changes intraday.
-    if (q.vix1d && q.vix1d.price > 0) {
-      setIvMode(IV_MODES.DIRECT);
-      setDirectIVInput((q.vix1d.price / 100).toFixed(4));
-    }
-
-    // Auto-set today's date if not already set
-    if (!vix.selectedDate) {
-      const today = new Date().toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
-      vix.setSelectedDate(today);
-    }
-    // Auto-set current time in CT
-    if (timeHour === '10' && timeMinute === '00') {
-      const now = new Date();
-      const ctStr = now.toLocaleString('en-US', {
-        timeZone: 'America/Chicago',
-      });
-      const ctDate = new Date(ctStr);
-      let h = ctDate.getHours();
-      const m = ctDate.getMinutes();
-      const snappedMin = Math.floor(m / 5) * 5;
-      const ampm: AmPm = h >= 12 ? 'PM' : 'AM';
-      if (h > 12) h -= 12;
-      if (h === 0) h = 12;
-      setTimeHour(String(h));
-      setTimeMinute(String(snappedMin).padStart(2, '0'));
-      setTimeAmPm(ampm);
-      setTimezone('CT');
-    }
-    // vix.selectedDate and vix.setSelectedDate are the only properties used;
-    // including the full vix object would re-run on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    market.data.quotes,
+  // Auto-fill inputs from live/historical data + compute history snapshot
+  const historySnapshot = useAutoFill({
     spotPrice,
     spxDirect,
     vixInput,
-    vix.selectedDate,
-    vix.setSelectedDate,
-    timeHour,
-    timeMinute,
-  ]);
-
-  // Auto-fill from historical data when a past date is selected,
-  // or restore live data when switching back to today
-  useEffect(() => {
-    if (historyData.hasHistory) {
-      // Past date: fill from historical candles
-      const { etHour, etMinute } = toETTime(
-        timeHour,
-        timeMinute,
-        timeAmPm,
-        timezone,
-      );
-
-      const snapshot = historyData.getStateAtTime(etHour, etMinute);
-      if (!snapshot) return;
-
-      // SPX/SPY prices
-      setSpotPrice(snapshot.spy.toFixed(2));
-      setSpxDirect(snapshot.spot.toFixed(0));
-
-      // VIX always populates the VIX field (regime analysis needs it)
-      if (snapshot.vix != null) {
-        setVixInput(snapshot.vix.toFixed(2));
-      }
-
-      // Auto-use VIX1D as σ when available (from Schwab intraday or CBOE static)
-      const vix1dVal =
-        snapshot.vix1d ??
-        (vix1dStatic.loaded
-          ? vix1dStatic.getVix1d(historyData.history!.date, etHour)
-          : null);
-      if (vix1dVal != null && vix1dVal > 0) {
-        setIvMode(IV_MODES.DIRECT);
-        setDirectIVInput((vix1dVal / 100).toFixed(4));
-      } else if (snapshot.vix != null) {
-        // No VIX1D available — fall back to VIX mode
-        setIvMode(IV_MODES.VIX);
-      }
-    } else if (market.data.quotes) {
-      // Today (or no history): restore live prices if available
-      const q = market.data.quotes;
-      if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
-      if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
-    }
-  }, [
-    historyData,
     timeHour,
     timeMinute,
     timeAmPm,
     timezone,
+    setSpotPrice,
+    setSpxDirect,
+    setVixInput,
+    setIvMode,
+    setDirectIVInput,
+    setTimeHour,
+    setTimeMinute,
+    setTimeAmPm,
+    setTimezone,
+    market,
+    vix,
+    historyData,
     vix1dStatic,
-    market.data.quotes,
-  ]);
-
-  // Compute current history snapshot for downstream components
-  const historySnapshot = (() => {
-    if (!historyData.hasHistory) return null;
-    const { etHour, etMinute } = toETTime(
-      timeHour,
-      timeMinute,
-      timeAmPm,
-      timezone,
-    );
-    const snapshot = historyData.getStateAtTime(etHour, etMinute);
-    if (!snapshot) return null;
-
-    // Fall back to static VIX1D daily data if Schwab intraday unavailable
-    if (snapshot.vix1d == null && vix1dStatic.loaded) {
-      const staticVal = vix1dStatic.getVix1d(historyData.history!.date, etHour);
-      if (staticVal != null) {
-        return { ...snapshot, vix1d: staticVal };
-      }
-    }
-    return snapshot;
-  })();
+  });
 
   // Auto-save market snapshot for authenticated owner (fire-and-forget)
   const signals = useComputedSignals({
@@ -274,13 +174,7 @@ export default function StrikeCalculator() {
     market.hasData || !!historySnapshot,
   );
 
-  // Shared CSS classes
   const chevronUrl = buildChevronUrl(th.chevronColor);
-  const inputCls =
-    'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary p-[11px_14px] text-base font-mono outline-none w-full box-border transition-[border-color] duration-150';
-  const selectCls =
-    inputCls +
-    ' cursor-pointer appearance-none bg-no-repeat bg-[length:14px_14px] bg-[position:right_12px_center] pr-[34px]';
 
   return (
     <div className={darkMode ? 'dark' : ''}>
@@ -400,7 +294,7 @@ export default function StrikeCalculator() {
             {vix.vixDataLoaded && (
               <DateLookupSection
                 th={th}
-                inputCls={inputCls}
+                inputCls={INPUT_CLS}
                 selectedDate={vix.selectedDate}
                 onDateChange={vix.setSelectedDate}
                 vixOHLC={vix.vixOHLC}
@@ -412,7 +306,7 @@ export default function StrikeCalculator() {
 
             <SpotPriceSection
               th={th}
-              inputCls={inputCls}
+              inputCls={INPUT_CLS}
               spotPrice={spotPrice}
               onSpotChange={setSpotPrice}
               spxDirect={spxDirect}
@@ -428,7 +322,7 @@ export default function StrikeCalculator() {
 
             <EntryTimeSection
               th={th}
-              selectCls={selectCls}
+              selectCls={SELECT_CLS}
               chevronUrl={chevronUrl}
               timeHour={timeHour}
               onHourChange={setTimeHour}
@@ -443,7 +337,7 @@ export default function StrikeCalculator() {
 
             <IVInputSection
               th={th}
-              inputCls={inputCls}
+              inputCls={INPUT_CLS}
               ivMode={ivMode}
               onIvModeChange={setIvMode}
               vixInput={vixInput}
@@ -477,92 +371,98 @@ export default function StrikeCalculator() {
               onContractsChange={setContracts}
             />
 
-            <MarketRegimeSection
-              th={th}
-              dVix={dVix}
-              results={results}
-              errors={errors}
-              skewPct={skewPct}
-              selectedDate={vix.selectedDate}
-              market={market}
-              onClusterMultChange={setClusterMult}
-              clusterMult={clusterMult}
-              historySnapshot={historySnapshot}
-              historyCandles={historyData.history?.spx.candles}
-              entryTimeLabel={
-                historySnapshot
-                  ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
-                  : undefined
-              }
-              signals={signals}
-              chain={chainData.chain}
-            />
+            <ErrorBoundary label="Market Regime">
+              <MarketRegimeSection
+                th={th}
+                dVix={dVix}
+                results={results}
+                errors={errors}
+                skewPct={skewPct}
+                selectedDate={vix.selectedDate}
+                market={market}
+                onClusterMultChange={setClusterMult}
+                clusterMult={clusterMult}
+                historySnapshot={historySnapshot}
+                historyCandles={historyData.history?.spx.candles}
+                entryTimeLabel={
+                  historySnapshot
+                    ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
+                    : undefined
+                }
+                signals={signals}
+                chain={chainData.chain}
+              />
+            </ErrorBoundary>
 
             {/* Chart Analysis — owner-only (requires auth session or backtest with results) */}
             {(market.hasData || !!historySnapshot) && (
-              <ChartAnalysis
-                th={th}
-                results={results}
-                context={
-                  {
-                    selectedDate: vix.selectedDate,
-                    entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
-                    spx: results?.spot,
-                    spy: Number.parseFloat(dSpot) || undefined,
-                    vix: Number.parseFloat(dVix) || undefined,
-                    vix1d: signals.vix1d,
-                    vix9d: signals.vix9d,
-                    vvix: signals.vvix,
-                    sigma: results?.sigma,
-                    sigmaSource: signals.sigmaSource,
-                    T: results?.T,
-                    hoursRemaining: results?.hoursRemaining,
-                    deltaCeiling: signals.icCeiling ?? undefined,
-                    putSpreadCeiling: signals.putSpreadCeiling ?? undefined,
-                    callSpreadCeiling: signals.callSpreadCeiling ?? undefined,
-                    regimeZone: signals.regimeZone ?? undefined,
-                    clusterMult,
-                    dowLabel: signals.dowLabel ?? undefined,
-                    openingRangeSignal: signals.openingRangeSignal ?? undefined,
-                    openingRangeAvailable: signals.openingRangeAvailable,
-                    vixTermSignal: signals.vixTermSignal ?? undefined,
-                    vixTermShape: signals.vixTermShape ?? undefined,
-                    clusterPutMult: signals.clusterPutMult ?? undefined,
-                    clusterCallMult: signals.clusterCallMult ?? undefined,
-                    rvIvRatio:
-                      signals.rvIvRatio == null
-                        ? undefined
-                        : `${signals.rvIvRatio.toFixed(2)} (${signals.rvIvLabel})`,
-                    rvAnnualized: signals.rvAnnualized ?? undefined,
-                    ivAccelMult: (() => {
-                      const row = results?.allDeltas.find(
-                        (r) => !('error' in r),
-                      );
-                      return row && !('error' in row)
-                        ? row.ivAccelMult
-                        : undefined;
-                    })(),
-                    overnightGap:
-                      signals.overnightGap == null
-                        ? undefined
-                        : String(signals.overnightGap),
-                    isBacktest: !!historySnapshot,
-                    dataNote: signals.dataNote,
-                  } satisfies AnalysisContext
-                }
-              />
+              <ErrorBoundary label="Chart Analysis">
+                <ChartAnalysis
+                  th={th}
+                  results={results}
+                  context={
+                    {
+                      selectedDate: vix.selectedDate,
+                      entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
+                      spx: results?.spot,
+                      spy: Number.parseFloat(dSpot) || undefined,
+                      vix: Number.parseFloat(dVix) || undefined,
+                      vix1d: signals.vix1d,
+                      vix9d: signals.vix9d,
+                      vvix: signals.vvix,
+                      sigma: results?.sigma,
+                      sigmaSource: signals.sigmaSource,
+                      T: results?.T,
+                      hoursRemaining: results?.hoursRemaining,
+                      deltaCeiling: signals.icCeiling ?? undefined,
+                      putSpreadCeiling: signals.putSpreadCeiling ?? undefined,
+                      callSpreadCeiling: signals.callSpreadCeiling ?? undefined,
+                      regimeZone: signals.regimeZone ?? undefined,
+                      clusterMult,
+                      dowLabel: signals.dowLabel ?? undefined,
+                      openingRangeSignal: signals.openingRangeSignal ?? undefined,
+                      openingRangeAvailable: signals.openingRangeAvailable,
+                      vixTermSignal: signals.vixTermSignal ?? undefined,
+                      vixTermShape: signals.vixTermShape ?? undefined,
+                      clusterPutMult: signals.clusterPutMult ?? undefined,
+                      clusterCallMult: signals.clusterCallMult ?? undefined,
+                      rvIvRatio:
+                        signals.rvIvRatio == null
+                          ? undefined
+                          : `${signals.rvIvRatio.toFixed(2)} (${signals.rvIvLabel})`,
+                      rvAnnualized: signals.rvAnnualized ?? undefined,
+                      ivAccelMult: (() => {
+                        const row = results?.allDeltas.find(
+                          (r) => !('error' in r),
+                        );
+                        return row && !('error' in row)
+                          ? row.ivAccelMult
+                          : undefined;
+                      })(),
+                      overnightGap:
+                        signals.overnightGap == null
+                          ? undefined
+                          : String(signals.overnightGap),
+                      isBacktest: !!historySnapshot,
+                      dataNote: signals.dataNote,
+                    } satisfies AnalysisContext
+                  }
+                />
+              </ErrorBoundary>
             )}
 
-            <ResultsSection
-              th={th}
-              results={results}
-              effectiveRatio={effectiveRatio}
-              spxDirectActive={spxDirectActive}
-              showIC={showIC}
-              wingWidth={wingWidth}
-              contracts={contracts}
-              skewPct={skewPct}
-            />
+            <ErrorBoundary label="Results">
+              <ResultsSection
+                th={th}
+                results={results}
+                effectiveRatio={effectiveRatio}
+                spxDirectActive={spxDirectActive}
+                showIC={showIC}
+                wingWidth={wingWidth}
+                contracts={contracts}
+                skewPct={skewPct}
+              />
+            </ErrorBoundary>
           </main>
         </div>
       </div>

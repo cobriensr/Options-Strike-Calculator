@@ -54,11 +54,24 @@ export interface MarketDataState {
 // FETCH HELPERS
 // ============================================================
 
+/** Timeout for individual API fetches (ms). Prevents hung requests from stacking. */
+const FETCH_TIMEOUT_MS = 10_000;
+
 async function fetchJson<T>(
   url: string,
+  signal?: AbortSignal,
 ): Promise<{ data: T } | { error: string; status: number }> {
   try {
-    const res = await fetch(url, { credentials: 'same-origin' });
+    // Combine caller signal (unmount) with a per-request timeout
+    const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+    const combinedSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal;
+
+    const res = await fetch(url, {
+      credentials: 'same-origin',
+      signal: combinedSignal,
+    });
     if (!res.ok) {
       const body = await res
         .json()
@@ -71,6 +84,12 @@ async function fetchJson<T>(
     const data: T = await res.json();
     return { data };
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return { error: 'Request aborted', status: 0 };
+    }
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      return { error: 'Request timed out', status: 0 };
+    }
     return {
       error: err instanceof Error ? err.message : 'Network error',
       status: 0,

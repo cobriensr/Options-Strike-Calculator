@@ -3,6 +3,8 @@ import type { ReactNode, ErrorInfo } from 'react';
 
 interface Props {
   children: ReactNode;
+  /** When set, renders a compact inline fallback instead of a full-page error. */
+  label?: string;
 }
 
 interface State {
@@ -26,6 +28,26 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (this.state.hasError) {
+      // Section-level: compact inline fallback
+      if (this.props.label) {
+        return (
+          <div
+            className="bg-surface border-edge rounded-lg border p-4 text-center"
+            role="alert"
+          >
+            <p className="text-secondary text-sm">
+              {this.props.label} failed to render.
+            </p>
+            {this.state.error && (
+              <pre className="text-danger mt-2 overflow-auto text-xs">
+                {this.state.error.message}
+              </pre>
+            )}
+          </div>
+        );
+      }
+
+      // Top-level: full-page fallback
       return (
         <div
           style={{

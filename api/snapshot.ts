@@ -12,7 +12,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { saveSnapshot } from './_lib/db.js';
-import type { SnapshotInput } from './_lib/db.js';
+import { snapshotBodySchema } from './_lib/validation.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST')
@@ -26,13 +26,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (rateLimited) return;
 
   try {
-    const input = req.body as SnapshotInput;
-
-    if (!input.date || !input.entryTime) {
-      return res.status(400).json({ error: 'date and entryTime are required' });
+    const parsed = snapshotBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.issues[0];
+      return res.status(400).json({
+        error: firstError?.message ?? 'Invalid request body',
+      });
     }
 
-    const id = await saveSnapshot(input);
+    const id = await saveSnapshot(parsed.data);
 
     return res.status(200).json({ id, saved: id != null });
   } catch (err) {
