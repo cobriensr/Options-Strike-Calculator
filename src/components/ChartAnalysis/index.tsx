@@ -482,7 +482,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
         {/* PaperMoney CSV upload */}
         {images.length > 0 && !loading && (
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-4 flex items-center gap-3">
             <input
               ref={csvInputRef}
               type="file"
@@ -495,11 +495,11 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               type="button"
               onClick={() => csvInputRef.current?.click()}
               disabled={positionUpload.status === 'uploading'}
-              className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
+              className="cursor-pointer rounded-md px-4 py-2 font-sans text-xs font-semibold transition-opacity hover:opacity-80"
               style={{
-                backgroundColor: th.surfaceAlt,
-                color: th.textMuted,
-                border: `1px solid ${th.accent}30`,
+                backgroundColor: th.accent,
+                color: '#fff',
+                border: `1px solid ${th.accent}`,
               }}
             >
               {positionUpload.status === 'uploading'
@@ -507,12 +507,12 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 : 'Upload paperMoney Positions (.csv)'}
             </button>
             {positionUpload.status === 'success' && (
-              <span className="text-[10px]" style={{ color: th.green }}>
+              <span className="text-xs" style={{ color: th.green }}>
                 {positionUpload.message}
               </span>
             )}
             {positionUpload.status === 'error' && (
-              <span className="text-[10px]" style={{ color: th.red }}>
+              <span className="text-xs" style={{ color: th.red }}>
                 {positionUpload.message}
               </span>
             )}

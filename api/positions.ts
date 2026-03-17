@@ -322,9 +322,9 @@ export function parseTosExpiration(raw: string): string {
 
 /** Parse "$450.00" → 450, "($1,050.00)" → -1050 */
 export function parseTosMarkValue(raw: string): number {
-  const cleaned = raw.replace(/[$,]/g, '');
+  const cleaned = raw.replaceAll(/[$,]/g, '');
   // Parentheses indicate negative: ($1050.00) → -1050
-  const match = cleaned.match(/^\((.+)\)$/);
+  const match = /^\((.+)\)$/.exec(cleaned);
   if (match) return -Number.parseFloat(match[1]!);
   return Number.parseFloat(cleaned);
 }
