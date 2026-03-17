@@ -606,21 +606,25 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       timeout: 720_000, // 12 minutes — Opus with adaptive thinking can take 5+ min
     });
 
+    // Stream the response — Anthropic sends headers immediately with streaming,
+    // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK types lag behind API features (adaptive thinking, output_config, cache_control ttl)
-    const data: any = await anthropic.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 25000,
-      thinking: { type: 'adaptive' },
-      output_config: { effort: 'high' },
-      system: [
-        {
-          type: 'text' as const,
-          text: SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral', ttl: '1h' },
-        },
-      ],
-      messages: [{ role: 'user' as const, content }],
-    } as unknown as Parameters<typeof anthropic.messages.create>[0]);
+    const data: any = await anthropic.messages
+      .stream({
+        model: 'claude-opus-4-6',
+        max_tokens: 25000,
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'high' },
+        system: [
+          {
+            type: 'text' as const,
+            text: SYSTEM_PROMPT,
+            cache_control: { type: 'ephemeral', ttl: '1h' },
+          },
+        ],
+        messages: [{ role: 'user' as const, content }],
+      } as unknown as Parameters<typeof anthropic.messages.stream>[0])
+      .finalMessage();
 
     // Log usage for cost monitoring
     if (data.usage) {

@@ -16,12 +16,14 @@ vi.mock('../_lib/db.js', () => ({
   getPreviousRecommendation: vi.fn().mockResolvedValue(null),
 }));
 
-// Mock the Anthropic SDK — capture the create call
-const mockCreate = vi.fn();
+// Mock the Anthropic SDK — capture the stream call
+// The handler uses `anthropic.messages.stream(params).finalMessage()`
+const mockFinalMessage = vi.fn();
+const mockStream = vi.fn().mockReturnValue({ finalMessage: mockFinalMessage });
 
 vi.mock('@anthropic-ai/sdk', () => {
   class MockAnthropic {
-    messages = { create: mockCreate };
+    messages = { stream: mockStream };
   }
   class APIError extends Error {
     status: number;
@@ -94,7 +96,8 @@ function makeSDKResponse(analysis: Record<string, unknown>) {
 describe('POST /api/analyze', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    mockCreate.mockReset();
+    mockStream.mockReset().mockReturnValue({ finalMessage: mockFinalMessage });
+    mockFinalMessage.mockReset();
     process.env.ANTHROPIC_API_KEY = 'test-key';
   });
 
@@ -157,7 +160,7 @@ describe('POST /api/analyze', () => {
 
   it('returns parsed analysis on success', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -174,15 +177,15 @@ describe('POST /api/analyze', () => {
 
   it('sends correct model and params to Anthropic SDK', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody();
     const req = mockRequest({ method: 'POST', body });
     const res = mockResponse();
     await handler(req, res);
 
-    expect(mockCreate).toHaveBeenCalledOnce();
-    const params = mockCreate.mock.calls[0]![0];
+    expect(mockStream).toHaveBeenCalledOnce();
+    const params = mockStream.mock.calls[0]![0];
     expect(params.model).toBe('claude-opus-4-6');
     expect(params.max_tokens).toBe(25000);
     expect(params.thinking).toEqual({ type: 'adaptive' });
@@ -196,7 +199,7 @@ describe('POST /api/analyze', () => {
 
   it('handles multiple images', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const images = [
       { data: 'img1', mediaType: 'image/png' },
@@ -208,7 +211,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const params = mockCreate.mock.calls[0]![0];
+    const params = mockStream.mock.calls[0]![0];
     // 3 × (text label + image block) + 1 context text block = 7
     expect(params.messages[0].content).toHaveLength(7);
   });
@@ -216,7 +219,9 @@ describe('POST /api/analyze', () => {
   it('returns 502 when Anthropic API returns 429', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const err = Object.assign(new Error('Rate limited'), { status: 429 });
-    mockCreate.mockRejectedValue(err);
+    mockStream.mockImplementation(() => {
+      throw err;
+    });
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -229,7 +234,7 @@ describe('POST /api/analyze', () => {
 
   it('returns raw text when Claude response is not valid JSON', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: 'Not valid JSON response' }],
       usage: { input_tokens: 100, output_tokens: 50 },
     });
@@ -247,7 +252,7 @@ describe('POST /api/analyze', () => {
   it('strips markdown code fences from Claude response', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const wrapped = '```json\n' + JSON.stringify(SAMPLE_ANALYSIS) + '\n```';
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: wrapped }],
       usage: { input_tokens: 100, output_tokens: 200 },
     });
@@ -263,7 +268,9 @@ describe('POST /api/analyze', () => {
 
   it('returns 500 when SDK throws a network error', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockRejectedValue(new Error('Network failure'));
+    mockStream.mockImplementation(() => {
+      throw new Error('Network failure');
+    });
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -275,7 +282,9 @@ describe('POST /api/analyze', () => {
 
   it('returns generic message for non-Error throws', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockRejectedValue('something weird');
+    mockStream.mockImplementation(() => {
+      throw 'something weird';
+    });
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -287,7 +296,7 @@ describe('POST /api/analyze', () => {
 
   it('includes midday mode text in context', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
       context: {
@@ -301,7 +310,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const params = mockCreate.mock.calls[0]![0];
+    const params = mockStream.mock.calls[0]![0];
     const contextBlock = params.messages[0].content.at(-1).text;
     expect(contextBlock).toContain('MID-DAY RE-ANALYSIS');
     expect(contextBlock).toContain('Short 10Δ IC at 5650/5750');
@@ -309,7 +318,7 @@ describe('POST /api/analyze', () => {
 
   it('includes review mode text and previous recommendation in context', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
       context: {
@@ -323,7 +332,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const params = mockCreate.mock.calls[0]![0];
+    const params = mockStream.mock.calls[0]![0];
     const contextBlock = params.messages[0].content.at(-1).text;
     expect(contextBlock).toContain('END-OF-DAY REVIEW');
     expect(contextBlock).toContain('Iron condor at 8Δ');
@@ -331,7 +340,7 @@ describe('POST /api/analyze', () => {
 
   it('filters out thinking blocks from response', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [
         { type: 'thinking', thinking: 'internal reasoning...' },
         { type: 'text', text: JSON.stringify(SAMPLE_ANALYSIS) },
@@ -350,7 +359,7 @@ describe('POST /api/analyze', () => {
 
   it('uses image labels when provided', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const images = [
       { data: 'img1', mediaType: 'image/png', label: 'Market Tide (SPX)' },
@@ -360,7 +369,7 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    const params = mockCreate.mock.calls[0]![0];
+    const params = mockStream.mock.calls[0]![0];
     const content = params.messages[0].content;
     expect(content[0].text).toContain('Market Tide (SPX)');
     expect(content[2].text).toContain('Unlabeled');
@@ -368,7 +377,7 @@ describe('POST /api/analyze', () => {
 
   it('populates all context fields in the request', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const ctx = {
       mode: 'entry',
@@ -401,7 +410,7 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    const params = mockCreate.mock.calls[0]![0];
+    const params = mockStream.mock.calls[0]![0];
     const contextBlock = params.messages[0].content.at(-1).text;
     expect(contextBlock).toContain('PRE-TRADE ENTRY');
     expect(contextBlock).toContain('2025-03-14');
@@ -429,7 +438,9 @@ describe('POST /api/analyze', () => {
   it('returns correct client message for Anthropic 401', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const err = Object.assign(new Error('Invalid API key'), { status: 401 });
-    mockCreate.mockRejectedValue(err);
+    mockStream.mockImplementation(() => {
+      throw err;
+    });
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -446,7 +457,9 @@ describe('POST /api/analyze', () => {
     const err = Object.assign(new Error('Internal server error'), {
       status: 500,
     });
-    mockCreate.mockRejectedValue(err);
+    mockStream.mockImplementation(() => {
+      throw err;
+    });
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -460,7 +473,7 @@ describe('POST /api/analyze', () => {
 
   it('still returns analysis when DB save fails', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     // Make DB throw
     const { saveAnalysis } = await import('../_lib/db.js');
@@ -478,7 +491,7 @@ describe('POST /api/analyze', () => {
 
   it('handles response with only thinking blocks (no text)', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: 'thinking', thinking: 'internal only...' }],
       usage: { input_tokens: 100, output_tokens: 50 },
     });
