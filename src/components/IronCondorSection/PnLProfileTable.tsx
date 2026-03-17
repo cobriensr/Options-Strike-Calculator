@@ -21,7 +21,11 @@ export default function PnLProfileTable({
         P&L Profile {'\u2014'} {contracts} contract{contracts === 1 ? '' : 's'}{' '}
         (theoretical)
       </div>
-      <div className="border-edge overflow-x-auto rounded-[10px] border">
+      <section
+        className="border-edge overflow-x-auto rounded-[10px] border"
+        tabIndex={0}
+        aria-label="P&amp;L profile"
+      >
         <table
           className="w-full border-collapse font-mono text-[13px]"
           role="table"
@@ -215,7 +219,7 @@ export default function PnLProfileTable({
             })}
           </tbody>
         </table>
-      </div>
+      </section>
     </>
   );
 }

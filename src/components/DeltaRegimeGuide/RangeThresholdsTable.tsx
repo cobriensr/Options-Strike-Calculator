@@ -16,7 +16,11 @@ interface Props {
 
 export default function RangeThresholdsTable({ computed }: Props) {
   return (
-    <div className="border-edge overflow-x-auto rounded-[10px] border">
+    <section
+      className="border-edge overflow-x-auto rounded-[10px] border"
+      tabIndex={0}
+      aria-label="Range thresholds"
+    >
       <table
         className="w-full border-collapse font-mono text-[13px]"
         role="table"
@@ -68,6 +72,6 @@ export default function RangeThresholdsTable({ computed }: Props) {
           ))}
         </tbody>
       </table>
-    </div>
+    </section>
   );
 }

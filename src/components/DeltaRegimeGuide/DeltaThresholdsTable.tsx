@@ -30,7 +30,11 @@ export default function DeltaThresholdsTable({
         Your Deltas vs. Regime Thresholds
       </div>
 
-      <div className="border-edge overflow-x-auto rounded-[10px] border">
+      <section
+        className="border-edge overflow-x-auto rounded-[10px] border"
+        tabIndex={0}
+        aria-label="Delta thresholds"
+      >
         <table
           className="w-full border-collapse font-mono text-[13px]"
           role="table"
@@ -107,7 +111,7 @@ export default function DeltaThresholdsTable({
             })}
           </tbody>
         </table>
-      </div>
+      </section>
 
       <p className="text-muted mt-1.5 text-[11px] italic">
         {'\u2713'} = both sides clear threshold (IC safe).{' '}

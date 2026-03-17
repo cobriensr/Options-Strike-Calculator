@@ -13,7 +13,11 @@ export default function FineGrainedBars({ th, vix, spot }: Props) {
   const maxP90 = Math.max(...FINE_VIX_STATS.map((s) => s.p90HL));
 
   return (
-    <div className="border-edge overflow-x-auto rounded-[10px] border">
+    <section
+      className="border-edge overflow-x-auto rounded-[10px] border"
+      tabIndex={0}
+      aria-label="Fine-grained VIX bars"
+    >
       <table
         className="w-full border-collapse font-mono text-[12px]"
         role="table"
@@ -113,6 +117,6 @@ export default function FineGrainedBars({ th, vix, spot }: Props) {
           })}
         </tbody>
       </table>
-    </div>
+    </section>
   );
 }

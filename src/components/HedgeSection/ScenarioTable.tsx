@@ -16,7 +16,11 @@ export default function ScenarioTable({
   direction,
 }: Props) {
   return (
-    <div className="border-edge overflow-x-auto rounded-[10px] border">
+    <section
+      className="border-edge overflow-x-auto rounded-[10px] border"
+      tabIndex={0}
+      aria-label="Hedge scenarios"
+    >
       <table
         className="w-full border-collapse font-mono text-xs"
         role="table"
@@ -85,6 +89,6 @@ export default function ScenarioTable({
           })}
         </tbody>
       </table>
-    </div>
+    </section>
   );
 }

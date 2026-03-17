@@ -15,7 +15,11 @@ export default function DeltaStrikesTable({ th, allDeltas, spot }: Props) {
     firstRow && !('error' in firstRow) ? firstRow.ivAccelMult : 1;
   return (
     <>
-      <div className="border-edge overflow-x-auto rounded-[10px] border">
+      <section
+        className="border-edge overflow-x-auto rounded-[10px] border"
+        tabIndex={0}
+        aria-label="Delta strikes"
+      >
         <table
           className="w-full border-collapse font-mono text-[13px]"
           role="table"
@@ -109,7 +113,7 @@ export default function DeltaStrikesTable({ th, allDeltas, spot }: Props) {
             })}
           </tbody>
         </table>
-      </div>
+      </section>
       {ivAccelMult > 1.01 && (
         <div
           className="mt-2 flex items-center gap-2 rounded-lg px-3 py-2 font-sans text-[11px]"

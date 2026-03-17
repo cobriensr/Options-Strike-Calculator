@@ -7,7 +7,11 @@ interface Props {
 
 export default function LegsTable({ icRows }: Props) {
   return (
-    <div className="border-edge overflow-x-auto rounded-[10px] border">
+    <section
+      className="border-edge overflow-x-auto rounded-[10px] border"
+      tabIndex={0}
+      aria-label="Iron condor legs"
+    >
       <table
         className="w-full border-collapse font-mono text-[13px]"
         role="table"
@@ -60,6 +64,6 @@ export default function LegsTable({ icRows }: Props) {
           ))}
         </tbody>
       </table>
-    </div>
+    </section>
   );
 }

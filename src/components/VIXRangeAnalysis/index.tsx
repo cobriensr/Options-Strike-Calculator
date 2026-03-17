@@ -39,7 +39,11 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
         Historical SPX Range by VIX Level
       </div>
 
-      <div className="border-edge overflow-x-auto rounded-[10px] border">
+      <section
+        className="border-edge overflow-x-auto rounded-[10px] border"
+        tabIndex={0}
+        aria-label="SPX range by VIX level"
+      >
         <table
           className="w-full border-collapse font-mono text-[13px]"
           role="table"
@@ -130,7 +134,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
             })}
           </tbody>
         </table>
-      </div>
+      </section>
 
       <p className="text-muted mt-1.5 mb-4 text-[11px] italic">
         Based on {TOTAL_MATCHED_DAYS.toLocaleString()} trading days (1990
@@ -158,7 +162,11 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
         />
       </div>
 
-      <div className="border-edge overflow-x-auto rounded-[10px] border">
+      <section
+        className="border-edge overflow-x-auto rounded-[10px] border"
+        tabIndex={0}
+        aria-label="Iron condor survival rates"
+      >
         <table
           className="w-full border-collapse font-mono text-[12px]"
           role="table"
@@ -216,7 +224,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
             })}
           </tbody>
         </table>
-      </div>
+      </section>
 
       <p className="text-muted mt-1.5 text-[11px] italic">
         {survMode === 'settle'
