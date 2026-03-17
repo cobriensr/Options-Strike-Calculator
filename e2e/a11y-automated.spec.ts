@@ -11,7 +11,9 @@ async function scanA11y(page: import('@playwright/test').Page) {
   );
   // Log details for debugging cross-browser differences
   for (const v of critical) {
-    console.log(`[a11y] ${v.impact}: ${v.id} — ${v.description} (${v.nodes.length} nodes)`);
+    console.log(
+      `[a11y] ${v.impact}: ${v.id} — ${v.description} (${v.nodes.length} nodes)`,
+    );
   }
   return critical;
 }
