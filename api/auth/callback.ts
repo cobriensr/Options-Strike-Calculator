@@ -52,7 +52,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   ];
   if (!isLocal) cookieParts.push('Secure');
 
-  res.setHeader('Set-Cookie', cookieParts.join('; '));
+  // Non-HttpOnly hint cookie so the frontend can detect the owner session
+  // on page load (the real sc-owner cookie is HttpOnly and invisible to JS).
+  const hintParts = [
+    `sc-hint=1`,
+    `Path=/`,
+    `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
+    'SameSite=Strict',
+  ];
+  if (!isLocal) hintParts.push('Secure');
+
+  res.setHeader('Set-Cookie', [
+    cookieParts.join('; '),
+    hintParts.join('; '),
+  ]);
 
   // Return a simple success page
   res.setHeader('Content-Type', 'text/html');

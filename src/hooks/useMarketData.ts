@@ -96,8 +96,9 @@ export function useMarketData(): MarketDataState {
   const [loading, setLoading] = useState(true);
   const [needsAuth, setNeedsAuth] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-  // Track if the owner cookie is present (any endpoint returned 200)
-  const isOwnerRef = useRef(false);
+  // Track if the owner cookie is present (any endpoint returned 200,
+  // or the sc-hint cookie exists from a prior auth session).
+  const isOwnerRef = useRef(document.cookie.includes('sc-hint='));
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAll = useCallback(async () => {
