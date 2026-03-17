@@ -30,6 +30,8 @@ Live at: [theta-options.com](https://theta-options.com)
   - [Live Option Chain Verification](#live-option-chain-verification)
   - [Backtesting System](#backtesting-system)
   - [Live Position Tracking](#live-position-tracking)
+    - [Schwab Trader API (Live Accounts)](#schwab-trader-api-live-accounts)
+    - [PaperMoney CSV Upload (Paper Trading)](#papermoney-csv-upload-paper-trading)
   - [Data Collection \& ML Pipeline](#data-collection--ml-pipeline)
     - [Tables](#tables)
     - [Data Flow](#data-flow)
@@ -287,7 +289,9 @@ Full historical replay using 5-minute SPX candles from the Schwab API:
 
 ## Live Position Tracking
 
-Real-time SPX 0DTE position awareness via the Schwab Trader API. Before each chart analysis, the frontend auto-fetches current positions so Claude can factor in what's already open.
+Real-time SPX 0DTE position awareness via the Schwab Trader API or manual CSV upload from thinkorswim paperMoney. Before each chart analysis, the frontend auto-fetches current positions so Claude can factor in what's already open.
+
+### Schwab Trader API (Live Accounts)
 
 | Feature              | Detail                                                                                             |
 | -------------------- | -------------------------------------------------------------------------------------------------- |
@@ -300,6 +304,29 @@ Real-time SPX 0DTE position awareness via the Schwab Trader API. Before each cha
 | DB persistence       | Saved to `positions` table with snapshot linkage, ON CONFLICT DO UPDATE for re-fetches             |
 | Rate limit           | 20/min via Upstash Redis                                                                           |
 | Graceful degradation | Positions are optional — if the fetch fails, analysis proceeds without them                        |
+
+### PaperMoney CSV Upload (Paper Trading)
+
+Schwab's Trader API doesn't expose thinkorswim paperMoney positions. To work around this, you can export an account statement CSV from paperMoney and upload it directly.
+
+| Feature            | Detail                                                                                      |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| Endpoint           | `POST /api/positions?spx=5700`                                                              |
+| Data source        | thinkorswim paperMoney account statement CSV export                                         |
+| Body format        | Raw CSV text or JSON `{ csv: "..." }`                                                       |
+| CSV parsing        | Extracts the "Options" section, filters for SPX, parses strikes/qty/prices/mark values      |
+| Date parsing       | Converts thinkorswim format (`17 MAR 26`) to ISO (`2026-03-17`)                             |
+| Value parsing      | Handles `$450.00` and parenthesized negatives `($1,050.00)`                                 |
+| Spread grouping    | Same logic as live — matches short + long legs by closest strike                            |
+| DB persistence     | Saved with `accountHash: 'paperMoney'`, same pipeline as live positions                     |
+| UI                 | "Upload paperMoney Positions (.csv)" button in the Chart Analysis section                   |
+| Feedback           | Shows spread count on success or error message on failure                                   |
+
+**How to use:**
+
+1. In thinkorswim paperMoney, go to **Monitor** > **Account Statement** and export to CSV
+2. In the Chart Analysis section, click **Upload paperMoney Positions (.csv)** and select the file
+3. The parsed positions are saved to the database and automatically included in Claude's analysis context
 
 ### What Claude Sees
 
