@@ -156,7 +156,7 @@ export default function AnalysisResults({
 
       {/* Per-Chart Confidence (always visible, compact) */}
       {analysis.chartConfidence && (
-        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {(
             [
               ['marketTide', 'Market Tide'],
@@ -171,26 +171,26 @@ export default function AnalysisResults({
             return (
               <div
                 key={key}
-                className="bg-surface border-edge rounded-md border p-2"
+                className="bg-surface border-edge rounded-md border p-2.5"
               >
-                <div className="text-muted mb-0.5 text-[8px] font-bold tracking-wider uppercase">
+                <div className="text-muted mb-0.5 text-[9px] font-bold tracking-wider uppercase">
                   {label}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span
-                    className="text-[11px] font-bold"
+                    className="text-[13px] font-bold"
                     style={{ color: signalColor(sig.signal) }}
                   >
                     {sig.signal}
                   </span>
                   <span
-                    className="text-[8px] font-semibold"
+                    className="text-[9px] font-semibold"
                     style={{ color: confidenceColor(sig.confidence) }}
                   >
                     {sig.confidence}
                   </span>
                 </div>
-                <div className="text-muted mt-0.5 text-[9px] leading-tight">
+                <div className="text-muted mt-1 text-[10px] leading-snug">
                   {sig.note}
                 </div>
               </div>
