@@ -2,12 +2,21 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { visualizer } from 'rollup-plugin-visualizer';
 import { resolve } from 'node:path';
+
+const analyze = process.env.ANALYZE === 'true';
 
 export default defineConfig({
   plugins: [
     tailwindcss(),
     react(),
+    analyze &&
+      visualizer({
+        open: true,
+        filename: 'dist/bundle-stats.html',
+        gzipSize: true,
+      }),
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
@@ -97,6 +106,12 @@ export default defineConfig({
       },
     }),
   ],
+  define: {
+    // Expose SENTRY_DSN to client (Vercel sets SENTRY_DSN, Vite needs VITE_ prefix)
+    'import.meta.env.VITE_SENTRY_DSN': JSON.stringify(
+      process.env.SENTRY_DSN ?? '',
+    ),
+  },
   build: {
     rollupOptions: {
       output: {
