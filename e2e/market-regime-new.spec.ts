@@ -163,24 +163,26 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
     });
     await page.goto('/');
 
-    // Wait for auto-fill to complete (SPY + VIX populated from mocked quotes)
+    // Wait for auto-fill to fully complete — SPY, VIX, and time must all settle.
+    // The auto-fill sets time last, so wait for the Hour select to have a non-default
+    // value (the auto-fill always picks the current hour).
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 5000,
     });
     await expect(page.getByLabel('VIX (regime only)')).toHaveValue(/\d+/, {
       timeout: 5000,
     });
+    // Wait for auto-fill to set the timezone to CT (it always does)
+    await expect(
+      page.getByRole('radio', { name: 'CT', exact: true }),
+    ).toBeChecked({ timeout: 5000 });
 
-    // Auto-fill also sets the time asynchronously — wait for it to settle
-    // before overriding, otherwise our override gets clobbered.
-    await page.waitForTimeout(500);
-
-    // Override to a valid market time to ensure T is computed.
+    // Now override to a valid market time — auto-fill has finished.
     await page.getByLabel('Hour').selectOption('10');
     await page.getByLabel('Minute').selectOption('30');
     await page.getByRole('radio', { name: 'AM' }).click();
 
-    // After auto-fill + time correction, results should appear
+    // After time correction, results should appear
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
     ).toBeVisible({ timeout: 10000 });
@@ -208,7 +210,9 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
     await expect(page.getByLabel('VIX (regime only)')).toHaveValue(/\d+/, {
       timeout: 5000,
     });
-    await page.waitForTimeout(500);
+    await expect(
+      page.getByRole('radio', { name: 'CT', exact: true }),
+    ).toBeChecked({ timeout: 5000 });
 
     await page.getByLabel('Hour').selectOption('10');
     await page.getByLabel('Minute').selectOption('30');

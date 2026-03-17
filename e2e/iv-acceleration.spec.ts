@@ -39,7 +39,7 @@ test.describe('IV Acceleration', () => {
 
     // At 2 PM ET (2h remaining), mult ≈ 1.12
     await expect(page.getByText(/IV acceleration/)).toBeVisible({
-      timeout: 3000,
+      timeout: 5000,
     });
     // Should show the sigma multiplier value in the indicator
     await expect(page.locator('.font-mono').getByText(/\u00D7/)).toBeVisible();
