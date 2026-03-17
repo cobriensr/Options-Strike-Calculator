@@ -22,8 +22,8 @@ import {
   getPreviousRecommendation,
 } from './_lib/db.js';
 
-// Allow up to 5 minutes for Opus with adaptive thinking
-export const config = { maxDuration: 300 };
+// Allow up to 13 minutes for Opus with adaptive thinking
+export const config = { maxDuration: 780 };
 
 // ============================================================
 // SYSTEM PROMPT
@@ -608,7 +608,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
           type: 'adaptive',
         },
         output_config: {
-          effort: 'medium',
+          effort: 'high',
         },
         system: [
           {

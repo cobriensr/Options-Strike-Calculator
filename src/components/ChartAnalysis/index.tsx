@@ -215,7 +215,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
       const controller = new AbortController();
       abortRef.current = controller;
-      const timeout = setTimeout(() => controller.abort(), 240_000); // 4 min
+      const timeout = setTimeout(() => controller.abort(), 750_000); // 12 min 30s
 
       const res = await fetchWithRetry('/api/analyze', {
         method: 'POST',
@@ -265,7 +265,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         // abortRef is null if cancelAnalysis was called (it clears it); non-null means timeout
         if (abortRef.current)
           setError(
-            'Analysis timed out (>4 min). Try fewer images or simpler charts.',
+            'Analysis timed out (>12 min). Try fewer images or simpler charts.',
           );
       } else {
         setError(err instanceof Error ? err.message : 'Analysis failed');
@@ -406,7 +406,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 style={{ color: '#E8A317' }}
               >
                 Send {images.length} image{images.length > 1 ? 's' : ''} to
-                Opus? (~1{'\u20134'} min, billed on send)
+                Opus? (~5{'\u201310'} min, billed on send)
               </div>
               <div className="text-muted mt-0.5 font-sans text-[10px]">
                 {MODE_LABELS[mode].label} {'\u2022'}{' '}
@@ -464,7 +464,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                 className="h-full rounded-full"
                 style={{
                   backgroundColor: th.accent,
-                  width: `${Math.min(95, (elapsed / 140) * 100)}%`,
+                  width: `${Math.min(95, (elapsed / 600) * 100)}%`,
                   transition: 'width 1s linear',
                 }}
               />
@@ -481,7 +481,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                   {
                     THINKING_MESSAGES[
                       Math.min(
-                        Math.floor(elapsed / 8),
+                        Math.floor(elapsed / 50),
                         THINKING_MESSAGES.length - 1,
                       )
                     ]
