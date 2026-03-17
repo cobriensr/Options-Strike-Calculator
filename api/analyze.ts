@@ -662,34 +662,37 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         .join('') ?? '';
 
     // Parse the JSON response
+    let analysis: Record<string, unknown> | null = null;
     try {
       const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
-      const analysis = JSON.parse(cleaned);
+      analysis = JSON.parse(cleaned);
+    } catch {
+      // JSON parse failed — will return raw text below
+    }
 
-      // Save to Postgres before responding (must await — Vercel kills the function after res.json)
+    // Save to Postgres before responding (Vercel kills the function after res.json)
+    if (analysis) {
       try {
         const db = getDb();
         const date =
-          context.selectedDate ??
+          (context.selectedDate as string | undefined) ??
           new Date().toLocaleDateString('en-CA', {
             timeZone: 'America/New_York',
           });
-        const entryTime = context.entryTime ?? 'unknown';
+        const entryTime = (context.entryTime as string | undefined) ?? 'unknown';
         const rows = await db`
           SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
         `;
         const snapshotId = rows.length > 0 ? (rows[0]!.id as number) : null;
-        await saveAnalysis(context, analysis, snapshotId);
+        await saveAnalysis(context, analysis as Parameters<typeof saveAnalysis>[1], snapshotId);
       } catch (dbErr) {
-        console.error('Failed to save analysis to DB:', dbErr);
+        console.error('[analyze] DB save failed:', dbErr);
       }
-
-      return res.status(200).json({ analysis, raw: text });
-    } catch {
-      // Return raw text if JSON parse fails
-      return res.status(200).json({ analysis: null, raw: text });
     }
+
+    return res.status(200).json({ analysis, raw: text });
   } catch (err) {
+    console.error('[analyze] unhandled error:', err);
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Analysis failed',
     });
