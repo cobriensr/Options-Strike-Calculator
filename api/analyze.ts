@@ -1,7 +1,7 @@
 /**
  * POST /api/analyze
  *
- * Chart analysis powered by Claude Opus 4.6 with extended thinking.
+ * Chart analysis powered by Claude Opus 4.6 with adaptive thinking.
  * Accepts Market Tide, Net Flow, and Periscope screenshots plus
  * calculator context. Returns a comprehensive trading plan.
  *
@@ -22,7 +22,7 @@ import {
   getPreviousRecommendation,
 } from './_lib/db.js';
 
-// Allow up to 5 minutes for Opus with extended thinking
+// Allow up to 5 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 300 };
 
 // ============================================================
@@ -310,6 +310,40 @@ Consider: VIX level, directional conviction, straddle cone proximity, gamma prof
 - Were there earlier exit opportunities?
 - Optimal trade with perfect hindsight
 - Key lessons for future similar setups
+
+## Chart Reading Protocol — Extract First, Then Analyze
+
+Before forming any opinion about structure, direction, or confidence, you MUST first extract raw values from each chart. This is a two-phase process:
+
+### Phase 1: Value Extraction (do this in your thinking)
+For EACH chart image provided, extract the following values AT THE ENTRY TIME (not the header values, which may show end-of-day):
+
+**Market Tide / Net Flow charts:**
+- SPX or SPY price at entry time (read from the yellow line against the left Y-axis)
+- NCP (green line) approximate value at entry time (read against the right Y-axis)
+- NPP (red/pink line) approximate value at entry time (read against the right Y-axis)
+- NCP direction over the prior 30 minutes: rising, falling, or flat
+- NPP direction over the prior 30 minutes: rising, falling, or flat
+- NCP vs NPP relationship: converging, diverging, or parallel
+- Volume bar color dominance at entry time: green, red, or mixed
+- Right Y-axis scale (note the range — this tells you whether values are in millions, thousands, etc.)
+
+**Periscope charts:**
+- Current price level
+- Nearest positive gamma wall: price level and approximate bar size
+- Nearest negative gamma zone: price level and approximate bar size
+- Straddle cone upper and lower breakevens (yellow dashed lines)
+- Whether price is inside, near, or outside the cone
+- Any orange (recently flipped) bars and their locations
+
+Record these values explicitly. If you cannot read a value, state "unreadable" and explain why. Do NOT estimate a value and then treat it as certain — if you had to squint, qualify it with "approximately" or "appears to be."
+
+### Phase 2: Analysis (use the extracted values)
+Only AFTER completing Phase 1 for all charts should you begin forming your structure recommendation. Every claim in your analysis must trace back to a specific extracted value. For example:
+- GOOD: "NCP at approximately -102M and falling suggests bearish call flow → CALL CREDIT SPREAD"
+- BAD: "The green line is going down so it's bearish" (no value extracted, no scale reference)
+
+If a value extraction contradicts a pattern you expected, trust the extracted value, not the pattern. Charts don't lie — but visual impressions of line direction without checking scale can.
 
 ## Critical Accuracy Rules
 
@@ -601,6 +635,30 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     }
 
     const data = await response.json();
+
+    // Log usage for cost monitoring
+    if (data.usage) {
+      const u = data.usage;
+      const inputCost = ((u.input_tokens ?? 0) / 1_000_000) * 5;
+      const outputCost = ((u.output_tokens ?? 0) / 1_000_000) * 25;
+      const cacheWriteCost =
+        ((u.cache_creation_input_tokens ?? 0) / 1_000_000) * 10;
+      const cacheReadCost =
+        ((u.cache_read_input_tokens ?? 0) / 1_000_000) * 0.5;
+      const totalCost = inputCost + outputCost + cacheWriteCost + cacheReadCost;
+
+      console.log(
+        `[analyze] mode=${String(mode)} | ` +
+          `input=${u.input_tokens ?? 0} | ` +
+          `output=${u.output_tokens ?? 0} | ` +
+          `cache_write=${u.cache_creation_input_tokens ?? 0} | ` +
+          `cache_read=${u.cache_read_input_tokens ?? 0} | ` +
+          `est_cost=$${totalCost.toFixed(4)} ` +
+          `(in=$${inputCost.toFixed(4)} out=$${outputCost.toFixed(4)} ` +
+          `cw=$${cacheWriteCost.toFixed(4)} cr=$${cacheReadCost.toFixed(4)})`,
+      );
+    }
+
     // Filter to text blocks only — thinking blocks are excluded
     const text =
       data.content
