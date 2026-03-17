@@ -131,10 +131,10 @@ describe('POST /api/analyze', () => {
     expect(res._json).toEqual({ error: 'At least one image is required' });
   });
 
-  it('returns 400 when more than 5 images', async () => {
+  it('returns 400 when more than 6 images', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
-    const images = Array.from({ length: 6 }, () => ({
+    const images = Array.from({ length: 7 }, () => ({
       data: 'base64',
       mediaType: 'image/png',
     }));
@@ -143,7 +143,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Maximum 5 images allowed' });
+    expect(res._json).toEqual({ error: 'Maximum 6 images allowed' });
   });
 
   it('returns parsed analysis on success', async () => {
@@ -181,10 +181,9 @@ describe('POST /api/analyze', () => {
 
     const sentBody = JSON.parse(opts.body);
     expect(sentBody.model).toBe('claude-opus-4-6');
-    expect(sentBody.max_tokens).toBe(20000);
+    expect(sentBody.max_tokens).toBe(25000);
     expect(sentBody.thinking).toEqual({
-      type: 'enabled',
-      budget_tokens: 16000,
+      type: 'adaptive',
     });
     expect(sentBody.messages).toHaveLength(1);
     // Should have 1 text label + 1 image block + 1 context text block

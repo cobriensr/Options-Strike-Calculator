@@ -184,7 +184,7 @@ describe('ChartAnalysis', () => {
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
-      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/6 images/)).toBeInTheDocument();
     });
 
     it('shows analyze button after adding an image', async () => {
@@ -218,13 +218,13 @@ describe('ChartAnalysis', () => {
       expect(screen.getByText(/drop or click to upload/i)).toBeInTheDocument();
     });
 
-    it('defaults image label to Market Tide (SPX)', async () => {
+    it('defaults image label to Market Tide', async () => {
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(
-        'Market Tide (SPX)',
+        'Market Tide',
       );
     });
 
@@ -239,13 +239,13 @@ describe('ChartAnalysis', () => {
       expect((select as HTMLSelectElement).value).toBe('Net Flow (SPY)');
     });
 
-    it('limits to 5 images', async () => {
+    it('limits to 6 images', async () => {
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
       );
-      for (let i = 0; i < 6; i++)
+      for (let i = 0; i < 7; i++)
         await addImageViaInput(container, createImageFile(`chart${i}.png`));
-      expect(screen.getByText(/5\/5 images/)).toBeInTheDocument();
+      expect(screen.getByText(/6\/6 images/)).toBeInTheDocument();
     });
 
     it('handles drag and drop', async () => {
@@ -260,7 +260,7 @@ describe('ChartAnalysis', () => {
           types: ['Files'],
         },
       });
-      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/6 images/)).toBeInTheDocument();
     });
   });
 
@@ -290,9 +290,9 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
-      expect(
-        screen.getAllByText(/Market Tide \(SPX\)/).length,
-      ).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText(/Market Tide/).length).toBeGreaterThanOrEqual(
+        1,
+      );
     });
 
     it('returns to normal state when Go Back is clicked', async () => {
@@ -598,7 +598,9 @@ describe('ChartAnalysis', () => {
 
     it('chart confidence cards are always visible', async () => {
       await renderFull();
-      expect(screen.getByText('Market Tide')).toBeInTheDocument();
+      expect(screen.getAllByText('Market Tide').length).toBeGreaterThanOrEqual(
+        1,
+      );
       expect(screen.getByText('BEARISH')).toBeInTheDocument();
     });
 
@@ -830,7 +832,7 @@ describe('ChartAnalysis', () => {
       fireEvent.change(inputs[1]!, {
         target: { files: [createImageFile('new.png')] },
       });
-      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/6 images/)).toBeInTheDocument();
     });
   });
 
@@ -847,7 +849,7 @@ describe('ChartAnalysis', () => {
       await act(() => {
         document.dispatchEvent(evt);
       });
-      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/6 images/)).toBeInTheDocument();
     });
 
     it('ignores non-image paste', () => {
@@ -1132,7 +1134,7 @@ describe('ChartAnalysis', () => {
       });
 
       // Should still have 1 image (replaced, not added)
-      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/6 images/)).toBeInTheDocument();
     });
 
     it('handleReplaceFile does nothing with out-of-bounds index', async () => {
@@ -1149,7 +1151,7 @@ describe('ChartAnalysis', () => {
       });
 
       // Still 1 image, nothing changed
-      expect(screen.getByText(/1\/5 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/6 images/)).toBeInTheDocument();
     });
   });
 
