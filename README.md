@@ -1081,15 +1081,15 @@ These rules are derived from backtesting and live trading. They are coded into t
 
 #### Chart Input Lineup (6–7 images)
 
-| Slot | Chart | Question It Answers |
-| ---- | ----- | ------------------- |
-| 1 | Market Tide | Broad market sentiment (25% weight) |
-| 2 | SPX Net Flow | Flow in the trader's exact instrument (50% weight) |
-| 3 | SPY Net Flow | Confirmation/contradiction (15% weight) |
-| 4 | QQQ Net Flow | Tech sector divergence (10% weight) |
-| 5 | Periscope (Delta Flow + Gamma) | Gamma walls, acceleration zones, straddle cone |
-| 6 | Net Charm (SPX) | Which gamma walls hold vs decay into the afternoon |
-| 7 | _(optional)_ | Second Periscope timeframe for midday comparison |
+| Slot | Chart                          | Question It Answers                                |
+| ---- | ------------------------------ | -------------------------------------------------- |
+| 1    | Market Tide                    | Broad market sentiment (25% weight)                |
+| 2    | SPX Net Flow                   | Flow in the trader's exact instrument (50% weight) |
+| 3    | SPY Net Flow                   | Confirmation/contradiction (15% weight)            |
+| 4    | QQQ Net Flow                   | Tech sector divergence (10% weight)                |
+| 5    | Periscope (Delta Flow + Gamma) | Gamma walls, acceleration zones, straddle cone     |
+| 6    | Net Charm (SPX)                | Which gamma walls hold vs decay into the afternoon |
+| 7    | _(optional)_                   | Second Periscope timeframe for midday comparison   |
 
 #### Rule 1: Gamma Asymmetry Overrides Neutral Flow
 

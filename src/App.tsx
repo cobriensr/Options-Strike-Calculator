@@ -439,6 +439,16 @@ export default function StrikeCalculator() {
                           : String(signals.overnightGap),
                       isBacktest: !!historySnapshot,
                       dataNote: signals.dataNote,
+                      events: (market.data.events?.events ?? [])
+                        .filter(
+                          (e) =>
+                            e.severity === 'high' || e.severity === 'medium',
+                        )
+                        .map((e) => ({
+                          event: e.event,
+                          time: e.time,
+                          severity: e.severity,
+                        })),
                     } satisfies AnalysisContext
                   }
                 />

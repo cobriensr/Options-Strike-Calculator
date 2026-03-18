@@ -31,6 +31,7 @@ export interface AnalysisContext {
   overnightGap?: string;
   isBacktest?: boolean;
   dataNote?: string; // describes any missing data
+  events?: Array<{ event: string; time: string; severity: string }>;
 }
 
 export interface UploadedImage {

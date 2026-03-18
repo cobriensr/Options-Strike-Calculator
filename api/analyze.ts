@@ -668,6 +668,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 - VIX term structure signal: ${context.vixTermSignal ?? 'N/A'}
 - RV/IV ratio: ${context.rvIvRatio ?? 'N/A'}
 - Overnight gap: ${context.overnightGap ?? 'N/A'}
+- Scheduled events: ${(() => {
+    const events = context.events as
+      | Array<{ event: string; time: string; severity: string }>
+      | undefined;
+    if (!events || events.length === 0) return 'NONE';
+    return events
+      .map((e) => `${e.event} at ${e.time} [${e.severity}]`)
+      .join('; ');
+  })()}
 - Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
