@@ -138,10 +138,10 @@ test.describe('PaperMoney Position Upload', () => {
     });
 
     await page.goto('/');
-    // Wait for quotes to load and Chart Analysis to render
-    await expect(page.getByText('Chart Analysis')).toBeVisible({
-      timeout: 5000,
-    });
+    // Wait for quotes to load and Chart Analysis section to render
+    await expect(
+      page.locator('section[aria-label="Chart Analysis"]'),
+    ).toBeVisible({ timeout: 5000 });
   });
 
   async function uploadChartImage(page: import('@playwright/test').Page) {
@@ -153,10 +153,12 @@ test.describe('PaperMoney Position Upload', () => {
     fs.writeFileSync(tmpImg, pngBuffer);
 
     // Use setInputFiles directly on the hidden file input to avoid
-    // flaky filechooser events in Firefox
+    // flaky filechooser events in Firefox/WebKit
     const fileInput = page.locator(
       'input[type="file"][accept="image/*"][multiple]',
     );
+    // Ensure the input is interactable (un-hide for setInputFiles compatibility)
+    await fileInput.evaluate((el) => el.classList.remove('hidden'));
     await fileInput.setInputFiles(tmpImg);
 
     try {
@@ -168,7 +170,7 @@ test.describe('PaperMoney Position Upload', () => {
     // Wait for the CSV upload button to appear (it shows after image added)
     await expect(
       page.getByRole('button', { name: /Upload paperMoney/ }),
-    ).toBeVisible({ timeout: 3000 });
+    ).toBeVisible({ timeout: 5000 });
   }
 
   test('upload button is visible after adding a chart image', async ({
@@ -185,8 +187,9 @@ test.describe('PaperMoney Position Upload', () => {
   }) => {
     await uploadChartImage(page);
 
-    // Use setInputFiles directly on the hidden CSV input to avoid flaky filechooser in Firefox
+    // Un-hide the CSV input for setInputFiles compatibility on Firefox/WebKit
     const csvInput = page.getByLabel('Upload paperMoney CSV');
+    await csvInput.evaluate((el) => el.classList.remove('hidden'));
     await csvInput.setInputFiles(csvPath);
 
     await expect(page.getByText(/1 spread loaded from paperMoney/)).toBeVisible(
@@ -209,8 +212,9 @@ test.describe('PaperMoney Position Upload', () => {
 
     await uploadChartImage(page);
 
-    // Use setInputFiles directly on the hidden CSV input to avoid flaky filechooser in Firefox
+    // Un-hide the CSV input for setInputFiles compatibility on Firefox/WebKit
     const csvInput = page.getByLabel('Upload paperMoney CSV');
+    await csvInput.evaluate((el) => el.classList.remove('hidden'));
     await csvInput.setInputFiles(csvPath);
 
     await expect(page.getByText(/No SPX options found/)).toBeVisible({

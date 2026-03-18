@@ -69,7 +69,11 @@ test.describe('Responsive Layout', () => {
 
     await expect(page.locator('h1')).toHaveText('Strike Calculator');
     // Content should be constrained to max-w-[660px]
-    const container = page.locator(String.raw`.max-w-\[660px\]`);
+    const container = page.locator('[class*="max-w-"]').first();
     await expect(container).toBeVisible();
+    const maxWidth = await container.evaluate((el) =>
+      getComputedStyle(el).maxWidth,
+    );
+    expect(maxWidth).toBe('660px');
   });
 });

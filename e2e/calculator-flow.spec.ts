@@ -91,17 +91,21 @@ test.describe('Calculator Flow', () => {
   });
 
   test('dark mode toggle works', async ({ page }) => {
+    // App defaults to dark mode
+    await expect(page.locator('div.dark').first()).toBeVisible();
+
+    // Toggle to light mode
     const toggle = page.getByRole('button', {
-      name: 'Switch to dark mode',
+      name: 'Switch to light mode',
     });
     await toggle.click();
 
-    // After clicking, the root div should have the "dark" class
-    await expect(page.locator('div.dark').first()).toBeVisible();
+    // After clicking, the root div should NOT have the "dark" class
+    await expect(page.locator('div.dark')).not.toBeAttached();
 
-    // Button label should now say "Light"
+    // Button label should now say "Dark"
     await expect(
-      page.getByRole('button', { name: 'Switch to light mode' }),
+      page.getByRole('button', { name: 'Switch to dark mode' }),
     ).toBeVisible();
   });
 

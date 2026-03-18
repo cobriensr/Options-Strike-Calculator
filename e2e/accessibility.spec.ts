@@ -72,19 +72,19 @@ test.describe('Keyboard Navigation & Accessibility', () => {
   });
 
   test('theme toggle is keyboard accessible', async ({ page }) => {
-    // Verify no dark class initially
-    await expect(page.locator('div.dark')).not.toBeAttached();
+    // App defaults to dark mode
+    await expect(page.locator('div.dark')).toBeAttached();
 
-    // Tab to the theme toggle button
+    // Tab to the theme toggle button (switch to light mode)
     const toggle = page.getByRole('button', {
-      name: /switch to dark mode/i,
+      name: /switch to light mode/i,
     });
     await toggle.focus();
     await expect(toggle).toBeFocused();
 
-    // Press Enter to activate dark mode
+    // Press Enter to activate light mode
     await page.keyboard.press('Enter');
-    await expect(page.locator('div.dark')).toBeAttached();
+    await expect(page.locator('div.dark')).not.toBeAttached();
   });
 
   test('radio chips respond to keyboard', async ({ page }) => {

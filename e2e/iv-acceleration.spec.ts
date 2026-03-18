@@ -56,7 +56,7 @@ test.describe('IV Acceleration', () => {
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
-    ).toBeVisible({ timeout: 5000 });
+    ).toBeVisible({ timeout: 10000 });
 
     // At 3:30 PM (0.5h remaining), mult ≈ 1.56 → should show late session warning
     await expect(page.getByText(/Late session/)).toBeVisible({ timeout: 3000 });

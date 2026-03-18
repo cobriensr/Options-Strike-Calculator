@@ -6,14 +6,16 @@ test.describe('Theme Persistence', () => {
   });
 
   test('dark mode persists across page reload', async ({ page }) => {
+    // Clear localStorage so default dark mode kicks in
     await page.goto('/');
+    await page.evaluate(() => localStorage.removeItem('darkMode'));
+    await page.reload();
 
-    // Toggle to dark mode
-    const toggle = page.getByRole('button', { name: /switch to dark mode/i });
-    await toggle.click();
-
-    // Verify dark class is applied
+    // App defaults to dark mode
     await expect(page.locator('div.dark')).toBeAttached();
+    await expect(
+      page.getByRole('button', { name: /switch to light mode/i }),
+    ).toBeVisible();
 
     // Reload the page
     await page.reload();
@@ -33,20 +35,11 @@ test.describe('Theme Persistence', () => {
   test('light mode persists across page reload', async ({ page }) => {
     await page.goto('/');
 
-    // Start in dark mode
-    const toggleToDark = page.getByRole('button', {
-      name: /switch to dark mode/i,
-    });
-    await toggleToDark.click();
-    await expect(page.locator('div.dark')).toBeAttached();
-
-    // Toggle back to light mode
+    // App starts in dark mode — toggle to light
     const toggleToLight = page.getByRole('button', {
       name: /switch to light mode/i,
     });
     await toggleToLight.click();
-
-    // Verify dark class is removed
     await expect(page.locator('div.dark')).not.toBeAttached();
 
     // Reload the page
@@ -62,15 +55,15 @@ test.describe('Theme Persistence', () => {
   test('theme toggle applies correct CSS class', async ({ page }) => {
     await page.goto('/');
 
-    // Initially in light mode — no div.dark
-    await expect(page.locator('div.dark')).not.toBeAttached();
-
-    // Toggle to dark mode
-    await page.getByRole('button', { name: /switch to dark mode/i }).click();
+    // App defaults to dark mode
     await expect(page.locator('div.dark')).toBeAttached();
 
-    // Toggle back to light mode
+    // Toggle to light mode
     await page.getByRole('button', { name: /switch to light mode/i }).click();
     await expect(page.locator('div.dark')).not.toBeAttached();
+
+    // Toggle back to dark mode
+    await page.getByRole('button', { name: /switch to dark mode/i }).click();
+    await expect(page.locator('div.dark')).toBeAttached();
   });
 });
