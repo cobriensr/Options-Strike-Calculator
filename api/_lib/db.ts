@@ -504,7 +504,7 @@ export async function saveAnalysis(
     mode?: string;
     structure: string;
     confidence: string;
-    suggestedDelta: number;
+    suggestedDelta: number | null | undefined;
     hedge?: { recommendation: string } | null;
     [key: string]: unknown;
   },
@@ -526,7 +526,7 @@ export async function saveAnalysis(
       ${snapshotId ?? null},
       ${date}, ${entryTime}, ${mode},
       ${analysis.structure}, ${analysis.confidence},
-      ${analysis.suggestedDelta},
+      ${analysis.suggestedDelta ?? 0},
       ${context.spx ?? null}, ${context.vix ?? null}, ${context.vix1d ?? null},
       ${analysis.hedge?.recommendation ?? null},
       ${JSON.stringify(analysis)}
