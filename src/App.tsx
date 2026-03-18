@@ -23,6 +23,7 @@ import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
 import ChartAnalysis from './components/ChartAnalysis';
 import type { AnalysisContext } from './components/ChartAnalysis';
+import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StatusBadge } from './components/ui';
@@ -443,6 +444,10 @@ export default function StrikeCalculator() {
                 />
               </ErrorBoundary>
             )}
+
+            <ErrorBoundary label="Analysis History">
+              <AnalysisHistory th={th} />
+            </ErrorBoundary>
 
             <ErrorBoundary label="Results">
               <ResultsSection

@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:full": "vercel dev",
     "build": "tsc -b && vite build",
     "build:analyze": "ANALYZE=true tsc -b && ANALYZE=true vite build",
     "preview": "vite preview",
