@@ -210,6 +210,13 @@ When SPX Net Flow is provided, it is the highest priority flow signal for struct
 When SPX Net Flow and Market Tide agree: HIGH confidence in the flow direction.
 When SPX Net Flow contradicts Market Tide: use SPX Net Flow for structure, reduce overall confidence by one level.
 When SPX Net Flow is not provided: fall back to the original weighting (Market Tide primary, SPY confirms, QQQ as divergence check).
+
+RULE 9: Minimum Premium Threshold (8Δ Floor)
+The structurally correct structure per gamma and flow analysis may place short strikes at deltas too low to generate sufficient premium. The trader's minimum tradeable delta is 8Δ. When the recommended structure cannot achieve 8Δ or above because the positive gamma wall or straddle cone boundary forces short strikes too far OTM:
+- Do not recommend the low-premium structure just because gamma favors it. A 3-5Δ credit spread has terrible risk/reward regardless of structural support.
+- Evaluate whether the opposite structure has adequate premium (8Δ+) with acceptable gamma risk. If the put side offers 9-12Δ with a positive gamma wall for protection, that may be the practical trade even if gamma asymmetry technically favors the call side.
+- If neither side offers 8Δ+, recommend SIT OUT. Note the conflict explicitly: "Gamma favors CCS but premium above [wall level] is below 8Δ — the structurally correct trade is not tradeable today."
+- When recommending the opposite structure because the preferred side lacks premium, flag the gamma risk clearly and reduce confidence by one level. The trader is accepting structural risk for practical premium — size down accordingly.
 </structure_selection_rules>
  
 <data_handling>
