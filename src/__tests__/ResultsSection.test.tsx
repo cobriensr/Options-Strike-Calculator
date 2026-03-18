@@ -62,9 +62,7 @@ describe('ResultsSection', () => {
         skewPct={0}
       />,
     );
-    expect(
-      screen.getByText(/Enter SPY spot price, time, and IV/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Fill in the inputs above/)).toBeInTheDocument();
   });
 
   it('shows results section when results exist', () => {

@@ -26,7 +26,7 @@ export default function DateLookupSection({
   liveEvents,
 }: Props) {
   return (
-    <SectionBox th={th} label="Date Lookup">
+    <SectionBox label="Date Lookup">
       <label htmlFor="date-picker" className="sr-only">
         Select date
       </label>
@@ -36,7 +36,6 @@ export default function DateLookupSection({
         value={selectedDate}
         onChange={(e) => onDateChange(e.target.value)}
         className={inputCls}
-        style={{ colorScheme: th.dateScheme }}
       />
       {vixOHLC && (
         <div className="mt-3.5">
@@ -62,7 +61,6 @@ export default function DateLookupSection({
               {(['smart', 'open', 'high', 'low', 'close'] as const).map((f) => (
                 <Chip
                   key={f}
-                  th={th}
                   active={vixOHLCField === f}
                   onClick={() => onOHLCFieldChange(f)}
                   label={
@@ -87,7 +85,7 @@ export default function DateLookupSection({
         liveEvents={liveEvents}
       />
       {selectedDate && !vixOHLC && (
-        <ErrorMsg th={th}>No VIX data found for this date</ErrorMsg>
+        <ErrorMsg>No VIX data found for this date</ErrorMsg>
       )}
     </SectionBox>
   );

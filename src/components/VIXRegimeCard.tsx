@@ -1,4 +1,5 @@
 import type { Theme } from '../themes';
+import { tint } from '../utils/ui-utils';
 import { findBucket, findFineStat, estimateRange } from '../data/vixRangeStats';
 
 interface Props {
@@ -21,29 +22,29 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
   const zoneConfig = {
     go: {
       color: th.green,
-      bg: th.green + '12',
-      border: th.green + '30',
+      bg: tint(th.green, '12'),
+      border: tint(th.green, '30'),
       label: 'GREEN',
       advice: 'Favorable for iron condors',
     },
     caution: {
-      color: '#E8A317',
-      bg: '#E8A31712',
-      border: '#E8A31730',
+      color: th.caution,
+      bg: tint(th.caution, '12'),
+      border: tint(th.caution, '30'),
       label: 'CAUTION',
       advice: 'Widen strikes or reduce size',
     },
     stop: {
       color: th.red,
-      bg: th.red + '12',
-      border: th.red + '30',
+      bg: tint(th.red, '12'),
+      border: tint(th.red, '30'),
       label: 'ELEVATED',
       advice: 'Consider sitting out',
     },
     danger: {
       color: th.red,
-      bg: th.red + '18',
-      border: th.red + '40',
+      bg: tint(th.red, '18'),
+      border: tint(th.red, '40'),
       label: 'EXTREME',
       advice: 'Do not sell iron condors',
     },
@@ -68,7 +69,7 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
             className="h-2.5 w-2.5 rounded-full"
             style={{
               backgroundColor: zoneConfig.color,
-              boxShadow: '0 0 6px ' + zoneConfig.color + '66',
+              boxShadow: '0 0 6px ' + tint(zoneConfig.color, '66'),
             }}
           />
           <span
@@ -135,7 +136,7 @@ function MiniStat({
 }) {
   return (
     <div>
-      <div className="text-tertiary font-sans text-[9px] font-bold tracking-[0.06em] uppercase">
+      <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
         {label}
       </div>
       <div

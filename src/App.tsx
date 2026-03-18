@@ -1,5 +1,6 @@
 import { IV_MODES } from './constants';
-import { lightTheme, darkTheme } from './themes';
+import { useEffect } from 'react';
+import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
 import { useAppState } from './hooks/useAppState';
 import { useAutoFill } from './hooks/useAutoFill';
@@ -24,6 +25,7 @@ import ChartAnalysis from './components/ChartAnalysis';
 import type { AnalysisContext } from './components/ChartAnalysis';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
+import { StatusBadge } from './components/ui';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 
@@ -31,7 +33,7 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 // SHARED CSS CLASSES (static — no per-render cost)
 // ============================================================
 const INPUT_CLS =
-  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary p-[11px_14px] text-base font-mono outline-none w-full box-border transition-[border-color] duration-150';
+  'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[11px_14px] text-base font-mono outline-none w-full box-border transition-[border-color] duration-150';
 const SELECT_CLS =
   INPUT_CLS +
   ' cursor-pointer appearance-none bg-no-repeat bg-[length:14px_14px] bg-[position:right_12px_center] pr-[34px]';
@@ -87,7 +89,15 @@ export default function StrikeCalculator() {
     spxDirectActive,
     effectiveRatio,
   } = state;
-  const th = darkMode ? darkTheme : lightTheme;
+  const th = theme;
+
+  // Apply dark class to <html> so CSS vars resolve correctly everywhere
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute('content', darkMode ? '#121212' : '#f4f1eb');
+  }, [darkMode]);
 
   // Data hooks
   const market = useMarketData();
@@ -210,69 +220,41 @@ export default function StrikeCalculator() {
               </div>
               <div className="flex items-center gap-2">
                 {historySnapshot && (
-                  <span
-                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
-                    style={{
-                      backgroundColor: '#7C3AED18',
-                      color: '#7C3AED',
-                    }}
-                  >
-                    ● BACKTEST
-                  </span>
+                  <StatusBadge label="BACKTEST" color={th.backtest} dot />
                 )}
                 {historyData.loading && (
-                  <span
-                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
-                    style={{
-                      backgroundColor: th.surfaceAlt,
-                      color: th.textMuted,
-                    }}
-                  >
-                    Loading…
-                  </span>
+                  <StatusBadge label="Loading…" color={th.textMuted} />
                 )}
                 {historyData.error && !historyData.loading && (
-                  <span
-                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
-                    style={{
-                      backgroundColor: th.red + '18',
-                      color: th.red,
-                    }}
+                  <StatusBadge
+                    label="NO INTRADAY"
+                    color={th.red}
+                    dot
                     title={historyData.error}
-                  >
-                    ● NO INTRADAY
-                  </span>
+                  />
                 )}
                 {!historySnapshot && !historyData.error && market.hasData && (
-                  <span
-                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold"
-                    style={{
-                      backgroundColor: market.data.quotes?.marketOpen
-                        ? th.green + '18'
-                        : th.surfaceAlt,
-                      color: market.data.quotes?.marketOpen
-                        ? th.green
-                        : th.textMuted,
-                    }}
-                  >
-                    {market.data.quotes?.marketOpen ? '● LIVE' : '● CLOSED'}
-                  </span>
+                  <StatusBadge
+                    label={market.data.quotes?.marketOpen ? 'LIVE' : 'CLOSED'}
+                    color={
+                      market.data.quotes?.marketOpen ? th.green : th.textMuted
+                    }
+                    dot
+                  />
                 )}
                 {market.needsAuth && (
-                  <a
+                  <StatusBadge
+                    label="Re-authenticate"
+                    color={th.red}
                     href="/api/auth/init"
-                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold no-underline"
-                    style={{ backgroundColor: th.red + '18', color: th.red }}
-                  >
-                    Re-authenticate
-                  </a>
+                  />
                 )}
                 <button
                   onClick={() => setDarkMode(!darkMode)}
                   aria-label={
                     darkMode ? 'Switch to light mode' : 'Switch to dark mode'
                   }
-                  className="border-edge-strong bg-surface text-primary mt-1 flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[8px_12px] font-sans text-lg transition-all duration-200"
+                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary mt-1 flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[8px_12px] font-sans text-lg transition-all duration-200"
                 >
                   {darkMode ? '\u2600\uFE0F' : '\uD83C\uDF19'}
                   <span className="text-xs font-semibold">
@@ -285,7 +267,6 @@ export default function StrikeCalculator() {
 
           <main>
             <VixUploadSection
-              th={th}
               vixDataLoaded={vix.vixDataLoaded}
               vixDataSource={vix.vixDataSource}
               fileInputRef={vix.fileInputRef}
@@ -322,7 +303,6 @@ export default function StrikeCalculator() {
             />
 
             <EntryTimeSection
-              th={th}
               selectCls={SELECT_CLS}
               chevronUrl={chevronUrl}
               timeHour={timeHour}

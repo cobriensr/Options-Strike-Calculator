@@ -1,4 +1,5 @@
 import type { Theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 import type { VvixResult } from './classifiers';
 
 interface Props {
@@ -19,13 +20,13 @@ export default function VvixCard({ th, result }: Props) {
           <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
             VVIX
           </div>
-          <div className="text-muted font-sans text-[9px]">
+          <div className="text-muted font-sans text-[10px]">
             Volatility of VIX
           </div>
         </div>
         <span
-          className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
-          style={{ backgroundColor: color + '18', color }}
+          className="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold tracking-[0.06em] uppercase"
+          style={{ backgroundColor: tint(color, '18'), color }}
         >
           {label}
         </span>
@@ -53,7 +54,7 @@ export default function VvixCard({ th, result }: Props) {
             className="absolute -top-px h-2 w-0.5"
             style={{
               left: ((100 - 60) / 80) * 100 + '%',
-              backgroundColor: th.textMuted + '60',
+              backgroundColor: tint(th.textMuted, '60'),
             }}
           />
         </div>

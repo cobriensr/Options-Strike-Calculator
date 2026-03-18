@@ -53,8 +53,8 @@ describe('DeltaStrikesTable', () => {
       <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow()]} spot={5700} />,
     );
     expect(screen.getByText('Delta')).toBeInTheDocument();
-    expect(screen.getByText('Put (SPX)')).toBeInTheDocument();
-    expect(screen.getByText('Call (SPX)')).toBeInTheDocument();
+    expect(screen.getByText(/Put \(SPX\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Call \(SPX\)/)).toBeInTheDocument();
     expect(screen.getByText('Width')).toBeInTheDocument();
   });
 

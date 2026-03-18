@@ -1,4 +1,5 @@
 import type { Theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 
 interface Props {
   th: Theme;
@@ -40,7 +41,7 @@ export default function RangeConsumptionBar({
             className="absolute -top-0.5 h-3.5 w-0.5"
             style={{
               left: (1 / 1.5) * 100 + '%',
-              backgroundColor: th.text + '40',
+              backgroundColor: tint(th.text, '40'),
             }}
           />
         </div>
@@ -65,14 +66,14 @@ export default function RangeConsumptionBar({
             className="absolute top-0 left-0 h-full rounded-[5px] transition-[width] duration-300"
             style={{
               width: (Math.min(pctOfP90Used, 1.5) / 1.5) * 100 + '%',
-              backgroundColor: th.accent + '80',
+              backgroundColor: tint(th.accent, '80'),
             }}
           />
           <div
             className="absolute -top-0.5 h-3.5 w-0.5"
             style={{
               left: (1 / 1.5) * 100 + '%',
-              backgroundColor: th.text + '40',
+              backgroundColor: tint(th.text, '40'),
             }}
           />
         </div>

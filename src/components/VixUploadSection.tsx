@@ -1,8 +1,6 @@
-import type { Theme } from '../themes';
 import { SectionBox } from './ui';
 
 interface Props {
-  th: Theme;
   vixDataLoaded: boolean;
   vixDataSource: string;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
@@ -10,7 +8,6 @@ interface Props {
 }
 
 export default function VixUploadSection({
-  th,
   vixDataLoaded,
   vixDataSource,
   fileInputRef,
@@ -18,7 +15,6 @@ export default function VixUploadSection({
 }: Props) {
   return (
     <SectionBox
-      th={th}
       label="Historical VIX Data"
       badge={vixDataLoaded ? vixDataSource : null}
     >

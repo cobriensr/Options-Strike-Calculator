@@ -1,4 +1,5 @@
 import type { Theme } from '../themes';
+import { tint } from '../utils/ui-utils';
 import type { ChainResponse, ChainStrike } from '../types/api';
 
 interface Props {
@@ -90,21 +91,21 @@ export default function PinRiskAnalysis({ th, chain, spot }: Props) {
         <div
           className="mb-3 flex items-start gap-3 rounded-[10px] p-3 sm:items-center sm:p-4"
           style={{
-            backgroundColor: '#E8A317' + '10',
-            border: '1.5px solid ' + '#E8A317' + '30',
+            backgroundColor: tint(th.caution, '10'),
+            border: '1.5px solid ' + tint(th.caution, '30'),
           }}
         >
           <div
             className="h-3 w-3 shrink-0 rounded-full"
             style={{
-              backgroundColor: '#E8A317',
-              boxShadow: '0 0 8px ' + '#E8A317' + '66',
+              backgroundColor: th.caution,
+              boxShadow: '0 0 8px ' + tint(th.caution, '66'),
             }}
           />
           <div>
             <span
               className="font-sans text-[10px] font-bold tracking-widest uppercase"
-              style={{ color: '#E8A317' }}
+              style={{ color: th.caution }}
             >
               PIN RISK
             </span>
@@ -122,22 +123,22 @@ export default function PinRiskAnalysis({ th, chain, spot }: Props) {
         <table className="w-full border-collapse text-left font-mono text-[11px]">
           <thead>
             <tr className="border-edge border-b">
-              <th className="text-tertiary px-3 py-2 font-sans text-[9px] font-bold tracking-[0.08em] uppercase">
+              <th className="text-tertiary px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                 Strike
               </th>
-              <th className="text-tertiary px-3 py-2 text-right font-sans text-[9px] font-bold tracking-[0.08em] uppercase">
+              <th className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                 Put OI
               </th>
-              <th className="text-tertiary px-3 py-2 text-right font-sans text-[9px] font-bold tracking-[0.08em] uppercase">
+              <th className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                 Call OI
               </th>
-              <th className="text-tertiary px-3 py-2 text-right font-sans text-[9px] font-bold tracking-[0.08em] uppercase">
+              <th className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                 Total
               </th>
-              <th className="text-tertiary px-3 py-2 font-sans text-[9px] font-bold tracking-[0.08em] uppercase">
+              <th className="text-tertiary px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                 Dist
               </th>
-              <th className="text-tertiary w-[30%] px-3 py-2 font-sans text-[9px] font-bold tracking-[0.08em] uppercase">
+              <th className="text-tertiary w-[30%] px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                 {/* bar column */}
               </th>
             </tr>
@@ -158,21 +159,21 @@ export default function PinRiskAnalysis({ th, chain, spot }: Props) {
                   className="border-edge border-b last:border-b-0"
                   style={
                     isNearSpot
-                      ? { backgroundColor: '#E8A317' + '08' }
+                      ? { backgroundColor: tint(th.caution, '08') }
                       : undefined
                   }
                 >
                   <td className="px-3 py-1.5">
                     <span
                       className="font-bold"
-                      style={isNearSpot ? { color: '#E8A317' } : undefined}
+                      style={isNearSpot ? { color: th.caution } : undefined}
                     >
                       {s.strike}
                     </span>
                     {isNearSpot && (
                       <span
                         className="ml-1.5 font-sans text-[8px] font-bold"
-                        style={{ color: '#E8A317' }}
+                        style={{ color: th.caution }}
                       >
                         PIN
                       </span>

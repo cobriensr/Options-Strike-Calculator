@@ -1,10 +1,8 @@
-import type { Theme } from '../themes';
 import type { AmPm, Timezone } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 import { tinyLbl } from '../utils/ui-utils';
 
 interface Props {
-  th: Theme;
   selectCls: string;
   chevronUrl: string;
   timeHour: string;
@@ -19,7 +17,6 @@ interface Props {
 }
 
 export default function EntryTimeSection({
-  th,
   selectCls,
   chevronUrl,
   timeHour,
@@ -33,7 +30,7 @@ export default function EntryTimeSection({
   errors,
 }: Props) {
   return (
-    <SectionBox th={th} label="Entry Time">
+    <SectionBox label="Entry Time">
       <div className="grid grid-cols-2 items-end gap-2.5 md:grid-cols-[1fr_1fr_auto_auto]">
         <div>
           <label htmlFor="sel-hour" className={tinyLbl}>
@@ -77,7 +74,6 @@ export default function EntryTimeSection({
             {(['AM', 'PM'] as const).map((ap) => (
               <Chip
                 key={ap}
-                th={th}
                 active={timeAmPm === ap}
                 onClick={() => onAmPmChange(ap)}
                 label={ap}
@@ -91,7 +87,6 @@ export default function EntryTimeSection({
             {(['ET', 'CT'] as const).map((tz) => (
               <Chip
                 key={tz}
-                th={th}
                 active={timezone === tz}
                 onClick={() => onTimezoneChange(tz)}
                 label={tz}
@@ -100,7 +95,7 @@ export default function EntryTimeSection({
           </div>
         </fieldset>
       </div>
-      {errors['time'] && <ErrorMsg th={th}>{errors['time']}</ErrorMsg>}
+      {errors['time'] && <ErrorMsg>{errors['time']}</ErrorMsg>}
     </SectionBox>
   );
 }

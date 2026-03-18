@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Theme } from '../../themes';
-import { tinyLbl } from '../../utils/ui-utils';
+import { tinyLbl, tint } from '../../utils/ui-utils';
 import { estimateRange, getDowMultiplier } from '../../data/vixRangeStats';
 import StatCell from './StatCell';
 import RangeConsumptionBar from './RangeConsumptionBar';
@@ -78,7 +78,7 @@ function parseDow(selectedDate?: string): number | null {
 }
 
 const inputCls =
-  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
+  'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
 
 /**
  * Opening Range Check.
@@ -153,7 +153,7 @@ export default function OpeningRangeCheck({
     analysis?.signal === 'green'
       ? th.green
       : analysis?.signal === 'yellow'
-        ? '#E8A317'
+        ? th.caution
         : analysis?.signal === 'red'
           ? th.red
           : th.textMuted;
@@ -208,15 +208,15 @@ export default function OpeningRangeCheck({
           <div
             className="mb-3 flex items-start gap-3 rounded-[10px] p-3 sm:items-center sm:p-4"
             style={{
-              backgroundColor: signalColor + '10',
-              border: '1.5px solid ' + signalColor + '30',
+              backgroundColor: tint(signalColor, '10'),
+              border: '1.5px solid ' + tint(signalColor, '30'),
             }}
           >
             <div
               className="h-3 w-3 shrink-0 rounded-full"
               style={{
                 backgroundColor: signalColor,
-                boxShadow: '0 0 8px ' + signalColor + '66',
+                boxShadow: '0 0 8px ' + tint(signalColor, '66'),
               }}
             />
             <div>

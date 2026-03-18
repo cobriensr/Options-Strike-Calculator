@@ -1,4 +1,5 @@
 import type { Theme } from '../themes';
+import { tint } from '../utils/ui-utils';
 
 interface Props {
   th: Theme;
@@ -32,13 +33,13 @@ export default function RvIvCard({
           <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
             RV / IV Ratio
           </div>
-          <div className="text-muted font-sans text-[9px]">
+          <div className="text-muted font-sans text-[10px]">
             Yesterday&apos;s realized vol vs today&apos;s implied
           </div>
         </div>
         <span
-          className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
-          style={{ backgroundColor: color + '18', color }}
+          className="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold tracking-[0.06em] uppercase"
+          style={{ backgroundColor: tint(color, '18'), color }}
         >
           {label}
         </span>
@@ -66,20 +67,20 @@ export default function RvIvCard({
             className="absolute -top-px h-2 w-0.5"
             style={{
               left: (0.8 / 2) * 100 + '%',
-              backgroundColor: th.green + '50',
+              backgroundColor: tint(th.green, '50'),
             }}
           />
           {/* 1.0x marker */}
           <div
             className="absolute -top-px left-1/2 h-2 w-0.5"
-            style={{ backgroundColor: th.textMuted + '60' }}
+            style={{ backgroundColor: tint(th.textMuted, '60') }}
           />
           {/* 1.2x marker (IV Cheap threshold) */}
           <div
             className="absolute -top-px h-2 w-0.5"
             style={{
               left: (1.2 / 2) * 100 + '%',
-              backgroundColor: th.red + '50',
+              backgroundColor: tint(th.red, '50'),
             }}
           />
         </div>

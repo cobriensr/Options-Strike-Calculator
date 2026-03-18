@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Theme } from '../../themes';
-import { tinyLbl } from '../../utils/ui-utils';
+import { tinyLbl, tint } from '../../utils/ui-utils';
 import type { Signal } from './classifiers';
 import {
   classifyVix1dRatio,
@@ -87,7 +87,7 @@ export default function VIXTermStructure({
       : combinedSignal === 'normal'
         ? th.accent
         : combinedSignal === 'elevated'
-          ? '#E8A317'
+          ? th.caution
           : combinedSignal === 'extreme'
             ? th.red
             : th.textMuted;
@@ -154,15 +154,15 @@ export default function VIXTermStructure({
             <div
               className="mb-3 flex items-start gap-3 rounded-[10px] p-3 sm:items-center sm:p-4"
               style={{
-                backgroundColor: combinedColor + '10',
-                border: '1.5px solid ' + combinedColor + '30',
+                backgroundColor: tint(combinedColor, '10'),
+                border: '1.5px solid ' + tint(combinedColor, '30'),
               }}
             >
               <div
                 className="h-3 w-3 shrink-0 rounded-full"
                 style={{
                   backgroundColor: combinedColor,
-                  boxShadow: '0 0 8px ' + combinedColor + '66',
+                  boxShadow: '0 0 8px ' + tint(combinedColor, '66'),
                 }}
               />
               <div>
@@ -194,28 +194,30 @@ export default function VIXTermStructure({
                   <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                     Curve Shape
                   </div>
-                  <div className="text-muted font-sans text-[9px]">
+                  <div className="text-muted font-sans text-[10px]">
                     VIX1D {'\u2194'} VIX {'\u2194'} VIX9D relationship
                   </div>
                 </div>
                 <span
-                  className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
+                  className="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold tracking-[0.06em] uppercase"
                   style={{
-                    backgroundColor:
-                      (termShape === 'contango'
+                    backgroundColor: tint(
+                      termShape === 'contango'
                         ? th.green
                         : termShape === 'fear-spike'
                           ? th.red
                           : termShape === 'backwardation'
-                            ? '#E8A317'
-                            : th.accent) + '18',
+                            ? th.caution
+                            : th.accent,
+                      '18',
+                    ),
                     color:
                       termShape === 'contango'
                         ? th.green
                         : termShape === 'fear-spike'
                           ? th.red
                           : termShape === 'backwardation'
-                            ? '#E8A317'
+                            ? th.caution
                             : th.accent,
                   }}
                 >
@@ -284,9 +286,9 @@ export default function VIXTermStructure({
             <>
               <span
                 className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
-                style={{ backgroundColor: '#7C3AED' }}
+                style={{ backgroundColor: th.backtest }}
               />
-              <strong style={{ color: '#7C3AED' }}>Active:</strong> Strike
+              <strong style={{ color: th.backtest }}>Active:</strong> Strike
               pricing uses VIX1D ({vix1d.toFixed(2)}) as {'\u03C3'} ={' '}
               {vix1dSigma.toFixed(4)}. No 0DTE adjustment applied.
             </>
@@ -299,7 +301,7 @@ export default function VIXTermStructure({
               {onUseVix1dAsSigma && (
                 <button
                   onClick={() => onUseVix1dAsSigma(vix1dSigma)}
-                  className="bg-accent-bg text-accent ml-2 cursor-pointer rounded-md border-[1.5px] border-[var(--th-accent)] px-2.5 py-[3px] font-sans text-[11px] font-semibold"
+                  className="bg-accent-bg text-accent ml-2 cursor-pointer rounded-md border-[1.5px] border-[var(--color-accent)] px-2.5 py-[3px] font-sans text-[11px] font-semibold"
                 >
                   Use VIX1D as {'\u03C3'}
                 </button>

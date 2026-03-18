@@ -1,4 +1,5 @@
 import type { Theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 import type { DeltaRow, DeltaRowError } from '../../types';
 import {
   calcBSDelta,
@@ -197,7 +198,7 @@ export default function DeltaRegimeGuide({
     bucket.zone === 'go'
       ? th.green
       : bucket.zone === 'caution'
-        ? '#E8A317'
+        ? th.caution
         : th.red;
 
   return (
@@ -209,19 +210,19 @@ export default function DeltaRegimeGuide({
             const dowHL = dowMult.multHL;
             return (
               <span
-                className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
+                className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
                 style={{
                   backgroundColor:
                     dowHL < 0.97
-                      ? th.green + '18'
+                      ? tint(th.green, '18')
                       : dowHL > 1.03
-                        ? '#E8A31718'
+                        ? tint(th.caution, '18')
                         : th.surfaceAlt,
                   color:
                     dowHL < 0.97
                       ? th.green
                       : dowHL > 1.03
-                        ? '#E8A317'
+                        ? th.caution
                         : th.textMuted,
                 }}
               >
@@ -233,10 +234,11 @@ export default function DeltaRegimeGuide({
           })()}
         {cMult > 1.03 && (
           <span
-            className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
+            className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
             style={{
-              backgroundColor: cMult > 1.15 ? th.red + '18' : '#E8A31718',
-              color: cMult > 1.15 ? th.red : '#E8A317',
+              backgroundColor:
+                cMult > 1.15 ? tint(th.red, '18') : tint(th.caution, '18'),
+              color: cMult > 1.15 ? th.red : th.caution,
             }}
           >
             {'\u26A1'} {cMult.toFixed(2)}x cluster
@@ -244,9 +246,9 @@ export default function DeltaRegimeGuide({
         )}
         {cMult < 0.97 && (
           <span
-            className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
+            className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
             style={{
-              backgroundColor: th.green + '18',
+              backgroundColor: tint(th.green, '18'),
               color: th.green,
             }}
           >

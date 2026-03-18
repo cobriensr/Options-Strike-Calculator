@@ -6,7 +6,7 @@ export function zoneToColor(zone: VIXBucket['zone'], th: Theme): string {
     case 'go':
       return th.green;
     case 'caution':
-      return '#E8A317';
+      return th.caution;
     case 'stop':
       return th.red;
     case 'danger':
@@ -18,7 +18,7 @@ export function heatColor(val: number, th: Theme): string {
   if (val >= 95) return th.green;
   if (val >= 85) return th.green;
   if (val >= 70) return th.accent;
-  if (val >= 50) return '#E8A317';
+  if (val >= 50) return th.caution;
   return th.red;
 }
 

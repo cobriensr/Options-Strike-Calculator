@@ -1,6 +1,7 @@
 import type { Theme } from '../../themes';
 import type { AnalysisMode, AnalysisResult } from './types';
 import { MODE_LABELS } from './types';
+import { tint } from '../../utils/ui-utils';
 import BulletList from './BulletList';
 import Collapsible from './Collapsible';
 
@@ -21,12 +22,12 @@ export default function AnalysisResults({
     if (s === 'IRON CONDOR') return th.accent;
     if (s === 'PUT CREDIT SPREAD') return th.red;
     if (s === 'CALL CREDIT SPREAD') return th.green;
-    return '#E8A317';
+    return th.caution;
   };
 
   const confidenceColor = (c: string) => {
     if (c === 'HIGH') return th.green;
-    if (c === 'MODERATE') return '#E8A317';
+    if (c === 'MODERATE') return th.caution;
     return th.red;
   };
 
@@ -36,7 +37,7 @@ export default function AnalysisResults({
     if (s === 'BULLISH' || s === 'CONFIRMS' || s === 'FAVORABLE')
       return th.green;
     if (s === 'NEUTRAL' || s === 'NOT PROVIDED') return th.textMuted;
-    return '#E8A317';
+    return th.caution;
   };
 
   return (
@@ -45,8 +46,8 @@ export default function AnalysisResults({
       <div
         className="rounded-[10px] p-3.5"
         style={{
-          backgroundColor: structureColor(analysis.structure) + '0C',
-          border: `1.5px solid ${structureColor(analysis.structure)}30`,
+          backgroundColor: tint(structureColor(analysis.structure), '0C'),
+          border: `1.5px solid ${tint(structureColor(analysis.structure), '30')}`,
         }}
       >
         <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -57,18 +58,18 @@ export default function AnalysisResults({
             {analysis.structure}
           </span>
           <span
-            className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
+            className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
             style={{
-              backgroundColor: confidenceColor(analysis.confidence) + '18',
+              backgroundColor: tint(confidenceColor(analysis.confidence), '18'),
               color: confidenceColor(analysis.confidence),
             }}
           >
             {analysis.confidence}
           </span>
           <span
-            className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
+            className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
             style={{
-              backgroundColor: th.accent + '18',
+              backgroundColor: tint(th.accent, '18'),
               color: th.accent,
             }}
           >
@@ -77,14 +78,17 @@ export default function AnalysisResults({
           </span>
           {analysis.hedge && analysis.hedge.recommendation !== 'NO HEDGE' && (
             <span
-              className="rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold"
-              style={{ backgroundColor: '#E8A31718', color: '#E8A317' }}
+              className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
+              style={{
+                backgroundColor: tint(th.caution, '18'),
+                color: th.caution,
+              }}
             >
               {analysis.hedge.recommendation}
             </span>
           )}
           <span
-            className="text-muted rounded-full px-2 py-0.5 font-mono text-[9px]"
+            className="text-muted rounded-full px-2 py-0.5 font-mono text-[10px]"
             style={{ backgroundColor: th.surfaceAlt }}
           >
             {MODE_LABELS[analysis.mode ?? mode].label}
@@ -100,7 +104,7 @@ export default function AnalysisResults({
         <div
           className="grid gap-1 border-t pt-2"
           style={{
-            borderColor: structureColor(analysis.structure) + '20',
+            borderColor: tint(structureColor(analysis.structure), '20'),
           }}
         >
           {analysis.entryPlan?.entry1 && (
@@ -143,7 +147,7 @@ export default function AnalysisResults({
           )}
           {analysis.hedge && analysis.hedge.recommendation !== 'NO HEDGE' && (
             <div className="flex items-center gap-2 text-[10px]">
-              <span className="font-semibold" style={{ color: '#E8A317' }}>
+              <span className="font-semibold" style={{ color: th.caution }}>
                 Hedge:
               </span>
               <span className="text-secondary">
@@ -173,7 +177,7 @@ export default function AnalysisResults({
                 key={key}
                 className="bg-surface border-edge rounded-md border p-2.5"
               >
-                <div className="text-muted mb-0.5 text-[9px] font-bold tracking-wider uppercase">
+                <div className="text-muted mb-0.5 text-[10px] font-bold tracking-wider uppercase">
                   {label}
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -184,7 +188,7 @@ export default function AnalysisResults({
                     {sig.signal}
                   </span>
                   <span
-                    className="text-[9px] font-semibold"
+                    className="text-[10px] font-semibold"
                     style={{ color: confidenceColor(sig.confidence) }}
                   >
                     {sig.confidence}
@@ -274,7 +278,7 @@ export default function AnalysisResults({
                   <div
                     className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-bold"
                     style={{
-                      backgroundColor: th.accent + '18',
+                      backgroundColor: tint(th.accent, '18'),
                       color: th.accent,
                     }}
                   >
@@ -295,7 +299,7 @@ export default function AnalysisResults({
                         {entry.delta}
                         {'\u0394'}
                       </span>
-                      <span className="text-muted text-[9px]">
+                      <span className="text-muted text-[10px]">
                         {entry.sizePercent}% size
                       </span>
                     </div>
@@ -318,7 +322,7 @@ export default function AnalysisResults({
               analysis.entryPlan.noEntryConditions.length > 0 && (
                 <div className="mt-1">
                   <div
-                    className="mb-0.5 text-[9px] font-bold uppercase"
+                    className="mb-0.5 text-[10px] font-bold uppercase"
                     style={{ color: th.red }}
                   >
                     Do NOT add entries if:
@@ -337,7 +341,7 @@ export default function AnalysisResults({
 
       {/* Management Rules */}
       {analysis.managementRules && (
-        <Collapsible title="Position Management Rules" color="#E8A317">
+        <Collapsible title="Position Management Rules" color={th.caution}>
           <div className="grid gap-1.5">
             {analysis.managementRules.profitTarget && (
               <div className="text-[11px] leading-relaxed">
@@ -368,7 +372,7 @@ export default function AnalysisResults({
               )}
             {analysis.managementRules.timeRules && (
               <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: '#E8A317' }}>
+                <span className="font-semibold" style={{ color: th.caution }}>
                   Time rule:{' '}
                 </span>
                 <span className="text-secondary">
@@ -378,7 +382,7 @@ export default function AnalysisResults({
             )}
             {analysis.managementRules.flowReversalSignal && (
               <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: '#E8A317' }}>
+                <span className="font-semibold" style={{ color: th.caution }}>
                   Flow reversal:{' '}
                 </span>
                 <span className="text-secondary">
@@ -411,7 +415,7 @@ export default function AnalysisResults({
               ? th.green
               : analysis.hedge.recommendation === 'SKIP'
                 ? th.red
-                : '#E8A317'
+                : th.caution
           }
         >
           <div>
@@ -452,9 +456,9 @@ export default function AnalysisResults({
           className="rounded-[10px] p-3.5"
           style={{
             backgroundColor: analysis.review.wasCorrect
-              ? th.green + '08'
-              : th.red + '08',
-            border: `1.5px solid ${analysis.review.wasCorrect ? th.green : th.red}20`,
+              ? tint(th.green, '08')
+              : tint(th.red, '08'),
+            border: `1.5px solid ${tint(analysis.review.wasCorrect ? th.green : th.red, '20')}`,
           }}
         >
           <div className="mb-2 flex items-center gap-2">
@@ -479,7 +483,7 @@ export default function AnalysisResults({
               </span>
             </div>
             <div className="text-[11px] leading-relaxed">
-              <span className="font-semibold" style={{ color: '#E8A317' }}>
+              <span className="font-semibold" style={{ color: th.caution }}>
                 What was missed:{' '}
               </span>
               <span className="text-secondary">
@@ -497,7 +501,7 @@ export default function AnalysisResults({
             {analysis.review.lessonsLearned.length > 0 && (
               <div>
                 <div
-                  className="mb-0.5 text-[9px] font-bold tracking-wider uppercase"
+                  className="mb-0.5 text-[10px] font-bold tracking-wider uppercase"
                   style={{ color: th.accent }}
                 >
                   Lessons for next time
@@ -526,13 +530,13 @@ export default function AnalysisResults({
         <div
           className="rounded-lg p-3"
           style={{
-            backgroundColor: '#E8A31708',
-            border: '1px solid #E8A31720',
+            backgroundColor: tint(th.caution, '08'),
+            border: '1px solid ' + tint(th.caution, '20'),
           }}
         >
           <div
-            className="mb-2 font-sans text-[9px] font-bold tracking-wider uppercase"
-            style={{ color: '#E8A317' }}
+            className="mb-2 font-sans text-[10px] font-bold tracking-wider uppercase"
+            style={{ color: th.caution }}
           >
             Image Issues {'\u2014'} {analysis.imageIssues.length} image
             {analysis.imageIssues.length > 1 ? 's' : ''} need
@@ -547,7 +551,7 @@ export default function AnalysisResults({
                 <div className="min-w-0 flex-1">
                   <div
                     className="mb-0.5 font-sans text-[11px] font-semibold"
-                    style={{ color: '#E8A317' }}
+                    style={{ color: th.caution }}
                   >
                     Image {issue.imageIndex}: {issue.label}
                   </div>
@@ -563,9 +567,9 @@ export default function AnalysisResults({
                   onClick={() => onReplaceImage(issue.imageIndex)}
                   className="shrink-0 cursor-pointer rounded-md px-2.5 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
                   style={{
-                    backgroundColor: '#E8A31718',
-                    color: '#E8A317',
-                    border: '1px solid #E8A31730',
+                    backgroundColor: tint(th.caution, '18'),
+                    color: th.caution,
+                    border: '1px solid ' + tint(th.caution, '30'),
                   }}
                 >
                   Replace

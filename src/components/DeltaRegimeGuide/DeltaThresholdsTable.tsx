@@ -32,7 +32,6 @@ export default function DeltaThresholdsTable({
 
       <section
         className="border-edge overflow-x-auto rounded-[10px] border"
-        tabIndex={0}
         aria-label="Delta thresholds"
       >
         <table
@@ -94,7 +93,7 @@ export default function DeltaThresholdsTable({
                         ) : putClears || callClears ? (
                           <span
                             className="text-[11px] font-semibold"
-                            style={{ color: '#E8A317' }}
+                            style={{ color: 'var(--color-caution)' }}
                           >
                             {putClears ? 'P\u2713' : 'C\u2713'}
                           </span>
@@ -115,11 +114,11 @@ export default function DeltaThresholdsTable({
 
       <p className="text-muted mt-1.5 text-[11px] italic">
         {'\u2713'} = both sides clear threshold (IC safe).{' '}
-        <span style={{ color: '#E8A317' }}>P{'\u2713'}</span> = only put side
-        clears (put spread OK).{' '}
-        <span style={{ color: '#E8A317' }}>C{'\u2713'}</span> = only call side
-        clears (call spread OK). {'\u2717'} = neither side clears. Put/Call %
-        use VIX {'\u00D7'} 1.15 {'\u03C3'} to match the Guide
+        <span style={{ color: 'var(--color-caution)' }}>P{'\u2713'}</span> =
+        only put side clears (put spread OK).{' '}
+        <span style={{ color: 'var(--color-caution)' }}>C{'\u2713'}</span> =
+        only call side clears (call spread OK). {'\u2717'} = neither side
+        clears. Put/Call % use VIX {'\u00D7'} 1.15 {'\u03C3'} to match the Guide
         {'\u2019'}s thresholds.
       </p>
     </>

@@ -26,16 +26,15 @@ export default function AdvancedSection({
 }: Props) {
   return (
     <SectionBox
-      th={th}
       label="Advanced"
       headerRight={
         <button
           onClick={onToggleIC}
           className={
-            'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold ' +
+            'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
             (showIC
               ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-              : 'border-chip-border bg-chip-bg text-chip-text')
+              : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
           }
         >
           {showIC ? 'Hide' : 'Show'} Iron Condor
@@ -103,7 +102,6 @@ export default function AdvancedSection({
             {[5, 10, 15, 20, 25, 30, 50].map((w) => (
               <Chip
                 key={w}
-                th={th}
                 active={wingWidth === w}
                 onClick={() => onWingWidthChange(w)}
                 label={String(w)}

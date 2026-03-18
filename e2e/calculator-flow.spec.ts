@@ -41,13 +41,13 @@ test.describe('Calculator Flow', () => {
 
     // 3. Entry time defaults are pre-set (10:00 AM CT)
     //    Just verify the time section is visible
-    await expect(page.getByText('Entry Time')).toBeVisible();
+    await expect(page.getByText('Entry Time', { exact: true })).toBeVisible();
 
-    // 4. Wait for results to appear
+    // 4. Wait for results to appear (the populated section, not the empty state)
     const resultsSection = page.locator('#results');
-    await expect(resultsSection.getByText('All Delta Strikes')).toBeVisible({
-      timeout: 5000,
-    });
+    await expect(
+      resultsSection.locator('section[aria-label="Strike results for all deltas"]'),
+    ).toBeVisible({ timeout: 5000 });
 
     // 5. Verify parameter summary shows correct inputs
     await expect(resultsSection.getByText('6790')).toBeVisible();

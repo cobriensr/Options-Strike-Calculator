@@ -62,7 +62,7 @@ export function classifyVix1dRatio(ratio: number, th: Theme): RatioResult {
       ratio,
       signal: 'elevated',
       label: 'ELEVATED',
-      color: '#E8A317',
+      color: th.caution,
       advice:
         'Market pricing above-average move today. Widen deltas or reduce size.',
     };
@@ -101,7 +101,7 @@ export function classifyVix9dRatio(ratio: number, th: Theme): RatioResult {
       ratio,
       signal: 'elevated',
       label: 'INVERTED',
-      color: '#E8A317',
+      color: th.caution,
       advice: 'Near-term stress building. Caution over next 1\u20132 weeks.',
     };
   }
@@ -139,7 +139,7 @@ export function classifyVvix(vvix: number, th: Theme): VvixResult {
       value: vvix,
       signal: 'elevated',
       label: 'UNSTABLE',
-      color: '#E8A317',
+      color: th.caution,
       advice: 'VIX could spike mid-session. Tighten deltas or reduce size.',
     };
   }

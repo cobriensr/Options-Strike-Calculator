@@ -18,7 +18,6 @@ export default function ScenarioTable({
   return (
     <section
       className="border-edge overflow-x-auto rounded-[10px] border"
-      tabIndex={0}
       aria-label="Hedge scenarios"
     >
       <table

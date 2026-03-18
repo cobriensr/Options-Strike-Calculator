@@ -7,6 +7,7 @@
 
 import { useMemo } from 'react';
 import type { Theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 import type { HistoryCandle } from '../../types/api';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
 import type { SettlementResult } from './types';
@@ -150,19 +151,19 @@ export default function SettlementCheck({
 
   if (settledLossCount > 0) {
     verdictColor = th.red;
-    verdictBg = th.red + '0C';
-    verdictBorder = th.red + '25';
+    verdictBg = tint(th.red, '0C');
+    verdictBorder = tint(th.red, '25');
   } else if (
     !results.every((r) => r.survived) ||
     minCushionOverall < WARN_PTS
   ) {
-    verdictColor = '#E8A317';
-    verdictBg = '#E8A3170C';
-    verdictBorder = '#E8A31725';
+    verdictColor = th.caution;
+    verdictBg = tint(th.caution, '0C');
+    verdictBorder = tint(th.caution, '25');
   } else {
     verdictColor = th.green;
-    verdictBg = th.green + '0C';
-    verdictBorder = th.green + '25';
+    verdictBg = tint(th.green, '0C');
+    verdictBorder = tint(th.green, '25');
   }
 
   // Verdict text
@@ -244,18 +245,18 @@ export default function SettlementCheck({
       </div>
 
       {/* Legend */}
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 font-sans text-[9px]">
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 font-sans text-[10px]">
         <span className="text-muted flex items-center gap-1">
           <span
             className="inline-block h-1.5 w-3 rounded-full"
-            style={{ backgroundColor: th.green + '70' }}
+            style={{ backgroundColor: tint(th.green, '70') }}
           />
           Comfortable ({'\u2265'}50 pts)
         </span>
         <span className="text-muted flex items-center gap-1">
           <span
             className="inline-block h-1.5 w-3 rounded-full"
-            style={{ backgroundColor: '#E8A31770' }}
+            style={{ backgroundColor: tint(th.caution, '70') }}
           />
           Tight (25{'\u2013'}50 pts)
         </span>

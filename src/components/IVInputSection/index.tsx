@@ -3,7 +3,7 @@ import type { Theme } from '../../themes';
 import type { IVMode, CalculationResults } from '../../types';
 import { IV_MODES } from '../../constants';
 import { SectionBox, Chip, ErrorMsg } from '../ui';
-import { tinyLbl } from '../../utils/ui-utils';
+import { tinyLbl, tint } from '../../utils/ui-utils';
 import VIXRegimeCard from '../VIXRegimeCard';
 import VIXTermStructure from '../VIXTermStructure';
 import type { MarketDataState } from '../../hooks/useMarketData';
@@ -74,7 +74,6 @@ export default function IVInputSection({
 
   return (
     <SectionBox
-      th={th}
       label="Implied Volatility"
       headerRight={
         <fieldset className="m-0 border-none p-0">
@@ -88,7 +87,6 @@ export default function IVInputSection({
             ).map(({ key, label }) => (
               <Chip
                 key={key}
-                th={th}
                 active={ivMode === key}
                 onClick={() => onIvModeChange(key)}
                 label={label}
@@ -153,8 +151,11 @@ export default function IVInputSection({
                   {'\u03C3'} (Direct IV)
                 </label>
                 <span
-                  className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-wider uppercase"
-                  style={{ backgroundColor: '#7C3AED18', color: '#7C3AED' }}
+                  className="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold tracking-wider uppercase"
+                  style={{
+                    backgroundColor: tint(th.backtest, '18'),
+                    color: th.backtest,
+                  }}
                 >
                   VIX1D
                 </span>
@@ -192,11 +193,9 @@ export default function IVInputSection({
           </div>
         </div>
       )}
-      {errors['vix'] && <ErrorMsg th={th}>{errors['vix']}</ErrorMsg>}
-      {errors['multiplier'] && (
-        <ErrorMsg th={th}>{errors['multiplier']}</ErrorMsg>
-      )}
-      {errors['iv'] && <ErrorMsg th={th}>{errors['iv']}</ErrorMsg>}
+      {errors['vix'] && <ErrorMsg>{errors['vix']}</ErrorMsg>}
+      {errors['multiplier'] && <ErrorMsg>{errors['multiplier']}</ErrorMsg>}
+      {errors['iv'] && <ErrorMsg>{errors['iv']}</ErrorMsg>}
 
       {/* VIX Regime Card — shown in both VIX and Direct IV modes */}
       {dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && results && (

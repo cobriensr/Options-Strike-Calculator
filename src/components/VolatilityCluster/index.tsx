@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Theme } from '../../themes';
-import { tinyLbl } from '../../utils/ui-utils';
+import { tinyLbl, tint } from '../../utils/ui-utils';
 import {
   getClusterMultiplier,
   CLUSTER_THRESHOLDS,
@@ -86,7 +86,7 @@ export default function VolatilityCluster({
       : cluster.mult < 1.05
         ? th.accent
         : cluster.mult < 1.2
-          ? '#E8A317'
+          ? th.caution
           : th.red
     : th.textMuted;
 
@@ -184,15 +184,15 @@ export default function VolatilityCluster({
           <div
             className="mb-3 flex items-start gap-3 rounded-[10px] p-3 sm:items-center sm:p-4"
             style={{
-              backgroundColor: signalColor + '10',
-              border: '1.5px solid ' + signalColor + '30',
+              backgroundColor: tint(signalColor, '10'),
+              border: '1.5px solid ' + tint(signalColor, '30'),
             }}
           >
             <div
               className="h-3 w-3 shrink-0 rounded-full"
               style={{
                 backgroundColor: signalColor,
-                boxShadow: '0 0 8px ' + signalColor + '66',
+                boxShadow: '0 0 8px ' + tint(signalColor, '66'),
               }}
             />
             <div>
@@ -211,7 +211,7 @@ export default function VolatilityCluster({
           {/* Stats grid */}
           <div className="bg-surface-alt border-edge mb-3 grid grid-cols-1 gap-2.5 rounded-[10px] border px-4 py-3.5 sm:grid-cols-3">
             <div className="text-center">
-              <div className="text-tertiary font-sans text-[9px] font-bold tracking-[0.06em] uppercase">
+              <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
                 Yesterday{'\u2019'}s Range
               </div>
               <div
@@ -225,7 +225,7 @@ export default function VolatilityCluster({
               </div>
             </div>
             <div className="text-center">
-              <div className="text-tertiary font-sans text-[9px] font-bold tracking-[0.06em] uppercase">
+              <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
                 Classification
               </div>
               <div
@@ -239,7 +239,7 @@ export default function VolatilityCluster({
               </div>
             </div>
             <div className="text-center">
-              <div className="text-tertiary font-sans text-[9px] font-bold tracking-[0.06em] uppercase">
+              <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
                 Today{'\u2019'}s Multiplier
               </div>
               <div
@@ -263,7 +263,7 @@ export default function VolatilityCluster({
             clusterCallMult != null &&
             Math.abs(clusterPutMult - clusterCallMult) > 0.01 && (
               <div className="bg-surface border-edge mb-3 rounded-[10px] border p-3">
-                <div className="text-tertiary mb-1.5 font-sans text-[9px] font-bold tracking-[0.08em] uppercase">
+                <div className="text-tertiary mb-1.5 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                   Directional Tilt
                 </div>
                 <div className="flex items-center gap-4">

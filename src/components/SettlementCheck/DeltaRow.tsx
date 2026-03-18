@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 import type { SettlementResult } from './types';
 
 interface Props {
@@ -47,15 +48,15 @@ export default function DeltaRow({
       rowColor = '#D97706';
       barColor = '#D97706';
     } else if (minCushion < WARN_PTS) {
-      rowColor = '#E8A317';
-      barColor = '#E8A317';
+      rowColor = th.caution;
+      barColor = th.caution;
     } else {
       rowColor = th.green;
       barColor = th.green;
     }
   } else if (r.settledSafe) {
-    rowColor = '#E8A317';
-    barColor = '#E8A317';
+    rowColor = th.caution;
+    barColor = th.caution;
   } else {
     rowColor = th.red;
     barColor = th.red;
@@ -93,7 +94,10 @@ export default function DeltaRow({
               {tightnessLabel && (
                 <span
                   className="ml-1.5 rounded-sm px-1 py-0.5 font-sans text-[8px] font-bold tracking-wider"
-                  style={{ backgroundColor: rowColor + '18', color: rowColor }}
+                  style={{
+                    backgroundColor: tint(rowColor, '18'),
+                    color: rowColor,
+                  }}
                 >
                   {tightnessLabel}
                 </span>
@@ -102,7 +106,7 @@ export default function DeltaRow({
           ) : r.settledSafe ? (
             <span
               className="font-sans text-[11px]"
-              style={{ color: '#E8A317' }}
+              style={{ color: th.caution }}
             >
               Breached intraday, settled safe
               <span
@@ -125,7 +129,7 @@ export default function DeltaRow({
       </div>
 
       {/* Closest approach detail — always shown */}
-      <div className="flex gap-4 px-2.5 pb-1.5 font-sans text-[9px]">
+      <div className="flex gap-4 px-2.5 pb-1.5 font-sans text-[10px]">
         <span className="text-muted">
           Put: SPX low {remainingLow.toFixed(0)}, strike{' '}
           {r.putStrike.toFixed(0)}
@@ -169,10 +173,10 @@ export default function DeltaRow({
         <div className="relative">
           {/* Strike labels */}
           <div className="mb-0.5 flex justify-between font-mono text-[8px]">
-            <span style={{ color: th.red + 'AA' }}>
+            <span style={{ color: tint(th.red, 'AA') }}>
               {r.putStrike.toFixed(0)}
             </span>
-            <span style={{ color: th.green + 'AA' }}>
+            <span style={{ color: tint(th.green, 'AA') }}>
               {r.callStrike.toFixed(0)}
             </span>
           </div>
@@ -189,8 +193,8 @@ export default function DeltaRow({
               style={{
                 left: `${barLeft}%`,
                 width: `${barWidth}%`,
-                backgroundColor: barColor + '50',
-                border: `1px solid ${barColor}80`,
+                backgroundColor: tint(barColor, '50'),
+                border: `1px solid ${tint(barColor, '80')}`,
                 padding: 0,
               }}
               onMouseEnter={() => setShowTooltip(true)}
@@ -228,7 +232,7 @@ export default function DeltaRow({
                 className="absolute top-0 left-0 h-full rounded-l-full"
                 style={{
                   width: `${Math.min(20, Math.abs((remainingLow - r.putStrike) / width) * 100)}%`,
-                  backgroundColor: rowColor + '40',
+                  backgroundColor: tint(rowColor, '40'),
                   borderLeft: `2px solid ${rowColor}`,
                 }}
               />
@@ -238,7 +242,7 @@ export default function DeltaRow({
                 className="absolute top-0 right-0 h-full rounded-r-full"
                 style={{
                   width: `${Math.min(20, Math.abs((remainingHigh - r.callStrike) / width) * 100)}%`,
-                  backgroundColor: rowColor + '40',
+                  backgroundColor: tint(rowColor, '40'),
                   borderRight: `2px solid ${rowColor}`,
                 }}
               />

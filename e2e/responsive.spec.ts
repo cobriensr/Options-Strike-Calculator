@@ -45,9 +45,9 @@ test.describe('Responsive Layout', () => {
     const table = page.getByRole('table', { name: 'Strike prices by delta' });
     await expect(table).toBeVisible({ timeout: 5000 });
 
-    // The table wrapper should have overflow-x-auto
-    const wrapper = table.locator('..');
-    await expect(wrapper).toHaveCSS('overflow-x', 'auto');
+    // The ScrollHint wrapper (grandparent of table) should have overflow-x-auto
+    const scrollWrapper = table.locator('..').locator('..');
+    await expect(scrollWrapper).toHaveCSS('overflow-x', 'auto');
   });
 
   test('renders correctly on tablet viewport', async ({ page }) => {

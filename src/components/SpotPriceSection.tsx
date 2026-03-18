@@ -34,7 +34,7 @@ export default function SpotPriceSection({
   errors,
 }: Props) {
   return (
-    <SectionBox th={th} label="Spot Price">
+    <SectionBox label="Spot Price">
       <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
         <div>
           <label htmlFor="spot-price" className={tinyLbl}>
@@ -70,11 +70,7 @@ export default function SpotPriceSection({
           />
         </div>
       </div>
-      {errors['spot'] && (
-        <ErrorMsg th={th} id="spot-err">
-          {errors['spot']}
-        </ErrorMsg>
-      )}
+      {errors['spot'] && <ErrorMsg id="spot-err">{errors['spot']}</ErrorMsg>}
       {dSpot && !errors['spot'] && Number.parseFloat(dSpot) > 0 && (
         <div className="bg-surface-alt mt-3 rounded-lg p-[12px_14px]">
           {spxDirectActive ? (

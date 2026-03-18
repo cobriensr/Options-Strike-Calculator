@@ -52,17 +52,16 @@ export default function MarketRegimeSection({
 
   return (
     <SectionBox
-      th={th}
       label="Market Regime"
       badge={results ? 'VIX ' + (Number.parseFloat(dVix) || '\u2014') : null}
       headerRight={
         <button
           onClick={() => setShowRegime(!showRegime)}
           className={
-            'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold ' +
+            'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
             (showRegime
               ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-              : 'border-chip-border bg-chip-bg text-chip-text')
+              : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
           }
         >
           {showRegime ? 'Hide' : 'Show'} Analysis

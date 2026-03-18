@@ -13,6 +13,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Theme } from '../../themes';
 import type { CalculationResults } from '../../types';
 import { SectionBox } from '../ui';
+import { tint } from '../../utils/ui-utils';
 import type { AnalysisMode, AnalysisResult, UploadedImage } from './types';
 import { CHART_LABELS, MODE_LABELS } from './types';
 import AnalysisResultsView from './AnalysisResults';
@@ -382,7 +383,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   // ── Render ────────────────────────────────────────────────
 
   return (
-    <SectionBox th={th} label="Chart Analysis">
+    <SectionBox label="Chart Analysis">
       <div className="font-sans text-[11px] leading-relaxed">
         {/* Mode selector */}
         <div className="mb-3 flex gap-1.5">
@@ -393,9 +394,10 @@ export default function ChartAnalysis({ th, results, context }: Props) {
               onClick={() => setMode(m)}
               className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-all"
               style={{
-                backgroundColor: mode === m ? th.accent + '18' : th.surfaceAlt,
+                backgroundColor:
+                  mode === m ? tint(th.accent, '18') : th.surfaceAlt,
                 color: mode === m ? th.accent : th.textMuted,
-                border: `1px solid ${mode === m ? th.accent + '40' : 'transparent'}`,
+                border: `1px solid ${mode === m ? tint(th.accent, '40') : 'transparent'}`,
               }}
             >
               {MODE_LABELS[m].label}
@@ -411,7 +413,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           type="button"
           onDrop={handleDrop}
           onDragOver={(e) => e.preventDefault()}
-          className="border-edge bg-surface-alt mb-3 w-full cursor-pointer rounded-lg border-2 border-dashed p-4 text-center transition-colors hover:border-[var(--th-accent)]"
+          className="border-edge bg-surface-alt mb-3 w-full cursor-pointer rounded-lg border-2 border-dashed p-4 text-center transition-colors hover:border-[var(--color-accent)]"
           onClick={() => fileInputRef.current?.click()}
           aria-label="Upload chart images"
         >
@@ -538,14 +540,14 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           <div
             className="mb-3 flex items-center justify-between rounded-lg px-4 py-3"
             style={{
-              backgroundColor: '#E8A31710',
-              border: '1.5px solid #E8A31730',
+              backgroundColor: tint(th.caution, '10'),
+              border: '1.5px solid ' + tint(th.caution, '30'),
             }}
           >
             <div>
               <div
                 className="font-sans text-[11px] font-semibold"
-                style={{ color: '#E8A317' }}
+                style={{ color: th.caution }}
               >
                 Send {images.length} image{images.length > 1 ? 's' : ''} to
                 Opus? (~5{'\u201310'} min, billed on send)
@@ -600,7 +602,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
             {/* Pulsing bar */}
             <div
               className="mb-3 h-1 w-full overflow-hidden rounded-full"
-              style={{ backgroundColor: th.accent + '20' }}
+              style={{ backgroundColor: tint(th.accent, '20') }}
             >
               <div
                 className="h-full rounded-full"
@@ -642,9 +644,9 @@ export default function ChartAnalysis({ th, results, context }: Props) {
                   onClick={cancelAnalysis}
                   className="cursor-pointer rounded-md px-3 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
                   style={{
-                    backgroundColor: th.red + '18',
+                    backgroundColor: tint(th.red, '18'),
                     color: th.red,
-                    border: `1px solid ${th.red}30`,
+                    border: `1px solid ${tint(th.red, '30')}`,
                   }}
                 >
                   Cancel
@@ -658,7 +660,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         {error && (
           <div
             className="mb-3 rounded-lg px-3 py-2 text-[11px]"
-            style={{ backgroundColor: th.red + '12', color: th.red }}
+            style={{ backgroundColor: tint(th.red, '12'), color: th.red }}
           >
             {error}
           </div>
@@ -677,7 +679,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
         {/* Raw response fallback */}
         {!analysis && rawResponse && (
           <div className="bg-surface-alt border-edge rounded-lg border p-3">
-            <div className="text-muted mb-1 font-sans text-[9px] font-bold tracking-wider uppercase">
+            <div className="text-muted mb-1 font-sans text-[10px] font-bold tracking-wider uppercase">
               Raw Analysis
             </div>
             <pre className="text-secondary max-h-48 overflow-auto font-mono text-[10px] leading-relaxed whitespace-pre-wrap">

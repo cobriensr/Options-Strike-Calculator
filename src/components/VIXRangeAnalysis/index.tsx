@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Theme } from '../../themes';
 import { Chip } from '../ui';
-import { mkTh, mkTd } from '../../utils/ui-utils';
+import { mkTh, mkTd, tint } from '../../utils/ui-utils';
 import {
   VIX_BUCKETS,
   SURVIVAL_DATA,
@@ -41,7 +41,6 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
 
       <section
         className="border-edge overflow-x-auto rounded-[10px] border"
-        tabIndex={0}
         aria-label="SPX range by VIX level"
       >
         <table
@@ -75,7 +74,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
                   style={
                     isActive
                       ? {
-                          backgroundColor: zoneColor + '14',
+                          backgroundColor: tint(zoneColor, '14'),
                           borderLeftColor: zoneColor,
                         }
                       : undefined
@@ -88,9 +87,9 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
                     {b.label}
                     {isActive && (
                       <span
-                        className="ml-1.5 inline-block rounded-full px-1.5 py-px font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
+                        className="ml-1.5 inline-block rounded-full px-1.5 py-px font-sans text-[10px] font-bold tracking-[0.06em] uppercase"
                         style={{
-                          backgroundColor: zoneColor + '22',
+                          backgroundColor: tint(zoneColor, '22'),
                           color: zoneColor,
                         }}
                       >
@@ -149,13 +148,11 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
 
       <div className="mb-3 flex gap-1.5">
         <Chip
-          th={th}
           active={survMode === 'settle'}
           onClick={() => setSurvMode('settle')}
           label={'Settlement (O\u2192C)'}
         />
         <Chip
-          th={th}
           active={survMode === 'intraday'}
           onClick={() => setSurvMode('intraday')}
           label="Intraday (H-L)"
@@ -164,7 +161,6 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
 
       <section
         className="border-edge overflow-x-auto rounded-[10px] border"
-        tabIndex={0}
         aria-label="Iron condor survival rates"
       >
         <table

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { tint } from '../../utils/ui-utils';
 
 interface Props {
   title: string;
@@ -20,10 +21,10 @@ export default function Collapsible({
         type="button"
         onClick={() => setOpen(!open)}
         className="flex w-full cursor-pointer items-center justify-between px-3 py-2 text-left"
-        style={{ backgroundColor: color + '06' }}
+        style={{ backgroundColor: tint(color, '06') }}
       >
         <span
-          className="font-sans text-[9px] font-bold tracking-wider uppercase"
+          className="font-sans text-[10px] font-bold tracking-wider uppercase"
           style={{ color }}
         >
           {title}

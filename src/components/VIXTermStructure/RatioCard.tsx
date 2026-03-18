@@ -1,4 +1,5 @@
 import type { Theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 
 interface Props {
   th: Theme;
@@ -26,11 +27,11 @@ export default function RatioCard({
           <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
             {title}
           </div>
-          <div className="text-muted font-sans text-[9px]">{subtitle}</div>
+          <div className="text-muted font-sans text-[10px]">{subtitle}</div>
         </div>
         <span
-          className="rounded-full px-2 py-0.5 font-sans text-[9px] font-bold tracking-[0.06em] uppercase"
-          style={{ backgroundColor: color + '18', color }}
+          className="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold tracking-[0.06em] uppercase"
+          style={{ backgroundColor: tint(color, '18'), color }}
         >
           {label}
         </span>
@@ -56,7 +57,7 @@ export default function RatioCard({
           {/* 1.0x marker */}
           <div
             className="absolute -top-px left-1/2 h-2 w-0.5"
-            style={{ backgroundColor: th.textMuted + '60' }}
+            style={{ backgroundColor: tint(th.textMuted, '60') }}
           />
         </div>
         <div className="text-muted mt-0.5 flex justify-between font-mono text-[8px]">

@@ -1,4 +1,5 @@
 import type { Theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 
 interface Thresholds {
   p50: number;
@@ -32,19 +33,19 @@ export default function PercentileBar({
         {/* Colored segments */}
         <div
           className="absolute top-0 left-0 h-full w-1/2 rounded-l-md"
-          style={{ backgroundColor: th.green + '30' }}
+          style={{ backgroundColor: tint(th.green, '30') }}
         />
         <div
           className="absolute top-0 left-1/2 h-full w-1/4"
-          style={{ backgroundColor: th.accent + '20' }}
+          style={{ backgroundColor: tint(th.accent, '20') }}
         />
         <div
           className="absolute top-0 left-3/4 h-full w-[15%]"
-          style={{ backgroundColor: '#E8A31730' }}
+          style={{ backgroundColor: tint(th.caution, '30') }}
         />
         <div
           className="absolute top-0 left-[90%] h-full w-[10%] rounded-r-md"
-          style={{ backgroundColor: th.red + '30' }}
+          style={{ backgroundColor: tint(th.red, '30') }}
         />
 
         {/* Yesterday's position marker */}
@@ -53,7 +54,7 @@ export default function PercentileBar({
           style={{
             left: pos + '%',
             backgroundColor: signalColor,
-            boxShadow: '0 0 6px ' + signalColor + '88',
+            boxShadow: '0 0 6px ' + tint(signalColor, '88'),
           }}
         />
 

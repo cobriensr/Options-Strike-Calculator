@@ -1,4 +1,5 @@
 import type { Theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 import type { VIXBucket } from '../../data/vixRangeStats';
 import GuidanceCell from './GuidanceCell';
 
@@ -46,11 +47,11 @@ export default function RecommendationBanner({
     return (
       <div
         className="mb-3.5 overflow-hidden rounded-[10px]"
-        style={{ border: '1.5px solid ' + th.red + '30' }}
+        style={{ border: '1.5px solid ' + tint(th.red, '30') }}
       >
         <div
           className="flex flex-col gap-2.5 p-3.5 px-4.5 md:flex-row md:items-center md:justify-between"
-          style={{ backgroundColor: th.red + '10' }}
+          style={{ backgroundColor: tint(th.red, '10') }}
         >
           <div>
             <div
@@ -82,8 +83,8 @@ export default function RecommendationBanner({
         <div
           className="text-secondary px-4.5 py-2 font-sans text-[11px] leading-normal"
           style={{
-            backgroundColor: th.red + '08',
-            borderTop: '1px solid ' + th.red + '15',
+            backgroundColor: tint(th.red, '08'),
+            borderTop: '1px solid ' + tint(th.red, '15'),
           }}
         >
           {'\u26A0\uFE0F'}{' '}
@@ -104,12 +105,12 @@ export default function RecommendationBanner({
   return (
     <div
       className="mb-3.5 overflow-hidden rounded-[10px]"
-      style={{ border: '1.5px solid ' + zoneColor + '30' }}
+      style={{ border: '1.5px solid ' + tint(zoneColor, '30') }}
     >
       {/* Main recommendation */}
       <div
         className="flex flex-col gap-2.5 p-3.5 px-4.5 md:flex-row md:items-center md:justify-between"
-        style={{ backgroundColor: zoneColor + '10' }}
+        style={{ backgroundColor: tint(zoneColor, '10') }}
       >
         <div>
           <div
@@ -131,7 +132,7 @@ export default function RecommendationBanner({
         <div className="flex items-center gap-3">
           {/* IC ceiling */}
           <div className="text-center">
-            <div className="text-muted mb-0.5 font-sans text-[9px] font-semibold tracking-wider">
+            <div className="text-muted mb-0.5 font-sans text-[10px] font-semibold tracking-wider">
               IRON CONDOR
             </div>
             <div
@@ -154,8 +155,8 @@ export default function RecommendationBanner({
           {putSpreadCeiling != null && (
             <div className="text-center">
               <div
-                className="mb-0.5 font-sans text-[9px] font-semibold tracking-wider"
-                style={{ color: th.red + 'CC' }}
+                className="mb-0.5 font-sans text-[10px] font-semibold tracking-wider"
+                style={{ color: tint(th.red, 'CC') }}
               >
                 PUT SPREAD
               </div>
@@ -173,8 +174,8 @@ export default function RecommendationBanner({
           {callSpreadCeiling != null && (
             <div className="text-center">
               <div
-                className="mb-0.5 font-sans text-[9px] font-semibold tracking-wider"
-                style={{ color: th.green + 'CC' }}
+                className="mb-0.5 font-sans text-[10px] font-semibold tracking-wider"
+                style={{ color: tint(th.green, 'CC') }}
               >
                 CALL SPREAD
               </div>
@@ -204,7 +205,7 @@ export default function RecommendationBanner({
         return (
           <div
             className={'bg-surface-alt px-4.5 py-2.5 ' + gridCls}
-            style={{ borderTop: '1px solid ' + zoneColor + '20' }}
+            style={{ borderTop: '1px solid ' + tint(zoneColor, '20') }}
           >
             <GuidanceCell
               label="Aggressive"
@@ -239,8 +240,8 @@ export default function RecommendationBanner({
         <div
           className="text-secondary px-4.5 py-2 font-sans text-[11px] leading-normal"
           style={{
-            backgroundColor: zoneColor + '08',
-            borderTop: '1px solid ' + zoneColor + '15',
+            backgroundColor: tint(zoneColor, '08'),
+            borderTop: '1px solid ' + tint(zoneColor, '15'),
           }}
         >
           {'\u26A0\uFE0F'}{' '}

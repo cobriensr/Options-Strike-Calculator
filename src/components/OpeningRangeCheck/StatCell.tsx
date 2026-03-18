@@ -8,7 +8,7 @@ interface Props {
 export default function StatCell({ label, value, sub, color }: Props) {
   return (
     <div className="text-center">
-      <div className="text-tertiary font-sans text-[9px] font-bold tracking-[0.06em] uppercase">
+      <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
         {label}
       </div>
       <div className="mt-0.5 font-mono text-[17px] font-bold" style={{ color }}>

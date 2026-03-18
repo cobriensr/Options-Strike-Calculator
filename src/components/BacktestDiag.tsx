@@ -101,7 +101,7 @@ export default function BacktestDiag({
           fontWeight: 700,
           fontSize: 12,
           marginBottom: 6,
-          color: '#7C3AED',
+          color: 'var(--color-backtest)',
         }}
       >
         Backtest Diagnostic

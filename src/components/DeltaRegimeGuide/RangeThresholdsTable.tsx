@@ -18,7 +18,6 @@ export default function RangeThresholdsTable({ computed }: Props) {
   return (
     <section
       className="border-edge overflow-x-auto rounded-[10px] border"
-      tabIndex={0}
       aria-label="Range thresholds"
     >
       <table

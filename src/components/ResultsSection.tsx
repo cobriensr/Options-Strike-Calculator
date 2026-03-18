@@ -27,7 +27,7 @@ export default function ResultsSection({
   skewPct,
 }: Props) {
   return (
-    <div id="results" tabIndex={-1} className="mt-1">
+    <div id="results" tabIndex={-1} className="mt-6">
       {results ? (
         <section
           aria-label="Strike results for all deltas"
@@ -83,10 +83,33 @@ export default function ResultsSection({
           </p>
         </section>
       ) : (
-        <div className="border-edge-strong bg-surface rounded-[14px] border-2 border-dashed p-10 text-center">
-          <p className="text-muted m-0 text-[15px]">
-            Enter SPY spot price, time, and IV to see all delta strikes
+        <div className="border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-10 text-center">
+          <div className="text-accent mb-3 font-sans text-xs font-bold tracking-[0.16em] uppercase">
+            All Delta Strikes
+          </div>
+          <p className="text-secondary m-0 mb-4 text-[15px]">
+            Fill in the inputs above to calculate strike placement
           </p>
+          <div className="text-muted mx-auto inline-flex flex-col gap-1.5 text-left font-sans text-[13px]">
+            <span>
+              <span className="text-accent mr-2 font-mono text-xs font-bold">
+                1
+              </span>
+              SPY spot price
+            </span>
+            <span>
+              <span className="text-accent mr-2 font-mono text-xs font-bold">
+                2
+              </span>
+              Entry time
+            </span>
+            <span>
+              <span className="text-accent mr-2 font-mono text-xs font-bold">
+                3
+              </span>
+              Implied volatility (VIX or direct)
+            </span>
+          </div>
         </div>
       )}
     </div>

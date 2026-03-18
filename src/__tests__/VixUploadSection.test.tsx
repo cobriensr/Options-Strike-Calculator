@@ -2,9 +2,6 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { createRef } from 'react';
 import VixUploadSection from '../components/VixUploadSection';
-import { lightTheme } from '../themes';
-
-const th = lightTheme;
 
 describe('VixUploadSection', () => {
   function renderSection(
@@ -18,7 +15,6 @@ describe('VixUploadSection', () => {
     const onFileUpload = overrides.onFileUpload ?? vi.fn();
     return render(
       <VixUploadSection
-        th={th}
         vixDataLoaded={overrides.vixDataLoaded ?? false}
         vixDataSource={overrides.vixDataSource ?? ''}
         fileInputRef={ref}
@@ -64,7 +60,6 @@ describe('VixUploadSection', () => {
     const ref = createRef<HTMLInputElement>();
     render(
       <VixUploadSection
-        th={th}
         vixDataLoaded={false}
         vixDataSource=""
         fileInputRef={ref}

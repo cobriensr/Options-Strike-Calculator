@@ -1,4 +1,5 @@
 import type { Theme } from '../themes';
+import { tint } from '../utils/ui-utils';
 import { getEventsForDate, getMaxSeverity } from '../data/eventCalendar';
 import type { EventItem } from '../types/api';
 
@@ -43,9 +44,9 @@ export default function EventDayWarning({
       : 'medium';
   const isHigh = severity === 'high';
 
-  const color = isHigh ? th.red : '#E8A317';
-  const bg = isHigh ? th.red + '12' : '#E8A31712';
-  const border = isHigh ? th.red + '35' : '#E8A31735';
+  const color = isHigh ? th.red : th.caution;
+  const bg = isHigh ? tint(th.red, '12') : tint(th.caution, '12');
+  const border = isHigh ? tint(th.red, '35') : tint(th.caution, '35');
 
   return (
     <div
@@ -135,13 +136,13 @@ function EventRow({
     severity: 'high' | 'medium';
   };
 }) {
-  const tagColor = event.severity === 'high' ? th.red : '#E8A317';
+  const tagColor = event.severity === 'high' ? th.red : th.caution;
 
   return (
     <div className="flex items-center gap-2.5 py-1.5">
       <span
-        className="shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px] font-bold tracking-[0.06em] uppercase"
-        style={{ backgroundColor: tagColor + '18', color: tagColor }}
+        className="shrink-0 rounded-full px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.06em] uppercase"
+        style={{ backgroundColor: tint(tagColor, '18'), color: tagColor }}
       >
         {event.event}
       </span>
