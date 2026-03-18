@@ -15,6 +15,7 @@
  * Response: { analyses: [...], count: N }
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
@@ -94,6 +95,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).json({ analyses: rows, count: rows.length });
   } catch (err) {
+    Sentry.captureException(err);
     logger.error({ err }, 'Journal query error');
     return res.status(500).json({ error: 'Query failed' });
   }

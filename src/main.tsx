@@ -9,7 +9,7 @@ Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN || undefined,
   integrations: [Sentry.browserTracingIntegration()],
   sendDefaultPii: true,
-  tracesSampleRate: 0.2,
+  tracesSampleRate: 1.0,
   tracePropagationTargets: ['localhost', /^https:\/\/0dte\.vercel\.app\/api/],
   enableLogs: true,
   enabled: import.meta.env.PROD,

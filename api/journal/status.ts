@@ -5,6 +5,7 @@
  * Owner-gated.
  */
 
+import { Sentry } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
@@ -56,6 +57,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     });
   } catch (err) {
+    Sentry.captureException(err);
     return res.status(500).json({
       connected: false,
       error: err instanceof Error ? err.message : 'Unknown error',

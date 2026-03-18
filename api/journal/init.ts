@@ -11,6 +11,7 @@
  * Safe to call multiple times (uses IF NOT EXISTS).
  */
 
+import { Sentry } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { initDb, migrateDb } from '../_lib/db.js';
@@ -31,6 +32,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       message: 'All tables created and migrations applied',
     });
   } catch (err) {
+    Sentry.captureException(err);
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to init database',
     });

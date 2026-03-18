@@ -14,6 +14,7 @@
  *   - Today: cached 120s (data is still accumulating)
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -211,82 +212,91 @@ async function fetchSymbolHistory(
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (rejectIfNotOwner(req, res)) return;
-
-  const dateParam = typeof req.query?.date === 'string' ? req.query.date : '';
-  if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-    return res.status(400).json({
-      error: 'Missing or invalid date parameter. Use ?date=YYYY-MM-DD',
-    });
-  }
-
-  const now = new Date();
-  const todayET = now.toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-  const isToday = dateParam === todayET;
-
-  if (dateParam > todayET) {
-    return res
-      .status(400)
-      .json({ error: 'Cannot fetch history for future dates' });
-  }
-
-  // Try Redis cache (past dates are cached long-term)
-  const cacheKey = `${REDIS_PREFIX}${dateParam}`;
-  if (!isToday) {
+  return Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/history');
     try {
-      const cached = await redis.get<HistoryResponse>(cacheKey);
-      if (cached) {
-        res.setHeader(
-          'Cache-Control',
-          's-maxage=86400, stale-while-revalidate=3600',
-        );
-        res.setHeader('X-Cache', 'HIT');
-        return res.status(200).json(cached);
+      if (rejectIfNotOwner(req, res)) return;
+
+      const dateParam =
+        typeof req.query?.date === 'string' ? req.query.date : '';
+      if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        return res.status(400).json({
+          error: 'Missing or invalid date parameter. Use ?date=YYYY-MM-DD',
+        });
       }
-    } catch {
-      // Redis unavailable
+
+      const now = new Date();
+      const todayET = now.toLocaleDateString('en-CA', {
+        timeZone: 'America/New_York',
+      });
+      const isToday = dateParam === todayET;
+
+      if (dateParam > todayET) {
+        return res
+          .status(400)
+          .json({ error: 'Cannot fetch history for future dates' });
+      }
+
+      // Try Redis cache (past dates are cached long-term)
+      const cacheKey = `${REDIS_PREFIX}${dateParam}`;
+      if (!isToday) {
+        try {
+          const cached = await redis.get<HistoryResponse>(cacheKey);
+          if (cached) {
+            res.setHeader(
+              'Cache-Control',
+              's-maxage=86400, stale-while-revalidate=3600',
+            );
+            res.setHeader('X-Cache', 'HIT');
+            return res.status(200).json(cached);
+          }
+        } catch {
+          // Redis unavailable
+        }
+      }
+
+      // Time window: 7 days before to 2 days after target date
+      const targetMs = new Date(dateParam + 'T12:00:00Z').getTime();
+      const startMs = targetMs - 7 * 24 * 60 * 60 * 1000;
+      const endMs = targetMs + 2 * 24 * 60 * 60 * 1000;
+
+      // Fetch all 5 symbols in parallel
+      const [spx, vix, vix1d, vix9d, vvix] = await Promise.all([
+        fetchSymbolHistory('$SPX', startMs, endMs, dateParam),
+        fetchSymbolHistory('$VIX', startMs, endMs, dateParam),
+        fetchSymbolHistory('$VIX1D', startMs, endMs, dateParam),
+        fetchSymbolHistory('$VIX9D', startMs, endMs, dateParam),
+        fetchSymbolHistory('$VVIX', startMs, endMs, dateParam),
+      ]);
+
+      const response: HistoryResponse = {
+        date: dateParam,
+        spx,
+        vix,
+        vix1d,
+        vix9d,
+        vvix,
+        candleCount: spx.candles.length,
+        asOf: new Date().toISOString(),
+      };
+
+      // Cache
+      try {
+        if (isToday) {
+          await redis.set(cacheKey, response, { ex: 120 });
+        } else if (spx.candles.length > 0) {
+          await redis.set(cacheKey, response, { ex: PAST_CACHE_TTL });
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to cache history');
+      }
+
+      setCacheHeaders(res, isToday ? 120 : 86400, isToday ? 60 : 3600);
+
+      res.status(200).json(response);
+    } catch (error) {
+      Sentry.captureException(error);
+      res.status(500).json({ error: 'Internal server error' });
     }
-  }
-
-  // Time window: 7 days before to 2 days after target date
-  const targetMs = new Date(dateParam + 'T12:00:00Z').getTime();
-  const startMs = targetMs - 7 * 24 * 60 * 60 * 1000;
-  const endMs = targetMs + 2 * 24 * 60 * 60 * 1000;
-
-  // Fetch all 5 symbols in parallel
-  const [spx, vix, vix1d, vix9d, vvix] = await Promise.all([
-    fetchSymbolHistory('$SPX', startMs, endMs, dateParam),
-    fetchSymbolHistory('$VIX', startMs, endMs, dateParam),
-    fetchSymbolHistory('$VIX1D', startMs, endMs, dateParam),
-    fetchSymbolHistory('$VIX9D', startMs, endMs, dateParam),
-    fetchSymbolHistory('$VVIX', startMs, endMs, dateParam),
-  ]);
-
-  const response: HistoryResponse = {
-    date: dateParam,
-    spx,
-    vix,
-    vix1d,
-    vix9d,
-    vvix,
-    candleCount: spx.candles.length,
-    asOf: new Date().toISOString(),
-  };
-
-  // Cache
-  try {
-    if (isToday) {
-      await redis.set(cacheKey, response, { ex: 120 });
-    } else if (spx.candles.length > 0) {
-      await redis.set(cacheKey, response, { ex: PAST_CACHE_TTL });
-    }
-  } catch (err) {
-    logger.error({ err }, 'Failed to cache history');
-  }
-
-  setCacheHeaders(res, isToday ? 120 : 86400, isToday ? 60 : 3600);
-
-  res.status(200).json(response);
+  });
 }

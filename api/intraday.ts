@@ -21,6 +21,7 @@
  * }
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -117,74 +118,82 @@ function computeTodayOHLC(candles: SchwabCandle[]): {
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Owner-only: public visitors get 401, frontend falls back to manual input
-  if (rejectIfNotOwner(req, res)) return;
+  return Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/intraday');
+    try {
+      // Owner-only: public visitors get 401, frontend falls back to manual input
+      if (rejectIfNotOwner(req, res)) return;
 
-  // Use explicit start/end dates for TODAY's session.
-  // period=1 returns the most recent *completed* day, which during market
-  // hours is yesterday. Instead, fetch a 24h window and filter to today's
-  // ET date to get the current session's candles.
-  const now = new Date();
-  const todayET = now.toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
+      // Use explicit start/end dates for TODAY's session.
+      // period=1 returns the most recent *completed* day, which during market
+      // hours is yesterday. Instead, fetch a 24h window and filter to today's
+      // ET date to get the current session's candles.
+      const now = new Date();
+      const todayET = now.toLocaleDateString('en-CA', {
+        timeZone: 'America/New_York',
+      });
 
-  // Fetch a 24h window. Schwab only returns market-hours candles
-  // (needExtendedHoursData=false). We filter to today's date below
-  // in case the window overlaps yesterday's session.
-  const startMs = now.getTime() - 24 * 60 * 60 * 1000;
-  const endMs = now.getTime();
+      // Fetch a 24h window. Schwab only returns market-hours candles
+      // (needExtendedHoursData=false). We filter to today's date below
+      // in case the window overlaps yesterday's session.
+      const startMs = now.getTime() - 24 * 60 * 60 * 1000;
+      const endMs = now.getTime();
 
-  const params = new URLSearchParams({
-    symbol: '$SPX',
-    periodType: 'day',
-    frequencyType: 'minute',
-    frequency: '5',
-    startDate: String(startMs),
-    endDate: String(endMs),
-    needExtendedHoursData: 'false',
-    needPreviousClose: 'true',
-  });
+      const params = new URLSearchParams({
+        symbol: '$SPX',
+        periodType: 'day',
+        frequencyType: 'minute',
+        frequency: '5',
+        startDate: String(startMs),
+        endDate: String(endMs),
+        needExtendedHoursData: 'false',
+        needPreviousClose: 'true',
+      });
 
-  const result = await schwabFetch<SchwabPriceHistory>(
-    `/pricehistory?${params.toString()}`,
-  );
+      const result = await schwabFetch<SchwabPriceHistory>(
+        `/pricehistory?${params.toString()}`,
+      );
 
-  if ('error' in result) {
-    return res.status(result.status).json({ error: result.error });
-  }
+      if ('error' in result) {
+        return res.status(result.status).json({ error: result.error });
+      }
 
-  const { previousClose } = result.data;
-  const marketOpen = isMarketOpen();
+      const { previousClose } = result.data;
+      const marketOpen = isMarketOpen();
 
-  // Filter candles to today's ET date AND regular session hours only.
-  // $SPX candles can start before 9:30 AM (pre-market indicative values)
-  // even with needExtendedHoursData=false. We need the 9:30 AM open to
-  // match the actual regular session open shown on TradingView/brokers.
-  const todayCandles = result.data.candles.filter((c) => {
-    const d = new Date(c.datetime);
-    const etDate = d.toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
-    if (etDate !== todayET) return false;
+      // Filter candles to today's ET date AND regular session hours only.
+      // $SPX candles can start before 9:30 AM (pre-market indicative values)
+      // even with needExtendedHoursData=false. We need the 9:30 AM open to
+      // match the actual regular session open shown on TradingView/brokers.
+      const todayCandles = result.data.candles.filter((c) => {
+        const d = new Date(c.datetime);
+        const etDate = d.toLocaleDateString('en-CA', {
+          timeZone: 'America/New_York',
+        });
+        if (etDate !== todayET) return false;
 
-    // Only keep candles from 9:30 AM onward
-    return getETTotalMinutes(d) >= 570; // 9:30 AM = 9*60 + 30 = 570
-  });
+        // Only keep candles from 9:30 AM onward
+        return getETTotalMinutes(d) >= 570; // 9:30 AM = 9*60 + 30 = 570
+      });
 
-  // Cache: 2 min during hours (opening range doesn't change after 10 AM),
-  // 10 min after close (data is final)
-  setCacheHeaders(res, marketOpen ? 120 : 600, marketOpen ? 60 : 120);
+      // Cache: 2 min during hours (opening range doesn't change after 10 AM),
+      // 10 min after close (data is final)
+      setCacheHeaders(res, marketOpen ? 120 : 600, marketOpen ? 60 : 120);
 
-  const today = computeTodayOHLC(todayCandles);
-  const openingRange = computeOpeningRange(todayCandles);
+      const today = computeTodayOHLC(todayCandles);
+      const openingRange = computeOpeningRange(todayCandles);
 
-  res.status(200).json({
-    today,
-    openingRange,
-    previousClose,
-    candleCount: todayCandles.length,
-    marketOpen,
-    asOf: new Date().toISOString(),
+      res.status(200).json({
+        today,
+        openingRange,
+        previousClose,
+        candleCount: todayCandles.length,
+        marketOpen,
+        asOf: new Date().toISOString(),
+      });
+    } catch (error) {
+      Sentry.captureException(error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   });
 }

@@ -300,14 +300,17 @@ export default function AnalysisHistory({ th }: Props) {
       <div className="mb-4 flex flex-wrap items-end gap-3">
         {/* Date picker */}
         <div className="min-w-[180px] flex-1">
-          <label htmlFor="analysis-date-picker" className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase">
+          <label
+            htmlFor="analysis-date-picker"
+            className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
+          >
             Date
           </label>
           <select
             id="analysis-date-picker"
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
-            className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] outline-none transition-[border-color] duration-150"
+            className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] transition-[border-color] duration-150 outline-none"
             style={{ color: th.text }}
           >
             <option value="">Select a date...</option>
@@ -325,14 +328,17 @@ export default function AnalysisHistory({ th }: Props) {
         {/* Time picker */}
         {selectedDate && availableTimes.length > 0 && (
           <div className="min-w-[140px]">
-            <label htmlFor="analysis-time-picker" className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase">
+            <label
+              htmlFor="analysis-time-picker"
+              className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
+            >
               Entry Time
             </label>
             <select
               id="analysis-time-picker"
               value={selectedTime}
               onChange={(e) => handleTimeChange(e.target.value)}
-              className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] outline-none transition-[border-color] duration-150"
+              className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] transition-[border-color] duration-150 outline-none"
               style={{ color: th.text }}
             >
               {availableTimes.map((t) => (
@@ -401,10 +407,7 @@ export default function AnalysisHistory({ th }: Props) {
               <span
                 className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
                 style={{
-                  backgroundColor: tint(
-                    modeColor(selectedAnalysis.mode),
-                    '15',
-                  ),
+                  backgroundColor: tint(modeColor(selectedAnalysis.mode), '15'),
                   color: modeColor(selectedAnalysis.mode),
                 }}
               >
@@ -473,7 +476,11 @@ export default function AnalysisHistory({ th }: Props) {
           className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
           style={{ color: th.textMuted }}
         >
-          No {modeFilter === 'all' ? '' : MODE_LABELS[modeFilter as AnalysisMode].label + ' '}analyses found for this date.
+          No{' '}
+          {modeFilter === 'all'
+            ? ''
+            : MODE_LABELS[modeFilter as AnalysisMode].label + ' '}
+          analyses found for this date.
         </div>
       )}
     </SectionBox>

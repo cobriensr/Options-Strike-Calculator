@@ -19,6 +19,7 @@
  *   { positions: { summary, legs, spreads, stats }, saved: boolean }
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   rejectIfNotOwner,
@@ -586,6 +587,7 @@ async function handleCSVUpload(
       source: 'paperMoney',
     });
   } catch (err) {
+    Sentry.captureException(err);
     logger.error({ err }, 'CSV upload error');
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to parse CSV',
@@ -720,6 +722,7 @@ async function handleSchwabFetch(
       fetchTime,
     });
   } catch (err) {
+    Sentry.captureException(err);
     logger.error({ err }, 'Positions fetch error');
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to fetch positions',

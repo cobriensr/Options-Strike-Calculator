@@ -13,6 +13,7 @@
  * Environment: ANTHROPIC_API_KEY
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
@@ -736,6 +737,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       model: usedModel,
     });
   } catch (err) {
+    Sentry.captureException(err);
     logger.error({ err }, 'analyze unhandled error');
 
     // Map Anthropic SDK errors to client-friendly messages

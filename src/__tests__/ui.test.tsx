@@ -1,7 +1,13 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
-import { SectionBox, Chip, ScrollHint, StatusBadge, ErrorMsg } from '../components/ui';
+import {
+  SectionBox,
+  Chip,
+  ScrollHint,
+  StatusBadge,
+  ErrorMsg,
+} from '../components/ui';
 
 describe('SectionBox', () => {
   it('renders label and children', () => {
@@ -11,12 +17,20 @@ describe('SectionBox', () => {
   });
 
   it('renders badge when provided', () => {
-    render(<SectionBox label="Sec" badge="v2">Child</SectionBox>);
+    render(
+      <SectionBox label="Sec" badge="v2">
+        Child
+      </SectionBox>,
+    );
     expect(screen.getByText('v2')).toBeInTheDocument();
   });
 
   it('does not render badge when null', () => {
-    render(<SectionBox label="Sec" badge={null}>Child</SectionBox>);
+    render(
+      <SectionBox label="Sec" badge={null}>
+        Child
+      </SectionBox>,
+    );
     expect(screen.queryByText('v2')).not.toBeInTheDocument();
   });
 
@@ -89,7 +103,8 @@ describe('ScrollHint', () => {
       unobserve = vi.fn();
       disconnect = disconnectFn;
     }
-    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+    globalThis.ResizeObserver =
+      MockResizeObserver as unknown as typeof ResizeObserver;
 
     const { container, unmount } = render(
       <ScrollHint>
@@ -112,16 +127,31 @@ describe('ScrollHint', () => {
     );
     const scrollEl = container.querySelector('.overflow-x-auto')!;
     // Simulate overflow: scrollWidth > clientWidth
-    Object.defineProperty(scrollEl, 'scrollWidth', { value: 2000, configurable: true });
-    Object.defineProperty(scrollEl, 'clientWidth', { value: 500, configurable: true });
-    Object.defineProperty(scrollEl, 'scrollLeft', { value: 0, configurable: true, writable: true });
+    Object.defineProperty(scrollEl, 'scrollWidth', {
+      value: 2000,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'clientWidth', {
+      value: 500,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'scrollLeft', {
+      value: 0,
+      configurable: true,
+      writable: true,
+    });
     fireEvent.scroll(scrollEl);
     expect(container.querySelector('.pointer-events-none')).toBeInTheDocument();
 
     // Simulate scrolled to end
-    Object.defineProperty(scrollEl, 'scrollLeft', { value: 1500, configurable: true });
+    Object.defineProperty(scrollEl, 'scrollLeft', {
+      value: 1500,
+      configurable: true,
+    });
     fireEvent.scroll(scrollEl);
-    expect(container.querySelector('.pointer-events-none')).not.toBeInTheDocument();
+    expect(
+      container.querySelector('.pointer-events-none'),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -145,7 +175,11 @@ describe('StatusBadge', () => {
 
   it('renders as link when href is provided', () => {
     render(
-      <StatusBadge label="Re-authenticate" color="#f87171" href="/api/auth/init" />,
+      <StatusBadge
+        label="Re-authenticate"
+        color="#f87171"
+        href="/api/auth/init"
+      />,
     );
     const link = screen.getByRole('link', { name: 'Re-authenticate' });
     expect(link).toHaveAttribute('href', '/api/auth/init');

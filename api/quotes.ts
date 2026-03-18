@@ -19,6 +19,7 @@
  * }
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -79,45 +80,53 @@ function toSlice(q: SchwabQuote): QuoteSlice {
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Owner-only: public visitors get 401, frontend falls back to manual input
-  if (rejectIfNotOwner(req, res)) return;
-  const result = await schwabFetch<SchwabQuotesResponse>(
-    `/quotes?symbols=${encodeURIComponent(SYMBOLS)}&fields=quote`,
-  );
+  return Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/quotes');
+    try {
+      // Owner-only: public visitors get 401, frontend falls back to manual input
+      if (rejectIfNotOwner(req, res)) return;
+      const result = await schwabFetch<SchwabQuotesResponse>(
+        `/quotes?symbols=${encodeURIComponent(SYMBOLS)}&fields=quote`,
+      );
 
-  if ('error' in result) {
-    return res.status(result.status).json({ error: result.error });
-  }
+      if ('error' in result) {
+        return res.status(result.status).json({ error: result.error });
+      }
 
-  const data = result.data;
-  const marketOpen = isMarketOpen();
+      const data = result.data;
+      const marketOpen = isMarketOpen();
 
-  // Set cache: 60s during market hours, 5 min after close
-  setCacheHeaders(res, marketOpen ? 60 : 300, marketOpen ? 30 : 60);
+      // Set cache: 60s during market hours, 5 min after close
+      setCacheHeaders(res, marketOpen ? 60 : 300, marketOpen ? 30 : 60);
 
-  const response: Record<string, unknown> = {
-    marketOpen,
-    asOf: new Date().toISOString(),
-  };
+      const response: Record<string, unknown> = {
+        marketOpen,
+        asOf: new Date().toISOString(),
+      };
 
-  // Map each symbol, handling possible missing data gracefully
-  const mapping: [string, string][] = [
-    ['spy', 'SPY'],
-    ['spx', '$SPX'],
-    ['vix', '$VIX'],
-    ['vix1d', '$VIX1D'],
-    ['vix9d', '$VIX9D'],
-    ['vvix', '$VVIX'],
-  ];
+      // Map each symbol, handling possible missing data gracefully
+      const mapping: [string, string][] = [
+        ['spy', 'SPY'],
+        ['spx', '$SPX'],
+        ['vix', '$VIX'],
+        ['vix1d', '$VIX1D'],
+        ['vix9d', '$VIX9D'],
+        ['vvix', '$VVIX'],
+      ];
 
-  for (const [key, symbol] of mapping) {
-    const q = data[symbol];
-    if (q?.quote) {
-      response[key] = toSlice(q);
-    } else {
-      response[key] = null;
+      for (const [key, symbol] of mapping) {
+        const q = data[symbol];
+        if (q?.quote) {
+          response[key] = toSlice(q);
+        } else {
+          response[key] = null;
+        }
+      }
+
+      res.status(200).json(response);
+    } catch (error) {
+      Sentry.captureException(error);
+      res.status(500).json({ error: 'Internal server error' });
     }
-  }
-
-  res.status(200).json(response);
+  });
 }

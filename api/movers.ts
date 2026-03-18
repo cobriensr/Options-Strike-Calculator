@@ -12,6 +12,7 @@
  *   After hours:  600s edge cache + 120s SWR
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -50,73 +51,81 @@ interface MoverSlice {
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (rejectIfNotOwner(req, res)) return;
+  return Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/movers');
+    try {
+      if (rejectIfNotOwner(req, res)) return;
 
-  // Fetch both up and down movers in parallel
-  const [upResult, downResult] = await Promise.all([
-    schwabFetch<SchwabMoversResponse>(
-      '/movers/$SPX?sort=percent_change_up&frequency=0',
-    ),
-    schwabFetch<SchwabMoversResponse>(
-      '/movers/$SPX?sort=percent_change_down&frequency=0',
-    ),
-  ]);
+      // Fetch both up and down movers in parallel
+      const [upResult, downResult] = await Promise.all([
+        schwabFetch<SchwabMoversResponse>(
+          '/movers/$SPX?sort=percent_change_up&frequency=0',
+        ),
+        schwabFetch<SchwabMoversResponse>(
+          '/movers/$SPX?sort=percent_change_down&frequency=0',
+        ),
+      ]);
 
-  const marketOpen = isMarketOpen();
-  setCacheHeaders(res, marketOpen ? 120 : 600, marketOpen ? 60 : 120);
+      const marketOpen = isMarketOpen();
+      setCacheHeaders(res, marketOpen ? 120 : 600, marketOpen ? 60 : 120);
 
-  function mapMovers(data: SchwabMoversResponse): MoverSlice[] {
-    return (data.screeners || []).slice(0, 10).map((m) => ({
-      symbol: m.symbol,
-      name: m.description,
-      change: m.change,
-      price: m.last,
-      volume: m.totalVolume,
-    }));
-  }
+      function mapMovers(data: SchwabMoversResponse): MoverSlice[] {
+        return (data.screeners || []).slice(0, 10).map((m) => ({
+          symbol: m.symbol,
+          name: m.description,
+          change: m.change,
+          price: m.last,
+          volume: m.totalVolume,
+        }));
+      }
 
-  const up = 'data' in upResult ? mapMovers(upResult.data) : [];
-  const down = 'data' in downResult ? mapMovers(downResult.data) : [];
+      const up = 'data' in upResult ? mapMovers(upResult.data) : [];
+      const down = 'data' in downResult ? mapMovers(downResult.data) : [];
 
-  // Concentration analysis: what % of the top 10 movers are mega-caps?
-  const megaCaps = new Set([
-    'AAPL',
-    'MSFT',
-    'NVDA',
-    'AMZN',
-    'GOOG',
-    'GOOGL',
-    'META',
-    'TSLA',
-    'BRK.B',
-    'AVGO',
-  ]);
-  const allMovers = [...up, ...down];
-  const megaCapMovers = allMovers.filter((m) => megaCaps.has(m.symbol));
-  const concentrated = megaCapMovers.length >= 3;
+      // Concentration analysis: what % of the top 10 movers are mega-caps?
+      const megaCaps = new Set([
+        'AAPL',
+        'MSFT',
+        'NVDA',
+        'AMZN',
+        'GOOG',
+        'GOOGL',
+        'META',
+        'TSLA',
+        'BRK.B',
+        'AVGO',
+      ]);
+      const allMovers = [...up, ...down];
+      const megaCapMovers = allMovers.filter((m) => megaCaps.has(m.symbol));
+      const concentrated = megaCapMovers.length >= 3;
 
-  // Directional bias: are the biggest movers skewed one way?
-  const topUpChange = up[0]?.change ?? 0;
-  const topDownChange = Math.abs(down[0]?.change ?? 0);
-  const bias =
-    topUpChange > topDownChange * 1.5
-      ? 'bullish'
-      : topDownChange > topUpChange * 1.5
-        ? 'bearish'
-        : 'mixed';
+      // Directional bias: are the biggest movers skewed one way?
+      const topUpChange = up[0]?.change ?? 0;
+      const topDownChange = Math.abs(down[0]?.change ?? 0);
+      const bias =
+        topUpChange > topDownChange * 1.5
+          ? 'bullish'
+          : topDownChange > topUpChange * 1.5
+            ? 'bearish'
+            : 'mixed';
 
-  res.status(200).json({
-    up,
-    down,
-    analysis: {
-      concentrated,
-      megaCapCount: megaCapMovers.length,
-      megaCapSymbols: megaCapMovers.map((m) => m.symbol),
-      bias,
-      topUp: up[0] ?? null,
-      topDown: down[0] ?? null,
-    },
-    marketOpen,
-    asOf: new Date().toISOString(),
+      res.status(200).json({
+        up,
+        down,
+        analysis: {
+          concentrated,
+          megaCapCount: megaCapMovers.length,
+          megaCapSymbols: megaCapMovers.map((m) => m.symbol),
+          bias,
+          topUp: up[0] ?? null,
+          topDown: down[0] ?? null,
+        },
+        marketOpen,
+        asOf: new Date().toISOString(),
+      });
+    } catch (error) {
+      Sentry.captureException(error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   });
 }

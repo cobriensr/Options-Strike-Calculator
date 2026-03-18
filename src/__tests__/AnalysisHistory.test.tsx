@@ -16,7 +16,13 @@ function makeDateEntry(
   const entries = counts.entries ?? 0;
   const middays = counts.middays ?? 0;
   const reviews = counts.reviews ?? 0;
-  return { date, total: entries + middays + reviews, entries, middays, reviews };
+  return {
+    date,
+    total: entries + middays + reviews,
+    entries,
+    middays,
+    reviews,
+  };
 }
 
 function makeAnalysis(overrides: Partial<AnalysisResult> = {}): AnalysisResult {
@@ -107,9 +113,7 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory th={th} />);
 
       await waitFor(() => {
-        expect(
-          screen.getByText(/No saved analyses yet/),
-        ).toBeInTheDocument();
+        expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
       });
     });
 
@@ -121,9 +125,7 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory th={th} />);
 
       await waitFor(() => {
-        expect(
-          screen.getByText(/No saved analyses yet/),
-        ).toBeInTheDocument();
+        expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
       });
     });
   });
@@ -274,7 +276,10 @@ describe('AnalysisHistory', () => {
         makeEntry(1, 'entry', '10:00 AM'),
         makeEntry(3, 'midday', '10:00 AM', {
           structure: 'PUT CREDIT SPREAD',
-          analysis: makeAnalysis({ mode: 'midday', structure: 'PUT CREDIT SPREAD' }),
+          analysis: makeAnalysis({
+            mode: 'midday',
+            structure: 'PUT CREDIT SPREAD',
+          }),
         }),
       ];
       vi.stubGlobal('fetch', mockFetch(DATES, analyses));
@@ -290,7 +295,9 @@ describe('AnalysisHistory', () => {
       // Auto-selects entry mode — should show IRON CONDOR
       await waitFor(() => {
         expect(screen.getByRole('group')).toBeInTheDocument();
-        expect(screen.getAllByText('IRON CONDOR').length).toBeGreaterThanOrEqual(1);
+        expect(
+          screen.getAllByText('IRON CONDOR').length,
+        ).toBeGreaterThanOrEqual(1);
       });
 
       // Click Mid-Day tab in the fieldset
@@ -299,7 +306,9 @@ describe('AnalysisHistory', () => {
 
       // Summary bar should now show PUT CREDIT SPREAD
       await waitFor(() => {
-        expect(screen.getAllByText('PUT CREDIT SPREAD').length).toBeGreaterThanOrEqual(1);
+        expect(
+          screen.getAllByText('PUT CREDIT SPREAD').length,
+        ).toBeGreaterThanOrEqual(1);
       });
     });
   });
@@ -318,7 +327,9 @@ describe('AnalysisHistory', () => {
 
       await waitFor(() => {
         // May appear in both summary bar and results view
-        expect(screen.getAllByText('IRON CONDOR').length).toBeGreaterThanOrEqual(1);
+        expect(
+          screen.getAllByText('IRON CONDOR').length,
+        ).toBeGreaterThanOrEqual(1);
         expect(screen.getAllByText('HIGH').length).toBeGreaterThanOrEqual(1);
       });
     });
@@ -469,9 +480,7 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory th={th} />);
 
       await waitFor(() => {
-        expect(
-          screen.getByText(/No saved analyses yet/),
-        ).toBeInTheDocument();
+        expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
       });
     });
 
@@ -488,9 +497,7 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory th={th} />);
 
       await waitFor(() => {
-        expect(
-          screen.getByText(/No saved analyses yet/),
-        ).toBeInTheDocument();
+        expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
       });
     });
   });

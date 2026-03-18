@@ -9,6 +9,7 @@
  * Called automatically by the frontend whenever results are computed.
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { saveSnapshot } from './_lib/db.js';
@@ -40,6 +41,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ id, saved: id != null });
   } catch (err) {
     // Don't fail the user experience or leak DB details
+    Sentry.captureException(err);
     logger.error({ err }, 'Snapshot save error');
     return res.status(200).json({ id: null, saved: false });
   }

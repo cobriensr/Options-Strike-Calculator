@@ -17,6 +17,7 @@
  *   FINNHUB_API_KEY — Free key from https://finnhub.io/register (optional, earnings only)
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { redis } from './_lib/schwab.js';
 import logger from './_lib/logger.js';
@@ -448,68 +449,84 @@ async function fetchAllEvents(
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const fredKey = process.env.FRED_API_KEY;
-  if (!fredKey) {
-    return res
-      .status(500)
-      .json({ error: 'FRED_API_KEY environment variable must be set' });
-  }
-  const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
+  return Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/events');
+    try {
+      const fredKey = process.env.FRED_API_KEY;
+      if (!fredKey) {
+        return res
+          .status(500)
+          .json({ error: 'FRED_API_KEY environment variable must be set' });
+      }
+      const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
 
-  // Parse days parameter (default 30, max 90)
-  const daysParam = Number(req.query?.days) || 30;
-  const days = Math.min(Math.max(daysParam, 1), 90);
+      // Parse days parameter (default 30, max 90)
+      const daysParam = Number(req.query?.days) || 30;
+      const days = Math.min(Math.max(daysParam, 1), 90);
 
-  // Date range: today → today + days
-  const now = new Date();
-  const startDate = now.toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-  const endDate = new Date(
-    now.getTime() + days * 24 * 60 * 60 * 1000,
-  ).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      // Date range: today → today + days
+      const now = new Date();
+      const startDate = now.toLocaleDateString('en-CA', {
+        timeZone: 'America/New_York',
+      });
+      const endDate = new Date(
+        now.getTime() + days * 24 * 60 * 60 * 1000,
+      ).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-  // Try Redis cache first
-  const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;
-  try {
-    const cached = await redis.get<EventItem[]>(cacheKey);
-    if (cached) {
+      // Try Redis cache first
+      const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;
+      try {
+        const cached = await redis.get<EventItem[]>(cacheKey);
+        if (cached) {
+          res.setHeader(
+            'Cache-Control',
+            's-maxage=43200, stale-while-revalidate=3600',
+          );
+          res.setHeader('X-Cache', 'HIT');
+          return res.status(200).json({
+            events: cached,
+            startDate,
+            endDate,
+            cached: true,
+            asOf: new Date().toISOString(),
+          });
+        }
+      } catch {
+        // Redis unavailable — fetch fresh
+      }
+
+      // Fetch from all sources
+      const events = await fetchAllEvents(
+        fredKey,
+        finnhubKey,
+        startDate,
+        endDate,
+      );
+
+      // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
+      try {
+        await redis.set(cacheKey, events, { ex: CACHE_TTL_SEC });
+      } catch (err) {
+        logger.error({ err }, 'Failed to cache events in Redis');
+      }
+
+      // Edge cache: 12 hours
       res.setHeader(
         'Cache-Control',
         's-maxage=43200, stale-while-revalidate=3600',
       );
-      res.setHeader('X-Cache', 'HIT');
-      return res.status(200).json({
-        events: cached,
+      res.setHeader('X-Cache', 'MISS');
+
+      res.status(200).json({
+        events,
         startDate,
         endDate,
-        cached: true,
+        cached: false,
         asOf: new Date().toISOString(),
       });
+    } catch (error) {
+      Sentry.captureException(error);
+      res.status(500).json({ error: 'Internal server error' });
     }
-  } catch {
-    // Redis unavailable — fetch fresh
-  }
-
-  // Fetch from all sources
-  const events = await fetchAllEvents(fredKey, finnhubKey, startDate, endDate);
-
-  // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
-  try {
-    await redis.set(cacheKey, events, { ex: CACHE_TTL_SEC });
-  } catch (err) {
-    logger.error({ err }, 'Failed to cache events in Redis');
-  }
-
-  // Edge cache: 12 hours
-  res.setHeader('Cache-Control', 's-maxage=43200, stale-while-revalidate=3600');
-  res.setHeader('X-Cache', 'MISS');
-
-  res.status(200).json({
-    events,
-    startDate,
-    endDate,
-    cached: false,
-    asOf: new Date().toISOString(),
   });
 }

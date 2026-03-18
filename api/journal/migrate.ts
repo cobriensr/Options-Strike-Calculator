@@ -8,6 +8,7 @@
  * market_snapshots. It preserves all existing data.
  */
 
+import { Sentry } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { migrateDb } from '../_lib/db.js';
@@ -26,6 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       message: `Migration complete: ${applied.length} column(s) ensured`,
     });
   } catch (err) {
+    Sentry.captureException(err);
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Migration failed',
     });

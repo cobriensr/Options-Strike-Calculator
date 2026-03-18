@@ -9,64 +9,71 @@
  * don't have it and get a 401 (frontend silently falls back to manual input).
  */
 
+import { Sentry } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { storeInitialTokens } from '../_lib/schwab.js';
 import { OWNER_COOKIE, OWNER_COOKIE_MAX_AGE } from '../_lib/api-helpers.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const code = req.query.code;
-  if (!code || typeof code !== 'string') {
-    return res.status(400).json({ error: 'Missing authorization code' });
-  }
+  return Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/auth/callback');
+    try {
+      const code = req.query.code;
+      if (!code || typeof code !== 'string') {
+        return res.status(400).json({ error: 'Missing authorization code' });
+      }
 
-  const ownerSecret = process.env.OWNER_SECRET;
-  if (!ownerSecret) {
-    return res
-      .status(500)
-      .json({ error: 'OWNER_SECRET environment variable must be set' });
-  }
+      const ownerSecret = process.env.OWNER_SECRET;
+      if (!ownerSecret) {
+        return res
+          .status(500)
+          .json({ error: 'OWNER_SECRET environment variable must be set' });
+      }
 
-  const host = req.headers.host || 'localhost:3000';
-  const protocol = host.includes('localhost') ? 'http' : 'https';
-  const redirectUri = `${protocol}://${host}/api/auth/callback`;
+      const host = req.headers.host || 'localhost:3000';
+      const protocol = host.includes('localhost') ? 'http' : 'https';
+      const redirectUri = `${protocol}://${host}/api/auth/callback`;
 
-  const result = await storeInitialTokens(code, redirectUri);
+      const result = await storeInitialTokens(code, redirectUri);
 
-  if ('error' in result) {
-    return res.status(500).json({ error: result.error.message });
-  }
+      if ('error' in result) {
+        return res.status(500).json({ error: result.error.message });
+      }
 
-  // Set the owner session cookie — this is what gates the data endpoints.
-  // HttpOnly:    can't be read by JavaScript (XSS safe)
-  // Secure:      only sent over HTTPS
-  // SameSite=Strict: not sent on cross-site requests (CSRF safe)
-  // Path=/:      available to all endpoints
-  // Max-Age=7d:  matches Schwab refresh token lifetime
-  const isLocal = host.includes('localhost');
-  const cookieParts = [
-    `${OWNER_COOKIE}=${ownerSecret}`,
-    `Path=/`,
-    `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
-    'HttpOnly',
-    'SameSite=Strict',
-  ];
-  if (!isLocal) cookieParts.push('Secure');
+      // Set the owner session cookie — this is what gates the data endpoints.
+      // HttpOnly:    can't be read by JavaScript (XSS safe)
+      // Secure:      only sent over HTTPS
+      // SameSite=Strict: not sent on cross-site requests (CSRF safe)
+      // Path=/:      available to all endpoints
+      // Max-Age=7d:  matches Schwab refresh token lifetime
+      const isLocal = host.includes('localhost');
+      const cookieParts = [
+        `${OWNER_COOKIE}=${ownerSecret}`,
+        `Path=/`,
+        `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
+        'HttpOnly',
+        'SameSite=Strict',
+      ];
+      if (!isLocal) cookieParts.push('Secure');
 
-  // Non-HttpOnly hint cookie so the frontend can detect the owner session
-  // on page load (the real sc-owner cookie is HttpOnly and invisible to JS).
-  const hintParts = [
-    `sc-hint=1`,
-    `Path=/`,
-    `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
-    'SameSite=Strict',
-  ];
-  if (!isLocal) hintParts.push('Secure');
+      // Non-HttpOnly hint cookie so the frontend can detect the owner session
+      // on page load (the real sc-owner cookie is HttpOnly and invisible to JS).
+      const hintParts = [
+        `sc-hint=1`,
+        `Path=/`,
+        `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
+        'SameSite=Strict',
+      ];
+      if (!isLocal) hintParts.push('Secure');
 
-  res.setHeader('Set-Cookie', [cookieParts.join('; '), hintParts.join('; ')]);
+      res.setHeader('Set-Cookie', [
+        cookieParts.join('; '),
+        hintParts.join('; '),
+      ]);
 
-  // Return a simple success page
-  res.setHeader('Content-Type', 'text/html');
-  res.status(200).send(`
+      // Return a simple success page
+      res.setHeader('Content-Type', 'text/html');
+      res.status(200).send(`
     <!DOCTYPE html>
     <html>
     <head><title>Auth Complete</title></head>
@@ -80,4 +87,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     </body>
     </html>
   `);
+    } catch (error) {
+      Sentry.captureException(error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
 }

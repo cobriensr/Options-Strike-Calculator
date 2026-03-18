@@ -10,7 +10,7 @@ interface Props {
   readonly analysis: AnalysisResult;
   readonly mode: AnalysisMode;
   readonly onReplaceImage: (index: number) => void;
-  defaultCollapsed?: boolean
+  defaultCollapsed?: boolean;
 }
 
 export default function AnalysisResults({
@@ -264,7 +264,11 @@ export default function AnalysisResults({
 
       {/* Entry Plan */}
       {analysis.entryPlan && (
-          <Collapsible title="Entry Plan" color={th.accent} defaultOpen={!defaultCollapsed}>
+        <Collapsible
+          title="Entry Plan"
+          color={th.accent}
+          defaultOpen={!defaultCollapsed}
+        >
           <div className="grid gap-2">
             {[
               analysis.entryPlan.entry1,

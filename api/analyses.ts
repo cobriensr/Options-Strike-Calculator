@@ -12,6 +12,7 @@
  *   ?id=42                                             — Get a single analysis by ID
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
@@ -122,6 +123,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .status(400)
       .json({ error: 'Provide ?dates=true, ?date=YYYY-MM-DD, or ?id=N' });
   } catch (err) {
+    Sentry.captureException(err);
     logger.error({ err }, 'analyses endpoint error');
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to fetch analyses',

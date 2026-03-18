@@ -8,20 +8,29 @@
  * Only needs to be called once every 7 days when the refresh token expires.
  */
 
+import { Sentry } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getAuthUrl } from '../_lib/schwab.js';
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
-  const host = req.headers.host || 'localhost:3000';
-  const protocol = host.includes('localhost') ? 'http' : 'https';
-  const redirectUri = `${protocol}://${host}/api/auth/callback`;
+  Sentry.withIsolationScope((scope) => {
+    scope.setTransactionName('GET /api/auth/init');
+    try {
+      const host = req.headers.host || 'localhost:3000';
+      const protocol = host.includes('localhost') ? 'http' : 'https';
+      const redirectUri = `${protocol}://${host}/api/auth/callback`;
 
-  const authUrl = getAuthUrl(redirectUri);
-  if (!authUrl) {
-    return res.status(500).json({
-      error: 'SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET must be set',
-    });
-  }
+      const authUrl = getAuthUrl(redirectUri);
+      if (!authUrl) {
+        return res.status(500).json({
+          error: 'SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET must be set',
+        });
+      }
 
-  res.redirect(302, authUrl);
+      res.redirect(302, authUrl);
+    } catch (error) {
+      Sentry.captureException(error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
 }

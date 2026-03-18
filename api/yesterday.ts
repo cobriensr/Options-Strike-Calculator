@@ -18,6 +18,7 @@
  * }
  */
 
+import { Sentry } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -95,59 +96,69 @@ function todayET(): string {
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Owner-only: public visitors get 401, frontend falls back to manual input
-  if (rejectIfNotOwner(req, res)) return;
-  const params = new URLSearchParams({
-    symbol: '$SPX',
-    periodType: 'month',
-    period: '1',
-    frequencyType: 'daily',
-    frequency: '1',
-  });
+  return Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/yesterday');
+    try {
+      // Owner-only: public visitors get 401, frontend falls back to manual input
+      if (rejectIfNotOwner(req, res)) return;
+      const params = new URLSearchParams({
+        symbol: '$SPX',
+        periodType: 'month',
+        period: '1',
+        frequencyType: 'daily',
+        frequency: '1',
+      });
 
-  const result = await schwabFetch<SchwabPriceHistory>(
-    `/pricehistory?${params.toString()}`,
-  );
+      const result = await schwabFetch<SchwabPriceHistory>(
+        `/pricehistory?${params.toString()}`,
+      );
 
-  if ('error' in result) {
-    return res.status(result.status).json({ error: result.error });
-  }
+      if ('error' in result) {
+        return res.status(result.status).json({ error: result.error });
+      }
 
-  const { candles } = result.data;
+      const { candles } = result.data;
 
-  if (candles.length === 0) {
-    return res.status(200).json({
-      yesterday: null,
-      twoDaysAgo: null,
-      asOf: new Date().toISOString(),
-    });
-  }
+      if (candles.length === 0) {
+        return res.status(200).json({
+          yesterday: null,
+          twoDaysAgo: null,
+          asOf: new Date().toISOString(),
+        });
+      }
 
-  // Filter out today's candle if market is still open
-  // (Schwab may include a partial today candle)
-  const today = todayET();
-  const completed = candles.filter((c) => msToDateStr(c.datetime) !== today);
+      // Filter out today's candle if market is still open
+      // (Schwab may include a partial today candle)
+      const today = todayET();
+      const completed = candles.filter(
+        (c) => msToDateStr(c.datetime) !== today,
+      );
 
-  // Most recent completed = yesterday, second most recent = two days ago
-  // (for multi-day clustering streaks)
-  const yesterday =
-    completed.length > 0 ? toDaySummary(completed.at(-1)!) : null;
+      // Most recent completed = yesterday, second most recent = two days ago
+      // (for multi-day clustering streaks)
+      const yesterday =
+        completed.length > 0 ? toDaySummary(completed.at(-1)!) : null;
 
-  const twoDaysAgo =
-    completed.length > 1 ? toDaySummary(completed.at(-2)!) : null;
+      const twoDaysAgo =
+        completed.length > 1 ? toDaySummary(completed.at(-2)!) : null;
 
-  // Last 5 completed trading days (for rolling Parkinson RV)
-  const priorDays = completed.slice(-5).map(toDaySummary);
+      // Last 5 completed trading days (for rolling Parkinson RV)
+      const priorDays = completed.slice(-5).map(toDaySummary);
 
-  const marketOpen = isMarketOpen();
+      const marketOpen = isMarketOpen();
 
-  // Yesterday's data never changes once the day is over
-  setCacheHeaders(res, marketOpen ? 3600 : 86400, 3600);
+      // Yesterday's data never changes once the day is over
+      setCacheHeaders(res, marketOpen ? 3600 : 86400, 3600);
 
-  res.status(200).json({
-    yesterday,
-    twoDaysAgo,
-    priorDays,
-    asOf: new Date().toISOString(),
+      res.status(200).json({
+        yesterday,
+        twoDaysAgo,
+        priorDays,
+        asOf: new Date().toISOString(),
+      });
+    } catch (error) {
+      Sentry.captureException(error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   });
 }
