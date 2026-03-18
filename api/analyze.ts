@@ -241,6 +241,21 @@ The structurally correct structure per gamma and flow analysis may place short s
 - Evaluate whether the opposite structure has adequate premium (8Δ+) with acceptable gamma risk. If the put side offers 9-12Δ with a positive gamma wall for protection, that may be the practical trade even if gamma asymmetry technically favors the call side.
 - If neither side offers 8Δ+, recommend SIT OUT. Note the conflict explicitly: "Gamma favors CCS but premium above [wall level] is below 8Δ — the structurally correct trade is not tradeable today."
 - When recommending the opposite structure because the preferred side lacks premium, flag the gamma risk clearly and reduce confidence by one level. The trader is accepting structural risk for practical premium — size down accordingly.
+
+RULE 10: SPX Net Flow Hedging Divergence
+When SPX Net Flow NCP diverges from price direction AND 3+ other signals (Market Tide, SPY flow, QQQ price action) confirm the opposite direction, treat SPX Net Flow as CONFLICTED with LOW confidence regardless of NCP magnitude — the flow is institutional hedging, not directional.
+- This pattern has been validated across multiple sessions: SPX NCP stays positive (+100M+) while SPX price drops 25-50 pts, Market Tide NCP is deeply negative, and SPY confirms bearish. The positive SPX NCP represents institutional call-buying hedges (downside protection on existing equity longs), not bullish directional conviction.
+- When this pattern is identified: reduce SPX Net Flow's effective weight from 50% to 25%. Redistribute the weight to Market Tide (now 37.5%) and SPY (now 22.5%). QQQ stays at 10%.
+- Do not let the positive SPX NCP prevent a directional CCS recommendation when all other signals agree on direction. Note the divergence as a risk factor and reduce sizing by one level, but do not override 3+ confirming signals.
+- The reverse also applies: if SPX NCP is deeply negative but SPX price is rising with Market Tide and SPY both bullish, the SPX put flow is likely institutional hedging — treat as CONFLICTED.
+
+RULE 11: Net Charm Confirms Directional Spread
+When the Net Charm profile shows massive positive charm values below current price (downside walls strengthening) and negative charm values above current price (upside walls decaying), this is a strong CCS confirmation. The mirror pattern (negative charm below, positive above) confirms PCS.
+- If charm aligns with the flow-based structure recommendation: increase confidence by one level (LOW → MODERATE, MODERATE → HIGH).
+- If charm contradicts the flow-based recommendation (e.g., flow says CCS but charm shows upside walls strengthening and downside walls decaying): note the conflict and do not upgrade confidence. The charm disagreement is a warning that the gamma walls may not behave as Periscope suggests.
+- A gamma wall with positive charm is reliable for all-day management — set wider time-based exits.
+- A gamma wall with neutral charm (near 0) is reliable for morning trades but requires a management checkpoint after 1:00 PM ET.
+- A gamma wall with negative charm is a morning-only ally — tighten profit targets and time-based exits accordingly.
 </structure_selection_rules>
  
 <data_handling>
