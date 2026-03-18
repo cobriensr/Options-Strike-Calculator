@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { visualizer } from 'rollup-plugin-visualizer';
+import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { resolve } from 'node:path';
 
 const analyze = process.env.ANALYZE === 'true';
@@ -17,6 +18,11 @@ export default defineConfig({
         filename: 'dist/bundle-stats.html',
         gzipSize: true,
       }),
+    sentryVitePlugin({
+      org: process.env.SENTRY_ORG,
+      project: process.env.SENTRY_PROJECT,
+      authToken: process.env.SENTRY_AUTH_TOKEN,
+    }),
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
@@ -113,6 +119,7 @@ export default defineConfig({
     ),
   },
   build: {
+    sourcemap: true,
     rollupOptions: {
       output: {
         manualChunks: {
