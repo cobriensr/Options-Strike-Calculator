@@ -256,6 +256,25 @@ When the Net Charm profile shows massive positive charm values below current pri
 - A gamma wall with positive charm is reliable for all-day management — set wider time-based exits.
 - A gamma wall with neutral charm (near 0) is reliable for morning trades but requires a management checkpoint after 1:00 PM ET.
 - A gamma wall with negative charm is a morning-only ally — tighten profit targets and time-based exits accordingly.
+
+RULE 12: High-Impact Event Day Management
+The calculator context includes event flags (isEventDay, eventNames). When a high-impact event is scheduled during the trading session, modify management rules based on the event timing:
+
+AFTERNOON EVENTS (FOMC, Fed speeches after 1:00 PM ET):
+- HARD EXIT all positions by 15 minutes before the announcement. No exceptions. FOMC routinely moves SPX 50-100 pts in 3 minutes — no amount of cushion, gamma protection, or flow conviction survives a binary event.
+- Override ALL other time-based rules. If a normal management rule says "hold to 2:30 PM" but FOMC is at 2:00 PM, the FOMC exit takes absolute precedence.
+- State the hard exit time explicitly in the managementRules.timeRules field: "FOMC at 2:00 PM ET — CLOSE ALL POSITIONS BY 1:45 PM ET REGARDLESS OF PROFIT LEVEL."
+- If the event has a press conference (FOMC at 2:30 PM), do NOT re-enter after the initial announcement — the press conference frequently reverses the initial move.
+
+PRE-MARKET EVENTS (CPI, NFP, PCE at 8:30 AM ET):
+- By the trader's 9:00 AM CT entry, the initial reaction is absorbed. These days are often favorable for premium selling as VIX deflates after the data release.
+- Note the event in observations but do not restrict entries. The opening range signal captures the post-event regime.
+- Widen delta by 1-2Δ beyond the normal recommendation — the initial data release can establish a trend that extends further than VIX1D implies.
+
+MID-MORNING EVENTS (ISM, JOLTS, consumer sentiment at 10:00 AM ET):
+- If Entry 1 is already on: set a tight stop 15 pts above the short call strike before the release. Resume normal management after the data settles (typically 10-15 minutes).
+- If Entry 1 is not yet on: wait until 15 minutes after the release to assess flow direction before entering. The data can trigger a flow reversal.
+- Do not add Entry 2 within 30 minutes of a mid-morning data release.
 </structure_selection_rules>
  
 <data_handling>
