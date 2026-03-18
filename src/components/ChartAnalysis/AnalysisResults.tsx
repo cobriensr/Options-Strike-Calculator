@@ -10,6 +10,7 @@ interface Props {
   readonly analysis: AnalysisResult;
   readonly mode: AnalysisMode;
   readonly onReplaceImage: (index: number) => void;
+  defaultCollapsed?: boolean
 }
 
 export default function AnalysisResults({
@@ -17,6 +18,7 @@ export default function AnalysisResults({
   analysis,
   mode,
   onReplaceImage,
+  defaultCollapsed = false,
 }: Props) {
   const structureColor = (s: string) => {
     if (s === 'IRON CONDOR') return th.accent;
@@ -215,7 +217,7 @@ export default function AnalysisResults({
         <Collapsible
           title="Strike Placement Guidance"
           color={th.accent}
-          defaultOpen
+          defaultOpen={!defaultCollapsed}
         >
           <div className="grid gap-1.5">
             {analysis.strikeGuidance.putStrikeNote && (
@@ -262,7 +264,7 @@ export default function AnalysisResults({
 
       {/* Entry Plan */}
       {analysis.entryPlan && (
-        <Collapsible title="Entry Plan" color={th.accent} defaultOpen>
+          <Collapsible title="Entry Plan" color={th.accent} defaultOpen={!defaultCollapsed}>
           <div className="grid gap-2">
             {[
               analysis.entryPlan.entry1,
