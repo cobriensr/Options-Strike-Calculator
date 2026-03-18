@@ -210,7 +210,7 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 
 ### What Claude Receives
 
-- All uploaded chart images (up to 5) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Periscope Delta Flow, Periscope Gamma)
+- All uploaded chart images (up to 7) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX)
 - Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier (symmetric + directional put/call), DOW label, opening range signal, term structure signal + curve shape, RV/IV ratio, IV acceleration multiplier, overnight gap
 - Live Schwab positions: Current SPX 0DTE spreads with strikes, credits, P&L, cushion distances, and net greeks — auto-fetched before each analysis so Claude knows what's already open
 - Previous recommendation (for mid-day/review continuity — auto-fetched from DB via `getPreviousRecommendation()`, with client-side `lastAnalysisRef` fallback for first-run or backtest scenarios)
@@ -224,13 +224,13 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 - Strike placement guidance from Periscope gamma zones with straddle cone analysis
 - Multi-entry laddering plan (3 entries with timing, conditions, size percentages)
 - Position management rules (profit target, stop conditions, time rules, flow reversal signal)
-- Hedge recommendation (NO HEDGE, REDUCED SIZE, PROTECTIVE LONG, or SKIP)
+- Hedge recommendation: NO HEDGE, REDUCED SIZE, PROTECTIVE LONG, or SKIP
 - End-of-day review with wasCorrect, whatWorked, whatMissed, optimalTrade, lessonsLearned
 
 ### UI Features
 
-- Drag-and-drop, file picker, or clipboard paste for image upload (max 5 images)
-- Per-image label selector (Market Tide, Net Flow SPY, Net Flow QQQ, Periscope Delta Flow, Periscope Gamma)
+- Drag-and-drop, file picker, or clipboard paste for image upload (max 7 images)
+- Per-image label selector (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX)
 - Two-step confirmation: Analyze button → confirmation bar showing image count, mode, and labels → Confirm/Go Back
 - Thinking indicator with progress bar, elapsed timer, rotating status messages, and Cancel button
 - TL;DR summary card always visible with structure, confidence, delta, hedge badge, Entry 1 details, profit target
@@ -241,13 +241,13 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 ### Technical Details
 
 - Model: Claude Opus 4.6 (`claude-opus-4-6`)
-- Extended thinking: `type: "enabled"`, `budget_tokens: 16000`
-- Max tokens: 20,000 (16K thinking + 4K response)
-- Vercel function timeout: 300 seconds (`maxDuration: 300`)
-- Client-side timeout: 240 seconds (AbortController)
+- Adaptive thinking: `thinking: { type: 'adaptive' }` — Claude decides how much thinking budget to use per request
+- Max tokens: 35,000
+- Vercel function timeout: 780 seconds / 13 minutes (`maxDuration: 780`)
+- Client-side timeout: 750 seconds / 12m 30s (AbortController)
 - Cost: ~$0.30–0.40 per analysis
 - Owner-gated: requires authenticated session cookie
-- Rate limited: 10 analyses per minute via Upstash Redis
+- Rate limited: 3 analyses per minute via Upstash Redis
 
 ---
 
@@ -431,6 +431,10 @@ GET /api/journal?date=2026-03-13              → all analyses for a date
 GET /api/journal?structure=CALL+CREDIT+SPREAD → filter by structure
 GET /api/journal?from=2026-03-01&to=2026-03-14 → date range
 GET /api/journal/status                       → DB connection test + table counts
+
+GET /api/analyses?dates=true                  → list all dates with analyses (public)
+GET /api/analyses?date=2026-03-17             → all analyses for a date (public)
+GET /api/analyses?id=42                       → single analysis by ID (public)
 ```
 
 ### ML Roadmap
@@ -509,6 +513,7 @@ Static calendar of FOMC (8/year), CPI (12/year), NFP (12/year), GDP (4/year) for
 | `GET /api/movers`           | `movers($SPX)`                                 | Market movers                            | 5 min          | 10 min         |
 | `GET /api/positions`        | Schwab Trader API                              | Live SPX 0DTE positions + spreads        | —              | —              |
 | `POST /api/analyze`         | Anthropic Messages API                         | Claude chart analysis                    | —              | —              |
+| `GET /api/analyses`         | Neon Postgres                                  | Browse past analyses (public, no auth)   | —              | —              |
 | `POST /api/snapshot`        | Neon Postgres                                  | Save market snapshot                     | —              | —              |
 | `GET /api/journal`          | Neon Postgres                                  | Query saved analyses                     | —              | —              |
 | `GET /api/journal/status`   | Neon Postgres                                  | DB connection + table counts             | —              | —              |
@@ -517,7 +522,7 @@ Static calendar of FOMC (8/year), CPI (12/year), NFP (12/year), GDP (4/year) for
 
 ### Owner Gating
 
-All data, analysis, and database endpoints are gated behind an HTTP-only session cookie (`sc-owner`) set during the Schwab OAuth flow. Public visitors get the full calculator with manual input.
+All data, analysis, and database endpoints are gated behind an HTTP-only session cookie (`sc-owner`) set during the Schwab OAuth flow, except `/api/analyses` (public read-only access to past analyses) and `/api/events` (public economic calendar). Public visitors get the full calculator with manual input.
 
 ### Authentication Flow
 
@@ -633,7 +638,7 @@ npm install
 
 ```bash
 npm run dev          # Frontend only (localhost:5173)
-vercel dev           # Frontend + API functions (localhost:3000)
+npm run dev:full     # Frontend + API functions via Vercel dev (localhost:3000)
 ```
 
 ### Environment Variables
@@ -644,7 +649,6 @@ See [.env.example](.env.example) for a copy-paste template with descriptions.
 | -------------------------- | ---------------------------- | --------------------------------- |
 | `SCHWAB_CLIENT_ID`         | developer.schwab.com         | Schwab API app key                |
 | `SCHWAB_CLIENT_SECRET`     | developer.schwab.com         | Schwab API app secret             |
-| `SCHWAB_REDIRECT_URI`      | Your Schwab app settings     | OAuth callback URL                |
 | `OWNER_SECRET`             | `openssl rand -hex 32`       | Owner session cookie value        |
 | `UPSTASH_REDIS_REST_URL`   | Auto-set by Vercel (Upstash) | Redis REST endpoint               |
 | `UPSTASH_REDIS_REST_TOKEN` | Auto-set by Vercel (Upstash) | Redis auth token                  |
@@ -685,7 +689,9 @@ npx tsx scripts/backfill-outcomes.ts
 │   │   ├── schwab.ts                  # Schwab OAuth token management (Upstash Redis)
 │   │   ├── api-helpers.ts             # Shared fetch, cache, owner-gate, rate limiting
 │   │   ├── db.ts                      # Neon Postgres: schema, snapshots, analyses, outcomes, positions
-│   │   └── logger.ts                  # Structured JSON logger (pino)
+│   │   ├── logger.ts                  # Structured JSON logger (pino)
+│   │   ├── sentry.ts                  # Sentry server-side init + isolation scope helpers
+│   │   └── validation.ts             # Zod schemas for API request bodies
 │   ├── auth/
 │   │   ├── init.ts                    # GET /api/auth/init → redirect to Schwab login
 │   │   └── callback.ts               # GET /api/auth/callback → exchange code for tokens
@@ -694,6 +700,7 @@ npx tsx scripts/backfill-outcomes.ts
 │   │   ├── migrate.ts                 # POST /api/journal/migrate → add new columns (idempotent)
 │   │   └── status.ts                  # GET /api/journal/status → DB connection diagnostics
 │   ├── analyze.ts                     # POST /api/analyze → Claude Opus 4.6 chart analysis
+│   ├── analyses.ts                    # GET /api/analyses → browse past analyses (public)
 │   ├── chain.ts                       # GET /api/chain → live option chain with per-strike deltas
 │   ├── events.ts                      # GET /api/events → FRED economic calendar
 │   ├── history.ts                     # GET /api/history → historical candles for backtesting
@@ -711,7 +718,7 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── backfill-outcomes.ts           # Populate outcomes table from historical CSVs
 │   └── entry-time-analysis.ts         # 8:45 vs 9:00 AM CT entry timing study
 ├── src/
-│   ├── __tests__/                     # 1700 tests across 71 test files
+│   ├── __tests__/                     # Unit/integration tests (54 test files)
 │   ├── components/
 │   │   ├── BacktestDiag.tsx           # Backtest diagnostic panel
 │   │   ├── ChainVerification.tsx      # Theoretical vs live chain strike comparison
@@ -752,7 +759,7 @@ npx tsx scripts/backfill-outcomes.ts
 │   │   └── vixStorage.ts              # localStorage cache + static JSON loader
 │   ├── App.tsx                        # Root component: state, hooks, layout
 │   └── main.tsx                       # React entry point + Sentry init
-├── e2e/                               # Playwright E2E tests (22 spec files)
+├── e2e/                               # Playwright E2E tests (23 spec files)
 ├── .env.example                       # Environment variable template
 ├── .nvmrc                             # Node 24 version pin
 ├── vercel.json                        # Rewrites + security headers + CSP
@@ -833,15 +840,15 @@ All owner-gated endpoints are rate-limited via Upstash Redis:
 
 | Endpoint         | Limit  | Purpose                               |
 | ---------------- | ------ | ------------------------------------- |
-| `/api/analyze`   | 10/min | Prevent Opus cost abuse (~$0.30/call) |
+| `/api/analyze`   | 3/min  | Prevent Opus cost abuse (~$0.30/call) |
+| `/api/analyses`  | 30/min | Public browse endpoint                |
 | `/api/positions` | 20/min | Auto-fetched before each analysis     |
 | `/api/snapshot`  | 30/min | Generous for normal use               |
 | `/api/journal`   | 20/min | Query endpoint                        |
-| Auth endpoints   | 5/min  | Brute-force protection                |
 
 ### Input Validation
 
-- Image payload: Max 5 images, max 5MB per image (base64)
+- Image payload: Max 7 images, max 5MB per image (base64)
 - Anthropic errors: Sanitized to generic messages, full details logged server-side only
 - DB errors: Sanitized, never expose connection details to client
 - SQL injection: Neon tagged templates auto-parameterize all queries
@@ -894,7 +901,7 @@ npm run build:analyze    # Opens dist/bundle-stats.html
 
 ## Testing
 
-1,700 unit tests across 71 test files + Playwright E2E tests across 22 spec files (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode.
+Unit tests across 54 test files + Playwright E2E tests across 23 spec files (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode.
 
 ### Unit Tests (Vitest)
 
@@ -937,6 +944,7 @@ npm run build:analyze    # Opens dist/bundle-stats.html
 | `delta-regime-guide.spec.ts` | Delta guide ceiling and regime badges                        |
 | `opening-range.spec.ts`      | Opening range check signals                                  |
 | `parameter-summary.spec.ts`  | Parameter summary display                                    |
+| `positions-upload.spec.ts`   | PaperMoney CSV upload and position parsing                   |
 
 ```bash
 npm test                 # Watch mode
@@ -983,6 +991,7 @@ Section 508 / WCAG 2.1 AA: semantic HTML, ARIA attributes, focus management, 4.5
 | Command                                  | Description                                      |
 | ---------------------------------------- | ------------------------------------------------ |
 | `npm run dev`                            | Vite dev server with HMR                         |
+| `npm run dev:full`                       | Vercel dev (frontend + API functions)            |
 | `npm run build`                          | TypeScript check + production build              |
 | `npm run build:analyze`                  | Production build + interactive bundle treemap    |
 | `npm test`                               | Vitest watch mode                                |
@@ -1058,10 +1067,10 @@ Multiple positions on the same underlying and expiration are NOT diversified —
 
 1. **VIX vs actual 0DTE IV**: VIX1D auto-apply mitigates this; chain verification shows actual per-strike deltas
 2. **IV acceleration is empirical**: The intraday σ multiplier (0.6 coefficient) is calibrated from observed behavior, not derived from a formal model. Actual gamma acceleration varies by VIX regime and market structure. The multiplier is capped at 1.8× to prevent extreme values near close.
-3. **Fat-tail kurtosis is a constant**: The 2× kurtosis factor is calibrated from 9,102 days of SPX data. Real kurtosis varies by VIX level (higher VIX = fatter tails) and time of day. A VIX-dependent kurtosis curve would be more accurate.
+3. **Fat-tail kurtosis is stepped, not continuous**: The VIX-dependent kurtosis factor (`getKurtosisFactor(vix)`) uses discrete VIX bands (1.5× at VIX < 15 → 3.5× at VIX > 30). Real kurtosis varies continuously and by time of day. A smoothly interpolated kurtosis curve would be more accurate.
 4. **Convex skew exponent is static**: The 1.35 put convexity is empirically reasonable for typical VIX 15-25 days. On extreme fear days (VIX 35+), real put skew can be significantly steeper. The chain endpoint shows actual per-strike IV for comparison.
 5. **Theoretical vs market premiums**: Black-Scholes assumes continuous hedging; real prices include bid/ask spreads
-6. **Parkinson RV estimator**: Uses only yesterday's single-day high-low range. A multi-day rolling RV (5-20 days) would be smoother but requires more historical data access.
+6. **Parkinson RV estimator**: Uses a 5-day rolling window of daily high-low ranges. Smoother than single-day, but still sensitive to outlier days. A longer window (10-20 days) or GARCH-based estimator could improve stability.
 7. **Chart analysis limitations**: Claude reads charts visually — it estimates NCP/NPP values from line positions, not exact data. Image quality affects accuracy.
 8. **Backtest limitations**: Periscope gamma profiles are point-in-time screenshots; historical gamma data is not available programmatically
 9. **Database coverage**: VIX1D data available from May 2022 only; earlier outcomes have VIX close but not VIX1D close
