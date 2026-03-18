@@ -1,15 +1,11 @@
 /**
  * AnalysisHistory — Browse past Claude chart analyses.
  *
- * Fetches saved analyses from /api/analyses and displays them
- * using the existing AnalysisResults component. No Claude calls
- * needed — just reads from Postgres.
- *
- * Usage:
- *   <AnalysisHistory th={th} />
+ * Cascading picker: Date → Entry Time → Mode (entry/midday/review)
+ * All options are driven by what's in the database.
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import type { Theme } from '../../themes';
 import type { AnalysisMode, AnalysisResult } from './types';
 import { MODE_LABELS } from './types';
@@ -50,12 +46,11 @@ interface Props {
 
 export default function AnalysisHistory({ th }: Props) {
   const [dates, setDates] = useState<DateEntry[]>([]);
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string>('');
   const [analyses, setAnalyses] = useState<AnalysisEntry[]>([]);
-  const [selectedAnalysis, setSelectedAnalysis] =
-    useState<AnalysisEntry | null>(null);
+  const [selectedTime, setSelectedTime] = useState<string>('');
+  const [selectedMode, setSelectedMode] = useState<AnalysisMode | ''>('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // ── Fetch dates on mount ───────────────────────────────
 
@@ -64,13 +59,12 @@ export default function AnalysisHistory({ th }: Props) {
     (async () => {
       try {
         const res = await fetch('/api/analyses?dates=true');
-        if (!res.ok) throw new Error('Failed to fetch dates');
+        if (!res.ok) return;
         const text = await res.text();
-        if (!text.startsWith('{')) throw new Error('API not available');
+        if (!text.startsWith('{')) return;
         const data = JSON.parse(text);
         if (!cancelled) setDates(data.dates ?? []);
       } catch {
-        // Silently fail on mount — API may not be available locally
         if (!cancelled) setDates([]);
       }
     })();
@@ -79,55 +73,110 @@ export default function AnalysisHistory({ th }: Props) {
     };
   }, []);
 
-  // ── Fetch analyses for a date ──────────────────────────
+  // ── Fetch analyses when date changes ───────────────────
 
-  const loadDate = useCallback(async (date: string) => {
-    setSelectedDate(date);
-    setSelectedAnalysis(null);
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/analyses?date=${date}`);
-      if (!res.ok) throw new Error('Failed to fetch analyses');
-      const data = await res.json();
-      setAnalyses(data.analyses ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load');
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!selectedDate) {
+      setAnalyses([]);
+      setSelectedTime('');
+      setSelectedMode('');
+      return;
     }
+
+    let cancelled = false;
+    setLoading(true);
+    setSelectedTime('');
+    setSelectedMode('');
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/analyses?date=${selectedDate}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setAnalyses(data.analyses ?? []);
+      } catch {
+        if (!cancelled) setAnalyses([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDate]);
+
+  // ── Derived: unique entry times for selected date ──────
+
+  const availableTimes = useMemo(() => {
+    const times = [...new Set(analyses.map((a) => a.entryTime))];
+    // Sort chronologically by parsing the time string
+    return times.sort((a, b) => {
+      const parse = (t: string) => {
+        const match = /^(\d+):(\d+)\s*(AM|PM)/i.exec(t);
+        if (!match) return 0;
+        let h = Number.parseInt(match[1]!, 10);
+        const m = Number.parseInt(match[2]!, 10);
+        const ampm = match[3]!.toUpperCase();
+        if (ampm === 'PM' && h !== 12) h += 12;
+        if (ampm === 'AM' && h === 12) h = 0;
+        return h * 60 + m;
+      };
+      return parse(a) - parse(b);
+    });
+  }, [analyses]);
+
+  // ── Derived: available modes for selected time ─────────
+
+  const availableModes = useMemo(() => {
+    if (!selectedTime) return [];
+    return analyses
+      .filter((a) => a.entryTime === selectedTime)
+      .map((a) => a.mode);
+  }, [analyses, selectedTime]);
+
+  // ── Derived: the selected analysis ─────────────────────
+
+  const selectedAnalysis = useMemo(() => {
+    if (!selectedTime || !selectedMode) return null;
+    return (
+      analyses.find(
+        (a) => a.entryTime === selectedTime && a.mode === selectedMode,
+      ) ?? null
+    );
+  }, [analyses, selectedTime, selectedMode]);
+
+  // ── Auto-select first time when times load ─────────────
+
+  useEffect(() => {
+    if (availableTimes.length > 0 && !selectedTime) {
+      setSelectedTime(availableTimes[0]!);
+    }
+  }, [availableTimes, selectedTime]);
+
+  // ── Auto-select first mode when modes load ─────────────
+
+  useEffect(() => {
+    if (availableModes.length > 0 && !selectedMode) {
+      // Prefer entry → midday → review order
+      const preferred: AnalysisMode[] = ['entry', 'midday', 'review'];
+      const first = preferred.find((m) => availableModes.includes(m));
+      setSelectedMode(first ?? availableModes[0]!);
+    }
+  }, [availableModes, selectedMode]);
+
+  // ── Reset downstream when time changes ─────────────────
+
+  const handleTimeChange = useCallback((time: string) => {
+    setSelectedTime(time);
+    setSelectedMode('');
   }, []);
 
-  // ── Back navigation ────────────────────────────────────
-
-  const goBackToList = useCallback(() => {
-    setSelectedDate(null);
-    setSelectedAnalysis(null);
-    setAnalyses([]);
-  }, []);
-
-  const goBackToDate = useCallback(() => {
-    setSelectedAnalysis(null);
-  }, []);
-
-  // ── No-op for image replace (not applicable in history) ─
+  // ── No-op for image replace ────────────────────────────
 
   const noopReplace = useCallback(() => {}, []);
 
   // ── Helpers ────────────────────────────────────────────
-
-  const structureColor = (s: string) => {
-    if (s === 'IRON CONDOR') return th.accent;
-    if (s === 'PUT CREDIT SPREAD') return th.red;
-    if (s === 'CALL CREDIT SPREAD') return th.green;
-    return th.caution;
-  };
-
-  const confidenceColor = (c: string) => {
-    if (c === 'HIGH') return th.green;
-    if (c === 'MODERATE') return th.caution;
-    return th.red;
-  };
 
   const modeColor = (m: string) => {
     if (m === 'entry') return th.accent;
@@ -135,9 +184,10 @@ export default function AnalysisHistory({ th }: Props) {
     return '#A78BFA';
   };
 
-  const formatDate = (d: string) => {
+  const formatDateLabel = (d: string) => {
     try {
-      const date = new Date(d + 'T12:00:00');
+      const [year, month, day] = d.split('-').map(Number);
+      const date = new Date(year!, month! - 1, day!);
       return date.toLocaleDateString('en-US', {
         weekday: 'short',
         month: 'short',
@@ -149,270 +199,195 @@ export default function AnalysisHistory({ th }: Props) {
     }
   };
 
-  // ── Render: Single analysis ────────────────────────────
+  // ── Render ─────────────────────────────────────────────
 
-  if (selectedAnalysis) {
+  if (dates.length === 0) {
     return (
       <SectionBox label="Analysis History">
-        <div className="mb-3">
-          <button
-            type="button"
-            onClick={goBackToDate}
-            className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
-            style={{ backgroundColor: th.surfaceAlt, color: th.textMuted }}
-          >
-            {'\u2190'} Back to {formatDate(selectedDate!)}
-          </button>
-        </div>
-
-        {/* Header bar */}
-        <div
-          className="mb-3 flex items-center justify-between rounded-lg px-3 py-2"
-          style={{ backgroundColor: tint(modeColor(selectedAnalysis.mode), '08') }}
-        >
-          <div className="flex items-center gap-2">
-            <span
-              className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
-              style={{
-                backgroundColor: tint(modeColor(selectedAnalysis.mode), '15'),
-                color: modeColor(selectedAnalysis.mode),
-              }}
-            >
-              {MODE_LABELS[selectedAnalysis.mode].label}
-            </span>
-            <span className="text-muted font-mono text-[10px]">
-              {selectedAnalysis.entryTime}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            {!!selectedAnalysis.spx && (
-              <span className="text-muted font-mono text-[10px]">
-                SPX {Number(selectedAnalysis.spx).toFixed(0)}
-              </span>
-            )}
-            {!!selectedAnalysis.vix && (
-              <span className="text-muted font-mono text-[10px]">
-                VIX {Number(selectedAnalysis.vix).toFixed(1)}
-              </span>
-            )}
-          </div>
-        </div>
-
-        <AnalysisResultsView
-          th={th}
-          analysis={selectedAnalysis.analysis}
-          mode={selectedAnalysis.mode}
-          onReplaceImage={noopReplace}
-        />
-      </SectionBox>
-    );
-  }
-
-  // ── Render: Analyses for a date ────────────────────────
-
-  if (selectedDate) {
-    return (
-      <SectionBox label="Analysis History">
-        <div className="mb-3">
-          <button
-            type="button"
-            onClick={goBackToList}
-            className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
-            style={{ backgroundColor: th.surfaceAlt, color: th.textMuted }}
-          >
-            {'\u2190'} All Dates
-          </button>
-        </div>
-
-        <div
-          className="mb-3 font-sans text-[13px] font-bold"
-          style={{ color: th.text }}
-        >
-          {formatDate(selectedDate)}
-        </div>
-
-        {loading && (
-          <div
-            className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
-            style={{ color: th.textMuted }}
-          >
-            Loading analyses...
-          </div>
-        )}
-
-        {!loading && analyses.length === 0 && (
-          <div
-            className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
-            style={{ color: th.textMuted }}
-          >
-            No analyses found for this date.
-          </div>
-        )}
-
-        {!loading && analyses.length > 0 && (
-          <div className="grid gap-2">
-            {analyses.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => setSelectedAnalysis(a)}
-                className="border-edge cursor-pointer rounded-lg border p-3 text-left transition-all hover:border-[color:var(--color-accent)]"
-                style={{ backgroundColor: th.surface }}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
-                      style={{
-                        backgroundColor: tint(modeColor(a.mode), '15'),
-                        color: modeColor(a.mode),
-                      }}
-                    >
-                      {MODE_LABELS[a.mode].label}
-                    </span>
-                    <span className="text-muted font-mono text-[10px]">
-                      {a.entryTime}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="font-mono text-[11px] font-bold"
-                      style={{ color: structureColor(a.structure) }}
-                    >
-                      {a.structure}
-                    </span>
-                    <span
-                      className="font-mono text-[10px] font-semibold"
-                      style={{ color: confidenceColor(a.confidence) }}
-                    >
-                      {a.confidence}
-                    </span>
-                    <span className="text-muted font-mono text-[10px]">
-                      {a.suggestedDelta}{'\u0394'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Summary line */}
-                <div
-                  className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed"
-                  style={{ color: th.textSecondary }}
-                >
-                  {a.analysis.reasoning}
-                </div>
-
-                {/* Market context */}
-                <div className="mt-1.5 flex items-center gap-3">
-                  {!!a.spx && (
-                    <span className="text-muted font-mono text-[9px]">
-                      SPX {Number(a.spx).toFixed(0)}
-                    </span>
-                  )}
-                  {!!a.vix && (
-                    <span className="text-muted font-mono text-[9px]">
-                      VIX {Number(a.vix).toFixed(1)}
-                    </span>
-                  )}
-                  {a.hedge && a.hedge !== 'null' && (
-                    <span className="text-muted font-mono text-[9px]">
-                      Hedge: {a.hedge}
-                    </span>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {error && (
-          <div
-            className="mt-2 rounded-lg px-3 py-2 text-[11px]"
-            style={{ backgroundColor: th.red + '12', color: th.red }}
-          >
-            {error}
-          </div>
-        )}
-      </SectionBox>
-    );
-  }
-
-  // ── Render: Date list ──────────────────────────────────
-
-  return (
-    <SectionBox label="Analysis History">
-      {dates.length === 0 && !error && (
         <div
           className="rounded-lg px-3 py-6 text-center font-sans text-[11px]"
           style={{ color: th.textMuted }}
         >
           No saved analyses yet. Run a chart analysis to get started.
         </div>
-      )}
+      </SectionBox>
+    );
+  }
 
-      {dates.length > 0 && (
-        <div className="grid gap-1.5">
-          {dates.map((d) => (
-            <button
-              key={d.date}
-              type="button"
-              onClick={() => loadDate(d.date)}
-              className="border-edge cursor-pointer rounded-lg border px-3 py-2.5 text-left transition-all hover:border-[color:var(--color-accent)]"
-              style={{ backgroundColor: th.surface }}
+  return (
+    <SectionBox label="Analysis History">
+      {/* ── Picker row ────────────────────────────────────── */}
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        {/* Date picker */}
+        <div className="min-w-[180px] flex-1">
+          <label
+            htmlFor="analysis-date"
+            className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
+          >
+            Date
+          </label>
+          <select
+            id="analysis-date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] outline-none transition-[border-color] duration-150"
+            style={{ color: th.text }}
+          >
+            <option value="">Select a date...</option>
+            {dates.map((d) => (
+              <option key={d.date} value={d.date}>
+                {formatDateLabel(d.date)} ({d.total} analysis{d.total > 1 ? 'es' : ''})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Time picker */}
+        {selectedDate && availableTimes.length > 0 && (
+          <div className="min-w-[140px]">
+            <label
+              htmlFor="analysis-time"
+              className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
             >
-              <div className="flex items-center justify-between">
-                <span
-                  className="font-sans text-[12px] font-semibold"
-                  style={{ color: th.text }}
-                >
-                  {formatDate(d.date)}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  {d.entries > 0 && (
-                    <span
-                      className="rounded-full px-1.5 py-0.5 font-mono text-[9px] font-semibold"
-                      style={{
-                        backgroundColor: tint(th.accent, '12'),
-                        color: th.accent,
-                      }}
-                    >
-                      {d.entries} entry
-                    </span>
-                  )}
-                  {d.middays > 0 && (
-                    <span
-                      className="rounded-full px-1.5 py-0.5 font-mono text-[9px] font-semibold"
-                      style={{
-                        backgroundColor: tint(th.caution, '12'),
-                        color: th.caution,
-                      }}
-                    >
-                      {d.middays} midday
-                    </span>
-                  )}
-                  {d.reviews > 0 && (
-                    <span
-                      className="rounded-full px-1.5 py-0.5 font-mono text-[9px] font-semibold"
-                      style={{
-                        backgroundColor: tint('#A78BFA', '12'),
-                        color: '#A78BFA',
-                      }}
-                    >
-                      {d.reviews} review
-                    </span>
-                  )}
-                </div>
+              Entry Time
+            </label>
+            <select
+              id="analysis-time"
+              value={selectedTime}
+              onChange={(e) => handleTimeChange(e.target.value)}
+              className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] outline-none transition-[border-color] duration-150"
+              style={{ color: th.text }}
+            >
+              {availableTimes.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Mode tabs */}
+        {selectedTime && availableModes.length > 0 && (
+          <div>
+            <fieldset className="m-0 border-0 p-0">
+              <legend
+                className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
+              >
+                Type
+              </legend>
+              <div className="flex gap-1">
+              {(['entry', 'midday', 'review'] as AnalysisMode[]).map((m) => {
+                const available = availableModes.includes(m);
+                const active = selectedMode === m;
+                if (!available) return null;
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setSelectedMode(m)}
+                    className="cursor-pointer rounded-md px-3 py-2 font-mono text-[10px] font-semibold transition-all duration-100"
+                    style={{
+                      backgroundColor: active
+                        ? tint(modeColor(m), '18')
+                        : 'transparent',
+                      color: active ? modeColor(m) : th.textMuted,
+                      border: `1.5px solid ${active ? modeColor(m) + '40' : th.border}`,
+                    }}
+                  >
+                    {MODE_LABELS[m].label}
+                  </button>
+                );
+              })}
               </div>
-            </button>
-          ))}
+            </fieldset>
+          </div>
+        )}
+      </div>
+
+      {/* ── Loading ───────────────────────────────────────── */}
+      {loading && (
+        <div
+          className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
+          style={{ color: th.textMuted }}
+        >
+          Loading...
         </div>
       )}
 
-      {error && (
+      {/* ── Summary bar ───────────────────────────────────── */}
+      {selectedAnalysis && !loading && (
+        <>
+          <div
+            className="mb-3 flex items-center justify-between rounded-lg px-3 py-2"
+            style={{
+              backgroundColor: tint(modeColor(selectedAnalysis.mode), '08'),
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className="font-mono text-[12px] font-bold"
+                style={{
+                  color:
+                    selectedAnalysis.structure === 'IRON CONDOR'
+                      ? th.accent
+                      : selectedAnalysis.structure === 'PUT CREDIT SPREAD'
+                        ? th.red
+                        : selectedAnalysis.structure === 'CALL CREDIT SPREAD'
+                          ? th.green
+                          : th.caution,
+                }}
+              >
+                {selectedAnalysis.structure}
+              </span>
+              <span
+                className="font-mono text-[10px] font-semibold"
+                style={{
+                  color:
+                    selectedAnalysis.confidence === 'HIGH'
+                      ? th.green
+                      : selectedAnalysis.confidence === 'MODERATE'
+                        ? th.caution
+                        : th.red,
+                }}
+              >
+                {selectedAnalysis.confidence}
+              </span>
+              <span className="text-muted font-mono text-[10px]">
+                {selectedAnalysis.suggestedDelta}{'\u0394'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {!!selectedAnalysis.spx && (
+                <span className="text-muted font-mono text-[10px]">
+                  SPX {Number(selectedAnalysis.spx).toFixed(0)}
+                </span>
+              )}
+              {!!selectedAnalysis.vix && (
+                <span className="text-muted font-mono text-[10px]">
+                  VIX {Number(selectedAnalysis.vix).toFixed(1)}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* ── Analysis results ──────────────────────────── */}
+          <AnalysisResultsView
+            th={th}
+            analysis={selectedAnalysis.analysis}
+            mode={selectedAnalysis.mode}
+            onReplaceImage={noopReplace}
+          />
+        </>
+      )}
+
+      {/* ── Empty state after selecting date ──────────────── */}
+      {selectedDate && !loading && analyses.length === 0 && (
         <div
-          className="mt-2 rounded-lg px-3 py-2 text-[11px]"
-          style={{ backgroundColor: th.red + '12', color: th.red }}
+          className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
+          style={{ color: th.textMuted }}
         >
-          {error}
+          No analyses found for this date.
         </div>
       )}
     </SectionBox>
