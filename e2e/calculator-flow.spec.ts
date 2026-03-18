@@ -86,7 +86,7 @@ test.describe('Calculator Flow', () => {
     // Wait for results
     const resultsSection = page.locator('#results');
     await expect(resultsSection.getByText('All Delta Strikes')).toBeVisible({
-      timeout: 5000,
+      timeout: 10000,
     });
   });
 

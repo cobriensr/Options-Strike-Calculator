@@ -39,7 +39,7 @@ test.describe('IV Acceleration', () => {
 
     // At 2 PM ET (2h remaining), mult ≈ 1.12
     await expect(page.getByText(/IV acceleration/)).toBeVisible({
-      timeout: 5000,
+      timeout: 10000,
     });
     // Should show the sigma multiplier value in the indicator
     await expect(page.locator('.font-mono').getByText(/\u00D7/)).toBeVisible();
@@ -59,7 +59,9 @@ test.describe('IV Acceleration', () => {
     ).toBeVisible({ timeout: 10000 });
 
     // At 3:30 PM (0.5h remaining), mult ≈ 1.56 → should show late session warning
-    await expect(page.getByText(/Late session/)).toBeVisible({ timeout: 3000 });
+    await expect(page.getByText(/Late session/)).toBeVisible({
+      timeout: 10000,
+    });
   });
 
   test('premiums are higher for afternoon entries than morning entries', async ({

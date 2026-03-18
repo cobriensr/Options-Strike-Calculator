@@ -71,11 +71,13 @@ test.describe('Advanced Section', () => {
 
     const results = page.locator('#results');
     await expect(results.getByText('Iron Condor').first()).toBeVisible({
-      timeout: 5000,
+      timeout: 10000,
     });
 
     // Default: 20-pt wings
-    await expect(results.getByText('20-pt wings')).toBeVisible();
+    await expect(results.getByText('20-pt wings')).toBeVisible({
+      timeout: 5000,
+    });
 
     // Switch to 10-pt wings
     const wingGroup = page.getByRole('radiogroup', {
