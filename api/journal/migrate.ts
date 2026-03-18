@@ -21,7 +21,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'POST only' });
   }
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
+  if (ownerCheck) {
+    done({ status: 401 });
+    return ownerCheck;
+  }
 
   try {
     const applied = await migrateDb();

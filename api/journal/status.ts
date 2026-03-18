@@ -13,9 +13,15 @@ import { getDb } from '../_lib/db.js';
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/journal/status');
 
-  if (req.method !== 'GET') { done({ status: 405 }); return res.status(405).json({ error: 'GET only' }); }
+  if (req.method !== 'GET') {
+    done({ status: 405 });
+    return res.status(405).json({ error: 'GET only' });
+  }
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
+  if (ownerCheck) {
+    done({ status: 401 });
+    return ownerCheck;
+  }
 
   try {
     const sql = getDb();

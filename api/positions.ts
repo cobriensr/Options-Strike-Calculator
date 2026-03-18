@@ -479,10 +479,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
+  if (ownerCheck) {
+    done({ status: 401 });
+    return ownerCheck;
+  }
 
   const rateLimited = await rejectIfRateLimited(req, res, 'positions', 20);
-  if (rateLimited) { done({ status: 429 }); return; }
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
+  }
 
   const today = (req.query.date as string) || getTodayET();
   const fetchTime = getNowCT();

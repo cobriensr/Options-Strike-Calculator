@@ -216,7 +216,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/history');
     const done = metrics.request('/api/history');
     try {
-      if (rejectIfNotOwner(req, res)) { done({ status: 401 }); return; }
+      if (rejectIfNotOwner(req, res)) {
+        done({ status: 401 });
+        return;
+      }
 
       const dateParam =
         typeof req.query?.date === 'string' ? req.query.date : '';

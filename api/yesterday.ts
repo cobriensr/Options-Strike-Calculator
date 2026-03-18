@@ -101,7 +101,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const done = metrics.request('/api/yesterday');
     try {
       // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwner(req, res)) { done({ status: 401 }); return; }
+      if (rejectIfNotOwner(req, res)) {
+        done({ status: 401 });
+        return;
+      }
       const params = new URLSearchParams({
         symbol: '$SPX',
         periodType: 'month',

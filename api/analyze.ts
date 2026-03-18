@@ -554,11 +554,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
+  if (ownerCheck) {
+    done({ status: 401 });
+    return ownerCheck;
+  }
 
   // Rate limit: max 3 analyses per minute (each call hits Claude Opus with images)
   const rateLimited = await rejectIfRateLimited(req, res, 'analyze', 3);
-  if (rateLimited) { done({ status: 429 }); return; }
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
+  }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {

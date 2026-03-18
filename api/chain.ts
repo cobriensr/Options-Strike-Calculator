@@ -218,7 +218,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const done = metrics.request('/api/chain');
     try {
       const ownerCheck = rejectIfNotOwner(req, res);
-      if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
+      if (ownerCheck) {
+        done({ status: 401 });
+        return ownerCheck;
+      }
 
       const today = getTodayET();
       const strikeCount = Number(req.query.strikeCount) || 80;

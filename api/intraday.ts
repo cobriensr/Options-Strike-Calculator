@@ -123,7 +123,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const done = metrics.request('/api/intraday');
     try {
       // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwner(req, res)) { done({ status: 401 }); return; }
+      if (rejectIfNotOwner(req, res)) {
+        done({ status: 401 });
+        return;
+      }
 
       // Use explicit start/end dates for TODAY's session.
       // period=1 returns the most recent *completed* day, which during market

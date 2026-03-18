@@ -55,7 +55,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/movers');
     const done = metrics.request('/api/movers');
     try {
-      if (rejectIfNotOwner(req, res)) { done({ status: 401 }); return; }
+      if (rejectIfNotOwner(req, res)) {
+        done({ status: 401 });
+        return;
+      }
 
       // Fetch both up and down movers in parallel
       const [upResult, downResult] = await Promise.all([
