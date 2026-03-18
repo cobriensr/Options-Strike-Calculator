@@ -19,7 +19,7 @@
  *   { positions: { summary, legs, spreads, stats }, saved: boolean }
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   rejectIfNotOwner,
@@ -471,15 +471,18 @@ function buildPositionResponse(spxLegs: PositionLeg[], spxPrice?: number) {
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const done = metrics.request('/api/positions');
+
   if (req.method !== 'GET' && req.method !== 'POST') {
+    done({ status: 405 });
     return res.status(405).json({ error: 'GET or POST only' });
   }
 
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) return ownerCheck;
+  if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
 
   const rateLimited = await rejectIfRateLimited(req, res, 'positions', 20);
-  if (rateLimited) return;
+  if (rateLimited) { done({ status: 429 }); return; }
 
   const today = (req.query.date as string) || getTodayET();
   const fetchTime = getNowCT();
@@ -561,7 +564,9 @@ async function handleCSVUpload(
         snapshotId,
       });
       saved = true;
+      metrics.dbSave('positions', true);
     } catch (dbErr) {
+      metrics.dbSave('positions', false);
       logger.error({ err: dbErr }, 'Failed to save uploaded positions');
     }
 
@@ -697,7 +702,9 @@ async function handleSchwabFetch(
         snapshotId,
       });
       saved = true;
+      metrics.dbSave('positions', true);
     } catch (dbErr) {
+      metrics.dbSave('positions', false);
       logger.error({ err: dbErr }, 'Failed to save positions');
     }
 

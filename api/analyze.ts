@@ -13,7 +13,7 @@
  * Environment: ANTHROPIC_API_KEY
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
@@ -547,25 +547,29 @@ Notes on the response:
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const done = metrics.request('/api/analyze');
   if (req.method !== 'POST') {
+    done({ status: 405 });
     return res.status(405).json({ error: 'POST only' });
   }
 
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) return ownerCheck;
+  if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
 
   // Rate limit: max 3 analyses per minute (each call hits Claude Opus with images)
   const rateLimited = await rejectIfRateLimited(req, res, 'analyze', 3);
-  if (rateLimited) return;
+  if (rateLimited) { done({ status: 429 }); return; }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
+    done({ status: 500, error: 'missing_api_key' });
     return res.status(500).json({ error: 'Server configuration error' });
   }
 
   const parsed = analyzeBodySchema.safeParse(req.body);
   if (!parsed.success) {
     const firstError = parsed.error.issues[0];
+    done({ status: 400 });
     return res.status(400).json({
       error: firstError?.message ?? 'Invalid request body',
     });
@@ -687,6 +691,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
 
   content.push({ type: 'text', text: contextText });
 
+  const analyzeStart = Date.now();
   try {
     const anthropic = new Anthropic({
       apiKey,
@@ -799,17 +804,27 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
           analysis as Parameters<typeof saveAnalysis>[1],
           snapshotId,
         );
+        metrics.dbSave('analyses', true);
       } catch (dbErr) {
+        metrics.dbSave('analyses', false);
         logger.error({ err: dbErr }, 'analyze DB save failed');
       }
     }
 
+    metrics.analyzeCall({
+      model: usedModel,
+      mode: String(mode),
+      durationMs: Date.now() - analyzeStart,
+      imageCount: images.length,
+    });
+    done({ status: 200 });
     return res.status(200).json({
       analysis,
       raw: text,
       model: usedModel,
     });
   } catch (err) {
+    done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     logger.error({ err }, 'analyze unhandled error');
 

@@ -32,7 +32,7 @@
  * }
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -215,9 +215,10 @@ const TARGET_DELTAS = [5, 8, 10, 12, 15, 20];
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/chain');
+    const done = metrics.request('/api/chain');
     try {
       const ownerCheck = rejectIfNotOwner(req, res);
-      if (ownerCheck) return ownerCheck;
+      if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
 
       const today = getTodayET();
       const strikeCount = Number(req.query.strikeCount) || 80;
@@ -231,6 +232,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
 
       if ('error' in result) {
+        done({ status: result.status, error: 'schwab' });
         return res.status(result.status).json({ error: result.error });
       }
 
@@ -239,6 +241,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const rawCalls = flattenMap(chain.callExpDateMap ?? {});
 
       if (rawPuts.length === 0 && rawCalls.length === 0) {
+        done({ status: 200 });
         return res.status(200).json({
           error:
             'No 0DTE contracts found. Market may be closed or chain not yet available.',
@@ -256,8 +259,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
+      done({ status: 200 });
       return buildResponse(res, chain, rawPuts, rawCalls, today);
     } catch (error) {
+      done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
       res.status(500).json({ error: 'Internal server error' });
     }

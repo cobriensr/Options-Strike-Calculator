@@ -9,7 +9,7 @@
  * don't have it and get a 401 (frontend silently falls back to manual input).
  */
 
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { storeInitialTokens } from '../_lib/schwab.js';
 import { OWNER_COOKIE, OWNER_COOKIE_MAX_AGE } from '../_lib/api-helpers.js';
@@ -17,14 +17,17 @@ import { OWNER_COOKIE, OWNER_COOKIE_MAX_AGE } from '../_lib/api-helpers.js';
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/auth/callback');
+    const done = metrics.request('/api/auth/callback');
     try {
       const code = req.query.code;
       if (!code || typeof code !== 'string') {
+        done({ status: 400 });
         return res.status(400).json({ error: 'Missing authorization code' });
       }
 
       const ownerSecret = process.env.OWNER_SECRET;
       if (!ownerSecret) {
+        done({ status: 500 });
         return res
           .status(500)
           .json({ error: 'OWNER_SECRET environment variable must be set' });
@@ -37,6 +40,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const result = await storeInitialTokens(code, redirectUri);
 
       if ('error' in result) {
+        done({ status: 500 });
         return res.status(500).json({ error: result.error.message });
       }
 
@@ -72,6 +76,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ]);
 
       // Return a simple success page
+      done({ status: 200 });
       res.setHeader('Content-Type', 'text/html');
       res.status(200).send(`
     <!DOCTYPE html>
@@ -88,6 +93,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     </html>
   `);
     } catch (error) {
+      done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
       res.status(500).json({ error: 'Internal server error' });
     }

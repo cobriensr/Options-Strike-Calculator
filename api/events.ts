@@ -17,7 +17,7 @@
  *   FINNHUB_API_KEY — Free key from https://finnhub.io/register (optional, earnings only)
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { redis } from './_lib/schwab.js';
 import logger from './_lib/logger.js';
@@ -451,9 +451,11 @@ async function fetchAllEvents(
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/events');
+    const done = metrics.request('/api/events');
     try {
       const fredKey = process.env.FRED_API_KEY;
       if (!fredKey) {
+        done({ status: 500 });
         return res
           .status(500)
           .json({ error: 'FRED_API_KEY environment variable must be set' });
@@ -478,11 +480,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       try {
         const cached = await redis.get<EventItem[]>(cacheKey);
         if (cached) {
+          metrics.cacheResult('/api/events', true);
           res.setHeader(
             'Cache-Control',
             's-maxage=43200, stale-while-revalidate=3600',
           );
           res.setHeader('X-Cache', 'HIT');
+          done({ status: 200 });
           return res.status(200).json({
             events: cached,
             startDate,
@@ -517,6 +521,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
       res.setHeader('X-Cache', 'MISS');
 
+      done({ status: 200 });
       res.status(200).json({
         events,
         startDate,
@@ -525,6 +530,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         asOf: new Date().toISOString(),
       });
     } catch (error) {
+      done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
       res.status(500).json({ error: 'Internal server error' });
     }

@@ -12,7 +12,7 @@
  *   ?id=42                                             — Get a single analysis by ID
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
@@ -40,12 +40,18 @@ function parseRow(r: Record<string, unknown>) {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const done = metrics.request('/api/analyses');
+
   if (req.method !== 'GET') {
+    done({ status: 405 });
     return res.status(405).json({ error: 'GET only' });
   }
 
   const rateLimited = await rejectIfRateLimited(req, res, 'analyses', 30);
-  if (rateLimited) return;
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
+  }
 
   try {
     const sql = getDb();
@@ -59,8 +65,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                full_response, created_at
         FROM analyses WHERE id = ${String(id)} LIMIT 1
       `;
-      if (rows.length === 0)
+      if (rows.length === 0) {
+        done({ status: 404 });
         return res.status(404).json({ error: 'Analysis not found' });
+      }
+      done({ status: 200 });
       return res.status(200).json(parseRow(rows[0]!));
     }
 
@@ -76,6 +85,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM analyses
         GROUP BY date ORDER BY date DESC LIMIT 90
       `;
+      done({ status: 200 });
       return res.status(200).json({
         dates: rows.map((r) => ({
           date: r.date as string,
@@ -101,8 +111,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           WHERE date = ${dateStr} AND entry_time = ${String(entryTime)} AND mode = ${String(mode)}
           ORDER BY created_at DESC LIMIT 1
         `;
-        if (rows.length === 0)
+        if (rows.length === 0) {
+          done({ status: 404 });
           return res.status(404).json({ error: 'Analysis not found' });
+        }
+        done({ status: 200 });
         return res.status(200).json(parseRow(rows[0]!));
       }
 
@@ -113,16 +126,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                full_response, created_at
         FROM analyses WHERE date = ${dateStr} ORDER BY created_at ASC
       `;
+      done({ status: 200 });
       return res.status(200).json({
         date: dateStr,
         analyses: rows.map(parseRow),
       });
     }
 
+    done({ status: 400 });
     return res
       .status(400)
       .json({ error: 'Provide ?dates=true, ?date=YYYY-MM-DD, or ?id=N' });
   } catch (err) {
+    done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     logger.error({ err }, 'analyses endpoint error');
     return res.status(500).json({

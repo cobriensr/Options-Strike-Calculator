@@ -19,7 +19,7 @@
  * }
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -82,14 +82,16 @@ function toSlice(q: SchwabQuote): QuoteSlice {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/quotes');
+    const done = metrics.request('/api/quotes');
     try {
       // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwner(req, res)) return done({ status: 401 });
       const result = await schwabFetch<SchwabQuotesResponse>(
         `/quotes?symbols=${encodeURIComponent(SYMBOLS)}&fields=quote`,
       );
 
       if ('error' in result) {
+        done({ status: result.status, error: 'schwab' });
         return res.status(result.status).json({ error: result.error });
       }
 
@@ -123,8 +125,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
+      done({ status: 200 });
       res.status(200).json(response);
     } catch (error) {
+      done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
       res.status(500).json({ error: 'Internal server error' });
     }

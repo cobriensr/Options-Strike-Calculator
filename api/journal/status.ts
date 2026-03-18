@@ -5,15 +5,17 @@
  * Owner-gated.
  */
 
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
+  const done = metrics.request('/api/journal/status');
+
+  if (req.method !== 'GET') { done({ status: 405 }); return res.status(405).json({ error: 'GET only' }); }
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) return ownerCheck;
+  if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
 
   try {
     const sql = getDb();
@@ -45,6 +47,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'NEON_DATABASE_URL',
     ].filter((key) => !!process.env[key]);
 
+    done({ status: 200 });
     return res.status(200).json({
       connected: true,
       serverTime: timeResult[0]?.now,
@@ -57,6 +60,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     });
   } catch (err) {
+    done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     return res.status(500).json({
       connected: false,

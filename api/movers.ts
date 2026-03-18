@@ -12,7 +12,7 @@
  *   After hours:  600s edge cache + 120s SWR
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -53,8 +53,9 @@ interface MoverSlice {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/movers');
+    const done = metrics.request('/api/movers');
     try {
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwner(req, res)) { done({ status: 401 }); return; }
 
       // Fetch both up and down movers in parallel
       const [upResult, downResult] = await Promise.all([
@@ -109,6 +110,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ? 'bearish'
             : 'mixed';
 
+      done({ status: 200 });
       res.status(200).json({
         up,
         down,
@@ -124,6 +126,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         asOf: new Date().toISOString(),
       });
     } catch (error) {
+      done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
       res.status(500).json({ error: 'Internal server error' });
     }

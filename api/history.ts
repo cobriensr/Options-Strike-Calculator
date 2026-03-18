@@ -14,7 +14,7 @@
  *   - Today: cached 120s (data is still accumulating)
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -214,12 +214,14 @@ async function fetchSymbolHistory(
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/history');
+    const done = metrics.request('/api/history');
     try {
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwner(req, res)) { done({ status: 401 }); return; }
 
       const dateParam =
         typeof req.query?.date === 'string' ? req.query.date : '';
       if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        done({ status: 400 });
         return res.status(400).json({
           error: 'Missing or invalid date parameter. Use ?date=YYYY-MM-DD',
         });
@@ -232,6 +234,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const isToday = dateParam === todayET;
 
       if (dateParam > todayET) {
+        done({ status: 400 });
         return res
           .status(400)
           .json({ error: 'Cannot fetch history for future dates' });
@@ -243,11 +246,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         try {
           const cached = await redis.get<HistoryResponse>(cacheKey);
           if (cached) {
+            metrics.cacheResult('/api/history', true);
             res.setHeader(
               'Cache-Control',
               's-maxage=86400, stale-while-revalidate=3600',
             );
             res.setHeader('X-Cache', 'HIT');
+            done({ status: 200 });
             return res.status(200).json(cached);
           }
         } catch {
@@ -293,8 +298,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       setCacheHeaders(res, isToday ? 120 : 86400, isToday ? 60 : 3600);
 
+      done({ status: 200 });
       res.status(200).json(response);
     } catch (error) {
+      done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
       res.status(500).json({ error: 'Internal server error' });
     }

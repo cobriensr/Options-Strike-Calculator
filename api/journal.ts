@@ -15,19 +15,30 @@
  * Response: { analyses: [...], count: N }
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
+  const done = metrics.request('/api/journal');
+
+  if (req.method !== 'GET') {
+    done({ status: 405 });
+    return res.status(405).json({ error: 'GET only' });
+  }
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) return ownerCheck;
+  if (ownerCheck) {
+    done({ status: 401 });
+    return ownerCheck;
+  }
 
   const rateLimited = await rejectIfRateLimited(req, res, 'journal', 20);
-  if (rateLimited) return;
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
+  }
 
   try {
     const sql = getDb();
@@ -93,8 +104,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `;
     }
 
+    done({ status: 200 });
     return res.status(200).json({ analyses: rows, count: rows.length });
   } catch (err) {
+    done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     logger.error({ err }, 'Journal query error');
     return res.status(500).json({ error: 'Query failed' });

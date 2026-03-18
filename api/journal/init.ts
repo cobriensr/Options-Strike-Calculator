@@ -11,20 +11,25 @@
  * Safe to call multiple times (uses IF NOT EXISTS).
  */
 
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { initDb, migrateDb } from '../_lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST')
+  const done = metrics.request('/api/journal/init');
+
+  if (req.method !== 'POST') {
+    done({ status: 405 });
     return res.status(405).json({ error: 'POST only' });
+  }
   const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) return ownerCheck;
+  if (ownerCheck) { done({ status: 401 }); return ownerCheck; }
 
   try {
     await initDb();
     const migrated = await migrateDb();
+    done({ status: 200 });
     return res.status(200).json({
       success: true,
       tables: ['market_snapshots', 'analyses', 'outcomes', 'positions'],
@@ -32,6 +37,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       message: 'All tables created and migrations applied',
     });
   } catch (err) {
+    done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to init database',

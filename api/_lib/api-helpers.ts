@@ -9,6 +9,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getAccessToken, redis } from './schwab.js';
+import { metrics } from './sentry.js';
 import { getMarketCloseHourET } from '../../src/data/eventCalendar.js';
 import {
   getETTime,
@@ -134,6 +135,7 @@ export async function rejectIfRateLimited(
   const key = getRateLimitKey(req, endpoint);
   const limited = await isRateLimited(key, maxPerMinute);
   if (limited) {
+    metrics.rateLimited(endpoint);
     res.setHeader('Retry-After', '60');
     res
       .status(429)
@@ -158,9 +160,13 @@ async function schwabApiFetch<T>(
   const authResult = await getAccessToken();
 
   if ('error' in authResult) {
+    metrics.tokenRefresh(false);
     const status = authResult.error.type === 'expired_refresh' ? 401 : 500;
     return { error: authResult.error.message, status };
   }
+
+  const endpoint = path.split('?')[0] ?? path;
+  const done = metrics.schwabCall(endpoint);
 
   const url = `${base}${path}`;
   const res = await fetch(url, {
@@ -171,6 +177,7 @@ async function schwabApiFetch<T>(
   });
 
   if (!res.ok) {
+    done(false);
     const body = await res.text();
     return {
       error: `Schwab API error (${res.status}): ${body}`,
@@ -178,6 +185,7 @@ async function schwabApiFetch<T>(
     };
   }
 
+  done(true);
   const data: T = await res.json();
   return { data };
 }

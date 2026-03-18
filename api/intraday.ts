@@ -21,7 +21,7 @@
  * }
  */
 
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
@@ -120,9 +120,10 @@ function computeTodayOHLC(candles: SchwabCandle[]): {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/intraday');
+    const done = metrics.request('/api/intraday');
     try {
       // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwner(req, res)) { done({ status: 401 }); return; }
 
       // Use explicit start/end dates for TODAY's session.
       // period=1 returns the most recent *completed* day, which during market
@@ -155,6 +156,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
 
       if ('error' in result) {
+        done({ status: result.status, error: 'schwab' });
         return res.status(result.status).json({ error: result.error });
       }
 
@@ -183,6 +185,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const today = computeTodayOHLC(todayCandles);
       const openingRange = computeOpeningRange(todayCandles);
 
+      done({ status: 200 });
       res.status(200).json({
         today,
         openingRange,
@@ -192,6 +195,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         asOf: new Date().toISOString(),
       });
     } catch (error) {
+      done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
       res.status(500).json({ error: 'Internal server error' });
     }
