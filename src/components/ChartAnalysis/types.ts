@@ -67,6 +67,7 @@ export interface AnalysisResult {
     spyNetFlow?: ChartSignal;
     qqqNetFlow?: ChartSignal;
     periscope?: ChartSignal;
+    netCharm?: ChartSignal;
   };
   observations: string[];
   strikeGuidance?: {
@@ -119,6 +120,7 @@ export const CHART_LABELS = [
   'Net Flow (SPX)',
   'Periscope (Delta Flow)',
   'Periscope (Gamma)',
+  'Net Charm (SPX)',
   'Other',
 ] as const;
 

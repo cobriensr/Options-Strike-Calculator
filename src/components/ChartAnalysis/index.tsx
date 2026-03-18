@@ -60,7 +60,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
 
   const addImage = useCallback(
     (file: File) => {
-      if (images.length >= 6) return;
+      if (images.length >= 7) return;
       const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const preview = URL.createObjectURL(file);
       setImages((prev) => {
@@ -123,7 +123,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
       const files = Array.from(e.dataTransfer.files).filter((f) =>
         f.type.startsWith('image/'),
       );
-      for (const f of files.slice(0, 6 - images.length)) addImage(f);
+      for (const f of files.slice(0, 7 - images.length)) addImage(f);
     },
     [addImage, images.length],
   );
@@ -131,7 +131,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
-      for (const f of files.slice(0, 6 - images.length)) addImage(f);
+      for (const f of files.slice(0, 7 - images.length)) addImage(f);
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
     [addImage, images.length],
@@ -215,6 +215,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
     'Checking SPX Net Flow...',
     'Checking Net Flow confirmation...',
     'Evaluating gamma exposure...',
+    'Checking charm decay profile...',
     'Mapping strikes to gamma zones...',
     'Building entry plan...',
     'Assessing hedge options...',
@@ -435,7 +436,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           <div className="text-muted text-[12px]">
             {images.length === 0
               ? 'Drop or click to upload, or paste (Ctrl+V) a screenshot from clipboard'
-              : `${images.length}/6 images \u2014 drop, click, or paste more`}
+              : `${images.length}/7 images \u2014 drop, click, or paste more`}
           </div>
         </button>
 
