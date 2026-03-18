@@ -14,4 +14,4 @@ Sentry.init({
   enabled: process.env.VERCEL_ENV === 'production',
 });
 
-export { Sentry };
+export { Sentry }; // NOSONAR: can't use re-export, Sentry.init() must run first

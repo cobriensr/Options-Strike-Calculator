@@ -657,7 +657,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       anthropic.messages
         .stream({
           model,
-          max_tokens: 25000,
+          max_tokens: 35000,
           thinking: { type: 'adaptive' },
           output_config: { effort: 'high' },
           system: [

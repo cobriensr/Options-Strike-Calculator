@@ -190,7 +190,7 @@ describe('POST /api/analyze', () => {
     expect(mockStream).toHaveBeenCalledOnce();
     const params = mockStream.mock.calls[0]![0];
     expect(params.model).toBe('claude-opus-4-6');
-    expect(params.max_tokens).toBe(25000);
+    expect(params.max_tokens).toBe(35000);
     expect(params.thinking).toEqual({ type: 'adaptive' });
     expect(params.messages).toHaveLength(1);
     // Should have 1 text label + 1 image block + 1 context text block
@@ -286,7 +286,7 @@ describe('POST /api/analyze', () => {
   it('returns generic message for non-Error throws', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockStream.mockImplementation(() => {
-      throw 'something weird';
+      throw 'something weird'; // NOSONAR: intentionally testing non-Error throw handling
     });
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
