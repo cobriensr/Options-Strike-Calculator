@@ -68,41 +68,41 @@
    DARK THEME — override --color-* tokens
    ============================================================ */
 .dark {
-  --color-page: #121212;
-  --color-surface: #1e1e1e;
-  --color-surface-alt: #2a2a2a;
-  --color-input: #252525;
-  --color-table-alt: #252525;
-  --color-table-header: #2a2a2a;
-  --color-accent-bg: #1a2744;
-  --color-primary: #ececec;
-  --color-secondary: #c0c0c0;
-  --color-tertiary: #a0a0a0;
-  --color-muted: #808080;
-  --color-placeholder: #606060;
-  --color-accent: #6b9cff;
-  --color-success: #4ade80;
-  --color-danger: #f87171;
+  --color-page: #1a1a22;
+  --color-surface: #242430;
+  --color-surface-alt: #2e2e3a;
+  --color-input: #2a2a36;
+  --color-table-alt: #2a2a36;
+  --color-table-header: #2e2e3a;
+  --color-accent-bg: #1e2a4a;
+  --color-primary: #e8e8ee;
+  --color-secondary: #b8b8c4;
+  --color-tertiary: #9898a8;
+  --color-muted: #787888;
+  --color-placeholder: #585868;
+  --color-accent: #7ba4ff;
+  --color-success: #5ce896;
+  --color-danger: #ff8585;
   --color-caution: #f0b429;
-  --color-backtest: #a78bfa;
-  --color-badge: #4ade80;
-  --color-edge: #333333;
-  --color-edge-strong: #444444;
-  --color-edge-heavy: #e0ddd6;
-  --color-tooltip-bg: #ececec;
-  --color-tooltip-text: #1e1e1e;
-  --color-tooltip-code-bg: #333333;
-  --color-tooltip-code-text: #e0e0e0;
-  --color-chip-bg: #252525;
-  --color-chip-active-bg: #1a2744;
-  --color-chip-border: #444444;
-  --color-chip-active-border: #6b9cff;
-  --color-chip-text: #c0c0c0;
-  --color-chip-active-text: #6b9cff;
-  --color-focus-ring: #6b9cff;
+  --color-backtest: #b49bff;
+  --color-badge: #5ce896;
+  --color-edge: #383848;
+  --color-edge-strong: #484858;
+  --color-edge-heavy: #d8d8e0;
+  --color-tooltip-bg: #e8e8ee;
+  --color-tooltip-text: #1a1a22;
+  --color-tooltip-code-bg: #383848;
+  --color-tooltip-code-text: #e0e0e8;
+  --color-chip-bg: #2a2a36;
+  --color-chip-active-bg: #1e2a4a;
+  --color-chip-border: #484858;
+  --color-chip-active-border: #7ba4ff;
+  --color-chip-text: #b8b8c4;
+  --color-chip-active-text: #7ba4ff;
+  --color-focus-ring: #7ba4ff;
   --color-selection-bg: #2a3e66;
   --color-selection-text: #bfdbfe;
-  --color-chevron: #a0a0a0;
+  --color-chevron: #9898a8;
   color-scheme: dark;
 }
 
@@ -119,6 +119,21 @@
 
 .font-sans {
   font-size-adjust: 0.5;
+}
+
+/* ============================================================
+   PAGE GRADIENT — subtle depth on the page background
+   ============================================================ */
+#app-shell {
+  background: var(--color-page) !important;
+}
+
+.dark #app-shell {
+  background: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    color-mix(in srgb, var(--color-accent) 15%, var(--color-page)) 0%,
+    var(--color-page) 60%
+  ) !important;
 }
 
 /* ============================================================
@@ -152,6 +167,24 @@ input[type='number'] {
 
 input::placeholder {
   color: var(--color-placeholder);
+}
+
+/* ============================================================
+   MICRO-ANIMATIONS
+   ============================================================ */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 250ms ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {

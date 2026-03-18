@@ -31,9 +31,9 @@ export default function ResultsSection({
       {results ? (
         <section
           aria-label="Strike results for all deltas"
-          className="bg-surface border-edge-heavy rounded-[14px] border-2 p-[24px_20px] shadow-[0_2px_8px_rgba(0,0,0,0.05),0_8px_24px_rgba(0,0,0,0.04)]"
+          className="animate-fade-in-up bg-surface border-edge-heavy border-t-accent rounded-[14px] border-2 border-t-[3px] p-[24px_20px] shadow-[0_4px_12px_rgba(0,0,0,0.08),0_12px_32px_rgba(0,0,0,0.06)]"
         >
-          <div className="text-accent mb-[18px] font-sans text-xs font-bold tracking-[0.16em] uppercase">
+          <div className="text-accent mb-[18px] font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
             All Delta Strikes
           </div>
 
@@ -83,32 +83,55 @@ export default function ResultsSection({
           </p>
         </section>
       ) : (
-        <div className="border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-10 text-center">
-          <div className="text-accent mb-3 font-sans text-xs font-bold tracking-[0.16em] uppercase">
-            All Delta Strikes
+        <div className="animate-fade-in-up border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-12 text-center">
+          <div className="text-muted mb-2 text-[28px]">{'\u2193'}</div>
+          <div className="text-accent mb-2 font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+            Strike Results
           </div>
-          <p className="text-secondary m-0 mb-4 text-[15px]">
+          <p className="text-secondary m-0 mb-6 text-[15px]">
             Fill in the inputs above to calculate strike placement
           </p>
-          <div className="text-muted mx-auto inline-flex flex-col gap-1.5 text-left font-sans text-[13px]">
-            <span>
-              <span className="text-accent mr-2 font-mono text-xs font-bold">
+          <div className="text-secondary mx-auto inline-flex flex-col gap-3 text-left font-sans text-[13px]">
+            <div className="flex items-center gap-3">
+              <span className="bg-accent-bg text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold">
                 1
               </span>
-              SPY spot price
-            </span>
-            <span>
-              <span className="text-accent mr-2 font-mono text-xs font-bold">
+              <span>Select date</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="bg-accent-bg text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold">
                 2
               </span>
-              Entry time
-            </span>
-            <span>
-              <span className="text-accent mr-2 font-mono text-xs font-bold">
+              <span>Enter SPY spot price</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="bg-accent-bg text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold">
                 3
               </span>
-              Implied volatility (VIX or direct)
-            </span>
+              <span>
+                Enter SPX spot price{' '}
+                <span className="text-muted">(optional)</span> or set SPX/SPY
+                ratio
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="bg-accent-bg text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold">
+                4
+              </span>
+              <span>Set entry time</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="bg-accent-bg text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold">
+                5
+              </span>
+              <span>Set VIX or direct IV</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="bg-accent-bg text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold">
+                6
+              </span>
+              <span>Enter VIX1D and VIX9D</span>
+            </div>
           </div>
         </div>
       )}

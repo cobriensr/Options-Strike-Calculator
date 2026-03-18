@@ -189,7 +189,10 @@ export default function StrikeCalculator() {
 
   return (
     <div className={darkMode ? 'dark' : ''}>
-      <div className="bg-page text-primary min-h-screen font-serif transition-[background-color,color] duration-[250ms]">
+      <div
+        id="app-shell"
+        className="text-primary min-h-screen font-serif transition-[background-color,color] duration-[250ms]"
+      >
         <a
           href="#results"
           className="bg-accent absolute top-0 -left-[9999px] z-[100] p-[8px_16px] font-sans text-sm text-white"
@@ -203,67 +206,75 @@ export default function StrikeCalculator() {
           Skip to results
         </a>
 
-        <div className="mx-auto max-w-[660px] px-5 pt-9 pb-12">
-          {/* Header */}
-          <header className="border-edge-heavy mb-8 border-b-[2.5px] pb-[18px]">
-            <div className="flex flex-col items-start justify-between md:flex-row">
-              <div>
-                <div className="text-accent mb-1.5 font-sans text-[11px] font-bold tracking-[0.2em] uppercase">
-                  0DTE Options
-                </div>
-                <h1 className="text-primary m-0 text-[30px] leading-[1.15] font-bold">
-                  Strike Calculator
-                </h1>
-                <p className="text-secondary mt-2 mb-0 text-[15px] leading-normal">
-                  Black-Scholes approximation for delta-based strike placement
-                </p>
+        {/* Sticky header bar */}
+        <header
+          className="border-edge sticky top-0 z-50 border-b backdrop-blur-md"
+          style={{
+            backgroundColor:
+              'color-mix(in srgb, var(--color-page) 85%, transparent)',
+          }}
+        >
+          <div className="mx-auto flex max-w-[660px] items-center justify-between px-5 py-3">
+            <div>
+              <div className="text-accent font-sans text-[10px] font-bold tracking-[0.2em] uppercase">
+                0DTE Options
               </div>
-              <div className="flex items-center gap-2">
-                {historySnapshot && (
-                  <StatusBadge label="BACKTEST" color={th.backtest} dot />
-                )}
-                {historyData.loading && (
-                  <StatusBadge label="Loading…" color={th.textMuted} />
-                )}
-                {historyData.error && !historyData.loading && (
-                  <StatusBadge
-                    label="NO INTRADAY"
-                    color={th.red}
-                    dot
-                    title={historyData.error}
-                  />
-                )}
-                {!historySnapshot && !historyData.error && market.hasData && (
-                  <StatusBadge
-                    label={market.data.quotes?.marketOpen ? 'LIVE' : 'CLOSED'}
-                    color={
-                      market.data.quotes?.marketOpen ? th.green : th.textMuted
-                    }
-                    dot
-                  />
-                )}
-                {market.needsAuth && (
-                  <StatusBadge
-                    label="Re-authenticate"
-                    color={th.red}
-                    href="/api/auth/init"
-                  />
-                )}
-                <button
-                  onClick={() => setDarkMode(!darkMode)}
-                  aria-label={
-                    darkMode ? 'Switch to light mode' : 'Switch to dark mode'
-                  }
-                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary mt-1 flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[8px_12px] font-sans text-lg transition-all duration-200"
-                >
-                  {darkMode ? '\u2600\uFE0F' : '\uD83C\uDF19'}
-                  <span className="text-xs font-semibold">
-                    {darkMode ? 'Light' : 'Dark'}
-                  </span>
-                </button>
-              </div>
+              <h1 className="text-primary m-0 font-serif text-[20px] leading-tight font-bold">
+                Strike Calculator
+              </h1>
             </div>
-          </header>
+            <div className="flex items-center gap-2">
+              {historySnapshot && (
+                <StatusBadge label="BACKTEST" color={th.backtest} dot />
+              )}
+              {historyData.loading && (
+                <StatusBadge label="Loading…" color={th.textMuted} />
+              )}
+              {historyData.error && !historyData.loading && (
+                <StatusBadge
+                  label="NO INTRADAY"
+                  color={th.red}
+                  dot
+                  title={historyData.error}
+                />
+              )}
+              {!historySnapshot && !historyData.error && market.hasData && (
+                <StatusBadge
+                  label={market.data.quotes?.marketOpen ? 'LIVE' : 'CLOSED'}
+                  color={
+                    market.data.quotes?.marketOpen ? th.green : th.textMuted
+                  }
+                  dot
+                />
+              )}
+              {market.needsAuth && (
+                <StatusBadge
+                  label="Re-authenticate"
+                  color={th.red}
+                  href="/api/auth/init"
+                />
+              )}
+              <button
+                onClick={() => setDarkMode(!darkMode)}
+                aria-label={
+                  darkMode ? 'Switch to light mode' : 'Switch to dark mode'
+                }
+                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+              >
+                {darkMode ? '\u2600\uFE0F' : '\uD83C\uDF19'}
+                <span className="text-[11px] font-semibold">
+                  {darkMode ? 'Light' : 'Dark'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12">
+          {/* Subtitle — below sticky header */}
+          <p className="text-secondary mb-8 text-[15px] leading-normal">
+            Black-Scholes approximation for delta-based strike placement
+          </p>
 
           <main>
             <VixUploadSection

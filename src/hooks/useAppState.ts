@@ -19,9 +19,10 @@ export function useAppState() {
   // Theme — persist preference in localStorage
   const [darkMode, setDarkMode] = useState(() => {
     try {
-      return localStorage.getItem('darkMode') === 'true';
+      const stored = localStorage.getItem('darkMode');
+      return stored === null ? true : stored === 'true';
     } catch {
-      return false;
+      return true;
     }
   });
   const setDarkModeAndPersist = (value: boolean) => {

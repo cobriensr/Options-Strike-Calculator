@@ -10,7 +10,7 @@ describe('useAppState', () => {
     const { result } = renderHook(() => useAppState());
     const s = result.current;
 
-    expect(s.darkMode).toBe(false);
+    expect(s.darkMode).toBe(true);
     expect(s.spotPrice).toBe('');
     expect(s.spxDirect).toBe('');
     expect(s.spxRatio).toBe(10);

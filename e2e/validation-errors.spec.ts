@@ -48,7 +48,9 @@ test.describe('Input Validation', () => {
     // The results section shows a placeholder prompt instead of the strike table
     const results = page.locator('#results');
     await expect(
-      results.getByText('Fill in the inputs above to calculate strike placement'),
+      results.getByText(
+        'Fill in the inputs above to calculate strike placement',
+      ),
     ).toBeVisible();
 
     // The actual results section (with the styled border) should not be present

@@ -46,7 +46,9 @@ test.describe('Calculator Flow', () => {
     // 4. Wait for results to appear (the populated section, not the empty state)
     const resultsSection = page.locator('#results');
     await expect(
-      resultsSection.locator('section[aria-label="Strike results for all deltas"]'),
+      resultsSection.locator(
+        'section[aria-label="Strike results for all deltas"]',
+      ),
     ).toBeVisible({ timeout: 5000 });
 
     // 5. Verify parameter summary shows correct inputs

@@ -21,11 +21,11 @@ export function SectionBox({
   return (
     <section
       aria-label={label}
-      className="bg-surface border-edge mt-6 rounded-[14px] border-[1.5px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)] first:mt-0"
+      className="animate-fade-in-up bg-surface border-edge border-t-accent mt-6 rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)] first:mt-0"
     >
       <div className="mb-3.5 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="text-tertiary font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
+          <div className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
             {label}
           </div>
           {badge && (
