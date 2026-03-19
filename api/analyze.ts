@@ -790,30 +790,47 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       // JSON parse failed — will return raw text below
     }
 
-    // Save to Postgres before responding (Vercel kills the function after res.json)
+    // Save to Postgres before responding (Vercel kills the function after res.json).
+    // Retry the save up to 2 extra times — after a long Anthropic retry the first
+    // Neon call can fail due to connection pressure / cold-start latency.
     if (analysis) {
-      try {
-        const db = getDb();
-        const date =
-          (context.selectedDate as string | undefined) ??
-          new Date().toLocaleDateString('en-CA', {
-            timeZone: 'America/New_York',
-          });
-        const entryTime =
-          (context.entryTime as string | undefined) ?? 'unknown';
-        const rows = await db`
-          SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
-        `;
-        const snapshotId = rows.length > 0 ? (rows[0]!.id as number) : null;
-        await saveAnalysis(
-          context,
-          analysis as Parameters<typeof saveAnalysis>[1],
-          snapshotId,
-        );
-        metrics.dbSave('analyses', true);
-      } catch (dbErr) {
+      const DB_SAVE_ATTEMPTS = 3;
+      let saved = false;
+      for (let dbAttempt = 1; dbAttempt <= DB_SAVE_ATTEMPTS; dbAttempt++) {
+        try {
+          const db = getDb();
+          const date =
+            (context.selectedDate as string | undefined) ??
+            new Date().toLocaleDateString('en-CA', {
+              timeZone: 'America/New_York',
+            });
+          const entryTime =
+            (context.entryTime as string | undefined) ?? 'unknown';
+          const rows = await db`
+            SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
+          `;
+          const snapshotId = rows.length > 0 ? (rows[0]!.id as number) : null;
+          await saveAnalysis(
+            context,
+            analysis as Parameters<typeof saveAnalysis>[1],
+            snapshotId,
+          );
+          metrics.dbSave('analyses', true);
+          saved = true;
+          break;
+        } catch (dbErr) {
+          logger.error(
+            { err: dbErr, attempt: dbAttempt },
+            'analyze DB save failed',
+          );
+          if (dbAttempt < DB_SAVE_ATTEMPTS) {
+            await new Promise((r) => setTimeout(r, 500 * dbAttempt));
+          }
+        }
+      }
+      if (!saved) {
         metrics.dbSave('analyses', false);
-        logger.error({ err: dbErr }, 'analyze DB save failed');
+        logger.error('analyze DB save exhausted all retries');
       }
     }
 
