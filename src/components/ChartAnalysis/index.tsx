@@ -24,9 +24,10 @@ interface Props {
   readonly th: Theme;
   readonly results: CalculationResults | null;
   readonly context: import('./types').AnalysisContext;
+  readonly onAnalysisSaved?: () => void;
 }
 
-export default function ChartAnalysis({ th, results, context }: Props) {
+export default function ChartAnalysis({ th, results, context, onAnalysisSaved }: Props) {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [mode, setMode] = useState<AnalysisMode>('entry');
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
@@ -318,6 +319,7 @@ export default function ChartAnalysis({ th, results, context }: Props) {
           if (data.analysis) {
             setAnalysis(data.analysis);
             lastAnalysisRef.current = data.analysis;
+            onAnalysisSaved?.();
           }
           if (data.raw) setRawResponse(data.raw);
           if (!data.analysis && data.raw)

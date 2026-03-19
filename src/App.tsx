@@ -1,5 +1,5 @@
 import { IV_MODES } from './constants';
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
 import { useAppState } from './hooks/useAppState';
@@ -185,6 +185,9 @@ export default function StrikeCalculator() {
     },
     market.hasData || !!historySnapshot,
   );
+
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const handleAnalysisSaved = useCallback(() => setHistoryRefreshKey((k) => k + 1), []);
 
   const chevronUrl = buildChevronUrl(th.chevronColor);
 
@@ -393,6 +396,7 @@ export default function StrikeCalculator() {
                 <ChartAnalysis
                   th={th}
                   results={results}
+                  onAnalysisSaved={handleAnalysisSaved}
                   context={
                     {
                       selectedDate: vix.selectedDate,
@@ -458,7 +462,7 @@ export default function StrikeCalculator() {
             )}
 
             <ErrorBoundary label="Analysis History">
-              <AnalysisHistory th={th} />
+              <AnalysisHistory th={th} refreshKey={historyRefreshKey} />
             </ErrorBoundary>
 
             <ErrorBoundary label="Results">

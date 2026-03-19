@@ -45,9 +45,11 @@ type ModeFilter = 'all' | 'entry' | 'midday' | 'review';
 
 interface Props {
   readonly th: Theme;
+  /** Bump this to trigger a refetch of analysis dates */
+  readonly refreshKey?: number;
 }
 
-export default function AnalysisHistory({ th }: Props) {
+export default function AnalysisHistory({ th, refreshKey }: Props) {
   const [allDates, setAllDates] = useState<DateEntry[]>([]);
   const [modeFilter, setModeFilter] = useState<ModeFilter>('all');
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -56,7 +58,7 @@ export default function AnalysisHistory({ th }: Props) {
   const [selectedMode, setSelectedMode] = useState<AnalysisMode | ''>('');
   const [loading, setLoading] = useState(false);
 
-  // ── Fetch dates on mount ───────────────────────────────
+  // ── Fetch dates on mount + when refreshKey changes ────
 
   useEffect(() => {
     let cancelled = false;
@@ -75,7 +77,7 @@ export default function AnalysisHistory({ th }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   // ── Filtered dates based on mode filter ────────────────
 
@@ -129,7 +131,7 @@ export default function AnalysisHistory({ th }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [selectedDate]);
+  }, [selectedDate, refreshKey]);
 
   // ── Filter analyses by mode filter ─────────────────────
 
