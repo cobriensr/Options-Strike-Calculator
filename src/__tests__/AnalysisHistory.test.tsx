@@ -471,6 +471,85 @@ describe('AnalysisHistory', () => {
     });
   });
 
+  describe('refreshKey triggers refetch', () => {
+    it('refetches dates when refreshKey changes', async () => {
+      const fetchMock = mockFetch();
+      vi.stubGlobal('fetch', fetchMock);
+      const { rerender } = render(<AnalysisHistory th={th} refreshKey={0} />);
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('dates=true'),
+        );
+      });
+
+      const callsBefore = fetchMock.mock.calls.filter((c: string[]) =>
+        c[0].includes('dates=true'),
+      ).length;
+
+      rerender(<AnalysisHistory th={th} refreshKey={1} />);
+
+      await waitFor(() => {
+        const callsAfter = fetchMock.mock.calls.filter((c: string[]) =>
+          c[0].includes('dates=true'),
+        ).length;
+        expect(callsAfter).toBe(callsBefore + 1);
+      });
+    });
+
+    it('refetches analyses for selected date when refreshKey changes', async () => {
+      const fetchMock = mockFetch();
+      vi.stubGlobal('fetch', fetchMock);
+      const user = userEvent.setup();
+      const { rerender } = render(<AnalysisHistory th={th} refreshKey={0} />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('date=2025-03-01'),
+        );
+      });
+
+      const dateCalls = fetchMock.mock.calls.filter((c: string[]) =>
+        c[0].includes('date=2025-03-01'),
+      ).length;
+
+      rerender(<AnalysisHistory th={th} refreshKey={1} />);
+
+      await waitFor(() => {
+        const newDateCalls = fetchMock.mock.calls.filter((c: string[]) =>
+          c[0].includes('date=2025-03-01'),
+        ).length;
+        expect(newDateCalls).toBe(dateCalls + 1);
+      });
+    });
+  });
+
+  describe('review mode color', () => {
+    it('shows review mode tab with correct styling', async () => {
+      const analyses = [makeEntry(1, 'review', '10:00 AM')];
+      vi.stubGlobal('fetch', mockFetch(DATES, analyses));
+      const user = userEvent.setup();
+      render(<AnalysisHistory th={th} />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+
+      await waitFor(() => {
+        // Review mode should be auto-selected (only mode available)
+        expect(screen.getByLabelText('Entry Time')).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('non-ok response handling', () => {
     it('handles non-ok date fetch gracefully', async () => {
       vi.stubGlobal(

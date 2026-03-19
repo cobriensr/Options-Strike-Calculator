@@ -187,7 +187,10 @@ export default function StrikeCalculator() {
   );
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
-  const handleAnalysisSaved = useCallback(() => setHistoryRefreshKey((k) => k + 1), []);
+  const handleAnalysisSaved = useCallback(
+    () => setHistoryRefreshKey((k) => k + 1),
+    [],
+  );
 
   const chevronUrl = buildChevronUrl(th.chevronColor);
 

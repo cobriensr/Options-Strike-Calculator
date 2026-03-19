@@ -492,6 +492,93 @@ describe('POST /api/analyze', () => {
     expect(json.analysis.structure).toBe('IRON CONDOR');
   });
 
+  it('retries DB save and succeeds on second attempt', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const { saveAnalysis } = await import('../_lib/db.js');
+    const mockedSave = vi.mocked(saveAnalysis);
+    mockedSave.mockClear();
+    mockedSave
+      .mockRejectedValueOnce(new Error('DB transient'))
+      .mockResolvedValueOnce(undefined);
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('exhausts all DB save retries and still returns analysis', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const { saveAnalysis } = await import('../_lib/db.js');
+    const mockedSave = vi.mocked(saveAnalysis);
+    mockedSave.mockClear();
+    mockedSave
+      .mockRejectedValueOnce(new Error('DB fail 1'))
+      .mockRejectedValueOnce(new Error('DB fail 2'))
+      .mockRejectedValueOnce(new Error('DB fail 3'));
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledTimes(3);
+    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+    vi.useRealTimers();
+  });
+
+  it('retries Opus once on server error then succeeds', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+
+    // First call throws a server error, second succeeds
+    const serverErr = Object.assign(new Error('Internal server error'), {
+      status: 500,
+    });
+    mockFinalMessage
+      .mockRejectedValueOnce(serverErr)
+      .mockResolvedValueOnce(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockStream).toHaveBeenCalledTimes(2);
+    // Both calls should use Opus
+    expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-6');
+    expect(mockStream.mock.calls[1]![0].model).toBe('claude-opus-4-6');
+  });
+
+  it('falls back to Sonnet when Opus retry also fails with server error', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+
+    const serverErr = Object.assign(new Error('overloaded'), { status: 529 });
+    mockFinalMessage
+      .mockRejectedValueOnce(serverErr)
+      .mockRejectedValueOnce(serverErr)
+      .mockResolvedValueOnce(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockStream).toHaveBeenCalledTimes(3);
+    expect(mockStream.mock.calls[2]![0].model).toBe('claude-sonnet-4-6');
+    const json = res._json as { model: string };
+    expect(json.model).toBe('claude-sonnet-4-6');
+  });
+
   it('handles response with only thinking blocks (no text)', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue({

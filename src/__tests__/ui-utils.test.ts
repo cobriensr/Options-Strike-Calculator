@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildChevronUrl,
   mkTh,
@@ -17,6 +17,24 @@ describe('buildChevronUrl', () => {
   it('encodes the color into the SVG', () => {
     const result = buildChevronUrl('#ff0000');
     expect(result).toContain(encodeURIComponent('#ff0000'));
+  });
+
+  it('resolves CSS var() via getComputedStyle', () => {
+    const spy = vi
+      .spyOn(globalThis, 'getComputedStyle')
+      .mockReturnValue({ getPropertyValue: () => '  #abcdef  ' } as any);
+    const result = buildChevronUrl('var(--color-chevron)');
+    expect(result).toContain(encodeURIComponent('#abcdef'));
+    spy.mockRestore();
+  });
+
+  it('falls back to original var() when computed value is empty', () => {
+    const spy = vi
+      .spyOn(globalThis, 'getComputedStyle')
+      .mockReturnValue({ getPropertyValue: () => '  ' } as any);
+    const result = buildChevronUrl('var(--missing)');
+    expect(result).toContain(encodeURIComponent('var(--missing)'));
+    spy.mockRestore();
   });
 });
 

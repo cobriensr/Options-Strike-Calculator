@@ -945,6 +945,207 @@ describe('ChartAnalysis', () => {
     });
   });
 
+  // ── onAnalysisSaved CALLBACK ──
+
+  describe('onAnalysisSaved callback', () => {
+    it('calls onAnalysisSaved after successful analysis', async () => {
+      const onAnalysisSaved = vi.fn();
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(
+          () =>
+            new Response(
+              JSON.stringify({
+                analysis: SAMPLE_ANALYSIS,
+                raw: JSON.stringify(SAMPLE_ANALYSIS),
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            ),
+        ),
+      );
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+          onAnalysisSaved={onAnalysisSaved}
+        />,
+      );
+      await addImageViaInput(container);
+      await clickAnalyzeAndConfirm(user);
+      await waitFor(() => {
+        expect(onAnalysisSaved).toHaveBeenCalledOnce();
+      });
+    });
+
+    it('does not call onAnalysisSaved when analysis is null', async () => {
+      const onAnalysisSaved = vi.fn();
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ analysis: null, raw: 'text' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+          onAnalysisSaved={onAnalysisSaved}
+        />,
+      );
+      await addImageViaInput(container);
+      await clickAnalyzeAndConfirm(user);
+      await waitFor(() => {
+        expect(screen.getByText(/could not parse/i)).toBeInTheDocument();
+      });
+      expect(onAnalysisSaved).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── POSITIONS PRE-FETCH FAILURE ──
+
+  describe('positions pre-fetch', () => {
+    it('proceeds with analysis when positions fetch fails', async () => {
+      const user = userEvent.setup();
+      let callCount = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((url: string) => {
+          callCount++;
+          if (url.includes('/api/positions'))
+            return Promise.reject(new Error('Network error'));
+          return new Response(
+            JSON.stringify({
+              analysis: SAMPLE_ANALYSIS,
+              raw: JSON.stringify(SAMPLE_ANALYSIS),
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }),
+      );
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(container);
+      await clickAnalyzeAndConfirm(user);
+      await waitFor(() => {
+        expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
+      });
+      expect(callCount).toBe(2); // positions + analyze
+    });
+
+    it('skips positions fetch for backtests', async () => {
+      const user = userEvent.setup();
+      const mockFn = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            analysis: SAMPLE_ANALYSIS,
+            raw: JSON.stringify(SAMPLE_ANALYSIS),
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+      vi.stubGlobal('fetch', mockFn);
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext({ isBacktest: true })}
+        />,
+      );
+      await addImageViaInput(container);
+      await clickAnalyzeAndConfirm(user);
+      await waitFor(() => {
+        expect(screen.getByText('IRON CONDOR')).toBeInTheDocument();
+      });
+      // Only the /api/analyze call, no positions pre-fetch
+      expect(mockFn).toHaveBeenCalledTimes(1);
+      expect(mockFn.mock.calls[0]![0]).toBe('/api/analyze');
+    });
+  });
+
+  // ── CSV UPLOAD ──
+
+  describe('CSV upload', () => {
+    it('uploads CSV and shows spread count on success', async () => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              positions: { stats: { totalSpreads: 3 } },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+      );
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(container);
+
+      const csvInput = container.querySelector(
+        'input[accept=".csv"]',
+      ) as HTMLInputElement;
+      const csvFile = new File(['csv data'], 'positions.csv', {
+        type: 'text/csv',
+      });
+      fireEvent.change(csvInput, { target: { files: [csvFile] } });
+
+      await waitFor(() => {
+        expect(screen.getByText(/3 spreads loaded/)).toBeInTheDocument();
+      });
+    });
+
+    it('shows error on CSV upload failure', async () => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ error: 'Bad CSV' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(container);
+
+      const csvInput = container.querySelector(
+        'input[accept=".csv"]',
+      ) as HTMLInputElement;
+      const csvFile = new File(['bad'], 'positions.csv', {
+        type: 'text/csv',
+      });
+      fireEvent.change(csvInput, { target: { files: [csvFile] } });
+
+      await waitFor(() => {
+        expect(screen.getByText('Bad CSV')).toBeInTheDocument();
+      });
+    });
+  });
+
   // ── RAW FALLBACK ──
 
   describe('raw response fallback', () => {

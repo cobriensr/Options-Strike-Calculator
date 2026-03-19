@@ -27,7 +27,12 @@ interface Props {
   readonly onAnalysisSaved?: () => void;
 }
 
-export default function ChartAnalysis({ th, results, context, onAnalysisSaved }: Props) {
+export default function ChartAnalysis({
+  th,
+  results,
+  context,
+  onAnalysisSaved,
+}: Props) {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [mode, setMode] = useState<AnalysisMode>('entry');
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
@@ -381,7 +386,7 @@ export default function ChartAnalysis({ th, results, context, onAnalysisSaved }:
       abortRef.current = null;
       setLoading(false);
     }
-  }, [images, context, results, mode]);
+  }, [images, context, results, mode, onAnalysisSaved]);
 
   // ── Render ────────────────────────────────────────────────
 
