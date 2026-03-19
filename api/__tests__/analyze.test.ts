@@ -146,10 +146,10 @@ describe('POST /api/analyze', () => {
     expect(res._json).toEqual({ error: 'At least one image is required' });
   });
 
-  it('returns 400 when more than 7 images', async () => {
+  it('returns 400 when more than 8 images', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
-    const images = Array.from({ length: 8 }, () => ({
+    const images = Array.from({ length: 9 }, () => ({
       data: 'base64',
       mediaType: 'image/png',
     }));
@@ -158,7 +158,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Maximum 7 images allowed' });
+    expect(res._json).toEqual({ error: 'Maximum 8 images allowed' });
   });
 
   it('returns parsed analysis on success', async () => {

@@ -34,9 +34,21 @@ export default function AnalysisResults({
   };
 
   const signalColor = (s: string) => {
-    if (s === 'BEARISH' || s === 'CONTRADICTS' || s === 'UNFAVORABLE')
+    if (
+      s === 'BEARISH' ||
+      s === 'CONTRADICTS' ||
+      s === 'UNFAVORABLE' ||
+      s === 'DECAYING' ||
+      s === 'NEGATIVE'
+    )
       return th.red;
-    if (s === 'BULLISH' || s === 'CONFIRMS' || s === 'FAVORABLE')
+    if (
+      s === 'BULLISH' ||
+      s === 'CONFIRMS' ||
+      s === 'FAVORABLE' ||
+      s === 'SUPPORTIVE' ||
+      s === 'POSITIVE'
+    )
       return th.green;
     if (s === 'NEUTRAL' || s === 'NOT PROVIDED') return th.textMuted;
     return th.caution;
@@ -162,7 +174,7 @@ export default function AnalysisResults({
 
       {/* Per-Chart Confidence (always visible, compact) */}
       {analysis.chartConfidence && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
           {(
             [
               ['marketTide', 'Market Tide'],
@@ -170,6 +182,8 @@ export default function AnalysisResults({
               ['spyNetFlow', 'SPY Flow'],
               ['qqqNetFlow', 'QQQ Flow'],
               ['periscope', 'Periscope'],
+              ['netCharm', 'Net Charm'],
+              ['aggregateGex', 'Aggregate GEX'],
             ] as const
           ).map(([key, label]) => {
             const sig = analysis.chartConfidence?.[key];

@@ -66,7 +66,7 @@ export default function ChartAnalysis({
 
   const addImage = useCallback(
     (file: File) => {
-      if (images.length >= 7) return;
+      if (images.length >= 8) return;
       const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const preview = URL.createObjectURL(file);
       setImages((prev) => {
@@ -129,7 +129,7 @@ export default function ChartAnalysis({
       const files = Array.from(e.dataTransfer.files).filter((f) =>
         f.type.startsWith('image/'),
       );
-      for (const f of files.slice(0, 7 - images.length)) addImage(f);
+      for (const f of files.slice(0, 8 - images.length)) addImage(f);
     },
     [addImage, images.length],
   );
@@ -137,7 +137,7 @@ export default function ChartAnalysis({
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
-      for (const f of files.slice(0, 7 - images.length)) addImage(f);
+      for (const f of files.slice(0, 8 - images.length)) addImage(f);
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
     [addImage, images.length],
@@ -222,6 +222,7 @@ export default function ChartAnalysis({
     'Checking Net Flow confirmation...',
     'Evaluating gamma exposure...',
     'Checking charm decay profile...',
+    'Reading aggregate GEX regime...',
     'Mapping strikes to gamma zones...',
     'Building entry plan...',
     'Assessing hedge options...',
@@ -443,7 +444,7 @@ export default function ChartAnalysis({
           <div className="text-muted text-[12px]">
             {images.length === 0
               ? 'Drop or click to upload, or paste (Ctrl+V) a screenshot from clipboard'
-              : `${images.length}/7 images \u2014 drop, click, or paste more`}
+              : `${images.length}/8 images \u2014 drop, click, or paste more`}
           </div>
         </button>
 
