@@ -442,7 +442,8 @@ export default function StrikeCalculator() {
                       events: (market.data.events?.events ?? [])
                         .filter(
                           (e) =>
-                            e.severity === 'high' || e.severity === 'medium',
+                            (e.severity === 'high' || e.severity === 'medium') &&
+                            e.date === vix.selectedDate,
                         )
                         .map((e) => ({
                           event: e.event,
