@@ -10,10 +10,10 @@ import userEvent from '@testing-library/user-event';
 
 import ChartAnalysis from '../components/ChartAnalysis';
 import type { AnalysisContext } from '../components/ChartAnalysis';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { CalculationResults } from '../types';
 
-const th = lightTheme;
+const th = theme;
 
 // ============================================================
 // HELPERS
@@ -1078,7 +1078,6 @@ describe('ChartAnalysis', () => {
 
   describe('CSV upload', () => {
     it('uploads CSV and shows spread count on success', async () => {
-      const user = userEvent.setup();
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue(
@@ -1113,7 +1112,6 @@ describe('ChartAnalysis', () => {
     });
 
     it('shows error on CSV upload failure', async () => {
-      const user = userEvent.setup();
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue(

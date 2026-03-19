@@ -483,15 +483,15 @@ describe('AnalysisHistory', () => {
         );
       });
 
-      const callsBefore = fetchMock.mock.calls.filter((c: string[]) =>
-        c[0].includes('dates=true'),
+      const callsBefore = fetchMock.mock.calls.filter((c: unknown[]) =>
+        (c[0] as string).includes('dates=true'),
       ).length;
 
       rerender(<AnalysisHistory th={th} refreshKey={1} />);
 
       await waitFor(() => {
-        const callsAfter = fetchMock.mock.calls.filter((c: string[]) =>
-          c[0].includes('dates=true'),
+        const callsAfter = fetchMock.mock.calls.filter((c: unknown[]) =>
+          (c[0] as string).includes('dates=true'),
         ).length;
         expect(callsAfter).toBe(callsBefore + 1);
       });
@@ -515,15 +515,15 @@ describe('AnalysisHistory', () => {
         );
       });
 
-      const dateCalls = fetchMock.mock.calls.filter((c: string[]) =>
-        c[0].includes('date=2025-03-01'),
+      const dateCalls = fetchMock.mock.calls.filter((c: unknown[]) =>
+        (c[0] as string).includes('date=2025-03-01'),
       ).length;
 
       rerender(<AnalysisHistory th={th} refreshKey={1} />);
 
       await waitFor(() => {
-        const newDateCalls = fetchMock.mock.calls.filter((c: string[]) =>
-          c[0].includes('date=2025-03-01'),
+        const newDateCalls = fetchMock.mock.calls.filter((c: unknown[]) =>
+          (c[0] as string).includes('date=2025-03-01'),
         ).length;
         expect(newDateCalls).toBe(dateCalls + 1);
       });
