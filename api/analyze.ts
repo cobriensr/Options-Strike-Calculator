@@ -576,7 +576,6 @@ Notes on the response:
 - entryPlan should account for the trader's laddered entry style (2-4 entries, typically 9:00 AM, 10:00 AM, 11:00 AM CT).
 - If any field is not applicable, set it to null rather than omitting it.
 </response_format>`;
- 
 
 // ============================================================
 // HANDLER
