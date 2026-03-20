@@ -783,11 +783,13 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     const anthropic = new Anthropic({
       apiKey,
       timeout: 720_000, // 12 minutes — Opus with adaptive thinking can take 5+ min
+      maxRetries: 3, // SDK retries with exponential backoff (0.5s → 1s → 2s)
     });
 
     // Stream the response — Anthropic sends headers immediately with streaming,
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
-    // Retry once on transient stream failures, then fall back to Sonnet if Opus is down.
+    // The SDK handles transient retries (429, 5xx, connection errors) internally.
+    // Our wrapper only handles the Opus → Sonnet model fallback.
     const streamRequest = (model: string) =>
       anthropic.messages
         .stream({
@@ -806,48 +808,16 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         } as unknown as Parameters<typeof anthropic.messages.stream>[0])
         .finalMessage();
 
-    const isRetryable = (err: unknown): boolean => {
-      if (!(err instanceof Error)) return false;
-      // Match 5xx status codes or known Anthropic error types
-      if (/api_error|overloaded|internal.server/i.test(err.message))
-        return true;
-      if (
-        'status' in err &&
-        typeof err.status === 'number' &&
-        err.status >= 500
-      )
-        return true;
-      // Match network-level failures (TCP resets, timeouts, connection refused)
-      if (
-        /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|terminated|socket hang up|network/i.test(
-          err.message,
-        )
-      )
-        return true;
-      return false;
-    };
-
     let data: Awaited<ReturnType<typeof streamRequest>>;
     let usedModel = 'claude-opus-4-6';
     try {
       data = await streamRequest('claude-opus-4-6');
-    } catch (opusErr1) {
-      if (!isRetryable(opusErr1)) throw opusErr1;
-      // Brief pause before retry — immediate retry often hits the same broken connection
-      logger.info(
-        { err: opusErr1 },
-        'Opus stream failed, retrying after 2s...',
-      );
-      await new Promise((r) => setTimeout(r, 2000));
-      try {
-        data = await streamRequest('claude-opus-4-6');
-      } catch (opusErr2) {
-        if (!isRetryable(opusErr2)) throw opusErr2;
-        // Opus is down — fall back to Sonnet
-        logger.info('Opus unavailable, falling back to Sonnet 4.6...');
-        usedModel = 'claude-sonnet-4-6';
-        data = await streamRequest('claude-sonnet-4-6');
-      }
+    } catch (opusErr) {
+      // SDK already retried 3× with backoff. If we're here, Opus is genuinely down.
+      // Fall back to Sonnet rather than failing the request.
+      logger.info({ err: opusErr }, 'Opus exhausted SDK retries, falling back to Sonnet 4.6');
+      usedModel = 'claude-sonnet-4-6';
+      data = await streamRequest('claude-sonnet-4-6');
     }
 
     // Log usage for cost monitoring
