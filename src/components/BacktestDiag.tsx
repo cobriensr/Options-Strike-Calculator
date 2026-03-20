@@ -9,6 +9,7 @@
  *   <BacktestDiag snapshot={historySnapshot} history={historyData} />
  */
 
+import { useState } from 'react';
 import type {
   HistorySnapshot,
   UseHistoryDataReturn,
@@ -31,6 +32,8 @@ export default function BacktestDiag({
   timeAmPm,
   timezone,
 }: Props) {
+  const [collapsed, setCollapsed] = useState(false);
+
   if (!snapshot) return null;
 
   const displayTime = `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`;
@@ -96,49 +99,65 @@ export default function BacktestDiag({
         border: '1px solid #333',
       }}
     >
-      <div
+      <button
+        onClick={() => setCollapsed(c => !c)}
         style={{
           fontWeight: 700,
           fontSize: 12,
-          marginBottom: 6,
+          marginBottom: collapsed ? 0 : 6,
           color: 'var(--color-backtest)',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          width: '100%',
+          background: 'none',
+          border: 'none',
+          padding: 0,
+          textAlign: 'left',
         }}
       >
         Backtest Diagnostic
-      </div>
-      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-        <tbody>
-          {rows.map(([label, value]) => (
-            <tr key={label}>
-              <td
-                style={{
-                  padding: '1px 8px 1px 0',
-                  color: '#888',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {label}
-              </td>
-              <td
-                style={{
-                  padding: '1px 0',
-                  color:
-                    value === 'no data' || value.includes('n/a')
-                      ? '#f44'
-                      : '#e0e0e0',
-                  textAlign: 'right',
-                }}
-              >
-                {value}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {history.error && (
-        <div style={{ marginTop: 6, color: '#f44', fontSize: 10 }}>
-          Error: {history.error}
-        </div>
+        <span style={{ fontSize: 10, color: '#888' }}>{collapsed ? '▲' : '▼'}</span>
+      </button>
+      {!collapsed && (
+        <>
+          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+            <tbody>
+              {rows.map(([label, value]) => (
+                <tr key={label}>
+                  <td
+                    style={{
+                      padding: '1px 8px 1px 0',
+                      color: '#888',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {label}
+                  </td>
+                  <td
+                    style={{
+                      padding: '1px 0',
+                      color:
+                        value === 'no data' || value.includes('n/a')
+                          ? '#f44'
+                          : '#e0e0e0',
+                      textAlign: 'right',
+                    }}
+                  >
+                    {value}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {history.error && (
+            <div style={{ marginTop: 6, color: '#f44', fontSize: 10 }}>
+              Error: {history.error}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
