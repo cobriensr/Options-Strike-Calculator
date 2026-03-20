@@ -13,7 +13,7 @@
   ],
   "headers": [
     {
-      "source": "/(.*)",
+      "source": "/((?!149e9513-01fa-4fb0-aad4-566afd725d1b).*)",
       "headers": [
         { "key": "X-Content-Type-Options", "value": "nosniff" },
         { "key": "X-Frame-Options", "value": "SAMEORIGIN" },

@@ -88,7 +88,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Owner-only: public visitors get 401, frontend falls back to manual input
       if (rejectIfNotOwner(req, res)) return done({ status: 401 });
 
-      const botCheck = await checkBotId();
+      const botCheck = await checkBotId({ advancedOptions: { headers: req.headers } });
       if (botCheck.isBot) {
         done({ status: 403 });
         return res.status(403).json({ error: 'Access denied' });

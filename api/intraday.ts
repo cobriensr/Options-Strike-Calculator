@@ -129,7 +129,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return;
       }
 
-      const botCheck = await checkBotId();
+      const botCheck = await checkBotId({ advancedOptions: { headers: req.headers } });
       if (botCheck.isBot) {
         done({ status: 403 });
         res.status(403).json({ error: 'Access denied' });
