@@ -55,6 +55,39 @@ export default function ChartAnalysis({
     spreadCount?: number;
   }>({ status: 'idle' });
 
+  const [entryExistsToday, setEntryExistsToday] = useState(false);
+
+  // Check if a pre-trade entry already exists for today's selected date
+  useEffect(() => {
+    const date = context.selectedDate;
+    if (!date) {
+      setEntryExistsToday(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/analyses?date=${encodeURIComponent(date)}`,
+          { credentials: 'include' },
+        );
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const hasEntry = (data.analyses ?? []).some(
+          (a: { mode: string }) => a.mode === 'entry',
+        );
+        if (!cancelled) {
+          setEntryExistsToday(hasEntry);
+          // Auto-switch away from entry if one already exists
+          if (hasEntry && mode === 'entry') setMode('midday');
+        }
+      } catch {
+        // Non-critical — leave button enabled if check fails
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [context.selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const cancelAnalysis = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
@@ -84,6 +117,13 @@ export default function ChartAnalysis({
       const img = prev.find((i) => i.id === id);
       if (img) URL.revokeObjectURL(img.preview);
       return prev.filter((i) => i.id !== id);
+    });
+  }, []);
+
+  const clearAllImages = useCallback(() => {
+    setImages((prev) => {
+      for (const img of prev) URL.revokeObjectURL(img.preview);
+      return [];
     });
   }, []);
 
@@ -326,6 +366,8 @@ export default function ChartAnalysis({
             setAnalysis(data.analysis);
             lastAnalysisRef.current = data.analysis;
             onAnalysisSaved?.();
+            // If we just ran a pre-trade entry, lock the button immediately
+            if (mode === 'entry') setEntryExistsToday(true);
           }
           if (data.raw) setRawResponse(data.raw);
           if (!data.analysis && data.raw)
@@ -396,24 +438,32 @@ export default function ChartAnalysis({
       <div className="font-sans text-[11px] leading-relaxed">
         {/* Mode selector */}
         <div className="mb-3 flex gap-1.5">
-          {(Object.keys(MODE_LABELS) as AnalysisMode[]).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMode(m)}
-              className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-all"
-              style={{
-                backgroundColor:
-                  mode === m ? tint(th.accent, '18') : th.surfaceAlt,
-                color: mode === m ? th.accent : th.textMuted,
-                border: `1px solid ${mode === m ? tint(th.accent, '40') : 'transparent'}`,
-              }}
-            >
-              {MODE_LABELS[m].label}
-            </button>
-          ))}
+          {(Object.keys(MODE_LABELS) as AnalysisMode[]).map((m) => {
+            const disabled = m === 'entry' && entryExistsToday;
+            return (
+              <button
+                key={m}
+                type="button"
+                disabled={disabled}
+                onClick={() => !disabled && setMode(m)}
+                className={`rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-all ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}
+                style={{
+                  backgroundColor:
+                    mode === m ? tint(th.accent, '18') : th.surfaceAlt,
+                  color: mode === m ? th.accent : th.textMuted,
+                  border: `1px solid ${mode === m ? tint(th.accent, '40') : 'transparent'}`,
+                }}
+                title={disabled ? 'Pre-trade entry already exists for this date' : MODE_LABELS[m].desc}
+              >
+                {MODE_LABELS[m].label}
+                {disabled && ' ✓'}
+              </button>
+            );
+          })}
           <span className="text-muted ml-2 self-center text-[10px] italic">
-            {MODE_LABELS[mode].desc}
+            {entryExistsToday && mode !== 'entry'
+              ? `${MODE_LABELS[mode].desc} — entry already ran today`
+              : MODE_LABELS[mode].desc}
           </span>
         </div>
 
@@ -449,6 +499,22 @@ export default function ChartAnalysis({
         </button>
 
         {/* Image previews */}
+        {images.length > 0 && (
+          <div className="mb-1.5 flex justify-end">
+            <button
+              type="button"
+              onClick={clearAllImages}
+              className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
+              style={{
+                backgroundColor: tint(th.red, '12'),
+                color: th.red,
+                border: `1px solid ${tint(th.red, '25')}`,
+              }}
+            >
+              Clear All Images
+            </button>
+          </div>
+        )}
         {images.length > 0 && (
           <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {images.map((img) => (
