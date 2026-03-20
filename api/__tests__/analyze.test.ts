@@ -537,10 +537,11 @@ describe('POST /api/analyze', () => {
     vi.useRealTimers();
   });
 
-  it('retries Opus once on server error then succeeds', async () => {
+  it('falls back to Sonnet when Opus fails with server error', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
-    // First call throws a server error, second succeeds
+    // SDK retries are internal (maxRetries: 3). When mockFinalMessage rejects,
+    // it means Opus is exhausted — code falls back to Sonnet immediately.
     const serverErr = Object.assign(new Error('Internal server error'), {
       status: 500,
     });
@@ -554,29 +555,29 @@ describe('POST /api/analyze', () => {
 
     expect(res._status).toBe(200);
     expect(mockStream).toHaveBeenCalledTimes(2);
-    // Both calls should use Opus
+    // First call is Opus, second is Sonnet fallback
     expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-6');
-    expect(mockStream.mock.calls[1]![0].model).toBe('claude-opus-4-6');
+    expect(mockStream.mock.calls[1]![0].model).toBe('claude-sonnet-4-6');
+    const json = res._json as { model: string };
+    expect(json.model).toBe('claude-sonnet-4-6');
   });
 
-  it('falls back to Sonnet when Opus retry also fails with server error', async () => {
+  it('returns 500 when both Opus and Sonnet fail', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
     const serverErr = Object.assign(new Error('overloaded'), { status: 529 });
     mockFinalMessage
       .mockRejectedValueOnce(serverErr)
-      .mockRejectedValueOnce(serverErr)
-      .mockResolvedValueOnce(makeSDKResponse(SAMPLE_ANALYSIS));
+      .mockRejectedValueOnce(serverErr);
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(200);
-    expect(mockStream).toHaveBeenCalledTimes(3);
-    expect(mockStream.mock.calls[2]![0].model).toBe('claude-sonnet-4-6');
-    const json = res._json as { model: string };
-    expect(json.model).toBe('claude-sonnet-4-6');
+    expect(res._status).toBe(502);
+    expect(mockStream).toHaveBeenCalledTimes(2);
+    expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-6');
+    expect(mockStream.mock.calls[1]![0].model).toBe('claude-sonnet-4-6');
   });
 
   it('handles response with only thinking blocks (no text)', async () => {

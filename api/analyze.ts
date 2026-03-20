@@ -815,7 +815,10 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     } catch (opusErr) {
       // SDK already retried 3× with backoff. If we're here, Opus is genuinely down.
       // Fall back to Sonnet rather than failing the request.
-      logger.info({ err: opusErr }, 'Opus exhausted SDK retries, falling back to Sonnet 4.6');
+      logger.info(
+        { err: opusErr },
+        'Opus exhausted SDK retries, falling back to Sonnet 4.6',
+      );
       usedModel = 'claude-sonnet-4-6';
       data = await streamRequest('claude-sonnet-4-6');
     }
