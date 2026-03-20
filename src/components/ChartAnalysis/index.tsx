@@ -56,12 +56,14 @@ export default function ChartAnalysis({
   }>({ status: 'idle' });
 
   const [entryExistsToday, setEntryExistsToday] = useState(false);
+  const [reviewExistsToday, setReviewExistsToday] = useState(false);
 
-  // Check if a pre-trade entry already exists for today's selected date
+  // Check which analysis modes already exist for today's selected date
   useEffect(() => {
     const date = context.selectedDate;
     if (!date) {
       setEntryExistsToday(false);
+      setReviewExistsToday(false);
       return;
     }
     let cancelled = false;
@@ -73,16 +75,23 @@ export default function ChartAnalysis({
         );
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        const hasEntry = (data.analyses ?? []).some(
+        const analyses = data.analyses ?? [];
+        const hasEntry = analyses.some(
           (a: { mode: string }) => a.mode === 'entry',
+        );
+        const hasReview = analyses.some(
+          (a: { mode: string }) => a.mode === 'review',
         );
         if (!cancelled) {
           setEntryExistsToday(hasEntry);
-          // Auto-switch away from entry if one already exists
-          if (hasEntry && mode === 'entry') setMode('midday');
+          setReviewExistsToday(hasReview);
+          // Auto-switch to the next logical mode
+          if (hasReview && (mode === 'entry' || mode === 'midday'))
+            setMode('review');
+          else if (hasEntry && mode === 'entry') setMode('midday');
         }
       } catch {
-        // Non-critical — leave button enabled if check fails
+        // Non-critical — leave buttons enabled if check fails
       }
     })();
     return () => {
@@ -368,8 +377,9 @@ export default function ChartAnalysis({
             setAnalysis(data.analysis);
             lastAnalysisRef.current = data.analysis;
             onAnalysisSaved?.();
-            // If we just ran a pre-trade entry, lock the button immediately
+            // Lock completed modes immediately without waiting for re-fetch
             if (mode === 'entry') setEntryExistsToday(true);
+            if (mode === 'review') setReviewExistsToday(true);
           }
           if (data.raw) setRawResponse(data.raw);
           if (!data.analysis && data.raw)
@@ -441,7 +451,22 @@ export default function ChartAnalysis({
         {/* Mode selector */}
         <div className="mb-3 flex gap-1.5">
           {(Object.keys(MODE_LABELS) as AnalysisMode[]).map((m) => {
-            const disabled = m === 'entry' && entryExistsToday;
+            const disabled =
+              (m === 'entry' && entryExistsToday) ||
+              (m === 'midday' && reviewExistsToday);
+            const disabledReason =
+              m === 'entry' && entryExistsToday
+                ? 'Pre-trade entry already exists for this date'
+                : m === 'midday' && reviewExistsToday
+                  ? 'Review already exists — mid-day is locked'
+                  : undefined;
+            const modeColor =
+              m === 'entry'
+                ? th.accent
+                : m === 'midday'
+                  ? th.caution
+                  : th.green;
+            const isActive = mode === m;
             return (
               <button
                 key={m}
@@ -450,26 +475,25 @@ export default function ChartAnalysis({
                 onClick={() => !disabled && setMode(m)}
                 className={`rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-all ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}
                 style={{
-                  backgroundColor:
-                    mode === m ? tint(th.accent, '18') : th.surfaceAlt,
-                  color: mode === m ? th.accent : th.textMuted,
-                  border: `1px solid ${mode === m ? tint(th.accent, '40') : 'transparent'}`,
+                  backgroundColor: isActive
+                    ? tint(modeColor, '18')
+                    : th.surfaceAlt,
+                  color: isActive ? modeColor : th.textMuted,
+                  border: `1px solid ${isActive ? tint(modeColor, '40') : 'transparent'}`,
                 }}
-                title={
-                  disabled
-                    ? 'Pre-trade entry already exists for this date'
-                    : MODE_LABELS[m].desc
-                }
+                title={disabledReason ?? MODE_LABELS[m].desc}
               >
                 {MODE_LABELS[m].label}
-                {disabled && ' ✓'}
+                {disabled && ' \u2713'}
               </button>
             );
           })}
           <span className="text-muted ml-2 self-center text-[10px] italic">
-            {entryExistsToday && mode !== 'entry'
-              ? `${MODE_LABELS[mode].desc} — entry already ran today`
-              : MODE_LABELS[mode].desc}
+            {reviewExistsToday && mode === 'review'
+              ? `${MODE_LABELS[mode].desc} — review already ran today`
+              : entryExistsToday && mode !== 'entry'
+                ? `${MODE_LABELS[mode].desc} — entry already ran today`
+                : MODE_LABELS[mode].desc}
           </span>
         </div>
 
