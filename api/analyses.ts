@@ -83,7 +83,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           COUNT(*) FILTER (WHERE mode = 'midday') AS middays,
           COUNT(*) FILTER (WHERE mode = 'review') AS reviews
         FROM analyses
-        GROUP BY date ORDER BY date DESC LIMIT 90
+        GROUP BY date ORDER BY date DESC
       `;
       done({ status: 200 });
       return res.status(200).json({
