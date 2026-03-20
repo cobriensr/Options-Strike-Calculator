@@ -21,6 +21,7 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { checkBotId } from 'botid/server';
 import {
   schwabFetch,
   setCacheHeaders,
@@ -86,6 +87,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       // Owner-only: public visitors get 401, frontend falls back to manual input
       if (rejectIfNotOwner(req, res)) return done({ status: 401 });
+
+      const botCheck = await checkBotId();
+      if (botCheck.isBot) {
+        done({ status: 403 });
+        return res.status(403).json({ error: 'Access denied' });
+      }
       const result = await schwabFetch<SchwabQuotesResponse>(
         `/quotes?symbols=${encodeURIComponent(SYMBOLS)}&fields=quote`,
       );

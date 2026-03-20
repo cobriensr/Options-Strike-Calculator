@@ -221,7 +221,7 @@ export default function StrikeCalculator() {
               'color-mix(in srgb, var(--color-page) 85%, transparent)',
           }}
         >
-          <div className="mx-auto flex max-w-[660px] lg:max-w-6xl items-center justify-between px-5 py-3">
+          <div className="mx-auto flex max-w-[660px] items-center justify-between px-5 py-3 lg:max-w-6xl">
             <div>
               <div className="text-accent font-sans text-[10px] font-bold tracking-[0.2em] uppercase">
                 0DTE Options
@@ -277,7 +277,7 @@ export default function StrikeCalculator() {
           </div>
         </header>
 
-        <div className="mx-auto max-w-[660px] lg:max-w-6xl px-5 pt-6 pb-12">
+        <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
           {/* Subtitle — below sticky header */}
           <p className="text-secondary mb-8 text-[15px] leading-normal">
             Black-Scholes approximation for delta-based strike placement

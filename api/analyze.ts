@@ -16,6 +16,7 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
+import { checkBotId } from 'botid/server';
 import { rejectIfNotOwner, rejectIfRateLimited } from './_lib/api-helpers.js';
 import {
   saveAnalysis,
@@ -623,6 +624,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     done({ status: 405 });
     return res.status(405).json({ error: 'POST only' });
+  }
+
+  const botCheck = await checkBotId();
+  if (botCheck.isBot) {
+    done({ status: 403 });
+    return res.status(403).json({ error: 'Access denied' });
   }
 
   const ownerCheck = rejectIfNotOwner(req, res);

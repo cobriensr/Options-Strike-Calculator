@@ -20,6 +20,7 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { checkBotId } from 'botid/server';
 import {
   schwabFetch,
   setCacheHeaders,
@@ -105,6 +106,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         done({ status: 401 });
         return;
       }
+
+      const botCheck = await checkBotId();
+      if (botCheck.isBot) {
+        done({ status: 403 });
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
       const params = new URLSearchParams({
         symbol: '$SPX',
         periodType: 'month',

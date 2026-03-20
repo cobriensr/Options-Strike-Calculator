@@ -100,7 +100,7 @@ export default function BacktestDiag({
       }}
     >
       <button
-        onClick={() => setCollapsed(c => !c)}
+        onClick={() => setCollapsed((c) => !c)}
         style={{
           fontWeight: 700,
           fontSize: 12,
@@ -119,7 +119,9 @@ export default function BacktestDiag({
         }}
       >
         Backtest Diagnostic
-        <span style={{ fontSize: 10, color: '#888' }}>{collapsed ? '▲' : '▼'}</span>
+        <span style={{ fontSize: 10, color: '#888' }}>
+          {collapsed ? '▲' : '▼'}
+        </span>
       </button>
       {!collapsed && (
         <>
