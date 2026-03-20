@@ -85,7 +85,9 @@ export default function ChartAnalysis({
         // Non-critical — leave button enabled if check fails
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [context.selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cancelAnalysis = useCallback(() => {
@@ -453,7 +455,11 @@ export default function ChartAnalysis({
                   color: mode === m ? th.accent : th.textMuted,
                   border: `1px solid ${mode === m ? tint(th.accent, '40') : 'transparent'}`,
                 }}
-                title={disabled ? 'Pre-trade entry already exists for this date' : MODE_LABELS[m].desc}
+                title={
+                  disabled
+                    ? 'Pre-trade entry already exists for this date'
+                    : MODE_LABELS[m].desc
+                }
               >
                 {MODE_LABELS[m].label}
                 {disabled && ' ✓'}
