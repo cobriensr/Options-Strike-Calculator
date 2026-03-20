@@ -806,7 +806,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         } as unknown as Parameters<typeof anthropic.messages.stream>[0])
         .finalMessage();
 
-    const isServerError = (err: unknown): boolean => {
+    const isRetryable = (err: unknown): boolean => {
       if (!(err instanceof Error)) return false;
       // Match 5xx status codes or known Anthropic error types
       if (/api_error|overloaded|internal.server/i.test(err.message))
@@ -817,6 +817,13 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         err.status >= 500
       )
         return true;
+      // Match network-level failures (TCP resets, timeouts, connection refused)
+      if (
+        /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|terminated|socket hang up|network/i.test(
+          err.message,
+        )
+      )
+        return true;
       return false;
     };
 
@@ -825,13 +832,17 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     try {
       data = await streamRequest('claude-opus-4-6');
     } catch (opusErr1) {
-      if (!isServerError(opusErr1)) throw opusErr1;
-      // Retry Opus once
-      logger.info('Opus stream failed, retrying once...');
+      if (!isRetryable(opusErr1)) throw opusErr1;
+      // Brief pause before retry — immediate retry often hits the same broken connection
+      logger.info(
+        { err: opusErr1 },
+        'Opus stream failed, retrying after 2s...',
+      );
+      await new Promise((r) => setTimeout(r, 2000));
       try {
         data = await streamRequest('claude-opus-4-6');
       } catch (opusErr2) {
-        if (!isServerError(opusErr2)) throw opusErr2;
+        if (!isRetryable(opusErr2)) throw opusErr2;
         // Opus is down — fall back to Sonnet
         logger.info('Opus unavailable, falling back to Sonnet 4.6...');
         usedModel = 'claude-sonnet-4-6';
