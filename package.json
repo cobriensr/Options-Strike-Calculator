@@ -23,7 +23,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.79.0",
+    "@anthropic-ai/sdk": "^0.80.0",
     "@neondatabase/serverless": "^1.0.2",
     "@sentry/node": "^10.44.0",
     "@sentry/react": "^10.44.0",
