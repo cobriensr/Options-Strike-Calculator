@@ -25,6 +25,7 @@ import ChartAnalysis from './components/ChartAnalysis';
 import type { AnalysisContext } from './components/ChartAnalysis';
 import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
 import BacktestDiag from './components/BacktestDiag';
+import RiskCalculator from './components/RiskCalculator';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StatusBadge } from './components/ui';
 import { Analytics } from '@vercel/analytics/react';
@@ -369,6 +370,10 @@ export default function StrikeCalculator() {
               contracts={contracts}
               onContractsChange={setContracts}
             />
+
+            <ErrorBoundary label="Risk Calculator">
+              <RiskCalculator />
+            </ErrorBoundary>
 
             <ErrorBoundary label="Market Regime">
               <MarketRegimeSection
