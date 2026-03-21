@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import type { Theme } from '../themes';
 import type { AmPm, Timezone } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
@@ -22,11 +22,24 @@ const DateInput = memo(function DateInput({
   className: string;
   onDateChange: (v: string) => void;
 }) {
+  const ref = useRef<HTMLInputElement>(null);
+
+  // Sync programmatic value changes (e.g. auto-fill) via ref so React never
+  // writes to input.value during reconciliation. Both iOS Safari and Android
+  // Firefox close the native date picker the moment React touches the DOM node,
+  // even when the value is unchanged. Uncontrolled + ref sidesteps that entirely.
+  useEffect(() => {
+    if (ref.current && ref.current.value !== value) {
+      ref.current.value = value;
+    }
+  }, [value]);
+
   return (
     <input
+      ref={ref}
       id="date-picker"
       type="date"
-      value={value}
+      defaultValue={value}
       onChange={(e) => onDateChange(e.target.value)}
       className={className}
     />
