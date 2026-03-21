@@ -8,6 +8,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
   isMarketOpen: vi.fn(),
+  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
 import handler from '../yesterday.js';

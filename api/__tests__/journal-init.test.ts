@@ -5,6 +5,7 @@ import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfNotOwner: vi.fn(),
+  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
 vi.mock('../_lib/db.js', () => ({

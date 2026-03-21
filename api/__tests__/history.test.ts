@@ -7,6 +7,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfNotOwner: vi.fn(),
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
+  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
 vi.mock('../_lib/schwab.js', () => ({

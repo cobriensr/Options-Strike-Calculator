@@ -507,9 +507,9 @@ describe('RiskCalculator: conviction grid', () => {
   it('shows all four conviction tiers', () => {
     render(<RiskCalculator />);
     expect(screen.getByText('High')).toBeInTheDocument();
-    expect(screen.getByText('Mod')).toBeInTheDocument();
+    expect(screen.getByText('Medium')).toBeInTheDocument();
     expect(screen.getByText('Low')).toBeInTheDocument();
-    expect(screen.getByText('Out')).toBeInTheDocument();
+    expect(screen.getByText('Sit Out')).toBeInTheDocument();
   });
 
   it('shows correct ranges for each conviction tier', () => {
