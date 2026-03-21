@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AdvancedSection from '../components/AdvancedSection';
 import { lightTheme } from '../themes';
+import type { VIXDayData, OHLCField } from '../types';
 
 const th = lightTheme;
 
@@ -19,6 +20,11 @@ function defaultProps(
     onWingWidthChange: vi.fn(),
     contracts: 1,
     onContractsChange: vi.fn(),
+    vixOHLC: null as VIXDayData | null,
+    vixOHLCField: 'smart' as OHLCField,
+    onOHLCFieldChange: vi.fn(),
+    vixDataLoaded: false,
+    selectedDate: '',
     ...overrides,
   };
 }
@@ -540,5 +546,257 @@ describe('AdvancedSection', () => {
       />,
     );
     expect(screen.queryByText('Max Loss')).not.toBeInTheDocument();
+  });
+
+  // ============================================================
+  // VIX OHLC DISPLAY
+  // ============================================================
+
+  const sampleOHLC: VIXDayData = {
+    open: 18.5,
+    high: 20.25,
+    low: 17.8,
+    close: 19.1,
+  };
+
+  it('shows OHLC values when vixOHLC is provided', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+        })}
+      />,
+    );
+    expect(screen.getByText('18.50')).toBeInTheDocument();
+    expect(screen.getByText('20.25')).toBeInTheDocument();
+    expect(screen.getByText('17.80')).toBeInTheDocument();
+    expect(screen.getByText('19.10')).toBeInTheDocument();
+  });
+
+  it('shows OHLC field labels', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+        })}
+      />,
+    );
+    expect(screen.getByText('open')).toBeInTheDocument();
+    expect(screen.getByText('high')).toBeInTheDocument();
+    expect(screen.getByText('low')).toBeInTheDocument();
+    expect(screen.getByText('close')).toBeInTheDocument();
+  });
+
+  it('shows em dash for null OHLC values', () => {
+    const partialOHLC: VIXDayData = {
+      open: 18.5,
+      high: null,
+      low: 17.8,
+      close: null,
+    };
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: partialOHLC,
+        })}
+      />,
+    );
+    expect(screen.getByText('18.50')).toBeInTheDocument();
+    expect(screen.getByText('17.80')).toBeInTheDocument();
+    const dashes = screen.getAllByText('\u2014');
+    expect(dashes.length).toBe(2);
+  });
+
+  it('does not show OHLC section when vixOHLC is null', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: null,
+        })}
+      />,
+    );
+    expect(screen.queryByText('VIX OHLC values')).not.toBeInTheDocument();
+  });
+
+  it('has accessible legend "VIX OHLC values"', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+        })}
+      />,
+    );
+    expect(screen.getByText('VIX OHLC values')).toBeInTheDocument();
+  });
+
+  it('shows field selector chips when vixOHLC present', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+          vixOHLCField: 'smart',
+        })}
+      />,
+    );
+    expect(screen.getByRole('radio', { name: 'Auto' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Open' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'High' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Low' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Close' })).toBeInTheDocument();
+  });
+
+  it('does not show field selector chips when vixOHLC is null', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: null,
+        })}
+      />,
+    );
+    expect(
+      screen.queryByRole('radio', { name: 'Auto' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows Auto chip as active when vixOHLCField=smart', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+          vixOHLCField: 'smart',
+        })}
+      />,
+    );
+    expect(screen.getByRole('radio', { name: 'Auto' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByRole('radio', { name: 'Open' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+  });
+
+  it('calls onOHLCFieldChange when chip clicked', async () => {
+    const user = userEvent.setup();
+    const onOHLCFieldChange = vi.fn();
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+          vixOHLCField: 'smart',
+          onOHLCFieldChange,
+        })}
+      />,
+    );
+    await user.click(screen.getByRole('radio', { name: 'High' }));
+    expect(onOHLCFieldChange).toHaveBeenCalledWith('high');
+  });
+
+  it('shows Auto description when vixOHLCField=smart', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+          vixOHLCField: 'smart',
+        })}
+      />,
+    );
+    expect(
+      screen.getByText('Auto: uses Open for AM entries, Close for PM entries'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows specific field description when vixOHLCField=open', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+          vixOHLCField: 'open',
+        })}
+      />,
+    );
+    expect(screen.getByText('Using VIX open value')).toBeInTheDocument();
+  });
+
+  it('shows error when vixDataLoaded && selectedDate && !vixOHLC', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: null,
+        })}
+      />,
+    );
+    expect(
+      screen.getByText('No VIX data found for this date'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not show error when vixDataLoaded is false', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: false,
+          selectedDate: '2026-03-15',
+          vixOHLC: null,
+        })}
+      />,
+    );
+    expect(
+      screen.queryByText('No VIX data found for this date'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not show error when vixOHLC is provided', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: sampleOHLC,
+        })}
+      />,
+    );
+    expect(
+      screen.queryByText('No VIX data found for this date'),
+    ).not.toBeInTheDocument();
   });
 });
