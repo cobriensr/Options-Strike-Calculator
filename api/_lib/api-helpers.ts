@@ -8,6 +8,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
 import { metrics } from './sentry.js';
 import { getMarketCloseHourET } from '../../src/data/eventCalendar.js';
@@ -19,6 +20,23 @@ import {
 
 const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
+
+// ============================================================
+// BOT PROTECTION
+// ============================================================
+
+/**
+ * Wrapper around checkBotId.
+ * Skips the check entirely in local dev — botid requires client-side tokens
+ * that aren't present outside Vercel's infrastructure, producing terminal spam.
+ * VERCEL=1 is set automatically by Vercel; it's unset in local dev.
+ */
+export async function checkBot(
+  req: VercelRequest,
+): Promise<{ isBot: boolean }> {
+  if (!process.env.VERCEL) return { isBot: false };
+  return checkBotId({ advancedOptions: { headers: req.headers } });
+}
 
 // ============================================================
 // OWNER VERIFICATION

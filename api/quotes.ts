@@ -21,12 +21,12 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBotId } from 'botid/server';
 import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
   rejectIfNotOwner,
+  checkBot,
 } from './_lib/api-helpers.js';
 
 // ============================================================
@@ -88,9 +88,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Owner-only: public visitors get 401, frontend falls back to manual input
       if (rejectIfNotOwner(req, res)) return done({ status: 401 });
 
-      const botCheck = await checkBotId({
-        advancedOptions: { headers: req.headers },
-      });
+      const botCheck = await checkBot(req);
       if (botCheck.isBot) {
         done({ status: 403 });
         return res.status(403).json({ error: 'Access denied' });

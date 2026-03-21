@@ -19,7 +19,7 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBotId } from 'botid/server';
+import { checkBot } from './_lib/api-helpers.js';
 import { redis } from './_lib/schwab.js';
 import logger from './_lib/logger.js';
 
@@ -454,9 +454,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/events');
     const done = metrics.request('/api/events');
     try {
-      const botCheck = await checkBotId({
-        advancedOptions: { headers: req.headers },
-      });
+      const botCheck = await checkBot(req);
       if (botCheck.isBot) {
         done({ status: 403 });
         return res.status(403).json({ error: 'Access denied' });
