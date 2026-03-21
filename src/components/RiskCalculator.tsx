@@ -336,161 +336,174 @@ export default function RiskCalculator() {
       <div className="border-edge mt-3 flex items-center justify-between gap-2 border-t pt-3">
         {/* Left group: text + stop + cap */}
         <div className="flex items-center gap-5">
-        {/* Target / status text */}
-        <div className="shrink-0 text-[11px]" style={{ width: '155px' }}>
-          {/* Sell: Target guidance */}
-          {mode === 'sell' && (
-            <span className="text-muted font-sans">
-              Target:{' '}
-              <span className="text-primary font-mono font-semibold">
-                ${(wing * 0.1).toFixed(2)}
-              </span>
-              {' – '}
-              <span className="text-primary font-mono font-semibold">
-                ${(wing * 0.15).toFixed(2)}
-              </span>
-              {hasCredit &&
-                (() => {
-                  const deltaSuffix = hasDelta ? ' at ' + delta + '\u0394' : '';
-                  let verdict: string;
-                  if (creditPct >= 0.15) verdict = ' Excellent' + deltaSuffix;
-                  else if (creditPct >= 0.1) verdict = ' OK' + deltaSuffix;
-                  else
-                    verdict =
-                      ' ' +
-                      (creditPct * 100).toFixed(1) +
-                      '%' +
-                      deltaSuffix +
-                      ' — pass';
-                  return (
-                    <span
-                      className="ml-1 font-semibold"
-                      style={{
-                        color:
-                          creditPct >= 0.1
-                            ? 'var(--color-success)'
-                            : 'var(--color-danger)',
-                      }}
-                    >
-                      {verdict}
-                    </span>
-                  );
-                })()}
-              {hasDelta && delta < 0.08 && (
-                <span
-                  className="ml-1 font-semibold"
-                  style={{ color: 'var(--color-danger)' }}
-                >
-                  {'\u0394'}&lt;0.08
+          {/* Target / status text */}
+          <div className="shrink-0 text-[11px]" style={{ width: '155px' }}>
+            {/* Sell: Target guidance */}
+            {mode === 'sell' && (
+              <span className="text-muted font-sans">
+                Target:{' '}
+                <span className="text-primary font-mono font-semibold">
+                  ${(wing * 0.1).toFixed(2)}
                 </span>
-              )}
-            </span>
-          )}
-
-          {/* Buy: profit target & R:R summary */}
-          {mode === 'buy' && (
-            <span className="text-muted font-sans">
-              {hasTarget ? (
-                <>
-                  Profit at target:{' '}
-                  <span
-                    className="font-mono font-semibold"
-                    style={{ color: 'var(--color-success)' }}
-                  >
-                    ${buyProfitPerContract.toLocaleString()}/ct
-                  </span>
-                  <span className="mx-1.5">{'\u00B7'}</span>
-                  R:R{' '}
-                  <span className="text-primary font-mono font-semibold">
-                    1:{rrRatio > 0 ? rrRatio.toFixed(1) : '\u2014'}
-                  </span>
-                  {hasDelta && (
-                    <>
-                      <span className="mx-1.5">{'\u00B7'}</span>
-                      <span className="text-primary font-mono font-semibold">
-                        {delta}
-                        {'\u0394'}
+                {' – '}
+                <span className="text-primary font-mono font-semibold">
+                  ${(wing * 0.15).toFixed(2)}
+                </span>
+                {hasCredit &&
+                  (() => {
+                    const deltaSuffix = hasDelta
+                      ? ' at ' + delta + '\u0394'
+                      : '';
+                    let verdict: string;
+                    if (creditPct >= 0.15) verdict = ' Excellent' + deltaSuffix;
+                    else if (creditPct >= 0.1) verdict = ' OK' + deltaSuffix;
+                    else
+                      verdict =
+                        ' ' +
+                        (creditPct * 100).toFixed(1) +
+                        '%' +
+                        deltaSuffix +
+                        ' — pass';
+                    return (
+                      <span
+                        className="ml-1 font-semibold"
+                        style={{
+                          color:
+                            creditPct >= 0.1
+                              ? 'var(--color-success)'
+                              : 'var(--color-danger)',
+                        }}
+                      >
+                        {verdict}
                       </span>
-                    </>
-                  )}
-                </>
-              ) : premium > 0 ? (
-                'Enter a target exit price to see profit & R:R'
-              ) : (
-                'Enter premium paid and target exit to see analysis'
-              )}
+                    );
+                  })()}
+                {hasDelta && delta < 0.08 && (
+                  <span
+                    className="ml-1 font-semibold"
+                    style={{ color: 'var(--color-danger)' }}
+                  >
+                    {'\u0394'}&lt;0.08
+                  </span>
+                )}
+              </span>
+            )}
+
+            {/* Buy: profit target & R:R summary */}
+            {mode === 'buy' && (
+              <span className="text-muted font-sans">
+                {hasTarget ? (
+                  <>
+                    Profit at target:{' '}
+                    <span
+                      className="font-mono font-semibold"
+                      style={{ color: 'var(--color-success)' }}
+                    >
+                      ${buyProfitPerContract.toLocaleString()}/ct
+                    </span>
+                    <span className="mx-1.5">{'\u00B7'}</span>
+                    R:R{' '}
+                    <span className="text-primary font-mono font-semibold">
+                      1:{rrRatio > 0 ? rrRatio.toFixed(1) : '\u2014'}
+                    </span>
+                    {hasDelta && (
+                      <>
+                        <span className="mx-1.5">{'\u00B7'}</span>
+                        <span className="text-primary font-mono font-semibold">
+                          {delta}
+                          {'\u0394'}
+                        </span>
+                      </>
+                    )}
+                  </>
+                ) : premium > 0 ? (
+                  'Enter a target exit price to see profit & R:R'
+                ) : (
+                  'Enter premium paid and target exit to see analysis'
+                )}
+              </span>
+            )}
+          </div>
+
+          {/* Stop loss */}
+          <div
+            className="ml-4 flex shrink-0 items-center gap-1.5"
+            style={{ width: '235px' }}
+          >
+            <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
+              Stop
             </span>
-          )}
-        </div>
+            {mode === 'sell' ? (
+              <>
+                {[null, 2, 3, 4, 5].map((m) => (
+                  <button
+                    key={m ?? 'none'}
+                    onClick={() => setStopMultiple(m)}
+                    className={`${chipBase} ${stopMultiple === m ? chipActive : chipInactive}`}
+                  >
+                    {m === null ? '\u2014' : `${m}\u00D7`}
+                  </button>
+                ))}
+                {hasStop && (
+                  <span className="text-muted text-[10px]">
+                    ${(credit * stopMultiple).toFixed(2)}
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                {[null, 25, 50, 75].map((pct) => (
+                  <button
+                    key={pct ?? 'none'}
+                    onClick={() => setBuyStopPct(pct)}
+                    className={`${chipBase} ${buyStopPct === pct ? chipActive : chipInactive}`}
+                  >
+                    {pct === null ? '\u2014' : `${pct}%`}
+                  </button>
+                ))}
+                {hasBuyStop && (
+                  <span className="text-muted text-[10px]">
+                    exit ${(premium * (1 - buyStopPct / 100)).toFixed(2)}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
 
-        {/* Stop loss */}
-        <div className="flex shrink-0 items-center gap-1.5 ml-4" style={{ width: '235px' }}>
-          <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
-            Stop
-          </span>
-          {mode === 'sell' ? (
-            <>
-              {[null, 2, 3, 4, 5].map((m) => (
-                <button
-                  key={m ?? 'none'}
-                  onClick={() => setStopMultiple(m)}
-                  className={`${chipBase} ${stopMultiple === m ? chipActive : chipInactive}`}
-                >
-                  {m === null ? '\u2014' : `${m}\u00D7`}
-                </button>
-              ))}
-              {hasStop && (
-                <span className="text-muted text-[10px]">
-                  ${(credit * stopMultiple).toFixed(2)}
-                </span>
-              )}
-            </>
-          ) : (
-            <>
-              {[null, 25, 50, 75].map((pct) => (
-                <button
-                  key={pct ?? 'none'}
-                  onClick={() => setBuyStopPct(pct)}
-                  className={`${chipBase} ${buyStopPct === pct ? chipActive : chipInactive}`}
-                >
-                  {pct === null ? '\u2014' : `${pct}%`}
-                </button>
-              ))}
-              {hasBuyStop && (
-                <span className="text-muted text-[10px]">
-                  exit ${(premium * (1 - buyStopPct / 100)).toFixed(2)}
-                </span>
-              )}
-            </>
-          )}
+          {/* Cap */}
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
+              Cap
+            </span>
+            {[25, 50, 75, 100].map((cap) => (
+              <button
+                key={cap}
+                onClick={() => setPortfolioCap(cap)}
+                className={`${chipBase} ${portfolioCap === cap ? chipActive : chipInactive}`}
+              >
+                {cap}%
+              </button>
+            ))}
+          </div>
         </div>
-
-        {/* Cap */}
-        <div className="flex shrink-0 items-center gap-1.5">
-          <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
-            Cap
-          </span>
-          {[25, 50, 75, 100].map((cap) => (
-            <button
-              key={cap}
-              onClick={() => setPortfolioCap(cap)}
-              className={`${chipBase} ${portfolioCap === cap ? chipActive : chipInactive}`}
-            >
-              {cap}%
-            </button>
-          ))}
-        </div>
-        </div>{/* end left group */}
+        {/* end left group */}
 
         {/* Conviction 2×2 */}
-        <div className="grid shrink-0 grid-cols-2 gap-1" style={{ width: '280px' }}>
+        <div
+          className="grid shrink-0 grid-cols-2 gap-1"
+          style={{ width: '280px' }}
+        >
           {[
             {
               label: 'High',
               range: '8\u201310%',
               color: 'var(--color-success)',
             },
-            { label: 'Medium', range: '5\u20137%', color: 'var(--color-caution)' },
+            {
+              label: 'Medium',
+              range: '5\u20137%',
+              color: 'var(--color-caution)',
+            },
             { label: 'Low', range: '3\u20134%', color: 'var(--color-danger)' },
             { label: 'Sit Out', range: '0%', color: 'var(--color-muted)' },
           ].map((tier) => (
@@ -506,7 +519,7 @@ export default function RiskCalculator() {
                 {tier.label}
               </span>
               <span
-                className="ml-auto whitespace-nowrap font-mono text-[10px] font-semibold"
+                className="ml-auto font-mono text-[10px] font-semibold whitespace-nowrap"
                 style={{ color: tier.color }}
               >
                 {tier.range}

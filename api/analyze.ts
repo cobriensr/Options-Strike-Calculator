@@ -16,7 +16,11 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
-import { rejectIfNotOwner, rejectIfRateLimited, checkBot } from './_lib/api-helpers.js';
+import {
+  rejectIfNotOwner,
+  rejectIfRateLimited,
+  checkBot,
+} from './_lib/api-helpers.js';
 import {
   saveAnalysis,
   getDb,

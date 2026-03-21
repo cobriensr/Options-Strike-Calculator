@@ -11,7 +11,11 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner, rejectIfRateLimited, checkBot } from './_lib/api-helpers.js';
+import {
+  rejectIfNotOwner,
+  rejectIfRateLimited,
+  checkBot,
+} from './_lib/api-helpers.js';
 import { saveSnapshot } from './_lib/db.js';
 import { snapshotBodySchema } from './_lib/validation.js';
 import logger from './_lib/logger.js';

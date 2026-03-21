@@ -178,9 +178,7 @@ describe('VIXTermStructure: VIX1D as sigma', () => {
 
   it('shows use button when callback is provided', () => {
     const onUse = vi.fn();
-    render(
-      <VIXTermStructure th={theme} vix={20} onUseVix1dAsSigma={onUse} />,
-    );
+    render(<VIXTermStructure th={theme} vix={20} onUseVix1dAsSigma={onUse} />);
     setInput(screen.getByLabelText(/vix1d/i), '22.5');
     const btn = screen.getByRole('button', { name: /use vix1d/i });
     expect(btn).toBeInTheDocument();
@@ -189,9 +187,7 @@ describe('VIXTermStructure: VIX1D as sigma', () => {
   it('calls onUseVix1dAsSigma with correct value when clicked', async () => {
     const user = userEvent.setup();
     const onUse = vi.fn();
-    render(
-      <VIXTermStructure th={theme} vix={20} onUseVix1dAsSigma={onUse} />,
-    );
+    render(<VIXTermStructure th={theme} vix={20} onUseVix1dAsSigma={onUse} />);
     setInput(screen.getByLabelText(/vix1d/i), '22.5');
     await user.click(screen.getByRole('button', { name: /use vix1d/i }));
     expect(onUse).toHaveBeenCalledWith(0.225);
