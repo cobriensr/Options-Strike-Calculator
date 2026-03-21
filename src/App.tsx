@@ -338,9 +338,6 @@ export default function StrikeCalculator() {
                 selectedDate={vix.selectedDate}
                 onDateChange={vix.setSelectedDate}
                 vixDataLoaded={vix.vixDataLoaded}
-                vixOHLC={vix.vixOHLC}
-                vixOHLCField={vix.vixOHLCField}
-                onOHLCFieldChange={vix.setVixOHLCField}
                 liveEvents={market.data.events?.events}
                 timeHour={timeHour}
                 onHourChange={setTimeHour}
@@ -382,6 +379,11 @@ export default function StrikeCalculator() {
                 contracts={contracts}
                 onContractsChange={setContracts}
                 results={results}
+                vixOHLC={vix.vixOHLC}
+                vixOHLCField={vix.vixOHLCField}
+                onOHLCFieldChange={vix.setVixOHLCField}
+                vixDataLoaded={vix.vixDataLoaded}
+                selectedDate={vix.selectedDate}
               />
 
               <IVInputSection

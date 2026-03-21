@@ -1,5 +1,5 @@
 import type { Theme } from '../themes';
-import type { VIXDayData, OHLCField, AmPm, Timezone } from '../types';
+import type { AmPm, Timezone } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 import { tinyLbl } from '../utils/ui-utils';
 import EventDayWarning from './EventDayWarning';
@@ -13,9 +13,6 @@ interface Props {
   selectedDate: string;
   onDateChange: (date: string) => void;
   vixDataLoaded: boolean;
-  vixOHLC: VIXDayData | null;
-  vixOHLCField: OHLCField;
-  onOHLCFieldChange: (field: OHLCField) => void;
   liveEvents?: readonly EventItem[];
   timeHour: string;
   onHourChange: (v: string) => void;
@@ -36,9 +33,6 @@ export default function DateTimeSection({
   selectedDate,
   onDateChange,
   vixDataLoaded,
-  vixOHLC,
-  vixOHLCField,
-  onOHLCFieldChange,
   liveEvents,
   timeHour,
   onHourChange,
@@ -139,58 +133,11 @@ export default function DateTimeSection({
         {errors['time'] && <ErrorMsg>{errors['time']}</ErrorMsg>}
       </div>
 
-      {/* VIX OHLC display */}
-      {vixOHLC && (
-        <div className="border-edge mt-3.5 border-t pt-3.5">
-          <fieldset className="m-0 grid grid-cols-4 gap-2 border-none p-0">
-            <legend className="sr-only">VIX OHLC values</legend>
-            {(['open', 'high', 'low', 'close'] as const).map((field) => (
-              <div
-                key={field}
-                className="bg-surface-alt rounded-lg p-[10px_6px] text-center"
-              >
-                <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-                  {field}
-                </div>
-                <div className="text-primary mt-0.5 font-mono text-[17px] font-medium">
-                  {vixOHLC[field]?.toFixed(2) ?? '\u2014'}
-                </div>
-              </div>
-            ))}
-          </fieldset>
-          <fieldset className="m-0 mt-3 border-none p-0">
-            <legend className="sr-only">VIX value to use</legend>
-            <div className="flex flex-wrap gap-1.5" role="radiogroup">
-              {(['smart', 'open', 'high', 'low', 'close'] as const).map((f) => (
-                <Chip
-                  key={f}
-                  active={vixOHLCField === f}
-                  onClick={() => onOHLCFieldChange(f)}
-                  label={
-                    f === 'smart'
-                      ? 'Auto'
-                      : f.charAt(0).toUpperCase() + f.slice(1)
-                  }
-                />
-              ))}
-            </div>
-          </fieldset>
-          <p className="text-tertiary mt-2 text-xs italic">
-            {vixOHLCField === 'smart'
-              ? 'Auto: uses Open for AM entries, Close for PM entries'
-              : 'Using VIX ' + vixOHLCField + ' value'}
-          </p>
-        </div>
-      )}
-
       <EventDayWarning
         th={th}
         selectedDate={selectedDate}
         liveEvents={liveEvents}
       />
-      {vixDataLoaded && selectedDate && !vixOHLC && (
-        <ErrorMsg>No VIX data found for this date</ErrorMsg>
-      )}
     </SectionBox>
   );
 }
