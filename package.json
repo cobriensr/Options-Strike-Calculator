@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "dev:full": "vercel dev",
+    "dev:full": "LOG_LEVEL=debug vercel dev | npx pino-pretty",
     "build": "tsc -b && vite build",
     "build:analyze": "ANALYZE=true tsc -b && ANALYZE=true vite build",
     "preview": "vite preview",
