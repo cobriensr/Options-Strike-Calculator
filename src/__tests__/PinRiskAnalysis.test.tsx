@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import PinRiskAnalysis from '../components/PinRiskAnalysis';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { ChainResponse, ChainStrike } from '../types/api';
 
-const th = lightTheme;
+const th = theme;
 
 function makeStrike(
   strike: number,

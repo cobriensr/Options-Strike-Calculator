@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AnalysisHistory from '../components/ChartAnalysis/AnalysisHistory';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { AnalysisResult } from '../components/ChartAnalysis/types';
 
-const th = lightTheme;
+const th = theme;
 
 // ── Mock data ──────────────────────────────────────────────
 

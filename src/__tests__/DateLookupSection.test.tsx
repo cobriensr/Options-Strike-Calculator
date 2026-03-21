@@ -2,10 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DateLookupSection from '../components/DateLookupSection';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { VIXDayData, OHLCField } from '../types';
 
-const th = lightTheme;
+const th = theme;
 const inputCls = 'test-input';
 
 function renderSection(

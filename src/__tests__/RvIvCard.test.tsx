@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import RvIvCard from '../components/RvIvCard';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 
-const th = lightTheme;
+const th = theme;
 
 describe('RvIvCard', () => {
   it('renders the ratio value', () => {

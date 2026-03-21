@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import PreTradeSignals from '../components/PreTradeSignals';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type {
   QuotesResponse,
   YesterdayResponse,
@@ -10,7 +10,7 @@ import type {
   MoverSlice,
 } from '../types/api';
 
-const th = lightTheme;
+const th = theme;
 
 // ============================================================
 // HELPERS

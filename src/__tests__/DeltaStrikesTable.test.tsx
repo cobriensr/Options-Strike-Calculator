@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import DeltaStrikesTable from '../components/DeltaStrikesTable';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { DeltaRow, DeltaRowError } from '../types';
 
-const th = lightTheme;
+const th = theme;
 
 function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
   return {

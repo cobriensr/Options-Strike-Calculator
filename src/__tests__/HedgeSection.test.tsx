@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import HedgeSection from '../components/HedgeSection';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { CalculationResults, IronCondorLegs } from '../types';
 
-const th = lightTheme;
+const th = theme;
 
 // ============================================================
 // HELPERS

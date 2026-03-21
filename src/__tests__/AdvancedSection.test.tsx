@@ -2,10 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AdvancedSection from '../components/AdvancedSection';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { VIXDayData, OHLCField } from '../types';
 
-const th = lightTheme;
+const th = theme;
 
 function defaultProps(
   overrides: Partial<Parameters<typeof AdvancedSection>[0]> = {},

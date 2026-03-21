@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IVInputSection from '../components/IVInputSection';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 
-const th = lightTheme;
+const th = theme;
 
 const mockMarket = {
   data: {

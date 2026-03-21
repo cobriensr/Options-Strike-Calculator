@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import DeltaRegimeGuide from '../components/DeltaRegimeGuide';
-import { lightTheme, darkTheme } from '../themes';
+import { theme } from '../themes';
 import { calcAllDeltas, calcTimeToExpiry } from '../utils/calculator';
 
 // Helper: standard test params matching a typical 0DTE session
@@ -22,7 +22,7 @@ function makeProps(
   const sigma = ((overrides.vix ?? 20) * 1.15) / 100; // only used for allDeltas computation
   const allDeltas = calcAllDeltas(spot, sigma, T, skew, 10);
   return {
-    th: lightTheme,
+    th: theme,
     vix: overrides.vix ?? 20,
     spot,
     T,
@@ -45,7 +45,7 @@ describe('DeltaRegimeGuide: rendering', () => {
   });
 
   it('renders in dark mode', () => {
-    render(<DeltaRegimeGuide {...makeProps()} th={darkTheme} />);
+    render(<DeltaRegimeGuide {...makeProps()} th={theme} />);
     expect(screen.getAllByText(/delta guide/i).length).toBeGreaterThanOrEqual(
       1,
     );
@@ -404,7 +404,7 @@ describe('DeltaRegimeGuide: theme support', () => {
   });
 
   it('renders completely in dark theme', () => {
-    render(<DeltaRegimeGuide {...makeProps()} th={darkTheme} />);
+    render(<DeltaRegimeGuide {...makeProps()} th={theme} />);
     expect(
       screen.getByRole('table', { name: /range thresholds/i }),
     ).toBeInTheDocument();

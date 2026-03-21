@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IronCondorSection from '../components/IronCondorSection';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../types';
 
-const th = lightTheme;
+const th = theme;
 
 // ============================================================
 // HELPERS

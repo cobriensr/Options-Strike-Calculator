@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import EntryTimeSection from '../components/EntryTimeSection';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 
-const th = lightTheme;
+const th = theme;
 
 function renderSection(
   overrides: Partial<Parameters<typeof EntryTimeSection>[0]> = {},

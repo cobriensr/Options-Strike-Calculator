@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import SettlementCheck from '../components/SettlementCheck';
-import { lightTheme, darkTheme } from '../themes';
+import { theme } from '../themes';
 import type { HistorySnapshot } from '../hooks/useHistoryData';
 import type { HistoryCandle } from '../types/api';
 
@@ -135,7 +135,7 @@ describe('SettlementCheck', () => {
   it('renders nothing when no valid deltas match target deltas', () => {
     const { container } = render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={[{ error: 'IV too low' }]}
@@ -148,7 +148,7 @@ describe('SettlementCheck', () => {
     const candles = makeCandles();
     const { container } = render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot({ candleIndex: candles.length - 1 })}
         allCandles={candles}
         allDeltas={makeAllDeltas()}
@@ -160,7 +160,7 @@ describe('SettlementCheck', () => {
   it('renders the Settlement Check heading', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -172,7 +172,7 @@ describe('SettlementCheck', () => {
   it('shows all survived verdict when all strikes hold', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -184,7 +184,7 @@ describe('SettlementCheck', () => {
   it('shows entry context in summary', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -199,7 +199,7 @@ describe('SettlementCheck', () => {
   it('shows actual SPX range in summary', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -213,7 +213,7 @@ describe('SettlementCheck', () => {
   it('shows "Safe by X pts" for survived rows', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -231,7 +231,7 @@ describe('SettlementCheck', () => {
   it('shows call breach with settled-at text when call is breached and settlement outside strikes', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -254,7 +254,7 @@ describe('SettlementCheck', () => {
   it('shows put breach with settled-at text when put is breached and settlement outside strikes', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -277,7 +277,7 @@ describe('SettlementCheck', () => {
   it('shows partial survival verdict', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -308,7 +308,7 @@ describe('SettlementCheck', () => {
   it('shows all settled beyond strikes verdict when none settle safe', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -352,7 +352,7 @@ describe('SettlementCheck', () => {
   it('only renders rows for deltas in the target list', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={[
@@ -368,7 +368,7 @@ describe('SettlementCheck', () => {
   it('filters out error entries from allDeltas', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={[
@@ -384,7 +384,7 @@ describe('SettlementCheck', () => {
   it('shows directional cushion values: negative on put side, positive on call side', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -400,7 +400,7 @@ describe('SettlementCheck', () => {
   it('shows legend for the bar visualization', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -416,7 +416,7 @@ describe('SettlementCheck', () => {
     // So callSnapped >= 5880 and putSnapped <= 5755
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -462,7 +462,7 @@ describe('SettlementCheck', () => {
     // All must settle safe but not all survive
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas({
@@ -513,7 +513,7 @@ describe('SettlementCheck', () => {
   it('shows tooltip on bar hover and hides on mouse leave', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -540,7 +540,7 @@ describe('SettlementCheck', () => {
   it('shows tooltip on focus and hides on blur', () => {
     render(
       <SettlementCheck
-        th={lightTheme}
+        th={theme}
         snapshot={makeSnapshot()}
         allCandles={makeCandles()}
         allDeltas={makeAllDeltas()}
@@ -563,11 +563,11 @@ describe('SettlementCheck', () => {
       allDeltas: makeAllDeltas(),
     };
 
-    const { unmount } = render(<SettlementCheck th={lightTheme} {...props} />);
+    const { unmount } = render(<SettlementCheck th={theme} {...props} />);
     expect(screen.getByText('Settlement Check')).toBeInTheDocument();
     unmount();
 
-    render(<SettlementCheck th={darkTheme} {...props} />);
+    render(<SettlementCheck th={theme} {...props} />);
     expect(screen.getByText('Settlement Check')).toBeInTheDocument();
   });
 });

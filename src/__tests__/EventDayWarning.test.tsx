@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import EventDayWarning from '../components/EventDayWarning';
-import { lightTheme, darkTheme } from '../themes';
+import { theme } from '../themes';
 import {
   getEventsForDate,
   isHighImpactDay,
@@ -168,56 +168,56 @@ describe('eventCalendar: data integrity', () => {
 describe('EventDayWarning: rendering', () => {
   it('renders nothing for non-event date', () => {
     const { container } = render(
-      <EventDayWarning th={lightTheme} selectedDate="2026-03-15" />,
+      <EventDayWarning th={theme} selectedDate="2026-03-15" />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing for empty date', () => {
     const { container } = render(
-      <EventDayWarning th={lightTheme} selectedDate="" />,
+      <EventDayWarning th={theme} selectedDate="" />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('shows high-impact warning for FOMC day', () => {
-    render(<EventDayWarning th={lightTheme} selectedDate="2026-01-28" />);
+    render(<EventDayWarning th={theme} selectedDate="2026-01-28" />);
     expect(screen.getByText(/high-impact event day/i)).toBeInTheDocument();
     expect(screen.getAllByText(/FOMC/).length).toBeGreaterThan(0);
   });
 
   it('shows CPI event details', () => {
-    render(<EventDayWarning th={lightTheme} selectedDate="2026-03-11" />);
+    render(<EventDayWarning th={theme} selectedDate="2026-03-11" />);
     expect(screen.getAllByText(/CPI/).length).toBeGreaterThan(0);
     expect(screen.getByText(/consumer price index/i)).toBeInTheDocument();
     expect(screen.getByText(/8:30 AM ET/)).toBeInTheDocument();
   });
 
   it('shows NFP event details', () => {
-    render(<EventDayWarning th={lightTheme} selectedDate="2026-03-06" />);
+    render(<EventDayWarning th={theme} selectedDate="2026-03-06" />);
     expect(screen.getAllByText(/NFP/).length).toBeGreaterThan(0);
     expect(screen.getByText(/nonfarm payrolls/i)).toBeInTheDocument();
   });
 
   it('shows advice for high-impact events', () => {
-    render(<EventDayWarning th={lightTheme} selectedDate="2026-01-28" />);
+    render(<EventDayWarning th={theme} selectedDate="2026-01-28" />);
     expect(screen.getByText(/wider ranges/i)).toBeInTheDocument();
   });
 
   it('shows multiple events on overlap day (2026-12-09: FOMC + CPI)', () => {
-    render(<EventDayWarning th={lightTheme} selectedDate="2026-12-09" />);
+    render(<EventDayWarning th={theme} selectedDate="2026-12-09" />);
     expect(screen.getAllByText(/CPI/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/FOMC/).length).toBeGreaterThan(0);
   });
 
   it('shows medium severity for GDP-only day', () => {
-    render(<EventDayWarning th={lightTheme} selectedDate="2026-04-29" />);
+    render(<EventDayWarning th={theme} selectedDate="2026-04-29" />);
     expect(screen.getByText(/economic event day/i)).toBeInTheDocument();
     expect(screen.getAllByText(/GDP/).length).toBeGreaterThan(0);
   });
 
   it('renders in dark mode', () => {
-    render(<EventDayWarning th={darkTheme} selectedDate="2026-03-11" />);
+    render(<EventDayWarning th={theme} selectedDate="2026-03-11" />);
     expect(screen.getAllByText(/CPI/).length).toBeGreaterThan(0);
   });
 
@@ -237,7 +237,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-01-19"
         liveEvents={liveEvents}
       />,
@@ -267,7 +267,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-11-27"
         liveEvents={liveEvents}
       />,
@@ -290,7 +290,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-11-27"
         liveEvents={liveEvents}
       />,
@@ -321,7 +321,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-07-15"
         liveEvents={liveEvents}
       />,
@@ -342,7 +342,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-07-15"
         liveEvents={liveEvents}
       />,
@@ -365,7 +365,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-01-19"
         liveEvents={liveEvents}
       />,
@@ -386,7 +386,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-11-27"
         liveEvents={liveEvents}
       />,
@@ -407,7 +407,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-07-15"
         liveEvents={liveEvents}
       />,
@@ -429,7 +429,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-03-11"
         liveEvents={liveEvents}
       />,
@@ -451,7 +451,7 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={lightTheme}
+        th={theme}
         selectedDate="2026-04-29"
         liveEvents={liveEvents}
       />,

@@ -2,13 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import MarketRegimeSection from '../components/MarketRegimeSection';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 import type { CalculationResults, DeltaRow } from '../types';
 import type { HistorySnapshot } from '../hooks/useHistoryData';
 import type { ComputedSignals } from '../hooks/useComputedSignals';
 import type { HistoryCandle } from '../types/api';
 
-const th = lightTheme;
+const th = theme;
 
 const defaultSignals: ComputedSignals = {
   vix1d: undefined,

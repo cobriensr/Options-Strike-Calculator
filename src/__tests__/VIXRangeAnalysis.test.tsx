@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import VIXRangeAnalysis from '../components/VIXRangeAnalysis';
-import { lightTheme, darkTheme } from '../themes';
+import { theme } from '../themes';
 import {
   VIX_BUCKETS,
   SURVIVAL_DATA,
@@ -22,17 +22,17 @@ function getIntradayChip() {
 // ============================================================
 describe('VIXRangeAnalysis: rendering', () => {
   it('renders without crashing with all props null', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     expect(screen.getByText(/historical spx range/i)).toBeInTheDocument();
   });
 
   it('renders without crashing with VIX and spot', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={20} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={6800} />);
     expect(screen.getByText(/historical spx range/i)).toBeInTheDocument();
   });
 
   it('renders in dark mode', () => {
-    render(<VIXRangeAnalysis th={darkTheme} vix={20} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={6800} />);
     expect(screen.getByText(/historical spx range/i)).toBeInTheDocument();
   });
 });
@@ -42,14 +42,14 @@ describe('VIXRangeAnalysis: rendering', () => {
 // ============================================================
 describe('VIXRangeAnalysis: VIX range table', () => {
   it('renders the range table', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     expect(
       screen.getByRole('table', { name: /spx daily range statistics/i }),
     ).toBeInTheDocument();
   });
 
   it('shows all 8 VIX bucket labels in range table', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', { name: /spx daily range/i });
     for (const b of VIX_BUCKETS) {
       // Each label appears in both range table and survival table, so scope to range table
@@ -60,7 +60,7 @@ describe('VIXRangeAnalysis: VIX range table', () => {
   });
 
   it('shows all column headers', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', { name: /spx daily range/i });
     expect(within(table).getByText('VIX')).toBeInTheDocument();
     expect(within(table).getByText('Days')).toBeInTheDocument();
@@ -72,35 +72,35 @@ describe('VIXRangeAnalysis: VIX range table', () => {
   });
 
   it('shows day counts for each bucket', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', { name: /spx daily range/i });
     expect(within(table).getByText('806')).toBeInTheDocument();
     expect(within(table).getByText('2,075')).toBeInTheDocument();
   });
 
   it('displays percentage values with % suffix', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', { name: /spx daily range/i });
     const pctCells = within(table).getAllByText(/%/);
     expect(pctCells.length).toBeGreaterThan(20);
   });
 
   it('shows point values when spot is provided', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={6800} />);
     const table = screen.getByRole('table', { name: /spx daily range/i });
     const pointCells = within(table).getAllByText(/\(\d+\)/);
     expect(pointCells.length).toBeGreaterThanOrEqual(8);
   });
 
   it('does not show point values when spot is null', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', { name: /spx daily range/i });
     const pointCells = within(table).queryAllByText(/\(\d+\)/);
     expect(pointCells.length).toBe(0);
   });
 
   it('shows dataset source note with day count', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     expect(screen.getByText(/9,102.*trading days/)).toBeInTheDocument();
   });
 });
@@ -110,12 +110,12 @@ describe('VIXRangeAnalysis: VIX range table', () => {
 // ============================================================
 describe('VIXRangeAnalysis: active bucket highlighting', () => {
   it('shows "current" badge for the active VIX bucket', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={15} spot={6800} />);
     expect(screen.getByText('current')).toBeInTheDocument();
   });
 
   it('shows "current" on the correct bucket for VIX 22', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={22} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={22} spot={6800} />);
     const currentBadge = screen.getByText('current');
     const row = currentBadge.closest('tr');
     expect(row).not.toBeNull();
@@ -123,17 +123,17 @@ describe('VIXRangeAnalysis: active bucket highlighting', () => {
   });
 
   it('does not show "current" badge when VIX is null', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={6800} />);
     expect(screen.queryByText('current')).not.toBeInTheDocument();
   });
 
   it('shows only one "current" badge', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={15} spot={6800} />);
     expect(screen.getAllByText('current')).toHaveLength(1);
   });
 
   it('current badge appears in range table', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={15} spot={6800} />);
     const rangeTable = screen.getByRole('table', { name: /spx daily range/i });
     expect(within(rangeTable).getByText('current')).toBeInTheDocument();
   });
@@ -144,14 +144,14 @@ describe('VIXRangeAnalysis: active bucket highlighting', () => {
 // ============================================================
 describe('VIXRangeAnalysis: survival heatmap', () => {
   it('renders the survival heatmap table', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     expect(
       screen.getByRole('table', { name: /iron condor survival rates/i }),
     ).toBeInTheDocument();
   });
 
   it('shows all VIX bucket labels in survival table', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', {
       name: /iron condor survival rates/i,
     });
@@ -163,7 +163,7 @@ describe('VIXRangeAnalysis: survival heatmap', () => {
   });
 
   it('shows all wing width column headers', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', {
       name: /iron condor survival rates/i,
     });
@@ -173,12 +173,12 @@ describe('VIXRangeAnalysis: survival heatmap', () => {
   });
 
   it('defaults to settlement mode', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     expect(getSettleChip()).toHaveAttribute('aria-checked', 'true');
   });
 
   it('shows settlement survival values by default', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', {
       name: /iron condor survival rates/i,
     });
@@ -186,7 +186,7 @@ describe('VIXRangeAnalysis: survival heatmap', () => {
   });
 
   it('shows settlement description text by default', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     expect(
       screen.getByText(/closing price stayed within/i),
     ).toBeInTheDocument();
@@ -199,7 +199,7 @@ describe('VIXRangeAnalysis: survival heatmap', () => {
 describe('VIXRangeAnalysis: survival mode toggle', () => {
   it('switches to intraday mode when clicked', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
 
     await user.click(getIntradayChip());
     expect(getIntradayChip()).toHaveAttribute('aria-checked', 'true');
@@ -207,7 +207,7 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
 
   it('shows intraday survival values after switching', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
 
     await user.click(getIntradayChip());
 
@@ -220,7 +220,7 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
 
   it('shows intraday description text after switching', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
 
     await user.click(getIntradayChip());
     expect(
@@ -230,7 +230,7 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
 
   it('switches back to settlement mode', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
 
     await user.click(getIntradayChip());
     await user.click(getSettleChip());
@@ -239,7 +239,7 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
 
   it('table aria-label updates with mode', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
 
     expect(
       screen.getByRole('table', { name: /survival rates.*settle/i }),
@@ -257,20 +257,20 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
 // ============================================================
 describe('VIXRangeAnalysis: fine-grained breakdown', () => {
   it('fine-grained table is hidden by default', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     expect(
       screen.queryByRole('table', { name: /fine-grained/i }),
     ).not.toBeInTheDocument();
   });
 
   it('shows expand button', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     expect(screen.getByText(/show.*point-by-point/i)).toBeInTheDocument();
   });
 
   it('expands fine-grained table when button is clicked', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
 
     await user.click(screen.getByText(/show.*point-by-point/i));
     expect(
@@ -280,7 +280,7 @@ describe('VIXRangeAnalysis: fine-grained breakdown', () => {
 
   it('collapses fine-grained table when button is clicked again', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
 
     await user.click(screen.getByText(/show.*point-by-point/i));
     expect(
@@ -295,7 +295,7 @@ describe('VIXRangeAnalysis: fine-grained breakdown', () => {
 
   it('button text changes from Show to Hide', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
 
     expect(screen.getByText(/show.*point-by-point/i)).toBeInTheDocument();
     await user.click(screen.getByText(/show.*point-by-point/i));
@@ -309,7 +309,7 @@ describe('VIXRangeAnalysis: fine-grained breakdown', () => {
 describe('VIXRangeAnalysis: fine-grained table content', () => {
   it('shows all VIX levels from 10 to 30', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
 
     const table = screen.getByRole('table', { name: /fine-grained/i });
@@ -320,7 +320,7 @@ describe('VIXRangeAnalysis: fine-grained table content', () => {
 
   it('shows column headers', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
 
     const table = screen.getByRole('table', { name: /fine-grained/i });
@@ -332,7 +332,7 @@ describe('VIXRangeAnalysis: fine-grained table content', () => {
 
   it('shows day counts for fine stats', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
 
     const table = screen.getByRole('table', { name: /fine-grained/i });
@@ -342,7 +342,7 @@ describe('VIXRangeAnalysis: fine-grained table content', () => {
 
   it('shows point estimates when spot is provided', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={6800} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
 
     const ptTexts = screen.getAllByText(/pts median/);
@@ -351,7 +351,7 @@ describe('VIXRangeAnalysis: fine-grained table content', () => {
 
   it('does not show point estimates when spot is null', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
 
     expect(screen.queryByText(/pts median/)).not.toBeInTheDocument();
@@ -359,7 +359,7 @@ describe('VIXRangeAnalysis: fine-grained table content', () => {
 
   it('highlights active VIX level in fine table', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={15.3} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={15.3} spot={6800} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
 
     const table = screen.getByRole('table', { name: /fine-grained/i });
@@ -378,14 +378,14 @@ describe('VIXRangeAnalysis: fine-grained table content', () => {
 describe('VIXRangeAnalysis: VIX prop reactivity', () => {
   it('updates active bucket highlight when VIX changes', () => {
     const { rerender } = render(
-      <VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />,
+      <VIXRangeAnalysis th={theme} vix={15} spot={6800} />,
     );
 
     let currentBadge = screen.getByText('current');
     let row = currentBadge.closest('tr');
     expect(within(row!).getByText(VIX_BUCKETS[2]!.label)).toBeInTheDocument();
 
-    rerender(<VIXRangeAnalysis th={lightTheme} vix={25} spot={6800} />);
+    rerender(<VIXRangeAnalysis th={theme} vix={25} spot={6800} />);
     currentBadge = screen.getByText('current');
     row = currentBadge.closest('tr');
     expect(within(row!).getByText(VIX_BUCKETS[5]!.label)).toBeInTheDocument();
@@ -393,11 +393,11 @@ describe('VIXRangeAnalysis: VIX prop reactivity', () => {
 
   it('removes highlighting when VIX becomes null', () => {
     const { rerender } = render(
-      <VIXRangeAnalysis th={lightTheme} vix={15} spot={6800} />,
+      <VIXRangeAnalysis th={theme} vix={15} spot={6800} />,
     );
     expect(screen.getByText('current')).toBeInTheDocument();
 
-    rerender(<VIXRangeAnalysis th={lightTheme} vix={null} spot={6800} />);
+    rerender(<VIXRangeAnalysis th={theme} vix={null} spot={6800} />);
     expect(screen.queryByText('current')).not.toBeInTheDocument();
   });
 });
@@ -407,7 +407,7 @@ describe('VIXRangeAnalysis: VIX prop reactivity', () => {
 // ============================================================
 describe('VIXRangeAnalysis: theme support', () => {
   it('renders complete component in light theme', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={20} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={6800} />);
     expect(
       screen.getByRole('table', { name: /spx daily range/i }),
     ).toBeInTheDocument();
@@ -417,7 +417,7 @@ describe('VIXRangeAnalysis: theme support', () => {
   });
 
   it('renders complete component in dark theme', () => {
-    render(<VIXRangeAnalysis th={darkTheme} vix={20} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={6800} />);
     expect(
       screen.getByRole('table', { name: /spx daily range/i }),
     ).toBeInTheDocument();
@@ -430,7 +430,7 @@ describe('VIXRangeAnalysis: theme support', () => {
     const user = userEvent.setup();
 
     const { unmount } = render(
-      <VIXRangeAnalysis th={lightTheme} vix={20} spot={6800} />,
+      <VIXRangeAnalysis th={theme} vix={20} spot={6800} />,
     );
     await user.click(screen.getByText(/show.*point-by-point/i));
     expect(
@@ -438,7 +438,7 @@ describe('VIXRangeAnalysis: theme support', () => {
     ).toBeInTheDocument();
     unmount();
 
-    render(<VIXRangeAnalysis th={darkTheme} vix={20} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={6800} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
     expect(
       screen.getByRole('table', { name: /fine-grained/i }),
@@ -451,7 +451,7 @@ describe('VIXRangeAnalysis: theme support', () => {
 // ============================================================
 describe('VIXRangeAnalysis: edge cases', () => {
   it('handles VIX 0', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={0} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={0} spot={6800} />);
     expect(
       screen.getByRole('table', { name: /spx daily range/i }),
     ).toBeInTheDocument();
@@ -459,19 +459,19 @@ describe('VIXRangeAnalysis: edge cases', () => {
   });
 
   it('handles VIX 100 (extreme)', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={100} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={100} spot={6800} />);
     expect(screen.getByText('current')).toBeInTheDocument();
   });
 
   it('handles spot = 0', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={20} spot={0} />);
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={0} />);
     expect(
       screen.getByRole('table', { name: /spx daily range/i }),
     ).toBeInTheDocument();
   });
 
   it('handles fractional VIX 14.73', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={14.73} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={14.73} spot={6800} />);
     const currentBadge = screen.getByText('current');
     const row = currentBadge.closest('tr');
     expect(within(row!).getByText(VIX_BUCKETS[1]!.label)).toBeInTheDocument();
@@ -479,7 +479,7 @@ describe('VIXRangeAnalysis: edge cases', () => {
 
   it('renders all tables together without conflicts', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={20} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={6800} />);
 
     await user.click(screen.getByText(/show.*point-by-point/i));
 
@@ -496,7 +496,7 @@ describe('VIXRangeAnalysis: edge cases', () => {
 
   it('survival toggle and fine-grained toggle work independently', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={20} spot={6800} />);
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={6800} />);
 
     // Toggle intraday via role-scoped query
     await user.click(getIntradayChip());
@@ -525,20 +525,20 @@ describe('VIXRangeAnalysis: edge cases', () => {
 // ============================================================
 describe('VIXRangeAnalysis: survival value spot checks', () => {
   it('VIX <12 with ±2.00% wing shows 99.9% settle', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', { name: /iron condor survival/i });
     expect(within(table).getByText('99.9%')).toBeInTheDocument();
   });
 
   it('VIX 40+ with ±0.50% wing shows 11.8% settle', () => {
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     const table = screen.getByRole('table', { name: /iron condor survival/i });
     expect(within(table).getByText('11.8%')).toBeInTheDocument();
   });
 
   it('intraday mode: VIX <12 with ±0.75% wing shows 98.6%', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     await user.click(getIntradayChip());
 
     const table = screen.getByRole('table', {
@@ -549,7 +549,7 @@ describe('VIXRangeAnalysis: survival value spot checks', () => {
 
   it('intraday mode: VIX 40+ with ±0.50% wing shows 1.4%', async () => {
     const user = userEvent.setup();
-    render(<VIXRangeAnalysis th={lightTheme} vix={null} spot={null} />);
+    render(<VIXRangeAnalysis th={theme} vix={null} spot={null} />);
     await user.click(getIntradayChip());
 
     const table = screen.getByRole('table', {

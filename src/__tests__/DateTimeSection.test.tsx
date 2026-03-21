@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DateTimeSection from '../components/DateTimeSection';
-import { lightTheme } from '../themes';
-const th = lightTheme;
+import { theme } from '../themes';
+const th = theme;
 
 const INPUT_CLS = 'test-input';
 const SELECT_CLS = 'test-select';

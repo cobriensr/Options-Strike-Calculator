@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import ParameterSummary from '../components/ParameterSummary';
-import { lightTheme } from '../themes';
+import { theme } from '../themes';
 
-const th = lightTheme;
+const th = theme;
 
 describe('ParameterSummary', () => {
   const defaultProps = {
