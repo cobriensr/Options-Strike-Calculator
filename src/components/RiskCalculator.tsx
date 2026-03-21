@@ -155,7 +155,7 @@ export default function RiskCalculator() {
   return (
     <SectionBox label="Risk Calculator">
       {/* ── ROW 1: mode + inputs ── */}
-      <div className="flex items-end justify-between">
+      <div className="flex flex-wrap items-end gap-3">
         <div>
           <label
             htmlFor="rc-mode"
@@ -333,11 +333,11 @@ export default function RiskCalculator() {
       </div>
 
       {/* ── ROW 2: settings ── */}
-      <div className="border-edge mt-3 flex items-center justify-between gap-2 border-t pt-3">
+      <div className="border-edge mt-3 flex flex-wrap items-start gap-3 border-t pt-3">
         {/* Left group: text + stop + cap */}
-        <div className="flex items-center gap-5">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
           {/* Target / status text */}
-          <div className="shrink-0 text-[11px]" style={{ width: '155px' }}>
+          <div className="text-[11px]">
             {/* Sell: Target guidance */}
             {mode === 'sell' && (
               <span className="text-muted font-sans">
@@ -426,10 +426,7 @@ export default function RiskCalculator() {
           </div>
 
           {/* Stop loss */}
-          <div
-            className="ml-4 flex shrink-0 items-center gap-1.5"
-            style={{ width: '235px' }}
-          >
+          <div className="flex items-center gap-1.5">
             <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
               Stop
             </span>
@@ -489,10 +486,7 @@ export default function RiskCalculator() {
         {/* end left group */}
 
         {/* Conviction 2×2 */}
-        <div
-          className="grid shrink-0 grid-cols-2 gap-1"
-          style={{ width: '280px' }}
-        >
+        <div className="grid grid-cols-2 gap-1">
           {[
             {
               label: 'High',
@@ -601,7 +595,7 @@ export default function RiskCalculator() {
             </div>
           </div>
           {/* Row 2: BP, R/R, max positions, EV */}
-          <div className="mt-2 grid grid-cols-4 gap-2">
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <div className="bg-surface-alt rounded-lg px-3 py-2 text-center">
               <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
                 BP Required

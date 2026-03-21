@@ -1,9 +1,37 @@
+import { memo } from 'react';
 import type { Theme } from '../themes';
 import type { AmPm, Timezone } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 import { tinyLbl } from '../utils/ui-utils';
 import EventDayWarning from './EventDayWarning';
 import type { EventItem } from '../types/api';
+
+/**
+ * Isolated memo'd wrapper around the native date input.
+ * iOS Safari dismisses the native date picker whenever React reconciles a
+ * controlled <input type="date"> — even if the value hasn't changed. By
+ * memoizing this component, React skips reconciliation (and DOM writes)
+ * entirely whenever selectedDate and onDateChange are stable.
+ */
+const DateInput = memo(function DateInput({
+  value,
+  className,
+  onDateChange,
+}: {
+  value: string;
+  className: string;
+  onDateChange: (v: string) => void;
+}) {
+  return (
+    <input
+      id="date-picker"
+      type="date"
+      value={value}
+      onChange={(e) => onDateChange(e.target.value)}
+      className={className}
+    />
+  );
+});
 
 interface Props {
   th: Theme;
@@ -52,12 +80,10 @@ export default function DateTimeSection({
           <label htmlFor="date-picker" className={tinyLbl}>
             Date
           </label>
-          <input
-            id="date-picker"
-            type="date"
+          <DateInput
             value={selectedDate}
-            onChange={(e) => onDateChange(e.target.value)}
             className={inputCls}
+            onDateChange={onDateChange}
           />
         </>
       )}
