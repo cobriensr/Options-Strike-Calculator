@@ -1,5 +1,10 @@
 {
+  "functions": {
+    "api/analyze.ts": { "maxDuration": 800 }
+  },
   "installCommand": "npm install",
+  "devCommand": "npm run dev",
+  "outputDirectory": "dist",
   "rewrites": [
     {
       "source": "/149e9513-01fa-4fb0-aad4-566afd725d1b/2d206a39-8ed7-437e-a3be-862e0f06eea3/a-4-a/c.js",
@@ -9,7 +14,7 @@
       "source": "/149e9513-01fa-4fb0-aad4-566afd725d1b/2d206a39-8ed7-437e-a3be-862e0f06eea3/:path*",
       "destination": "https://api.vercel.com/bot-protection/v1/proxy/:path*"
     },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    { "source": "/((?!api/)(?!@)[^.]*)", "destination": "/index.html" }
   ],
   "headers": [
     {
@@ -28,7 +33,7 @@
         { "key": "X-XSS-Protection", "value": "1; mode=block" },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' 'sha256-ieoeWczDHkReVBsRBqaal5AFMlBtNjMzgwKvLqi/tSU=' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=' https://va.vercel-scripts.com https://browser.sentry-cdn.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.schwabapi.com https://va.vercel-scripts.com https://*.ingest.sentry.io; worker-src 'self'; img-src 'self' data: blob:; frame-ancestors 'self'; manifest-src 'self'"
+          "value": "default-src 'self'; script-src 'self' 'sha256-ieoeWczDHkReVBsRBqaal5AFMlBtNjMzgwKvLqi/tSU=' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=' https://va.vercel-scripts.com https://browser.sentry-cdn.com https://vercel.live; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.schwabapi.com https://va.vercel-scripts.com https://*.ingest.sentry.io; worker-src 'self'; img-src 'self' data: blob:; frame-ancestors 'self'; manifest-src 'self'"
         }
       ]
     },
