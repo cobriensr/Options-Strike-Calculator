@@ -37,10 +37,11 @@ describe('VIXTermStructure: rendering', () => {
     expect(screen.getByLabelText(/vix1d/i)).toBeInTheDocument();
   });
 
-  it('shows empty state hint when VIX is set but no VIX1D/VIX9D entered', () => {
+  it('shows ratio cards from seeded defaults when VIX is set', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
-    expect(screen.getByText(/enter vix1d/i)).toBeInTheDocument();
-    expect(screen.getByText(/CBOE:VIX1D/)).toBeInTheDocument();
+    // Defaults (18.50 / 20.10) produce ratio cards immediately
+    expect(screen.getByText('VIX1D / VIX')).toBeInTheDocument();
+    expect(screen.getByText('VIX9D / VIX')).toBeInTheDocument();
   });
 
   it('shows VIX needed hint when VIX1D entered but VIX is null', () => {
@@ -217,8 +218,9 @@ describe('VIXTermStructure: edge cases', () => {
   it('handles non-numeric input gracefully', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
     setInput(screen.getByLabelText(/vix1d/i), 'abc');
-    // Should not show ratio cards or crash
-    expect(screen.queryByText(/x$/)).not.toBeInTheDocument();
+    setInput(screen.getByLabelText(/vix9d/i), '');
+    // Should not show VIX1D ratio card (invalid) or crash
+    expect(screen.queryByText('VIX1D / VIX')).not.toBeInTheDocument();
   });
 
   it('handles very high VIX1D ratio', () => {
@@ -236,6 +238,7 @@ describe('VIXTermStructure: edge cases', () => {
   it('works with only VIX1D entered (no VIX9D)', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
     setInput(screen.getByLabelText(/vix1d/i), '20');
+    setInput(screen.getByLabelText(/vix9d/i), '');
     expect(screen.getByText('NORMAL')).toBeInTheDocument();
     expect(screen.getByText('0.5x')).toBeInTheDocument(); // bar scale label
   });
@@ -309,12 +312,12 @@ describe('VIXTermStructure: auto-fill from live data', () => {
     expect(input.value).toBe('25');
   });
 
-  it('works without initial values (backward compatible)', () => {
+  it('shows seeded defaults when no initial values provided', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} />);
     const vix1dInput = screen.getByLabelText(/vix1d/i) as HTMLInputElement;
     const vix9dInput = screen.getByLabelText(/vix9d/i) as HTMLInputElement;
-    expect(vix1dInput.value).toBe('');
-    expect(vix9dInput.value).toBe('');
+    expect(vix1dInput.value).toBe('18.50');
+    expect(vix9dInput.value).toBe('20.10');
   });
 });
 
@@ -330,8 +333,11 @@ describe('VIXTermStructure: VVIX card', () => {
 
   it('shows NORMAL when VVIX is 80-100', () => {
     render(<VIXTermStructure th={lightTheme} vix={20} initialVvix={90} />);
-    expect(screen.getByText('NORMAL')).toBeInTheDocument();
-    expect(screen.getByText(/no additional signal/i)).toBeInTheDocument();
+    // NORMAL and "no additional signal" may appear in multiple cards (VIX1D, VIX9D, VVIX)
+    expect(screen.getAllByText('NORMAL').length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(/no additional signal/i).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('shows UNSTABLE when VVIX is 100-120', () => {

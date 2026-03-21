@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Theme } from '../../themes';
 import { tinyLbl, tint } from '../../utils/ui-utils';
 import {
@@ -39,18 +39,19 @@ export default function VolatilityCluster({
   clusterPutMult,
   clusterCallMult,
 }: Props) {
-  const [yestHigh, setYestHigh] = useState('');
-  const [yestLow, setYestLow] = useState('');
-  const [yestOpen, setYestOpen] = useState('');
+  const [yestHigh, setYestHigh] = useState('5750');
+  const [yestLow, setYestLow] = useState('5690');
+  const [yestOpen, setYestOpen] = useState('5720');
+  const userEdited = useRef(false);
 
-  // Auto-fill from live data (only populates empty fields)
+  // Auto-fill from live data (overwrites defaults but respects user edits)
   useEffect(() => {
-    if (initialYesterday && !yestOpen) {
+    if (initialYesterday && !userEdited.current) {
       setYestOpen(initialYesterday.open.toFixed(2));
       setYestHigh(initialYesterday.high.toFixed(2));
       setYestLow(initialYesterday.low.toFixed(2));
     }
-  }, [initialYesterday]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialYesterday]);
 
   const hasVix = vix != null && vix > 0;
   const highVal = Number.parseFloat(yestHigh);
@@ -135,7 +136,7 @@ export default function VolatilityCluster({
       <div className="mb-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
         <div>
           <label htmlFor="yest-open" className={tinyLbl}>
-            Yest. Open
+            Yesterday Open
           </label>
           <input
             id="yest-open"
@@ -143,13 +144,16 @@ export default function VolatilityCluster({
             inputMode="decimal"
             placeholder={spot ? spot.toFixed(0) : 'e.g. 6800'}
             value={yestOpen}
-            onChange={(e) => setYestOpen(e.target.value)}
+            onChange={(e) => {
+              setYestOpen(e.target.value);
+              userEdited.current = true;
+            }}
             className={inputCls}
           />
         </div>
         <div>
           <label htmlFor="yest-high" className={tinyLbl}>
-            Yest. High
+            Yesterday High
           </label>
           <input
             id="yest-high"
@@ -157,13 +161,16 @@ export default function VolatilityCluster({
             inputMode="decimal"
             placeholder={spot ? (spot + 30).toFixed(0) : 'e.g. 6830'}
             value={yestHigh}
-            onChange={(e) => setYestHigh(e.target.value)}
+            onChange={(e) => {
+              setYestHigh(e.target.value);
+              userEdited.current = true;
+            }}
             className={inputCls}
           />
         </div>
         <div>
           <label htmlFor="yest-low" className={tinyLbl}>
-            Yest. Low
+            Yesterday Low
           </label>
           <input
             id="yest-low"
@@ -171,7 +178,10 @@ export default function VolatilityCluster({
             inputMode="decimal"
             placeholder={spot ? (spot - 30).toFixed(0) : 'e.g. 6770'}
             value={yestLow}
-            onChange={(e) => setYestLow(e.target.value)}
+            onChange={(e) => {
+              setYestLow(e.target.value);
+              userEdited.current = true;
+            }}
             className={inputCls}
           />
         </div>

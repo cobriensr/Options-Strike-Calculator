@@ -208,4 +208,337 @@ describe('AdvancedSection', () => {
     );
     expect(onContractsChange).toHaveBeenCalledWith(999);
   });
+
+  it('contracts input empty string resets to 1', () => {
+    const onContractsChange = vi.fn();
+    render(
+      <AdvancedSection
+        {...defaultProps({ showIC: true, contracts: 5, onContractsChange })}
+      />,
+    );
+    const input = screen.getByLabelText('Number of contracts');
+    fireEvent.change(input, { target: { value: '' } });
+    expect(onContractsChange).toHaveBeenCalledWith(1);
+  });
+
+  // ============================================================
+  // WING WIDTH CHIP ACTIVE STATE
+  // ============================================================
+
+  it('marks the active wing width chip as aria-checked', () => {
+    render(
+      <AdvancedSection {...defaultProps({ showIC: true, wingWidth: 20 })} />,
+    );
+    const chip20 = screen.getByRole('radio', { name: '20' });
+    expect(chip20).toHaveAttribute('aria-checked', 'true');
+    const chip10 = screen.getByRole('radio', { name: '10' });
+    expect(chip10).toHaveAttribute('aria-checked', 'false');
+  });
+
+  // ============================================================
+  // SKEW DISPLAY AT BOUNDARY
+  // ============================================================
+
+  it('shows correct skew text at max value (8%)', () => {
+    render(<AdvancedSection {...defaultProps({ skewPct: 8 })} />);
+    expect(screen.getByText('+8% put / \u22128% call')).toBeInTheDocument();
+  });
+
+  // ============================================================
+  // MODEL PARAMETERS
+  // ============================================================
+
+  const makeDeltaRow = (
+    overrides: Partial<import('../types').DeltaRow> = {},
+  ): import('../types').DeltaRow => ({
+    delta: 10,
+    z: 1.28,
+    putStrike: 5800,
+    callStrike: 6200,
+    putSnapped: 5800,
+    callSnapped: 6200,
+    putSpySnapped: 580,
+    callSpySnapped: 620,
+    spyPut: '580',
+    spyCall: '620',
+    putDistance: 200,
+    callDistance: 200,
+    putPct: '3.33',
+    callPct: '3.33',
+    putPremium: 2.5,
+    callPremium: 2.5,
+    putSigma: 0.18,
+    callSigma: 0.15,
+    basePutSigma: 0.17,
+    baseCallSigma: 0.14,
+    putActualDelta: 0.1,
+    callActualDelta: 0.1,
+    putGamma: 0.002,
+    callGamma: 0.002,
+    putTheta: -50,
+    callTheta: -50,
+    ivAccelMult: 1.12,
+    ...overrides,
+  });
+
+  const makeResults = (
+    overrides: Partial<import('../types').CalculationResults> = {},
+  ): import('../types').CalculationResults => ({
+    allDeltas: [makeDeltaRow()],
+    sigma: 0.16,
+    T: 0.003,
+    hoursRemaining: 4.5,
+    spot: 6000,
+    vix: 18,
+    ...overrides,
+  });
+
+  it('does not render Model Parameters when results is undefined', () => {
+    render(<AdvancedSection {...defaultProps()} />);
+    expect(screen.queryByText('Model Parameters')).not.toBeInTheDocument();
+  });
+
+  it('does not render Model Parameters when results is null', () => {
+    render(<AdvancedSection {...defaultProps({ results: null })} />);
+    expect(screen.queryByText('Model Parameters')).not.toBeInTheDocument();
+  });
+
+  it('renders Model Parameters section when results exist', () => {
+    render(<AdvancedSection {...defaultProps({ results: makeResults() })} />);
+    expect(screen.getByText('Model Parameters')).toBeInTheDocument();
+  });
+
+  it('displays Eff. σ value from results', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({ results: makeResults({ sigma: 0.16 }) })}
+      />,
+    );
+    expect(screen.getByText('Eff. \u03C3')).toBeInTheDocument();
+    expect(screen.getByText('16.00%')).toBeInTheDocument();
+  });
+
+  it('displays Hours Left value from results', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({ results: makeResults({ hoursRemaining: 4.5 }) })}
+      />,
+    );
+    expect(screen.getByText('Hours Left')).toBeInTheDocument();
+    expect(screen.getByText('4.5h')).toBeInTheDocument();
+  });
+
+  it('displays IV Accel multiplier from first valid delta row', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          results: makeResults({
+            allDeltas: [makeDeltaRow({ ivAccelMult: 1.12 })],
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText('IV Accel')).toBeInTheDocument();
+    expect(screen.getByText('1.12x')).toBeInTheDocument();
+  });
+
+  it('shows dash for IV Accel when all delta rows have errors', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          results: makeResults({
+            allDeltas: [{ delta: 10, error: 'fail' }],
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText('IV Accel')).toBeInTheDocument();
+    expect(screen.getByText('\u2014')).toBeInTheDocument();
+  });
+
+  it('displays Kurtosis factor based on VIX level', () => {
+    // VIX 18 → getKurtosisFactor returns 2.0
+    render(
+      <AdvancedSection
+        {...defaultProps({ results: makeResults({ vix: 18 }) })}
+      />,
+    );
+    expect(screen.getByText('Kurtosis')).toBeInTheDocument();
+    expect(screen.getByText('2.0x')).toBeInTheDocument();
+  });
+
+  it('displays different Kurtosis factor for high VIX', () => {
+    // VIX 32 → getKurtosisFactor returns 3.5
+    render(
+      <AdvancedSection
+        {...defaultProps({ results: makeResults({ vix: 32 }) })}
+      />,
+    );
+    expect(screen.getByText('3.5x')).toBeInTheDocument();
+  });
+
+  it('uses mt-auto class on Model Parameters container for bottom alignment', () => {
+    render(<AdvancedSection {...defaultProps({ results: makeResults() })} />);
+    const heading = screen.getByText('Model Parameters');
+    // The mt-auto class is on the parent div that wraps the heading
+    const container = heading.closest('div.mt-auto');
+    expect(container).toBeInTheDocument();
+  });
+
+  // ============================================================
+  // 10Δ IC SNAPSHOT
+  // ============================================================
+
+  it('renders 10Δ IC Snapshot when results contain a 10-delta row', () => {
+    render(<AdvancedSection {...defaultProps({ results: makeResults() })} />);
+    expect(screen.getByText(/10.*IC Snapshot/)).toBeInTheDocument();
+  });
+
+  it('does not render IC Snapshot when no 10-delta row exists', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          results: makeResults({
+            allDeltas: [
+              makeDeltaRow({ delta: 15 as import('../types').DeltaTarget }),
+            ],
+          }),
+        })}
+      />,
+    );
+    expect(screen.queryByText(/IC Snapshot/)).not.toBeInTheDocument();
+  });
+
+  it('displays put and call snapped strikes in IC Snapshot', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          results: makeResults({
+            allDeltas: [makeDeltaRow({ putSnapped: 5800, callSnapped: 6200 })],
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText('5800')).toBeInTheDocument();
+    expect(screen.getByText('6200')).toBeInTheDocument();
+  });
+
+  it('displays range percentage in IC Snapshot', () => {
+    // range = callSnapped - putSnapped = 6200 - 5800 = 400
+    // rangePct = (400 / 6000) * 100 = 6.7%
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          results: makeResults({
+            spot: 6000,
+            allDeltas: [makeDeltaRow({ putSnapped: 5800, callSnapped: 6200 })],
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText('6.7% range')).toBeInTheDocument();
+  });
+
+  it('displays spot price in IC Snapshot', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          results: makeResults({ spot: 6000 }),
+        })}
+      />,
+    );
+    expect(screen.getByText('6000')).toBeInTheDocument();
+  });
+
+  // ============================================================
+  // MAX LOSS / PER CONTRACT
+  // ============================================================
+
+  it('shows Max Loss and Per Contract when showIC is true and 10Δ row exists', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          wingWidth: 10,
+          contracts: 3,
+          results: makeResults(),
+        })}
+      />,
+    );
+    expect(screen.getByText('Max Loss')).toBeInTheDocument();
+    expect(screen.getByText('Per Contract')).toBeInTheDocument();
+    // wingWidth 10 × $100 = $1,000 per contract
+    expect(screen.getByText('$1,000')).toBeInTheDocument();
+    // total: $1,000 × 3 contracts = $3,000
+    expect(screen.getByText('$3,000')).toBeInTheDocument();
+  });
+
+  it('does not show Max Loss / Per Contract when showIC is false', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: false,
+          wingWidth: 10,
+          contracts: 3,
+          results: makeResults(),
+        })}
+      />,
+    );
+    expect(screen.queryByText('Max Loss')).not.toBeInTheDocument();
+    expect(screen.queryByText('Per Contract')).not.toBeInTheDocument();
+  });
+
+  it('calculates Max Loss correctly with different wing widths', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          wingWidth: 25,
+          contracts: 2,
+          results: makeResults(),
+        })}
+      />,
+    );
+    // Per contract: 25 × $100 = $2,500
+    expect(screen.getByText('$2,500')).toBeInTheDocument();
+    // Total: $2,500 × 2 = $5,000
+    expect(screen.getByText('$5,000')).toBeInTheDocument();
+  });
+
+  it('does not show Max Loss when results have no 10-delta row', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          wingWidth: 10,
+          contracts: 1,
+          results: makeResults({
+            allDeltas: [
+              makeDeltaRow({ delta: 15 as import('../types').DeltaTarget }),
+            ],
+          }),
+        })}
+      />,
+    );
+    expect(screen.queryByText('Max Loss')).not.toBeInTheDocument();
+  });
+
+  it('does not show Max Loss when 10-delta row has an error', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          wingWidth: 10,
+          contracts: 1,
+          results: makeResults({
+            allDeltas: [
+              makeDeltaRow({ delta: 15 as import('../types').DeltaTarget }),
+              { delta: 10, error: 'calculation failed' },
+            ],
+          }),
+        })}
+      />,
+    );
+    expect(screen.queryByText('Max Loss')).not.toBeInTheDocument();
+  });
 });

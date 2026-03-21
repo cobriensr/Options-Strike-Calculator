@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Theme } from '../../themes';
 import { tinyLbl, tint } from '../../utils/ui-utils';
 import { estimateRange, getDowMultiplier } from '../../data/vixRangeStats';
@@ -92,16 +92,17 @@ export default function OpeningRangeCheck({
   selectedDate,
   initialRange,
 }: Props) {
-  const [openHigh, setOpenHigh] = useState('');
-  const [openLow, setOpenLow] = useState('');
+  const [openHigh, setOpenHigh] = useState('5735');
+  const [openLow, setOpenLow] = useState('5705');
+  const userEdited = useRef(false);
 
-  // Auto-fill from live data (only populates empty fields)
+  // Auto-fill from live data (overwrites defaults but respects user edits)
   useEffect(() => {
-    if (initialRange && !openHigh) {
+    if (initialRange && !userEdited.current) {
       setOpenHigh(initialRange.high.toFixed(2));
       setOpenLow(initialRange.low.toFixed(2));
     }
-  }, [initialRange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialRange]);
 
   const hasVix = vix != null && vix > 0;
 
@@ -181,7 +182,10 @@ export default function OpeningRangeCheck({
             inputMode="decimal"
             placeholder={spot ? (spot + 15).toFixed(0) : 'e.g. 6760'}
             value={openHigh}
-            onChange={(e) => setOpenHigh(e.target.value)}
+            onChange={(e) => {
+              setOpenHigh(e.target.value);
+              userEdited.current = true;
+            }}
             className={inputCls}
           />
         </div>
@@ -195,7 +199,10 @@ export default function OpeningRangeCheck({
             inputMode="decimal"
             placeholder={spot ? (spot - 15).toFixed(0) : 'e.g. 6720'}
             value={openLow}
-            onChange={(e) => setOpenLow(e.target.value)}
+            onChange={(e) => {
+              setOpenLow(e.target.value);
+              userEdited.current = true;
+            }}
             className={inputCls}
           />
         </div>

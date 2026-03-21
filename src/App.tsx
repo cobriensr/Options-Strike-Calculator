@@ -1,5 +1,5 @@
 import { IV_MODES } from './constants';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
 import { useAppState } from './hooks/useAppState';
@@ -13,10 +13,8 @@ import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { getEarlyCloseHourET } from './data/eventCalendar';
-import VixUploadSection from './components/VixUploadSection';
-import DateLookupSection from './components/DateLookupSection';
+import DateTimeSection from './components/DateTimeSection';
 import SpotPriceSection from './components/SpotPriceSection';
-import EntryTimeSection from './components/EntryTimeSection';
 import IVInputSection from './components/IVInputSection';
 import AdvancedSection from './components/AdvancedSection';
 import MarketRegimeSection from './components/MarketRegimeSection';
@@ -103,7 +101,11 @@ export default function StrikeCalculator() {
 
   // Data hooks
   const market = useMarketData();
-  const vix = useVixData(ivMode, timeHour, timeAmPm, timezone, setVixInput);
+  const {
+    fileInputRef: vixFileInputRef,
+    handleFileUpload: vixHandleFileUpload,
+    ...vix
+  } = useVixData(ivMode, timeHour, timeAmPm, timezone, setVixInput);
   const historyData = useHistoryData(vix.selectedDate);
   const vix1dStatic = useVix1dData();
   const chainData = useChainData(market.hasData && !historyData.hasHistory);
@@ -123,11 +125,37 @@ export default function StrikeCalculator() {
     getEarlyCloseHourET(vix.selectedDate),
   );
 
+  // Track user edits so auto-fill overwrites defaults but not manual input
+  const spotEdited = useRef(false);
+  const spxEdited = useRef(false);
+  const vixEdited = useRef(false);
+  const handleSpotChange = useCallback(
+    (v: string) => {
+      spotEdited.current = true;
+      setSpotPrice(v);
+    },
+    [setSpotPrice],
+  );
+  const handleSpxChange = useCallback(
+    (v: string) => {
+      spxEdited.current = true;
+      setSpxDirect(v);
+    },
+    [setSpxDirect],
+  );
+  const handleVixChange = useCallback(
+    (v: string) => {
+      vixEdited.current = true;
+      setVixInput(v);
+    },
+    [setVixInput],
+  );
+
   // Auto-fill inputs from live/historical data + compute history snapshot
   const historySnapshot = useAutoFill({
-    spotPrice,
-    spxDirect,
-    vixInput,
+    spotEdited,
+    spxEdited,
+    vixEdited,
     timeHour,
     timeMinute,
     timeAmPm,
@@ -262,6 +290,22 @@ export default function StrikeCalculator() {
                   href="/api/auth/init"
                 />
               )}
+              <input
+                ref={vixFileInputRef}
+                type="file"
+                accept=".csv"
+                onChange={vixHandleFileUpload}
+                className="hidden"
+                aria-label="Upload VIX OHLC CSV file"
+              />
+              <button
+                onClick={() => vixFileInputRef.current?.click()}
+                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+              >
+                <span className="text-[11px] font-semibold">
+                  {vix.vixDataLoaded ? vix.vixDataSource : 'Upload VIX CSV'}
+                </span>
+              </button>
               <button
                 onClick={() => setDarkMode(!darkMode)}
                 aria-label={
@@ -285,91 +329,85 @@ export default function StrikeCalculator() {
           </p>
 
           <main>
-            <VixUploadSection
-              vixDataLoaded={vix.vixDataLoaded}
-              vixDataSource={vix.vixDataSource}
-              fileInputRef={vix.fileInputRef}
-              onFileUpload={vix.handleFileUpload}
-            />
-
-            {vix.vixDataLoaded && (
-              <DateLookupSection
+            <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
+              <DateTimeSection
                 th={th}
                 inputCls={INPUT_CLS}
+                selectCls={SELECT_CLS}
+                chevronUrl={chevronUrl}
                 selectedDate={vix.selectedDate}
                 onDateChange={vix.setSelectedDate}
+                vixDataLoaded={vix.vixDataLoaded}
                 vixOHLC={vix.vixOHLC}
                 vixOHLCField={vix.vixOHLCField}
                 onOHLCFieldChange={vix.setVixOHLCField}
                 liveEvents={market.data.events?.events}
+                timeHour={timeHour}
+                onHourChange={setTimeHour}
+                timeMinute={timeMinute}
+                onMinuteChange={setTimeMinute}
+                timeAmPm={timeAmPm}
+                onAmPmChange={setTimeAmPm}
+                timezone={timezone}
+                onTimezoneChange={setTimezone}
+                errors={errors}
               />
-            )}
 
-            <SpotPriceSection
-              th={th}
-              inputCls={INPUT_CLS}
-              spotPrice={spotPrice}
-              onSpotChange={setSpotPrice}
-              spxDirect={spxDirect}
-              onSpxDirectChange={setSpxDirect}
-              spxRatio={spxRatio}
-              onSpxRatioChange={setSpxRatio}
-              dSpot={dSpot}
-              effectiveRatio={effectiveRatio}
-              spxDirectActive={spxDirectActive}
-              derivedRatio={spxDirectActive ? spxVal / spyVal : spxRatio}
-              errors={errors}
-            />
+              <SpotPriceSection
+                th={th}
+                inputCls={INPUT_CLS}
+                spotPrice={spotPrice}
+                onSpotChange={handleSpotChange}
+                spxDirect={spxDirect}
+                onSpxDirectChange={handleSpxChange}
+                spxRatio={spxRatio}
+                onSpxRatioChange={setSpxRatio}
+                dSpot={dSpot}
+                effectiveRatio={effectiveRatio}
+                spxDirectActive={spxDirectActive}
+                derivedRatio={spxDirectActive ? spxVal / spyVal : spxRatio}
+                errors={errors}
+              />
+            </div>
 
-            <EntryTimeSection
-              selectCls={SELECT_CLS}
-              chevronUrl={chevronUrl}
-              timeHour={timeHour}
-              onHourChange={setTimeHour}
-              timeMinute={timeMinute}
-              onMinuteChange={setTimeMinute}
-              timeAmPm={timeAmPm}
-              onAmPmChange={setTimeAmPm}
-              timezone={timezone}
-              onTimezoneChange={setTimezone}
-              errors={errors}
-            />
+            <div className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
+              <AdvancedSection
+                th={th}
+                skewPct={skewPct}
+                onSkewChange={setSkewPct}
+                showIC={showIC}
+                onToggleIC={() => setShowIC(!showIC)}
+                wingWidth={wingWidth}
+                onWingWidthChange={setWingWidth}
+                contracts={contracts}
+                onContractsChange={setContracts}
+                results={results}
+              />
 
-            <IVInputSection
-              th={th}
-              inputCls={INPUT_CLS}
-              ivMode={ivMode}
-              onIvModeChange={setIvMode}
-              vixInput={vixInput}
-              onVixChange={setVixInput}
-              multiplier={multiplier}
-              onMultiplierChange={setMultiplier}
-              directIVInput={directIVInput}
-              onDirectIVChange={setDirectIVInput}
-              dVix={dVix}
-              results={results}
-              errors={errors}
-              market={market}
-              historySnapshot={historySnapshot}
-              onUseVix1dAsSigma={(sigma) => {
-                setIvMode(IV_MODES.DIRECT);
-                setDirectIVInput(sigma.toFixed(4));
-              }}
-              termShape={signals.vixTermShape}
-              termShapeAdvice={signals.vixTermShapeAdvice}
-            />
-
-            <AdvancedSection
-              th={th}
-              skewPct={skewPct}
-              onSkewChange={setSkewPct}
-              showIC={showIC}
-              onToggleIC={() => setShowIC(!showIC)}
-              wingWidth={wingWidth}
-              onWingWidthChange={setWingWidth}
-              contracts={contracts}
-              onContractsChange={setContracts}
-            />
+              <IVInputSection
+                th={th}
+                inputCls={INPUT_CLS}
+                ivMode={ivMode}
+                onIvModeChange={setIvMode}
+                vixInput={vixInput}
+                onVixChange={handleVixChange}
+                multiplier={multiplier}
+                onMultiplierChange={setMultiplier}
+                directIVInput={directIVInput}
+                onDirectIVChange={setDirectIVInput}
+                dVix={dVix}
+                results={results}
+                errors={errors}
+                market={market}
+                historySnapshot={historySnapshot}
+                onUseVix1dAsSigma={(sigma) => {
+                  setIvMode(IV_MODES.DIRECT);
+                  setDirectIVInput(sigma.toFixed(4));
+                }}
+                termShape={signals.vixTermShape}
+                termShapeAdvice={signals.vixTermShapeAdvice}
+              />
+            </div>
 
             <ErrorBoundary label="Risk Calculator">
               <RiskCalculator />

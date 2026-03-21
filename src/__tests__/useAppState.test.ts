@@ -11,11 +11,11 @@ describe('useAppState', () => {
     const s = result.current;
 
     expect(s.darkMode).toBe(true);
-    expect(s.spotPrice).toBe('');
-    expect(s.spxDirect).toBe('');
+    expect(s.spotPrice).toBe('572');
+    expect(s.spxDirect).toBe('5720');
     expect(s.spxRatio).toBe(10);
     expect(s.ivMode).toBe(IV_MODES.VIX);
-    expect(s.vixInput).toBe('');
+    expect(s.vixInput).toBe('19');
     expect(s.multiplier).toBe(String(DEFAULTS.IV_PREMIUM_FACTOR));
     expect(s.directIVInput).toBe('');
     expect(s.timeHour).toBe('10');
@@ -31,9 +31,9 @@ describe('useAppState', () => {
 
   it('debounced values start matching initial state', () => {
     const { result } = renderHook(() => useAppState());
-    expect(result.current.dSpot).toBe('');
-    expect(result.current.dSpx).toBe('');
-    expect(result.current.dVix).toBe('');
+    expect(result.current.dSpot).toBe('572');
+    expect(result.current.dSpx).toBe('5720');
+    expect(result.current.dVix).toBe('19');
     expect(result.current.dIV).toBe('');
     expect(result.current.dMult).toBe(String(DEFAULTS.IV_PREMIUM_FACTOR));
   });
@@ -134,9 +134,10 @@ describe('useAppState', () => {
 
   // ── Derived ratio ──
 
-  it('effectiveRatio falls back to spxRatio when no valid SPX/SPY', () => {
+  it('effectiveRatio uses derived ratio from seeded defaults', () => {
     const { result } = renderHook(() => useAppState());
-    expect(result.current.spxDirectActive).toBe(false);
+    // Both spotPrice ('572') and spxDirect ('5720') are seeded, so spxDirectActive is true
+    expect(result.current.spxDirectActive).toBe(true);
     expect(result.current.effectiveRatio).toBe(10);
   });
 

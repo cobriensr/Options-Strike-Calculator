@@ -1,4 +1,6 @@
 import type { Theme } from '../themes';
+import type { CalculationResults } from '../types';
+import { getKurtosisFactor } from '../constants';
 import { SectionBox, Chip } from './ui';
 
 interface Props {
@@ -11,6 +13,7 @@ interface Props {
   onWingWidthChange: (v: number) => void;
   contracts: number;
   onContractsChange: (v: number) => void;
+  results?: CalculationResults | null;
 }
 
 export default function AdvancedSection({
@@ -23,6 +26,7 @@ export default function AdvancedSection({
   onWingWidthChange,
   contracts,
   onContractsChange,
+  results,
 }: Props) {
   return (
     <SectionBox
@@ -42,7 +46,7 @@ export default function AdvancedSection({
       }
     >
       {/* Put Skew Slider */}
-      <div className={showIC ? 'mb-4' : ''}>
+      <div className={showIC ? 'mb-5' : ''}>
         <div className="mb-1.5 flex items-center justify-between">
           <label
             htmlFor="skew-slider"
@@ -159,6 +163,116 @@ export default function AdvancedSection({
               dollar values.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Model Parameters — derived values driving calculations */}
+      {results && (
+        <div className="border-edge mt-auto border-t pt-3.5">
+          <div className="text-tertiary mb-2 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
+            Model Parameters
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              {
+                label: 'Eff. \u03C3',
+                value: (results.sigma * 100).toFixed(2) + '%',
+              },
+              {
+                label: 'Hours Left',
+                value: results.hoursRemaining.toFixed(1) + 'h',
+              },
+              {
+                label: 'IV Accel',
+                value: (() => {
+                  const row = results.allDeltas.find((r) => !('error' in r));
+                  return row && !('error' in row)
+                    ? row.ivAccelMult.toFixed(2) + 'x'
+                    : '\u2014';
+                })(),
+              },
+              {
+                label: 'Kurtosis',
+                value: getKurtosisFactor(results.vix).toFixed(1) + 'x',
+              },
+            ].map(({ label, value }) => (
+              <div
+                key={label}
+                className="bg-surface-alt rounded-lg p-[8px_10px]"
+              >
+                <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+                  {label}
+                </div>
+                <div className="text-primary mt-0.5 font-mono text-[15px] font-medium">
+                  {value}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Position Snapshot — 10Δ IC boundaries + max risk */}
+          {(() => {
+            const ref = results.allDeltas.find(
+              (r) => !('error' in r) && r.delta === 10,
+            );
+            if (!ref || 'error' in ref) return null;
+            const maxLossPerContract = wingWidth * 100;
+            const totalMaxLoss = maxLossPerContract * contracts;
+            const rangeWidth = ref.callSnapped - ref.putSnapped;
+            const rangePct = ((rangeWidth / results.spot) * 100).toFixed(1);
+            return (
+              <div className="border-edge mt-3.5 border-t pt-3.5">
+                <div className="text-tertiary mb-2 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
+                  10{'\u0394'} IC Snapshot
+                </div>
+                <div className="bg-surface-alt rounded-lg p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-sm font-medium text-red-400">
+                      {ref.putSnapped}
+                    </span>
+                    <div className="mx-2 flex flex-1 flex-col items-center">
+                      <span className="text-tertiary text-[10px]">
+                        {rangePct}% range
+                      </span>
+                      <div className="bg-edge relative my-1 h-[3px] w-full rounded">
+                        <div
+                          className="bg-accent absolute inset-y-0 rounded"
+                          style={{ left: '10%', right: '10%' }}
+                        />
+                        <div className="bg-accent absolute top-1/2 left-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full" />
+                      </div>
+                      <span className="text-muted font-mono text-[10px]">
+                        {results.spot.toFixed(0)}
+                      </span>
+                    </div>
+                    <span className="font-mono text-sm font-medium text-green-400">
+                      {ref.callSnapped}
+                    </span>
+                  </div>
+                </div>
+                {showIC && (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <div className="bg-surface-alt rounded-lg p-[8px_10px]">
+                      <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+                        Max Loss
+                      </div>
+                      <div className="text-primary mt-0.5 font-mono text-[15px] font-medium">
+                        ${totalMaxLoss.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="bg-surface-alt rounded-lg p-[8px_10px]">
+                      <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+                        Per Contract
+                      </div>
+                      <div className="text-primary mt-0.5 font-mono text-[15px] font-medium">
+                        ${maxLossPerContract.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
     </SectionBox>

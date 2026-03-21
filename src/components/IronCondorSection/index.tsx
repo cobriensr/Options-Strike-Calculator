@@ -23,7 +23,6 @@ export default function IronCondorSection({
   effectiveRatio,
   skewPct,
 }: Props) {
-  const [showHedge, setShowHedge] = useState(false);
   const [hedgeDeltaIdx, setHedgeDeltaIdx] = useState(0);
 
   const icRows = results.allDeltas
@@ -68,55 +67,17 @@ export default function IronCondorSection({
         Premiums theoretical (r=0).
       </p>
 
-      {/* Hedge Toggle */}
-      <div className="mt-3.5 flex flex-wrap items-center gap-3">
-        <button
-          onClick={() => setShowHedge(!showHedge)}
-          aria-pressed={showHedge}
-          className={
-            'cursor-pointer rounded-lg border-[1.5px] px-4.5 py-2 font-sans text-xs font-semibold ' +
-            (showHedge
-              ? 'border-accent bg-accent-bg text-accent'
-              : 'border-edge-strong bg-chip-bg text-secondary')
-          }
-        >
-          {showHedge ? '\u2713' : '\u26A1'} Hedge Calculator
-        </button>
-
-        {showHedge && icRows.length > 1 && (
-          <div className="flex flex-wrap items-center gap-1">
-            <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-              IC Delta
-            </span>
-            {icRows.map((ic, idx) => (
-              <button
-                key={ic.delta}
-                onClick={() => setHedgeDeltaIdx(idx)}
-                role="radio"
-                aria-checked={hedgeDeltaIdx === idx}
-                className={
-                  'cursor-pointer rounded-full border-[1.5px] px-2.5 py-0.5 font-mono text-xs font-medium transition-all duration-100 ' +
-                  (hedgeDeltaIdx === idx
-                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                    : 'border-chip-border bg-chip-bg text-chip-text')
-                }
-              >
-                {ic.delta}
-                {'\u0394'}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Hedge Section */}
-      {showHedge && hedgeIc && (
+      {/* Hedge Section — always visible */}
+      {hedgeIc && (
         <HedgeSection
           th={th}
           results={results}
           ic={hedgeIc}
           contracts={contracts}
           skew={skewPct / 100}
+          icRows={icRows}
+          hedgeDeltaIdx={hedgeDeltaIdx}
+          onHedgeDeltaChange={setHedgeDeltaIdx}
         />
       )}
 

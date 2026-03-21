@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Theme } from '../../themes';
 import { tinyLbl, tint } from '../../utils/ui-utils';
 import type { Signal } from './classifiers';
@@ -41,16 +41,18 @@ export default function VIXTermStructure({
   termShape,
   termShapeAdvice,
 }: Props) {
-  const [vix1dInput, setVix1dInput] = useState('');
-  const [vix9dInput, setVix9dInput] = useState('');
+  const [vix1dInput, setVix1dInput] = useState('18.50');
+  const [vix9dInput, setVix9dInput] = useState('20.10');
+  const vix1dEdited = useRef(false);
+  const vix9dEdited = useRef(false);
 
-  // Auto-fill from live data (only populates empty fields)
+  // Auto-fill from live data (overwrites defaults but respects user edits)
   useEffect(() => {
-    if (initialVix1d != null && !vix1dInput)
+    if (initialVix1d != null && !vix1dEdited.current)
       setVix1dInput(initialVix1d.toFixed(2));
-    if (initialVix9d != null && !vix9dInput)
+    if (initialVix9d != null && !vix9dEdited.current)
       setVix9dInput(initialVix9d.toFixed(2));
-  }, [initialVix1d, initialVix9d]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialVix1d, initialVix9d]);
 
   const vix1d = Number.parseFloat(vix1dInput);
   const vix9d = Number.parseFloat(vix9dInput);
@@ -123,7 +125,10 @@ export default function VIXTermStructure({
             inputMode="decimal"
             placeholder="e.g. 18.5"
             value={vix1dInput}
-            onChange={(e) => setVix1dInput(e.target.value)}
+            onChange={(e) => {
+              setVix1dInput(e.target.value);
+              vix1dEdited.current = true;
+            }}
             className={inputCls}
           />
         </div>
@@ -140,7 +145,10 @@ export default function VIXTermStructure({
             inputMode="decimal"
             placeholder="e.g. 20.1"
             value={vix9dInput}
-            onChange={(e) => setVix9dInput(e.target.value)}
+            onChange={(e) => {
+              setVix9dInput(e.target.value);
+              vix9dEdited.current = true;
+            }}
             className={inputCls}
           />
         </div>

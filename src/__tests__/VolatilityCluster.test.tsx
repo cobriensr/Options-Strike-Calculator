@@ -8,9 +8,9 @@ function setInput(label: RegExp, value: string) {
 }
 
 function enterYesterday(open: string, high: string, low: string) {
-  setInput(/yest\. open/i, open);
-  setInput(/yest\. high/i, high);
-  setInput(/yest\. low/i, low);
+  setInput(/yesterday open/i, open);
+  setInput(/yesterday high/i, high);
+  setInput(/yesterday low/i, low);
 }
 
 // ============================================================
@@ -33,9 +33,9 @@ describe('VolatilityCluster: rendering', () => {
 
   it('shows all three input fields', () => {
     render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} />);
-    expect(screen.getByLabelText(/yest\. open/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/yest\. high/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/yest\. low/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/yesterday open/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/yesterday high/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/yesterday low/i)).toBeInTheDocument();
   });
 
   it('shows empty state when VIX is null', () => {
@@ -129,8 +129,9 @@ describe('VolatilityCluster: range computation', () => {
 
   it('uses spot as fallback when open not entered', () => {
     render(<VolatilityCluster th={lightTheme} vix={15} spot={6800} />);
-    setInput(/yest\. high/i, '6820');
-    setInput(/yest\. low/i, '6780');
+    setInput(/yesterday open/i, '');
+    setInput(/yesterday high/i, '6820');
+    setInput(/yesterday low/i, '6780');
     // 40 / 6800 = 0.59%
     expect(screen.getByText('0.59%')).toBeInTheDocument();
   });
@@ -169,22 +170,23 @@ describe('VolatilityCluster: VIX sensitivity', () => {
 describe('VolatilityCluster: edge cases', () => {
   it('shows error when high <= low', () => {
     render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} />);
-    setInput(/yest\. high/i, '6780');
-    setInput(/yest\. low/i, '6820');
+    setInput(/yesterday high/i, '6780');
+    setInput(/yesterday low/i, '6820');
     expect(screen.getByText(/high must be greater/i)).toBeInTheDocument();
   });
 
   it('handles non-numeric input', () => {
     render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} />);
-    setInput(/yest\. high/i, 'abc');
-    setInput(/yest\. low/i, '6780');
+    setInput(/yesterday high/i, 'abc');
+    setInput(/yesterday low/i, '6780');
     expect(screen.queryByText(/multiplier/i)).not.toBeInTheDocument();
   });
 
   it('works without spot (uses midpoint)', () => {
     render(<VolatilityCluster th={lightTheme} vix={20} spot={null} />);
-    setInput(/yest\. high/i, '6820');
-    setInput(/yest\. low/i, '6780');
+    setInput(/yesterday open/i, '');
+    setInput(/yesterday high/i, '6820');
+    setInput(/yesterday low/i, '6780');
     expect(screen.getByText('0.59%')).toBeInTheDocument();
   });
 
@@ -234,7 +236,7 @@ describe('VolatilityCluster: onMultiplierChange callback', () => {
     expect(lastCall).toBeGreaterThan(0);
   });
 
-  it('calls with 1.0 when no data entered', () => {
+  it('calls with multiplier from seeded defaults on initial render', () => {
     const onMult = vi.fn();
     render(
       <VolatilityCluster
@@ -244,8 +246,10 @@ describe('VolatilityCluster: onMultiplierChange callback', () => {
         onMultiplierChange={onMult}
       />,
     );
-    // Initial render calls with 1 (no data)
-    expect(onMult).toHaveBeenCalledWith(1);
+    // Defaults (5720/5750/5690) produce a cluster result
+    expect(onMult).toHaveBeenCalled();
+    const lastCall = onMult.mock.calls.at(-1)![0];
+    expect(lastCall).toBeGreaterThan(0);
   });
 });
 
@@ -262,9 +266,15 @@ describe('VolatilityCluster: auto-fill from live data', () => {
         initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
       />,
     );
-    const openInput = screen.getByLabelText(/yest\. open/i) as HTMLInputElement;
-    const highInput = screen.getByLabelText(/yest\. high/i) as HTMLInputElement;
-    const lowInput = screen.getByLabelText(/yest\. low/i) as HTMLInputElement;
+    const openInput = screen.getByLabelText(
+      /yesterday open/i,
+    ) as HTMLInputElement;
+    const highInput = screen.getByLabelText(
+      /yesterday high/i,
+    ) as HTMLInputElement;
+    const lowInput = screen.getByLabelText(
+      /yesterday low/i,
+    ) as HTMLInputElement;
     expect(openInput.value).toBe('6681.78');
     expect(highInput.value).toBe('6810.44');
     expect(lowInput.value).toBe('6636.04');
@@ -308,15 +318,27 @@ describe('VolatilityCluster: auto-fill from live data', () => {
         initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
       />,
     );
-    const openInput = screen.getByLabelText(/yest\. open/i) as HTMLInputElement;
+    const openInput = screen.getByLabelText(
+      /yesterday open/i,
+    ) as HTMLInputElement;
     // User types a different value
     fireEvent.change(openInput, { target: { value: '7000' } });
     expect(openInput.value).toBe('7000');
   });
 
-  it('works without initialYesterday (backward compatible)', () => {
+  it('shows seeded defaults when no initialYesterday provided', () => {
     render(<VolatilityCluster th={lightTheme} vix={20} spot={6800} />);
-    const openInput = screen.getByLabelText(/yest\. open/i) as HTMLInputElement;
-    expect(openInput.value).toBe('');
+    const openInput = screen.getByLabelText(
+      /yesterday open/i,
+    ) as HTMLInputElement;
+    const highInput = screen.getByLabelText(
+      /yesterday high/i,
+    ) as HTMLInputElement;
+    const lowInput = screen.getByLabelText(
+      /yesterday low/i,
+    ) as HTMLInputElement;
+    expect(openInput.value).toBe('5720');
+    expect(highInput.value).toBe('5750');
+    expect(lowInput.value).toBe('5690');
   });
 });

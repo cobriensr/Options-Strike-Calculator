@@ -35,7 +35,7 @@ export default function SpotPriceSection({
 }: Props) {
   return (
     <SectionBox label="Spot Price">
-      <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+      <div className="grid grid-cols-2 gap-2.5">
         <div>
           <label htmlFor="spot-price" className={tinyLbl}>
             SPY Price

@@ -56,7 +56,7 @@ function DollarField({
           onChange={(e) => {
             onChange(e.target.value.replaceAll(/[^0-9.]/g, ''));
           }}
-          className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] py-[11px] pr-3 pl-7 font-mono text-sm outline-none transition-[border-color] duration-150"
+          className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] py-[11px] pr-3 pl-7 font-mono text-sm transition-[border-color] duration-150 outline-none"
         />
       </div>
     </div>
@@ -70,9 +70,11 @@ export default function RiskCalculator() {
   const [contracts, setContracts] = useState(1);
   const [creditInput, setCreditInput] = useState('');
   const [premiumInput, setPremiumInput] = useState('');
+  const [targetExitInput, setTargetExitInput] = useState('');
   const [deltaInput, setDeltaInput] = useState('');
   const [popInput, setPopInput] = useState('');
   const [stopMultiple, setStopMultiple] = useState<number | null>(null);
+  const [buyStopPct, setBuyStopPct] = useState<number | null>(null);
   const [portfolioCap, setPortfolioCap] = useState(100);
 
   const bal = Number.parseFloat(balance) || 0;
@@ -83,7 +85,10 @@ export default function RiskCalculator() {
   const credit = Number.parseFloat(creditInput) || 0;
   const creditPerContract = credit * 100;
   const grossLossPerContract = wing * 100;
-  const netLossPerContract = Math.max(0, grossLossPerContract - creditPerContract);
+  const netLossPerContract = Math.max(
+    0,
+    grossLossPerContract - creditPerContract,
+  );
   const hasCredit = credit > 0;
 
   // Stop loss: if set, max loss = (stopMultiple × credit - credit) × 100
@@ -96,11 +101,15 @@ export default function RiskCalculator() {
   // Buy-side calculations
   const premium = Number.parseFloat(premiumInput) || 0;
   const premiumPerContract = premium * 100;
+  const hasBuyStop = mode === 'buy' && premium > 0 && buyStopPct !== null;
+  const buyStopLossPerContract = hasBuyStop
+    ? premiumPerContract * (buyStopPct / 100)
+    : premiumPerContract;
 
   // Unified loss figure based on mode
   const lossPerContract =
     mode === 'buy'
-      ? premiumPerContract
+      ? buyStopLossPerContract
       : hasStop
         ? Math.min(stopLossPerContract, netLossPerContract)
         : hasCredit
@@ -115,16 +124,23 @@ export default function RiskCalculator() {
     mode === 'buy' ? premiumPerContract : netLossPerContract;
   const totalBp = bpPerContract * contracts;
 
-  // Risk/reward (sell mode only — max profit is credit received)
-  const maxProfit = mode === 'sell' && hasCredit ? creditPerContract : 0;
+  // Buy-side target exit
+  const targetExit = Number.parseFloat(targetExitInput) || 0;
+  const hasTarget = mode === 'buy' && targetExit > premium && premium > 0;
+  const buyProfitPerContract = hasTarget ? (targetExit - premium) * 100 : 0;
+
+  // Risk/reward — sell: credit vs net loss; buy: premium vs target profit
+  const maxProfit =
+    mode === 'sell' && hasCredit
+      ? creditPerContract
+      : hasTarget
+        ? buyProfitPerContract
+        : 0;
   const rrRatio =
-    maxProfit > 0 && lossPerContract > 0
-      ? lossPerContract / maxProfit
-      : 0;
+    maxProfit > 0 && lossPerContract > 0 ? lossPerContract / maxProfit : 0;
 
   // Max concurrent positions
-  const maxPositions =
-    lossPct > 0 ? Math.floor(portfolioCap / lossPct) : 0;
+  const maxPositions = lossPct > 0 ? Math.floor(portfolioCap / lossPct) : 0;
 
   // Probability of profit & expected value
   const pop = Number.parseFloat(popInput) || 0;
@@ -141,10 +157,18 @@ export default function RiskCalculator() {
       {/* ── ROW 1: mode + inputs ── */}
       <div className="flex items-end justify-between">
         <div>
-          <label htmlFor="rc-mode" className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase">
+          <label
+            htmlFor="rc-mode"
+            className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
+          >
             Mode
           </label>
-          <div id="rc-mode" className="flex gap-1" role="radiogroup" aria-label="Trade mode">
+          <div
+            id="rc-mode"
+            className="flex gap-1"
+            role="radiogroup"
+            aria-label="Trade mode"
+          >
             {(['sell', 'buy'] as const).map((m) => (
               <button
                 key={m}
@@ -168,72 +192,79 @@ export default function RiskCalculator() {
           wide
         />
         {mode === 'sell' ? (
+          <DollarField
+            id="rc-credit"
+            label="Credit Received"
+            value={creditInput}
+            onChange={setCreditInput}
+            placeholder="1.50"
+          />
+        ) : (
           <>
             <DollarField
-              id="rc-credit"
-              label="Credit Received"
-              value={creditInput}
-              onChange={setCreditInput}
-              placeholder="1.50"
+              id="rc-premium"
+              label="Premium Paid"
+              value={premiumInput}
+              onChange={setPremiumInput}
+              placeholder="3.50"
             />
-            <div>
-              <label
-                htmlFor="rc-delta"
-                className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
-              >
-                Delta
-              </label>
-              <div className="relative w-20">
-                <span className="text-muted pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 font-mono text-sm">
-                  {'\u0394'}
-                </span>
-                <input
-                  id="rc-delta"
-                  type="text"
-                  inputMode="decimal"
-                  placeholder=".08"
-                  value={deltaInput}
-                  onChange={(e) => {
-                    setDeltaInput(e.target.value.replaceAll(/[^0-9.]/g, ''));
-                  }}
-                  className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] py-[11px] pr-3 pl-7 font-mono text-sm outline-none transition-[border-color] duration-150"
-                />
-              </div>
-            </div>
-            <div>
-              <label
-                htmlFor="rc-pop"
-                className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
-              >
-                PoP %
-              </label>
-              <div className="relative w-20">
-                <input
-                  id="rc-pop"
-                  type="text"
-                  inputMode="decimal"
-                  placeholder="85"
-                  value={popInput}
-                  onChange={(e) => {
-                    setPopInput(e.target.value.replaceAll(/[^0-9.]/g, ''));
-                  }}
-                  className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] py-[11px] px-3 font-mono text-sm outline-none transition-[border-color] duration-150"
-                />
-                <span className="text-muted pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 font-mono text-sm">
-                  %
-                </span>
-              </div>
-            </div>
+            <DollarField
+              id="rc-target"
+              label="Target Exit"
+              value={targetExitInput}
+              onChange={setTargetExitInput}
+              placeholder="7.00"
+            />
           </>
-        ) : (
-          <DollarField
-            id="rc-premium"
-            label="Premium Paid"
-            value={premiumInput}
-            onChange={setPremiumInput}
-            placeholder="3.50"
-          />
         )}
+        <div>
+          <label
+            htmlFor="rc-delta"
+            className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
+          >
+            Delta
+          </label>
+          <div className="relative w-20">
+            <span className="text-muted pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 font-mono text-sm">
+              {'\u0394'}
+            </span>
+            <input
+              id="rc-delta"
+              type="text"
+              inputMode="decimal"
+              placeholder=".08"
+              value={deltaInput}
+              onChange={(e) => {
+                setDeltaInput(e.target.value.replaceAll(/[^0-9.]/g, ''));
+              }}
+              className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] py-[11px] pr-3 pl-7 font-mono text-sm transition-[border-color] duration-150 outline-none"
+            />
+          </div>
+        </div>
+        <div>
+          <label
+            htmlFor="rc-pop"
+            className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
+          >
+            PoP %
+          </label>
+          <div className="relative w-20">
+            <input
+              id="rc-pop"
+              type="text"
+              inputMode="decimal"
+              placeholder="85"
+              value={popInput}
+              onChange={(e) => {
+                setPopInput(e.target.value.replaceAll(/[^0-9.]/g, ''));
+              }}
+              className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] px-3 py-[11px] font-mono text-sm transition-[border-color] duration-150 outline-none"
+            />
+            <span className="text-muted pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 font-mono text-sm">
+              %
+            </span>
+          </div>
+        </div>
 
         {mode === 'sell' && (
           <div>
@@ -302,59 +333,138 @@ export default function RiskCalculator() {
       </div>
 
       {/* ── ROW 2: settings ── */}
-      <div className="border-edge mt-3 flex items-center justify-between border-t pt-3">
-        {/* Target */}
+      <div className="border-edge mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+        {/* Sell: Target guidance */}
         {mode === 'sell' && (
           <span className="text-muted font-sans text-[11px]">
-            Target: <span className="text-primary font-mono font-semibold">${(wing * 0.1).toFixed(2)}</span>
+            Target:{' '}
+            <span className="text-primary font-mono font-semibold">
+              ${(wing * 0.1).toFixed(2)}
+            </span>
             {' – '}
-            <span className="text-primary font-mono font-semibold">${(wing * 0.15).toFixed(2)}</span>
-            {hasCredit && (() => {
-              const deltaSuffix = hasDelta ? ' at ' + delta + '\u0394' : '';
-              let verdict: string;
-              if (creditPct >= 0.15) verdict = ' Excellent' + deltaSuffix;
-              else if (creditPct >= 0.1) verdict = ' OK' + deltaSuffix;
-              else verdict = ' ' + (creditPct * 100).toFixed(1) + '%' + deltaSuffix + ' — pass';
-              return (
-                <span className="ml-1 font-semibold" style={{
-                  color: creditPct >= 0.1 ? 'var(--color-success)' : 'var(--color-danger)',
-                }}>
-                  {verdict}
-                </span>
-              );
-            })()}
+            <span className="text-primary font-mono font-semibold">
+              ${(wing * 0.15).toFixed(2)}
+            </span>
+            {hasCredit &&
+              (() => {
+                const deltaSuffix = hasDelta ? ' at ' + delta + '\u0394' : '';
+                let verdict: string;
+                if (creditPct >= 0.15) verdict = ' Excellent' + deltaSuffix;
+                else if (creditPct >= 0.1) verdict = ' OK' + deltaSuffix;
+                else
+                  verdict =
+                    ' ' +
+                    (creditPct * 100).toFixed(1) +
+                    '%' +
+                    deltaSuffix +
+                    ' — pass';
+                return (
+                  <span
+                    className="ml-1 font-semibold"
+                    style={{
+                      color:
+                        creditPct >= 0.1
+                          ? 'var(--color-success)'
+                          : 'var(--color-danger)',
+                    }}
+                  >
+                    {verdict}
+                  </span>
+                );
+              })()}
             {hasDelta && delta < 0.08 && (
-              <span className="ml-1 font-semibold" style={{ color: 'var(--color-danger)' }}>
+              <span
+                className="ml-1 font-semibold"
+                style={{ color: 'var(--color-danger)' }}
+              >
                 {'\u0394'}&lt;0.08
               </span>
             )}
           </span>
         )}
 
-        {/* Stop loss */}
-        {mode === 'sell' && (
-          <div className="flex items-center gap-1.5">
-            <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">Stop</span>
-            {[null, 2, 3, 4, 5].map((m) => (
-              <button
-                key={m ?? 'none'}
-                onClick={() => setStopMultiple(m)}
-                className={`${chipBase} ${stopMultiple === m ? chipActive : chipInactive}`}
-              >
-                {m === null ? '\u2014' : `${m}\u00D7`}
-              </button>
-            ))}
-            {hasStop && (
-              <span className="text-muted text-[10px]">
-                ${(credit * stopMultiple).toFixed(2)}
-              </span>
+        {/* Buy: profit target & R:R summary */}
+        {mode === 'buy' && (
+          <span className="text-muted font-sans text-[11px]">
+            {hasTarget ? (
+              <>
+                Profit at target:{' '}
+                <span
+                  className="font-mono font-semibold"
+                  style={{ color: 'var(--color-success)' }}
+                >
+                  ${buyProfitPerContract.toLocaleString()}/ct
+                </span>
+                <span className="mx-1.5">{'\u00B7'}</span>
+                R:R{' '}
+                <span className="text-primary font-mono font-semibold">
+                  1:{rrRatio > 0 ? rrRatio.toFixed(1) : '\u2014'}
+                </span>
+                {hasDelta && (
+                  <>
+                    <span className="mx-1.5">{'\u00B7'}</span>
+                    <span className="text-primary font-mono font-semibold">
+                      {delta}
+                      {'\u0394'}
+                    </span>
+                  </>
+                )}
+              </>
+            ) : premium > 0 ? (
+              'Enter a target exit price to see profit & R:R'
+            ) : (
+              'Enter premium paid and target exit to see analysis'
             )}
-          </div>
+          </span>
         )}
+
+        {/* Stop loss — both modes */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
+            Stop
+          </span>
+          {mode === 'sell' ? (
+            <>
+              {[null, 2, 3, 4, 5].map((m) => (
+                <button
+                  key={m ?? 'none'}
+                  onClick={() => setStopMultiple(m)}
+                  className={`${chipBase} ${stopMultiple === m ? chipActive : chipInactive}`}
+                >
+                  {m === null ? '\u2014' : `${m}\u00D7`}
+                </button>
+              ))}
+              {hasStop && (
+                <span className="text-muted text-[10px]">
+                  ${(credit * stopMultiple).toFixed(2)}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              {[null, 25, 50, 75].map((pct) => (
+                <button
+                  key={pct ?? 'none'}
+                  onClick={() => setBuyStopPct(pct)}
+                  className={`${chipBase} ${buyStopPct === pct ? chipActive : chipInactive}`}
+                >
+                  {pct === null ? '\u2014' : `${pct}%`}
+                </button>
+              ))}
+              {hasBuyStop && (
+                <span className="text-muted text-[10px]">
+                  exit ${(premium * (1 - buyStopPct / 100)).toFixed(2)}
+                </span>
+              )}
+            </>
+          )}
+        </div>
 
         {/* Cap */}
         <div className="flex items-center gap-1.5">
-          <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">Cap</span>
+          <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
+            Cap
+          </span>
           {[25, 50, 75, 100].map((cap) => (
             <button
               key={cap}
@@ -369,7 +479,11 @@ export default function RiskCalculator() {
         {/* Conviction 2×2 */}
         <div className="grid grid-cols-2 gap-1">
           {[
-            { label: 'High', range: '8\u201310%', color: 'var(--color-success)' },
+            {
+              label: 'High',
+              range: '8\u201310%',
+              color: 'var(--color-success)',
+            },
             { label: 'Mod', range: '5\u20137%', color: 'var(--color-caution)' },
             { label: 'Low', range: '3\u20134%', color: 'var(--color-danger)' },
             { label: 'Out', range: '0%', color: 'var(--color-muted)' },
@@ -428,6 +542,19 @@ export default function RiskCalculator() {
                 </div>
                 <div className="text-primary mt-1 font-mono text-[16px] font-semibold">
                   ${premiumPerContract.toLocaleString()}
+                </div>
+              </div>
+            )}
+            {mode === 'buy' && hasTarget && (
+              <div className="bg-surface-alt rounded-lg px-3 py-2 text-center">
+                <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
+                  Profit at Target
+                </div>
+                <div
+                  className="mt-1 font-mono text-[16px] font-semibold"
+                  style={{ color: 'var(--color-success)' }}
+                >
+                  ${(buyProfitPerContract * contracts).toLocaleString()}
                 </div>
               </div>
             )}
@@ -497,12 +624,18 @@ export default function RiskCalculator() {
                 }}
               >
                 {hasPop && maxProfit > 0
-                  ? (evPerContract >= 0 ? '+' : '') + '$' + Math.abs(evPerContract * contracts).toLocaleString(undefined, { maximumFractionDigits: 0 })
+                  ? (evPerContract >= 0 ? '+' : '') +
+                    '$' +
+                    Math.abs(evPerContract * contracts).toLocaleString(
+                      undefined,
+                      { maximumFractionDigits: 0 },
+                    )
                   : '\u2014'}
               </div>
               {hasPop && maxProfit > 0 && (
                 <div className="text-muted mt-0.5 font-sans text-[9px]">
-                  ${evPerContract >= 0 ? '+' : ''}{evPerContract.toFixed(0)}/ct
+                  ${evPerContract >= 0 ? '+' : ''}
+                  {evPerContract.toFixed(0)}/ct
                 </div>
               )}
             </div>
@@ -534,8 +667,7 @@ export default function RiskCalculator() {
                       const budget = bal * (pct / 100);
                       const maxContracts = Math.floor(budget / lossPerContract);
                       const actualLoss = maxContracts * lossPerContract;
-                      const actualPct =
-                        bal > 0 ? (actualLoss / bal) * 100 : 0;
+                      const actualPct = bal > 0 ? (actualLoss / bal) * 100 : 0;
 
                       return (
                         <tr
@@ -601,7 +733,6 @@ export default function RiskCalculator() {
           </div>
         </>
       )}
-
     </SectionBox>
   );
 }

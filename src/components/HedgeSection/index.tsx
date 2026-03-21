@@ -17,6 +17,9 @@ interface Props {
   ic: IronCondorLegs;
   contracts: number;
   skew: number;
+  icRows?: IronCondorLegs[];
+  hedgeDeltaIdx?: number;
+  onHedgeDeltaChange?: (idx: number) => void;
 }
 
 export default function HedgeSection({
@@ -25,6 +28,9 @@ export default function HedgeSection({
   ic,
   contracts,
   skew,
+  icRows,
+  hedgeDeltaIdx,
+  onHedgeDeltaChange,
 }: Props) {
   const [hedgeDelta, setHedgeDelta] = useState<HedgeDelta>(2);
   const [hedgeDte, setHedgeDte] = useState<number>(DEFAULTS.HEDGE_DTE);
@@ -55,10 +61,34 @@ export default function HedgeSection({
         <div className="text-accent font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
           Hedge Calculator (Reinsurance)
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-4">
+          {icRows && icRows.length > 1 && onHedgeDeltaChange && (
+            <div className="flex items-center gap-1">
+              <span className="text-tertiary mr-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+                IC {'\u0394'}
+              </span>
+              {icRows.map((row, idx) => (
+                <button
+                  key={row.delta}
+                  onClick={() => onHedgeDeltaChange(idx)}
+                  role="radio"
+                  aria-checked={hedgeDeltaIdx === idx}
+                  className={
+                    'cursor-pointer rounded-full border-[1.5px] px-2.5 py-0.5 font-mono text-xs font-medium transition-all duration-100 ' +
+                    (hedgeDeltaIdx === idx
+                      ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                      : 'border-chip-border bg-chip-bg text-chip-text')
+                  }
+                >
+                  {row.delta}
+                  {'\u0394'}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex items-center gap-1">
             <span className="text-tertiary mr-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-              {'\u0394'}
+              Hedge {'\u0394'}
             </span>
             {HEDGE_DELTA_OPTIONS.map((d) => (
               <button

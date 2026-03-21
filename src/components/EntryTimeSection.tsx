@@ -31,7 +31,7 @@ export default function EntryTimeSection({
 }: Props) {
   return (
     <SectionBox label="Entry Time">
-      <div className="grid grid-cols-2 items-end gap-2.5 md:grid-cols-[1fr_1fr_auto_auto]">
+      <div className="grid grid-cols-2 items-end gap-2.5">
         <div>
           <label htmlFor="sel-hour" className={tinyLbl}>
             Hour

@@ -24,10 +24,10 @@ import type { UseHistoryDataReturn, HistorySnapshot } from './useHistoryData';
 import type { UseVix1dDataReturn } from './useVix1dData';
 
 interface UseAutoFillInputs {
-  // Current input values (read-only — used to avoid overwriting user input)
-  spotPrice: string;
-  spxDirect: string;
-  vixInput: string;
+  // Refs tracking whether the user has manually edited each field
+  spotEdited: { current: boolean };
+  spxEdited: { current: boolean };
+  vixEdited: { current: boolean };
   timeHour: string;
   timeMinute: string;
 
@@ -44,7 +44,7 @@ interface UseAutoFillInputs {
 
   // External hook data
   market: MarketDataState;
-  vix: UseVixDataReturn;
+  vix: Pick<UseVixDataReturn, 'selectedDate' | 'setSelectedDate'>;
   historyData: UseHistoryDataReturn;
   vix1dStatic: UseVix1dDataReturn;
 
@@ -55,9 +55,9 @@ interface UseAutoFillInputs {
 
 export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   const {
-    spotPrice,
-    spxDirect,
-    vixInput,
+    spotEdited,
+    spxEdited,
+    vixEdited,
     timeHour,
     timeMinute,
     timeAmPm,
@@ -86,12 +86,12 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     if (!market.data.quotes) return;
     const q = market.data.quotes;
 
-    // Only auto-fill empty fields — never overwrite user input
-    if (!spotPrice && q.spy) setSpotPrice(q.spy.price.toFixed(2));
-    if (!spxDirect && q.spx) setSpxDirect(q.spx.price.toFixed(0));
+    // Auto-fill from API — overwrites defaults but respects user edits
+    if (q.spy && !spotEdited.current) setSpotPrice(q.spy.price.toFixed(2));
+    if (q.spx && !spxEdited.current) setSpxDirect(q.spx.price.toFixed(0));
 
-    // VIX always populates the VIX field (regime analysis needs it)
-    if (!vixInput && q.vix) setVixInput(q.vix.price.toFixed(2));
+    // VIX — overwrites defaults but respects user edits
+    if (q.vix && !vixEdited.current) setVixInput(q.vix.price.toFixed(2));
 
     // Auto-use VIX1D as σ when available (most accurate 0DTE IV).
     // Updates on every quote refresh — VIX1D changes intraday.
@@ -124,9 +124,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     }
   }, [
     market.data.quotes,
-    spotPrice,
-    spxDirect,
-    vixInput,
+    spotEdited,
+    spxEdited,
+    vixEdited,
     selectedDate,
     setSelectedDate,
     setSpotPrice,

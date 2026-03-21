@@ -206,9 +206,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -238,9 +238,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '590.00',
-        spxDirect: '5900',
-        vixInput: '22.00',
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
         timeHour: '2',
         timeMinute: '15',
         timeAmPm: 'PM',
@@ -263,9 +263,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -299,9 +299,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '580',
-        spxDirect: '5800',
-        vixInput: '18',
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
         timeHour: '2',
         timeMinute: '00',
         timeAmPm: 'PM',
@@ -323,9 +323,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '580',
-        spxDirect: '5800',
-        vixInput: '18',
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
         timeHour: '2',
         timeMinute: '00',
         timeAmPm: 'PM',
@@ -346,9 +346,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '580',
-        spxDirect: '5800',
-        vixInput: '18',
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -373,9 +373,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '580',
-        spxDirect: '5800',
-        vixInput: '18',
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
         timeHour: '2',
         timeMinute: '15',
         timeAmPm: 'PM',
@@ -395,9 +395,9 @@ describe('useAutoFill', () => {
   it('does nothing when no market data', () => {
     renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -426,9 +426,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -458,9 +458,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -490,9 +490,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -515,9 +515,9 @@ describe('useAutoFill', () => {
 
     renderHook(() =>
       useAutoFill({
-        spotPrice: '575',
-        spxDirect: '5750',
-        vixInput: '20',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -539,9 +539,9 @@ describe('useAutoFill', () => {
   it('returns null when no history', () => {
     const { result } = renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -571,9 +571,9 @@ describe('useAutoFill', () => {
 
     const { result } = renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -600,9 +600,9 @@ describe('useAutoFill', () => {
 
     const { result } = renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -628,9 +628,9 @@ describe('useAutoFill', () => {
 
     const { result } = renderHook(() =>
       useAutoFill({
-        spotPrice: '',
-        spxDirect: '',
-        vixInput: '',
+        spotEdited: { current: false },
+        spxEdited: { current: false },
+        vixEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',

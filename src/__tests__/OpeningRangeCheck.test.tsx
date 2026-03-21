@@ -37,11 +37,10 @@ describe('OpeningRangeCheck: rendering', () => {
     expect(screen.getByText(/enter a vix value/i)).toBeInTheDocument();
   });
 
-  it('shows hint when VIX set but no range entered', () => {
+  it('shows analysis from seeded defaults when VIX is set', () => {
     render(<OpeningRangeCheck th={lightTheme} vix={20} spot={6800} />);
-    expect(
-      screen.getByText(/first 30 minutes of trading/i),
-    ).toBeInTheDocument();
+    // Defaults (5735/5705) produce an analysis immediately
+    expect(screen.getByText('RANGE INTACT')).toBeInTheDocument();
   });
 });
 
@@ -278,10 +277,12 @@ describe('OpeningRangeCheck: auto-fill from live data', () => {
     expect(highInput.value).toBe('6850');
   });
 
-  it('works without initialRange (backward compatible)', () => {
+  it('shows seeded defaults when no initialRange provided', () => {
     render(<OpeningRangeCheck th={lightTheme} vix={20} spot={6800} />);
     const highInput = screen.getByLabelText(/30-min high/i) as HTMLInputElement;
-    expect(highInput.value).toBe('');
+    const lowInput = screen.getByLabelText(/30-min low/i) as HTMLInputElement;
+    expect(highInput.value).toBe('5735');
+    expect(lowInput.value).toBe('5705');
   });
 
   it('auto-fill triggers analysis display', () => {

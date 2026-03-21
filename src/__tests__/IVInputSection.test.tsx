@@ -191,8 +191,8 @@ describe('IVInputSection', () => {
       },
       errors: {},
     });
-    // VIXRegimeCard renders regime zone content
-    expect(screen.getByText(/regime/i)).toBeInTheDocument();
+    // VIXRegimeCard renders regime zone content (may appear in multiple elements)
+    expect(screen.getAllByText(/regime/i).length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders Term Structure section when dVix is valid', () => {

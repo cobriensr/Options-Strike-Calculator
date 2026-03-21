@@ -34,14 +34,16 @@ export function useAppState() {
     }
   };
 
-  // Spot price state
-  const [spotPrice, setSpotPrice] = useState('');
-  const [spxDirect, setSpxDirect] = useState('');
+  // Spot price state — seeded with reasonable defaults so UI renders fully;
+  // overwritten by live/historical data via useAutoFill on load.
+  const [spotPrice, setSpotPrice] = useState('572');
+  const [spxDirect, setSpxDirect] = useState('5720');
   const [spxRatio, setSpxRatio] = useState(10);
 
-  // IV state
+  // IV state — seeded with default VIX so term structure + regime cards
+  // render immediately; overwritten by live/historical data on load.
   const [ivMode, setIvMode] = useState<IVMode>(IV_MODES.VIX);
-  const [vixInput, setVixInput] = useState('');
+  const [vixInput, setVixInput] = useState('19');
   const [multiplier, setMultiplier] = useState(
     String(DEFAULTS.IV_PREMIUM_FACTOR),
   );
