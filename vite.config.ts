@@ -22,6 +22,7 @@ export default defineConfig({
       org: process.env.SENTRY_ORG,
       project: process.env.SENTRY_PROJECT,
       authToken: process.env.SENTRY_AUTH_TOKEN,
+      telemetry: process.env.NODE_ENV === 'production',
     }),
     VitePWA({
       registerType: 'autoUpdate',
@@ -56,7 +57,7 @@ export default defineConfig({
       workbox: {
         skipWaiting: true,
         clientsClaim: true,
-        navigateFallbackDenylist: [/^\/api\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/149e9513-01fa-4fb0-aad4-566afd725d1b\//],
         globPatterns: ['**/*.{js,css,html,png,woff2}'],
         runtimeCaching: [
           {
@@ -81,10 +82,9 @@ export default defineConfig({
           },
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/,
-            handler: 'NetworkFirst',
+            handler: 'StaleWhileRevalidate',
             options: {
               cacheName: 'google-fonts-stylesheets',
-              networkTimeoutSeconds: 5,
               expiration: {
                 maxEntries: 10,
                 maxAgeSeconds: 60 * 60 * 24 * 365,
@@ -129,11 +129,13 @@ export default defineConfig({
     },
   },
   server: {
+    port: process.env.PORT ? Number.parseInt(process.env.PORT) : 5173,
+    strictPort: true,
     proxy: {
       '/api': {
-        target: 'https://0dte.vercel.app',
+        target: process.env.VITE_API_TARGET ?? 'http://localhost:3000',
         changeOrigin: true,
-        secure: true,
+        secure: false,
       },
     },
   },
