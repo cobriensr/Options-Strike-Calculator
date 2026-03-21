@@ -333,93 +333,98 @@ export default function RiskCalculator() {
       </div>
 
       {/* ── ROW 2: settings ── */}
-      <div className="border-edge mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3">
-        {/* Sell: Target guidance */}
-        {mode === 'sell' && (
-          <span className="text-muted font-sans text-[11px]">
-            Target:{' '}
-            <span className="text-primary font-mono font-semibold">
-              ${(wing * 0.1).toFixed(2)}
-            </span>
-            {' – '}
-            <span className="text-primary font-mono font-semibold">
-              ${(wing * 0.15).toFixed(2)}
-            </span>
-            {hasCredit &&
-              (() => {
-                const deltaSuffix = hasDelta ? ' at ' + delta + '\u0394' : '';
-                let verdict: string;
-                if (creditPct >= 0.15) verdict = ' Excellent' + deltaSuffix;
-                else if (creditPct >= 0.1) verdict = ' OK' + deltaSuffix;
-                else
-                  verdict =
-                    ' ' +
-                    (creditPct * 100).toFixed(1) +
-                    '%' +
-                    deltaSuffix +
-                    ' — pass';
-                return (
-                  <span
-                    className="ml-1 font-semibold"
-                    style={{
-                      color:
-                        creditPct >= 0.1
-                          ? 'var(--color-success)'
-                          : 'var(--color-danger)',
-                    }}
-                  >
-                    {verdict}
-                  </span>
-                );
-              })()}
-            {hasDelta && delta < 0.08 && (
-              <span
-                className="ml-1 font-semibold"
-                style={{ color: 'var(--color-danger)' }}
-              >
-                {'\u0394'}&lt;0.08
+      <div className="border-edge mt-3 flex items-center justify-between gap-2 border-t pt-3">
+        {/* Left group: text + stop + cap */}
+        <div className="flex items-center gap-5">
+        {/* Target / status text */}
+        <div className="shrink-0 text-[11px]" style={{ width: '155px' }}>
+          {/* Sell: Target guidance */}
+          {mode === 'sell' && (
+            <span className="text-muted font-sans">
+              Target:{' '}
+              <span className="text-primary font-mono font-semibold">
+                ${(wing * 0.1).toFixed(2)}
               </span>
-            )}
-          </span>
-        )}
-
-        {/* Buy: profit target & R:R summary */}
-        {mode === 'buy' && (
-          <span className="text-muted font-sans text-[11px]">
-            {hasTarget ? (
-              <>
-                Profit at target:{' '}
-                <span
-                  className="font-mono font-semibold"
-                  style={{ color: 'var(--color-success)' }}
-                >
-                  ${buyProfitPerContract.toLocaleString()}/ct
-                </span>
-                <span className="mx-1.5">{'\u00B7'}</span>
-                R:R{' '}
-                <span className="text-primary font-mono font-semibold">
-                  1:{rrRatio > 0 ? rrRatio.toFixed(1) : '\u2014'}
-                </span>
-                {hasDelta && (
-                  <>
-                    <span className="mx-1.5">{'\u00B7'}</span>
-                    <span className="text-primary font-mono font-semibold">
-                      {delta}
-                      {'\u0394'}
+              {' – '}
+              <span className="text-primary font-mono font-semibold">
+                ${(wing * 0.15).toFixed(2)}
+              </span>
+              {hasCredit &&
+                (() => {
+                  const deltaSuffix = hasDelta ? ' at ' + delta + '\u0394' : '';
+                  let verdict: string;
+                  if (creditPct >= 0.15) verdict = ' Excellent' + deltaSuffix;
+                  else if (creditPct >= 0.1) verdict = ' OK' + deltaSuffix;
+                  else
+                    verdict =
+                      ' ' +
+                      (creditPct * 100).toFixed(1) +
+                      '%' +
+                      deltaSuffix +
+                      ' — pass';
+                  return (
+                    <span
+                      className="ml-1 font-semibold"
+                      style={{
+                        color:
+                          creditPct >= 0.1
+                            ? 'var(--color-success)'
+                            : 'var(--color-danger)',
+                      }}
+                    >
+                      {verdict}
                     </span>
-                  </>
-                )}
-              </>
-            ) : premium > 0 ? (
-              'Enter a target exit price to see profit & R:R'
-            ) : (
-              'Enter premium paid and target exit to see analysis'
-            )}
-          </span>
-        )}
+                  );
+                })()}
+              {hasDelta && delta < 0.08 && (
+                <span
+                  className="ml-1 font-semibold"
+                  style={{ color: 'var(--color-danger)' }}
+                >
+                  {'\u0394'}&lt;0.08
+                </span>
+              )}
+            </span>
+          )}
 
-        {/* Stop loss — both modes */}
-        <div className="flex items-center gap-1.5">
+          {/* Buy: profit target & R:R summary */}
+          {mode === 'buy' && (
+            <span className="text-muted font-sans">
+              {hasTarget ? (
+                <>
+                  Profit at target:{' '}
+                  <span
+                    className="font-mono font-semibold"
+                    style={{ color: 'var(--color-success)' }}
+                  >
+                    ${buyProfitPerContract.toLocaleString()}/ct
+                  </span>
+                  <span className="mx-1.5">{'\u00B7'}</span>
+                  R:R{' '}
+                  <span className="text-primary font-mono font-semibold">
+                    1:{rrRatio > 0 ? rrRatio.toFixed(1) : '\u2014'}
+                  </span>
+                  {hasDelta && (
+                    <>
+                      <span className="mx-1.5">{'\u00B7'}</span>
+                      <span className="text-primary font-mono font-semibold">
+                        {delta}
+                        {'\u0394'}
+                      </span>
+                    </>
+                  )}
+                </>
+              ) : premium > 0 ? (
+                'Enter a target exit price to see profit & R:R'
+              ) : (
+                'Enter premium paid and target exit to see analysis'
+              )}
+            </span>
+          )}
+        </div>
+
+        {/* Stop loss */}
+        <div className="flex shrink-0 items-center gap-1.5 ml-4" style={{ width: '235px' }}>
           <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
             Stop
           </span>
@@ -461,7 +466,7 @@ export default function RiskCalculator() {
         </div>
 
         {/* Cap */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           <span className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">
             Cap
           </span>
@@ -475,22 +480,23 @@ export default function RiskCalculator() {
             </button>
           ))}
         </div>
+        </div>{/* end left group */}
 
         {/* Conviction 2×2 */}
-        <div className="grid grid-cols-2 gap-1">
+        <div className="grid shrink-0 grid-cols-2 gap-1" style={{ width: '280px' }}>
           {[
             {
               label: 'High',
               range: '8\u201310%',
               color: 'var(--color-success)',
             },
-            { label: 'Mod', range: '5\u20137%', color: 'var(--color-caution)' },
+            { label: 'Medium', range: '5\u20137%', color: 'var(--color-caution)' },
             { label: 'Low', range: '3\u20134%', color: 'var(--color-danger)' },
-            { label: 'Out', range: '0%', color: 'var(--color-muted)' },
+            { label: 'Sit Out', range: '0%', color: 'var(--color-muted)' },
           ].map((tier) => (
             <div
               key={tier.label}
-              className="bg-surface-alt flex items-center gap-1 rounded px-2 py-1"
+              className="bg-surface-alt flex min-w-[88px] items-center gap-1.5 rounded px-2.5 py-1"
             >
               <span
                 className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
@@ -500,7 +506,7 @@ export default function RiskCalculator() {
                 {tier.label}
               </span>
               <span
-                className="ml-auto font-mono text-[10px] font-semibold"
+                className="ml-auto whitespace-nowrap font-mono text-[10px] font-semibold"
                 style={{ color: tier.color }}
               >
                 {tier.range}
