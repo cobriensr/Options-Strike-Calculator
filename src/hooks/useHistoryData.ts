@@ -14,6 +14,7 @@ import type {
   SymbolDayData,
 } from '../types/api';
 import { getETTotalMinutes } from '../utils/timezone';
+import { getMarketCloseHourET } from '../data/eventCalendar';
 
 // ============================================================
 // TYPES
@@ -202,6 +203,15 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
       timeZone: 'America/New_York',
     });
     if (selectedDate >= todayET) {
+      setHistory(null);
+      setError(null);
+      return;
+    }
+
+    // Skip weekends and market holidays — no trading data exists
+    const dow = new Date(selectedDate + 'T12:00:00Z').getDay();
+    const isWeekend = dow === 0 || dow === 6;
+    if (isWeekend || getMarketCloseHourET(selectedDate) === null) {
       setHistory(null);
       setError(null);
       return;
