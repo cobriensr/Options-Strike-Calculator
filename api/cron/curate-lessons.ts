@@ -556,14 +556,17 @@ Respond with JSON:
   "category": "regime" | "flow" | "gamma" | "management" | "entry" | "sizing"
 }`;
 
-  const response = await anthropic.messages.create({
-    model: 'claude-opus-4-6',
-    max_tokens: 1024,
-    thinking: { type: 'adaptive' },
-    output_config: { effort: 'high' },
-    system: CURATION_SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: userMessage }],
-  });
+  // Use streaming to prevent TCP idle timeouts on long Opus + thinking calls
+  const response = await anthropic.messages
+    .stream({
+      model: 'claude-opus-4-6',
+      max_tokens: 16000,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+      system: CURATION_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userMessage }],
+    } as Parameters<typeof anthropic.messages.stream>[0])
+    .finalMessage();
 
   // Extract text content (skip thinking blocks)
   const textBlocks = response.content.filter((block) => block.type === 'text');
