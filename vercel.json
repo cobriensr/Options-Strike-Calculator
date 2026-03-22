@@ -33,7 +33,7 @@
         { "key": "X-XSS-Protection", "value": "1; mode=block" },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' 'sha256-ieoeWczDHkReVBsRBqaal5AFMlBtNjMzgwKvLqi/tSU=' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=' https://va.vercel-scripts.com https://browser.sentry-cdn.com https://vercel.live; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.schwabapi.com https://va.vercel-scripts.com https://*.ingest.sentry.io https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self'; img-src 'self' data: blob: https://vercel.com https://assets.vercel.com https://vercel.live; frame-ancestors 'self'; frame-src 'self' https://vercel.live; manifest-src 'self'"
+          "value": "default-src 'self'; script-src 'self' 'sha256-ieoeWczDHkReVBsRBqaal5AFMlBtNjMzgwKvLqi/tSU=' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=' https://va.vercel-scripts.com https://browser.sentry-cdn.com https://vercel.live; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://vercel.live; font-src 'self' https://fonts.gstatic.com https://vercel.live https://assets.vercel.com; connect-src 'self' https://api.schwabapi.com https://va.vercel-scripts.com https://*.ingest.sentry.io https://fonts.googleapis.com https://fonts.gstatic.com https://vercel.live wss://ws-us3.pusher.com; worker-src 'self'; img-src 'self' data: blob: https://vercel.com https://assets.vercel.com https://vercel.live; frame-ancestors 'self'; frame-src 'self' https://vercel.live; manifest-src 'self'"
         }
       ]
     },

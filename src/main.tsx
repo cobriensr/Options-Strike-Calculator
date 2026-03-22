@@ -6,6 +6,12 @@ import './index.css';
 import StrikeCalculator from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 
+if (import.meta.env.DEV) {
+  import('@vercel/toolbar/vite').then(({ mountVercelToolbar }) =>
+    mountVercelToolbar(),
+  );
+}
+
 initBotId({
   protect: [
     { path: '/api/quotes', method: 'GET' },

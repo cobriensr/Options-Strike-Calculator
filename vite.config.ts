@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
+import { vercelToolbar } from '@vercel/toolbar/plugins/vite';
 import { resolve } from 'node:path';
 
 const analyze = process.env.ANALYZE === 'true';
@@ -12,6 +13,7 @@ export default defineConfig({
   plugins: [
     tailwindcss(),
     react(),
+    vercelToolbar(),
     analyze &&
       visualizer({
         open: true,
