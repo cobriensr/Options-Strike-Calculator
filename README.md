@@ -704,6 +704,7 @@ npx tsx scripts/backfill-outcomes.ts
 
 ```text
 ├── api/
+│   ├── __tests__/                     # API endpoint tests (21 test files)
 │   ├── _lib/
 │   │   ├── schwab.ts                  # Schwab OAuth token management (Upstash Redis)
 │   │   ├── api-helpers.ts             # Shared fetch, cache, owner-gate, rate limiting
@@ -737,44 +738,120 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── backfill-outcomes.ts           # Populate outcomes table from historical CSVs
 │   └── entry-time-analysis.ts         # 8:45 vs 9:00 AM CT entry timing study
 ├── src/
-│   ├── __tests__/                     # Unit/integration tests (54 test files)
+│   ├── __tests__/
+│   │   ├── components/                # Component tests (30 files)
+│   │   ├── hooks/                     # Hook tests (13 files)
+│   │   ├── utils/                     # Utility tests (16 files)
+│   │   ├── data/                      # Data module tests (2 files)
+│   │   └── setup.ts                   # Vitest setup (jsdom, mocks)
 │   ├── components/
+│   │   ├── ChartAnalysis/             # Claude Opus chart analysis UI
+│   │   │   ├── index.tsx              #   Main component (upload, modes, confirm)
+│   │   │   ├── AnalysisResults.tsx    #   Structured analysis display
+│   │   │   ├── AnalysisHistory.tsx    #   Browse past analyses
+│   │   │   ├── BulletList.tsx         #   Reusable bullet list
+│   │   │   ├── Collapsible.tsx        #   Collapsible section
+│   │   │   └── types.ts              #   Analysis types + chart labels
+│   │   ├── DeltaRegimeGuide/          # Delta ceiling with DOW + clustering
+│   │   │   ├── index.tsx              #   Main guide (range→delta mapping)
+│   │   │   ├── RecommendationBanner.tsx  # Ceiling badges + guidance
+│   │   │   ├── RangeThresholdsTable.tsx  # Range % → max delta table
+│   │   │   ├── DeltaThresholdsTable.tsx  # Your deltas vs thresholds
+│   │   │   ├── GuidanceCell.tsx       #   Aggressive/moderate/conservative
+│   │   │   └── types.ts              #   ThresholdDelta type
+│   │   ├── HedgeSection/              # Hedge calculator (reinsurance)
+│   │   │   ├── index.tsx              #   Put/call hedge sizing + summary
+│   │   │   ├── ScenarioTable.tsx      #   Crash/rally P&L scenarios
+│   │   │   └── StatBox.tsx            #   Compact stat display
+│   │   ├── IronCondorSection/         # Iron condor analysis
+│   │   │   ├── index.tsx              #   IC builder + hedge + export
+│   │   │   ├── LegsTable.tsx          #   IC legs by delta
+│   │   │   └── PnLProfileTable.tsx    #   P&L profile (credit, loss, PoP)
+│   │   ├── IVInputSection/            # IV mode selection + term structure
+│   │   │   ├── index.tsx              #   VIX/Direct IV inputs + regime card
+│   │   │   └── IVTooltip.tsx          #   0DTE adjustment tooltip
+│   │   ├── OpeningRangeCheck/         # First-30-min range signal
+│   │   │   ├── index.tsx              #   Range vs expected daily move
+│   │   │   ├── RangeConsumptionBar.tsx  # Visual range consumption
+│   │   │   └── StatCell.tsx           #   Compact stat cell
+│   │   ├── PreTradeSignals/           # Pre-trade signal cards
+│   │   │   ├── index.tsx              #   RV/IV, gap, breadth
+│   │   │   ├── SignalCard.tsx         #   Signal display card
+│   │   │   └── classifiers.ts        #   Signal classification logic
+│   │   ├── SettlementCheck/           # Backtest settlement verification
+│   │   │   ├── index.tsx              #   Which deltas survived
+│   │   │   ├── DeltaRow.tsx           #   Per-delta visual bar
+│   │   │   └── types.ts              #   SettlementResult type
+│   │   ├── VIXRangeAnalysis/          # Historical range + survival heatmap
+│   │   │   ├── index.tsx              #   Range table + survival rates
+│   │   │   ├── FineGrainedBars.tsx    #   Point-by-point VIX breakdown
+│   │   │   └── helpers.ts            #   Zone colors + heat mapping
+│   │   ├── VIXTermStructure/          # VIX1D/VIX9D/VVIX panel
+│   │   │   ├── index.tsx              #   Term structure inputs + signals
+│   │   │   ├── RatioCard.tsx          #   VIX ratio display
+│   │   │   ├── VvixCard.tsx           #   VVIX display
+│   │   │   └── classifiers.ts        #   Term structure classification
+│   │   ├── VolatilityCluster/         # Volatility clustering signal
+│   │   │   ├── index.tsx              #   Yesterday's range → today's multiplier
+│   │   │   └── PercentileBar.tsx      #   Percentile reference bar
+│   │   ├── ui.tsx                     # Shared primitives (SectionBox, Chip, ScrollHint, etc.)
 │   │   ├── BacktestDiag.tsx           # Backtest diagnostic panel
-│   │   ├── ChainVerification.tsx      # Theoretical vs live chain strike comparison
-│   │   ├── ChartAnalysis.tsx          # Claude Opus chart analysis UI (major component)
 │   │   ├── DateLookupSection.tsx      # Date picker with event day integration
-│   │   ├── DeltaRegimeGuide.tsx       # Delta ceiling with DOW + clustering adjustments
+│   │   ├── DateTimeSection.tsx        # Combined date + time picker
+│   │   ├── DeltaStrikesTable.tsx      # All-delta strike results table
 │   │   ├── EntryTimeSection.tsx       # Time picker with CT/ET conversion
+│   │   ├── ErrorBoundary.tsx          # Error boundary with Sentry
 │   │   ├── EventDayWarning.tsx        # FOMC/CPI/NFP/GDP warning banner
-│   │   ├── IVInputSection.tsx         # IV mode selection + VIX term structure
-│   │   ├── MarketRegimeSection.tsx    # Container for all regime analysis components
-│   │   ├── OpeningRangeCheck.tsx      # First-30-min range signal
+│   │   ├── MarketRegimeSection.tsx    # Container for all regime components
+│   │   ├── ParameterSummary.tsx       # Calculation parameter display
 │   │   ├── PinRiskAnalysis.tsx        # Settlement pin risk OI heatmap
-│   │   ├── PreTradeSignals.tsx        # Pre-trade signal summary
+│   │   ├── ResultsSection.tsx         # Strike results + IC container
+│   │   ├── RiskCalculator.tsx         # Position sizing calculator
 │   │   ├── RvIvCard.tsx               # Realized vs implied volatility card
-│   │   ├── SettlementCheck.tsx        # Backtest: which deltas survived at settlement
-│   │   ├── VIXRangeAnalysis.tsx       # Full range analysis with survival heatmap
+│   │   ├── SpotPriceSection.tsx       # SPY/SPX price inputs + ratio
 │   │   ├── VIXRegimeCard.tsx          # Compact regime context card
-│   │   ├── VIXTermStructure.tsx       # VIX1D/VIX9D/VVIX term structure panel
-│   │   └── VolatilityCluster.tsx      # Yesterday's range clustering signal
+│   │   ├── VixUploadSection.tsx       # VIX CSV upload
+│   │   └── AdvancedSection.tsx        # Skew, wing width, contracts, OHLC
+│   ├── constants/
+│   │   └── index.ts                   # All app constants (deltas, defaults, thresholds)
 │   ├── data/
 │   │   ├── eventCalendar.ts           # Static FOMC/CPI/NFP/GDP dates + early close dates
 │   │   └── vixRangeStats.ts           # Pre-computed VIX→SPX range stats, DOW, clustering
 │   ├── hooks/
+│   │   ├── useAppState.ts             # Top-level UI state (inputs, preferences)
+│   │   ├── useAutoFill.ts             # Auto-fill from live market data
 │   │   ├── useCalculation.ts          # Main calculation hook (strikes, ICs, premiums)
 │   │   ├── useChainData.ts            # Live option chain polling (60s interval)
-│   │   ├── useComputedSignals.ts      # Lifts all derived signals to App level for DB
+│   │   ├── useChartAnalysis.ts        # Chart analysis API hook (fetch, retry, abort)
+│   │   ├── useComputedSignals.ts      # Derived signals (regime, DOW, range, RV/IV, etc.)
+│   │   ├── useDebounced.ts            # Debounce hook for input values
 │   │   ├── useHistoryData.ts          # Historical candle data for backtesting
+│   │   ├── useImageUpload.ts          # Image upload management (drag, paste, labels)
 │   │   ├── useMarketData.ts           # Live Schwab data (quotes, intraday, yesterday)
 │   │   ├── useSnapshotSave.ts         # Auto-saves market snapshots to Postgres
-│   │   └── useVix1dData.ts            # Static VIX1D CBOE data loader
+│   │   ├── useVix1dData.ts            # Static VIX1D CBOE data loader
+│   │   └── useVixData.ts              # VIX data management (cache, static, CSV)
+│   ├── themes/
+│   │   └── index.ts                   # Light/dark theme definitions
 │   ├── types/
 │   │   ├── api.ts                     # API response types + chain types
 │   │   └── index.ts                   # Core TypeScript types (all readonly)
 │   ├── utils/
-│   │   ├── calculator.ts              # Pure calculation functions (BS, strikes, IC, PoP)
+│   │   ├── analysis.ts                # Analysis result serialization
+│   │   ├── black-scholes.ts           # Black-Scholes pricing + Greeks
+│   │   ├── calculator.ts              # Barrel re-export (BS, strikes, IC, PoP)
+│   │   ├── classifiers.ts             # Opening range classifier
 │   │   ├── csvParser.ts               # VIX CSV parser
 │   │   ├── exportXlsx.ts              # Excel export (multi-sheet wing width comparison)
+│   │   ├── fetchWithRetry.ts          # Fetch with exponential backoff
+│   │   ├── hedge.ts                   # Hedge sizing calculations
+│   │   ├── iron-condor.ts             # Iron condor builder + PoP
+│   │   ├── pin-risk.ts                # OI aggregation + pin risk detection
+│   │   ├── settlement.ts              # Settlement survival computation
+│   │   ├── strikes.ts                 # Strike placement + snapping
+│   │   ├── time.ts                    # Time parsing (parseDow, market hours)
+│   │   ├── timezone.ts                # CT/ET timezone conversion
+│   │   ├── ui-utils.ts                # Shared UI helpers (tint, fmtDollar, inputCls)
 │   │   └── vixStorage.ts              # localStorage cache + static JSON loader
 │   ├── App.tsx                        # Root component: state, hooks, layout
 │   └── main.tsx                       # React entry point + Sentry init
@@ -920,22 +997,33 @@ npm run build:analyze    # Opens dist/bundle-stats.html
 
 ## Testing
 
-Unit tests across 54 test files + Playwright E2E tests across 23 spec files (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode.
+2,026 unit tests across 83 test files + Playwright E2E tests across 23 spec files (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode.
 
 ### Unit Tests (Vitest)
 
-| File                         | Focus                                                                                      |
-| ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `calculator.test.ts`         | 150+ tests: BS pricing, Greeks (delta/gamma/theta/vega), strikes, kurtosis, stressed sigma |
-| `ChartAnalysis.test.tsx`     | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling      |
-| `useComputedSignals.test.ts` | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering     |
-| `skewAndIC.test.ts`          | 63 tests: convex skew, IC legs, per-side PoP, breakevens                                   |
-| `hedge.test.tsx`             | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario            |
-| `PinRiskAnalysis.test.tsx`   | 7 tests: OI table, pin risk warning, empty state, K formatting                             |
-| `RvIvCard.test.tsx`          | 6 tests: ratio display, all 3 labels, RV/IV percentages                                    |
-| `positions.test.ts`          | 17 tests: handler, spread grouping, summary building, DB save, error paths                 |
-| `db.test.ts`                 | 34 tests: schema init, migrations, snapshots, analyses, outcomes, positions, previous recs |
-| `journal-migrate.test.ts`    | 5 tests: migration endpoint, idempotency, error handling                                   |
+Tests are organized by source type:
+
+```text
+src/__tests__/
+  components/    30 files — component rendering, interactions, accessibility
+  hooks/         13 files — hook state, effects, API integration
+  utils/         16 files — pure function logic, edge cases
+  data/           2 files — static data modules
+```
+
+| File | Focus |
+| --- | --- |
+| `utils/calculator.test.ts` | 150+ tests: BS pricing, Greeks (delta/gamma/theta/vega), strikes, kurtosis, stressed sigma |
+| `components/ChartAnalysis.test.tsx` | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling |
+| `hooks/useComputedSignals.test.ts` | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering |
+| `utils/skewAndIC.test.ts` | 63 tests: convex skew, IC legs, per-side PoP, breakevens |
+| `utils/hedge.test.tsx` | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario |
+| `utils/settlement.test.ts` | 16 tests: survived/breached cases, cushion calculations, settledSafe |
+| `utils/pin-risk.test.ts` | 17 tests: OI aggregation, top-N sorting, side classification, formatting |
+| `hooks/useChartAnalysis.test.ts` | 13 tests: fetch, retry, abort, timeout, mode completion, elapsed timer |
+| `hooks/useImageUpload.test.ts` | 12 tests: add/remove/clear, drag-drop, paste, label management, 8-image limit |
+| `utils/analysis.test.ts` | 10 tests: buildPreviousRecommendation with all field combinations |
+| `utils/classifiers.test.ts` | 14 tests: opening range classification, boundary values |
 
 ### E2E Tests (Playwright — Chromium, Firefox, WebKit)
 
