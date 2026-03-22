@@ -1,6 +1,7 @@
 import type { MoversResponse } from '../../types/api';
+import type { TrafficSignal } from '../../types';
 
-export type Signal = 'green' | 'yellow' | 'red';
+export type Signal = TrafficSignal;
 
 export interface SignalResult {
   signal: Signal;

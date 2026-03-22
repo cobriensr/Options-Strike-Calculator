@@ -10,6 +10,8 @@ import type { Theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { HistoryCandle } from '../../types/api';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
+import { SETTLEMENT_DELTAS } from '../../constants';
+import { computeSettlement } from '../../utils/settlement';
 import type { SettlementResult } from './types';
 import DeltaRow from './DeltaRow';
 
@@ -30,48 +32,6 @@ interface Props {
   readonly entryTimeLabel?: string;
 }
 
-function computeSettlement(
-  allCandles: readonly HistoryCandle[],
-  entryIndex: number,
-  callStrike: number,
-  putStrike: number,
-  delta: number,
-): SettlementResult | null {
-  if (entryIndex >= allCandles.length - 1) return null;
-
-  let remainingHigh = -Infinity;
-  let remainingLow = Infinity;
-
-  for (let i = entryIndex; i < allCandles.length; i++) {
-    const c = allCandles[i]!;
-    if (c.high > remainingHigh) remainingHigh = c.high;
-    if (c.low < remainingLow) remainingLow = c.low;
-  }
-
-  const settlement = allCandles.at(-1)!.close;
-  const callCushion = callStrike - remainingHigh;
-  const putCushion = remainingLow - putStrike;
-  const callBreached = remainingHigh >= callStrike;
-  const putBreached = remainingLow <= putStrike;
-  const settledSafe = settlement > putStrike && settlement < callStrike;
-
-  return {
-    delta,
-    callStrike,
-    putStrike,
-    survived: !callBreached && !putBreached,
-    callBreached,
-    putBreached,
-    callCushion: Math.round(callCushion * 100) / 100,
-    putCushion: Math.round(putCushion * 100) / 100,
-    settlement: Math.round(settlement * 100) / 100,
-    remainingHigh: Math.round(remainingHigh * 100) / 100,
-    remainingLow: Math.round(remainingLow * 100) / 100,
-    settledSafe,
-  };
-}
-
-const targetDeltas = [5, 8, 10, 12, 15];
 
 export default function SettlementCheck({
   th,
@@ -93,7 +53,7 @@ export default function SettlementCheck({
       } => !('error' in d),
     );
     const out: SettlementResult[] = [];
-    for (const target of targetDeltas) {
+    for (const target of SETTLEMENT_DELTAS) {
       const entry = validDeltas.find((d) => d.delta === target);
       if (!entry) continue;
 

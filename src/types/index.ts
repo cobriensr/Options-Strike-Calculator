@@ -1,3 +1,6 @@
+/** Traffic-light signal: green / yellow / red */
+export type TrafficSignal = 'green' | 'yellow' | 'red';
+
 /** Valid delta targets for which we have z-scores */
 export type DeltaTarget = 5 | 8 | 10 | 12 | 15 | 20;
 

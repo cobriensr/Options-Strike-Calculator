@@ -6,12 +6,12 @@ import {
   calcScaledSkew,
   calcScaledCallSkew,
 } from '../../utils/calculator';
-import { DELTA_Z_SCORES, DELTA_OPTIONS } from '../../constants';
+import { DELTA_Z_SCORES, DELTA_OPTIONS, DEFAULTS } from '../../constants';
+import { parseDow } from '../../utils/time';
 import {
   findBucket,
   estimateRange,
   getDowMultiplier,
-  getTodayDow,
 } from '../../data/vixRangeStats';
 import RecommendationBanner from './RecommendationBanner';
 import RangeThresholdsTable from './RangeThresholdsTable';
@@ -28,9 +28,6 @@ interface Props {
   readonly selectedDate?: string; // 'YYYY-MM-DD' from date picker, falls back to today
   readonly clusterMult?: number; // Volatility clustering multiplier (1.0 = no effect)
 }
-
-/** Default 0DTE IV adjustment — matches the calculator's default multiplier */
-const VIX_TO_SIGMA_MULT = 1.15;
 
 /** A range threshold from the VIX regime data */
 interface RangeThreshold {
@@ -65,30 +62,16 @@ export default function DeltaRegimeGuide({
   const bucket = findBucket(vix);
   if (!bucket) return null;
 
-  // Compute sigma internally from VIX — always uses VIX × 1.15 / 100
+  // Compute sigma internally from VIX — always uses VIX × DEFAULTS.IV_PREMIUM_FACTOR / 100
   // so the Delta Guide stays self-consistent with VIX-based range thresholds,
   // regardless of whether the user switched to Direct IV (VIX1D) for strike pricing.
-  const sigma = (vix * VIX_TO_SIGMA_MULT) / 100;
+  const sigma = (vix * DEFAULTS.IV_PREMIUM_FACTOR) / 100;
 
   // Clustering multiplier (default 1.0 = no effect)
   const cMult = clusterMult != null && clusterMult > 0 ? clusterMult : 1;
 
   // Derive day of week from selected date, falling back to today
-  const dow = (() => {
-    if (selectedDate) {
-      // Parse 'YYYY-MM-DD' — use UTC to avoid timezone shift
-      const parts = selectedDate.split('-');
-      if (parts.length === 3) {
-        const d = new Date(
-          Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])),
-        );
-        const jsDay = d.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
-        if (jsDay >= 1 && jsDay <= 5) return jsDay - 1; // 0=Mon..4=Fri
-        return null; // weekend
-      }
-    }
-    return getTodayDow();
-  })();
+  const dow = parseDow(selectedDate);
   const dowMult = dow == null ? null : getDowMultiplier(vix, dow);
 
   // Use continuous interpolation instead of discrete bucket thresholds.
@@ -267,7 +250,7 @@ export default function DeltaRegimeGuide({
       <p className="text-muted mt-1.5 mb-4 text-[11px] italic">
         {'"'}Max Delta{'"'} = the highest delta whose strike clears that range.
         Sell at or below this delta. Uses VIX-derived {'\u03C3'}=
-        {sigma.toFixed(4)} (VIX {vix.toFixed(1)} {'\u00D7'} {VIX_TO_SIGMA_MULT})
+        {sigma.toFixed(4)} (VIX {vix.toFixed(1)} {'\u00D7'} {DEFAULTS.IV_PREMIUM_FACTOR})
         and T={T.toFixed(6)}.
         {skew > 0
           ? ' Skew-adjusted: puts use higher \u03C3, calls use lower.'

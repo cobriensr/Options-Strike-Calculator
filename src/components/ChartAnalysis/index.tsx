@@ -17,8 +17,8 @@ import { tint } from '../../utils/ui-utils';
 import type { AnalysisMode } from './types';
 import { CHART_LABELS, MODE_LABELS } from './types';
 import AnalysisResultsView from './AnalysisResults';
-import { useImageUpload } from './useImageUpload';
-import { useChartAnalysis } from './useChartAnalysis';
+import { useImageUpload } from '../../hooks/useImageUpload';
+import { useChartAnalysis } from '../../hooks/useChartAnalysis';
 
 export type { AnalysisContext } from './types';
 

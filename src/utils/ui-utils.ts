@@ -51,6 +51,13 @@ export function fmtDollar(value: number): string {
   return value.toFixed(2);
 }
 
+/** Return a CSS color variable based on risk percentage thresholds */
+export function riskColor(pct: number): string {
+  if (pct > 5) return 'var(--color-danger)';
+  if (pct > 3) return 'var(--color-caution)';
+  return 'var(--color-success)';
+}
+
 /** Tiny label className constant */
 export const tinyLbl =
   'block text-[10px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans mb-1';

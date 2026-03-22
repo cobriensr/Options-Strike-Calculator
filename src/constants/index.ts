@@ -206,8 +206,33 @@ export function getKurtosisFactor(vix?: number): number {
   return 3.5;
 }
 
+/** Wing width options for iron condor spreads (SPX points) */
+export const WING_OPTIONS = [5, 10, 15, 20, 25, 30, 50] as const;
+
+/** Risk tier percentages for position sizing table */
+export const RISK_TIERS = [1, 2, 3, 5, 10] as const;
+
+/** Target delta values for settlement check analysis */
+export const SETTLEMENT_DELTAS = [5, 8, 10, 12, 15] as const;
+
 /** IV input mode identifiers */
 export const IV_MODES = {
   VIX: 'vix',
   DIRECT: 'direct',
 } as const;
+
+/** Progress messages shown during chart analysis */
+export const THINKING_MESSAGES = [
+  'Reading chart data...',
+  'Fetching open positions...',
+  'Analyzing Market Tide flow...',
+  'Checking SPX Net Flow...',
+  'Checking Net Flow confirmation...',
+  'Evaluating gamma exposure...',
+  'Checking charm decay profile...',
+  'Reading aggregate GEX regime...',
+  'Mapping strikes to gamma zones...',
+  'Building entry plan...',
+  'Assessing hedge options...',
+  'Formulating management rules...',
+] as const;

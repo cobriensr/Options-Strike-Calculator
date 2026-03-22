@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Theme } from '../../themes';
+import type { TrafficSignal } from '../../types';
 import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
+import { parseDow } from '../../utils/time';
+import { classifyOpeningRange } from '../../utils/classifiers';
 import { estimateRange, getDowMultiplier } from '../../data/vixRangeStats';
 import StatCell from './StatCell';
 import RangeConsumptionBar from './RangeConsumptionBar';
@@ -17,8 +20,6 @@ interface Props {
   };
 }
 
-type Signal = 'green' | 'yellow' | 'red';
-
 interface RangeAnalysis {
   readonly openingRangePct: number;
   readonly openingRangePts: number;
@@ -26,55 +27,9 @@ interface RangeAnalysis {
   readonly expectedP90HL: number;
   readonly pctOfMedianUsed: number;
   readonly pctOfP90Used: number;
-  readonly signal: Signal;
+  readonly signal: TrafficSignal;
   readonly label: string;
   readonly advice: string;
-}
-
-function classify(pctOfMedian: number): {
-  signal: Signal;
-  label: string;
-  advice: string;
-} {
-  if (pctOfMedian < 0.4) {
-    return {
-      signal: 'green',
-      label: 'RANGE INTACT',
-      advice:
-        'Opening range is small relative to the expected daily move. Good conditions to add positions.',
-    };
-  }
-  if (pctOfMedian < 0.65) {
-    return {
-      signal: 'yellow',
-      label: 'MODERATE',
-      advice:
-        'A meaningful portion of the expected range is used. Add positions with tighter deltas or smaller size.',
-    };
-  }
-  return {
-    signal: 'red',
-    label: 'RANGE EXHAUSTED',
-    advice:
-      'The day is already running hot. Adding new positions carries elevated risk of further extension.',
-  };
-}
-
-function parseDow(selectedDate?: string): number | null {
-  if (selectedDate) {
-    const parts = selectedDate.split('-');
-    if (parts.length === 3) {
-      const d = new Date(
-        Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])),
-      );
-      const jsDay = d.getUTCDay();
-      if (jsDay >= 1 && jsDay <= 5) return jsDay - 1;
-      return null;
-    }
-  }
-  const jsDay = new Date().getDay();
-  if (jsDay === 0 || jsDay === 6) return null;
-  return jsDay - 1;
 }
 
 /**
@@ -132,7 +87,7 @@ export default function OpeningRangeCheck({
     const pctOfMedianUsed = openingRangePct / expectedMedHL;
     const pctOfP90Used = openingRangePct / expectedP90HL;
 
-    const { signal, label, advice } = classify(pctOfMedianUsed);
+    const { signal, label, advice } = classifyOpeningRange(pctOfMedianUsed);
 
     return {
       openingRangePct,

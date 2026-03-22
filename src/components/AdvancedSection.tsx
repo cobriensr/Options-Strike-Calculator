@@ -1,6 +1,6 @@
 import type { Theme } from '../themes';
 import type { CalculationResults, VIXDayData, OHLCField } from '../types';
-import { getKurtosisFactor } from '../constants';
+import { getKurtosisFactor, WING_OPTIONS } from '../constants';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 
 interface Props {
@@ -113,7 +113,7 @@ export default function AdvancedSection({
             role="radiogroup"
             aria-label="Iron condor wing width"
           >
-            {[5, 10, 15, 20, 25, 30, 50].map((w) => (
+            {WING_OPTIONS.map((w) => (
               <Chip
                 key={w}
                 active={wingWidth === w}

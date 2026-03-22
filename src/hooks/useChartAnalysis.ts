@@ -1,59 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { CalculationResults } from '../../types';
+import type { CalculationResults } from '../types';
 import type {
   AnalysisMode,
   AnalysisResult,
   AnalysisContext,
   UploadedImage,
-} from './types';
-
-export const THINKING_MESSAGES = [
-  'Reading chart data...',
-  'Fetching open positions...',
-  'Analyzing Market Tide flow...',
-  'Checking SPX Net Flow...',
-  'Checking Net Flow confirmation...',
-  'Evaluating gamma exposure...',
-  'Checking charm decay profile...',
-  'Reading aggregate GEX regime...',
-  'Mapping strikes to gamma zones...',
-  'Building entry plan...',
-  'Assessing hedge options...',
-  'Formulating management rules...',
-];
-
-/**
- * Build a concise previous recommendation string from a client-side analysis result.
- * This is a FALLBACK — the backend now auto-fetches from DB via getPreviousRecommendation().
- * This client-side version is used when:
- *   - DB doesn't have the previous analysis yet (first run, no save)
- *   - Backtesting mode where analyses may not be saved
- */
-function buildPreviousRecommendation(prev: AnalysisResult): string {
-  const parts = [
-    `Structure: ${prev.structure}, Delta: ${prev.suggestedDelta}, Confidence: ${prev.confidence}`,
-    `Reasoning: ${prev.reasoning}`,
-  ];
-  const e1 = prev.entryPlan?.entry1;
-  if (e1) {
-    const timing = e1.timing ?? e1.condition ?? '';
-    parts.push(`Entry 1: ${e1.structure} ${String(e1.delta)}Δ at ${timing}`);
-  }
-  if (prev.hedge) {
-    parts.push(
-      `Hedge: ${prev.hedge.recommendation} — ${prev.hedge.description}`,
-    );
-  }
-  if (prev.managementRules?.profitTarget) {
-    parts.push(`Profit target: ${prev.managementRules.profitTarget}`);
-  }
-  if (prev.managementRules?.stopConditions) {
-    parts.push(
-      `Stop conditions: ${prev.managementRules.stopConditions.join('; ')}`,
-    );
-  }
-  return parts.join('. ');
-}
+} from '../components/ChartAnalysis/types';
+import { THINKING_MESSAGES } from '../constants';
+import { buildPreviousRecommendation } from '../utils/analysis';
 
 export function useChartAnalysis(opts: {
   images: UploadedImage[];

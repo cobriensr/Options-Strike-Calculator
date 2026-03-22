@@ -1,17 +1,9 @@
 import { useState } from 'react';
 import { SectionBox, ScrollHint, Chip } from './ui';
-import { mkTh, mkTd } from '../utils/ui-utils';
+import { mkTh, mkTd, riskColor } from '../utils/ui-utils';
+import { WING_OPTIONS, RISK_TIERS } from '../constants';
 
 type Mode = 'sell' | 'buy';
-
-const RISK_TIERS = [1, 2, 3, 5, 10];
-const WING_OPTIONS = [5, 10, 15, 20, 25, 30, 50];
-
-function riskColor(pct: number): string {
-  if (pct > 5) return 'var(--color-danger)';
-  if (pct > 3) return 'var(--color-caution)';
-  return 'var(--color-success)';
-}
 
 /* Compact chip classes — intentionally smaller than the shared Chip component */
 const chipCompact =

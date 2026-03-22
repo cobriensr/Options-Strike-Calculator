@@ -2,6 +2,28 @@ import { MARKET, DEFAULTS, IV_MODES } from '../constants';
 import type { TimeValidation, IVResult, IVMode } from '../types';
 
 /**
+ * Parses the day of week from 'YYYY-MM-DD' (UTC to avoid timezone shift).
+ * Returns 0 = Mon .. 4 = Fri, or null for weekends / invalid input.
+ * If no date is given, uses today's local day.
+ */
+export function parseDow(selectedDate?: string): number | null {
+  if (selectedDate) {
+    const parts = selectedDate.split('-');
+    if (parts.length === 3) {
+      const d = new Date(
+        Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])),
+      );
+      const jsDay = d.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
+      if (jsDay >= 1 && jsDay <= 5) return jsDay - 1; // 0=Mon..4=Fri
+      return null; // weekend
+    }
+  }
+  const jsDay = new Date().getDay();
+  if (jsDay === 0 || jsDay === 6) return null;
+  return jsDay - 1;
+}
+
+/**
  * Validates that a given time (in ET, 24h format) falls within market hours.
  * Returns hours remaining if valid, error message if not.
  */

@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { UploadedImage } from './types';
-import { CHART_LABELS } from './types';
+import type { UploadedImage } from '../components/ChartAnalysis/types';
+import { CHART_LABELS } from '../components/ChartAnalysis/types';
 
 export function useImageUpload() {
   const [images, setImages] = useState<UploadedImage[]>([]);

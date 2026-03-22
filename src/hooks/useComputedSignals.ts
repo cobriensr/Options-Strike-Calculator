@@ -18,7 +18,9 @@ import {
   calcScaledCallSkew,
   toETTime,
 } from '../utils/calculator';
-import { SIGNALS } from '../constants';
+import { SIGNALS, DEFAULTS } from '../constants';
+import { parseDow } from '../utils/time';
+import { classifyOpeningRange } from '../utils/classifiers';
 import {
   findBucket,
   estimateRange,
@@ -109,7 +111,6 @@ export interface ComputedSignals {
 // ============================================================
 
 const DOW_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-const VIX_TO_SIGMA_MULT = 1.15;
 
 /**
  * Parkinson realized volatility estimator (single day, annualized).
@@ -144,33 +145,6 @@ function rollingParkinsonRV(
   }
   if (validDays === 0) return 0;
   return Math.sqrt((sumVariance / validDays) * 252);
-}
-
-function parseDow(selectedDate?: string): number | null {
-  if (selectedDate) {
-    const parts = selectedDate.split('-');
-    if (parts.length === 3) {
-      const d = new Date(
-        Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])),
-      );
-      const jsDay = d.getUTCDay();
-      if (jsDay >= 1 && jsDay <= 5) return jsDay - 1; // 0=Mon..4=Fri
-      return null;
-    }
-  }
-  const now = new Date();
-  const etStr = now.toLocaleDateString('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'long',
-  });
-  const dayMap: Record<string, number> = {
-    Monday: 0,
-    Tuesday: 1,
-    Wednesday: 2,
-    Thursday: 3,
-    Friday: 4,
-  };
-  return dayMap[etStr] ?? null;
 }
 
 /**
@@ -275,12 +249,6 @@ function classifyTermShape(
     advice:
       'Term structure is roughly flat — no strong directional signal from vol curve.',
   };
-}
-
-function classifyOpeningRange(pctOfMedian: number): string {
-  if (pctOfMedian < SIGNALS.OPENING_RANGE_GREEN) return 'GREEN';
-  if (pctOfMedian < SIGNALS.OPENING_RANGE_MODERATE) return 'MODERATE';
-  return 'RED';
 }
 
 function classifyTermStructure(
@@ -561,7 +529,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
 
     // ── Delta guide ceilings ─────────────────────────────────
     // Uses VIX × 1.15 for consistency with historical calibration
-    const sigma = (vix * VIX_TO_SIGMA_MULT) / 100;
+    const sigma = (vix * DEFAULTS.IV_PREMIUM_FACTOR) / 100;
     const skew = skewPct / 100;
     const sqrtT = Math.sqrt(T);
 
@@ -636,7 +604,15 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       const medHL = result.medianHlPct ?? 1;
       const consumed = medHL > 0 ? rangePct / medHL : 0;
       result.openingRangePctConsumed = consumed;
-      result.openingRangeSignal = classifyOpeningRange(consumed);
+      const orClassification = classifyOpeningRange(consumed);
+      // Map traffic signal to legacy label expected by DB / API / tests
+      const signalToLabel: Record<string, string> = {
+        green: 'GREEN',
+        yellow: 'MODERATE',
+        red: 'RED',
+      };
+      result.openingRangeSignal =
+        signalToLabel[orClassification.signal] ?? 'RED';
     }
 
     // ── VIX term structure ───────────────────────────────────
@@ -658,7 +634,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
           ? rollingParkinsonRV(livePriorDays)
           : parkinsonRV(ydayHigh, ydayLow);
       // IV: prefer VIX1D, fall back to VIX × 1.15
-      const iv = vix1d ? vix1d / 100 : (vix * VIX_TO_SIGMA_MULT) / 100;
+      const iv = vix1d ? vix1d / 100 : (vix * DEFAULTS.IV_PREMIUM_FACTOR) / 100;
       if (iv > 0) {
         result.rvAnnualized = Math.round(rv * 10000) / 10000;
         result.rvIvRatio = Math.round((rv / iv) * 100) / 100;
