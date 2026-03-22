@@ -289,13 +289,13 @@ A self-improving closed-loop system where Claude's end-of-day review analyses pr
 
 ### Friday Cron Pipeline
 
-| Step | Description |
-| ---- | ----------- |
-| 0 | Bootstrap a `lesson_reports` row (upsert for crash safety) |
-| 1 | Query unprocessed review analyses from the past 7 days |
-| 2 | **Phase A** (outside transaction): For each lesson — generate embedding via OpenAI, find 5 most similar existing lessons by cosine distance, call Claude Opus to decide ADD / SUPERSEDE / SKIP |
-| 3 | **Phase B** (inside transaction): Batch all DB writes for a review atomically via `sql.transaction()`. Pre-allocate IDs via `nextval` for SUPERSEDE operations. |
-| 4 | Build weekly changelog report and save to `lesson_reports` |
+| Step | Description                                                                                                                                                                                    |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Bootstrap a `lesson_reports` row (upsert for crash safety)                                                                                                                                     |
+| 1    | Query unprocessed review analyses from the past 7 days                                                                                                                                         |
+| 2    | **Phase A** (outside transaction): For each lesson — generate embedding via OpenAI, find 5 most similar existing lessons by cosine distance, call Claude Opus to decide ADD / SUPERSEDE / SKIP |
+| 3    | **Phase B** (inside transaction): Batch all DB writes for a review atomically via `sql.transaction()`. Pre-allocate IDs via `nextval` for SUPERSEDE operations.                                |
+| 4    | Build weekly changelog report and save to `lesson_reports`                                                                                                                                     |
 
 Claude's curation rules enforce safety: it may NEVER edit existing lesson text, NEVER merge two lessons into one, and must ADD rather than SUPERSEDE when in doubt.
 
@@ -494,31 +494,31 @@ Uniqueness: `UNIQUE(date, fetch_time)` with `ON CONFLICT DO UPDATE`.
 
 **`lessons`** — Self-improving compendium of validated trading insights (pgvector):
 
-| Column             | Purpose                                                                                    |
-| ------------------ | ------------------------------------------------------------------------------------------ |
-| text               | The lesson itself (immutable after insert)                                                 |
-| status             | `active`, `superseded`, or `archived` (CHECK-constrained)                                  |
-| superseded_by      | FK to the newer lesson that replaced this one                                              |
-| source_analysis_id | FK to the review-mode analysis that produced this lesson (ON DELETE RESTRICT)               |
-| source_date        | Trading date the lesson was learned from                                                    |
-| market_conditions  | JSONB snapshot: VIX, GEX regime, structure, day of week, wasCorrect, confidence            |
-| tags               | Freeform tags for Claude scanning (e.g. `['gex', 'charm', 'friday']`)                     |
-| category           | One of: `regime`, `flow`, `gamma`, `management`, `entry`, `sizing` (CHECK-constrained)    |
-| embedding          | `vector(3072)` via OpenAI `text-embedding-3-large` — HNSW-indexed for cosine similarity   |
+| Column             | Purpose                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------- |
+| text               | The lesson itself (immutable after insert)                                              |
+| status             | `active`, `superseded`, or `archived` (CHECK-constrained)                               |
+| superseded_by      | FK to the newer lesson that replaced this one                                           |
+| source_analysis_id | FK to the review-mode analysis that produced this lesson (ON DELETE RESTRICT)           |
+| source_date        | Trading date the lesson was learned from                                                |
+| market_conditions  | JSONB snapshot: VIX, GEX regime, structure, day of week, wasCorrect, confidence         |
+| tags               | Freeform tags for Claude scanning (e.g. `['gex', 'charm', 'friday']`)                   |
+| category           | One of: `regime`, `flow`, `gamma`, `management`, `entry`, `sizing` (CHECK-constrained)  |
+| embedding          | `vector(3072)` via OpenAI `text-embedding-3-large` — HNSW-indexed for cosine similarity |
 
 Uniqueness: `UNIQUE(source_analysis_id, text)` — prevents duplicate lessons on retry.
 
 **`lesson_reports`** — Weekly curation changelog:
 
-| Column            | Purpose                                                   |
-| ----------------- | --------------------------------------------------------- |
-| week_ending       | Friday date (UNIQUE)                                      |
-| reviews_processed | Count of review analyses processed                        |
-| lessons_added     | New lessons inserted                                      |
+| Column             | Purpose                                                   |
+| ------------------ | --------------------------------------------------------- |
+| week_ending        | Friday date (UNIQUE)                                      |
+| reviews_processed  | Count of review analyses processed                        |
+| lessons_added      | New lessons inserted                                      |
 | lessons_superseded | Existing lessons replaced by more specific versions       |
-| lessons_skipped   | Duplicate candidates that were not inserted               |
-| report            | Full JSONB changelog (added, superseded, skipped, errors) |
-| error             | Error message if the cron failed                          |
+| lessons_skipped    | Duplicate candidates that were not inserted               |
+| report             | Full JSONB changelog (added, superseded, skipped, errors) |
+| error              | Error message if the cron failed                          |
 
 ### Data Flow
 
