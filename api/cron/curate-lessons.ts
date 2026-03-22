@@ -424,6 +424,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       lessonsSuperseded: superseded.length,
       lessonsSkipped: skipped.length,
       errors: errors.length,
+      errorDetails: errors.slice(0, 5),
     });
   } catch (err) {
     logger.error({ err }, 'Curation cron failed');

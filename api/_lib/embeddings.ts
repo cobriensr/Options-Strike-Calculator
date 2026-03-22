@@ -53,7 +53,8 @@ export async function generateEmbedding(
       dimensions: 2000,
     });
     return response.data[0]?.embedding ?? null;
-  } catch {
+  } catch (err) {
+    console.error('Embedding error:', err instanceof Error ? err.message : err);
     return null;
   }
 }
