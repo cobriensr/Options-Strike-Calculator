@@ -249,14 +249,52 @@ const MIGRATIONS: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_positions_snapshot ON positions (snapshot_id)`;
     },
   },
-  // Add new migrations here:
-  // {
-  //   id: 2,
-  //   description: 'Add new_column to market_snapshots',
-  //   run: async (sql) => {
-  //     await sql`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS new_column TEXT`;
-  //   },
-  // },
+  {
+    id: 2,
+    description: 'Create lessons and lesson_reports tables with pgvector',
+    run: async (sql) => {
+      await sql`CREATE EXTENSION IF NOT EXISTS vector`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS lessons (
+          id                  SERIAL PRIMARY KEY,
+          text                TEXT NOT NULL,
+          status              TEXT NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active', 'superseded', 'archived')),
+          superseded_by       INTEGER REFERENCES lessons(id),
+          source_analysis_id  INTEGER REFERENCES analyses(id) ON DELETE RESTRICT,
+          source_date         DATE NOT NULL,
+          market_conditions   JSONB,
+          tags                TEXT[],
+          category            TEXT CHECK (category IN (
+                                'regime', 'flow', 'gamma', 'management', 'entry', 'sizing'
+                              )),
+          embedding           vector(1536) NOT NULL,
+          created_at          TIMESTAMPTZ DEFAULT NOW(),
+          superseded_at       TIMESTAMPTZ,
+          UNIQUE (source_analysis_id, text)
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_lessons_status ON lessons (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_lessons_source ON lessons (source_analysis_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_lessons_source_date ON lessons (source_date)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS lesson_reports (
+          id                  SERIAL PRIMARY KEY,
+          week_ending         DATE NOT NULL UNIQUE,
+          reviews_processed   INTEGER DEFAULT 0,
+          lessons_added       INTEGER DEFAULT 0,
+          lessons_superseded  INTEGER DEFAULT 0,
+          lessons_skipped     INTEGER DEFAULT 0,
+          report              JSONB NOT NULL DEFAULT '{}',
+          error               TEXT,
+          created_at          TIMESTAMPTZ DEFAULT NOW()
+        )
+      `;
+    },
+  },
 ];
 
 /**

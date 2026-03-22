@@ -348,12 +348,27 @@ describe('db.ts', () => {
     it('skips already-applied migrations', async () => {
       // CREATE TABLE schema_migrations
       mockSql.mockResolvedValueOnce([]);
-      // SELECT returns migration #1 as already applied
-      mockSql.mockResolvedValueOnce([{ id: 1 }]);
+      // SELECT returns all migrations as already applied
+      mockSql.mockResolvedValueOnce([{ id: 1 }, { id: 2 }]);
 
       const applied = await migrateDb();
 
       expect(applied).toEqual([]);
+    });
+
+    it('applies migration #2 when migration #1 is already done', async () => {
+      // CREATE TABLE schema_migrations
+      mockSql.mockResolvedValueOnce([]);
+      // SELECT returns migration #1 as already applied
+      mockSql.mockResolvedValueOnce([{ id: 1 }]);
+      // Migration #2: CREATE EXTENSION + CREATE TABLE lessons + 4 indexes + CREATE TABLE lesson_reports + INSERT
+      mockSql.mockResolvedValue([]);
+
+      const applied = await migrateDb();
+
+      expect(applied).toEqual(['#2: Create lessons and lesson_reports tables with pgvector']);
+      // 2 setup calls + 7 migration SQL calls + 1 INSERT = 10
+      expect(mockSql).toHaveBeenCalledTimes(10);
     });
 
     it('propagates errors from migration SQL', async () => {
