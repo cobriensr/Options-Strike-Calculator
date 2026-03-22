@@ -13,8 +13,6 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../_lib/db.js';
 import {
-  insertLesson,
-  supersedeLesson,
   upsertReport,
   updateReport,
   buildMarketConditions,
@@ -130,8 +128,14 @@ export default async function handler(
     const weekEnding = getPrecedingFriday();
     await upsertReport(weekEnding);
 
-    // Step 1: Query unprocessed reviews
+    // Step 1: Query current active lesson count (for unchanged calculation)
     const sql = getDb();
+    const activeCountRows = await sql`
+      SELECT COUNT(*)::int AS count FROM lessons WHERE status = 'active'
+    `;
+    const activeCountBefore = (activeCountRows[0]?.count as number) ?? 0;
+
+    // Step 2: Query unprocessed reviews
     const reviews = await sql`
       SELECT a.id, a.date, a.full_response, a.snapshot_id, a.spx, a.vix, a.vix1d,
              a.structure, a.confidence
@@ -143,7 +147,7 @@ export default async function handler(
       ORDER BY a.date ASC
     `;
 
-    // Step 2: No reviews — update report and return
+    // Step 3: No reviews — update report and return
     if (reviews.length === 0) {
       await updateReport(weekEnding, {
         reviewsProcessed: 0,
@@ -156,7 +160,7 @@ export default async function handler(
           superseded: [],
           skipped: [],
           errors: [],
-          unchanged: 0,
+          unchanged: activeCountBefore,
         },
       });
 
@@ -247,61 +251,103 @@ export default async function handler(
         });
       }
 
-      // Phase B: DB writes for this review
+      // Phase B: Atomic DB writes for this review (all-or-nothing per review)
       try {
+        // Collect skip decisions first (no DB writes needed)
+        const writeActions: PreparedLesson[] = [];
         for (const lesson of prepared) {
-          const { decision } = lesson;
-
-          if (decision.action === 'add') {
-            const newId = await insertLesson({
-              text: lesson.text,
-              embedding: lesson.embedding,
-              tags: decision.tags,
-              category: decision.category,
-              marketConditions: lesson.marketConditions,
-              sourceAnalysisId: lesson.sourceAnalysisId,
-              sourceDate: lesson.sourceDate,
-            });
-
-            added.push({
-              id: newId,
-              text: lesson.text,
-              sourceDate: lesson.sourceDate,
-              tags: decision.tags,
-              category: decision.category,
-            });
-          } else if (decision.action === 'supersede' && decision.supersedes_id != null) {
-            const newId = await supersedeLesson(
-              {
-                text: lesson.text,
-                embedding: lesson.embedding,
-                tags: decision.tags,
-                category: decision.category,
-                marketConditions: lesson.marketConditions,
-                sourceAnalysisId: lesson.sourceAnalysisId,
-                sourceDate: lesson.sourceDate,
-              },
-              decision.supersedes_id,
-            );
-
-            // Fetch old lesson text for the report
-            const oldRows = await sql`
-              SELECT text FROM lessons WHERE id = ${decision.supersedes_id}
-            `;
-            const oldText = oldRows.length > 0 ? String(oldRows[0]!.text) : '';
-
-            superseded.push({
-              id: decision.supersedes_id,
-              oldText,
-              supersededBy: newId,
-              reason: decision.reason,
-            });
-          } else if (decision.action === 'skip') {
+          if (lesson.decision.action === 'skip') {
             skipped.push({
               text: lesson.text,
-              reason: decision.reason,
-              existingId: decision.supersedes_id ?? undefined,
+              reason: lesson.decision.reason,
+              existingId: lesson.decision.supersedes_id ?? undefined,
             });
+          } else {
+            writeActions.push(lesson);
+          }
+        }
+
+        if (writeActions.length > 0) {
+          // Pre-allocate IDs and fetch old lesson texts before the transaction
+          const preAllocated: {
+            lesson: PreparedLesson;
+            newId: number;
+            oldText?: string;
+          }[] = [];
+
+          for (const lesson of writeActions) {
+            const seqRows = await sql`SELECT nextval('lessons_id_seq') AS id`;
+            const newId = Number(seqRows[0]!.id);
+
+            let oldText: string | undefined;
+            if (lesson.decision.action === 'supersede' && lesson.decision.supersedes_id != null) {
+              const oldRows = await sql`
+                SELECT text FROM lessons WHERE id = ${lesson.decision.supersedes_id}
+              `;
+              oldText = oldRows.length > 0 ? String(oldRows[0]!.text) : '';
+            }
+
+            preAllocated.push({ lesson, newId, oldText });
+          }
+
+          // Build the transaction batch: all INSERTs and UPDATEs for this review
+          const txStatements = [];
+          for (const { lesson, newId } of preAllocated) {
+            const embeddingStr = `[${lesson.embedding.join(',')}]`;
+            const mcJson = lesson.marketConditions
+              ? JSON.stringify(lesson.marketConditions)
+              : null;
+
+            // INSERT the new lesson (for both ADD and SUPERSEDE)
+            txStatements.push(sql`
+              INSERT INTO lessons (
+                id, text, embedding, tags, category,
+                market_conditions, source_analysis_id, source_date
+              ) VALUES (
+                ${newId},
+                ${lesson.text},
+                ${embeddingStr}::vector,
+                ${lesson.decision.tags},
+                ${lesson.decision.category},
+                ${mcJson},
+                ${lesson.sourceAnalysisId},
+                ${lesson.sourceDate}
+              )
+            `);
+
+            // For SUPERSEDE, also UPDATE the old lesson
+            if (lesson.decision.action === 'supersede' && lesson.decision.supersedes_id != null) {
+              txStatements.push(sql`
+                UPDATE lessons
+                SET status = 'superseded',
+                    superseded_by = ${newId},
+                    superseded_at = NOW()
+                WHERE id = ${lesson.decision.supersedes_id}
+              `);
+            }
+          }
+
+          // Execute all statements atomically
+          await sql.transaction(txStatements);
+
+          // On success, populate the report accumulators
+          for (const { lesson, newId, oldText } of preAllocated) {
+            if (lesson.decision.action === 'add') {
+              added.push({
+                id: newId,
+                text: lesson.text,
+                sourceDate: lesson.sourceDate,
+                tags: lesson.decision.tags,
+                category: lesson.decision.category,
+              });
+            } else if (lesson.decision.action === 'supersede' && lesson.decision.supersedes_id != null) {
+              superseded.push({
+                id: lesson.decision.supersedes_id,
+                oldText: oldText ?? '',
+                supersededBy: newId,
+                reason: lesson.decision.reason,
+              });
+            }
           }
         }
       } catch (err) {
@@ -315,7 +361,7 @@ export default async function handler(
       }
     }
 
-    // Step 4: Build final report
+    // Step 5: Build final report
     const reportData = {
       reviewsProcessed: reviews.length,
       lessonsAdded: added.length,
@@ -327,7 +373,7 @@ export default async function handler(
         superseded,
         skipped,
         errors,
-        unchanged: 0,
+        unchanged: activeCountBefore - superseded.length,
       },
     };
 

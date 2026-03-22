@@ -7,14 +7,15 @@ import { mockRequest, mockResponse } from './helpers';
 // MOCKS — must be declared before handler import
 // ============================================================
 
-const mockSql = vi.fn(async () => []);
+const mockTransaction = vi.fn(async () => undefined);
+const mockSql = Object.assign(vi.fn(async () => []), {
+  transaction: mockTransaction,
+});
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
 }));
 
 vi.mock('../_lib/lessons.js', () => ({
-  insertLesson: vi.fn().mockResolvedValue(42),
-  supersedeLesson: vi.fn().mockResolvedValue(43),
   upsertReport: vi.fn().mockResolvedValue(undefined),
   updateReport: vi.fn().mockResolvedValue(undefined),
   buildMarketConditions: vi.fn().mockReturnValue({ vix: 18, structure: 'IC' }),
@@ -45,7 +46,7 @@ vi.mock('@anthropic-ai/sdk', () => {
 // ============================================================
 
 import handler from '../cron/curate-lessons.js';
-import { insertLesson, supersedeLesson, upsertReport, updateReport } from '../_lib/lessons.js';
+import { upsertReport, updateReport } from '../_lib/lessons.js';
 import { generateEmbedding, findSimilarLessons } from '../_lib/embeddings.js';
 
 // ============================================================
@@ -109,13 +110,13 @@ describe('GET /api/cron/curate-lessons', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSql.mockReset().mockImplementation(async () => []);
+    mockTransaction.mockReset().mockResolvedValue(undefined);
+    // Re-attach transaction after mockReset (mockReset only resets the call function)
+    mockSql.transaction = mockTransaction;
     mockCreate.mockReset();
     process.env.CRON_SECRET = 'test-cron-secret';
     process.env.ANTHROPIC_API_KEY = 'test-key';
-    // Re-apply default mocks (clearAllMocks only clears history, not implementations,
-    // but mockReset above clears implementations too for mockSql/mockCreate)
-    vi.mocked(insertLesson).mockResolvedValue(42);
-    vi.mocked(supersedeLesson).mockResolvedValue(43);
+    // Re-apply default mocks
     vi.mocked(upsertReport).mockResolvedValue(undefined);
     vi.mocked(updateReport).mockResolvedValue(undefined);
     vi.mocked(generateEmbedding).mockResolvedValue(new Array(1536).fill(0.1));
@@ -160,9 +161,13 @@ describe('GET /api/cron/curate-lessons', () => {
   // ── No reviews path ────────────────────────────────────────
 
   it('returns 200 with reviewsProcessed: 0 when no unprocessed reviews', async () => {
-    // First call is the snapshot query (may not happen), second is the reviews query
-    // The SQL tagged template is a function that returns rows — mock returns empty
-    mockSql.mockImplementation(async () => []);
+    // Call 1: active count query, Call 2: reviews query (empty)
+    let callCount = 0;
+    mockSql.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) return [{ count: 12 }]; // active count
+      return []; // reviews query returns empty
+    });
 
     const req = makeAuthedRequest();
     const res = mockResponse();
@@ -177,19 +182,45 @@ describe('GET /api/cron/curate-lessons', () => {
     );
   });
 
+  it('sets unchanged to active lesson count in no-reviews path', async () => {
+    let callCount = 0;
+    mockSql.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) return [{ count: 7 }]; // 7 active lessons
+      return []; // no reviews
+    });
+
+    const req = makeAuthedRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(updateReport).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        report: expect.objectContaining({
+          unchanged: 7,
+        }),
+      }),
+    );
+  });
+
   // ── Full processing — ADD action ───────────────────────────
 
   it('processes a review and adds a lesson via ADD action', async () => {
     const review = makeReview();
 
-    // First SQL call: reviews query returns our review
-    // Second SQL call: snapshot fetch
-    // Third SQL call: fetch old lesson text (won't happen for ADD)
+    // Call 1: active count
+    // Call 2: reviews query
+    // Call 3: snapshot fetch
+    // Call 4: nextval (pre-allocate ID)
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [review]; // reviews query
-      if (callCount === 2) return [{ id: 10, vix: 18, regime_zone: 'GREEN', dow_label: 'Friday', vix_term_signal: 'contango' }]; // snapshot
+      if (callCount === 1) return [{ count: 5 }]; // active count
+      if (callCount === 2) return [review]; // reviews query
+      if (callCount === 3) return [{ id: 10, vix: 18, regime_zone: 'GREEN', dow_label: 'Friday', vix_term_signal: 'contango' }]; // snapshot
+      if (callCount === 4) return [{ id: 42 }]; // nextval
       return [];
     });
 
@@ -207,16 +238,10 @@ describe('GET /api/cron/curate-lessons', () => {
       lessonsSkipped: 0,
     }));
 
-    expect(insertLesson).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: 'VIX above 25 means widen wings by 2 delta',
-        tags: ['vix', 'wing-width'],
-        category: 'sizing',
-        sourceAnalysisId: 100,
-      }),
-    );
+    // Transaction should have been called with the INSERT statement
+    expect(mockTransaction).toHaveBeenCalledOnce();
 
-    // Report should show the addition
+    // Report should show the addition with the pre-allocated ID
     expect(updateReport).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
@@ -228,6 +253,7 @@ describe('GET /api/cron/curate-lessons', () => {
               text: 'VIX above 25 means widen wings by 2 delta',
             }),
           ]),
+          unchanged: 5, // activeCountBefore(5) - superseded(0)
         }),
       }),
     );
@@ -238,12 +264,19 @@ describe('GET /api/cron/curate-lessons', () => {
   it('processes a review and supersedes a lesson via SUPERSEDE action', async () => {
     const review = makeReview();
 
+    // Call 1: active count
+    // Call 2: reviews query
+    // Call 3: snapshot
+    // Call 4: nextval
+    // Call 5: old lesson text fetch
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [review]; // reviews query
-      if (callCount === 2) return [{ id: 10 }]; // snapshot
-      if (callCount === 3) return [{ text: 'Old lesson about VIX' }]; // old lesson text
+      if (callCount === 1) return [{ count: 10 }]; // active count
+      if (callCount === 2) return [review]; // reviews query
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 4) return [{ id: 43 }]; // nextval
+      if (callCount === 5) return [{ text: 'Old lesson about VIX' }]; // old lesson text
       return [];
     });
 
@@ -270,14 +303,8 @@ describe('GET /api/cron/curate-lessons', () => {
       lessonsAdded: 0,
     }));
 
-    expect(supersedeLesson).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: 'VIX above 25 means widen wings by 2 delta',
-        tags: ['vix', 'wing-width'],
-        category: 'sizing',
-      }),
-      5,
-    );
+    // Transaction should have been called (INSERT + UPDATE batched)
+    expect(mockTransaction).toHaveBeenCalledOnce();
 
     expect(updateReport).toHaveBeenCalledWith(
       expect.any(String),
@@ -290,6 +317,7 @@ describe('GET /api/cron/curate-lessons', () => {
               reason: 'More specific than existing lesson',
             }),
           ]),
+          unchanged: 9, // activeCountBefore(10) - superseded(1)
         }),
       }),
     );
@@ -303,8 +331,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [review];
-      if (callCount === 2) return [{ id: 10 }];
+      if (callCount === 1) return [{ count: 5 }]; // active count
+      if (callCount === 2) return [review];
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
       return [];
     });
 
@@ -328,9 +357,8 @@ describe('GET /api/cron/curate-lessons', () => {
       lessonsSuperseded: 0,
     }));
 
-    // No DB write for SKIP
-    expect(insertLesson).not.toHaveBeenCalled();
-    expect(supersedeLesson).not.toHaveBeenCalled();
+    // No transaction for SKIP-only
+    expect(mockTransaction).not.toHaveBeenCalled();
 
     expect(updateReport).toHaveBeenCalledWith(
       expect.any(String),
@@ -356,8 +384,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [review];
-      if (callCount === 2) return [{ id: 10 }];
+      if (callCount === 1) return [{ count: 3 }]; // active count
+      if (callCount === 2) return [review];
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
       return [];
     });
 
@@ -370,8 +399,8 @@ describe('GET /api/cron/curate-lessons', () => {
     expect(res._status).toBe(200);
     // No Claude call should have been made
     expect(mockCreate).not.toHaveBeenCalled();
-    // No DB writes
-    expect(insertLesson).not.toHaveBeenCalled();
+    // No transaction
+    expect(mockTransaction).not.toHaveBeenCalled();
 
     // Error recorded in report
     expect(updateReport).toHaveBeenCalledWith(
@@ -398,8 +427,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [review];
-      if (callCount === 2) return [{ id: 10 }];
+      if (callCount === 1) return [{ count: 0 }]; // active count
+      if (callCount === 2) return [review];
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
       return [];
     });
 
@@ -414,7 +444,7 @@ describe('GET /api/cron/curate-lessons', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(insertLesson).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
 
     expect(updateReport).toHaveBeenCalledWith(
       expect.any(String),
@@ -438,8 +468,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [review];
-      if (callCount === 2) return [{ id: 10 }];
+      if (callCount === 1) return [{ count: 0 }]; // active count
+      if (callCount === 2) return [review];
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
       return [];
     });
 
@@ -457,7 +488,7 @@ describe('GET /api/cron/curate-lessons', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(insertLesson).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
 
     expect(updateReport).toHaveBeenCalledWith(
       expect.any(String),
@@ -475,7 +506,7 @@ describe('GET /api/cron/curate-lessons', () => {
 
   // ── Transaction failure ────────────────────────────────────
 
-  it('records error but continues when DB write fails', async () => {
+  it('records error but continues when transaction fails for a review', async () => {
     const review1 = makeReview({ id: 100 });
     const review2 = makeReview({
       id: 200,
@@ -487,34 +518,47 @@ describe('GET /api/cron/curate-lessons', () => {
       },
     });
 
+    // Call 1: active count
+    // Call 2: reviews query (returns both reviews)
+    // Call 3: snapshot for review1
+    // Call 4: nextval for review1
+    // Call 5: tx INSERT statement build for review1 (passed to transaction)
+    // Call 6: snapshot for review2
+    // Call 7: nextval for review2
+    // Call 8: tx INSERT statement build for review2 (passed to transaction)
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [review1, review2]; // reviews query
-      if (callCount === 2) return [{ id: 10 }]; // snapshot for review1
-      if (callCount === 3) return [{ id: 11 }]; // snapshot for review2
+      if (callCount === 1) return [{ count: 5 }]; // active count
+      if (callCount === 2) return [review1, review2]; // reviews query
+      if (callCount === 3) return [{ id: 10 }]; // snapshot for review1
+      if (callCount === 4) return [{ id: 42 }]; // nextval for review1
+      // Call 5: tx INSERT statement (return value unused)
+      if (callCount === 6) return [{ id: 11 }]; // snapshot for review2
+      if (callCount === 7) return [{ id: 44 }]; // nextval for review2
+      // Call 8: tx INSERT statement (return value unused)
       return [];
     });
 
     mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
 
-    // First insertLesson throws, second succeeds
-    vi.mocked(insertLesson)
+    // First transaction throws, second succeeds
+    mockTransaction
       .mockRejectedValueOnce(new Error('DB connection lost'))
-      .mockResolvedValueOnce(44);
+      .mockResolvedValueOnce(undefined);
 
     const req = makeAuthedRequest();
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Second review should still have been processed
+    // Both reviews should still have been processed
     expect(res._json).toEqual(expect.objectContaining({
       reviewsProcessed: 2,
     }));
 
-    // insertLesson called twice (once per review)
-    expect(insertLesson).toHaveBeenCalledTimes(2);
+    // Transaction called twice (once per review)
+    expect(mockTransaction).toHaveBeenCalledTimes(2);
 
     // Report should have both error and success
     expect(updateReport).toHaveBeenCalledWith(
@@ -529,6 +573,146 @@ describe('GET /api/cron/curate-lessons', () => {
           added: expect.arrayContaining([
             expect.objectContaining({ id: 44 }),
           ]),
+        }),
+      }),
+    );
+  });
+
+  // ── Per-review atomicity ───────────────────────────────────
+
+  it('rolls back all lesson writes for a review when transaction fails', async () => {
+    // A review with two lessons — if the transaction fails, neither should appear in added
+    const review = makeReview({
+      id: 100,
+      full_response: {
+        review: {
+          lessonsLearned: [
+            'VIX above 25 means widen wings by 2 delta',
+            'Check gamma exposure before 2pm entries',
+          ],
+          wasCorrect: true,
+        },
+      },
+    });
+
+    let callCount = 0;
+    mockSql.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) return [{ count: 5 }]; // active count
+      if (callCount === 2) return [review]; // reviews query
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 4) return [{ id: 42 }]; // nextval for lesson 1
+      if (callCount === 5) return [{ id: 43 }]; // nextval for lesson 2
+      return [];
+    });
+
+    // Both lessons get ADD decisions
+    mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
+
+    // Transaction fails — all writes for this review should be rolled back
+    mockTransaction.mockRejectedValueOnce(new Error('Constraint violation'));
+
+    const req = makeAuthedRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+
+    // No lessons should have been added (transaction rolled back)
+    expect(res._json).toEqual(expect.objectContaining({
+      lessonsAdded: 0,
+      errors: 1,
+    }));
+
+    // The report should have zero added and contain the error
+    expect(updateReport).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        lessonsAdded: 0,
+        report: expect.objectContaining({
+          added: [],
+          errors: expect.arrayContaining([
+            expect.objectContaining({
+              error: 'Constraint violation',
+              sourceAnalysisId: 100,
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  // ── Unchanged count in full processing ─────────────────────
+
+  it('computes unchanged as activeCountBefore minus lessonsSuperseded', async () => {
+    const review = makeReview();
+
+    let callCount = 0;
+    mockSql.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) return [{ count: 20 }]; // 20 active lessons before
+      if (callCount === 2) return [review]; // reviews query
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 4) return [{ id: 50 }]; // nextval
+      if (callCount === 5) return [{ text: 'Old lesson' }]; // old lesson text
+      return [];
+    });
+
+    const supersedeDecision = {
+      action: 'supersede',
+      reason: 'More detailed',
+      supersedes_id: 5,
+      tags: ['vix'],
+      category: 'sizing',
+    };
+    mockCreate.mockResolvedValue(makeCurationResponse(supersedeDecision));
+
+    vi.mocked(findSimilarLessons).mockResolvedValue([
+      { id: 5, text: 'Old lesson', tags: ['vix'], category: 'sizing', sourceDate: '2026-03-10' },
+    ]);
+
+    const req = makeAuthedRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // unchanged = 20 (before) - 1 (superseded) = 19
+    expect(updateReport).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        report: expect.objectContaining({
+          unchanged: 19,
+        }),
+      }),
+    );
+  });
+
+  it('sets unchanged equal to activeCountBefore when only ADD actions occur', async () => {
+    const review = makeReview();
+
+    let callCount = 0;
+    mockSql.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) return [{ count: 15 }]; // 15 active lessons
+      if (callCount === 2) return [review];
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 4) return [{ id: 42 }]; // nextval
+      return [];
+    });
+
+    mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
+
+    const req = makeAuthedRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // unchanged = 15 - 0 superseded = 15
+    expect(updateReport).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        report: expect.objectContaining({
+          unchanged: 15,
         }),
       }),
     );
