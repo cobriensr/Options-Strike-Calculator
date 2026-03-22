@@ -41,3 +41,6 @@ __snapshots__/
 .claude/
 .vercel
 .env*.local
+
+# Serena
+.serena/
