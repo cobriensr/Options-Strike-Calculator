@@ -269,7 +269,7 @@ const MIGRATIONS: Migration[] = [
           category            TEXT CHECK (category IN (
                                 'regime', 'flow', 'gamma', 'management', 'entry', 'sizing'
                               )),
-          embedding           vector(3072) NOT NULL,
+          embedding           vector(2000) NOT NULL,
           created_at          TIMESTAMPTZ DEFAULT NOW(),
           superseded_at       TIMESTAMPTZ,
           UNIQUE (source_analysis_id, text)
@@ -278,7 +278,7 @@ const MIGRATIONS: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_lessons_status ON lessons (status)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_lessons_source ON lessons (source_analysis_id)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_lessons_source_date ON lessons (source_date)`;
-      await sql`CREATE INDEX IF NOT EXISTS idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops)`;
+      // HNSW index created in migration #3 after column is resized to vector(2000)
 
       await sql`
         CREATE TABLE IF NOT EXISTS lesson_reports (

@@ -361,7 +361,7 @@ describe('db.ts', () => {
       mockSql.mockResolvedValueOnce([]);
       // SELECT returns migration #1 as already applied
       mockSql.mockResolvedValueOnce([{ id: 1 }]);
-      // Migration #2: CREATE EXTENSION + CREATE TABLE lessons + 4 indexes + CREATE TABLE lesson_reports + INSERT = 7+1
+      // Migration #2: CREATE EXTENSION + CREATE TABLE lessons + 3 indexes + CREATE TABLE lesson_reports + INSERT = 6+1
       // Migration #3: DROP INDEX + ALTER TABLE + CREATE INDEX + INSERT = 3+1
       mockSql.mockResolvedValue([]);
 
@@ -371,8 +371,8 @@ describe('db.ts', () => {
         '#2: Create lessons and lesson_reports tables with pgvector',
         '#3: Reduce lessons embedding from vector(3072) to vector(2000) for HNSW compatibility',
       ]);
-      // 2 setup + 7 migration #2 + 1 insert + 3 migration #3 + 1 insert = 14
-      expect(mockSql).toHaveBeenCalledTimes(14);
+      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert = 13
+      expect(mockSql).toHaveBeenCalledTimes(13);
     });
 
     it('propagates errors from migration SQL', async () => {
