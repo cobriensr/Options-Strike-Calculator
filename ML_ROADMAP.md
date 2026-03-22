@@ -20,6 +20,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 **Model type:** Gradient boosted classifier (XGBoost or LightGBM)
 
 **Training features (from market snapshots):**
+
 - VIX, VIX1D, VIX9D, VVIX
 - VIX1D/VIX ratio, VIX/VIX9D ratio
 - Aggregate GEX (OI and Volume)
@@ -42,6 +43,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 **Model type:** Gradient boosted regressor or neural network
 
 **Training features:**
+
 - Morning snapshot features (same as above)
 - VIX1D/VIX ratio (key predictor of intraday vs multi-day vol expectations)
 - Aggregate GEX regime (positive/negative/deeply negative)
@@ -61,6 +63,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 **Model type:** Cox proportional hazards or random survival forest
 
 **Training features:**
+
 - Entry snapshot features
 - Structure selected (IC, CCS, PCS)
 - Charm regime (supportive, decaying, all-negative)
@@ -69,11 +72,13 @@ This document outlines planned ML applications as sufficient labeled data is acc
 - Day of week, VIX regime
 
 **Events:**
+
 - Time to 50% profit
 - Time to first stop condition trigger
 - Time to optimal exit (determined retrospectively from review data)
 
 **Use case:** Given today's entry conditions and structure, predict the optimal hold duration. Preliminary observations from the first two weeks of trading suggest patterns:
+
 - High-conviction CCS days hit 50% profit in 2-3 hours
 - All-negative charm days should exit by noon ET
 - Deeply negative GEX days need exits by 11:30 AM ET
@@ -103,12 +108,12 @@ Example hypothesis: there may be a cluster where VIX is moderate (18-22), GEX is
 
 The existing database schema already captures the required training data:
 
-| Table | Purpose | Key Fields |
-|-------|---------|------------|
-| `market_snapshots` | Feature vectors | 50+ calculator state fields per analysis run |
-| `analyses` | Model outputs + labels | Structure, confidence, delta, chart signals, full JSON response |
-| `outcomes` | Ground truth | Settlement, day range, close vs open |
-| `positions` | Position-specific data | Strikes, spreads, P&L, Greeks |
+| Table              | Purpose                | Key Fields                                                      |
+| ------------------ | ---------------------- | --------------------------------------------------------------- |
+| `market_snapshots` | Feature vectors        | 50+ calculator state fields per analysis run                    |
+| `analyses`         | Model outputs + labels | Structure, confidence, delta, chart signals, full JSON response |
+| `outcomes`         | Ground truth           | Settlement, day range, close vs open                            |
+| `positions`        | Position-specific data | Strikes, spreads, P&L, Greeks                                   |
 
 All tables are linked by date, enabling joins across features, predictions, and outcomes.
 
@@ -116,12 +121,12 @@ All tables are linked by date, enabling joins across features, predictions, and 
 
 ## Implementation Timeline
 
-| Phase | Model | Prerequisite | Status |
-|-------|-------|-------------|--------|
-| **Phase 1** | Intraday Range Regression | 30 years of historical data (available) | Ready to build |
-| **Phase 2** | Structure Classification | 100+ labeled trading days | Accumulating data |
-| **Phase 3** | Optimal Exit Timing | 50-100 days with timestamped exits | Accumulating data |
-| **Phase 4** | Day Type Clustering | 200+ trading days | Accumulating data |
+| Phase       | Model                     | Prerequisite                            | Status            |
+| ----------- | ------------------------- | --------------------------------------- | ----------------- |
+| **Phase 1** | Intraday Range Regression | 30 years of historical data (available) | Ready to build    |
+| **Phase 2** | Structure Classification  | 100+ labeled trading days               | Accumulating data |
+| **Phase 3** | Optimal Exit Timing       | 50-100 days with timestamped exits      | Accumulating data |
+| **Phase 4** | Day Type Clustering       | 200+ trading days                       | Accumulating data |
 
 Phase 1 can begin immediately using the existing historical dataset. Phases 2-4 require continued daily trading with the current rule-based system, which is generating labeled training data with every session.
 

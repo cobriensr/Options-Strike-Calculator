@@ -1011,19 +1011,19 @@ src/__tests__/
   data/           2 files — static data modules
 ```
 
-| File | Focus |
-| --- | --- |
-| `utils/calculator.test.ts` | 150+ tests: BS pricing, Greeks (delta/gamma/theta/vega), strikes, kurtosis, stressed sigma |
-| `components/ChartAnalysis.test.tsx` | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling |
-| `hooks/useComputedSignals.test.ts` | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering |
-| `utils/skewAndIC.test.ts` | 63 tests: convex skew, IC legs, per-side PoP, breakevens |
-| `utils/hedge.test.tsx` | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario |
-| `utils/settlement.test.ts` | 16 tests: survived/breached cases, cushion calculations, settledSafe |
-| `utils/pin-risk.test.ts` | 17 tests: OI aggregation, top-N sorting, side classification, formatting |
-| `hooks/useChartAnalysis.test.ts` | 13 tests: fetch, retry, abort, timeout, mode completion, elapsed timer |
-| `hooks/useImageUpload.test.ts` | 12 tests: add/remove/clear, drag-drop, paste, label management, 8-image limit |
-| `utils/analysis.test.ts` | 10 tests: buildPreviousRecommendation with all field combinations |
-| `utils/classifiers.test.ts` | 14 tests: opening range classification, boundary values |
+| File                                | Focus                                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------------ |
+| `utils/calculator.test.ts`          | 150+ tests: BS pricing, Greeks (delta/gamma/theta/vega), strikes, kurtosis, stressed sigma |
+| `components/ChartAnalysis.test.tsx` | 64 tests: image management, confirmation, cancel, analyze flow, modes, error handling      |
+| `hooks/useComputedSignals.test.ts`  | 70 tests: regime, DOW, range, opening range, term shape, RV/IV, directional clustering     |
+| `utils/skewAndIC.test.ts`           | 63 tests: convex skew, IC legs, per-side PoP, breakevens                                   |
+| `utils/hedge.test.tsx`              | 32 tests: hedge sizing, scenarios, DTE pricing, breakevens, real-world scenario            |
+| `utils/settlement.test.ts`          | 16 tests: survived/breached cases, cushion calculations, settledSafe                       |
+| `utils/pin-risk.test.ts`            | 17 tests: OI aggregation, top-N sorting, side classification, formatting                   |
+| `hooks/useChartAnalysis.test.ts`    | 13 tests: fetch, retry, abort, timeout, mode completion, elapsed timer                     |
+| `hooks/useImageUpload.test.ts`      | 12 tests: add/remove/clear, drag-drop, paste, label management, 8-image limit              |
+| `utils/analysis.test.ts`            | 10 tests: buildPreviousRecommendation with all field combinations                          |
+| `utils/classifiers.test.ts`         | 14 tests: opening range classification, boundary values                                    |
 
 ### E2E Tests (Playwright — Chromium, Firefox, WebKit)
 
