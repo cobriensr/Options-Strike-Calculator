@@ -106,6 +106,8 @@ interface PreparedLesson {
 // HANDLER
 // ============================================================
 
+export const config = { maxDuration: 780 };
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Method check — Vercel crons use GET
   if (req.method !== 'GET') {
@@ -297,6 +299,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         );
 
         if (!decision) {
+          progress({
+            event: 'curation_failed',
+            reviewIndex,
+            lessonIndex: curationIndex,
+            error: 'Malformed Claude response',
+          });
           errors.push({
             text: lessonText,
             error: 'Malformed Claude response',
@@ -581,11 +589,13 @@ Respond with JSON:
       !parsed.action ||
       !['add', 'supersede', 'skip'].includes(parsed.action)
     ) {
+      console.error('Invalid curation action:', rawText.slice(0, 200));
       return null;
     }
 
     return parsed;
   } catch {
+    console.error('Failed to parse curation JSON:', rawText.slice(0, 200));
     return null;
   }
 }
