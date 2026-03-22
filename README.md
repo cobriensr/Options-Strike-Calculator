@@ -28,6 +28,11 @@ Live at: [theta-options.com](https://theta-options.com)
     - [What Claude Returns](#what-claude-returns)
     - [UI Features](#ui-features)
     - [Technical Details](#technical-details)
+  - [Lessons Learned System](#lessons-learned-system)
+    - [How It Works](#how-it-works)
+    - [Friday Cron Pipeline](#friday-cron-pipeline)
+    - [Safety Mechanisms](#safety-mechanisms)
+    - [Backfill](#backfill)
   - [Live Option Chain Verification](#live-option-chain-verification)
   - [Backtesting System](#backtesting-system)
   - [Live Position Tracking](#live-position-tracking)
@@ -270,6 +275,58 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ), 
 
 ---
 
+## Lessons Learned System
+
+A self-improving closed-loop system where Claude's end-of-day review analyses produce lessons that are automatically curated, deduplicated, and injected back into future analyses — making each trading session's recommendations smarter than the last.
+
+### How It Works
+
+1. **Review mode produces lessons.** When Claude runs an end-of-day review, it generates `lessonsLearned[]` — actionable insights about what worked, what was missed, and what to do differently next time.
+
+2. **Friday cron curates lessons.** Every Friday at 10:00 PM ET, a Vercel cron job (`/api/cron/curate-lessons`) extracts lessons from the week's reviews and deduplicates them against the existing compendium using OpenAI `text-embedding-3-large` vector similarity + Claude Opus judgment.
+
+3. **Lessons injected at analysis time.** When `/api/analyze` is called, all active lessons are fetched from the `lessons` table and injected into Claude's system prompt as a `<lessons_learned>` block between `</structure_selection_rules>` and `<data_handling>`. Claude selectively references applicable lessons based on current market conditions.
+
+### Friday Cron Pipeline
+
+| Step | Description |
+| ---- | ----------- |
+| 0 | Bootstrap a `lesson_reports` row (upsert for crash safety) |
+| 1 | Query unprocessed review analyses from the past 7 days |
+| 2 | **Phase A** (outside transaction): For each lesson — generate embedding via OpenAI, find 5 most similar existing lessons by cosine distance, call Claude Opus to decide ADD / SUPERSEDE / SKIP |
+| 3 | **Phase B** (inside transaction): Batch all DB writes for a review atomically via `sql.transaction()`. Pre-allocate IDs via `nextval` for SUPERSEDE operations. |
+| 4 | Build weekly changelog report and save to `lesson_reports` |
+
+Claude's curation rules enforce safety: it may NEVER edit existing lesson text, NEVER merge two lessons into one, and must ADD rather than SUPERSEDE when in doubt.
+
+**Schedule:** `0 3 * * 6` (Saturday 3:00 AM UTC = Friday 10:00 PM ET)
+
+**Endpoint:** `GET /api/cron/curate-lessons` (auth: `Authorization: Bearer <CRON_SECRET>`)
+
+### Safety Mechanisms
+
+- **Append-only** — Lesson text is never modified after insertion
+- **Provenance chain** — Every lesson traces back to a specific review analysis via `source_analysis_id` (ON DELETE RESTRICT)
+- **Vector-assisted dedup** — Pre-filters to 5 nearest lessons before Claude judges, reducing hallucination risk
+- **Conservative curation prompt** — "When in doubt, ADD rather than SUPERSEDE"
+- **Per-review atomicity** — All lesson writes for a single review succeed or fail together
+- **Weekly changelog** — `lesson_reports` table stores full add/supersede/skip details with reasoning
+- **Manual override** — Flip lesson status directly in Neon UI (`active` → `archived` or `superseded` → `active`)
+- **CHECK constraints** — `status` and `category` columns are database-constrained to valid values
+
+### Backfill
+
+To seed the compendium from all historical review analyses (not just the last 7 days):
+
+```bash
+curl -X GET "https://theta-options.com/api/cron/curate-lessons?backfill=true" \
+  -H "Authorization: Bearer YOUR_CRON_SECRET"
+```
+
+This processes every review-mode analysis in the database. One-time operation — after that, the weekly cron handles new reviews automatically.
+
+---
+
 ## Live Option Chain Verification
 
 Compares theoretical calculator strikes to actual Schwab option chain data:
@@ -374,7 +431,7 @@ This lets Claude make position-aware recommendations — e.g., "You already have
 
 ## Data Collection & ML Pipeline
 
-Four Postgres tables automatically collect data for future ML training:
+Six Postgres tables automatically collect data for future ML training:
 
 ### Tables
 
@@ -434,6 +491,34 @@ Uniqueness: `UNIQUE(date)` with `ON CONFLICT DO UPDATE`.
 | total_credit, current_value, unrealized_pnl | P&L tracking                                    |
 
 Uniqueness: `UNIQUE(date, fetch_time)` with `ON CONFLICT DO UPDATE`.
+
+**`lessons`** — Self-improving compendium of validated trading insights (pgvector):
+
+| Column             | Purpose                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------ |
+| text               | The lesson itself (immutable after insert)                                                 |
+| status             | `active`, `superseded`, or `archived` (CHECK-constrained)                                  |
+| superseded_by      | FK to the newer lesson that replaced this one                                              |
+| source_analysis_id | FK to the review-mode analysis that produced this lesson (ON DELETE RESTRICT)               |
+| source_date        | Trading date the lesson was learned from                                                    |
+| market_conditions  | JSONB snapshot: VIX, GEX regime, structure, day of week, wasCorrect, confidence            |
+| tags               | Freeform tags for Claude scanning (e.g. `['gex', 'charm', 'friday']`)                     |
+| category           | One of: `regime`, `flow`, `gamma`, `management`, `entry`, `sizing` (CHECK-constrained)    |
+| embedding          | `vector(3072)` via OpenAI `text-embedding-3-large` — HNSW-indexed for cosine similarity   |
+
+Uniqueness: `UNIQUE(source_analysis_id, text)` — prevents duplicate lessons on retry.
+
+**`lesson_reports`** — Weekly curation changelog:
+
+| Column            | Purpose                                                   |
+| ----------------- | --------------------------------------------------------- |
+| week_ending       | Friday date (UNIQUE)                                      |
+| reviews_processed | Count of review analyses processed                        |
+| lessons_added     | New lessons inserted                                      |
+| lessons_superseded | Existing lessons replaced by more specific versions       |
+| lessons_skipped   | Duplicate candidates that were not inserted               |
+| report            | Full JSONB changelog (added, superseded, skipped, errors) |
+| error             | Error message if the cron failed                          |
 
 ### Data Flow
 
@@ -675,6 +760,8 @@ See [.env.example](.env.example) for a copy-paste template with descriptions.
 | `DATABASE_URL`             | Auto-set by Vercel (Neon)    | Postgres connection string        |
 | `SENTRY_DSN`               | Auto-set by Vercel (Sentry)  | Sentry error tracking DSN         |
 | `FRED_API_KEY`             | fred.stlouisfed.org          | Economic calendar data (optional) |
+| `OPENAI_API_KEY`           | platform.openai.com          | Embeddings for lesson dedup       |
+| `CRON_SECRET`              | Auto-set by Vercel           | Cron job auth (auto in prod)      |
 | `FINNHUB_API_KEY`          | finnhub.io                   | Mega-cap earnings data (optional) |
 
 ### Database Setup
@@ -708,7 +795,9 @@ npx tsx scripts/backfill-outcomes.ts
 │   ├── _lib/
 │   │   ├── schwab.ts                  # Schwab OAuth token management (Upstash Redis)
 │   │   ├── api-helpers.ts             # Shared fetch, cache, owner-gate, rate limiting
-│   │   ├── db.ts                      # Neon Postgres: schema, snapshots, analyses, outcomes, positions
+│   │   ├── db.ts                      # Neon Postgres: schema, snapshots, analyses, outcomes, positions, lessons
+│   │   ├── embeddings.ts              # OpenAI text-embedding-3-large + vector similarity search
+│   │   ├── lessons.ts                 # Lessons CRUD: getActiveLessons, insertLesson, supersedeLesson, reports
 │   │   ├── logger.ts                  # Structured JSON logger (pino)
 │   │   ├── sentry.ts                  # Sentry server-side init + isolation scope helpers
 │   │   └── validation.ts             # Zod schemas for API request bodies
@@ -719,7 +808,9 @@ npx tsx scripts/backfill-outcomes.ts
 │   │   ├── init.ts                    # POST /api/journal/init → create tables + run migrations
 │   │   ├── migrate.ts                 # POST /api/journal/migrate → add new columns (idempotent)
 │   │   └── status.ts                  # GET /api/journal/status → DB connection diagnostics
-│   ├── analyze.ts                     # POST /api/analyze → Claude Opus 4.6 chart analysis
+│   ├── cron/
+│   │   └── curate-lessons.ts          # GET /api/cron/curate-lessons → Friday lesson curation cron
+│   ├── analyze.ts                     # POST /api/analyze → Claude Opus 4.6 chart analysis (+ lessons injection)
 │   ├── analyses.ts                    # GET /api/analyses → browse past analyses (public)
 │   ├── chain.ts                       # GET /api/chain → live option chain with per-strike deltas
 │   ├── events.ts                      # GET /api/events → FRED economic calendar
