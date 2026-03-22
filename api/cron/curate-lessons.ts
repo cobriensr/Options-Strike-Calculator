@@ -330,7 +330,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             unknown
           >,
           sourceAnalysisId: review.id as number,
-          sourceDate: String(review.date),
+          sourceDate: String(review.date).split('T')[0]!,
         });
       }
 
