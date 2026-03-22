@@ -14,6 +14,7 @@ import { useState } from 'react';
 import type { IVMode, AmPm, Timezone } from '../types';
 import { DEFAULTS, IV_MODES } from '../constants';
 import { useDebounced } from './useDebounced';
+import { getCTTime } from '../utils/timezone';
 
 export function useAppState() {
   // Theme — persist preference in localStorage
@@ -49,10 +50,24 @@ export function useAppState() {
   );
   const [directIVInput, setDirectIVInput] = useState('');
 
-  // Time state
-  const [timeHour, setTimeHour] = useState('10');
-  const [timeMinute, setTimeMinute] = useState('00');
-  const [timeAmPm, setTimeAmPm] = useState<AmPm>('AM');
+  // Time state — initialized to current CT time so that useAutoFill's
+  // deferred time-setting (which checks for the '10'/'00' sentinel) never
+  // fires. Without this, market-data arrival (~1 s after load) triggers
+  // React DOM writes to the <select> elements inside the same SectionBox
+  // as the date input, which causes Firefox Android to close the native
+  // date picker while it is open.
+  const [timeHour, setTimeHour] = useState(() => {
+    const { hour } = getCTTime(new Date());
+    const h = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
+    return String(h);
+  });
+  const [timeMinute, setTimeMinute] = useState(() => {
+    const { minute } = getCTTime(new Date());
+    return String(Math.floor(minute / 5) * 5).padStart(2, '0');
+  });
+  const [timeAmPm, setTimeAmPm] = useState<AmPm>(() =>
+    getCTTime(new Date()).hour >= 12 ? 'PM' : 'AM',
+  );
   const [timezone, setTimezone] = useState<Timezone>('CT');
 
   // IC & skew state

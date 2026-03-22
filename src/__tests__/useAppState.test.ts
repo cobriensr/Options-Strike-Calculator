@@ -7,26 +7,35 @@ describe('useAppState', () => {
   // ── Default values ──
 
   it('returns correct default values', () => {
-    const { result } = renderHook(() => useAppState());
-    const s = result.current;
+    // Fix time to 2025-01-15 15:30 UTC = 9:30 AM CST so the CT-based
+    // time initialisation in useAppState is deterministic.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-15T15:30:00Z'));
+    try {
+      const { result } = renderHook(() => useAppState());
+      const s = result.current;
 
-    expect(s.darkMode).toBe(true);
-    expect(s.spotPrice).toBe('572');
-    expect(s.spxDirect).toBe('5720');
-    expect(s.spxRatio).toBe(10);
-    expect(s.ivMode).toBe(IV_MODES.VIX);
-    expect(s.vixInput).toBe('19');
-    expect(s.multiplier).toBe(String(DEFAULTS.IV_PREMIUM_FACTOR));
-    expect(s.directIVInput).toBe('');
-    expect(s.timeHour).toBe('10');
-    expect(s.timeMinute).toBe('00');
-    expect(s.timeAmPm).toBe('AM');
-    expect(s.timezone).toBe('CT');
-    expect(s.wingWidth).toBe(20);
-    expect(s.showIC).toBe(true);
-    expect(s.contracts).toBe(20);
-    expect(s.skewPct).toBe(3);
-    expect(s.clusterMult).toBe(1);
+      expect(s.darkMode).toBe(true);
+      expect(s.spotPrice).toBe('572');
+      expect(s.spxDirect).toBe('5720');
+      expect(s.spxRatio).toBe(10);
+      expect(s.ivMode).toBe(IV_MODES.VIX);
+      expect(s.vixInput).toBe('19');
+      expect(s.multiplier).toBe(String(DEFAULTS.IV_PREMIUM_FACTOR));
+      expect(s.directIVInput).toBe('');
+      // 9:30 AM CST → hour=9, minute=30, AM
+      expect(s.timeHour).toBe('9');
+      expect(s.timeMinute).toBe('30');
+      expect(s.timeAmPm).toBe('AM');
+      expect(s.timezone).toBe('CT');
+      expect(s.wingWidth).toBe(20);
+      expect(s.showIC).toBe(true);
+      expect(s.contracts).toBe(20);
+      expect(s.skewPct).toBe(3);
+      expect(s.clusterMult).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('debounced values start matching initial state', () => {
