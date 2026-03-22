@@ -44,3 +44,9 @@ __snapshots__/
 
 # Serena
 .serena/
+
+# Superpowers
+.docs/
+.docs/superpowers/
+.docs/superpowers/plans
+.docs/superpowers/specs

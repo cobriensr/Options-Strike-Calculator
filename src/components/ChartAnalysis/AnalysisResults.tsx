@@ -184,6 +184,7 @@ export default function AnalysisResults({
               ['periscope', 'Periscope'],
               ['netCharm', 'Net Charm'],
               ['aggregateGex', 'Aggregate GEX'],
+              ['periscopeCharm', 'Periscope Charm'],
             ] as const
           ).map(([key, label]) => {
             const sig = analysis.chartConfidence?.[key];

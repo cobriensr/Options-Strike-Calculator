@@ -231,6 +231,7 @@ export const THINKING_MESSAGES = [
   'Evaluating gamma exposure...',
   'Checking charm decay profile...',
   'Reading aggregate GEX regime...',
+  'Confirming charm with Periscope...',
   'Mapping strikes to gamma zones...',
   'Building entry plan...',
   'Assessing hedge options...',

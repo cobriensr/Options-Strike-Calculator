@@ -65,16 +65,16 @@ describe('useImageUpload', () => {
     expect(result.current.images[1]!.label).toBe('Net Flow (SPY)');
   });
 
-  it('respects the 8 image limit', () => {
+  it('respects the 9 image limit', () => {
     const { result } = renderHook(() => useImageUpload());
 
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 11; i++) {
       act(() => {
         result.current.addImage(makeFile(`img${i}.png`));
       });
     }
 
-    expect(result.current.images).toHaveLength(8);
+    expect(result.current.images).toHaveLength(9);
   });
 
   // ── removeImage ──

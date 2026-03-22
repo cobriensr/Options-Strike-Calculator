@@ -70,6 +70,7 @@ export interface AnalysisResult {
     periscope?: ChartSignal;
     netCharm?: ChartSignal;
     aggregateGex?: ChartSignal;
+    periscopeCharm?: ChartSignal;
   };
   observations: string[];
   strikeGuidance?: {
@@ -124,6 +125,7 @@ export const CHART_LABELS = [
   'Periscope (Gamma)',
   'Net Charm (SPX)',
   'Aggregate GEX (SPX)',
+  'Periscope Charm (SPX)',
   'Other',
 ] as const;
 
