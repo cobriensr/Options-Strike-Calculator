@@ -108,7 +108,7 @@ vi.mock('../_lib/validation.js', () => ({
 }));
 
 // --- Anthropic SDK mock ---
-// Cron handler uses `anthropic.messages.create()`
+// Cron handler uses `anthropic.messages.stream().finalMessage()`
 // Analyze handler uses `anthropic.messages.stream().finalMessage()`
 const mockCreate = vi.fn();
 const mockFinalMessage = vi.fn();
@@ -308,7 +308,7 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
       return [];
     });
 
-    mockCreate.mockResolvedValue(makeCurationResponse());
+    mockFinalMessage.mockResolvedValue(makeCurationResponse());
 
     const req = mockRequest({
       method: 'GET',
@@ -317,9 +317,12 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
     const res = mockResponse();
     await cronHandler(req, res);
 
-    // Verify the handler reports the lesson was added
+    // Verify the handler reports the lesson was added via NDJSON stream
     expect(res._status).toBe(200);
-    expect(res._json).toEqual(
+    const completeEvent = res._chunks
+      .map((c: string) => JSON.parse(c.trim()) as Record<string, unknown>)
+      .find((e: Record<string, unknown>) => e.event === 'complete');
+    expect(completeEvent).toEqual(
       expect.objectContaining({
         reviewsProcessed: 1,
         lessonsAdded: 1,
@@ -426,7 +429,7 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
       return [];
     });
 
-    mockCreate.mockResolvedValue(makeCurationResponse());
+    mockFinalMessage.mockResolvedValue(makeCurationResponse());
 
     const cronReq = mockRequest({
       method: 'GET',

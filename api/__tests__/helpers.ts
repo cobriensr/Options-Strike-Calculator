@@ -25,6 +25,7 @@ export function mockResponse(): VercelResponse & {
   _redirectStatus: number;
   _body: string;
   _contentType: string;
+  _chunks: string[];
 } {
   const res = {
     _status: 200,
@@ -34,6 +35,7 @@ export function mockResponse(): VercelResponse & {
     _redirectStatus: 0,
     _body: '',
     _contentType: '',
+    _chunks: [] as string[],
     status(code: number) {
       res._status = code;
       return res;
@@ -44,6 +46,13 @@ export function mockResponse(): VercelResponse & {
     },
     send(body: string) {
       res._body = body;
+      return res;
+    },
+    write(chunk: string) {
+      res._chunks.push(chunk);
+      return true;
+    },
+    end() {
       return res;
     },
     setHeader(key: string, value: string) {

@@ -106,8 +106,6 @@ interface PreparedLesson {
 // HANDLER
 // ============================================================
 
-export const config = { maxDuration: 780 };
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Method check — Vercel crons use GET
   if (req.method !== 'GET') {
@@ -245,7 +243,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         })),
       );
 
-      const embeddingSuccessCount = embeddingResults.filter(r => r.embedding).length;
+      const embeddingSuccessCount = embeddingResults.filter(
+        (r) => r.embedding,
+      ).length;
       progress({
         event: 'embeddings_done',
         reviewIndex,

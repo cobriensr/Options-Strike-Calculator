@@ -35,9 +35,13 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 const mockCreate = vi.fn();
+const mockStream = vi.fn();
 vi.mock('@anthropic-ai/sdk', () => {
   class MockAnthropic {
-    messages = { create: mockCreate };
+    messages = {
+      create: mockCreate,
+      stream: mockStream,
+    };
   }
   return { default: MockAnthropic };
 });
@@ -94,6 +98,22 @@ function makeAddDecision(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+/** Configure mockStream to resolve with the given response from finalMessage() */
+function mockStreamResponse(response: Record<string, unknown>) {
+  mockStream.mockReturnValue({
+    finalMessage: vi.fn().mockResolvedValue(response),
+  });
+}
+
+/** Parse NDJSON chunks and return the 'complete' event */
+function getCompleteEvent(res: ReturnType<typeof mockResponse>) {
+  for (const chunk of res._chunks) {
+    const parsed = JSON.parse(chunk.trim()) as Record<string, unknown>;
+    if (parsed.event === 'complete') return parsed;
+  }
+  return null;
+}
+
 function makeAuthedRequest(query: Record<string, string> = {}) {
   return mockRequest({
     method: 'GET',
@@ -114,6 +134,7 @@ describe('GET /api/cron/curate-lessons', () => {
     // Re-attach transaction after mockReset (mockReset only resets the call function)
     mockSql.transaction = mockTransaction;
     mockCreate.mockReset();
+    mockStream.mockReset();
     process.env.CRON_SECRET = 'test-cron-secret';
     process.env.ANTHROPIC_API_KEY = 'test-key';
     // Re-apply default mocks
@@ -219,14 +240,14 @@ describe('GET /api/cron/curate-lessons', () => {
       return [];
     });
 
-    mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
+    mockStreamResponse(makeCurationResponse(makeAddDecision()));
 
     const req = makeAuthedRequest({ backfill: 'true' });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual(
+    expect(getCompleteEvent(res)).toEqual(
       expect.objectContaining({ reviewsProcessed: 1, lessonsAdded: 1 }),
     );
   });
@@ -259,14 +280,14 @@ describe('GET /api/cron/curate-lessons', () => {
       return [];
     });
 
-    mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
+    mockStreamResponse(makeCurationResponse(makeAddDecision()));
 
     const req = makeAuthedRequest();
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual(
+    expect(getCompleteEvent(res)).toEqual(
       expect.objectContaining({
         reviewsProcessed: 1,
         lessonsAdded: 1,
@@ -324,7 +345,7 @@ describe('GET /api/cron/curate-lessons', () => {
       tags: ['vix', 'wing-width'],
       category: 'sizing',
     };
-    mockCreate.mockResolvedValue(makeCurationResponse(supersedeDecision));
+    mockStreamResponse(makeCurationResponse(supersedeDecision));
 
     vi.mocked(findSimilarLessons).mockResolvedValue([
       {
@@ -341,7 +362,7 @@ describe('GET /api/cron/curate-lessons', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual(
+    expect(getCompleteEvent(res)).toEqual(
       expect.objectContaining({
         lessonsSuperseded: 1,
         lessonsAdded: 0,
@@ -389,14 +410,14 @@ describe('GET /api/cron/curate-lessons', () => {
       tags: ['vix'],
       category: 'sizing',
     };
-    mockCreate.mockResolvedValue(makeCurationResponse(skipDecision));
+    mockStreamResponse(makeCurationResponse(skipDecision));
 
     const req = makeAuthedRequest();
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual(
+    expect(getCompleteEvent(res)).toEqual(
       expect.objectContaining({
         lessonsSkipped: 1,
         lessonsAdded: 0,
@@ -445,7 +466,7 @@ describe('GET /api/cron/curate-lessons', () => {
 
     expect(res._status).toBe(200);
     // No Claude call should have been made
-    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockStream).not.toHaveBeenCalled();
     // No transaction
     expect(mockTransaction).not.toHaveBeenCalled();
 
@@ -481,7 +502,7 @@ describe('GET /api/cron/curate-lessons', () => {
     });
 
     // Return non-JSON garbage
-    mockCreate.mockResolvedValue({
+    mockStreamResponse({
       content: [{ type: 'text', text: 'This is not valid JSON at all' }],
       usage: { input_tokens: 100, output_tokens: 50 },
     });
@@ -522,7 +543,7 @@ describe('GET /api/cron/curate-lessons', () => {
     });
 
     // Return valid JSON but invalid action
-    mockCreate.mockResolvedValue(
+    mockStreamResponse(
       makeCurationResponse({
         action: 'merge', // invalid
         reason: 'Merging lessons',
@@ -589,7 +610,7 @@ describe('GET /api/cron/curate-lessons', () => {
       return [];
     });
 
-    mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
+    mockStreamResponse(makeCurationResponse(makeAddDecision()));
 
     // First transaction throws, second succeeds
     mockTransaction
@@ -602,7 +623,7 @@ describe('GET /api/cron/curate-lessons', () => {
 
     expect(res._status).toBe(200);
     // Both reviews should still have been processed
-    expect(res._json).toEqual(
+    expect(getCompleteEvent(res)).toEqual(
       expect.objectContaining({
         reviewsProcessed: 2,
       }),
@@ -656,7 +677,7 @@ describe('GET /api/cron/curate-lessons', () => {
     });
 
     // Both lessons get ADD decisions
-    mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
+    mockStreamResponse(makeCurationResponse(makeAddDecision()));
 
     // Transaction fails — all writes for this review should be rolled back
     mockTransaction.mockRejectedValueOnce(new Error('Constraint violation'));
@@ -668,7 +689,7 @@ describe('GET /api/cron/curate-lessons', () => {
     expect(res._status).toBe(200);
 
     // No lessons should have been added (transaction rolled back)
-    expect(res._json).toEqual(
+    expect(getCompleteEvent(res)).toEqual(
       expect.objectContaining({
         lessonsAdded: 0,
         errors: 1,
@@ -716,7 +737,7 @@ describe('GET /api/cron/curate-lessons', () => {
       tags: ['vix'],
       category: 'sizing',
     };
-    mockCreate.mockResolvedValue(makeCurationResponse(supersedeDecision));
+    mockStreamResponse(makeCurationResponse(supersedeDecision));
 
     vi.mocked(findSimilarLessons).mockResolvedValue([
       {
@@ -757,7 +778,7 @@ describe('GET /api/cron/curate-lessons', () => {
       return [];
     });
 
-    mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
+    mockStreamResponse(makeCurationResponse(makeAddDecision()));
 
     const req = makeAuthedRequest();
     const res = mockResponse();
