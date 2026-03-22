@@ -2,7 +2,7 @@
  * OpenAI embeddings helper for the lessons-learned system.
  *
  * Provides:
- *   generateEmbedding()   — convert text to a 1536-d vector via text-embedding-3-small
+ *   generateEmbedding()   — convert text to a 3072-d vector via text-embedding-3-large
  *   findSimilarLessons()  — cosine-similarity search over the lessons table
  *
  * Install: npm install openai
@@ -34,8 +34,8 @@ export function _resetClient() {
 // ============================================================
 
 /**
- * Generate a 1536-dimension embedding vector for the given text
- * using OpenAI's text-embedding-3-small model.
+ * Generate a 3072-dimension embedding vector for the given text
+ * using OpenAI's text-embedding-3-large model.
  *
  * Returns null on any error (API timeout, network failure, missing key).
  */
@@ -44,7 +44,7 @@ export async function generateEmbedding(
 ): Promise<number[] | null> {
   try {
     const response = await getClient().embeddings.create({
-      model: 'text-embedding-3-small',
+      model: 'text-embedding-3-large',
       input: text,
     });
     return response.data[0]?.embedding ?? null;

@@ -65,7 +65,7 @@ vi.mock('../_lib/lessons.js', () => ({
 
 // --- Embeddings mock ---
 vi.mock('../_lib/embeddings.js', () => ({
-  generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0.1)),
+  generateEmbedding: vi.fn().mockResolvedValue(new Array(3072).fill(0.1)),
   findSimilarLessons: vi.fn().mockResolvedValue([]),
 }));
 

@@ -269,7 +269,7 @@ const MIGRATIONS: Migration[] = [
           category            TEXT CHECK (category IN (
                                 'regime', 'flow', 'gamma', 'management', 'entry', 'sizing'
                               )),
-          embedding           vector(1536) NOT NULL,
+          embedding           vector(3072) NOT NULL,
           created_at          TIMESTAMPTZ DEFAULT NOW(),
           superseded_at       TIMESTAMPTZ,
           UNIQUE (source_analysis_id, text)

@@ -53,8 +53,8 @@ describe('embeddings.ts', () => {
   // generateEmbedding
   // ============================================================
   describe('generateEmbedding', () => {
-    it('returns a 1536-dimension vector on success', async () => {
-      const fakeEmbedding = Array.from({ length: 1536 }, (_, i) => i * 0.001);
+    it('returns a 3072-dimension vector on success', async () => {
+      const fakeEmbedding = Array.from({ length: 3072 }, (_, i) => i * 0.001);
       mockCreate.mockResolvedValueOnce({
         data: [{ embedding: fakeEmbedding }],
       });
@@ -62,9 +62,9 @@ describe('embeddings.ts', () => {
       const result = await generateEmbedding('test text');
 
       expect(result).toEqual(fakeEmbedding);
-      expect(result).toHaveLength(1536);
+      expect(result).toHaveLength(3072);
       expect(mockCreate).toHaveBeenCalledWith({
-        model: 'text-embedding-3-small',
+        model: 'text-embedding-3-large',
         input: 'test text',
       });
     });
@@ -110,7 +110,7 @@ describe('embeddings.ts', () => {
         },
       ]);
 
-      const embedding = Array.from({ length: 1536 }, () => 0.1);
+      const embedding = Array.from({ length: 3072 }, () => 0.1);
       const result = await findSimilarLessons(embedding);
 
       expect(result).toHaveLength(2);
@@ -135,7 +135,7 @@ describe('embeddings.ts', () => {
     it('returns empty array when no lessons exist', async () => {
       mockSql.mockResolvedValueOnce([]);
 
-      const embedding = Array.from({ length: 1536 }, () => 0.1);
+      const embedding = Array.from({ length: 3072 }, () => 0.1);
       const result = await findSimilarLessons(embedding);
 
       expect(result).toEqual([]);
@@ -166,7 +166,7 @@ describe('embeddings.ts', () => {
         },
       ]);
 
-      const embedding = Array.from({ length: 1536 }, () => 0.1);
+      const embedding = Array.from({ length: 3072 }, () => 0.1);
       const result = await findSimilarLessons(embedding, 3);
 
       expect(result).toHaveLength(3);
