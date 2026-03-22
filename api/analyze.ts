@@ -29,6 +29,7 @@ import {
 } from './_lib/db.js';
 import { analyzeBodySchema } from './_lib/validation.js';
 import logger from './_lib/logger.js';
+import { getActiveLessons, formatLessonsBlock } from './_lib/lessons.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -37,7 +38,7 @@ export const config = { maxDuration: 780 };
 // SYSTEM PROMPT
 // ============================================================
 
-const SYSTEM_PROMPT = `You are a senior 0DTE SPX options analyst working as the trader's personal risk advisor. The trader sells iron condors and credit spreads on SPX daily, entering around 9:00 AM CT and holding to settlement (4:00 PM ET). They typically ladder 2–4 entries throughout the morning.
+const SYSTEM_PROMPT_PART1 = `You are a senior 0DTE SPX options analyst working as the trader's personal risk advisor. The trader sells iron condors and credit spreads on SPX daily, entering around 9:00 AM CT and holding to settlement (4:00 PM ET). They typically ladder 2–4 entries throughout the morning.
  
 You will receive 1–8 chart screenshots from Unusual Whales tools, plus the trader's current calculator context and analysis mode.
  
@@ -343,9 +344,9 @@ When the Aggregate GEX panel is provided, use the OI Net Gamma Exposure to adjus
 - OI GEX MODERATELY NEGATIVE (-50,000 to -150,000): Periscope walls may fail under sustained pressure. Reduce afternoon hold time — close CCS by 12:00 PM ET. Target 40% profit instead of 50%. Increase Rule 15's gamma proximity threshold from 30 pts to 40 pts.
 - OI GEX DEEPLY NEGATIVE (below -150,000): The entire market is in acceleration mode. ALL Periscope walls are structurally compromised. Close CCS by 11:30 AM ET or at 40% profit, whichever comes first. Reduce position size by an additional 10%. Do not trust any single positive gamma bar to contain a momentum move. PCS positions with positive charm walls can still be held, but with tightened stops.
 - When Volume GEX is strongly positive while OI GEX is negative: today's active trading is adding suppression that partially offsets the negative regime. The session may be calmer than the OI number suggests — but don't extend management past the OI-based time limits, because volume-based suppression can evaporate in the final 2 hours when trading thins out.
-</structure_selection_rules>
- 
-<data_handling>
+</structure_selection_rules>`;
+
+const SYSTEM_PROMPT_PART2 = `<data_handling>
  
 Missing or Limited Data:
 The calculator context includes a "DATA NOTES" field that flags known limitations. Adjust your analysis accordingly:
@@ -779,6 +780,16 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
 
   content.push({ type: 'text', text: contextText });
 
+  // Fetch active lessons for system prompt injection
+  let lessonsBlock = '';
+  try {
+    const lessons = await getActiveLessons();
+    lessonsBlock = formatLessonsBlock(lessons);
+  } catch (lessonsErr) {
+    logger.error({ err: lessonsErr }, 'Failed to fetch lessons for injection');
+    // Non-fatal — analysis works without lessons
+  }
+
   const analyzeStart = Date.now();
   try {
     const anthropic = new Anthropic({
@@ -801,7 +812,9 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
           system: [
             {
               type: 'text' as const,
-              text: SYSTEM_PROMPT,
+              text: lessonsBlock
+                ? SYSTEM_PROMPT_PART1 + '\n \n' + lessonsBlock + '\n \n' + SYSTEM_PROMPT_PART2
+                : SYSTEM_PROMPT_PART1 + '\n \n' + SYSTEM_PROMPT_PART2,
               cache_control: { type: 'ephemeral', ttl: '1h' },
             },
           ],

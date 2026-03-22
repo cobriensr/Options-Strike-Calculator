@@ -17,6 +17,11 @@ vi.mock('../_lib/db.js', () => ({
   getPreviousRecommendation: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock('../_lib/lessons.js', () => ({
+  getActiveLessons: vi.fn().mockResolvedValue([]),
+  formatLessonsBlock: vi.fn().mockReturnValue(''),
+}));
+
 // Mock the Anthropic SDK — capture the stream call
 // The handler uses `anthropic.messages.stream(params).finalMessage()`
 const mockFinalMessage = vi.fn();
@@ -39,6 +44,7 @@ vi.mock('@anthropic-ai/sdk', () => {
 
 import handler from '../analyze.js';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { getActiveLessons, formatLessonsBlock } from '../_lib/lessons.js';
 
 /** Minimal valid request body */
 function makeBody(
@@ -596,5 +602,61 @@ describe('POST /api/analyze', () => {
     const json = res._json as { analysis: null; raw: string };
     expect(json.analysis).toBeNull();
     expect(json.raw).toBe('');
+  });
+
+  it('injects lessons_learned block into system prompt when lessons exist', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const fakeLessons = [
+      {
+        id: 1,
+        text: 'VIX above 25 means widen wings',
+        sourceDate: '2025-03-10',
+        marketConditions: { vix: 28, structure: 'IRON CONDOR' },
+        tags: ['vix', 'wings'],
+        category: 'risk',
+      },
+    ];
+    vi.mocked(getActiveLessons).mockResolvedValueOnce(fakeLessons);
+    vi.mocked(formatLessonsBlock).mockReturnValueOnce(
+      '<lessons_learned>\n[1] (2025-03-10 | IRON CONDOR | VIX:28)\nVIX above 25 means widen wings\nTags: vix, wings\n</lessons_learned>',
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const systemText = params.system[0].text;
+    expect(systemText).toContain('<lessons_learned>');
+    expect(systemText).toContain('VIX above 25 means widen wings');
+    // Lessons block should sit between </structure_selection_rules> and <data_handling>
+    const lessonsIdx = systemText.indexOf('<lessons_learned>');
+    const structureEnd = systemText.indexOf('</structure_selection_rules>');
+    const dataHandling = systemText.indexOf('<data_handling>');
+    expect(lessonsIdx).toBeGreaterThan(structureEnd);
+    expect(lessonsIdx).toBeLessThan(dataHandling);
+  });
+
+  it('omits lessons_learned block when no lessons exist', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    vi.mocked(getActiveLessons).mockResolvedValueOnce([]);
+    vi.mocked(formatLessonsBlock).mockReturnValueOnce('');
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const systemText = params.system[0].text;
+    expect(systemText).not.toContain('<lessons_learned>');
+    // Structure rules and data handling should still be present
+    expect(systemText).toContain('</structure_selection_rules>');
+    expect(systemText).toContain('<data_handling>');
   });
 });
