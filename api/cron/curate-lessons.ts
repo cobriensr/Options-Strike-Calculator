@@ -16,6 +16,7 @@ import {
   upsertReport,
   updateReport,
   buildMarketConditions,
+  type MarketConditions,
 } from '../_lib/lessons.js';
 import {
   generateEmbedding,
@@ -430,7 +431,7 @@ async function curateLesson(
   anthropic: Anthropic,
   candidateText: string,
   similar: SimilarLesson[],
-  marketConditions: Record<string, unknown>,
+  marketConditions: MarketConditions,
 ): Promise<CurationDecision | null> {
   // Build similar lessons block
   let similarBlock: string;

@@ -1,6 +1,11 @@
 {
+  "crons": [{
+    "path": "/api/cron/curate-lessons",
+    "schedule": "0 3 * * 6"
+  }],
   "functions": {
-    "api/analyze.ts": { "maxDuration": 800 }
+    "api/analyze.ts": { "maxDuration": 800 },
+    "api/cron/curate-lessons.ts": { "maxDuration": 780 }
   },
   "installCommand": "npm install",
   "devCommand": "npm run dev",

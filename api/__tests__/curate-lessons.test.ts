@@ -8,9 +8,10 @@ import { mockRequest, mockResponse } from './helpers';
 // ============================================================
 
 const mockTransaction = vi.fn(async () => undefined);
-const mockSql = Object.assign(vi.fn(async () => []), {
-  transaction: mockTransaction,
-});
+const mockSql = Object.assign(
+  vi.fn(async (): Promise<Record<string, unknown>[]> => []),
+  { transaction: mockTransaction },
+);
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
 }));
