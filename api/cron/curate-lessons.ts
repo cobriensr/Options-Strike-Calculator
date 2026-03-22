@@ -131,16 +131,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const activeCountBefore = (activeCountRows[0]?.count as number) ?? 0;
 
     // Step 2: Query unprocessed reviews
-    const reviews = await sql`
-      SELECT a.id, a.date, a.full_response, a.snapshot_id, a.spx, a.vix, a.vix1d,
-             a.structure, a.confidence
-      FROM analyses a
-      LEFT JOIN lessons l ON l.source_analysis_id = a.id
-      WHERE a.mode = 'review'
-        AND a.date >= CURRENT_DATE - INTERVAL '7 days'
-        AND l.id IS NULL
-      ORDER BY a.date ASC
-    `;
+    // ?backfill=true skips the 7-day window and processes ALL historical reviews
+    const backfill = req.query.backfill === 'true';
+    const reviews = backfill
+      ? await sql`
+          SELECT a.id, a.date, a.full_response, a.snapshot_id, a.spx, a.vix, a.vix1d,
+                 a.structure, a.confidence
+          FROM analyses a
+          LEFT JOIN lessons l ON l.source_analysis_id = a.id
+          WHERE a.mode = 'review'
+            AND l.id IS NULL
+          ORDER BY a.date ASC
+        `
+      : await sql`
+          SELECT a.id, a.date, a.full_response, a.snapshot_id, a.spx, a.vix, a.vix1d,
+                 a.structure, a.confidence
+          FROM analyses a
+          LEFT JOIN lessons l ON l.source_analysis_id = a.id
+          WHERE a.mode = 'review'
+            AND a.date >= CURRENT_DATE - INTERVAL '7 days'
+            AND l.id IS NULL
+          ORDER BY a.date ASC
+        `;
 
     // Step 3: No reviews — update report and return
     if (reviews.length === 0) {

@@ -94,10 +94,11 @@ function makeAddDecision(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-function makeAuthedRequest() {
+function makeAuthedRequest(query: Record<string, string> = {}) {
   return mockRequest({
     method: 'GET',
     headers: { authorization: 'Bearer test-cron-secret' },
+    query,
   });
 }
 
@@ -201,6 +202,32 @@ describe('GET /api/cron/curate-lessons', () => {
           unchanged: 7,
         }),
       }),
+    );
+  });
+
+  // ── Backfill mode ──────────────────────────────────────────
+
+  it('skips the 7-day date filter when backfill=true', async () => {
+    const review = makeReview();
+    let callCount = 0;
+    mockSql.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) return [{ count: 0 }]; // active count
+      if (callCount === 2) return [review]; // reviews query (no date filter)
+      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 4) return [{ id: 42 }]; // nextval
+      return [];
+    });
+
+    mockCreate.mockResolvedValue(makeCurationResponse(makeAddDecision()));
+
+    const req = makeAuthedRequest({ backfill: 'true' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual(
+      expect.objectContaining({ reviewsProcessed: 1, lessonsAdded: 1 }),
     );
   });
 
