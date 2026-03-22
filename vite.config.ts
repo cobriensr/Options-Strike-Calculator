@@ -168,6 +168,8 @@ export default defineConfig({
         'src/main.tsx',
         'src/App.tsx',
         'src/components/SettlementCheck/types.ts',
+        'src/components/DeltaRegimeGuide/types.ts',
+        'src/components/ChartAnalysis/types.ts',
         'src/utils/calculator.ts', // barrel re-export only
       ],
     },
