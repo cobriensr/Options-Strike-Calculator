@@ -9,6 +9,21 @@ import type {
 import { THINKING_MESSAGES } from '../constants';
 import { buildPreviousRecommendation } from '../utils/analysis';
 
+async function compressImage(
+  file: File,
+  maxWidth = 1600,
+  quality = 0.75,
+): Promise<Blob> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxWidth / bitmap.width);
+  const w = Math.round(bitmap.width * scale);
+  const h = Math.round(bitmap.height * scale);
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  return canvas.convertToBlob({ type: 'image/jpeg', quality });
+}
+
 export function useChartAnalysis(opts: {
   images: UploadedImage[];
   context: AnalysisContext;
@@ -56,13 +71,14 @@ export function useChartAnalysis(opts: {
     try {
       const imageData = await Promise.all(
         images.map(async (img) => {
-          const buffer = await img.file.arrayBuffer();
+          const compressed = await compressImage(img.file);
+          const buffer = await compressed.arrayBuffer();
           const bytes = new Uint8Array(buffer);
           let binary = '';
           for (const b of bytes) binary += String.fromCodePoint(b);
           return {
             data: btoa(binary),
-            mediaType: img.file.type,
+            mediaType: 'image/jpeg',
             label: img.label,
           };
         }),
