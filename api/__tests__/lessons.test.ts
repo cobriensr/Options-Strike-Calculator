@@ -145,8 +145,12 @@ describe('lessons.ts', () => {
 
       expect(result).toContain('<lessons_learned>');
       expect(result).toContain('</lessons_learned>');
-      expect(result).toContain('[1] (2026-03-20 | CCS | VIX:26.2 | GEX:danger | Fri | correct:yes)');
-      expect(result).toContain('When charm exceeds +10M on a positive gamma wall, trust it.');
+      expect(result).toContain(
+        '[1] (2026-03-20 | CCS | VIX:26.2 | GEX:danger | Fri | correct:yes)',
+      );
+      expect(result).toContain(
+        'When charm exceeds +10M on a positive gamma wall, trust it.',
+      );
       expect(result).toContain('Tags: charm, gex, management');
     });
 
@@ -480,7 +484,9 @@ describe('lessons.ts', () => {
 
     it('propagates transaction errors', async () => {
       mockSql.mockResolvedValueOnce([{ id: 10 }]);
-      mockSql.transaction.mockRejectedValueOnce(new Error('Transaction failed'));
+      mockSql.transaction.mockRejectedValueOnce(
+        new Error('Transaction failed'),
+      );
 
       await expect(supersedeLesson(newLesson, 3)).rejects.toThrow(
         'Transaction failed',

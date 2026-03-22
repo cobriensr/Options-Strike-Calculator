@@ -14,9 +14,6 @@ const mockOpenAIInstance = { embeddings: { create: mockCreate } };
 vi.mock('openai', () => ({
   default: class MockOpenAI {
     embeddings = mockOpenAIInstance.embeddings;
-    constructor() {
-      // no-op
-    }
   },
 }));
 

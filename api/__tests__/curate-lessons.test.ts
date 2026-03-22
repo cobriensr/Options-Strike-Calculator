@@ -78,9 +78,7 @@ function makeReview(overrides: Partial<Record<string, unknown>> = {}) {
 /** Build a Claude curation response */
 function makeCurationResponse(decision: Record<string, unknown>) {
   return {
-    content: [
-      { type: 'text', text: JSON.stringify(decision) },
-    ],
+    content: [{ type: 'text', text: JSON.stringify(decision) }],
     usage: { input_tokens: 500, output_tokens: 100 },
   };
 }
@@ -220,7 +218,16 @@ describe('GET /api/cron/curate-lessons', () => {
       callCount++;
       if (callCount === 1) return [{ count: 5 }]; // active count
       if (callCount === 2) return [review]; // reviews query
-      if (callCount === 3) return [{ id: 10, vix: 18, regime_zone: 'GREEN', dow_label: 'Friday', vix_term_signal: 'contango' }]; // snapshot
+      if (callCount === 3)
+        return [
+          {
+            id: 10,
+            vix: 18,
+            regime_zone: 'GREEN',
+            dow_label: 'Friday',
+            vix_term_signal: 'contango',
+          },
+        ]; // snapshot
       if (callCount === 4) return [{ id: 42 }]; // nextval
       return [];
     });
@@ -232,12 +239,14 @@ describe('GET /api/cron/curate-lessons', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual(expect.objectContaining({
-      reviewsProcessed: 1,
-      lessonsAdded: 1,
-      lessonsSuperseded: 0,
-      lessonsSkipped: 0,
-    }));
+    expect(res._json).toEqual(
+      expect.objectContaining({
+        reviewsProcessed: 1,
+        lessonsAdded: 1,
+        lessonsSuperseded: 0,
+        lessonsSkipped: 0,
+      }),
+    );
 
     // Transaction should have been called with the INSERT statement
     expect(mockTransaction).toHaveBeenCalledOnce();
@@ -291,7 +300,13 @@ describe('GET /api/cron/curate-lessons', () => {
     mockCreate.mockResolvedValue(makeCurationResponse(supersedeDecision));
 
     vi.mocked(findSimilarLessons).mockResolvedValue([
-      { id: 5, text: 'Old lesson about VIX', tags: ['vix'], category: 'sizing', sourceDate: '2026-03-10' },
+      {
+        id: 5,
+        text: 'Old lesson about VIX',
+        tags: ['vix'],
+        category: 'sizing',
+        sourceDate: '2026-03-10',
+      },
     ]);
 
     const req = makeAuthedRequest();
@@ -299,10 +314,12 @@ describe('GET /api/cron/curate-lessons', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual(expect.objectContaining({
-      lessonsSuperseded: 1,
-      lessonsAdded: 0,
-    }));
+    expect(res._json).toEqual(
+      expect.objectContaining({
+        lessonsSuperseded: 1,
+        lessonsAdded: 0,
+      }),
+    );
 
     // Transaction should have been called (INSERT + UPDATE batched)
     expect(mockTransaction).toHaveBeenCalledOnce();
@@ -352,11 +369,13 @@ describe('GET /api/cron/curate-lessons', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual(expect.objectContaining({
-      lessonsSkipped: 1,
-      lessonsAdded: 0,
-      lessonsSuperseded: 0,
-    }));
+    expect(res._json).toEqual(
+      expect.objectContaining({
+        lessonsSkipped: 1,
+        lessonsAdded: 0,
+        lessonsSuperseded: 0,
+      }),
+    );
 
     // No transaction for SKIP-only
     expect(mockTransaction).not.toHaveBeenCalled();
@@ -476,13 +495,15 @@ describe('GET /api/cron/curate-lessons', () => {
     });
 
     // Return valid JSON but invalid action
-    mockCreate.mockResolvedValue(makeCurationResponse({
-      action: 'merge', // invalid
-      reason: 'Merging lessons',
-      supersedes_id: null,
-      tags: ['vix'],
-      category: 'sizing',
-    }));
+    mockCreate.mockResolvedValue(
+      makeCurationResponse({
+        action: 'merge', // invalid
+        reason: 'Merging lessons',
+        supersedes_id: null,
+        tags: ['vix'],
+        category: 'sizing',
+      }),
+    );
 
     const req = makeAuthedRequest();
     const res = mockResponse();
@@ -554,9 +575,11 @@ describe('GET /api/cron/curate-lessons', () => {
 
     expect(res._status).toBe(200);
     // Both reviews should still have been processed
-    expect(res._json).toEqual(expect.objectContaining({
-      reviewsProcessed: 2,
-    }));
+    expect(res._json).toEqual(
+      expect.objectContaining({
+        reviewsProcessed: 2,
+      }),
+    );
 
     // Transaction called twice (once per review)
     expect(mockTransaction).toHaveBeenCalledTimes(2);
@@ -571,9 +594,7 @@ describe('GET /api/cron/curate-lessons', () => {
               error: 'DB connection lost',
             }),
           ]),
-          added: expect.arrayContaining([
-            expect.objectContaining({ id: 44 }),
-          ]),
+          added: expect.arrayContaining([expect.objectContaining({ id: 44 })]),
         }),
       }),
     );
@@ -620,10 +641,12 @@ describe('GET /api/cron/curate-lessons', () => {
     expect(res._status).toBe(200);
 
     // No lessons should have been added (transaction rolled back)
-    expect(res._json).toEqual(expect.objectContaining({
-      lessonsAdded: 0,
-      errors: 1,
-    }));
+    expect(res._json).toEqual(
+      expect.objectContaining({
+        lessonsAdded: 0,
+        errors: 1,
+      }),
+    );
 
     // The report should have zero added and contain the error
     expect(updateReport).toHaveBeenCalledWith(
@@ -669,7 +692,13 @@ describe('GET /api/cron/curate-lessons', () => {
     mockCreate.mockResolvedValue(makeCurationResponse(supersedeDecision));
 
     vi.mocked(findSimilarLessons).mockResolvedValue([
-      { id: 5, text: 'Old lesson', tags: ['vix'], category: 'sizing', sourceDate: '2026-03-10' },
+      {
+        id: 5,
+        text: 'Old lesson',
+        tags: ['vix'],
+        category: 'sizing',
+        sourceDate: '2026-03-10',
+      },
     ]);
 
     const req = makeAuthedRequest();

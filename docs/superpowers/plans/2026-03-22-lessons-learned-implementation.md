@@ -15,6 +15,7 @@
 ### Task 1: Database Migration — Create Tables
 
 **Files:**
+
 - Modify: `api/_lib/db.ts` (add migration #2 to `MIGRATIONS` array)
 - Test: `api/__tests__/db.test.ts`
 
@@ -31,9 +32,7 @@ it('runs migration #2: lessons and lesson_reports tables', async () => {
   mockSql.mockResolvedValue([]); // all subsequent CREATE calls
 
   const applied = await migrateDb();
-  expect(applied).toContainEqual(
-    expect.stringContaining('lessons'),
-  );
+  expect(applied).toContainEqual(expect.stringContaining('lessons'));
 });
 ```
 
@@ -117,6 +116,7 @@ git commit -m "feat: add migration #2 for lessons and lesson_reports tables with
 ### Task 2: Lessons CRUD Module — `api/_lib/lessons.ts`
 
 **Files:**
+
 - Create: `api/_lib/lessons.ts`
 - Test: `api/__tests__/lessons.test.ts`
 
@@ -129,9 +129,12 @@ describe('getActiveLessons', () => {
   it('returns active lessons ordered by source_date desc', async () => {
     mockSql.mockResolvedValueOnce([
       {
-        id: 1, text: 'Charm walls hold', source_date: '2026-03-20',
+        id: 1,
+        text: 'Charm walls hold',
+        source_date: '2026-03-20',
         market_conditions: { vix: 26.2, structure: 'CCS' },
-        tags: ['charm'], category: 'gamma',
+        tags: ['charm'],
+        category: 'gamma',
       },
     ]);
     const lessons = await getActiveLessons();
@@ -178,7 +181,10 @@ export async function getActiveLessons(): Promise<Lesson[]> {
     id: r.id as number,
     text: r.text as string,
     sourceDate: r.source_date as string,
-    marketConditions: (r.market_conditions ?? null) as Record<string, unknown> | null,
+    marketConditions: (r.market_conditions ?? null) as Record<
+      string,
+      unknown
+    > | null,
     tags: (r.tags ?? []) as string[],
     category: (r.category ?? null) as string | null,
   }));
@@ -249,6 +255,7 @@ git commit -m "feat: add lessons CRUD module with getActiveLessons, insertLesson
 ### Task 3: Embeddings Helper — `api/_lib/embeddings.ts`
 
 **Files:**
+
 - Create: `api/_lib/embeddings.ts`
 - Test: `api/__tests__/embeddings.test.ts`
 - Modify: `package.json` (add `openai` dependency)
@@ -298,7 +305,9 @@ function getClient(): OpenAI {
   return _client;
 }
 
-export async function generateEmbedding(text: string): Promise<number[] | null> {
+export async function generateEmbedding(
+  text: string,
+): Promise<number[] | null> {
   try {
     const response = await getClient().embeddings.create({
       model: 'text-embedding-3-small',
@@ -341,6 +350,7 @@ git commit -m "feat: add OpenAI embeddings helper with generateEmbedding and fin
 ### Task 4: System Prompt Injection — Modify `/api/analyze`
 
 **Files:**
+
 - Modify: `api/analyze.ts` (split SYSTEM_PROMPT, add lesson fetch + injection)
 - Test: `api/__tests__/analyze.test.ts` (add test for lesson injection)
 
@@ -353,10 +363,18 @@ it('injects active lessons into system prompt', async () => {
   const { getActiveLessons } = await import('../_lib/lessons.js');
   vi.mocked(getActiveLessons).mockResolvedValueOnce([
     {
-      id: 1, text: 'Test lesson about charm',
+      id: 1,
+      text: 'Test lesson about charm',
       sourceDate: '2026-03-20',
-      marketConditions: { vix: 26.2, structure: 'CCS', gexRegime: 'danger', dayOfWeek: 'Friday', wasCorrect: true },
-      tags: ['charm', 'gex'], category: 'gamma',
+      marketConditions: {
+        vix: 26.2,
+        structure: 'CCS',
+        gexRegime: 'danger',
+        dayOfWeek: 'Friday',
+        wasCorrect: true,
+      },
+      tags: ['charm', 'gex'],
+      category: 'gamma',
     },
   ]);
 
@@ -388,7 +406,8 @@ import { getActiveLessons, formatLessonsBlock } from './_lib/lessons.js';
 // Inside handler, before building messages:
 const lessons = await getActiveLessons();
 const lessonsBlock = formatLessonsBlock(lessons);
-const systemPrompt = SYSTEM_PROMPT_PART1 + '\n' + lessonsBlock + '\n' + SYSTEM_PROMPT_PART2;
+const systemPrompt =
+  SYSTEM_PROMPT_PART1 + '\n' + lessonsBlock + '\n' + SYSTEM_PROMPT_PART2;
 ```
 
 - [ ] **Step 5: Add mock for lessons module in test file**
@@ -421,6 +440,7 @@ git commit -m "feat: inject active lessons into analysis system prompt"
 ### Task 5: Cron Handler — `api/cron/curate-lessons.ts`
 
 **Files:**
+
 - Create: `api/cron/curate-lessons.ts`
 - Test: `api/__tests__/curate-lessons.test.ts`
 
@@ -435,6 +455,7 @@ Mock `getDb()` to return empty results for the unprocessed reviews query. Verify
 - [ ] **Step 3: Implement the cron handler skeleton**
 
 Create `api/cron/curate-lessons.ts` with:
+
 - Auth check (`CRON_SECRET`)
 - `export const config = { maxDuration: 780 }`
 - Bootstrap report upsert (step 0)
@@ -454,6 +475,7 @@ Mock a single review with `lessonsLearned: ['Test lesson']`. Mock `generateEmbed
 - [ ] **Step 6: Implement Phase A — preparation (embedding + Claude curation)**
 
 For each review's `lessonsLearned[]`:
+
 1. Call `generateEmbedding()` — skip on null (record in errors)
 2. Call `findSimilarLessons()` with the embedding
 3. Call Claude Opus (`claude-opus-4-6`) with `thinking: { type: 'adaptive' }` and `output_config: { effort: 'high' }`, passing the candidate + similar lessons + market conditions
@@ -463,6 +485,7 @@ For each review's `lessonsLearned[]`:
 - [ ] **Step 7: Implement Phase B — atomic DB writes per review**
 
 For each review's prepared lessons:
+
 1. Pre-allocate IDs via `nextval`
 2. Batch INSERT + UPDATE in `sql.transaction()`
 3. On transaction failure, record error and continue
@@ -509,6 +532,7 @@ git commit -m "feat: add Friday cron for automated lesson curation with two-phas
 ### Task 6: Configuration — vercel.json and env vars
 
 **Files:**
+
 - Modify: `vercel.json`
 
 - [ ] **Step 1: Add cron schedule and function config to `vercel.json`**
@@ -547,6 +571,7 @@ git commit -m "config: add cron schedule for lesson curation and OPENAI_API_KEY 
 ### Task 7: Integration Test — Full Pipeline
 
 **Files:**
+
 - Test: `api/__tests__/lessons-integration.test.ts`
 
 - [ ] **Step 1: Write an integration test that exercises the full pipeline**

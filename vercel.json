@@ -1,8 +1,10 @@
 {
-  "crons": [{
-    "path": "/api/cron/curate-lessons",
-    "schedule": "0 3 * * 6"
-  }],
+  "crons": [
+    {
+      "path": "/api/cron/curate-lessons",
+      "schedule": "0 3 * * 6"
+    }
+  ],
   "functions": {
     "api/analyze.ts": { "maxDuration": 800 },
     "api/cron/curate-lessons.ts": { "maxDuration": 780 }

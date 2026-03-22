@@ -813,7 +813,11 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
             {
               type: 'text' as const,
               text: lessonsBlock
-                ? SYSTEM_PROMPT_PART1 + '\n \n' + lessonsBlock + '\n \n' + SYSTEM_PROMPT_PART2
+                ? SYSTEM_PROMPT_PART1 +
+                  '\n \n' +
+                  lessonsBlock +
+                  '\n \n' +
+                  SYSTEM_PROMPT_PART2
                 : SYSTEM_PROMPT_PART1 + '\n \n' + SYSTEM_PROMPT_PART2,
               cache_control: { type: 'ephemeral', ttl: '1h' },
             },

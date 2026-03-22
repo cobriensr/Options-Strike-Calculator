@@ -366,7 +366,9 @@ describe('db.ts', () => {
 
       const applied = await migrateDb();
 
-      expect(applied).toEqual(['#2: Create lessons and lesson_reports tables with pgvector']);
+      expect(applied).toEqual([
+        '#2: Create lessons and lesson_reports tables with pgvector',
+      ]);
       // 2 setup calls + 7 migration SQL calls + 1 INSERT = 10
       expect(mockSql).toHaveBeenCalledTimes(10);
     });

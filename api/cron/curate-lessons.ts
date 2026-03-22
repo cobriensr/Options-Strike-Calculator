@@ -18,10 +18,7 @@ import {
   buildMarketConditions,
   type MarketConditions,
 } from '../_lib/lessons.js';
-import {
-  generateEmbedding,
-  findSimilarLessons,
-} from '../_lib/embeddings.js';
+import { generateEmbedding, findSimilarLessons } from '../_lib/embeddings.js';
 import type { SimilarLesson } from '../_lib/embeddings.js';
 import logger from '../_lib/logger.js';
 
@@ -109,10 +106,7 @@ interface PreparedLesson {
 // HANDLER
 // ============================================================
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Method check — Vercel crons use GET
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'GET only' });
@@ -182,9 +176,10 @@ export default async function handler(
 
     // Step 3: Process each review
     for (const review of reviews) {
-      const fullResponse = typeof review.full_response === 'string'
-        ? JSON.parse(review.full_response as string)
-        : review.full_response;
+      const fullResponse =
+        typeof review.full_response === 'string'
+          ? JSON.parse(review.full_response as string)
+          : review.full_response;
 
       const reviewData = fullResponse?.review ?? fullResponse ?? {};
       const lessonsLearned: string[] = Array.isArray(reviewData.lessonsLearned)
@@ -199,7 +194,8 @@ export default async function handler(
         const snapRows = await sql`
           SELECT * FROM market_snapshots WHERE id = ${review.snapshot_id}
         `;
-        snapshotRow = snapRows.length > 0 ? (snapRows[0] as Record<string, unknown>) : null;
+        snapshotRow =
+          snapRows.length > 0 ? (snapRows[0] as Record<string, unknown>) : null;
       }
 
       const analysisRow = review as unknown as Record<string, unknown>;
@@ -223,7 +219,10 @@ export default async function handler(
         const similar = await findSimilarLessons(embedding);
 
         // 3. Build market conditions
-        const marketConditions = buildMarketConditions(analysisRow, snapshotRow);
+        const marketConditions = buildMarketConditions(
+          analysisRow,
+          snapshotRow,
+        );
 
         // 4. Call Claude for curation decision
         const decision = await curateLesson(
@@ -246,7 +245,10 @@ export default async function handler(
           text: lessonText,
           embedding,
           decision,
-          marketConditions: marketConditions as unknown as Record<string, unknown>,
+          marketConditions: marketConditions as unknown as Record<
+            string,
+            unknown
+          >,
           sourceAnalysisId: review.id as number,
           sourceDate: String(review.date),
         });
@@ -281,7 +283,10 @@ export default async function handler(
             const newId = Number(seqRows[0]!.id);
 
             let oldText: string | undefined;
-            if (lesson.decision.action === 'supersede' && lesson.decision.supersedes_id != null) {
+            if (
+              lesson.decision.action === 'supersede' &&
+              lesson.decision.supersedes_id != null
+            ) {
               const oldRows = await sql`
                 SELECT text FROM lessons WHERE id = ${lesson.decision.supersedes_id}
               `;
@@ -317,7 +322,10 @@ export default async function handler(
             `);
 
             // For SUPERSEDE, also UPDATE the old lesson
-            if (lesson.decision.action === 'supersede' && lesson.decision.supersedes_id != null) {
+            if (
+              lesson.decision.action === 'supersede' &&
+              lesson.decision.supersedes_id != null
+            ) {
               txStatements.push(sql`
                 UPDATE lessons
                 SET status = 'superseded',
@@ -341,7 +349,10 @@ export default async function handler(
                 tags: lesson.decision.tags,
                 category: lesson.decision.category,
               });
-            } else if (lesson.decision.action === 'supersede' && lesson.decision.supersedes_id != null) {
+            } else if (
+              lesson.decision.action === 'supersede' &&
+              lesson.decision.supersedes_id != null
+            ) {
               superseded.push({
                 id: lesson.decision.supersedes_id,
                 oldText: oldText ?? '',
@@ -353,7 +364,10 @@ export default async function handler(
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unknown DB error';
-        logger.error({ err, reviewId: review.id }, 'DB write failed for review');
+        logger.error(
+          { err, reviewId: review.id },
+          'DB write failed for review',
+        );
         errors.push({
           text: `Review ID ${review.id}`,
           error: msg,
@@ -436,7 +450,8 @@ async function curateLesson(
   // Build similar lessons block
   let similarBlock: string;
   if (similar.length === 0) {
-    similarBlock = 'No existing lessons match — this is a new topic area. Likely ADD.';
+    similarBlock =
+      'No existing lessons match — this is a new topic area. Likely ADD.';
   } else {
     similarBlock = similar
       .map((s, i) => `[${i + 1}] (ID: ${s.id}) "${s.text}"`)
@@ -473,17 +488,18 @@ Respond with JSON:
   });
 
   // Extract text content (skip thinking blocks)
-  const textBlocks = response.content.filter(
-    (block) => block.type === 'text',
-  );
-  const rawText = textBlocks.map((b) => 'text' in b ? b.text : '').join('');
+  const textBlocks = response.content.filter((block) => block.type === 'text');
+  const rawText = textBlocks.map((b) => ('text' in b ? b.text : '')).join('');
 
   // Parse the JSON response
   try {
     const parsed = JSON.parse(rawText) as CurationDecision;
 
     // Validate required fields
-    if (!parsed.action || !['add', 'supersede', 'skip'].includes(parsed.action)) {
+    if (
+      !parsed.action ||
+      !['add', 'supersede', 'skip'].includes(parsed.action)
+    ) {
       return null;
     }
 

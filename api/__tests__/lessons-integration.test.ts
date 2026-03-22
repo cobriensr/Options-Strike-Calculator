@@ -437,7 +437,7 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
 
     // Extract the lesson shape from the cron's report
     const reportCall = vi.mocked(updateReport).mock.calls[0]!;
-    const reportData = reportCall[1] as {
+    const reportData = reportCall[1] as unknown as {
       report: {
         added: Array<{
           id: number;
@@ -487,7 +487,8 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
 
     // Verify that formatLessonsBlock was called with a lesson whose text matches
     // exactly what the cron handler wrote
-    const lessonsArg = vi.mocked(formatLessonsBlock).mock.calls[0]![0] as Array<{
+    const lessonsArg = vi.mocked(formatLessonsBlock).mock
+      .calls[0]![0] as Array<{
       text: string;
     }>;
     expect(lessonsArg[0]!.text).toBe(addedLesson.text);

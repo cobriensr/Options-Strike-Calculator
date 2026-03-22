@@ -76,7 +76,8 @@ export async function getActiveLessons(): Promise<Lesson[]> {
     id: row.id as number,
     text: row.text as string,
     sourceDate: row.source_date as string,
-    marketConditions: (row.market_conditions as Record<string, unknown>) ?? null,
+    marketConditions:
+      (row.market_conditions as Record<string, unknown>) ?? null,
     tags: (row.tags as string[]) ?? [],
     category: (row.category as string) ?? null,
   }));
@@ -155,7 +156,7 @@ export function buildMarketConditions(
   const fullResponse =
     typeof analysisRow.full_response === 'string'
       ? (JSON.parse(analysisRow.full_response) as Record<string, unknown>)
-      : (analysisRow.full_response as Record<string, unknown>) ?? {};
+      : ((analysisRow.full_response as Record<string, unknown>) ?? {});
 
   const review = (fullResponse.review as Record<string, unknown>) ?? {};
 
@@ -164,15 +165,12 @@ export function buildMarketConditions(
     vix1d: snapshotRow?.vix1d != null ? Number(snapshotRow.vix1d) : null,
     spx: analysisRow.spx != null ? Number(analysisRow.spx) : null,
     gexRegime:
-      snapshotRow?.regime_zone != null
-        ? String(snapshotRow.regime_zone)
-        : null,
+      snapshotRow?.regime_zone != null ? String(snapshotRow.regime_zone) : null,
     structure:
       analysisRow.structure != null ? String(analysisRow.structure) : null,
     dayOfWeek:
       snapshotRow?.dow_label != null ? String(snapshotRow.dow_label) : null,
-    wasCorrect:
-      review.wasCorrect != null ? Boolean(review.wasCorrect) : null,
+    wasCorrect: review.wasCorrect != null ? Boolean(review.wasCorrect) : null,
     confidence:
       analysisRow.confidence != null ? String(analysisRow.confidence) : null,
     vixTermShape:

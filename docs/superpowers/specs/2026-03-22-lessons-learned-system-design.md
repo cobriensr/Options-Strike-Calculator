@@ -50,18 +50,18 @@ CREATE INDEX idx_lessons_embedding ON lessons
 
 **Column details:**
 
-| Column | Purpose |
-|--------|---------|
-| `text` | The lesson itself. Immutable after insert. |
-| `status` | `active` (injected into prompts), `superseded` (replaced by a newer lesson), `archived` (manually disabled via Neon UI). CHECK-constrained to valid values. |
-| `superseded_by` | FK to the newer lesson that replaced this one. NULL when active. |
+| Column               | Purpose                                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `text`               | The lesson itself. Immutable after insert.                                                                                                                        |
+| `status`             | `active` (injected into prompts), `superseded` (replaced by a newer lesson), `archived` (manually disabled via Neon UI). CHECK-constrained to valid values.       |
+| `superseded_by`      | FK to the newer lesson that replaced this one. NULL when active.                                                                                                  |
 | `source_analysis_id` | FK to the review-mode `analyses` row that produced this lesson. ON DELETE RESTRICT prevents deletion of analyses that have linked lessons, preserving provenance. |
-| `source_date` | The trading date the lesson was learned from. Indexed for injection query ordering. |
-| `market_conditions` | Snapshot of conditions when the lesson was learned. See "Market Conditions Derivation" section below. |
-| `tags` | Freeform tags for Claude's rapid scanning. e.g. `['gex', 'deeply-negative', 'friday', 'charm', 'management-timing']` |
-| `category` | Broad classification. CHECK-constrained to: `regime`, `flow`, `gamma`, `management`, `entry`, `sizing`. |
-| `embedding` | OpenAI `text-embedding-3-large` vector (3072 dimensions). NOT NULL — every lesson must have an embedding for dedup search. |
-| `superseded_at` | Timestamp when status changed to `superseded`. |
+| `source_date`        | The trading date the lesson was learned from. Indexed for injection query ordering.                                                                               |
+| `market_conditions`  | Snapshot of conditions when the lesson was learned. See "Market Conditions Derivation" section below.                                                             |
+| `tags`               | Freeform tags for Claude's rapid scanning. e.g. `['gex', 'deeply-negative', 'friday', 'charm', 'management-timing']`                                              |
+| `category`           | Broad classification. CHECK-constrained to: `regime`, `flow`, `gamma`, `management`, `entry`, `sizing`.                                                           |
+| `embedding`          | OpenAI `text-embedding-3-large` vector (3072 dimensions). NOT NULL — every lesson must have an embedding for dedup search.                                        |
+| `superseded_at`      | Timestamp when status changed to `superseded`.                                                                                                                    |
 
 **Key constraints:**
 
@@ -134,17 +134,17 @@ CREATE TABLE lesson_reports (
 
 The `market_conditions` JSONB is populated from **two source tables**:
 
-| Field | Source Table | Source Column | Notes |
-|-------|------------|--------------|-------|
-| `vix` | `market_snapshots` | `vix` | |
-| `vix1d` | `market_snapshots` | `vix1d` | |
-| `spx` | `analyses` | `spx` | From the analysis row, not snapshot |
-| `gexRegime` | `market_snapshots` | `regime_zone` | Stored as human-readable strings: `'go'`, `'caution'`, `'stop'`, `'danger'` — mapped from VIX bucket zones |
-| `structure` | `analyses` | `structure` | e.g. `'CALL CREDIT SPREAD'`, `'IRON CONDOR'` |
-| `dayOfWeek` | `market_snapshots` | `dow_label` | e.g. `'Monday'`, `'Friday'` |
-| `wasCorrect` | `analyses` | `full_response.review.wasCorrect` | Extracted from the review's JSONB |
-| `confidence` | `analyses` | `confidence` | e.g. `'HIGH'`, `'MODERATE'` |
-| `vixTermShape` | `market_snapshots` | `vix_term_signal` | e.g. `'calm'`, `'elevated'`, `'extreme'` |
+| Field          | Source Table       | Source Column                     | Notes                                                                                                      |
+| -------------- | ------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `vix`          | `market_snapshots` | `vix`                             |                                                                                                            |
+| `vix1d`        | `market_snapshots` | `vix1d`                           |                                                                                                            |
+| `spx`          | `analyses`         | `spx`                             | From the analysis row, not snapshot                                                                        |
+| `gexRegime`    | `market_snapshots` | `regime_zone`                     | Stored as human-readable strings: `'go'`, `'caution'`, `'stop'`, `'danger'` — mapped from VIX bucket zones |
+| `structure`    | `analyses`         | `structure`                       | e.g. `'CALL CREDIT SPREAD'`, `'IRON CONDOR'`                                                               |
+| `dayOfWeek`    | `market_snapshots` | `dow_label`                       | e.g. `'Monday'`, `'Friday'`                                                                                |
+| `wasCorrect`   | `analyses`         | `full_response.review.wasCorrect` | Extracted from the review's JSONB                                                                          |
+| `confidence`   | `analyses`         | `confidence`                      | e.g. `'HIGH'`, `'MODERATE'`                                                                                |
+| `vixTermShape` | `market_snapshots` | `vix_term_signal`                 | e.g. `'calm'`, `'elevated'`, `'extreme'`                                                                   |
 
 **Derivation query:**
 
@@ -239,34 +239,33 @@ if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
 
    b. Vector search existing active lessons — top 5 nearest by cosine distance (unscoped — see note below):
 
-      ```sql
-      SELECT id, text, tags, category, source_date
-      FROM lessons
-      WHERE status = 'active'
-      ORDER BY embedding <=> $1
-      LIMIT 5
-      ```
+   ```sql
+   SELECT id, text, tags, category, source_date
+   FROM lessons
+   WHERE status = 'active'
+   ORDER BY embedding <=> $1
+   LIMIT 5
+   ```
 
    c. Send Claude (`claude-opus-4-6` with `thinking: { type: 'adaptive' }` and `output_config: { effort: 'high' }`) the candidate lesson + 5 nearest existing lessons + the review's market conditions.
 
    d. Claude responds with structured JSON:
 
-      ```json
-      {
-        "action": "add" | "supersede" | "skip",
-        "reason": "string explaining the decision",
-        "supersedes_id": null | number,
-        "tags": ["charm", "gex", "friday"],
-        "category": "gamma"
-      }
-      ```
+   ```json
+   {
+     "action": "add" | "supersede" | "skip",
+     "reason": "string explaining the decision",
+     "supersedes_id": null | number,
+     "tags": ["charm", "gex", "friday"],
+     "category": "gamma"
+   }
+   ```
 
-      **If Claude's response is malformed** (invalid JSON, missing `action` field, or unexpected `action` value): treat as SKIP, log the raw response in the report's `errors` array, and continue processing. Never insert a lesson based on a malformed curation response.
+   **If Claude's response is malformed** (invalid JSON, missing `action` field, or unexpected `action` value): treat as SKIP, log the raw response in the report's `errors` array, and continue processing. Never insert a lesson based on a malformed curation response.
 
    **Phase B — Database writes (inside transaction, per review):**
 
    After all lessons for a review have been prepared (embeddings generated, Claude decisions received), execute the database writes for successfully prepared lessons in a single transaction using `sql.transaction()` from the Neon HTTP driver. Pre-allocate lesson IDs via `nextval('lessons_id_seq')` so that INSERT and UPDATE statements can be batched without interactive result inspection.
-
    - **ADD:** Insert new row with pre-allocated ID, text, embedding, tags, category, market_conditions, source_analysis_id, source_date
    - **SUPERSEDE:** Insert new row (as above) + UPDATE the old lesson: `status = 'superseded'`, `superseded_by = new_id`, `superseded_at = NOW()`. Both statements batched in the same `sql.transaction()` call.
    - **SKIP:** Record in report only, no DB changes
@@ -329,10 +328,12 @@ Add cron configuration and function config for the cron:
 
 ```json
 {
-  "crons": [{
-    "path": "/api/cron/curate-lessons",
-    "schedule": "0 3 * * 6"
-  }],
+  "crons": [
+    {
+      "path": "/api/cron/curate-lessons",
+      "schedule": "0 3 * * 6"
+    }
+  ],
   "functions": {
     "api/cron/curate-lessons.ts": { "maxDuration": 780 }
   }
@@ -360,20 +361,20 @@ Migration #2 in the existing `MIGRATIONS` array in `api/_lib/db.ts`:
 
 ## New Files
 
-| File | Purpose |
-|------|---------|
-| `api/cron/curate-lessons.ts` | Friday cron serverless function |
-| `api/_lib/embeddings.ts` | OpenAI embedding generation helper |
-| `api/_lib/lessons.ts` | Lesson CRUD: `getActiveLessons()`, `insertLesson()`, `supersede()`, `saveReport()`, `buildMarketConditions()` |
+| File                         | Purpose                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `api/cron/curate-lessons.ts` | Friday cron serverless function                                                                               |
+| `api/_lib/embeddings.ts`     | OpenAI embedding generation helper                                                                            |
+| `api/_lib/lessons.ts`        | Lesson CRUD: `getActiveLessons()`, `insertLesson()`, `supersede()`, `saveReport()`, `buildMarketConditions()` |
 
 ## Modified Files
 
-| File | Change |
-|------|--------|
+| File             | Change                                                                            |
+| ---------------- | --------------------------------------------------------------------------------- |
 | `api/analyze.ts` | Split `SYSTEM_PROMPT` into two parts; add lesson fetch and injection between them |
-| `api/_lib/db.ts` | Add migration #2 for lessons + lesson_reports tables + pgvector extension |
-| `vercel.json` | Add cron schedule and function config |
-| `package.json` | Add `openai` dependency |
+| `api/_lib/db.ts` | Add migration #2 for lessons + lesson_reports tables + pgvector extension         |
+| `vercel.json`    | Add cron schedule and function config                                             |
+| `package.json`   | Add `openai` dependency                                                           |
 
 ## Safety Mechanisms
 
@@ -394,16 +395,16 @@ Migration #2 in the existing `MIGRATIONS` array in `api/_lib/db.ts`:
 
 ## Edge Cases
 
-| Scenario | Behavior |
-|----------|----------|
-| No reviews this week | Report row created with `reviewsProcessed: 0`, exit cleanly |
-| OpenAI embedding API fails | Skip that lesson, record in report `errors` array, continue processing |
-| Claude curation response malformed | Treat as SKIP, log raw response in report `errors`, continue |
-| Cron crashes mid-execution | Bootstrapped report row exists with partial data for debugging |
+| Scenario                                    | Behavior                                                                                                                                                       |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No reviews this week                        | Report row created with `reviewsProcessed: 0`, exit cleanly                                                                                                    |
+| OpenAI embedding API fails                  | Skip that lesson, record in report `errors` array, continue processing                                                                                         |
+| Claude curation response malformed          | Treat as SKIP, log raw response in report `errors`, continue                                                                                                   |
+| Cron crashes mid-execution                  | Bootstrapped report row exists with partial data for debugging                                                                                                 |
 | Same analysis retried after partial failure | `UNIQUE (source_analysis_id, text)` prevents duplicate inserts; if a review's Phase B transaction was rolled back, all its lessons are re-processable on retry |
-| Cron re-run same week after crash | `INSERT ... ON CONFLICT` upsert on `week_ending` allows the bootstrap step to safely update the existing report row |
-| Analysis referenced by lesson is deleted | ON DELETE RESTRICT prevents deletion — provenance is preserved |
-| Market closed for holiday week | Cron runs, finds no reviews, creates empty report — no error |
+| Cron re-run same week after crash           | `INSERT ... ON CONFLICT` upsert on `week_ending` allows the bootstrap step to safely update the existing report row                                            |
+| Analysis referenced by lesson is deleted    | ON DELETE RESTRICT prevents deletion — provenance is preserved                                                                                                 |
+| Market closed for holiday week              | Cron runs, finds no reviews, creates empty report — no error                                                                                                   |
 
 ## Future Enhancement (noted, not day-one)
 
