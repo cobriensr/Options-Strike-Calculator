@@ -32,7 +32,6 @@ interface Props {
   readonly entryTimeLabel?: string;
 }
 
-
 export default function SettlementCheck({
   th,
   snapshot,

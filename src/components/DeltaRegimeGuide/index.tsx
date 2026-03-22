@@ -250,8 +250,8 @@ export default function DeltaRegimeGuide({
       <p className="text-muted mt-1.5 mb-4 text-[11px] italic">
         {'"'}Max Delta{'"'} = the highest delta whose strike clears that range.
         Sell at or below this delta. Uses VIX-derived {'\u03C3'}=
-        {sigma.toFixed(4)} (VIX {vix.toFixed(1)} {'\u00D7'} {DEFAULTS.IV_PREMIUM_FACTOR})
-        and T={T.toFixed(6)}.
+        {sigma.toFixed(4)} (VIX {vix.toFixed(1)} {'\u00D7'}{' '}
+        {DEFAULTS.IV_PREMIUM_FACTOR}) and T={T.toFixed(6)}.
         {skew > 0
           ? ' Skew-adjusted: puts use higher \u03C3, calls use lower.'
           : ''}{' '}
