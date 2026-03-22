@@ -578,7 +578,17 @@ Respond with JSON:
 
   // Extract text content (skip thinking blocks)
   const textBlocks = response.content.filter((block) => block.type === 'text');
-  const rawText = textBlocks.map((b) => ('text' in b ? b.text : '')).join('');
+  let rawText = textBlocks.map((b) => ('text' in b ? b.text : '')).join('');
+
+  // Strip markdown code fences if Claude wraps the JSON
+  rawText = rawText.trim();
+  if (rawText.startsWith('```')) {
+    rawText = rawText.slice(rawText.indexOf('\n') + 1);
+  }
+  if (rawText.endsWith('```')) {
+    rawText = rawText.slice(0, rawText.lastIndexOf('```'));
+  }
+  rawText = rawText.trim();
 
   // Parse the JSON response
   try {
