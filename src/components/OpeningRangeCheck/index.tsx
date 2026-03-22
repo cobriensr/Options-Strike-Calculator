@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Theme } from '../../themes';
-import { tinyLbl, tint } from '../../utils/ui-utils';
+import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
 import { estimateRange, getDowMultiplier } from '../../data/vixRangeStats';
 import StatCell from './StatCell';
 import RangeConsumptionBar from './RangeConsumptionBar';
@@ -76,9 +76,6 @@ function parseDow(selectedDate?: string): number | null {
   if (jsDay === 0 || jsDay === 6) return null;
   return jsDay - 1;
 }
-
-const inputCls =
-  'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
 
 /**
  * Opening Range Check.

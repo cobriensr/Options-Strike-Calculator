@@ -38,7 +38,6 @@ export default function ResultsSection({
           </div>
 
           <ParameterSummary
-            th={th}
             spySpot={(results.spot / effectiveRatio).toFixed(2)}
             spxLabel={
               'SPX (\u00D7' +

@@ -16,6 +16,7 @@ import {
 import RecommendationBanner from './RecommendationBanner';
 import RangeThresholdsTable from './RangeThresholdsTable';
 import DeltaThresholdsTable from './DeltaThresholdsTable';
+import type { ThresholdDelta } from './types';
 
 interface Props {
   readonly th: Theme;
@@ -36,17 +37,6 @@ interface RangeThreshold {
   readonly label: string;
   readonly pct: number;
   readonly purpose: string;
-}
-
-/** Computed delta for a given range threshold */
-interface ThresholdDelta {
-  readonly label: string;
-  readonly pct: number;
-  readonly pts: number;
-  readonly putDelta: number;
-  readonly callDelta: number;
-  readonly purpose: string;
-  readonly importance: 'primary' | 'secondary';
 }
 
 /**

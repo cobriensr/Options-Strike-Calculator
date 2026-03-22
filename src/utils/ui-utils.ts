@@ -54,3 +54,7 @@ export function fmtDollar(value: number): string {
 /** Tiny label className constant */
 export const tinyLbl =
   'block text-[10px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans mb-1';
+
+/** Standard full-width text input styling — used across volatility/range input sections */
+export const inputCls =
+  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Theme } from '../../themes';
-import { tinyLbl, tint } from '../../utils/ui-utils';
+import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
 import {
   getClusterMultiplier,
   CLUSTER_THRESHOLDS,
@@ -20,9 +20,6 @@ interface Props {
   readonly clusterPutMult?: number | null;
   readonly clusterCallMult?: number | null;
 }
-
-const inputCls =
-  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
 
 /**
  * Volatility Clustering signal.
@@ -78,7 +75,7 @@ export default function VolatilityCluster({
     if (onMultiplierChange) {
       onMultiplierChange(cluster?.mult ?? 1);
     }
-  }, [cluster?.mult]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cluster?.mult, onMultiplierChange]);
 
   // Determine signal color
   const signalColor = cluster

@@ -33,11 +33,11 @@ export default function EntryTimeSection({
     <SectionBox label="Entry Time">
       <div className="grid grid-cols-2 items-end gap-2.5">
         <div>
-          <label htmlFor="sel-hour" className={tinyLbl}>
+          <label htmlFor="entry-hour" className={tinyLbl}>
             Hour
           </label>
           <select
-            id="sel-hour"
+            id="entry-hour"
             value={timeHour}
             onChange={(e) => onHourChange(e.target.value)}
             className={selectCls}
@@ -51,11 +51,11 @@ export default function EntryTimeSection({
           </select>
         </div>
         <div>
-          <label htmlFor="sel-min" className={tinyLbl}>
+          <label htmlFor="entry-min" className={tinyLbl}>
             Minute
           </label>
           <select
-            id="sel-min"
+            id="entry-min"
             value={timeMinute}
             onChange={(e) => onMinuteChange(e.target.value)}
             className={selectCls}

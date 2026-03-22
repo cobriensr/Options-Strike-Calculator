@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { SectionBox, ScrollHint } from './ui';
+import { SectionBox, ScrollHint, Chip } from './ui';
 import { mkTh, mkTd } from '../utils/ui-utils';
 
 type Mode = 'sell' | 'buy';
@@ -13,11 +13,12 @@ function riskColor(pct: number): string {
   return 'var(--color-success)';
 }
 
-const chipBase =
+/* Compact chip classes — intentionally smaller than the shared Chip component */
+const chipCompact =
   'cursor-pointer rounded-full border-[1.5px] px-2.5 py-1 font-mono text-[12px] font-medium transition-all duration-100';
-const chipActive =
+const chipColorActive =
   'border-chip-active-border bg-chip-active-bg text-chip-active-text';
-const chipInactive =
+const chipColorInactive =
   'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt';
 
 function DollarField({
@@ -175,7 +176,7 @@ export default function RiskCalculator() {
                 onClick={() => setMode(m)}
                 className={
                   'cursor-pointer rounded-lg border-[1.5px] px-3 py-[10px] font-sans text-[11px] font-bold tracking-wide uppercase transition-all duration-100 ' +
-                  (mode === m ? chipActive : chipInactive)
+                  (mode === m ? chipColorActive : chipColorInactive)
                 }
               >
                 {m === 'sell' ? 'Sell' : 'Buy'}
@@ -281,13 +282,12 @@ export default function RiskCalculator() {
               aria-label="Wing width"
             >
               {WING_OPTIONS.map((w) => (
-                <button
+                <Chip
                   key={w}
                   onClick={() => setWing(w)}
-                  className={`${chipBase} ${wing === w ? chipActive : chipInactive}`}
-                >
-                  {w}
-                </button>
+                  active={wing === w}
+                  label={String(w)}
+                />
               ))}
             </div>
           </div>
@@ -436,7 +436,7 @@ export default function RiskCalculator() {
                   <button
                     key={m ?? 'none'}
                     onClick={() => setStopMultiple(m)}
-                    className={`${chipBase} ${stopMultiple === m ? chipActive : chipInactive}`}
+                    className={`${chipCompact} ${stopMultiple === m ? chipColorActive : chipColorInactive}`}
                   >
                     {m === null ? '\u2014' : `${m}\u00D7`}
                   </button>
@@ -453,7 +453,7 @@ export default function RiskCalculator() {
                   <button
                     key={pct ?? 'none'}
                     onClick={() => setBuyStopPct(pct)}
-                    className={`${chipBase} ${buyStopPct === pct ? chipActive : chipInactive}`}
+                    className={`${chipCompact} ${buyStopPct === pct ? chipColorActive : chipColorInactive}`}
                   >
                     {pct === null ? '\u2014' : `${pct}%`}
                   </button>
@@ -476,7 +476,7 @@ export default function RiskCalculator() {
               <button
                 key={cap}
                 onClick={() => setPortfolioCap(cap)}
-                className={`${chipBase} ${portfolioCap === cap ? chipActive : chipInactive}`}
+                className={`${chipCompact} ${portfolioCap === cap ? chipColorActive : chipColorInactive}`}
               >
                 {cap}%
               </button>

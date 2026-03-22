@@ -37,7 +37,7 @@ const DateInput = memo(function DateInput({
   return (
     <input
       ref={ref}
-      id="date-picker"
+      id="dt-date-picker"
       type="date"
       defaultValue={value}
       onChange={(e) => onDateChange(e.target.value)}
@@ -90,7 +90,7 @@ export default function DateTimeSection({
       {/* Date picker */}
       {vixDataLoaded && (
         <>
-          <label htmlFor="date-picker" className={tinyLbl}>
+          <label htmlFor="dt-date-picker" className={tinyLbl}>
             Date
           </label>
           <DateInput
@@ -107,11 +107,11 @@ export default function DateTimeSection({
       >
         <div className="grid grid-cols-2 items-end gap-2.5">
           <div>
-            <label htmlFor="sel-hour" className={tinyLbl}>
+            <label htmlFor="dt-hour" className={tinyLbl}>
               Hour
             </label>
             <select
-              id="sel-hour"
+              id="dt-hour"
               value={timeHour}
               onChange={(e) => onHourChange(e.target.value)}
               className={selectCls}
@@ -125,11 +125,11 @@ export default function DateTimeSection({
             </select>
           </div>
           <div>
-            <label htmlFor="sel-min" className={tinyLbl}>
+            <label htmlFor="dt-min" className={tinyLbl}>
               Minute
             </label>
             <select
-              id="sel-min"
+              id="dt-min"
               value={timeMinute}
               onChange={(e) => onMinuteChange(e.target.value)}
               className={selectCls}

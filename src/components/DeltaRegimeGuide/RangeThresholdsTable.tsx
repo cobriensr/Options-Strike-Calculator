@@ -1,14 +1,5 @@
 import { mkTh, mkTd } from '../../utils/ui-utils';
-
-interface ThresholdDelta {
-  readonly label: string;
-  readonly pct: number;
-  readonly pts: number;
-  readonly putDelta: number;
-  readonly callDelta: number;
-  readonly purpose: string;
-  readonly importance: 'primary' | 'secondary';
-}
+import type { ThresholdDelta } from './types';
 
 interface Props {
   readonly computed: ThresholdDelta[];

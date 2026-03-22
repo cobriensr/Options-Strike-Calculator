@@ -14,9 +14,11 @@ import type { Theme } from '../../themes';
 import type { CalculationResults } from '../../types';
 import { SectionBox } from '../ui';
 import { tint } from '../../utils/ui-utils';
-import type { AnalysisMode, AnalysisResult, UploadedImage } from './types';
+import type { AnalysisMode } from './types';
 import { CHART_LABELS, MODE_LABELS } from './types';
 import AnalysisResultsView from './AnalysisResults';
+import { useImageUpload } from './useImageUpload';
+import { useChartAnalysis } from './useChartAnalysis';
 
 export type { AnalysisContext } from './types';
 
@@ -33,20 +35,7 @@ export default function ChartAnalysis({
   context,
   onAnalysisSaved,
 }: Props) {
-  const [images, setImages] = useState<UploadedImage[]>([]);
   const [mode, setMode] = useState<AnalysisMode>('entry');
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
-  const [rawResponse, setRawResponse] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [replaceTargetIndex, setReplaceTargetIndex] = useState<number | null>(
-    null,
-  );
-  const replaceInputRef = useRef<HTMLInputElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const lastAnalysisRef = useRef<AnalysisResult | null>(null);
   const [confirming, setConfirming] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const [positionUpload, setPositionUpload] = useState<{
@@ -57,6 +46,43 @@ export default function ChartAnalysis({
 
   const [entryExistsToday, setEntryExistsToday] = useState(false);
   const [reviewExistsToday, setReviewExistsToday] = useState(false);
+
+  // ── Image management ──────────────────────────────────────
+  const {
+    images,
+    fileInputRef,
+    replaceInputRef,
+    removeImage,
+    clearAllImages,
+    updateLabel,
+    replaceImage,
+    handleReplaceFile,
+    handleDrop,
+    handleFileSelect,
+  } = useImageUpload();
+
+  // ── Analysis ──────────────────────────────────────────────
+  const {
+    analysis,
+    rawResponse,
+    loading,
+    error,
+    elapsed,
+    analyze,
+    cancelAnalysis,
+    lastAnalysis,
+    THINKING_MESSAGES,
+  } = useChartAnalysis({
+    images,
+    context,
+    results,
+    mode,
+    onAnalysisSaved,
+    onModeCompleted: (completedMode) => {
+      if (completedMode === 'entry') setEntryExistsToday(true);
+      if (completedMode === 'review') setReviewExistsToday(true);
+    },
+  });
 
   // Check which analysis modes already exist for today's selected date
   useEffect(() => {
@@ -97,121 +123,7 @@ export default function ChartAnalysis({
     return () => {
       cancelled = true;
     };
-  }, [context.selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const cancelAnalysis = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setLoading(false);
-    setError('Analysis cancelled.');
-  }, []);
-
-  // ── Image management ──────────────────────────────────────
-
-  const addImage = useCallback(
-    (file: File) => {
-      if (images.length >= 8) return;
-      const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const preview = URL.createObjectURL(file);
-      setImages((prev) => {
-        const usedLabels = new Set(prev.map((i) => i.label));
-        const nextLabel =
-          CHART_LABELS.find((l) => !usedLabels.has(l)) ?? CHART_LABELS[0];
-        return [...prev, { id, file, preview, label: nextLabel }];
-      });
-    },
-    [images.length],
-  );
-
-  const removeImage = useCallback((id: string) => {
-    setImages((prev) => {
-      const img = prev.find((i) => i.id === id);
-      if (img) URL.revokeObjectURL(img.preview);
-      return prev.filter((i) => i.id !== id);
-    });
-  }, []);
-
-  const clearAllImages = useCallback(() => {
-    setImages((prev) => {
-      for (const img of prev) URL.revokeObjectURL(img.preview);
-      return [];
-    });
-  }, []);
-
-  const updateLabel = useCallback((id: string, label: string) => {
-    setImages((prev) => prev.map((i) => (i.id === id ? { ...i, label } : i)));
-  }, []);
-
-  const replaceImage = useCallback((index: number) => {
-    setReplaceTargetIndex(index);
-    replaceInputRef.current?.click();
-  }, []);
-
-  const handleReplaceFile = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file || replaceTargetIndex == null) return;
-      setImages((prev) => {
-        const targetIdx = replaceTargetIndex - 1;
-        if (targetIdx < 0 || targetIdx >= prev.length) return prev;
-        const old = prev[targetIdx]!;
-        URL.revokeObjectURL(old.preview);
-        const newImg: UploadedImage = {
-          id: `img-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          file,
-          preview: URL.createObjectURL(file),
-          label: old.label,
-        };
-        return [
-          ...prev.slice(0, targetIdx),
-          newImg,
-          ...prev.slice(targetIdx + 1),
-        ];
-      });
-      setReplaceTargetIndex(null);
-      if (replaceInputRef.current) replaceInputRef.current.value = '';
-    },
-    [replaceTargetIndex],
-  );
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      const files = Array.from(e.dataTransfer.files).filter((f) =>
-        f.type.startsWith('image/'),
-      );
-      for (const f of files.slice(0, 8 - images.length)) addImage(f);
-    },
-    [addImage, images.length],
-  );
-
-  const handleFileSelect = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(e.target.files ?? []);
-      for (const f of files.slice(0, 8 - images.length)) addImage(f);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    },
-    [addImage, images.length],
-  );
-
-  const handlePaste = useCallback(
-    (e: ClipboardEvent) => {
-      const items = Array.from(e.clipboardData?.items ?? []);
-      for (const item of items) {
-        if (item.type.startsWith('image/')) {
-          e.preventDefault();
-          const file = item.getAsFile();
-          if (file) addImage(file);
-        }
-      }
-    },
-    [addImage],
-  );
-
-  useEffect(() => {
-    document.addEventListener('paste', handlePaste);
-    return () => document.removeEventListener('paste', handlePaste);
-  }, [handlePaste]);
+  }, [context.selectedDate, mode]);
 
   const handleCSVUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -253,195 +165,6 @@ export default function ChartAnalysis({
     },
     [results?.spot],
   );
-
-  // Elapsed timer while loading
-  useEffect(() => {
-    if (!loading) {
-      setElapsed(0);
-      return;
-    }
-    setElapsed(0);
-    const interval = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(interval);
-  }, [loading]);
-
-  const THINKING_MESSAGES = [
-    'Reading chart data...',
-    'Fetching open positions...',
-    'Analyzing Market Tide flow...',
-    'Checking SPX Net Flow...',
-    'Checking Net Flow confirmation...',
-    'Evaluating gamma exposure...',
-    'Checking charm decay profile...',
-    'Reading aggregate GEX regime...',
-    'Mapping strikes to gamma zones...',
-    'Building entry plan...',
-    'Assessing hedge options...',
-    'Formulating management rules...',
-  ];
-
-  // ── Analysis ──────────────────────────────────────────────
-
-  const analyze = useCallback(async () => {
-    if (images.length === 0) return;
-    setLoading(true);
-    setError(null);
-    setAnalysis(null);
-    setRawResponse(null);
-
-    try {
-      const imageData = await Promise.all(
-        images.map(async (img) => {
-          const buffer = await img.file.arrayBuffer();
-          const bytes = new Uint8Array(buffer);
-          let binary = '';
-          for (const b of bytes) binary += String.fromCodePoint(b);
-          return {
-            data: btoa(binary),
-            mediaType: img.file.type,
-            label: img.label,
-          };
-        }),
-      );
-
-      // Fetch live positions from Schwab before analysis (fire-and-forget save to DB)
-      // The /api/analyze endpoint auto-reads positions from DB, so this just ensures they're fresh
-      if (!context.isBacktest && results?.spot) {
-        try {
-          await fetch(`/api/positions?spx=${results.spot}`, {
-            credentials: 'include',
-          });
-        } catch {
-          // Positions are optional — analysis still works without them
-          console.warn(
-            'Failed to fetch positions — analysis will proceed without them',
-          );
-        }
-      }
-
-      const payload = JSON.stringify({
-        images: imageData,
-        context: {
-          ...context,
-          mode,
-          sigma: results?.sigma,
-          T: results?.T,
-          hoursRemaining: results?.hoursRemaining,
-          spx: results?.spot,
-          // Previous recommendation is now auto-fetched from DB by the backend.
-          // Keep the client-side fallback for cases where DB hasn't been populated yet
-          // (e.g., first analysis of the day, or backtesting without saved analyses).
-          previousRecommendation:
-            lastAnalysisRef.current && (mode === 'midday' || mode === 'review')
-              ? buildPreviousRecommendation(lastAnalysisRef.current)
-              : undefined,
-        },
-      });
-
-      const MAX_ATTEMPTS = 3;
-      let lastError: unknown = null;
-
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        // Fresh controller per attempt so a timeout on attempt N
-        // doesn't poison attempt N+1
-        const controller = new AbortController();
-        abortRef.current = controller;
-        const timeout = setTimeout(() => controller.abort(), 750_000); // 12 min 30s
-
-        try {
-          const res = await fetch('/api/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: payload,
-          });
-
-          clearTimeout(timeout);
-
-          if (!res.ok) {
-            const body = await res
-              .json()
-              .catch(() => ({ error: 'Request failed' }));
-            const httpErr = new Error(body.error || `HTTP ${res.status}`);
-            (httpErr as Error & { status: number }).status = res.status;
-            throw httpErr;
-          }
-
-          const data = await res.json();
-
-          // Clear any interim retry message now that we have a response
-          lastError = null;
-          setError(null);
-
-          if (data.analysis) {
-            setAnalysis(data.analysis);
-            lastAnalysisRef.current = data.analysis;
-            onAnalysisSaved?.();
-            // Lock completed modes immediately without waiting for re-fetch
-            if (mode === 'entry') setEntryExistsToday(true);
-            if (mode === 'review') setReviewExistsToday(true);
-          }
-          if (data.raw) setRawResponse(data.raw);
-          if (!data.analysis && data.raw)
-            setError(
-              'Could not parse structured response. See raw output below.',
-            );
-
-          break;
-        } catch (err) {
-          clearTimeout(timeout);
-          lastError = err;
-
-          // User manually cancelled — don't retry
-          if (err instanceof DOMException && err.name === 'AbortError') {
-            if (!abortRef.current) break; // manual cancel (abortRef cleared)
-            // Timeout-triggered abort — retry if attempts remain
-            if (attempt === MAX_ATTEMPTS) break;
-            setError(
-              `Attempt ${attempt}/${MAX_ATTEMPTS} timed out — retrying...`,
-            );
-            continue;
-          }
-
-          // Non-retryable client errors (auth, validation, bad request)
-          const status = (err as Error & { status?: number }).status;
-          if (status && status >= 400 && status < 500) {
-            break;
-          }
-
-          // Retryable failure — back off then retry
-          if (attempt < MAX_ATTEMPTS) {
-            const delaySec = 2 ** (attempt - 1); // 1s, 2s
-            setError(
-              `Attempt ${attempt}/${MAX_ATTEMPTS} failed — retrying in ${delaySec}s...`,
-            );
-            await new Promise((r) => setTimeout(r, delaySec * 1000));
-          }
-        }
-      }
-
-      if (lastError) {
-        if (
-          lastError instanceof DOMException &&
-          lastError.name === 'AbortError'
-        ) {
-          if (abortRef.current)
-            setError(
-              `Analysis timed out after ${MAX_ATTEMPTS} attempts. Try fewer images or simpler charts.`,
-            );
-        } else {
-          setError(
-            lastError instanceof Error ? lastError.message : 'Analysis failed',
-          );
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Analysis failed');
-    } finally {
-      abortRef.current = null;
-      setLoading(false);
-    }
-  }, [images, context, results, mode, onAnalysisSaved]);
 
   // ── Render ────────────────────────────────────────────────
 
@@ -665,14 +388,13 @@ export default function ChartAnalysis({
                     {' \u2022'} Will fetch live positions from Schwab
                   </span>
                 )}
-                {lastAnalysisRef.current &&
-                  (mode === 'midday' || mode === 'review') && (
-                    <span style={{ color: th.green }}>
-                      {' '}
-                      {'\u2022'} Includes previous{' '}
-                      {lastAnalysisRef.current.structure} recommendation
-                    </span>
-                  )}
+                {lastAnalysis && (mode === 'midday' || mode === 'review') && (
+                  <span style={{ color: th.green }}>
+                    {' '}
+                    {'\u2022'} Includes previous {lastAnalysis.structure}{' '}
+                    recommendation
+                  </span>
+                )}
               </div>
             </div>
             <div className="flex gap-2">
@@ -795,37 +517,4 @@ export default function ChartAnalysis({
       </div>
     </SectionBox>
   );
-}
-
-/**
- * Build a concise previous recommendation string from a client-side analysis result.
- * This is a FALLBACK — the backend now auto-fetches from DB via getPreviousRecommendation().
- * This client-side version is used when:
- *   - DB doesn't have the previous analysis yet (first run, no save)
- *   - Backtesting mode where analyses may not be saved
- */
-function buildPreviousRecommendation(prev: AnalysisResult): string {
-  const parts = [
-    `Structure: ${prev.structure}, Delta: ${prev.suggestedDelta}, Confidence: ${prev.confidence}`,
-    `Reasoning: ${prev.reasoning}`,
-  ];
-  const e1 = prev.entryPlan?.entry1;
-  if (e1) {
-    const timing = e1.timing ?? e1.condition ?? '';
-    parts.push(`Entry 1: ${e1.structure} ${String(e1.delta)}Δ at ${timing}`);
-  }
-  if (prev.hedge) {
-    parts.push(
-      `Hedge: ${prev.hedge.recommendation} — ${prev.hedge.description}`,
-    );
-  }
-  if (prev.managementRules?.profitTarget) {
-    parts.push(`Profit target: ${prev.managementRules.profitTarget}`);
-  }
-  if (prev.managementRules?.stopConditions) {
-    parts.push(
-      `Stop conditions: ${prev.managementRules.stopConditions.join('; ')}`,
-    );
-  }
-  return parts.join('. ');
 }

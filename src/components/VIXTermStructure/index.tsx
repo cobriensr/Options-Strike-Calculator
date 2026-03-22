@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Theme } from '../../themes';
-import { tinyLbl, tint } from '../../utils/ui-utils';
+import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
 import type { Signal } from './classifiers';
 import {
   classifyVix1dRatio,
@@ -21,9 +21,6 @@ interface Props {
   readonly termShape?: string | null; // Term structure shape from useComputedSignals
   readonly termShapeAdvice?: string | null;
 }
-
-const inputCls =
-  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
 
 /**
  * VIX Term Structure panel.

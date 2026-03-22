@@ -2,16 +2,7 @@ import type { Theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { VIXBucket } from '../../data/vixRangeStats';
 import GuidanceCell from './GuidanceCell';
-
-interface ThresholdDelta {
-  readonly label: string;
-  readonly pct: number;
-  readonly pts: number;
-  readonly putDelta: number;
-  readonly callDelta: number;
-  readonly purpose: string;
-  readonly importance: 'primary' | 'secondary';
-}
+import type { ThresholdDelta } from './types';
 
 interface Props {
   readonly th: Theme;

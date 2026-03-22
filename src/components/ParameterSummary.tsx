@@ -1,7 +1,4 @@
-import type { Theme } from '../themes';
-
 interface Props {
-  th: Theme;
   spySpot: string;
   spxLabel: string;
   spxValue: string;

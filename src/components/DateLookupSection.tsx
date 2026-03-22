@@ -27,11 +27,11 @@ export default function DateLookupSection({
 }: Props) {
   return (
     <SectionBox label="Date Lookup">
-      <label htmlFor="date-picker" className="sr-only">
+      <label htmlFor="lookup-date-picker" className="sr-only">
         Select date
       </label>
       <input
-        id="date-picker"
+        id="lookup-date-picker"
         type="date"
         value={selectedDate}
         onChange={(e) => onDateChange(e.target.value)}
