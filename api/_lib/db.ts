@@ -295,6 +295,19 @@ const MIGRATIONS: Migration[] = [
       `;
     },
   },
+  {
+    id: 3,
+    description:
+      'Reduce lessons embedding from vector(3072) to vector(2000) for HNSW compatibility',
+    run: async (sql) => {
+      // Drop the HNSW index if it exists (migration #2 may have failed on index creation)
+      await sql`DROP INDEX IF EXISTS idx_lessons_embedding`;
+      // Change column type from vector(3072) to vector(2000)
+      await sql`ALTER TABLE lessons ALTER COLUMN embedding TYPE vector(2000)`;
+      // Re-create the HNSW index with the new dimension
+      await sql`CREATE INDEX IF NOT EXISTS idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops)`;
+    },
+  },
 ];
 
 /**

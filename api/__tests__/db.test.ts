@@ -349,28 +349,30 @@ describe('db.ts', () => {
       // CREATE TABLE schema_migrations
       mockSql.mockResolvedValueOnce([]);
       // SELECT returns all migrations as already applied
-      mockSql.mockResolvedValueOnce([{ id: 1 }, { id: 2 }]);
+      mockSql.mockResolvedValueOnce([{ id: 1 }, { id: 2 }, { id: 3 }]);
 
       const applied = await migrateDb();
 
       expect(applied).toEqual([]);
     });
 
-    it('applies migration #2 when migration #1 is already done', async () => {
+    it('applies migrations #2 and #3 when migration #1 is already done', async () => {
       // CREATE TABLE schema_migrations
       mockSql.mockResolvedValueOnce([]);
       // SELECT returns migration #1 as already applied
       mockSql.mockResolvedValueOnce([{ id: 1 }]);
-      // Migration #2: CREATE EXTENSION + CREATE TABLE lessons + 4 indexes + CREATE TABLE lesson_reports + INSERT
+      // Migration #2: CREATE EXTENSION + CREATE TABLE lessons + 4 indexes + CREATE TABLE lesson_reports + INSERT = 7+1
+      // Migration #3: DROP INDEX + ALTER TABLE + CREATE INDEX + INSERT = 3+1
       mockSql.mockResolvedValue([]);
 
       const applied = await migrateDb();
 
       expect(applied).toEqual([
         '#2: Create lessons and lesson_reports tables with pgvector',
+        '#3: Reduce lessons embedding from vector(3072) to vector(2000) for HNSW compatibility',
       ]);
-      // 2 setup calls + 7 migration SQL calls + 1 INSERT = 10
-      expect(mockSql).toHaveBeenCalledTimes(10);
+      // 2 setup + 7 migration #2 + 1 insert + 3 migration #3 + 1 insert = 14
+      expect(mockSql).toHaveBeenCalledTimes(14);
     });
 
     it('propagates errors from migration SQL', async () => {

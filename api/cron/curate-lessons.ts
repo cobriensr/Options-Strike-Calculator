@@ -427,7 +427,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (err) {
     logger.error({ err }, 'Curation cron failed');
-    return res.status(500).json({ error: 'Curation failed' });
+    return res.status(500).json({
+      error: 'Curation failed',
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
   }
 }
 

@@ -23,7 +23,7 @@ vi.mock('../_lib/lessons.js', () => ({
 }));
 
 vi.mock('../_lib/embeddings.js', () => ({
-  generateEmbedding: vi.fn().mockResolvedValue(new Array(3072).fill(0.1)),
+  generateEmbedding: vi.fn().mockResolvedValue(new Array(2000).fill(0.1)),
   findSimilarLessons: vi.fn().mockResolvedValue([]),
 }));
 
@@ -119,7 +119,7 @@ describe('GET /api/cron/curate-lessons', () => {
     // Re-apply default mocks
     vi.mocked(upsertReport).mockResolvedValue(undefined);
     vi.mocked(updateReport).mockResolvedValue(undefined);
-    vi.mocked(generateEmbedding).mockResolvedValue(new Array(3072).fill(0.1));
+    vi.mocked(generateEmbedding).mockResolvedValue(new Array(2000).fill(0.1));
     vi.mocked(findSimilarLessons).mockResolvedValue([]);
   });
 

@@ -34,7 +34,7 @@ CREATE TABLE lessons (
   category            TEXT CHECK (category IN (
                         'regime', 'flow', 'gamma', 'management', 'entry', 'sizing'
                       )),
-  embedding           vector(3072) NOT NULL,
+  embedding           vector(2000) NOT NULL,
   created_at          TIMESTAMPTZ DEFAULT NOW(),
   superseded_at       TIMESTAMPTZ,
 
@@ -60,7 +60,7 @@ CREATE INDEX idx_lessons_embedding ON lessons
 | `market_conditions`  | Snapshot of conditions when the lesson was learned. See "Market Conditions Derivation" section below.                                                             |
 | `tags`               | Freeform tags for Claude's rapid scanning. e.g. `['gex', 'deeply-negative', 'friday', 'charm', 'management-timing']`                                              |
 | `category`           | Broad classification. CHECK-constrained to: `regime`, `flow`, `gamma`, `management`, `entry`, `sizing`.                                                           |
-| `embedding`          | OpenAI `text-embedding-3-large` vector (3072 dimensions). NOT NULL — every lesson must have an embedding for dedup search.                                        |
+| `embedding`          | OpenAI `text-embedding-3-large` vector (2000 dimensions, truncated for HNSW compatibility). NOT NULL — every lesson must have an embedding for dedup search.                                        |
 | `superseded_at`      | Timestamp when status changed to `superseded`.                                                                                                                    |
 
 **Key constraints:**
