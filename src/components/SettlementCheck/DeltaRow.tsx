@@ -189,6 +189,7 @@ export default function DeltaRow({
             {/* Actual price range — with tooltip on hover */}
             <button
               type="button"
+              aria-label={`${r.delta} delta price range: low ${remainingLow.toFixed(0)}, high ${remainingHigh.toFixed(0)}`}
               className="absolute top-0 h-full cursor-pointer rounded-full"
               style={{
                 left: `${barLeft}%`,

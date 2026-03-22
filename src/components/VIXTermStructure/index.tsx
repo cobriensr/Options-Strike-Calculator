@@ -112,7 +112,7 @@ export default function VIXTermStructure({
         <div>
           <label htmlFor="vix1d-input" className={tinyLbl}>
             VIX1D{' '}
-            <span className="font-normal tracking-normal normal-case opacity-70">
+            <span className="text-muted font-normal tracking-normal normal-case">
               (1-day)
             </span>
           </label>
@@ -132,7 +132,7 @@ export default function VIXTermStructure({
         <div>
           <label htmlFor="vix9d-input" className={tinyLbl}>
             VIX9D{' '}
-            <span className="font-normal tracking-normal normal-case opacity-70">
+            <span className="text-muted font-normal tracking-normal normal-case">
               (9-day)
             </span>
           </label>

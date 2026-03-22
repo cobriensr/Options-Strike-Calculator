@@ -55,7 +55,7 @@ export default function SpotPriceSection({
         <div>
           <label htmlFor="spx-direct" className={tinyLbl}>
             SPX Price{' '}
-            <span className="font-normal tracking-normal normal-case opacity-70">
+            <span className="text-muted font-normal tracking-normal normal-case">
               (optional)
             </span>
           </label>
