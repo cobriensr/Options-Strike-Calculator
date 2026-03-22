@@ -212,31 +212,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const analysisRow = review as unknown as Record<string, unknown>;
 
-      // Phase A: External API calls (embedding + Claude curation)
-      const prepared: PreparedLesson[] = [];
+      // Phase A: External API calls — two sub-phases:
+      //   A1: Generate all embeddings in parallel (independent, fast)
+      //   A2: Claude curation sequentially (each decision affects dedup context)
 
-      for (const lessonText of lessonsLearned) {
-        // 1. Generate embedding
-        const embedding = await generateEmbedding(lessonText);
-        if (!embedding) {
+      // A1: Batch all embeddings concurrently
+      const embeddingResults = await Promise.all(
+        lessonsLearned.map(async (text) => ({
+          text,
+          embedding: await generateEmbedding(text),
+        })),
+      );
+
+      // Separate successes from failures
+      const withEmbeddings: { text: string; embedding: number[] }[] = [];
+      for (const result of embeddingResults) {
+        if (!result.embedding) {
           errors.push({
-            text: lessonText,
+            text: result.text,
             error: 'Embedding generation failed',
             sourceAnalysisId: review.id as number,
           });
-          continue;
+        } else {
+          withEmbeddings.push({
+            text: result.text,
+            embedding: result.embedding,
+          });
         }
+      }
 
-        // 2. Find similar existing lessons
+      // A2: Claude curation — sequential because each decision
+      // affects what's "already in the compendium" for subsequent lessons
+      const marketConditions = buildMarketConditions(analysisRow, snapshotRow);
+      const prepared: PreparedLesson[] = [];
+
+      for (const { text: lessonText, embedding } of withEmbeddings) {
+        // Find similar existing lessons
         const similar = await findSimilarLessons(embedding);
 
-        // 3. Build market conditions
-        const marketConditions = buildMarketConditions(
-          analysisRow,
-          snapshotRow,
-        );
-
-        // 4. Call Claude for curation decision
+        // Call Claude for curation decision
         const decision = await curateLesson(
           anthropic,
           lessonText,
