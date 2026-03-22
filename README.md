@@ -106,6 +106,7 @@ Live at: [theta-options.com](https://theta-options.com)
       - [Rule 12: High-Impact Event Day Management](#rule-12-high-impact-event-day-management)
   - [Position Sizing Guide](#position-sizing-guide)
   - [Accuracy \& Limitations](#accuracy--limitations)
+  - [License](#license)
 
 ---
 
@@ -1165,3 +1166,7 @@ Multiple positions on the same underlying and expiration are NOT diversified —
 8. **Backtest limitations**: Periscope gamma profiles are point-in-time screenshots; historical gamma data is not available programmatically
 9. **Database coverage**: VIX1D data available from May 2022 only; earlier outcomes have VIX close but not VIX1D close
 10. **Pin risk requires live chain**: OI heatmap only available during market hours with authenticated Schwab session. Historical OI data is not persisted.
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0](LICENSE.md). See the [LICENSE.md](LICENSE.md) file for details.
