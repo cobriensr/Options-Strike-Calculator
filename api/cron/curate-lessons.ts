@@ -180,6 +180,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
 
+    // Stream NDJSON progress so the connection stays alive and progress is visible
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    const progress = (data: Record<string, unknown>) => {
+      res.write(JSON.stringify(data) + '\n');
+    };
+
+    progress({ event: 'start', reviews: reviews.length, backfill });
+
     // Accumulators for the final report
     const added: AddedLesson[] = [];
     const superseded: SupersededLesson[] = [];
@@ -187,7 +196,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const errors: LessonError[] = [];
 
     // Step 3: Process each review
+    let reviewIndex = 0;
     for (const review of reviews) {
+      reviewIndex++;
       const fullResponse =
         typeof review.full_response === 'string'
           ? JSON.parse(review.full_response as string)
@@ -199,6 +210,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         : [];
 
       if (lessonsLearned.length === 0) continue;
+
+      progress({
+        event: 'review',
+        reviewIndex,
+        totalReviews: reviews.length,
+        date: review.date,
+        lessons: lessonsLearned.length,
+      });
 
       // Fetch snapshot for market conditions
       let snapshotRow: Record<string, unknown> | null = null;
@@ -224,6 +243,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         })),
       );
 
+      const embeddingSuccessCount = embeddingResults.filter(r => r.embedding).length;
+      progress({
+        event: 'embeddings_done',
+        reviewIndex,
+        total: lessonsLearned.length,
+        succeeded: embeddingSuccessCount,
+        failed: lessonsLearned.length - embeddingSuccessCount,
+      });
+
       // Separate successes from failures
       const withEmbeddings: { text: string; embedding: number[] }[] = [];
       for (const result of embeddingResults) {
@@ -246,7 +274,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const marketConditions = buildMarketConditions(analysisRow, snapshotRow);
       const prepared: PreparedLesson[] = [];
 
+      let curationIndex = 0;
       for (const { text: lessonText, embedding } of withEmbeddings) {
+        curationIndex++;
+        progress({
+          event: 'curating',
+          reviewIndex,
+          lessonIndex: curationIndex,
+          totalLessons: withEmbeddings.length,
+          lessonPreview: lessonText.slice(0, 80) + '...',
+        });
+
         // Find similar existing lessons
         const similar = await findSimilarLessons(embedding);
 
@@ -266,6 +304,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
           continue;
         }
+
+        progress({
+          event: 'curated',
+          reviewIndex,
+          lessonIndex: curationIndex,
+          action: decision.action,
+          reason: decision.reason,
+        });
 
         prepared.push({
           text: lessonText,
@@ -432,14 +478,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'Curation complete',
     );
 
-    return res.status(200).json({
+    progress({
+      event: 'complete',
       reviewsProcessed: reviews.length,
       lessonsAdded: added.length,
       lessonsSuperseded: superseded.length,
       lessonsSkipped: skipped.length,
       errors: errors.length,
-      errorDetails: errors.slice(0, 5),
     });
+    return res.end();
   } catch (err) {
     logger.error({ err }, 'Curation cron failed');
     return res.status(500).json({
