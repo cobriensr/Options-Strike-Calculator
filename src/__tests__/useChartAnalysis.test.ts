@@ -27,7 +27,6 @@ afterEach(() => {
 
 const mockFile = new File(['data'], 'chart.png', { type: 'image/png' });
 // Provide a working arrayBuffer so the hook can convert to base64
-const originalArrayBuffer = mockFile.arrayBuffer.bind(mockFile);
 Object.defineProperty(mockFile, 'arrayBuffer', {
   value: () => Promise.resolve(new ArrayBuffer(4)),
   configurable: true,
@@ -109,7 +108,7 @@ describe('useChartAnalysis', () => {
     );
     expect(analyzeCalls.length).toBe(1);
 
-    const [url, options] = analyzeCalls[0];
+    const [url, options] = analyzeCalls[0]!;
     expect(url).toBe('/api/analyze');
     expect(options.method).toBe('POST');
     expect(options.headers['Content-Type']).toBe('application/json');

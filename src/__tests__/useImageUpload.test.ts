@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useImageUpload } from '../hooks/useImageUpload';
 
@@ -44,10 +44,10 @@ describe('useImageUpload', () => {
     });
 
     expect(result.current.images).toHaveLength(1);
-    expect(result.current.images[0].file).toBe(file);
-    expect(result.current.images[0].preview).toBe('blob:mock-url');
-    expect(result.current.images[0].label).toBe('Market Tide');
-    expect(result.current.images[0].id).toMatch(/^img-/);
+    expect(result.current.images[0]!.file).toBe(file);
+    expect(result.current.images[0]!.preview).toBe('blob:mock-url');
+    expect(result.current.images[0]!.label).toBe('Market Tide');
+    expect(result.current.images[0]!.id).toMatch(/^img-/);
     expect(mockCreateObjectURL).toHaveBeenCalledWith(file);
   });
 
@@ -61,8 +61,8 @@ describe('useImageUpload', () => {
       result.current.addImage(makeFile('b.png'));
     });
 
-    expect(result.current.images[0].label).toBe('Market Tide');
-    expect(result.current.images[1].label).toBe('Net Flow (SPY)');
+    expect(result.current.images[0]!.label).toBe('Market Tide');
+    expect(result.current.images[1]!.label).toBe('Net Flow (SPY)');
   });
 
   it('respects the 8 image limit', () => {
@@ -86,7 +86,7 @@ describe('useImageUpload', () => {
       result.current.addImage(makeFile());
     });
 
-    const id = result.current.images[0].id;
+    const id = result.current.images[0]!.id;
 
     act(() => {
       result.current.removeImage(id);
@@ -131,13 +131,13 @@ describe('useImageUpload', () => {
       result.current.addImage(makeFile());
     });
 
-    const id = result.current.images[0].id;
+    const id = result.current.images[0]!.id;
 
     act(() => {
       result.current.updateLabel(id, 'Periscope (Delta Flow)');
     });
 
-    expect(result.current.images[0].label).toBe('Periscope (Delta Flow)');
+    expect(result.current.images[0]!.label).toBe('Periscope (Delta Flow)');
   });
 
   // ── handleFileSelect ──
@@ -179,8 +179,8 @@ describe('useImageUpload', () => {
 
     expect(event.preventDefault).toHaveBeenCalled();
     expect(result.current.images).toHaveLength(2);
-    expect(result.current.images[0].file).toBe(imageFile);
-    expect(result.current.images[1].file).toBe(jpegFile);
+    expect(result.current.images[0]!.file).toBe(imageFile);
+    expect(result.current.images[1]!.file).toBe(jpegFile);
   });
 
   // ── Paste listener ──
@@ -215,7 +215,7 @@ describe('useImageUpload', () => {
     });
 
     expect(result.current.images).toHaveLength(1);
-    expect(result.current.images[0].file).toBe(pastedFile);
+    expect(result.current.images[0]!.file).toBe(pastedFile);
     expect(preventDefaultSpy).toHaveBeenCalled();
   });
 
