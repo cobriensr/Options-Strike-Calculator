@@ -762,15 +762,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     (context.previousRecommendation as string | undefined) ??
     null;
 
-  // Auto-fetch Market Tide flow data from DB (populated by cron)
+  // Auto-fetch flow data from DB (populated by crons)
   let marketTideContext: string | null = null;
   let marketTideOtmContext: string | null = null;
+  let spxFlowContext: string | null = null;
+  let spyFlowContext: string | null = null;
+  let qqqFlowContext: string | null = null;
 
   try {
-    const [tideRows, tideOtmRows] = await Promise.all([
-      getFlowData(analysisDate, 'market_tide'),
-      getFlowData(analysisDate, 'market_tide_otm'),
-    ]);
+    const [tideRows, tideOtmRows, spxRows, spyRows, qqqRows] =
+      await Promise.all([
+        getFlowData(analysisDate, 'market_tide'),
+        getFlowData(analysisDate, 'market_tide_otm'),
+        getFlowData(analysisDate, 'spx_flow'),
+        getFlowData(analysisDate, 'spy_flow'),
+        getFlowData(analysisDate, 'qqq_flow'),
+      ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,
       'Market Tide (All-In)',
@@ -779,9 +786,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       tideOtmRows,
       'Market Tide (OTM Only)',
     );
+    spxFlowContext = formatFlowDataForClaude(spxRows, 'SPX Net Flow');
+    spyFlowContext = formatFlowDataForClaude(spyRows, 'SPY Net Flow');
+    qqqFlowContext = formatFlowDataForClaude(qqqRows, 'QQQ Net Flow');
   } catch (flowErr) {
     logger.error({ err: flowErr }, 'Failed to fetch flow data for analysis');
-    // Non-fatal — analysis works without structured data (falls back to screenshots)
   }
 
   const marketTideOtmSection = marketTideOtmContext
@@ -827,6 +836,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 - Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
 ${marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${marketTideContext}\n${marketTideOtmSection}` : ''}
+${spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. These are the primary flow signal (Rule 8, 50% weight). Trust these values over screenshot estimates.\n\n${spxFlowContext}\n` : ''}
+${spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPY. Secondary confirmation signal (Rule 8, 15% weight).\n\n${spyFlowContext}\n` : ''}
+${qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for QQQ. Tech divergence check (Rule 8, 10% weight).\n\n${qqqFlowContext}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
