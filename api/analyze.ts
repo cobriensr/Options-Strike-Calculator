@@ -26,6 +26,8 @@ import {
   getDb,
   getLatestPositions,
   getPreviousRecommendation,
+  getFlowData,
+  formatFlowDataForClaude,
 } from './_lib/db.js';
 import { analyzeBodySchema } from './_lib/validation.js';
 import logger from './_lib/logger.js';
@@ -760,6 +762,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     (context.previousRecommendation as string | undefined) ??
     null;
 
+  // Auto-fetch Market Tide flow data from DB (populated by cron)
+  let marketTideContext: string | null = null;
+  let marketTideOtmContext: string | null = null;
+
+  try {
+    const [tideRows, tideOtmRows] = await Promise.all([
+      getFlowData(analysisDate, 'market_tide'),
+      getFlowData(analysisDate, 'market_tide_otm'),
+    ]);
+    marketTideContext = formatFlowDataForClaude(
+      tideRows,
+      'Market Tide (All-In)',
+    );
+    marketTideOtmContext = formatFlowDataForClaude(
+      tideOtmRows,
+      'Market Tide (OTM Only)',
+    );
+  } catch (flowErr) {
+    logger.error({ err: flowErr }, 'Failed to fetch flow data for analysis');
+    // Non-fatal — analysis works without structured data (falls back to screenshots)
+  }
+
+  const marketTideOtmSection = marketTideOtmContext
+    ? `\n${marketTideOtmContext}\n`
+    : '';
+
   const contextText = `
 ## Analysis Mode: ${mode === 'review' ? 'END-OF-DAY REVIEW' : mode === 'midday' ? 'MID-DAY RE-ANALYSIS' : 'PRE-TRADE ENTRY'}
 
@@ -798,6 +826,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   })()}
 - Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
+${marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${marketTideContext}\n${marketTideOtmSection}` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
