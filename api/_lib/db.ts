@@ -308,6 +308,27 @@ const MIGRATIONS: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops)`;
     },
   },
+  {
+    id: 4,
+    description: 'Create flow_data table for UW API time series',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS flow_data (
+          id          SERIAL PRIMARY KEY,
+          date        DATE NOT NULL,
+          timestamp   TIMESTAMPTZ NOT NULL,
+          source      TEXT NOT NULL,
+          ncp         DECIMAL(14,2),
+          npp         DECIMAL(14,2),
+          net_volume  INTEGER,
+          created_at  TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(date, timestamp, source)
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_flow_data_date_source ON flow_data (date, source)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_flow_data_timestamp ON flow_data (timestamp)`;
+    },
+  },
 ];
 
 /**
@@ -890,4 +911,162 @@ export async function getPreviousRecommendation(
   }
 
   return lines.join('\n');
+}
+
+// ============================================================
+// FLOW DATA (UW API time series)
+// ============================================================
+
+/**
+ * Get all flow data rows for a given date and source.
+ * Returns rows ordered by timestamp ascending (oldest first).
+ */
+export async function getFlowData(
+  date: string,
+  source: string,
+): Promise<
+  Array<{
+    timestamp: string;
+    ncp: number;
+    npp: number;
+    netVolume: number;
+  }>
+> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT timestamp, ncp, npp, net_volume
+    FROM flow_data
+    WHERE date = ${date} AND source = ${source}
+    ORDER BY timestamp ASC
+  `;
+
+  return rows.map((r) => ({
+    timestamp: r.timestamp as string,
+    ncp: Number(r.ncp),
+    npp: Number(r.npp),
+    netVolume: r.net_volume as number,
+  }));
+}
+
+/**
+ * Get flow data rows within a time window (e.g., last 60 minutes).
+ * Useful for building the time series context for Claude.
+ */
+export async function getRecentFlowData(
+  date: string,
+  source: string,
+  minutesBack: number = 60,
+): Promise<
+  Array<{
+    timestamp: string;
+    ncp: number;
+    npp: number;
+    netVolume: number;
+  }>
+> {
+  const sql = getDb();
+  const cutoff = new Date(Date.now() - minutesBack * 60 * 1000).toISOString();
+
+  const rows = await sql`
+    SELECT timestamp, ncp, npp, net_volume
+    FROM flow_data
+    WHERE date = ${date}
+      AND source = ${source}
+      AND timestamp >= ${cutoff}
+    ORDER BY timestamp ASC
+  `;
+
+  return rows.map((r) => ({
+    timestamp: r.timestamp as string,
+    ncp: Number(r.ncp),
+    npp: Number(r.npp),
+    netVolume: r.net_volume as number,
+  }));
+}
+
+/**
+ * Format flow data as a structured text block for Claude's context.
+ * Includes the time series, computed direction, and divergence pattern.
+ *
+ * @param rows - Flow data rows (ordered by timestamp ascending)
+ * @param label - Display name (e.g., "Market Tide", "Market Tide OTM")
+ * @returns Formatted text block, or null if no data
+ */
+export function formatFlowDataForClaude(
+  rows: Array<{
+    timestamp: string;
+    ncp: number;
+    npp: number;
+    netVolume: number;
+  }>,
+  label: string,
+): string | null {
+  if (rows.length === 0) return null;
+
+  const lines: string[] = [`${label} (5-min intervals):`];
+
+  // Format each row
+  for (const row of rows) {
+    const time = new Date(row.timestamp).toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+    const ncpStr = formatPremium(row.ncp);
+    const nppStr = formatPremium(row.npp);
+    const volSign = row.netVolume >= 0 ? '+' : '';
+    lines.push(
+      `  ${time} ET — NCP: ${ncpStr}, NPP: ${nppStr}, Vol: ${volSign}${row.netVolume.toLocaleString()}`,
+    );
+  }
+
+  // Compute direction summary from first and last rows
+  if (rows.length >= 2) {
+    const first = rows[0]!;
+    const last = rows.at(-1)!;
+    const ncpChange = last.ncp - first.ncp;
+    const nppChange = last.npp - first.npp;
+    const minutes = Math.round(
+      (new Date(last.timestamp).getTime() -
+        new Date(first.timestamp).getTime()) /
+        60000,
+    );
+
+    const ncpDir =
+      ncpChange > 0 ? 'rising' : ncpChange < 0 ? 'falling' : 'flat';
+    const nppDir =
+      nppChange > 0 ? 'rising' : nppChange < 0 ? 'falling' : 'flat';
+
+    lines.push(
+      `  Direction (${minutes} min): NCP ${ncpDir} (${formatPremium(ncpChange)}), NPP ${nppDir} (${formatPremium(nppChange)})`,
+    );
+
+    // Divergence pattern
+    const gap = last.ncp - last.npp;
+    const prevGap = first.ncp - first.npp;
+    if (Math.abs(gap) > Math.abs(prevGap)) {
+      const direction = gap > 0 ? 'bullish' : 'bearish';
+      lines.push(`  Pattern: ${direction} divergence widening`);
+    } else if (Math.abs(gap) < Math.abs(prevGap) * 0.5) {
+      lines.push('  Pattern: NCP/NPP converging');
+    } else {
+      lines.push('  Pattern: Lines roughly parallel');
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format a premium value for display (e.g., -140000000 → "-$140M")
+ */
+function formatPremium(value: number): string {
+  const abs = Math.abs(value);
+  const sign = value >= 0 ? '+' : '-';
+  if (abs >= 1_000_000_000)
+    return `${sign}$${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
 }
