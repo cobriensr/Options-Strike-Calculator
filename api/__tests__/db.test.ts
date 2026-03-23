@@ -349,7 +349,12 @@ describe('db.ts', () => {
       // CREATE TABLE schema_migrations
       mockSql.mockResolvedValueOnce([]);
       // SELECT returns all migrations as already applied
-      mockSql.mockResolvedValueOnce([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      mockSql.mockResolvedValueOnce([
+        { id: 1 },
+        { id: 2 },
+        { id: 3 },
+        { id: 4 },
+      ]);
 
       const applied = await migrateDb();
 
@@ -370,9 +375,10 @@ describe('db.ts', () => {
       expect(applied).toEqual([
         '#2: Create lessons and lesson_reports tables with pgvector',
         '#3: Reduce lessons embedding from vector(3072) to vector(2000) for HNSW compatibility',
+        '#4: Create flow_data table for UW API time series',
       ]);
-      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert = 13
-      expect(mockSql).toHaveBeenCalledTimes(13);
+      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert + 3 migration #4 + 1 insert = 17
+      expect(mockSql).toHaveBeenCalledTimes(17);
     });
 
     it('propagates errors from migration SQL', async () => {
