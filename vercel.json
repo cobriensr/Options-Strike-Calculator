@@ -3,6 +3,14 @@
     {
       "path": "/api/cron/curate-lessons",
       "schedule": "0 3 * * 6"
+    },
+    {
+      "path": "/api/cron/fetch-flow",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-net-flow",
+      "schedule": "*/5 13-21 * * 1-5"
     }
   ],
   "functions": {

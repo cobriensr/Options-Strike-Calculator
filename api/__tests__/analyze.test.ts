@@ -15,6 +15,8 @@ vi.mock('../_lib/db.js', () => ({
   saveSnapshot: vi.fn().mockResolvedValue(null),
   getLatestPositions: vi.fn().mockResolvedValue(null),
   getPreviousRecommendation: vi.fn().mockResolvedValue(null),
+  getFlowData: vi.fn().mockResolvedValue([]),
+  getRecentFlowData: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../_lib/lessons.js', () => ({
