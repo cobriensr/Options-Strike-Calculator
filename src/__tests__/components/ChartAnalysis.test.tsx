@@ -1083,6 +1083,7 @@ describe('ChartAnalysis', () => {
         vi.fn().mockResolvedValue(
           new Response(
             JSON.stringify({
+              saved: true,
               positions: { stats: { totalSpreads: 3 } },
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1107,7 +1108,9 @@ describe('ChartAnalysis', () => {
       fireEvent.change(csvInput, { target: { files: [csvFile] } });
 
       await waitFor(() => {
-        expect(screen.getByText(/3 spreads loaded/)).toBeInTheDocument();
+        expect(
+          screen.getByText(/3 spreads saved from paperMoney/),
+        ).toBeInTheDocument();
       });
     });
 

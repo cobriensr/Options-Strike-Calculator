@@ -391,6 +391,44 @@ const MIGRATIONS: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_spot_exposures_date_ticker ON spot_exposures (date, ticker)`;
     },
   },
+  {
+    id: 8,
+    description: 'Create strike_exposures table for per-strike Greek profile',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS strike_exposures (
+          id              SERIAL PRIMARY KEY,
+          date            DATE NOT NULL,
+          timestamp       TIMESTAMPTZ NOT NULL,
+          ticker          TEXT NOT NULL DEFAULT 'SPX',
+          expiry          DATE,
+          strike          DECIMAL(10,2) NOT NULL,
+          price           DECIMAL(10,2),
+          call_gamma_oi   DECIMAL(20,4),
+          put_gamma_oi    DECIMAL(20,4),
+          call_gamma_ask  DECIMAL(20,4),
+          call_gamma_bid  DECIMAL(20,4),
+          put_gamma_ask   DECIMAL(20,4),
+          put_gamma_bid   DECIMAL(20,4),
+          call_charm_oi   DECIMAL(20,4),
+          put_charm_oi    DECIMAL(20,4),
+          call_charm_ask  DECIMAL(20,4),
+          call_charm_bid  DECIMAL(20,4),
+          put_charm_ask   DECIMAL(20,4),
+          put_charm_bid   DECIMAL(20,4),
+          call_delta_oi   DECIMAL(20,4),
+          put_delta_oi    DECIMAL(20,4),
+          call_vanna_oi   DECIMAL(20,4),
+          put_vanna_oi    DECIMAL(20,4),
+          created_at      TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(date, timestamp, ticker, strike, expiry)
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_strike_exp_date_ticker ON strike_exposures (date, ticker)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_strike_exp_expiry ON strike_exposures (expiry)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_strike_exp_timestamp ON strike_exposures (timestamp)`;
+    },
+  },
 ];
 
 /**
