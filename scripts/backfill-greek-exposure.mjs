@@ -55,14 +55,15 @@ function getTradingDays(count) {
 // ── Fetch aggregate for one date ────────────────────────────
 
 async function fetchAggregate(date) {
-  const res = await fetch(
-    `${UW_BASE}/stock/SPX/greek-exposure?date=${date}`,
-    { headers: { Authorization: `Bearer ${UW_API_KEY}` } },
-  );
+  const res = await fetch(`${UW_BASE}/stock/SPX/greek-exposure?date=${date}`, {
+    headers: { Authorization: `Bearer ${UW_API_KEY}` },
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    console.warn(`  UW aggregate API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    console.warn(
+      `  UW aggregate API ${res.status} for ${date}: ${text.slice(0, 100)}`,
+    );
     return null;
   }
 
@@ -82,7 +83,9 @@ async function fetchByExpiry(date) {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    console.warn(`  UW expiry API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    console.warn(
+      `  UW expiry API ${res.status} for ${date}: ${text.slice(0, 100)}`,
+    );
     return [];
   }
 
@@ -157,7 +160,9 @@ async function main() {
   const tradingDays = getTradingDays(days);
 
   console.log(`Backfilling SPX Greek Exposure (aggregate + by-expiry)`);
-  console.log(`Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`);
+  console.log(
+    `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`,
+  );
 
   let totalExpiries = 0;
   let totalStored = 0;
@@ -178,7 +183,9 @@ async function main() {
     if (aggRow) {
       aggResult = await storeAggregate(aggRow, date);
       if (aggResult) aggCount++;
-      const ng = Number.parseFloat(aggRow.call_gamma) + Number.parseFloat(aggRow.put_gamma);
+      const ng =
+        Number.parseFloat(aggRow.call_gamma) +
+        Number.parseFloat(aggRow.put_gamma);
       netGamma = Number.isNaN(ng) ? 'N/A' : Math.round(ng).toLocaleString();
     }
 
@@ -191,7 +198,10 @@ async function main() {
     // 0DTE charm for logging
     const zeroDte = expiryRows.find((r) => r.expiry === date || r.dte === 0);
     const zeroDteCharm = zeroDte
-      ? Math.round(Number.parseFloat(zeroDte.call_charm) + Number.parseFloat(zeroDte.put_charm)).toLocaleString()
+      ? Math.round(
+          Number.parseFloat(zeroDte.call_charm) +
+            Number.parseFloat(zeroDte.put_charm),
+        ).toLocaleString()
       : 'N/A';
 
     console.log(
