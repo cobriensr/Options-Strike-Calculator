@@ -149,22 +149,22 @@ export default function ChartAnalysis({
           throw new Error(body.error || `HTTP ${res.status}`);
         }
 
-      const data = await res.json();
-      const count = data.positions?.stats?.totalSpreads ?? 0;
+        const data = await res.json();
+        const count = data.positions?.stats?.totalSpreads ?? 0;
 
-      if (!data.saved) {
+        if (!data.saved) {
+          setPositionUpload({
+            status: 'error',
+            message: `Parsed ${count} spreads but failed to save — Claude won't see your positions`,
+          });
+          return;
+        }
+
         setPositionUpload({
-          status: 'error',
-          message: `Parsed ${count} spreads but failed to save — Claude won't see your positions`,
+          status: 'success',
+          message: `${count} spread${count !== 1 ? 's' : ''} saved from paperMoney`,
+          spreadCount: count,
         });
-        return;
-      }
-
-      setPositionUpload({
-        status: 'success',
-        message: `${count} spread${count !== 1 ? 's' : ''} saved from paperMoney`,
-        spreadCount: count,
-      });
       } catch (err) {
         setPositionUpload({
           status: 'error',

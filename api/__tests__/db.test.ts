@@ -722,8 +722,18 @@ describe('db.ts', () => {
   describe('getFlowData', () => {
     it('returns mapped flow data rows', async () => {
       mockSql.mockResolvedValueOnce([
-        { timestamp: '2026-03-24T14:00:00Z', ncp: '150000000', npp: '-120000000', net_volume: 5000 },
-        { timestamp: '2026-03-24T14:05:00Z', ncp: '160000000', npp: '-110000000', net_volume: -3000 },
+        {
+          timestamp: '2026-03-24T14:00:00Z',
+          ncp: '150000000',
+          npp: '-120000000',
+          net_volume: 5000,
+        },
+        {
+          timestamp: '2026-03-24T14:05:00Z',
+          ncp: '160000000',
+          npp: '-110000000',
+          net_volume: -3000,
+        },
       ]);
 
       const result = await getFlowData('2026-03-24', 'market_tide');
@@ -751,7 +761,12 @@ describe('db.ts', () => {
   describe('getRecentFlowData', () => {
     it('returns mapped rows with time cutoff', async () => {
       mockSql.mockResolvedValueOnce([
-        { timestamp: '2026-03-24T14:30:00Z', ncp: '200000000', npp: '-100000000', net_volume: 8000 },
+        {
+          timestamp: '2026-03-24T14:30:00Z',
+          ncp: '200000000',
+          npp: '-100000000',
+          net_volume: 8000,
+        },
       ]);
 
       const result = await getRecentFlowData('2026-03-24', 'market_tide', 30);
@@ -782,7 +797,14 @@ describe('db.ts', () => {
 
     it('formats a single row without direction or divergence', () => {
       const result = formatFlowDataForClaude(
-        [{ timestamp: '2026-03-24T14:00:00.000Z', ncp: 150_000_000, npp: -120_000_000, netVolume: 5000 }],
+        [
+          {
+            timestamp: '2026-03-24T14:00:00.000Z',
+            ncp: 150_000_000,
+            npp: -120_000_000,
+            netVolume: 5000,
+          },
+        ],
         'Market Tide',
       );
 
@@ -797,20 +819,42 @@ describe('db.ts', () => {
 
     it('computes direction and bullish divergence widening', () => {
       const rows = [
-        { timestamp: '2026-03-24T14:00:00.000Z', ncp: 100_000_000, npp: -80_000_000, netVolume: 1000 },
-        { timestamp: '2026-03-24T15:00:00.000Z', ncp: 200_000_000, npp: -90_000_000, netVolume: 2000 },
+        {
+          timestamp: '2026-03-24T14:00:00.000Z',
+          ncp: 100_000_000,
+          npp: -80_000_000,
+          netVolume: 1000,
+        },
+        {
+          timestamp: '2026-03-24T15:00:00.000Z',
+          ncp: 200_000_000,
+          npp: -90_000_000,
+          netVolume: 2000,
+        },
       ];
 
       const result = formatFlowDataForClaude(rows, 'Market Tide')!;
 
-      expect(result).toContain('Direction (60 min): NCP rising (+$100.0M), NPP falling (-$10.0M)');
+      expect(result).toContain(
+        'Direction (60 min): NCP rising (+$100.0M), NPP falling (-$10.0M)',
+      );
       expect(result).toContain('Pattern: bullish divergence widening');
     });
 
     it('detects bearish divergence widening', () => {
       const rows = [
-        { timestamp: '2026-03-24T14:00:00.000Z', ncp: -100_000_000, npp: 80_000_000, netVolume: 0 },
-        { timestamp: '2026-03-24T14:30:00.000Z', ncp: -200_000_000, npp: 90_000_000, netVolume: 0 },
+        {
+          timestamp: '2026-03-24T14:00:00.000Z',
+          ncp: -100_000_000,
+          npp: 80_000_000,
+          netVolume: 0,
+        },
+        {
+          timestamp: '2026-03-24T14:30:00.000Z',
+          ncp: -200_000_000,
+          npp: 90_000_000,
+          netVolume: 0,
+        },
       ];
 
       const result = formatFlowDataForClaude(rows, 'Test')!;
@@ -821,8 +865,18 @@ describe('db.ts', () => {
     it('detects NCP/NPP converging pattern', () => {
       // prevGap = 200M - (-100M) = 300M; gap = 50M - (-50M) = 100M; 100 < 300*0.5=150 → converging
       const rows = [
-        { timestamp: '2026-03-24T14:00:00.000Z', ncp: 200_000_000, npp: -100_000_000, netVolume: 0 },
-        { timestamp: '2026-03-24T14:30:00.000Z', ncp: 50_000_000, npp: -50_000_000, netVolume: 0 },
+        {
+          timestamp: '2026-03-24T14:00:00.000Z',
+          ncp: 200_000_000,
+          npp: -100_000_000,
+          netVolume: 0,
+        },
+        {
+          timestamp: '2026-03-24T14:30:00.000Z',
+          ncp: 50_000_000,
+          npp: -50_000_000,
+          netVolume: 0,
+        },
       ];
 
       const result = formatFlowDataForClaude(rows, 'Test')!;
@@ -832,8 +886,18 @@ describe('db.ts', () => {
 
     it('detects roughly parallel pattern', () => {
       const rows = [
-        { timestamp: '2026-03-24T14:00:00.000Z', ncp: 100_000_000, npp: -50_000_000, netVolume: 0 },
-        { timestamp: '2026-03-24T14:30:00.000Z', ncp: 130_000_000, npp: -20_000_000, netVolume: 0 },
+        {
+          timestamp: '2026-03-24T14:00:00.000Z',
+          ncp: 100_000_000,
+          npp: -50_000_000,
+          netVolume: 0,
+        },
+        {
+          timestamp: '2026-03-24T14:30:00.000Z',
+          ncp: 130_000_000,
+          npp: -20_000_000,
+          netVolume: 0,
+        },
       ];
 
       const result = formatFlowDataForClaude(rows, 'Test')!;
@@ -843,7 +907,14 @@ describe('db.ts', () => {
 
     it('formats negative volume correctly', () => {
       const result = formatFlowDataForClaude(
-        [{ timestamp: '2026-03-24T14:00:00.000Z', ncp: 1000, npp: -500, netVolume: -2000 }],
+        [
+          {
+            timestamp: '2026-03-24T14:00:00.000Z',
+            ncp: 1000,
+            npp: -500,
+            netVolume: -2000,
+          },
+        ],
         'Test',
       )!;
 
@@ -852,7 +923,14 @@ describe('db.ts', () => {
 
     it('formats billion-scale values', () => {
       const result = formatFlowDataForClaude(
-        [{ timestamp: '2026-03-24T14:00:00.000Z', ncp: 2_500_000_000, npp: -1_800_000_000, netVolume: 0 }],
+        [
+          {
+            timestamp: '2026-03-24T14:00:00.000Z',
+            ncp: 2_500_000_000,
+            npp: -1_800_000_000,
+            netVolume: 0,
+          },
+        ],
         'Test',
       )!;
 
@@ -862,7 +940,14 @@ describe('db.ts', () => {
 
     it('formats thousand-scale values', () => {
       const result = formatFlowDataForClaude(
-        [{ timestamp: '2026-03-24T14:00:00.000Z', ncp: 50_000, npp: -25_000, netVolume: 0 }],
+        [
+          {
+            timestamp: '2026-03-24T14:00:00.000Z',
+            ncp: 50_000,
+            npp: -25_000,
+            netVolume: 0,
+          },
+        ],
         'Test',
       )!;
 
@@ -878,11 +963,16 @@ describe('db.ts', () => {
     it('returns mapped Greek exposure rows', async () => {
       mockSql.mockResolvedValueOnce([
         {
-          expiry: '2026-03-24', dte: -1,
-          call_gamma: '5000000', put_gamma: '-3000000',
-          call_charm: '100000', put_charm: '-80000',
-          call_delta: '200000', put_delta: '-150000',
-          call_vanna: '50000', put_vanna: '-30000',
+          expiry: '2026-03-24',
+          dte: -1,
+          call_gamma: '5000000',
+          put_gamma: '-3000000',
+          call_charm: '100000',
+          put_charm: '-80000',
+          call_delta: '200000',
+          put_delta: '-150000',
+          call_vanna: '50000',
+          put_vanna: '-30000',
         },
       ]);
 
@@ -909,11 +999,16 @@ describe('db.ts', () => {
     it('handles null gamma values (basic tier)', async () => {
       mockSql.mockResolvedValueOnce([
         {
-          expiry: '2026-03-24', dte: 0,
-          call_gamma: null, put_gamma: null,
-          call_charm: '50000', put_charm: '-40000',
-          call_delta: '100000', put_delta: '-75000',
-          call_vanna: '25000', put_vanna: '-15000',
+          expiry: '2026-03-24',
+          dte: 0,
+          call_gamma: null,
+          put_gamma: null,
+          call_charm: '50000',
+          put_charm: '-40000',
+          call_delta: '100000',
+          put_delta: '-75000',
+          call_vanna: '25000',
+          put_vanna: '-15000',
         },
       ]);
 
@@ -930,26 +1025,45 @@ describe('db.ts', () => {
   // formatGreekExposureForClaude
   // ============================================================
 
-  function makeAggRow(netGamma: number, overrides: Partial<GreekExposureRow> = {}): GreekExposureRow {
+  function makeAggRow(
+    netGamma: number,
+    overrides: Partial<GreekExposureRow> = {},
+  ): GreekExposureRow {
     return {
-      expiry: '2026-03-24', dte: -1,
+      expiry: '2026-03-24',
+      dte: -1,
       callGamma: Math.max(netGamma, 0),
       putGamma: Math.min(netGamma, 0),
       netGamma,
-      callCharm: 500_000, putCharm: -300_000, netCharm: 200_000,
-      callDelta: 1_000_000, putDelta: -800_000, netDelta: 200_000,
-      callVanna: 100_000, putVanna: -60_000,
+      callCharm: 500_000,
+      putCharm: -300_000,
+      netCharm: 200_000,
+      callDelta: 1_000_000,
+      putDelta: -800_000,
+      netDelta: 200_000,
+      callVanna: 100_000,
+      putVanna: -60_000,
       ...overrides,
     };
   }
 
-  function makeZeroDteRow(overrides: Partial<GreekExposureRow> = {}): GreekExposureRow {
+  function makeZeroDteRow(
+    overrides: Partial<GreekExposureRow> = {},
+  ): GreekExposureRow {
     return {
-      expiry: '2026-03-24', dte: 0,
-      callGamma: null, putGamma: null, netGamma: null,
-      callCharm: 100_000, putCharm: -80_000, netCharm: 20_000,
-      callDelta: 200_000, putDelta: -150_000, netDelta: 50_000,
-      callVanna: 25_000, putVanna: -15_000,
+      expiry: '2026-03-24',
+      dte: 0,
+      callGamma: null,
+      putGamma: null,
+      netGamma: null,
+      callCharm: 100_000,
+      putCharm: -80_000,
+      netCharm: 20_000,
+      callDelta: 200_000,
+      putDelta: -150_000,
+      netDelta: 50_000,
+      callVanna: 25_000,
+      putVanna: -15_000,
       ...overrides,
     };
   }
@@ -960,30 +1074,45 @@ describe('db.ts', () => {
     });
 
     it('formats POSITIVE regime (gex > 50K)', () => {
-      const result = formatGreekExposureForClaude([makeAggRow(100_000)], '2026-03-24')!;
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(100_000)],
+        '2026-03-24',
+      )!;
       expect(result).toContain('POSITIVE');
       expect(result).toContain('Periscope walls reliable');
     });
 
     it('formats MILDLY POSITIVE regime (0 < gex <= 50K)', () => {
-      const result = formatGreekExposureForClaude([makeAggRow(25_000)], '2026-03-24')!;
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(25_000)],
+        '2026-03-24',
+      )!;
       expect(result).toContain('MILDLY POSITIVE');
     });
 
     it('formats MILDLY NEGATIVE regime (-50K < gex <= 0)', () => {
-      const result = formatGreekExposureForClaude([makeAggRow(-25_000)], '2026-03-24')!;
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(-25_000)],
+        '2026-03-24',
+      )!;
       expect(result).toContain('MILDLY NEGATIVE');
       expect(result).toContain('Tighten CCS time exits');
     });
 
     it('formats MODERATELY NEGATIVE regime (-150K < gex <= -50K)', () => {
-      const result = formatGreekExposureForClaude([makeAggRow(-100_000)], '2026-03-24')!;
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(-100_000)],
+        '2026-03-24',
+      )!;
       expect(result).toContain('MODERATELY NEGATIVE');
       expect(result).toContain('Close CCS by 12:00 PM ET');
     });
 
     it('formats DEEPLY NEGATIVE regime (gex <= -150K)', () => {
-      const result = formatGreekExposureForClaude([makeAggRow(-200_000)], '2026-03-24')!;
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(-200_000)],
+        '2026-03-24',
+      )!;
       expect(result).toContain('DEEPLY NEGATIVE');
       expect(result).toContain('Reduce size 10%');
     });
@@ -1023,11 +1152,19 @@ describe('db.ts', () => {
         makeAggRow(100_000),
         makeZeroDteRow(),
         {
-          expiry: '2026-03-28', dte: 4,
-          callGamma: null, putGamma: null, netGamma: null,
-          callCharm: 300_000, putCharm: -200_000, netCharm: 100_000,
-          callDelta: 500_000, putDelta: -400_000, netDelta: 100_000,
-          callVanna: 50_000, putVanna: -30_000,
+          expiry: '2026-03-28',
+          dte: 4,
+          callGamma: null,
+          putGamma: null,
+          netGamma: null,
+          callCharm: 300_000,
+          putCharm: -200_000,
+          netCharm: 100_000,
+          callDelta: 500_000,
+          putDelta: -400_000,
+          netDelta: 100_000,
+          callVanna: 50_000,
+          putVanna: -30_000,
         },
       ];
 
@@ -1057,9 +1194,15 @@ describe('db.ts', () => {
         {
           timestamp: '2026-03-24T14:00:00Z',
           price: '5825.50',
-          gamma_oi: '1500000000', gamma_vol: '200000000', gamma_dir: '150000000',
-          charm_oi: '-500000000', charm_vol: '-100000000', charm_dir: '-80000000',
-          vanna_oi: '300000000', vanna_vol: '50000000', vanna_dir: '40000000',
+          gamma_oi: '1500000000',
+          gamma_vol: '200000000',
+          gamma_dir: '150000000',
+          charm_oi: '-500000000',
+          charm_vol: '-100000000',
+          charm_dir: '-80000000',
+          vanna_oi: '300000000',
+          vanna_vol: '50000000',
+          vanna_dir: '40000000',
         },
       ]);
 
@@ -1092,11 +1235,13 @@ describe('db.ts', () => {
   // formatSpotExposuresForClaude
   // ============================================================
 
-  function makeSpotRow(overrides: Partial<SpotExposureRow> = {}): SpotExposureRow {
+  function makeSpotRow(
+    overrides: Partial<SpotExposureRow> = {},
+  ): SpotExposureRow {
     return {
       timestamp: '2026-03-24T14:00:00.000Z',
       price: 5825,
-      gammaOi: 100_000_000_000,   // ÷1M = 100_000 → POSITIVE
+      gammaOi: 100_000_000_000, // ÷1M = 100_000 → POSITIVE
       gammaVol: 50_000_000_000,
       gammaDir: 30_000_000_000,
       charmOi: -500_000_000_000,
@@ -1130,27 +1275,35 @@ describe('db.ts', () => {
 
     it('formats MILDLY POSITIVE regime', () => {
       // gammaOi ÷ 1M = 25_000 → MILDLY POSITIVE
-      const result = formatSpotExposuresForClaude([makeSpotRow({ gammaOi: 25_000_000_000 })])!;
+      const result = formatSpotExposuresForClaude([
+        makeSpotRow({ gammaOi: 25_000_000_000 }),
+      ])!;
       expect(result).toContain('MILDLY POSITIVE');
     });
 
     it('formats MILDLY NEGATIVE regime', () => {
       // gammaOi ÷ 1M = -25_000 → MILDLY NEGATIVE
-      const result = formatSpotExposuresForClaude([makeSpotRow({ gammaOi: -25_000_000_000 })])!;
+      const result = formatSpotExposuresForClaude([
+        makeSpotRow({ gammaOi: -25_000_000_000 }),
+      ])!;
       expect(result).toContain('MILDLY NEGATIVE');
       expect(result).toContain('Tighten CCS time exits');
     });
 
     it('formats MODERATELY NEGATIVE regime', () => {
       // gammaOi ÷ 1M = -100_000
-      const result = formatSpotExposuresForClaude([makeSpotRow({ gammaOi: -100_000_000_000 })])!;
+      const result = formatSpotExposuresForClaude([
+        makeSpotRow({ gammaOi: -100_000_000_000 }),
+      ])!;
       expect(result).toContain('MODERATELY NEGATIVE');
       expect(result).toContain('Close CCS by 12:00 PM ET');
     });
 
     it('formats DEEPLY NEGATIVE regime', () => {
       // gammaOi ÷ 1M = -200_000
-      const result = formatSpotExposuresForClaude([makeSpotRow({ gammaOi: -200_000_000_000 })])!;
+      const result = formatSpotExposuresForClaude([
+        makeSpotRow({ gammaOi: -200_000_000_000 }),
+      ])!;
       expect(result).toContain('DEEPLY NEGATIVE');
       expect(result).toContain('Reduce size 10%');
     });
@@ -1183,8 +1336,16 @@ describe('db.ts', () => {
 
     it('includes intraday trend when 2+ rows', () => {
       const rows: SpotExposureRow[] = [
-        makeSpotRow({ timestamp: '2026-03-24T14:00:00.000Z', price: 5800, gammaOi: 80_000_000_000 }),
-        makeSpotRow({ timestamp: '2026-03-24T15:00:00.000Z', price: 5830, gammaOi: 100_000_000_000 }),
+        makeSpotRow({
+          timestamp: '2026-03-24T14:00:00.000Z',
+          price: 5800,
+          gammaOi: 80_000_000_000,
+        }),
+        makeSpotRow({
+          timestamp: '2026-03-24T15:00:00.000Z',
+          price: 5830,
+          gammaOi: 100_000_000_000,
+        }),
       ];
 
       const result = formatSpotExposuresForClaude(rows)!;
@@ -1196,8 +1357,14 @@ describe('db.ts', () => {
 
     it('shows deteriorating trend', () => {
       const rows: SpotExposureRow[] = [
-        makeSpotRow({ timestamp: '2026-03-24T14:00:00.000Z', gammaOi: 100_000_000_000 }),
-        makeSpotRow({ timestamp: '2026-03-24T14:30:00.000Z', gammaOi: 50_000_000_000 }),
+        makeSpotRow({
+          timestamp: '2026-03-24T14:00:00.000Z',
+          gammaOi: 100_000_000_000,
+        }),
+        makeSpotRow({
+          timestamp: '2026-03-24T14:30:00.000Z',
+          gammaOi: 50_000_000_000,
+        }),
       ];
 
       const result = formatSpotExposuresForClaude(rows)!;
@@ -1207,8 +1374,14 @@ describe('db.ts', () => {
 
     it('shows stable trend when no gamma change', () => {
       const rows: SpotExposureRow[] = [
-        makeSpotRow({ timestamp: '2026-03-24T14:00:00.000Z', gammaOi: 100_000_000_000 }),
-        makeSpotRow({ timestamp: '2026-03-24T14:30:00.000Z', gammaOi: 100_000_000_000 }),
+        makeSpotRow({
+          timestamp: '2026-03-24T14:00:00.000Z',
+          gammaOi: 100_000_000_000,
+        }),
+        makeSpotRow({
+          timestamp: '2026-03-24T14:30:00.000Z',
+          gammaOi: 100_000_000_000,
+        }),
       ];
 
       const result = formatSpotExposuresForClaude(rows)!;
