@@ -192,7 +192,7 @@ describe('fetch-greek-exposure handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      aggregate: true,
+      aggregateStored: true,
       expiries: 1,
       stored: 1,
       skipped: 0,
@@ -211,7 +211,7 @@ describe('fetch-greek-exposure handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      aggregate: false,
+      aggregateStored: false,
       expiries: 1,
       stored: 1,
     });
@@ -229,7 +229,7 @@ describe('fetch-greek-exposure handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      aggregate: false,
+      aggregateStored: false,
       expiries: 0,
       stored: 0,
       skipped: 0,

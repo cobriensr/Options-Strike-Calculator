@@ -356,6 +356,14 @@ const MIGRATIONS: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_greek_exposure_expiry ON greek_exposure (expiry)`;
     },
   },
+    {
+    id: 6,
+    description: 'Add dte to greek_exposure unique constraint',
+    run: async (sql) => {
+      await sql`ALTER TABLE greek_exposure DROP CONSTRAINT IF EXISTS greek_exposure_date_ticker_expiry_key`;
+      await sql`ALTER TABLE greek_exposure ADD CONSTRAINT greek_exposure_date_ticker_expiry_dte_key UNIQUE(date, ticker, expiry, dte)`;
+    },
+  },
 ];
 
 /**
@@ -1099,7 +1107,7 @@ function formatPremium(value: number): string {
 }
 
 // ── Greek Exposure (MM gamma/charm/delta/vanna by expiry) ───
-
+ 
 export interface GreekExposureRow {
   expiry: string;
   dte: number;
@@ -1115,10 +1123,10 @@ export interface GreekExposureRow {
   callVanna: number;
   putVanna: number;
 }
-
+ 
 /**
  * Get all Greek exposure rows for a given date and ticker.
- * Returns rows ordered by DTE ascending (aggregate first at dte=-1, then 0DTE, etc).
+ * Returns rows ordered by DTE ascending (aggregate at dte=-1 first, then 0DTE, etc).
  */
 export async function getGreekExposure(
   date: string,
@@ -1132,11 +1140,11 @@ export async function getGreekExposure(
     WHERE date = ${date} AND ticker = ${ticker}
     ORDER BY dte ASC
   `;
-
+ 
   return rows.map((r) => {
     const cg = r.call_gamma != null ? Number(r.call_gamma) : null;
     const pg = r.put_gamma != null ? Number(r.put_gamma) : null;
-
+ 
     return {
       expiry: r.expiry as string,
       dte: r.dte as number,
@@ -1154,10 +1162,10 @@ export async function getGreekExposure(
     };
   });
 }
-
+ 
 /**
  * Format Greek exposure data as a structured text block for Claude's context.
- * Uses aggregate row for OI Net Gamma (Rule 16) and by-expiry rows for charm/delta breakdown.
+ * Uses aggregate row (dte=-1) for OI Net Gamma (Rule 16) and 0DTE row for charm/delta breakdown.
  *
  * @param rows - Greek exposure rows (ordered by DTE ascending)
  * @param date - Analysis date (to identify 0DTE expiry)
@@ -1165,29 +1173,29 @@ export async function getGreekExposure(
  */
 export function formatGreekExposureForClaude(
   rows: GreekExposureRow[],
-  date: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _date: string,
 ): string | null {
   if (rows.length === 0) return null;
-
-  // Find aggregate row (expiry='aggregate', dte=-1)
-  const aggregate = rows.find((r) => r.expiry === 'aggregate');
-
-  // Find 0DTE row
-  const zeroDte = rows.find((r) => r.expiry === date || r.dte === 0);
-
-  // Non-aggregate, non-0DTE expiries
+ 
+  // Find aggregate row (dte=-1)
+  const aggregate = rows.find((r) => r.dte === -1);
+ 
+  // Find 0DTE row (dte=0)
+  const zeroDte = rows.find((r) => r.dte === 0);
+ 
+  // Non-aggregate, non-0DTE expiries sorted by charm magnitude
   const otherExpiries = rows
-    .filter((r) => r.expiry !== 'aggregate' && r.expiry !== date && r.dte !== 0)
+    .filter((r) => r.dte > 0)
     .sort((a, b) => Math.abs(b.netCharm) - Math.abs(a.netCharm))
     .slice(0, 3);
-
+ 
   const lines: string[] = [];
-
+ 
   lines.push('SPX Greek Exposure (OI-based, from API):');
-
+ 
   // Aggregate section (has gamma from the aggregate endpoint)
   if (aggregate?.netGamma != null) {
-    // Rule 16 regime classification
     const gex = aggregate.netGamma;
     let regime: string;
     if (gex > 50_000) {
@@ -1197,13 +1205,11 @@ export function formatGreekExposureForClaude(
     } else if (gex > -50_000) {
       regime = 'MILDLY NEGATIVE — Tighten CCS time exits by 30 min.';
     } else if (gex > -150_000) {
-      regime =
-        'MODERATELY NEGATIVE — Close CCS by 12:00 PM ET. Target 40% profit.';
+      regime = 'MODERATELY NEGATIVE — Close CCS by 12:00 PM ET. Target 40% profit.';
     } else {
-      regime =
-        'DEEPLY NEGATIVE — Close CCS by 11:30 AM ET. Reduce size 10%. Walls compromised.';
+      regime = 'DEEPLY NEGATIVE — Close CCS by 11:30 AM ET. Reduce size 10%. Walls compromised.';
     }
-
+ 
     lines.push(
       `  OI Net Gamma Exposure (all expiries): ${formatGreekValue(gex)}`,
       `  Rule 16 Regime: ${regime}`,
@@ -1211,8 +1217,8 @@ export function formatGreekExposureForClaude(
       `  Net Delta (all expiries): ${formatGreekValue(aggregate.netDelta)}`,
     );
   }
-
-  // 0DTE section (charm/delta only — gamma is null on basic tier)
+ 
+  // 0DTE section (charm/delta — gamma is null on basic tier)
   if (zeroDte) {
     lines.push(
       '',
@@ -1222,37 +1228,38 @@ export function formatGreekExposureForClaude(
       `    Net Delta: ${formatGreekValue(zeroDte.netDelta)}`,
       `    Call Delta: ${formatGreekValue(zeroDte.callDelta)} | Put Delta: ${formatGreekValue(zeroDte.putDelta)}`,
     );
-
+ 
     if (aggregate && aggregate.netCharm !== 0) {
-      const charmPct = ((zeroDte.netCharm / aggregate.netCharm) * 100).toFixed(
-        1,
-      );
+      const charmPct = ((zeroDte.netCharm / aggregate.netCharm) * 100).toFixed(1);
       lines.push(`    0DTE Charm as % of total: ${charmPct}%`);
     }
   }
-
+ 
   // Top non-0DTE expiries by charm magnitude
   if (otherExpiries.length > 0) {
-    lines.push('', '  Largest Non-0DTE Charm Concentrations:');
+    lines.push(
+      '',
+      '  Largest Non-0DTE Charm Concentrations:',
+    );
     for (const r of otherExpiries) {
       lines.push(
         `    ${r.expiry} (${r.dte}DTE): Net Charm ${formatGreekValue(r.netCharm)}, Net Delta ${formatGreekValue(r.netDelta)}`,
       );
     }
   }
-
+ 
   return lines.join('\n');
 }
-
+ 
 /**
  * Format a Greek exposure value for display (e.g., -12337386 → "-12.3M")
  */
 function formatGreekValue(value: number): string {
   const abs = Math.abs(value);
   const sign = value >= 0 ? '+' : '-';
-  if (abs >= 1_000_000_000)
-    return `${sign}${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000_000) return `${sign}${(abs / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
   return `${sign}${abs.toFixed(0)}`;
 }
+ 

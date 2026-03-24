@@ -355,6 +355,7 @@ describe('db.ts', () => {
         { id: 3 },
         { id: 4 },
         { id: 5 },
+        { id: 6 },
       ]);
 
       const applied = await migrateDb();
@@ -378,9 +379,10 @@ describe('db.ts', () => {
         '#3: Reduce lessons embedding from vector(3072) to vector(2000) for HNSW compatibility',
         '#4: Create flow_data table for UW API time series',
         '#5: Create greek_exposure table for MM Greek exposure by expiry',
+        '#6: Add dte to greek_exposure unique constraint',
       ]);
-      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert + 3 migration #4 + 1 insert + 3 migration #5 + 1 insert = 21
-      expect(mockSql).toHaveBeenCalledTimes(21);
+      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert + 3 migration #4 + 1 insert + 3 migration #5 + 1 insert + 2 migration #6 + 1 insert = 24
+      expect(mockSql).toHaveBeenCalledTimes(24);
     });
 
     it('propagates errors from migration SQL', async () => {

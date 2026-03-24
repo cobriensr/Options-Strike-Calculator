@@ -6,10 +6,9 @@
  *   1. Aggregate endpoint → OI Net Gamma (Rule 16), charm, delta, vanna
  *   2. By-expiry endpoint → charm/delta/vanna breakdown per expiration (gamma is null on basic tier)
  *
- * The aggregate endpoint provides the Rule 16 OI Net Gamma number.
- * The by-expiry endpoint provides 0DTE-specific charm/delta breakdown.
- *
- * Aggregate data stored with expiry='aggregate', dte=-1.
+ * The aggregate row is stored with expiry=date and dte=-1.
+ * The 0DTE by-expiry row is stored with expiry=date and dte=0.
+ * The UNIQUE constraint on (date, ticker, expiry, dte) allows both to coexist.
  *
  * Data is OI-based (changes once per day), so duplicate cron runs are skipped.
  *
@@ -110,21 +109,21 @@ async function storeAggregate(row: AggregateRow): Promise<boolean> {
       call_delta, put_delta, call_vanna, put_vanna
     )
     VALUES (
-      ${row.date}, 'SPX', 'aggregate', -1,
+      ${row.date}, 'SPX', ${row.date}, -1,
       ${row.call_gamma}, ${row.put_gamma},
       ${row.call_charm}, ${row.put_charm},
       ${row.call_delta}, ${row.put_delta},
       ${row.call_vanna}, ${row.put_vanna}
     )
-    ON CONFLICT (date, ticker, expiry) DO NOTHING
+    ON CONFLICT (date, ticker, expiry, dte) DO UPDATE SET
+      call_gamma = EXCLUDED.call_gamma,
+      put_gamma = EXCLUDED.put_gamma
     RETURNING id
   `;
   return result.length > 0;
 }
 
-async function storeExpiryRows(
-  rows: ExpiryRow[],
-): Promise<{ stored: number; skipped: number }> {
+async function storeExpiryRows(rows: ExpiryRow[]): Promise<{ stored: number; skipped: number }> {
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
@@ -146,7 +145,7 @@ async function storeExpiryRows(
           ${row.call_delta}, ${row.put_delta},
           ${row.call_vanna}, ${row.put_vanna}
         )
-        ON CONFLICT (date, ticker, expiry) DO NOTHING
+        ON CONFLICT (date, ticker, expiry, dte) DO NOTHING
         RETURNING id
       `;
       if (result.length > 0) stored++;
@@ -174,9 +173,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
+    return res.status(200).json({ skipped: true, reason: 'Outside market hours' });
   }
 
   const apiKey = process.env.UW_API_KEY;
@@ -191,26 +188,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       fetchByExpiry(apiKey),
     ]);
 
-    // Store aggregate (most recent row in the array)
     let aggStored = false;
     if (aggRows.length > 0) {
       const latest = aggRows.at(-1)!;
       aggStored = await storeAggregate(latest);
 
       const netGamma =
-        Number.parseFloat(latest.call_gamma) +
-        Number.parseFloat(latest.put_gamma);
+        Number.parseFloat(latest.call_gamma) + Number.parseFloat(latest.put_gamma);
       logger.info(
-        {
-          date: latest.date,
-          netGamma: Math.round(netGamma),
-          stored: aggStored,
-        },
+        { date: latest.date, netGamma: Math.round(netGamma), stored: aggStored },
         'Aggregate GEX stored',
       );
     }
 
-    // Store by-expiry rows
     const expiryResult = await storeExpiryRows(expiryRows);
 
     logger.info(
@@ -224,7 +214,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     return res.status(200).json({
-      aggregate: aggStored,
+      aggregateStored: aggStored,
       expiries: expiryRows.length,
       ...expiryResult,
     });
