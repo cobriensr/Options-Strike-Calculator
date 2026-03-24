@@ -19,7 +19,15 @@ import {
   savePositions,
   getLatestPositions,
   getPreviousRecommendation,
+  getFlowData,
+  getRecentFlowData,
+  formatFlowDataForClaude,
+  getGreekExposure,
+  formatGreekExposureForClaude,
+  getSpotExposures,
+  formatSpotExposuresForClaude,
 } from '../_lib/db.js';
+import type { GreekExposureRow, SpotExposureRow } from '../_lib/db.js';
 import { neon } from '@neondatabase/serverless';
 
 describe('db.ts', () => {
@@ -705,6 +713,529 @@ describe('db.ts', () => {
       expect(result).toContain('Confidence: LOW');
       // Should not crash when no optional fields exist
       expect(result).not.toContain('undefined');
+    });
+  });
+
+  // ============================================================
+  // getFlowData
+  // ============================================================
+  describe('getFlowData', () => {
+    it('returns mapped flow data rows', async () => {
+      mockSql.mockResolvedValueOnce([
+        { timestamp: '2026-03-24T14:00:00Z', ncp: '150000000', npp: '-120000000', net_volume: 5000 },
+        { timestamp: '2026-03-24T14:05:00Z', ncp: '160000000', npp: '-110000000', net_volume: -3000 },
+      ]);
+
+      const result = await getFlowData('2026-03-24', 'market_tide');
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual({
+        timestamp: '2026-03-24T14:00:00Z',
+        ncp: 150000000,
+        npp: -120000000,
+        netVolume: 5000,
+      });
+      expect(result[1]!.netVolume).toBe(-3000);
+    });
+
+    it('returns empty array when no rows', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      const result = await getFlowData('2026-03-24', 'market_tide');
+      expect(result).toEqual([]);
+    });
+  });
+
+  // ============================================================
+  // getRecentFlowData
+  // ============================================================
+  describe('getRecentFlowData', () => {
+    it('returns mapped rows with time cutoff', async () => {
+      mockSql.mockResolvedValueOnce([
+        { timestamp: '2026-03-24T14:30:00Z', ncp: '200000000', npp: '-100000000', net_volume: 8000 },
+      ]);
+
+      const result = await getRecentFlowData('2026-03-24', 'market_tide', 30);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        timestamp: '2026-03-24T14:30:00Z',
+        ncp: 200000000,
+        npp: -100000000,
+        netVolume: 8000,
+      });
+    });
+
+    it('returns empty array when no recent data', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      const result = await getRecentFlowData('2026-03-24', 'market_tide');
+      expect(result).toEqual([]);
+    });
+  });
+
+  // ============================================================
+  // formatFlowDataForClaude
+  // ============================================================
+  describe('formatFlowDataForClaude', () => {
+    it('returns null for empty rows', () => {
+      expect(formatFlowDataForClaude([], 'Market Tide')).toBeNull();
+    });
+
+    it('formats a single row without direction or divergence', () => {
+      const result = formatFlowDataForClaude(
+        [{ timestamp: '2026-03-24T14:00:00.000Z', ncp: 150_000_000, npp: -120_000_000, netVolume: 5000 }],
+        'Market Tide',
+      );
+
+      expect(result).toContain('Market Tide (5-min intervals):');
+      expect(result).toContain('NCP: +$150.0M');
+      expect(result).toContain('NPP: -$120.0M');
+      expect(result).toContain('Vol: +5,000');
+      // No direction or pattern with only 1 row
+      expect(result).not.toContain('Direction');
+      expect(result).not.toContain('Pattern');
+    });
+
+    it('computes direction and bullish divergence widening', () => {
+      const rows = [
+        { timestamp: '2026-03-24T14:00:00.000Z', ncp: 100_000_000, npp: -80_000_000, netVolume: 1000 },
+        { timestamp: '2026-03-24T15:00:00.000Z', ncp: 200_000_000, npp: -90_000_000, netVolume: 2000 },
+      ];
+
+      const result = formatFlowDataForClaude(rows, 'Market Tide')!;
+
+      expect(result).toContain('Direction (60 min): NCP rising (+$100.0M), NPP falling (-$10.0M)');
+      expect(result).toContain('Pattern: bullish divergence widening');
+    });
+
+    it('detects bearish divergence widening', () => {
+      const rows = [
+        { timestamp: '2026-03-24T14:00:00.000Z', ncp: -100_000_000, npp: 80_000_000, netVolume: 0 },
+        { timestamp: '2026-03-24T14:30:00.000Z', ncp: -200_000_000, npp: 90_000_000, netVolume: 0 },
+      ];
+
+      const result = formatFlowDataForClaude(rows, 'Test')!;
+
+      expect(result).toContain('Pattern: bearish divergence widening');
+    });
+
+    it('detects NCP/NPP converging pattern', () => {
+      // prevGap = 200M - (-100M) = 300M; gap = 50M - (-50M) = 100M; 100 < 300*0.5=150 → converging
+      const rows = [
+        { timestamp: '2026-03-24T14:00:00.000Z', ncp: 200_000_000, npp: -100_000_000, netVolume: 0 },
+        { timestamp: '2026-03-24T14:30:00.000Z', ncp: 50_000_000, npp: -50_000_000, netVolume: 0 },
+      ];
+
+      const result = formatFlowDataForClaude(rows, 'Test')!;
+
+      expect(result).toContain('Pattern: NCP/NPP converging');
+    });
+
+    it('detects roughly parallel pattern', () => {
+      const rows = [
+        { timestamp: '2026-03-24T14:00:00.000Z', ncp: 100_000_000, npp: -50_000_000, netVolume: 0 },
+        { timestamp: '2026-03-24T14:30:00.000Z', ncp: 130_000_000, npp: -20_000_000, netVolume: 0 },
+      ];
+
+      const result = formatFlowDataForClaude(rows, 'Test')!;
+
+      expect(result).toContain('Pattern: Lines roughly parallel');
+    });
+
+    it('formats negative volume correctly', () => {
+      const result = formatFlowDataForClaude(
+        [{ timestamp: '2026-03-24T14:00:00.000Z', ncp: 1000, npp: -500, netVolume: -2000 }],
+        'Test',
+      )!;
+
+      expect(result).toContain('Vol: -2,000');
+    });
+
+    it('formats billion-scale values', () => {
+      const result = formatFlowDataForClaude(
+        [{ timestamp: '2026-03-24T14:00:00.000Z', ncp: 2_500_000_000, npp: -1_800_000_000, netVolume: 0 }],
+        'Test',
+      )!;
+
+      expect(result).toContain('NCP: +$2.5B');
+      expect(result).toContain('NPP: -$1.8B');
+    });
+
+    it('formats thousand-scale values', () => {
+      const result = formatFlowDataForClaude(
+        [{ timestamp: '2026-03-24T14:00:00.000Z', ncp: 50_000, npp: -25_000, netVolume: 0 }],
+        'Test',
+      )!;
+
+      expect(result).toContain('NCP: +$50K');
+      expect(result).toContain('NPP: -$25K');
+    });
+  });
+
+  // ============================================================
+  // getGreekExposure
+  // ============================================================
+  describe('getGreekExposure', () => {
+    it('returns mapped Greek exposure rows', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          expiry: '2026-03-24', dte: -1,
+          call_gamma: '5000000', put_gamma: '-3000000',
+          call_charm: '100000', put_charm: '-80000',
+          call_delta: '200000', put_delta: '-150000',
+          call_vanna: '50000', put_vanna: '-30000',
+        },
+      ]);
+
+      const result = await getGreekExposure('2026-03-24');
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        expiry: '2026-03-24',
+        dte: -1,
+        callGamma: 5000000,
+        putGamma: -3000000,
+        netGamma: 2000000,
+        callCharm: 100000,
+        putCharm: -80000,
+        netCharm: 20000,
+        callDelta: 200000,
+        putDelta: -150000,
+        netDelta: 50000,
+        callVanna: 50000,
+        putVanna: -30000,
+      });
+    });
+
+    it('handles null gamma values (basic tier)', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          expiry: '2026-03-24', dte: 0,
+          call_gamma: null, put_gamma: null,
+          call_charm: '50000', put_charm: '-40000',
+          call_delta: '100000', put_delta: '-75000',
+          call_vanna: '25000', put_vanna: '-15000',
+        },
+      ]);
+
+      const result = await getGreekExposure('2026-03-24');
+
+      expect(result[0]!.callGamma).toBeNull();
+      expect(result[0]!.putGamma).toBeNull();
+      expect(result[0]!.netGamma).toBeNull();
+      expect(result[0]!.netCharm).toBe(10000);
+    });
+  });
+
+  // ============================================================
+  // formatGreekExposureForClaude
+  // ============================================================
+
+  function makeAggRow(netGamma: number, overrides: Partial<GreekExposureRow> = {}): GreekExposureRow {
+    return {
+      expiry: '2026-03-24', dte: -1,
+      callGamma: Math.max(netGamma, 0),
+      putGamma: Math.min(netGamma, 0),
+      netGamma,
+      callCharm: 500_000, putCharm: -300_000, netCharm: 200_000,
+      callDelta: 1_000_000, putDelta: -800_000, netDelta: 200_000,
+      callVanna: 100_000, putVanna: -60_000,
+      ...overrides,
+    };
+  }
+
+  function makeZeroDteRow(overrides: Partial<GreekExposureRow> = {}): GreekExposureRow {
+    return {
+      expiry: '2026-03-24', dte: 0,
+      callGamma: null, putGamma: null, netGamma: null,
+      callCharm: 100_000, putCharm: -80_000, netCharm: 20_000,
+      callDelta: 200_000, putDelta: -150_000, netDelta: 50_000,
+      callVanna: 25_000, putVanna: -15_000,
+      ...overrides,
+    };
+  }
+
+  describe('formatGreekExposureForClaude', () => {
+    it('returns null for empty rows', () => {
+      expect(formatGreekExposureForClaude([], '2026-03-24')).toBeNull();
+    });
+
+    it('formats POSITIVE regime (gex > 50K)', () => {
+      const result = formatGreekExposureForClaude([makeAggRow(100_000)], '2026-03-24')!;
+      expect(result).toContain('POSITIVE');
+      expect(result).toContain('Periscope walls reliable');
+    });
+
+    it('formats MILDLY POSITIVE regime (0 < gex <= 50K)', () => {
+      const result = formatGreekExposureForClaude([makeAggRow(25_000)], '2026-03-24')!;
+      expect(result).toContain('MILDLY POSITIVE');
+    });
+
+    it('formats MILDLY NEGATIVE regime (-50K < gex <= 0)', () => {
+      const result = formatGreekExposureForClaude([makeAggRow(-25_000)], '2026-03-24')!;
+      expect(result).toContain('MILDLY NEGATIVE');
+      expect(result).toContain('Tighten CCS time exits');
+    });
+
+    it('formats MODERATELY NEGATIVE regime (-150K < gex <= -50K)', () => {
+      const result = formatGreekExposureForClaude([makeAggRow(-100_000)], '2026-03-24')!;
+      expect(result).toContain('MODERATELY NEGATIVE');
+      expect(result).toContain('Close CCS by 12:00 PM ET');
+    });
+
+    it('formats DEEPLY NEGATIVE regime (gex <= -150K)', () => {
+      const result = formatGreekExposureForClaude([makeAggRow(-200_000)], '2026-03-24')!;
+      expect(result).toContain('DEEPLY NEGATIVE');
+      expect(result).toContain('Reduce size 10%');
+    });
+
+    it('includes 0DTE breakdown when present', () => {
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(100_000), makeZeroDteRow()],
+        '2026-03-24',
+      )!;
+
+      expect(result).toContain('0DTE Breakdown:');
+      expect(result).toContain('Net Charm:');
+      expect(result).toContain('Net Delta:');
+    });
+
+    it('calculates 0DTE charm as percentage of total', () => {
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(100_000), makeZeroDteRow()],
+        '2026-03-24',
+      )!;
+
+      // zeroDte netCharm = 20_000, aggregate netCharm = 200_000 → 10.0%
+      expect(result).toContain('0DTE Charm as % of total: 10.0%');
+    });
+
+    it('skips charm percentage when aggregate charm is zero', () => {
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(100_000, { netCharm: 0 }), makeZeroDteRow()],
+        '2026-03-24',
+      )!;
+
+      expect(result).not.toContain('0DTE Charm as % of total');
+    });
+
+    it('includes non-0DTE expiries sorted by charm magnitude', () => {
+      const rows: GreekExposureRow[] = [
+        makeAggRow(100_000),
+        makeZeroDteRow(),
+        {
+          expiry: '2026-03-28', dte: 4,
+          callGamma: null, putGamma: null, netGamma: null,
+          callCharm: 300_000, putCharm: -200_000, netCharm: 100_000,
+          callDelta: 500_000, putDelta: -400_000, netDelta: 100_000,
+          callVanna: 50_000, putVanna: -30_000,
+        },
+      ];
+
+      const result = formatGreekExposureForClaude(rows, '2026-03-24')!;
+
+      expect(result).toContain('Largest Non-0DTE Charm Concentrations:');
+      expect(result).toContain('2026-03-28 (4DTE)');
+    });
+
+    it('skips aggregate section when netGamma is null', () => {
+      const result = formatGreekExposureForClaude(
+        [{ ...makeAggRow(0), netGamma: null }],
+        '2026-03-24',
+      )!;
+
+      expect(result).toContain('SPX Greek Exposure');
+      expect(result).not.toContain('Rule 16 Regime');
+    });
+  });
+
+  // ============================================================
+  // getSpotExposures
+  // ============================================================
+  describe('getSpotExposures', () => {
+    it('returns mapped spot exposure rows', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          timestamp: '2026-03-24T14:00:00Z',
+          price: '5825.50',
+          gamma_oi: '1500000000', gamma_vol: '200000000', gamma_dir: '150000000',
+          charm_oi: '-500000000', charm_vol: '-100000000', charm_dir: '-80000000',
+          vanna_oi: '300000000', vanna_vol: '50000000', vanna_dir: '40000000',
+        },
+      ]);
+
+      const result = await getSpotExposures('2026-03-24');
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        timestamp: '2026-03-24T14:00:00Z',
+        price: 5825.5,
+        gammaOi: 1500000000,
+        gammaVol: 200000000,
+        gammaDir: 150000000,
+        charmOi: -500000000,
+        charmVol: -100000000,
+        charmDir: -80000000,
+        vannaOi: 300000000,
+        vannaVol: 50000000,
+        vannaDir: 40000000,
+      });
+    });
+
+    it('returns empty array when no data', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      const result = await getSpotExposures('2026-03-24');
+      expect(result).toEqual([]);
+    });
+  });
+
+  // ============================================================
+  // formatSpotExposuresForClaude
+  // ============================================================
+
+  function makeSpotRow(overrides: Partial<SpotExposureRow> = {}): SpotExposureRow {
+    return {
+      timestamp: '2026-03-24T14:00:00.000Z',
+      price: 5825,
+      gammaOi: 100_000_000_000,   // ÷1M = 100_000 → POSITIVE
+      gammaVol: 50_000_000_000,
+      gammaDir: 30_000_000_000,
+      charmOi: -500_000_000_000,
+      charmVol: -100_000_000_000,
+      charmDir: -80_000_000_000,
+      vannaOi: 300_000_000_000,
+      vannaVol: 50_000_000_000,
+      vannaDir: 40_000_000_000,
+      ...overrides,
+    };
+  }
+
+  describe('formatSpotExposuresForClaude', () => {
+    it('returns null for empty rows', () => {
+      expect(formatSpotExposuresForClaude([])).toBeNull();
+    });
+
+    it('formats single row with POSITIVE regime', () => {
+      const result = formatSpotExposuresForClaude([makeSpotRow()])!;
+
+      expect(result).toContain('SPX Aggregate GEX Panel');
+      expect(result).toContain('POSITIVE');
+      expect(result).toContain('Periscope walls reliable');
+      expect(result).toContain('SPX at 5825');
+      expect(result).toContain('OI Net Gamma Exposure:');
+      expect(result).toContain('Volume Net Gamma Exposure:');
+      expect(result).toContain('Directionalized Volume Net Gamma:');
+      expect(result).toContain('OI Net Charm:');
+      expect(result).toContain('Volume Net Charm:');
+    });
+
+    it('formats MILDLY POSITIVE regime', () => {
+      // gammaOi ÷ 1M = 25_000 → MILDLY POSITIVE
+      const result = formatSpotExposuresForClaude([makeSpotRow({ gammaOi: 25_000_000_000 })])!;
+      expect(result).toContain('MILDLY POSITIVE');
+    });
+
+    it('formats MILDLY NEGATIVE regime', () => {
+      // gammaOi ÷ 1M = -25_000 → MILDLY NEGATIVE
+      const result = formatSpotExposuresForClaude([makeSpotRow({ gammaOi: -25_000_000_000 })])!;
+      expect(result).toContain('MILDLY NEGATIVE');
+      expect(result).toContain('Tighten CCS time exits');
+    });
+
+    it('formats MODERATELY NEGATIVE regime', () => {
+      // gammaOi ÷ 1M = -100_000
+      const result = formatSpotExposuresForClaude([makeSpotRow({ gammaOi: -100_000_000_000 })])!;
+      expect(result).toContain('MODERATELY NEGATIVE');
+      expect(result).toContain('Close CCS by 12:00 PM ET');
+    });
+
+    it('formats DEEPLY NEGATIVE regime', () => {
+      // gammaOi ÷ 1M = -200_000
+      const result = formatSpotExposuresForClaude([makeSpotRow({ gammaOi: -200_000_000_000 })])!;
+      expect(result).toContain('DEEPLY NEGATIVE');
+      expect(result).toContain('Reduce size 10%');
+    });
+
+    it('adds suppression note when OI negative and Vol positive', () => {
+      const result = formatSpotExposuresForClaude([
+        makeSpotRow({ gammaOi: -50_000_000_000, gammaVol: 10_000_000_000 }),
+      ])!;
+
+      expect(result).toContain('Volume GEX positive while OI GEX negative');
+      expect(result).toContain('suppression');
+    });
+
+    it('adds worsening note when both OI and Vol negative', () => {
+      const result = formatSpotExposuresForClaude([
+        makeSpotRow({ gammaOi: -50_000_000_000, gammaVol: -10_000_000_000 }),
+      ])!;
+
+      expect(result).toContain('WORSENING the acceleration regime');
+    });
+
+    it('no volume note when OI positive', () => {
+      const result = formatSpotExposuresForClaude([
+        makeSpotRow({ gammaOi: 50_000_000_000, gammaVol: -10_000_000_000 }),
+      ])!;
+
+      expect(result).not.toContain('Volume GEX positive');
+      expect(result).not.toContain('WORSENING');
+    });
+
+    it('includes intraday trend when 2+ rows', () => {
+      const rows: SpotExposureRow[] = [
+        makeSpotRow({ timestamp: '2026-03-24T14:00:00.000Z', price: 5800, gammaOi: 80_000_000_000 }),
+        makeSpotRow({ timestamp: '2026-03-24T15:00:00.000Z', price: 5830, gammaOi: 100_000_000_000 }),
+      ];
+
+      const result = formatSpotExposuresForClaude(rows)!;
+
+      expect(result).toContain('Intraday Trend (60 min):');
+      expect(result).toContain('improving (toward positive)');
+      expect(result).toContain('+30 pts');
+    });
+
+    it('shows deteriorating trend', () => {
+      const rows: SpotExposureRow[] = [
+        makeSpotRow({ timestamp: '2026-03-24T14:00:00.000Z', gammaOi: 100_000_000_000 }),
+        makeSpotRow({ timestamp: '2026-03-24T14:30:00.000Z', gammaOi: 50_000_000_000 }),
+      ];
+
+      const result = formatSpotExposuresForClaude(rows)!;
+
+      expect(result).toContain('deteriorating (toward negative)');
+    });
+
+    it('shows stable trend when no gamma change', () => {
+      const rows: SpotExposureRow[] = [
+        makeSpotRow({ timestamp: '2026-03-24T14:00:00.000Z', gammaOi: 100_000_000_000 }),
+        makeSpotRow({ timestamp: '2026-03-24T14:30:00.000Z', gammaOi: 100_000_000_000 }),
+      ];
+
+      const result = formatSpotExposuresForClaude(rows)!;
+
+      expect(result).toContain('stable');
+    });
+
+    it('includes recent history time series for multiple rows', () => {
+      const rows: SpotExposureRow[] = [
+        makeSpotRow({ timestamp: '2026-03-24T14:00:00.000Z', price: 5800 }),
+        makeSpotRow({ timestamp: '2026-03-24T14:05:00.000Z', price: 5810 }),
+        makeSpotRow({ timestamp: '2026-03-24T14:10:00.000Z', price: 5825 }),
+      ];
+
+      const result = formatSpotExposuresForClaude(rows)!;
+
+      expect(result).toContain('Recent History (5-min intervals):');
+      // Should show each row's data
+      expect(result).toContain('SPX: 5800');
+      expect(result).toContain('SPX: 5825');
+    });
+
+    it('does not show trend or history for single row', () => {
+      const result = formatSpotExposuresForClaude([makeSpotRow()])!;
+
+      expect(result).not.toContain('Intraday Trend');
+      expect(result).not.toContain('Recent History');
     });
   });
 });
