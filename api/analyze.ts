@@ -28,6 +28,8 @@ import {
   getPreviousRecommendation,
   getFlowData,
   formatFlowDataForClaude,
+  getGreekExposure,
+  formatGreekExposureForClaude,
 } from './_lib/db.js';
 import { analyzeBodySchema } from './_lib/validation.js';
 import logger from './_lib/logger.js';
@@ -771,6 +773,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let qqqFlowContext: string | null = null;
   let spyEtfTideContext: string | null = null;
   let qqqEtfTideContext: string | null = null;
+  let greekExposureContext: string | null = null;
 
   try {
     const [
@@ -781,6 +784,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       qqqRows,
       spyEtfRows,
       qqqEtfRows,
+      greekRows,
     ] = await Promise.all([
       getFlowData(analysisDate, 'market_tide'),
       getFlowData(analysisDate, 'market_tide_otm'),
@@ -789,6 +793,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       getFlowData(analysisDate, 'qqq_flow'),
       getFlowData(analysisDate, 'spy_etf_tide'),
       getFlowData(analysisDate, 'qqq_etf_tide'),
+      getGreekExposure(analysisDate),
     ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,
@@ -808,6 +813,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     qqqEtfTideContext = formatFlowDataForClaude(
       qqqEtfRows,
       'QQQ ETF Tide (Holdings Flow)',
+    );
+    greekExposureContext = formatGreekExposureForClaude(
+      greekRows,
+      analysisDate,
     );
   } catch (flowErr) {
     logger.error({ err: flowErr }, 'Failed to fetch flow data for analysis');
@@ -861,6 +870,7 @@ ${spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact
 ${qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for QQQ. Tech divergence check (Rule 8, 10% weight).\n\n${qqqFlowContext}\n` : ''}
 ${spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside SPY (AAPL, MSFT, NVDA, etc), not on SPY itself. When SPY Net Flow is bullish but SPY ETF Tide is bearish, the SPY call buying is likely hedging — the underlying stocks are seeing directional put buying. Use as a confirmation/divergence layer against SPY Net Flow.\n\n${spyEtfTideContext}\n` : ''}
 ${qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${qqqEtfTideContext}\n` : ''}
+${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${greekExposureContext}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.

@@ -123,7 +123,9 @@ async function storeAggregate(row: AggregateRow): Promise<boolean> {
   return result.length > 0;
 }
 
-async function storeExpiryRows(rows: ExpiryRow[]): Promise<{ stored: number; skipped: number }> {
+async function storeExpiryRows(
+  rows: ExpiryRow[],
+): Promise<{ stored: number; skipped: number }> {
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
@@ -173,7 +175,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (!isMarketHours()) {
-    return res.status(200).json({ skipped: true, reason: 'Outside market hours' });
+    return res
+      .status(200)
+      .json({ skipped: true, reason: 'Outside market hours' });
   }
 
   const apiKey = process.env.UW_API_KEY;
@@ -194,9 +198,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       aggStored = await storeAggregate(latest);
 
       const netGamma =
-        Number.parseFloat(latest.call_gamma) + Number.parseFloat(latest.put_gamma);
+        Number.parseFloat(latest.call_gamma) +
+        Number.parseFloat(latest.put_gamma);
       logger.info(
-        { date: latest.date, netGamma: Math.round(netGamma), stored: aggStored },
+        {
+          date: latest.date,
+          netGamma: Math.round(netGamma),
+          stored: aggStored,
+        },
         'Aggregate GEX stored',
       );
     }
