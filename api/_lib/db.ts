@@ -364,6 +364,33 @@ const MIGRATIONS: Migration[] = [
       await sql`ALTER TABLE greek_exposure ADD CONSTRAINT greek_exposure_date_ticker_expiry_dte_key UNIQUE(date, ticker, expiry, dte)`;
     },
   },
+  {
+    id: 7,
+    description: 'Create spot_exposures table for intraday GEX panel data',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS spot_exposures (
+          id              SERIAL PRIMARY KEY,
+          date            DATE NOT NULL,
+          timestamp       TIMESTAMPTZ NOT NULL,
+          ticker          TEXT NOT NULL DEFAULT 'SPX',
+          price           DECIMAL(10,2),
+          gamma_oi        DECIMAL(20,4),
+          gamma_vol       DECIMAL(20,4),
+          gamma_dir       DECIMAL(20,4),
+          charm_oi        DECIMAL(20,4),
+          charm_vol       DECIMAL(20,4),
+          charm_dir       DECIMAL(20,4),
+          vanna_oi        DECIMAL(20,4),
+          vanna_vol       DECIMAL(20,4),
+          vanna_dir       DECIMAL(20,4),
+          created_at      TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(date, timestamp, ticker)
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_spot_exposures_date_ticker ON spot_exposures (date, ticker)`;
+    },
+  },
 ];
 
 /**
@@ -1262,5 +1289,194 @@ function formatGreekValue(value: number): string {
     return `${sign}${(abs / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}${abs.toFixed(0)}`;
+}
+
+// ── Spot GEX Exposures (intraday panel data) ────────────────
+
+export interface SpotExposureRow {
+  timestamp: string;
+  price: number;
+  gammaOi: number;
+  gammaVol: number;
+  gammaDir: number;
+  charmOi: number;
+  charmVol: number;
+  charmDir: number;
+  vannaOi: number;
+  vannaVol: number;
+  vannaDir: number;
+}
+
+/**
+ * Get all spot GEX exposure rows for a given date.
+ * Returns rows ordered by timestamp ascending (oldest first).
+ */
+export async function getSpotExposures(
+  date: string,
+  ticker: string = 'SPX',
+): Promise<SpotExposureRow[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT timestamp, price,
+           gamma_oi, gamma_vol, gamma_dir,
+           charm_oi, charm_vol, charm_dir,
+           vanna_oi, vanna_vol, vanna_dir
+    FROM spot_exposures
+    WHERE date = ${date} AND ticker = ${ticker}
+    ORDER BY timestamp ASC
+  `;
+
+  return rows.map((r) => ({
+    timestamp: r.timestamp as string,
+    price: Number(r.price),
+    gammaOi: Number(r.gamma_oi),
+    gammaVol: Number(r.gamma_vol),
+    gammaDir: Number(r.gamma_dir),
+    charmOi: Number(r.charm_oi),
+    charmVol: Number(r.charm_vol),
+    charmDir: Number(r.charm_dir),
+    vannaOi: Number(r.vanna_oi),
+    vannaVol: Number(r.vanna_vol),
+    vannaDir: Number(r.vanna_dir),
+  }));
+}
+
+/**
+ * Format spot GEX exposure data as a structured text block for Claude's context.
+ *
+ * IMPORTANT SCALE NOTE: The API returns dollar values per 1% move (billions).
+ * The Aggregate GEX screenshot shows these same values divided by ~1,000,000.
+ * Example: API returns -67,369,292,795 → screenshot shows -67,385.
+ * This formatter divides by 1,000,000 to match the screenshot scale that
+ * Rule 16 thresholds are calibrated against.
+ *
+ * @param rows - Spot exposure rows (ordered by timestamp ascending)
+ * @returns Formatted text block, or null if no data
+ */
+export function formatSpotExposuresForClaude(
+  rows: SpotExposureRow[],
+): string | null {
+  if (rows.length === 0) return null;
+
+  const latest = rows.at(-1)!;
+  const first = rows[0]!;
+
+  // Convert to screenshot scale (÷ 1,000,000)
+  const oiGex = latest.gammaOi / 1_000_000;
+  const volGex = latest.gammaVol / 1_000_000;
+  const dirGex = latest.gammaDir / 1_000_000;
+
+  // Rule 16 regime classification (using screenshot-scale values)
+  let regime: string;
+  if (oiGex > 50_000) {
+    regime = 'POSITIVE — Normal management. Periscope walls reliable.';
+  } else if (oiGex > 0) {
+    regime = 'MILDLY POSITIVE — Walls mostly reliable. Standard management.';
+  } else if (oiGex > -50_000) {
+    regime = 'MILDLY NEGATIVE — Tighten CCS time exits by 30 min.';
+  } else if (oiGex > -150_000) {
+    regime =
+      'MODERATELY NEGATIVE — Close CCS by 12:00 PM ET. Target 40% profit.';
+  } else {
+    regime =
+      'DEEPLY NEGATIVE — Close CCS by 11:30 AM ET. Reduce size 10%. Walls compromised.';
+  }
+
+  const lines: string[] = [];
+
+  // Latest snapshot
+  const latestTime = new Date(latest.timestamp).toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+
+  lines.push(
+    'SPX Aggregate GEX Panel (from API — intraday):',
+    `  Latest (${latestTime} ET) — SPX at ${latest.price}:`,
+    `    OI Net Gamma Exposure: ${fmtGex(oiGex)}`,
+    `    Volume Net Gamma Exposure: ${fmtGex(volGex)}`,
+    `    Directionalized Volume Net Gamma: ${fmtGex(dirGex)}`,
+    `    Rule 16 Regime: ${regime}`,
+  );
+
+  // Volume GEX interpretation
+  if (volGex !== 0) {
+    if (oiGex < 0 && volGex > 0) {
+      lines.push(
+        `    Note: Volume GEX positive while OI GEX negative — today's trading adds suppression. Session may be calmer than OI suggests, but don't extend past OI-based time limits.`,
+      );
+    } else if (oiGex < 0 && volGex < 0) {
+      lines.push(
+        `    Note: Volume GEX ALSO negative — today's trading is WORSENING the acceleration regime. Walls are less reliable than OI alone suggests.`,
+      );
+    }
+  }
+
+  // Charm snapshot
+  const oiCharm = latest.charmOi / 1_000_000;
+  const volCharm = latest.charmVol / 1_000_000;
+  lines.push(
+    '',
+    `    OI Net Charm: ${fmtGex(oiCharm)}`,
+    `    Volume Net Charm: ${fmtGex(volCharm)}`,
+  );
+
+  // Intraday trend
+  if (rows.length >= 2) {
+    const oiChange = (latest.gammaOi - first.gammaOi) / 1_000_000;
+    const minutes = Math.round(
+      (new Date(latest.timestamp).getTime() -
+        new Date(first.timestamp).getTime()) /
+        60000,
+    );
+
+    const gammaDir2 =
+      oiChange > 0
+        ? 'improving (toward positive)'
+        : oiChange < 0
+          ? 'deteriorating (toward negative)'
+          : 'stable';
+
+    lines.push(
+      '',
+      `  Intraday Trend (${minutes} min):`,
+      `    OI Gamma: ${gammaDir2} (${fmtGex(oiChange)} change)`,
+      `    Price: ${first.price} → ${latest.price} (${latest.price >= first.price ? '+' : ''}${(latest.price - first.price).toFixed(0)} pts)`,
+    );
+  }
+
+  // Recent time series (last 6 data points)
+  if (rows.length > 1) {
+    const recentRows = rows.slice(-6);
+    lines.push('', '  Recent History (5-min intervals):');
+    for (const row of recentRows) {
+      const time = new Date(row.timestamp).toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      });
+      lines.push(
+        `    ${time} ET — SPX: ${row.price} | OI: ${fmtGex(row.gammaOi / 1_000_000)} | Vol: ${fmtGex(row.gammaVol / 1_000_000)} | Dir: ${fmtGex(row.gammaDir / 1_000_000)}`,
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format a GEX value in screenshot scale for display.
+ * Values are already divided by 1M, so they're in the range of ±1K to ±300K.
+ */
+function fmtGex(value: number): string {
+  const abs = Math.abs(value);
+  const sign = value >= 0 ? '+' : '-';
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000).toFixed(0)}K`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
+  if (abs === 0) return '0';
   return `${sign}${abs.toFixed(0)}`;
 }
