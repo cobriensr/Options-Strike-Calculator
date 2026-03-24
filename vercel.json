@@ -11,6 +11,14 @@
     {
       "path": "/api/cron/fetch-net-flow",
       "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-etf-tide",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-greek-exposure",
+      "schedule": "*/5 13-21 * * 1-5"
     }
   ],
   "functions": {

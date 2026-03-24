@@ -329,6 +329,33 @@ const MIGRATIONS: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_flow_data_timestamp ON flow_data (timestamp)`;
     },
   },
+  {
+    id: 5,
+    description: 'Create greek_exposure table for MM Greek exposure by expiry',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS greek_exposure (
+          id          SERIAL PRIMARY KEY,
+          date        DATE NOT NULL,
+          ticker      TEXT NOT NULL,
+          expiry      DATE NOT NULL,
+          dte         INTEGER,
+          call_gamma  DECIMAL(20,4),
+          put_gamma   DECIMAL(20,4),
+          call_charm  DECIMAL(20,4),
+          put_charm   DECIMAL(20,4),
+          call_delta  DECIMAL(20,4),
+          put_delta   DECIMAL(20,4),
+          call_vanna  DECIMAL(20,4),
+          put_vanna   DECIMAL(20,4),
+          created_at  TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(date, ticker, expiry)
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_greek_exposure_date_ticker ON greek_exposure (date, ticker)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_greek_exposure_expiry ON greek_exposure (expiry)`;
+    },
+  },
 ];
 
 /**
@@ -1069,4 +1096,146 @@ function formatPremium(value: number): string {
   if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`;
   return `${sign}$${abs.toFixed(0)}`;
+}
+
+// ── Greek Exposure (MM gamma/charm/delta/vanna by expiry) ───
+
+export interface GreekExposureRow {
+  expiry: string;
+  dte: number;
+  callGamma: number;
+  putGamma: number;
+  netGamma: number;
+  callCharm: number;
+  putCharm: number;
+  netCharm: number;
+  callDelta: number;
+  putDelta: number;
+  netDelta: number;
+  callVanna: number;
+  putVanna: number;
+}
+
+/**
+ * Get all Greek exposure rows for a given date and ticker.
+ * Returns rows ordered by DTE ascending (0DTE first).
+ */
+export async function getGreekExposure(
+  date: string,
+  ticker: string = 'SPX',
+): Promise<GreekExposureRow[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm,
+           call_delta, put_delta, call_vanna, put_vanna
+    FROM greek_exposure
+    WHERE date = ${date} AND ticker = ${ticker}
+    ORDER BY dte ASC
+  `;
+
+  return rows.map((r) => ({
+    expiry: r.expiry as string,
+    dte: r.dte as number,
+    callGamma: Number(r.call_gamma),
+    putGamma: Number(r.put_gamma),
+    netGamma: Number(r.call_gamma) + Number(r.put_gamma),
+    callCharm: Number(r.call_charm),
+    putCharm: Number(r.put_charm),
+    netCharm: Number(r.call_charm) + Number(r.put_charm),
+    callDelta: Number(r.call_delta),
+    putDelta: Number(r.put_delta),
+    netDelta: Number(r.call_delta) + Number(r.put_delta),
+    callVanna: Number(r.call_vanna),
+    putVanna: Number(r.put_vanna),
+  }));
+}
+
+/**
+ * Format Greek exposure data as a structured text block for Claude's context.
+ * Includes aggregate totals, 0DTE breakdown, and regime classification.
+ *
+ * @param rows - Greek exposure rows (ordered by DTE ascending)
+ * @param date - Analysis date (to identify 0DTE expiry)
+ * @returns Formatted text block, or null if no data
+ */
+export function formatGreekExposureForClaude(
+  rows: GreekExposureRow[],
+  date: string,
+): string | null {
+  if (rows.length === 0) return null;
+
+  // Aggregate across all expiries
+  const aggGamma = rows.reduce((s, r) => s + r.netGamma, 0);
+  const aggCharm = rows.reduce((s, r) => s + r.netCharm, 0);
+  const aggDelta = rows.reduce((s, r) => s + r.netDelta, 0);
+
+  // 0DTE specific
+  const zeroDte = rows.find((r) => r.expiry === date || r.dte === 0);
+
+  // Regime classification per Rule 16
+  let regime: string;
+  if (aggGamma > 50_000) {
+    regime = 'POSITIVE — Normal management. Periscope walls reliable.';
+  } else if (aggGamma > 0) {
+    regime = 'MILDLY NEGATIVE (0 to +50K) — Tighten CCS time exits by 30 min.';
+  } else if (aggGamma > -50_000) {
+    regime = 'MILDLY NEGATIVE (0 to -50K) — Tighten CCS time exits by 30 min.';
+  } else if (aggGamma > -150_000) {
+    regime =
+      'MODERATELY NEGATIVE — Close CCS by 12:00 PM ET. Target 40% profit.';
+  } else {
+    regime =
+      'DEEPLY NEGATIVE — Close CCS by 11:30 AM ET. Reduce size 10%. Walls compromised.';
+  }
+
+  const lines: string[] = [
+    'SPX Greek Exposure (OI-based, from API):',
+    `  Aggregate Net Gamma (all expiries): ${formatGreekValue(aggGamma)}`,
+    `  Aggregate Net Charm (all expiries): ${formatGreekValue(aggCharm)}`,
+    `  Aggregate Net Delta (all expiries): ${formatGreekValue(aggDelta)}`,
+    `  Rule 16 Regime: ${regime}`,
+  ];
+
+  if (zeroDte) {
+    const pctOfTotal =
+      aggGamma !== 0 ? ((zeroDte.netGamma / aggGamma) * 100).toFixed(1) : 'N/A';
+    lines.push(
+      '',
+      '  0DTE Breakdown:',
+      `    Net Gamma: ${formatGreekValue(zeroDte.netGamma)} (${pctOfTotal}% of total)`,
+      `    Net Charm: ${formatGreekValue(zeroDte.netCharm)}`,
+      `    Net Delta: ${formatGreekValue(zeroDte.netDelta)}`,
+      `    Call Gamma: ${formatGreekValue(zeroDte.callGamma)} | Put Gamma: ${formatGreekValue(zeroDte.putGamma)}`,
+    );
+  }
+
+  // Top 3 expiries by gamma magnitude (excluding 0DTE)
+  const nonZeroDte = rows
+    .filter((r) => r.expiry !== date && r.dte !== 0)
+    .sort((a, b) => Math.abs(b.netGamma) - Math.abs(a.netGamma))
+    .slice(0, 3);
+
+  if (nonZeroDte.length > 0) {
+    lines.push('', '  Largest Non-0DTE Gamma Concentrations:');
+    for (const r of nonZeroDte) {
+      lines.push(
+        `    ${r.expiry} (${r.dte}DTE): Net Gamma ${formatGreekValue(r.netGamma)}, Net Charm ${formatGreekValue(r.netCharm)}`,
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format a Greek exposure value for display (e.g., -12337386 → "-12.3M")
+ */
+function formatGreekValue(value: number): string {
+  const abs = Math.abs(value);
+  const sign = value >= 0 ? '+' : '-';
+  if (abs >= 1_000_000_000)
+    return `${sign}${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}${abs.toFixed(0)}`;
 }
