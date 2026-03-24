@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * Local backfill script for Net Flow ticks (SPX, SPY, QQQ).
- * Fetches per-minute incremental data, cumulates, samples to 5-min, stores to Neon.
+ * Local backfill script for ETF Tide (SPY and QQQ underlying holdings flow).
  *
  * Usage:
- *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-net-flow.mjs
+ *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-etf-tide.mjs
  *
  * Options:
- *   node scripts/backfill-net-flow.mjs 5          # backfill 5 days instead of 30
- *   node scripts/backfill-net-flow.mjs 30 SPX     # backfill only SPX
- *   node scripts/backfill-net-flow.mjs 30 SPY QQQ # backfill only SPY and QQQ
+ *   node scripts/backfill-etf-tide.mjs 5          # 5 days instead of 30
+ *   node scripts/backfill-etf-tide.mjs 30 SPY     # SPY only
+ *   node scripts/backfill-etf-tide.mjs 30 QQQ     # QQQ only
  */
 
 import { neon } from '@neondatabase/serverless';
@@ -31,9 +30,8 @@ const sql = neon(DATABASE_URL);
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
 const ALL_TICKERS = [
-  { ticker: 'SPX', source: 'spx_flow' },
-  { ticker: 'SPY', source: 'spy_flow' },
-  { ticker: 'QQQ', source: 'qqq_flow' },
+  { ticker: 'SPY', source: 'spy_etf_tide' },
+  { ticker: 'QQQ', source: 'qqq_etf_tide' },
 ];
 
 // ── Parse args ──────────────────────────────────────────────
@@ -68,66 +66,45 @@ function getTradingDays(count) {
   return dates.reverse();
 }
 
-// ── Fetch + cumulate + sample ───────────────────────────────
+// ── Fetch ETF Tide for one date ─────────────────────────────
 
-async function fetchNetFlowForDate(ticker, date) {
-  const res = await fetch(
-    `${UW_BASE}/stock/${ticker}/net-prem-ticks?date=${date}`,
-    {
-      headers: { Authorization: `Bearer ${UW_API_KEY}` },
-    },
-  );
+async function fetchEtfTide(ticker, date) {
+  const res = await fetch(`${UW_BASE}/market/${ticker}/etf-tide?date=${date}`, {
+    headers: { Authorization: `Bearer ${UW_API_KEY}` },
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     console.warn(
-      `  UW API ${res.status} for ${ticker} ${date}: ${text.slice(0, 100)}`,
+      `  UW API ${res.status} for ${ticker} ETF Tide ${date}: ${text.slice(0, 100)}`,
     );
     return [];
   }
 
   const body = await res.json();
-  const ticks = body.data ?? [];
+  return body.data ?? [];
+}
 
-  if (ticks.length === 0) return [];
+// ── Sample to 5-min intervals ───────────────────────────────
 
-  // Cumulate incremental ticks
-  let runningNcp = 0;
-  let runningNpp = 0;
-  let runningCallVol = 0;
-  let runningPutVol = 0;
+function sampleTo5Min(rows) {
+  if (rows.length === 0) return [];
 
-  const cumulated = ticks.map((tick) => {
-    runningNcp += Number.parseFloat(tick.net_call_premium) || 0;
-    runningNpp += Number.parseFloat(tick.net_put_premium) || 0;
-    runningCallVol += tick.net_call_volume || 0;
-    runningPutVol += tick.net_put_volume || 0;
-
-    return {
-      date: tick.date,
-      timestamp: tick.tape_time,
-      ncp: runningNcp,
-      npp: runningNpp,
-      netVolume: runningCallVol + runningPutVol,
-    };
-  });
-
-  // Sample at 5-minute intervals (last tick per 5-min window)
   const sampled = new Map();
 
-  for (const tick of cumulated) {
-    const dt = new Date(tick.timestamp);
+  for (const row of rows) {
+    const dt = new Date(row.timestamp);
     const minutes = dt.getMinutes();
     const rounded = new Date(dt);
     rounded.setMinutes(minutes - (minutes % 5), 0, 0);
     const key = rounded.toISOString();
 
     sampled.set(key, {
-      date: tick.date,
+      date: row.date ?? dt.toISOString().slice(0, 10),
       timestamp: key,
-      ncp: tick.ncp,
-      npp: tick.npp,
-      netVolume: tick.netVolume,
+      ncp: Number.parseFloat(row.net_call_premium) || 0,
+      npp: Number.parseFloat(row.net_put_premium) || 0,
+      netVolume: row.net_volume || 0,
     });
   }
 
@@ -138,14 +115,14 @@ async function fetchNetFlowForDate(ticker, date) {
 
 // ── Store all sampled candles ───────────────────────────────
 
-async function storeCandles(candles, source) {
+async function storeCandles(candles, source, date) {
   let stored = 0;
 
   for (const c of candles) {
     try {
       const result = await sql`
         INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (${c.date}, ${c.timestamp}, ${source}, ${c.ncp}, ${c.npp}, ${c.netVolume})
+        VALUES (${date}, ${c.timestamp}, ${source}, ${c.ncp}, ${c.npp}, ${c.netVolume})
         ON CONFLICT (date, timestamp, source) DO NOTHING
         RETURNING id
       `;
@@ -164,7 +141,7 @@ async function main() {
   const tradingDays = getTradingDays(days);
 
   console.log(
-    `Backfilling net flow for: ${tickers.map((t) => t.ticker).join(', ')}`,
+    `Backfilling ETF Tide for: ${tickers.map((t) => t.ticker).join(', ')}`,
   );
   console.log(
     `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`,
@@ -173,17 +150,16 @@ async function main() {
   const totals = { candles: 0, stored: 0 };
 
   for (const date of tradingDays) {
-    // Delay between dates to respect rate limits
     await new Promise((r) => setTimeout(r, 300));
 
     const dayResults = [];
 
     for (const { ticker, source } of tickers) {
-      // Small delay between tickers
       await new Promise((r) => setTimeout(r, 100));
 
-      const candles = await fetchNetFlowForDate(ticker, date);
-      const stored = await storeCandles(candles, source);
+      const rows = await fetchEtfTide(ticker, date);
+      const candles = sampleTo5Min(rows);
+      const stored = await storeCandles(candles, source, date);
 
       totals.candles += candles.length;
       totals.stored += stored;

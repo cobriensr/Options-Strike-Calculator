@@ -28,6 +28,8 @@ import {
   getPreviousRecommendation,
   getFlowData,
   formatFlowDataForClaude,
+  getGreekExposure,
+  formatGreekExposureForClaude,
 } from './_lib/db.js';
 import { analyzeBodySchema } from './_lib/validation.js';
 import logger from './_lib/logger.js';
@@ -305,6 +307,7 @@ When SPX Net Flow NCP diverges from price direction AND 3+ other signals (Market
 - When this pattern is identified: reduce SPX Net Flow's effective weight from 50% to 25%. Redistribute the weight to Market Tide (now 37.5%) and SPY (now 22.5%). QQQ stays at 10%.
 - Do not let the positive SPX NCP prevent a directional CCS recommendation when all other signals agree on direction. Note the divergence as a risk factor and reduce sizing by one level, but do not override 3+ confirming signals.
 - The reverse also applies: if SPX NCP is deeply negative but SPX price is rising with Market Tide and SPY both bullish, the SPX put flow is likely institutional hedging — treat as CONFLICTED.
+- VIX 25+ REGIME OVERRIDE: When VIX is above 25, institutional hedging activity dominates aggregate flow signals (Market Tide, SPY). In this regime, if SPX Net Flow diverges from Market Tide/SPY, ALWAYS trust SPX Net Flow for structure selection without waiting for the standard 3+ confirming signals threshold. At VIX 25+, Market Tide and SPY bullish flow is overwhelmingly likely to be hedging noise from non-SPX instruments — do not let it override a bearish SPX NCP/NPP signal. This pattern has been confirmed across five sessions (Lessons 3, 33, 37, 53, and March 24 2026). Reduce the Rule 10 confirmation requirement from "3+ other signals" to "SPX Net Flow alone is sufficient" when VIX > 25.
  
 RULE 11: Net Charm Confirms Directional Spread
 When the Net Charm profile shows massive positive charm values below current price (downside walls strengthening) and negative charm values above current price (upside walls decaying), this is a strong CCS confirmation. The mirror pattern (negative charm below, positive above) confirms PCS.
@@ -393,6 +396,12 @@ Backtest mode:
 Time-Bounded Analysis:
 The trader specifies an entry time. Charts may show the full day (especially when backtesting). Only analyze what was visible at the entry time. Draw a mental vertical line at the entry time — everything to the RIGHT does not exist yet. Do not reference any price action, flow, or volume after the entry time.
 </data_handling>
+ 
+<api_data_priority>
+When structured API data is provided in the context (labeled "from API — 5-min intervals" or "from API — OI-based"), use those exact values for Phase 1 extraction instead of estimating from the corresponding screenshot. The API values are precise — no visual estimation needed. If both API data and a screenshot are provided for the same source, the API values take precedence for NCP/NPP/gamma/charm numbers. Still use the screenshot for visual pattern confirmation (e.g., line shape, acceleration, volume bar colors) if helpful.
+ 
+When API data includes a computed "Direction" and "Pattern" summary, treat these as pre-computed Phase 1 outputs — do not re-derive them unless the values look inconsistent.
+</api_data_priority>
  
 <analysis_modes>
  
@@ -768,16 +777,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let spxFlowContext: string | null = null;
   let spyFlowContext: string | null = null;
   let qqqFlowContext: string | null = null;
+  let spyEtfTideContext: string | null = null;
+  let qqqEtfTideContext: string | null = null;
+  let greekExposureContext: string | null = null;
 
   try {
-    const [tideRows, tideOtmRows, spxRows, spyRows, qqqRows] =
-      await Promise.all([
-        getFlowData(analysisDate, 'market_tide'),
-        getFlowData(analysisDate, 'market_tide_otm'),
-        getFlowData(analysisDate, 'spx_flow'),
-        getFlowData(analysisDate, 'spy_flow'),
-        getFlowData(analysisDate, 'qqq_flow'),
-      ]);
+    const [
+      tideRows,
+      tideOtmRows,
+      spxRows,
+      spyRows,
+      qqqRows,
+      spyEtfRows,
+      qqqEtfRows,
+      greekRows,
+    ] = await Promise.all([
+      getFlowData(analysisDate, 'market_tide'),
+      getFlowData(analysisDate, 'market_tide_otm'),
+      getFlowData(analysisDate, 'spx_flow'),
+      getFlowData(analysisDate, 'spy_flow'),
+      getFlowData(analysisDate, 'qqq_flow'),
+      getFlowData(analysisDate, 'spy_etf_tide'),
+      getFlowData(analysisDate, 'qqq_etf_tide'),
+      getGreekExposure(analysisDate),
+    ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,
       'Market Tide (All-In)',
@@ -789,6 +812,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     spxFlowContext = formatFlowDataForClaude(spxRows, 'SPX Net Flow');
     spyFlowContext = formatFlowDataForClaude(spyRows, 'SPY Net Flow');
     qqqFlowContext = formatFlowDataForClaude(qqqRows, 'QQQ Net Flow');
+    spyEtfTideContext = formatFlowDataForClaude(
+      spyEtfRows,
+      'SPY ETF Tide (Holdings Flow)',
+    );
+    qqqEtfTideContext = formatFlowDataForClaude(
+      qqqEtfRows,
+      'QQQ ETF Tide (Holdings Flow)',
+    );
+    greekExposureContext = formatGreekExposureForClaude(
+      greekRows,
+      analysisDate,
+    );
   } catch (flowErr) {
     logger.error({ err: flowErr }, 'Failed to fetch flow data for analysis');
   }
@@ -839,6 +874,9 @@ ${marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThi
 ${spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. These are the primary flow signal (Rule 8, 50% weight). Trust these values over screenshot estimates.\n\n${spxFlowContext}\n` : ''}
 ${spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPY. Secondary confirmation signal (Rule 8, 15% weight).\n\n${spyFlowContext}\n` : ''}
 ${qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for QQQ. Tech divergence check (Rule 8, 10% weight).\n\n${qqqFlowContext}\n` : ''}
+${spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside SPY (AAPL, MSFT, NVDA, etc), not on SPY itself. When SPY Net Flow is bullish but SPY ETF Tide is bearish, the SPY call buying is likely hedging — the underlying stocks are seeing directional put buying. Use as a confirmation/divergence layer against SPY Net Flow.\n\n${spyEtfTideContext}\n` : ''}
+${qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${qqqEtfTideContext}\n` : ''}
+${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${greekExposureContext}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
