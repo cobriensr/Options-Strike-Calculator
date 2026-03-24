@@ -1099,13 +1099,13 @@ function formatPremium(value: number): string {
 }
 
 // ── Greek Exposure (MM gamma/charm/delta/vanna by expiry) ───
-
+ 
 export interface GreekExposureRow {
   expiry: string;
   dte: number;
-  callGamma: number;
-  putGamma: number;
-  netGamma: number;
+  callGamma: number | null;
+  putGamma: number | null;
+  netGamma: number | null;
   callCharm: number;
   putCharm: number;
   netCharm: number;
@@ -1115,10 +1115,10 @@ export interface GreekExposureRow {
   callVanna: number;
   putVanna: number;
 }
-
+ 
 /**
  * Get all Greek exposure rows for a given date and ticker.
- * Returns rows ordered by DTE ascending (0DTE first).
+ * Returns rows ordered by DTE ascending (aggregate first at dte=-1, then 0DTE, etc).
  */
 export async function getGreekExposure(
   date: string,
@@ -1132,27 +1132,32 @@ export async function getGreekExposure(
     WHERE date = ${date} AND ticker = ${ticker}
     ORDER BY dte ASC
   `;
-
-  return rows.map((r) => ({
-    expiry: r.expiry as string,
-    dte: r.dte as number,
-    callGamma: Number(r.call_gamma),
-    putGamma: Number(r.put_gamma),
-    netGamma: Number(r.call_gamma) + Number(r.put_gamma),
-    callCharm: Number(r.call_charm),
-    putCharm: Number(r.put_charm),
-    netCharm: Number(r.call_charm) + Number(r.put_charm),
-    callDelta: Number(r.call_delta),
-    putDelta: Number(r.put_delta),
-    netDelta: Number(r.call_delta) + Number(r.put_delta),
-    callVanna: Number(r.call_vanna),
-    putVanna: Number(r.put_vanna),
-  }));
+ 
+  return rows.map((r) => {
+    const cg = r.call_gamma != null ? Number(r.call_gamma) : null;
+    const pg = r.put_gamma != null ? Number(r.put_gamma) : null;
+ 
+    return {
+      expiry: r.expiry as string,
+      dte: r.dte as number,
+      callGamma: cg,
+      putGamma: pg,
+      netGamma: cg != null && pg != null ? cg + pg : null,
+      callCharm: Number(r.call_charm),
+      putCharm: Number(r.put_charm),
+      netCharm: Number(r.call_charm) + Number(r.put_charm),
+      callDelta: Number(r.call_delta),
+      putDelta: Number(r.put_delta),
+      netDelta: Number(r.call_delta) + Number(r.put_delta),
+      callVanna: Number(r.call_vanna),
+      putVanna: Number(r.put_vanna),
+    };
+  });
 }
-
+ 
 /**
  * Format Greek exposure data as a structured text block for Claude's context.
- * Includes aggregate totals, 0DTE breakdown, and regime classification.
+ * Uses aggregate row for OI Net Gamma (Rule 16) and by-expiry rows for charm/delta breakdown.
  *
  * @param rows - Greek exposure rows (ordered by DTE ascending)
  * @param date - Analysis date (to identify 0DTE expiry)
@@ -1163,79 +1168,90 @@ export function formatGreekExposureForClaude(
   date: string,
 ): string | null {
   if (rows.length === 0) return null;
-
-  // Aggregate across all expiries
-  const aggGamma = rows.reduce((s, r) => s + r.netGamma, 0);
-  const aggCharm = rows.reduce((s, r) => s + r.netCharm, 0);
-  const aggDelta = rows.reduce((s, r) => s + r.netDelta, 0);
-
-  // 0DTE specific
+ 
+  // Find aggregate row (expiry='aggregate', dte=-1)
+  const aggregate = rows.find((r) => r.expiry === 'aggregate');
+ 
+  // Find 0DTE row
   const zeroDte = rows.find((r) => r.expiry === date || r.dte === 0);
-
-  // Regime classification per Rule 16
-  let regime: string;
-  if (aggGamma > 50_000) {
-    regime = 'POSITIVE — Normal management. Periscope walls reliable.';
-  } else if (aggGamma > 0) {
-    regime = 'MILDLY NEGATIVE (0 to +50K) — Tighten CCS time exits by 30 min.';
-  } else if (aggGamma > -50_000) {
-    regime = 'MILDLY NEGATIVE (0 to -50K) — Tighten CCS time exits by 30 min.';
-  } else if (aggGamma > -150_000) {
-    regime =
-      'MODERATELY NEGATIVE — Close CCS by 12:00 PM ET. Target 40% profit.';
-  } else {
-    regime =
-      'DEEPLY NEGATIVE — Close CCS by 11:30 AM ET. Reduce size 10%. Walls compromised.';
+ 
+  // Non-aggregate, non-0DTE expiries
+  const otherExpiries = rows
+    .filter((r) => r.expiry !== 'aggregate' && r.expiry !== date && r.dte !== 0)
+    .sort((a, b) => Math.abs(b.netCharm) - Math.abs(a.netCharm))
+    .slice(0, 3);
+ 
+  const lines: string[] = [];
+ 
+  lines.push('SPX Greek Exposure (OI-based, from API):');
+ 
+  // Aggregate section (has gamma from the aggregate endpoint)
+  if (aggregate?.netGamma != null) {
+    // Rule 16 regime classification
+    const gex = aggregate.netGamma;
+    let regime: string;
+    if (gex > 50_000) {
+      regime = 'POSITIVE — Normal management. Periscope walls reliable.';
+    } else if (gex > 0) {
+      regime = 'MILDLY POSITIVE — Walls mostly reliable. Standard management.';
+    } else if (gex > -50_000) {
+      regime = 'MILDLY NEGATIVE — Tighten CCS time exits by 30 min.';
+    } else if (gex > -150_000) {
+      regime = 'MODERATELY NEGATIVE — Close CCS by 12:00 PM ET. Target 40% profit.';
+    } else {
+      regime = 'DEEPLY NEGATIVE — Close CCS by 11:30 AM ET. Reduce size 10%. Walls compromised.';
+    }
+ 
+    lines.push(
+      `  OI Net Gamma Exposure (all expiries): ${formatGreekValue(gex)}`,
+      `  Rule 16 Regime: ${regime}`,
+      `  Net Charm (all expiries): ${formatGreekValue(aggregate.netCharm)}`,
+      `  Net Delta (all expiries): ${formatGreekValue(aggregate.netDelta)}`,
+    );
   }
-
-  const lines: string[] = [
-    'SPX Greek Exposure (OI-based, from API):',
-    `  Aggregate Net Gamma (all expiries): ${formatGreekValue(aggGamma)}`,
-    `  Aggregate Net Charm (all expiries): ${formatGreekValue(aggCharm)}`,
-    `  Aggregate Net Delta (all expiries): ${formatGreekValue(aggDelta)}`,
-    `  Rule 16 Regime: ${regime}`,
-  ];
-
+ 
+  // 0DTE section (charm/delta only — gamma is null on basic tier)
   if (zeroDte) {
-    const pctOfTotal =
-      aggGamma !== 0 ? ((zeroDte.netGamma / aggGamma) * 100).toFixed(1) : 'N/A';
     lines.push(
       '',
       '  0DTE Breakdown:',
-      `    Net Gamma: ${formatGreekValue(zeroDte.netGamma)} (${pctOfTotal}% of total)`,
       `    Net Charm: ${formatGreekValue(zeroDte.netCharm)}`,
+      `    Call Charm: ${formatGreekValue(zeroDte.callCharm)} | Put Charm: ${formatGreekValue(zeroDte.putCharm)}`,
       `    Net Delta: ${formatGreekValue(zeroDte.netDelta)}`,
-      `    Call Gamma: ${formatGreekValue(zeroDte.callGamma)} | Put Gamma: ${formatGreekValue(zeroDte.putGamma)}`,
+      `    Call Delta: ${formatGreekValue(zeroDte.callDelta)} | Put Delta: ${formatGreekValue(zeroDte.putDelta)}`,
     );
+ 
+    if (aggregate && aggregate.netCharm !== 0) {
+      const charmPct = ((zeroDte.netCharm / aggregate.netCharm) * 100).toFixed(1);
+      lines.push(`    0DTE Charm as % of total: ${charmPct}%`);
+    }
   }
-
-  // Top 3 expiries by gamma magnitude (excluding 0DTE)
-  const nonZeroDte = rows
-    .filter((r) => r.expiry !== date && r.dte !== 0)
-    .sort((a, b) => Math.abs(b.netGamma) - Math.abs(a.netGamma))
-    .slice(0, 3);
-
-  if (nonZeroDte.length > 0) {
-    lines.push('', '  Largest Non-0DTE Gamma Concentrations:');
-    for (const r of nonZeroDte) {
+ 
+  // Top non-0DTE expiries by charm magnitude
+  if (otherExpiries.length > 0) {
+    lines.push(
+      '',
+      '  Largest Non-0DTE Charm Concentrations:',
+    );
+    for (const r of otherExpiries) {
       lines.push(
-        `    ${r.expiry} (${r.dte}DTE): Net Gamma ${formatGreekValue(r.netGamma)}, Net Charm ${formatGreekValue(r.netCharm)}`,
+        `    ${r.expiry} (${r.dte}DTE): Net Charm ${formatGreekValue(r.netCharm)}, Net Delta ${formatGreekValue(r.netDelta)}`,
       );
     }
   }
-
+ 
   return lines.join('\n');
 }
-
+ 
 /**
  * Format a Greek exposure value for display (e.g., -12337386 → "-12.3M")
  */
 function formatGreekValue(value: number): string {
   const abs = Math.abs(value);
   const sign = value >= 0 ? '+' : '-';
-  if (abs >= 1_000_000_000)
-    return `${sign}${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000_000) return `${sign}${(abs / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
   return `${sign}${abs.toFixed(0)}`;
 }
+ 

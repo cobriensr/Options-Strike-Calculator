@@ -1,22 +1,19 @@
 /**
  * GET /api/cron/fetch-greek-exposure
  *
- * Fetches Greek Exposure by Expiry for SPX from Unusual Whales API.
- * Returns MM gamma, charm, delta, vanna exposure broken down by expiration date.
+ * Fetches Greek Exposure for SPX from Unusual Whales API.
+ * Two calls per invocation:
+ *   1. Aggregate endpoint → OI Net Gamma (Rule 16), charm, delta, vanna
+ *   2. By-expiry endpoint → charm/delta/vanna breakdown per expiration (gamma is null on basic tier)
  *
- * This replaces the Aggregate GEX screenshot:
- *   - Sum all expiries → OI Net Gamma Exposure (Rule 16)
- *   - Filter to today's expiry → 0DTE-specific exposure
- *   - Percentage breakdown → how much of the regime is 0DTE vs longer-dated
+ * The aggregate endpoint provides the Rule 16 OI Net Gamma number.
+ * The by-expiry endpoint provides 0DTE-specific charm/delta breakdown.
  *
- * NOTE: This endpoint returns OI-based Greek exposure (updated daily from
- * open interest). Volume GEX (intraday) is NOT available from this endpoint.
- * Volume GEX still requires the Aggregate GEX screenshot.
+ * Aggregate data stored with expiry='aggregate', dte=-1.
  *
- * Data changes once per day (based on prior day's OI), so fetching every
- * 5 minutes is safe — ON CONFLICT skips duplicates.
+ * Data is OI-based (changes once per day), so duplicate cron runs are skipped.
  *
- * Total API calls per invocation: 1
+ * Total API calls per invocation: 2
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
@@ -46,41 +43,86 @@ function isMarketHours(): boolean {
 
 // ── Types ───────────────────────────────────────────────────
 
-interface GreekExpiryRow {
-  call_charm: string;
-  call_delta: string;
-  call_gamma: string;
-  call_vanna: string;
+interface AggregateRow {
   date: string;
-  dte: number;
-  expiry: string;
-  put_charm: string;
-  put_delta: string;
+  call_gamma: string;
   put_gamma: string;
+  call_charm: string;
+  put_charm: string;
+  call_delta: string;
+  put_delta: string;
+  call_vanna: string;
   put_vanna: string;
 }
 
-// ── Fetch helper ────────────────────────────────────────────
+interface ExpiryRow {
+  date: string;
+  expiry: string;
+  dte: number;
+  call_gamma: string | null;
+  put_gamma: string | null;
+  call_charm: string;
+  put_charm: string;
+  call_delta: string;
+  put_delta: string;
+  call_vanna: string;
+  put_vanna: string;
+}
 
-async function fetchGreekExposure(apiKey: string): Promise<GreekExpiryRow[]> {
-  const res = await fetch(`${UW_BASE}/stock/SPX/greek-exposure/expiry`, {
+// ── Fetch helpers ───────────────────────────────────────────
+
+async function fetchAggregate(apiKey: string): Promise<AggregateRow[]> {
+  const res = await fetch(`${UW_BASE}/stock/SPX/greek-exposure`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`UW aggregate API ${res.status}: ${text.slice(0, 200)}`);
   }
 
   const body = await res.json();
   return body.data ?? [];
 }
 
-// ── Store helper ────────────────────────────────────────────
+async function fetchByExpiry(apiKey: string): Promise<ExpiryRow[]> {
+  const res = await fetch(`${UW_BASE}/stock/SPX/greek-exposure/expiry`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
 
-async function storeExpiryRows(
-  rows: GreekExpiryRow[],
-): Promise<{ stored: number; skipped: number }> {
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`UW expiry API ${res.status}: ${text.slice(0, 200)}`);
+  }
+
+  const body = await res.json();
+  return body.data ?? [];
+}
+
+// ── Store helpers ───────────────────────────────────────────
+
+async function storeAggregate(row: AggregateRow): Promise<boolean> {
+  const sql = getDb();
+  const result = await sql`
+    INSERT INTO greek_exposure (
+      date, ticker, expiry, dte,
+      call_gamma, put_gamma, call_charm, put_charm,
+      call_delta, put_delta, call_vanna, put_vanna
+    )
+    VALUES (
+      ${row.date}, 'SPX', 'aggregate', -1,
+      ${row.call_gamma}, ${row.put_gamma},
+      ${row.call_charm}, ${row.put_charm},
+      ${row.call_delta}, ${row.put_delta},
+      ${row.call_vanna}, ${row.put_vanna}
+    )
+    ON CONFLICT (date, ticker, expiry) DO NOTHING
+    RETURNING id
+  `;
+  return result.length > 0;
+}
+
+async function storeExpiryRows(rows: ExpiryRow[]): Promise<{ stored: number; skipped: number }> {
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
@@ -130,9 +172,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
+    return res.status(200).json({ skipped: true, reason: 'Outside market hours' });
   }
 
   const apiKey = process.env.UW_API_KEY;
@@ -142,37 +182,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const rows = await fetchGreekExposure(apiKey);
-    const result = await storeExpiryRows(rows);
+    const [aggRows, expiryRows] = await Promise.all([
+      fetchAggregate(apiKey),
+      fetchByExpiry(apiKey),
+    ]);
 
-    // Compute summary for logging
-    const zeroDte = rows.find((r) => r.date === r.expiry || r.dte === 0);
-    const aggregateGamma = rows.reduce(
-      (sum, r) =>
-        sum + Number.parseFloat(r.call_gamma) + Number.parseFloat(r.put_gamma),
-      0,
-    );
+    // Store aggregate (most recent row in the array)
+    let aggStored = false;
+    if (aggRows.length > 0) {
+      const latest = aggRows.at(-1)!;
+      aggStored = await storeAggregate(latest);
+
+      const netGamma =
+        Number.parseFloat(latest.call_gamma) + Number.parseFloat(latest.put_gamma);
+      logger.info(
+        { date: latest.date, netGamma: Math.round(netGamma), stored: aggStored },
+        'Aggregate GEX stored',
+      );
+    }
+
+    // Store by-expiry rows
+    const expiryResult = await storeExpiryRows(expiryRows);
 
     logger.info(
       {
-        expiries: rows.length,
-        stored: result.stored,
-        skipped: result.skipped,
-        aggregateGamma: Math.round(aggregateGamma),
-        zeroDteGamma: zeroDte
-          ? Math.round(
-              Number.parseFloat(zeroDte.call_gamma) +
-                Number.parseFloat(zeroDte.put_gamma),
-            )
-          : null,
+        aggregate: aggStored,
+        expiries: expiryRows.length,
+        expiryStored: expiryResult.stored,
+        expirySkipped: expiryResult.skipped,
       },
       'fetch-greek-exposure completed',
     );
 
     return res.status(200).json({
-      ...result,
-      expiries: rows.length,
-      aggregateGamma: Math.round(aggregateGamma),
+      aggregate: aggStored,
+      expiries: expiryRows.length,
+      ...expiryResult,
     });
   } catch (err) {
     logger.error({ err }, 'fetch-greek-exposure error');

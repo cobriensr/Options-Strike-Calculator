@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Local backfill script for Greek Exposure by Expiry (SPX).
+ * Local backfill script for SPX Greek Exposure.
+ * Fetches BOTH aggregate (has gamma) and by-expiry (has charm/delta/vanna breakdown).
  *
  * Usage:
  *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-greek-exposure.mjs
@@ -27,8 +28,6 @@ if (!DATABASE_URL) {
 const sql = neon(DATABASE_URL);
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
-// ── Parse args ──────────────────────────────────────────────
-
 const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
 // ── Generate last N trading days ────────────────────────────
@@ -53,9 +52,29 @@ function getTradingDays(count) {
   return dates.reverse();
 }
 
-// ── Fetch Greek Exposure by Expiry for one date ─────────────
+// ── Fetch aggregate for one date ────────────────────────────
 
-async function fetchGreekExposure(date) {
+async function fetchAggregate(date) {
+  const res = await fetch(
+    `${UW_BASE}/stock/SPX/greek-exposure?date=${date}`,
+    { headers: { Authorization: `Bearer ${UW_API_KEY}` } },
+  );
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    console.warn(`  UW aggregate API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    return null;
+  }
+
+  const body = await res.json();
+  const data = body.data ?? [];
+  // Find the row matching this date (array may contain multiple days)
+  return data.find((r) => r.date === date) ?? data[data.length - 1] ?? null;
+}
+
+// ── Fetch by-expiry for one date ────────────────────────────
+
+async function fetchByExpiry(date) {
   const res = await fetch(
     `${UW_BASE}/stock/SPX/greek-exposure/expiry?date=${date}`,
     { headers: { Authorization: `Bearer ${UW_API_KEY}` } },
@@ -63,9 +82,7 @@ async function fetchGreekExposure(date) {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    console.warn(
-      `  UW API ${res.status} for SPX greek exposure ${date}: ${text.slice(0, 100)}`,
-    );
+    console.warn(`  UW expiry API ${res.status} for ${date}: ${text.slice(0, 100)}`);
     return [];
   }
 
@@ -73,9 +90,36 @@ async function fetchGreekExposure(date) {
   return body.data ?? [];
 }
 
-// ── Store all expiry rows ───────────────────────────────────
+// ── Store aggregate row ─────────────────────────────────────
 
-async function storeRows(rows, date) {
+async function storeAggregate(row, date) {
+  try {
+    const result = await sql`
+      INSERT INTO greek_exposure (
+        date, ticker, expiry, dte,
+        call_gamma, put_gamma, call_charm, put_charm,
+        call_delta, put_delta, call_vanna, put_vanna
+      )
+      VALUES (
+        ${date}, 'SPX', 'aggregate', -1,
+        ${row.call_gamma}, ${row.put_gamma},
+        ${row.call_charm}, ${row.put_charm},
+        ${row.call_delta}, ${row.put_delta},
+        ${row.call_vanna}, ${row.put_vanna}
+      )
+      ON CONFLICT (date, ticker, expiry) DO NOTHING
+      RETURNING id
+    `;
+    return result.length > 0;
+  } catch (err) {
+    console.warn(`  Aggregate insert error: ${err.message}`);
+    return false;
+  }
+}
+
+// ── Store expiry rows ───────────────────────────────────────
+
+async function storeExpiryRows(rows, date) {
   let stored = 0;
 
   for (const row of rows) {
@@ -93,7 +137,9 @@ async function storeRows(rows, date) {
           ${row.call_delta}, ${row.put_delta},
           ${row.call_vanna}, ${row.put_vanna}
         )
-        ON CONFLICT (date, ticker, expiry) DO NOTHING
+        ON CONFLICT (date, ticker, expiry) DO UPDATE SET
+          call_gamma = EXCLUDED.call_gamma,
+          put_gamma = EXCLUDED.put_gamma
         RETURNING id
       `;
       if (result.length > 0) stored++;
@@ -110,49 +156,53 @@ async function storeRows(rows, date) {
 async function main() {
   const tradingDays = getTradingDays(days);
 
-  console.log(`Backfilling SPX Greek Exposure by Expiry`);
-  console.log(
-    `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`,
-  );
+  console.log(`Backfilling SPX Greek Exposure (aggregate + by-expiry)`);
+  console.log(`Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`);
 
-  let totalRows = 0;
+  let totalExpiries = 0;
   let totalStored = 0;
+  let aggCount = 0;
 
   for (const date of tradingDays) {
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
 
-    const rows = await fetchGreekExposure(date);
-    const stored = await storeRows(rows, date);
+    // Fetch both in parallel
+    const [aggRow, expiryRows] = await Promise.all([
+      fetchAggregate(date),
+      fetchByExpiry(date),
+    ]);
 
-    // Compute aggregate gamma for logging
-    const aggGamma = rows.reduce(
-      (sum, r) =>
-        sum + Number.parseFloat(r.call_gamma) + Number.parseFloat(r.put_gamma),
-      0,
-    );
-    const zeroDte = rows.find((r) => r.expiry === date || r.dte === 0);
-    const zeroDteGamma = zeroDte
-      ? Number.parseFloat(zeroDte.call_gamma) +
-        Number.parseFloat(zeroDte.put_gamma)
-      : null;
+    // Store aggregate
+    let aggResult = false;
+    let netGamma = 'N/A';
+    if (aggRow) {
+      aggResult = await storeAggregate(aggRow, date);
+      if (aggResult) aggCount++;
+      const ng = Number.parseFloat(aggRow.call_gamma) + Number.parseFloat(aggRow.put_gamma);
+      netGamma = Number.isNaN(ng) ? 'N/A' : Math.round(ng).toLocaleString();
+    }
 
-    totalRows += rows.length;
-    totalStored += stored;
+    // Store expiry rows
+    const expiryStored = await storeExpiryRows(expiryRows, date);
 
-    const zeroDteSuffix =
-      zeroDteGamma === null
-        ? ''
-        : ' | 0DTE GEX: ' + Math.round(zeroDteGamma).toLocaleString();
+    totalExpiries += expiryRows.length;
+    totalStored += expiryStored;
+
+    // 0DTE charm for logging
+    const zeroDte = expiryRows.find((r) => r.expiry === date || r.dte === 0);
+    const zeroDteCharm = zeroDte
+      ? Math.round(Number.parseFloat(zeroDte.call_charm) + Number.parseFloat(zeroDte.put_charm)).toLocaleString()
+      : 'N/A';
 
     console.log(
-      `  ${date}: ${rows.length} expiries (${stored} new) | Agg GEX: ${Math.round(aggGamma).toLocaleString()}${zeroDteSuffix}`,
+      `  ${date}: Agg GEX: ${netGamma} | ${expiryRows.length} expiries (${expiryStored} stored) | 0DTE Charm: ${zeroDteCharm}${aggResult ? ' | [agg NEW]' : ''}`,
     );
   }
 
   console.log(`\nDone!`);
-  console.log(`  Total rows: ${totalRows}`);
-  console.log(`  Newly stored: ${totalStored}`);
-  console.log(`  Skipped (duplicates): ${totalRows - totalStored}`);
+  console.log(`  Aggregate rows stored: ${aggCount}`);
+  console.log(`  Expiry rows stored: ${totalStored}`);
+  console.log(`  Total expiry rows processed: ${totalExpiries}`);
 }
 
 try {

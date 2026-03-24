@@ -26,21 +26,49 @@ const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
 // Fixed weekend date: Saturday
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 
-function makeGreekRow(overrides = {}) {
+function makeAggregateRow(overrides = {}) {
+  return {
+    date: '2026-03-24',
+    call_gamma: '5000000',
+    put_gamma: '-3000000',
+    call_charm: '100000',
+    put_charm: '-80000',
+    call_delta: '200000',
+    put_delta: '-150000',
+    call_vanna: '50000',
+    put_vanna: '-30000',
+    ...overrides,
+  };
+}
+
+function makeExpiryRow(overrides = {}) {
   return {
     date: '2026-03-24',
     expiry: '2026-03-24',
     dte: 0,
-    call_gamma: '500000000',
-    put_gamma: '-300000000',
-    call_charm: '100000',
-    put_charm: '-50000',
-    call_delta: '200000',
-    put_delta: '-150000',
-    call_vanna: '80000',
-    put_vanna: '-60000',
+    call_gamma: null,
+    put_gamma: null,
+    call_charm: '50000',
+    put_charm: '-40000',
+    call_delta: '100000',
+    put_delta: '-75000',
+    call_vanna: '25000',
+    put_vanna: '-15000',
     ...overrides,
   };
+}
+
+/** Stub fetch to return different data for aggregate vs expiry URLs */
+function stubFetch(aggData: unknown[] = [], expiryData: unknown[] = []) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/greek-exposure/expiry')) {
+        return { ok: true, json: async () => ({ data: expiryData }) };
+      }
+      return { ok: true, json: async () => ({ data: aggData }) };
+    }),
+  );
 }
 
 describe('fetch-greek-exposure handler', () => {
@@ -56,6 +84,7 @@ describe('fetch-greek-exposure handler', () => {
   afterEach(() => {
     process.env = originalEnv;
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   // ── Method guard ──────────────────────────────────────────
@@ -95,13 +124,7 @@ describe('fetch-greek-exposure handler', () => {
   it('passes auth when CRON_SECRET matches', async () => {
     process.env.CRON_SECRET = 'secret123';
     process.env.UW_API_KEY = 'uwkey';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [] }),
-      }),
-    );
+    stubFetch();
     const req = mockRequest({
       method: 'GET',
       headers: { authorization: 'Bearer secret123' },
@@ -109,24 +132,16 @@ describe('fetch-greek-exposure handler', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).not.toBe(401);
-    vi.unstubAllGlobals();
   });
 
   it('passes auth when CRON_SECRET is not set', async () => {
     delete process.env.CRON_SECRET;
     process.env.UW_API_KEY = 'uwkey';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [] }),
-      }),
-    );
+    stubFetch();
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).not.toBe(401);
-    vi.unstubAllGlobals();
   });
 
   // ── Market hours guard ────────────────────────────────────
@@ -167,16 +182,9 @@ describe('fetch-greek-exposure handler', () => {
 
   // ── Happy path ────────────────────────────────────────────
 
-  it('stores expiry rows and returns aggregateGamma', async () => {
+  it('stores aggregate and expiry rows and returns 200', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    const row = makeGreekRow();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [row] }),
-      }),
-    );
+    stubFetch([makeAggregateRow()], [makeExpiryRow()]);
 
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
@@ -184,24 +192,18 @@ describe('fetch-greek-exposure handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      aggregate: true,
+      expiries: 1,
       stored: 1,
       skipped: 0,
-      expiries: 1,
-      aggregateGamma: expect.any(Number),
     });
-    expect(mockSql).toHaveBeenCalledTimes(1);
-    vi.unstubAllGlobals();
+    // 1 aggregate insert + 1 expiry insert = 2
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
-  it('returns stored: 0 for empty API responses', async () => {
+  it('handles empty aggregate with expiry rows', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [] }),
-      }),
-    );
+    stubFetch([], [makeExpiryRow()]);
 
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
@@ -209,26 +211,37 @@ describe('fetch-greek-exposure handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      stored: 0,
-      skipped: 0,
-      expiries: 0,
+      aggregate: false,
+      expiries: 1,
+      stored: 1,
     });
-    expect(mockSql).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
+    // Only 1 expiry insert, no aggregate
+    expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
-  it('counts skipped rows when ON CONFLICT triggers', async () => {
+  it('returns zeros for empty API responses', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Empty result = no RETURNING id = duplicate/skipped
+    stubFetch([], []);
+
+    const req = mockRequest({ method: 'GET', headers: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      aggregate: false,
+      expiries: 0,
+      stored: 0,
+      skipped: 0,
+    });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('counts skipped duplicates correctly', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // Empty result = ON CONFLICT DO NOTHING (duplicate)
     mockSql.mockResolvedValue([]);
-    const row = makeGreekRow();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [row] }),
-      }),
-    );
+    stubFetch([], [makeExpiryRow()]);
 
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
@@ -238,21 +251,40 @@ describe('fetch-greek-exposure handler', () => {
     expect(res._json).toMatchObject({
       stored: 0,
       skipped: 1,
-      expiries: 1,
     });
-    vi.unstubAllGlobals();
   });
 
   // ── Error handling ────────────────────────────────────────
 
-  it('returns 500 when UW API returns an error status', async () => {
+  it('returns 500 when aggregate API fails', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 429,
-        text: async () => 'Rate limited',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/greek-exposure/expiry')) {
+          return { ok: true, json: async () => ({ data: [] }) };
+        }
+        return { ok: false, status: 500, text: async () => 'Server error' };
+      }),
+    );
+
+    const req = mockRequest({ method: 'GET', headers: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: expect.stringContaining('500') });
+  });
+
+  it('returns 500 when expiry API fails', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/greek-exposure/expiry')) {
+          return { ok: false, status: 429, text: async () => 'Rate limited' };
+        }
+        return { ok: true, json: async () => ({ data: [makeAggregateRow()] }) };
       }),
     );
 
@@ -262,7 +294,6 @@ describe('fetch-greek-exposure handler', () => {
 
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: expect.stringContaining('429') });
-    vi.unstubAllGlobals();
   });
 
   it('returns 500 when fetch throws', async () => {
@@ -278,6 +309,5 @@ describe('fetch-greek-exposure handler', () => {
 
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'Network error' });
-    vi.unstubAllGlobals();
   });
 });
