@@ -83,18 +83,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
+  const backfill = req.query.backfill === 'true';
+
+  if (backfill) {
+    return handleBackfill(res);
+  }
+
   const force = req.query.force === 'true';
   if (!force && !isAfterClose()) {
     return res.status(200).json({
       skipped: true,
       reason: 'Outside post-close window (4:15-5:30 PM ET)',
     });
-  }
-
-  const backfill = req.query.backfill === 'true';
-
-  if (backfill) {
-    return handleBackfill(res);
   }
 
   const now = new Date();
