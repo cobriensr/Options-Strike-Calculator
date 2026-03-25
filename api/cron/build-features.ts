@@ -233,7 +233,7 @@ function computeETFDivergence(
   dateStr: string,
 ): boolean | null {
   const spyNet = findNearestCandle(
-    allFlowRows.filter((r) => r.source === 'spy_net_flow'),
+    allFlowRows.filter((r) => r.source === 'spy_flow'),
     targetMinutes,
     dateStr,
   );
@@ -531,7 +531,7 @@ async function buildFeaturesForDate(
     );
 
     const spxCandle = findNearestCandle(
-      allFlowRows.filter((r) => r.source === 'spx_net_flow'),
+      allFlowRows.filter((r) => r.source === 'spx_flow'),
       cp.minutes,
       dateStr,
     );
