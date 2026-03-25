@@ -235,13 +235,13 @@ describe('ChartAnalysis', () => {
       expect((select as HTMLSelectElement).value).toBe('Periscope Charm (SPX)');
     });
 
-    it('limits to 9 images', async () => {
+    it('limits to 2 images', async () => {
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
       );
-      for (let i = 0; i < 10; i++)
+      for (let i = 0; i < 5; i++)
         await addImageViaInput(container, createImageFile(`chart${i}.png`));
-      expect(screen.getByText(/9\/9 images/)).toBeInTheDocument();
+      expect(screen.getByText(/2\/2 images/)).toBeInTheDocument();
     });
 
     it('handles drag and drop', async () => {
