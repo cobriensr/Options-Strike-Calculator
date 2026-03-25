@@ -38,6 +38,7 @@ import {
   formatStrikeExposuresForClaude,
   getAllExpiryStrikeExposures,
   formatAllExpiryStrikesForClaude,
+  formatGreekFlowForClaude,
 } from './_lib/db-strike-helpers.js';
 import { analyzeBodySchema } from './_lib/validation.js';
 import logger from './_lib/logger.js';
@@ -697,6 +698,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let spotGexContext: string | null = null;
   let strikeExposureContext: string | null = null;
   let allExpiryStrikeContext: string | null = null;
+  let greekFlowContext: string | null = null;
 
   try {
     const [
@@ -708,6 +710,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       spyEtfRows,
       qqqEtfRows,
       zeroDteIndexRows,
+      greekFlowRows,
       greekRows,
       spotGexRows,
       strikeRows,
@@ -721,9 +724,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       getFlowData(analysisDate, 'spy_etf_tide'),
       getFlowData(analysisDate, 'qqq_etf_tide'),
       getFlowData(analysisDate, 'zero_dte_index'),
+      getFlowData(analysisDate, 'zero_dte_greek_flow'),
       getGreekExposure(analysisDate),
       getSpotExposures(analysisDate),
-      getStrikeExposures(analysisDate),
       getStrikeExposures(analysisDate),
       getAllExpiryStrikeExposures(analysisDate),
     ]);
@@ -754,6 +757,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       greekRows,
       analysisDate,
     );
+    greekFlowContext = formatGreekFlowForClaude(greekFlowRows);
     spotGexContext = formatSpotExposuresForClaude(spotGexRows);
     strikeExposureContext = formatStrikeExposuresForClaude(strikeRows);
     allExpiryStrikeContext = formatAllExpiryStrikesForClaude(
@@ -814,6 +818,7 @@ ${spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min i
 ${qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${qqqEtfTideContext}\n` : ''}
 ${zeroDteIndexContext ? `\n## 0DTE Index-Only Net Flow (from API)\nPure 0DTE flow from index products (SPX, NDX) only — excludes weekly/monthly expirations and ETFs/equities. When this diverges from aggregate SPX Net Flow, the aggregate signal contains longer-dated hedging noise. Trust 0DTE index flow for same-session directional reads. When both agree, highest conviction.\n\n${zeroDteIndexContext}\n` : ''}
 ${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${greekExposureContext}\n` : ''}
+${greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${greekFlowContext}\n` : ''}
 ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}
 ${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
 ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
