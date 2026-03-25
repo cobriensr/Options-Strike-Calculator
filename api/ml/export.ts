@@ -20,6 +20,20 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 
+/** Normalize Neon Date objects to YYYY-MM-DD strings in result rows. */
+function normalizeDates(
+  rows: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return rows.map((row) => {
+    const normalized: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(row)) {
+      normalized[key] =
+        val instanceof Date ? val.toISOString().split('T')[0] : val;
+    }
+    return normalized;
+  });
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'GET only' });
@@ -33,24 +47,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const minLabel = Number(req.query.minLabelCompleteness) || 0;
   const format = (req.query.format as string) || 'json';
 
+  // Validate date params if provided
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (after && !dateRe.test(after)) {
+    return res.status(400).json({ error: 'after must be YYYY-MM-DD' });
+  }
+  if (before && !dateRe.test(before)) {
+    return res.status(400).json({ error: 'before must be YYYY-MM-DD' });
+  }
+
   const sql = getDb();
 
   try {
-    // Build WHERE clauses
-    const conditions: string[] = [];
-    if (after) conditions.push(`f.date > '${after}'`);
-    if (before) conditions.push(`f.date < '${before}'`);
-    if (minFeature > 0)
-      conditions.push(`f.feature_completeness >= ${minFeature}`);
-    if (minLabel > 0)
-      conditions.push(`COALESCE(l.label_completeness, 0) >= ${minLabel}`);
-
-    const whereClause =
-      conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    // Use raw SQL string since we need dynamic WHERE
-    const rows = await sql.call(null, [
-      `SELECT f.*,
+    // All params are parameterized — no string interpolation in SQL
+    const rows = (await sql`
+      SELECT f.*,
           o.settlement, o.day_open, o.day_high, o.day_low,
           o.day_range_pts, o.day_range_pct, o.close_vs_open,
           o.vix_close, o.vix1d_close,
@@ -65,20 +76,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM training_features f
         LEFT JOIN outcomes o ON o.date = f.date
         LEFT JOIN day_labels l ON l.date = f.date
-        ${whereClause}
-        ORDER BY f.date ASC`,
-    ] as unknown as TemplateStringsArray);
+        WHERE (${after}::date IS NULL OR f.date > ${after}::date)
+          AND (${before}::date IS NULL OR f.date < ${before}::date)
+          AND f.feature_completeness >= ${minFeature}
+          AND COALESCE(l.label_completeness, 0) >= ${minLabel}
+        ORDER BY f.date ASC
+    `) as Record<string, unknown>[];
 
-    if (format === 'csv' && rows.length > 0) {
-      const headers = Object.keys(rows[0]!);
+    const normalized = normalizeDates(rows);
+
+    if (format === 'csv' && normalized.length > 0) {
+      const headers = Object.keys(normalized[0]!);
       const csvLines = [headers.join(',')];
-      for (const row of rows) {
+      for (const row of normalized) {
         const values = headers.map((h) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const val = (row as Record<string, any>)[h];
+          const val = row[h];
           if (val == null) return '';
-          if (typeof val === 'string' && val.includes(',')) return `"${val}"`;
-          return String(val);
+          const str = String(val);
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return `"${str.replaceAll('"', '""')}"`;
+          }
+          return str;
         });
         csvLines.push(values.join(','));
       }
@@ -92,7 +110,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).json(rows);
+    return res.status(200).json(normalized);
   } catch (err) {
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Export failed',
