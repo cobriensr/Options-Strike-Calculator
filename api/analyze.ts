@@ -692,6 +692,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let qqqFlowContext: string | null = null;
   let spyEtfTideContext: string | null = null;
   let qqqEtfTideContext: string | null = null;
+  let zeroDteIndexContext: string | null = null;
   let greekExposureContext: string | null = null;
   let spotGexContext: string | null = null;
   let strikeExposureContext: string | null = null;
@@ -706,6 +707,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       qqqRows,
       spyEtfRows,
       qqqEtfRows,
+      zeroDteIndexRows,
       greekRows,
       spotGexRows,
       strikeRows,
@@ -718,6 +720,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       getFlowData(analysisDate, 'qqq_flow'),
       getFlowData(analysisDate, 'spy_etf_tide'),
       getFlowData(analysisDate, 'qqq_etf_tide'),
+      getFlowData(analysisDate, 'zero_dte_index'),
       getGreekExposure(analysisDate),
       getSpotExposures(analysisDate),
       getStrikeExposures(analysisDate),
@@ -742,6 +745,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     qqqEtfTideContext = formatFlowDataForClaude(
       qqqEtfRows,
       'QQQ ETF Tide (Holdings Flow)',
+    );
+    zeroDteIndexContext = formatFlowDataForClaude(
+      zeroDteIndexRows,
+      '0DTE Index-Only Net Flow',
     );
     greekExposureContext = formatGreekExposureForClaude(
       greekRows,
@@ -805,6 +812,7 @@ ${spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact
 ${qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for QQQ. Tech divergence check (Rule 8, 10% weight).\n\n${qqqFlowContext}\n` : ''}
 ${spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside SPY (AAPL, MSFT, NVDA, etc), not on SPY itself. When SPY Net Flow is bullish but SPY ETF Tide is bearish, the SPY call buying is likely hedging — the underlying stocks are seeing directional put buying. Use as a confirmation/divergence layer against SPY Net Flow.\n\n${spyEtfTideContext}\n` : ''}
 ${qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${qqqEtfTideContext}\n` : ''}
+${zeroDteIndexContext ? `\n## 0DTE Index-Only Net Flow (from API)\nPure 0DTE flow from index products (SPX, NDX) only — excludes weekly/monthly expirations and ETFs/equities. When this diverges from aggregate SPX Net Flow, the aggregate signal contains longer-dated hedging noise. Trust 0DTE index flow for same-session directional reads. When both agree, highest conviction.\n\n${zeroDteIndexContext}\n` : ''}
 ${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${greekExposureContext}\n` : ''}
 ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}
 ${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
