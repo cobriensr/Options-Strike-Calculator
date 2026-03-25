@@ -18,6 +18,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../cron/fetch-strike-exposure.js';
+import logger from '../_lib/logger.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
@@ -283,7 +284,7 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._json).toMatchObject({ error: 'Network error' });
   });
 
-  it('handles insert errors gracefully', async () => {
+  it('handles insert errors gracefully and logs warning', async () => {
     process.env.UW_API_KEY = 'uwkey';
     mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
     stubFetch([makeStrikeRow()]);
@@ -298,5 +299,9 @@ describe('fetch-strike-exposure handler', () => {
       stored: 0,
       skipped: 1,
     });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ strike: '5800' }),
+      'Strike exposure insert failed',
+    );
   });
 });
