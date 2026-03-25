@@ -18,25 +18,25 @@
 
 ### Tier 1: Full coverage (31/31)
 
-| Group | Features | Count |
-|---|---|---|
-| Volatility | VIX, regime_zone, dow_mult, cluster_mult | 4 |
-| Market Tide | mt_ncp/npp at T1-T2 | 4 |
-| Flow Agreement | flow_agreement at T1-T2 | 2 |
-| Calendar | day_of_week, is_friday, is_event_day | 3 |
-| Calculator | sigma, hours_remaining, ic_ceiling, put/call spread ceiling | 5 |
-| Opening Range | opening_range_signal, opening_range_pct_consumed | 2 |
-| **Per-source flow** | **spx/spy/qqq/zero_dte/delta_flow NCP/NPP at T1-T2** | **~16** |
+| Group               | Features                                                    | Count   |
+| ------------------- | ----------------------------------------------------------- | ------- |
+| Volatility          | VIX, regime_zone, dow_mult, cluster_mult                    | 4       |
+| Market Tide         | mt_ncp/npp at T1-T2                                         | 4       |
+| Flow Agreement      | flow_agreement at T1-T2                                     | 2       |
+| Calendar            | day_of_week, is_friday, is_event_day                        | 3       |
+| Calculator          | sigma, hours_remaining, ic_ceiling, put/call spread ceiling | 5       |
+| Opening Range       | opening_range_signal, opening_range_pct_consumed            | 2       |
+| **Per-source flow** | **spx/spy/qqq/zero_dte/delta_flow NCP/NPP at T1-T2**        | **~16** |
 
 ### Tier 2: Near-complete (26-29/31)
 
-| Group | Features | Count |
-|---|---|---|
-| VIX term structure | vix1d, vix1d_vix_ratio | 2 |
-| GEX | gex_oi/vol/dir at T1-T4, gex_oi_slope | ~9 |
-| Greek exposure | agg_net_gamma, dte0_net_charm, dte0_charm_pct | 3 |
-| Charm | charm_slope, charm_pattern, charm_max_pos/neg_dist | 4 |
-| ETF Tide | spy_etf/qqq_etf NCP/NPP at T1-T2 | 8 |
+| Group              | Features                                           | Count |
+| ------------------ | -------------------------------------------------- | ----- |
+| VIX term structure | vix1d, vix1d_vix_ratio                             | 2     |
+| GEX                | gex_oi/vol/dir at T1-T4, gex_oi_slope              | ~9    |
+| Greek exposure     | agg_net_gamma, dte0_net_charm, dte0_charm_pct      | 3     |
+| Charm              | charm_slope, charm_pattern, charm_max_pos/neg_dist | 4     |
+| ETF Tide           | spy_etf/qqq_etf NCP/NPP at T1-T2                   | 8     |
 
 ### Tier 3: Sparse (skip for now)
 
@@ -68,11 +68,11 @@ With 31 samples, expect 2-5 meaningful clusters. Methods:
 
 Run three algorithms and compare:
 
-| Algorithm | Why | When it works best |
-|---|---|---|
-| **K-Means** | Simple, interpretable centroids | Spherical, equal-size clusters |
-| **Gaussian Mixture** | Soft assignments (probabilities) | Elliptical clusters, uncertainty quantification |
-| **Hierarchical (Ward)** | Dendrogram shows structure at all levels | Small datasets, reveals nested groupings |
+| Algorithm               | Why                                      | When it works best                              |
+| ----------------------- | ---------------------------------------- | ----------------------------------------------- |
+| **K-Means**             | Simple, interpretable centroids          | Spherical, equal-size clusters                  |
+| **Gaussian Mixture**    | Soft assignments (probabilities)         | Elliptical clusters, uncertainty quantification |
+| **Hierarchical (Ward)** | Dendrogram shows structure at all levels | Small datasets, reveals nested groupings        |
 
 DBSCAN is NOT recommended for 31 samples — it needs density to work and will likely label most points as noise.
 
@@ -126,6 +126,7 @@ Before building, there are meaningful choices where your domain expertise matter
 ### Optimistic (clusters are meaningful)
 
 Discover 3-4 day types that map to trading-actionable regimes:
+
 - **"Calm range day"** — Low VIX, positive GEX, high flow agreement → IC territory
 - **"Directional breakout"** — High VIX1D/VIX, negative GEX, low flow agreement → CCS/PCS
 - **"Hedging confusion"** — Mixed flow, ETF Tide divergence, moderate VIX → SIT OUT or small size
@@ -138,6 +139,7 @@ Some clusters are meaningful, others are just noise from small sample size. The 
 ### What to do if clustering fails
 
 If no stable clusters emerge, that's still useful information:
+
 - The feature engineering may need different representations (e.g., ratios instead of raw values)
 - The sample size may simply be too small — wait for 60+ days and retry
 - Skip to Phase 2 (supervised classification) which may find structure that clustering can't
@@ -156,5 +158,6 @@ If no stable clusters emerge, that's still useful information:
 ## Data Milestone
 
 Phase 1 can run now with 31 days. Results will be preliminary. Re-run at:
+
 - **50 days** (~mid-April 2026) — more robust clustering, can try k=4-5
 - **100 days** (~late May 2026) — stable clusters, ready to use as Phase 2 features

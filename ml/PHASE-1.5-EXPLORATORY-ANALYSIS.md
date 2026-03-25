@@ -20,14 +20,14 @@ Every finding here is immediately actionable: it either validates a rule you're 
 
 The 16 trading rules make specific testable claims. With 31 days of outcomes, we can check:
 
-| Rule | Claim | Test |
-|---|---|---|
-| Rule 16 (GEX regime) | Negative GEX → wider ranges | Correlate `gex_oi_t1` with `day_range_pts` |
-| VIX1D inversion | VIX1D << VIX → range-bound | Correlate `vix1d_vix_ratio` with `day_range_pts` |
-| All-negative charm | → trending day, larger moves | Compare range by `charm_pattern` |
-| Flow agreement | High agreement → directional | Compare `flow_agreement_t1` vs `settlement_direction` |
-| ETF Tide divergence | → hedging, range-bound | Compare `etf_tide_divergence_t1` vs `range_category` |
-| Friday + high VIX | → sit out or small IC | Compare Friday outcomes vs other days at VIX > 19 |
+| Rule                 | Claim                        | Test                                                  |
+| -------------------- | ---------------------------- | ----------------------------------------------------- |
+| Rule 16 (GEX regime) | Negative GEX → wider ranges  | Correlate `gex_oi_t1` with `day_range_pts`            |
+| VIX1D inversion      | VIX1D << VIX → range-bound   | Correlate `vix1d_vix_ratio` with `day_range_pts`      |
+| All-negative charm   | → trending day, larger moves | Compare range by `charm_pattern`                      |
+| Flow agreement       | High agreement → directional | Compare `flow_agreement_t1` vs `settlement_direction` |
+| ETF Tide divergence  | → hedging, range-bound       | Compare `etf_tide_divergence_t1` vs `range_category`  |
+| Friday + high VIX    | → sit out or small IC        | Compare Friday outcomes vs other days at VIX > 19     |
 
 ### 2. Confidence Calibration
 

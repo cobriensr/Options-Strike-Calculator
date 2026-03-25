@@ -1251,10 +1251,11 @@ export function formatFlowDataForClaude(
     });
     const ncpStr = formatPremium(row.ncp);
     const nppStr = formatPremium(row.npp);
-    const volSign = row.netVolume >= 0 ? '+' : '';
-    lines.push(
-      `  ${time} ET — NCP: ${ncpStr}, NPP: ${nppStr}, Vol: ${volSign}${row.netVolume.toLocaleString()}`,
-    );
+    const volStr =
+      row.netVolume != null
+        ? `${row.netVolume >= 0 ? '+' : ''}${row.netVolume.toLocaleString()}`
+        : 'N/A';
+    lines.push(`  ${time} ET — NCP: ${ncpStr}, NPP: ${nppStr}, Vol: ${volStr}`);
   }
 
   // Compute direction summary from first and last rows
