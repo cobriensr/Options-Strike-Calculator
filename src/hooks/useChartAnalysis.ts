@@ -29,11 +29,11 @@ export function useChartAnalysis(opts: {
   context: AnalysisContext;
   results: CalculationResults | null;
   mode: AnalysisMode;
+  hasCSVPositions?: boolean;
   onAnalysisSaved?: () => void;
   onModeCompleted?: (mode: AnalysisMode) => void;
 }) {
-  const { images, context, results, mode, onAnalysisSaved, onModeCompleted } =
-    opts;
+  const { images, context, results, mode, onAnalysisSaved, onModeCompleted, hasCSVPositions } = opts;
 
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [rawResponse, setRawResponse] = useState<string | null>(null);
@@ -86,7 +86,7 @@ export function useChartAnalysis(opts: {
 
       // Fetch live positions from Schwab before analysis (fire-and-forget save to DB)
       // The /api/analyze endpoint auto-reads positions from DB, so this just ensures they're fresh
-      if (!context.isBacktest && results?.spot) {
+      if (!context.isBacktest && results?.spot && !hasCSVPositions) {
         try {
           await fetch(`/api/positions?spx=${results.spot}`, {
             credentials: 'include',
@@ -220,7 +220,7 @@ export function useChartAnalysis(opts: {
       abortRef.current = null;
       setLoading(false);
     }
-  }, [images, context, results, mode, onAnalysisSaved, onModeCompleted]);
+  }, [images, context, results, mode, hasCSVPositions, onAnalysisSaved, onModeCompleted]);
 
   return {
     analysis,

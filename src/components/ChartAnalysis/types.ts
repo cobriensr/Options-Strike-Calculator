@@ -117,16 +117,8 @@ export interface AnalysisResult {
 }
 
 export const CHART_LABELS = [
-  'Market Tide',
-  'Net Flow (SPY)',
-  'Net Flow (QQQ)',
-  'Net Flow (SPX)',
-  'Periscope (Delta Flow)',
   'Periscope (Gamma)',
-  'Net Charm (SPX)',
-  'Aggregate GEX (SPX)',
   'Periscope Charm (SPX)',
-  'Other',
 ] as const;
 
 export const MODE_LABELS: Record<

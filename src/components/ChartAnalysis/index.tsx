@@ -256,7 +256,7 @@ export default function ChartAnalysis({
           <div className="text-muted text-[12px]">
             {images.length === 0
               ? 'Drop or click to upload, or paste (Ctrl+V) a screenshot from clipboard'
-              : `${images.length}/9 images \u2014 drop, click, or paste more`}
+              : `${images.length}/2 images \u2014 drop, click, or paste more`}
           </div>
         </button>
 

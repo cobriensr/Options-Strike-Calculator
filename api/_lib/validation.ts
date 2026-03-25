@@ -27,7 +27,7 @@ export const analyzeBodySchema = z.object({
   images: z
     .array(analyzeImageSchema)
     .min(1, 'At least one image is required')
-    .max(9, 'Maximum 9 images allowed'),
+    .max(2, 'Maximum 2 images allowed'),
   context: z.record(z.string(), z.unknown()),
 });
 

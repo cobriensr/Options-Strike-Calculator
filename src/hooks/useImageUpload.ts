@@ -20,7 +20,7 @@ export function useImageUpload() {
 
   const addImage = useCallback(
     (file: File) => {
-      if (images.length >= 9) return;
+      if (images.length >= 2) return;
       const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const preview = URL.createObjectURL(file);
       setImages((prev) => {
@@ -90,7 +90,7 @@ export function useImageUpload() {
       const files = Array.from(e.dataTransfer.files).filter((f) =>
         f.type.startsWith('image/'),
       );
-      for (const f of files.slice(0, 9 - images.length)) addImage(f);
+      for (const f of files.slice(0, 2 - images.length)) addImage(f);
     },
     [addImage, images.length],
   );
@@ -98,7 +98,7 @@ export function useImageUpload() {
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
-      for (const f of files.slice(0, 9 - images.length)) addImage(f);
+      for (const f of files.slice(0, 2 - images.length)) addImage(f);
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
     [addImage, images.length],
