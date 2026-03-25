@@ -29,6 +29,7 @@ vi.mock('../_lib/db-strike-helpers.js', () => ({
   formatStrikeExposuresForClaude: vi.fn().mockReturnValue(null),
   getAllExpiryStrikeExposures: vi.fn().mockResolvedValue([]),
   formatAllExpiryStrikesForClaude: vi.fn().mockReturnValue(null),
+  formatGreekFlowForClaude: vi.fn().mockReturnValue(null),
 }));
 
 vi.mock('../_lib/lessons.js', () => ({
@@ -57,9 +58,26 @@ vi.mock('@anthropic-ai/sdk', () => {
 });
 
 import handler from '../analyze.js';
-import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import {
+  rejectIfNotOwner,
+  rejectIfRateLimited,
+  checkBot,
+} from '../_lib/api-helpers.js';
 import { getActiveLessons, formatLessonsBlock } from '../_lib/lessons.js';
-import { getFlowData } from '../_lib/db.js';
+import {
+  getFlowData,
+  formatFlowDataForClaude,
+  getLatestPositions,
+  getPreviousRecommendation,
+  formatGreekExposureForClaude,
+  formatSpotExposuresForClaude,
+  getDb,
+} from '../_lib/db.js';
+import {
+  formatStrikeExposuresForClaude,
+  formatAllExpiryStrikesForClaude,
+  formatGreekFlowForClaude,
+} from '../_lib/db-strike-helpers.js';
 
 /** Minimal valid request body */
 function makeBody(
@@ -121,6 +139,9 @@ describe('POST /api/analyze', () => {
     mockStream.mockReset().mockReturnValue({ finalMessage: mockFinalMessage });
     mockFinalMessage.mockReset();
     process.env.ANTHROPIC_API_KEY = 'test-key';
+    // Restore module mock defaults that restoreAllMocks may strip
+    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
     // Silence expected console.error/log from error-path tests
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -212,7 +233,7 @@ describe('POST /api/analyze', () => {
     expect(mockStream).toHaveBeenCalledOnce();
     const params = mockStream.mock.calls[0]![0];
     expect(params.model).toBe('claude-opus-4-6');
-    expect(params.max_tokens).toBe(35000);
+    expect(params.max_tokens).toBe(128000);
     expect(params.thinking).toEqual({ type: 'adaptive' });
     expect(params.messages).toHaveLength(1);
     // Should have 1 text label + 1 image block + 1 context text block
@@ -712,5 +733,422 @@ describe('POST /api/analyze', () => {
     const params = mockStream.mock.calls[0]![0];
     const systemText = params.system[0].text;
     expect(systemText).not.toContain('<lessons_learned>');
+  });
+
+  // ── Bot check ─────────────────────────────────────────────
+
+  it('returns 403 when bot check detects a bot', async () => {
+    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
+  });
+
+  // ── Rate limiting ─────────────────────────────────────────
+
+  it('returns early when rate limited', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfRateLimited).mockImplementation(async (_req, res) => {
+      res.status(429).json({ error: 'Rate limited' });
+      return true;
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(429);
+  });
+
+  // ── Position and previous rec auto-fetch ──────────────────
+
+  it('includes DB positions in context when available', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    vi.mocked(getLatestPositions).mockResolvedValueOnce({
+      summary: 'Short 8Δ IC at 5650/5750, qty 2',
+      legs: [],
+      fetchTime: '2025-03-14T14:00:00Z',
+      stats: {
+        totalSpreads: 2,
+        callSpreads: 1,
+        putSpreads: 1,
+        netDelta: null,
+        netTheta: null,
+        unrealizedPnl: null,
+      },
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('Short 8Δ IC at 5650/5750');
+    expect(contextBlock).toContain('Current Open Positions');
+  });
+
+  it('skips positions with default "No open" summary', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    vi.mocked(getLatestPositions).mockResolvedValueOnce({
+      summary: 'No open SPX 0DTE positions.',
+      legs: [],
+      fetchTime: '2025-03-14T14:00:00Z',
+      stats: {
+        totalSpreads: 0,
+        callSpreads: 0,
+        putSpreads: 0,
+        netDelta: null,
+        netTheta: null,
+        unrealizedPnl: null,
+      },
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).not.toContain('Current Open Positions');
+  });
+
+  it('continues when position fetch throws', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    vi.mocked(getLatestPositions).mockRejectedValueOnce(
+      new Error('Position fetch error'),
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+  });
+
+  it('auto-fetches previous recommendation in midday mode', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    vi.mocked(getPreviousRecommendation).mockResolvedValueOnce(
+      'Earlier analysis recommended PUT CREDIT SPREAD at 8Δ',
+    );
+
+    const body = makeBody({
+      context: { ...makeBody().context, mode: 'midday' },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('Previous Recommendation');
+    expect(contextBlock).toContain('PUT CREDIT SPREAD at 8Δ');
+  });
+
+  it('continues when previous recommendation fetch throws', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    vi.mocked(getPreviousRecommendation).mockRejectedValueOnce(
+      new Error('DB timeout'),
+    );
+
+    const body = makeBody({
+      context: { ...makeBody().context, mode: 'review' },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+  });
+
+  // ── Flow/context data interpolation ───────────────────────
+
+  it('includes all flow data contexts when formatters return strings', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    // Make all format functions return non-null strings
+    vi.mocked(formatFlowDataForClaude)
+      .mockReturnValueOnce('MT_DATA') // market_tide
+      .mockReturnValueOnce('MT_OTM_DATA') // market_tide_otm
+      .mockReturnValueOnce('SPX_DATA') // spx_flow
+      .mockReturnValueOnce('SPY_DATA') // spy_flow
+      .mockReturnValueOnce('QQQ_DATA') // qqq_flow
+      .mockReturnValueOnce('SPY_ETF_DATA') // spy_etf_tide
+      .mockReturnValueOnce('QQQ_ETF_DATA') // qqq_etf_tide
+      .mockReturnValueOnce('ZERO_DTE_DATA'); // zero_dte_index
+    vi.mocked(formatGreekExposureForClaude).mockReturnValueOnce(
+      'GREEK_EXP_DATA',
+    );
+    vi.mocked(formatGreekFlowForClaude).mockReturnValueOnce('GREEK_FLOW_DATA');
+    vi.mocked(formatSpotExposuresForClaude).mockReturnValueOnce(
+      'SPOT_GEX_DATA',
+    );
+    vi.mocked(formatStrikeExposuresForClaude).mockReturnValueOnce(
+      'STRIKE_DATA',
+    );
+    vi.mocked(formatAllExpiryStrikesForClaude).mockReturnValueOnce(
+      'ALL_EXP_DATA',
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('MT_DATA');
+    expect(contextBlock).toContain('MT_OTM_DATA');
+    expect(contextBlock).toContain('SPX_DATA');
+    expect(contextBlock).toContain('SPY_DATA');
+    expect(contextBlock).toContain('QQQ_DATA');
+    expect(contextBlock).toContain('SPY_ETF_DATA');
+    expect(contextBlock).toContain('QQQ_ETF_DATA');
+    expect(contextBlock).toContain('ZERO_DTE_DATA');
+    expect(contextBlock).toContain('GREEK_EXP_DATA');
+    expect(contextBlock).toContain('GREEK_FLOW_DATA');
+    expect(contextBlock).toContain('SPOT_GEX_DATA');
+    expect(contextBlock).toContain('STRIKE_DATA');
+    expect(contextBlock).toContain('ALL_EXP_DATA');
+    expect(contextBlock).toContain('Market Tide Data');
+    expect(contextBlock).toContain('SPX Net Flow Data');
+    expect(contextBlock).toContain('Per-Strike Greek Profile');
+    expect(contextBlock).toContain('All-Expiry Per-Strike Profile');
+  });
+
+  // ── Events, backtest, dataNote context fields ─────────────
+
+  it('formats scheduled events in context', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        events: [
+          { event: 'CPI Release', time: '8:30 AM', severity: 'HIGH' },
+          { event: 'Fed Speaker', time: '2:00 PM', severity: 'MEDIUM' },
+        ],
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('CPI Release at 8:30 AM [HIGH]');
+    expect(contextBlock).toContain('Fed Speaker at 2:00 PM [MEDIUM]');
+  });
+
+  it('includes backtest mode indicator in context', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    vi.mocked(getLatestPositions).mockClear();
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        isBacktest: true,
+        selectedDate: '2025-03-10',
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('YES — using historical data');
+    // isBacktest skips position fetch
+    expect(getLatestPositions).not.toHaveBeenCalled();
+  });
+
+  it('includes data note warning in context', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        dataNote: 'VIX data delayed by 15 minutes',
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('DATA NOTES');
+    expect(contextBlock).toContain('VIX data delayed by 15 minutes');
+  });
+
+  // ── JSON repair for truncated responses ───────────────────
+
+  it('repairs truncated JSON with unbalanced braces', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    // Truncated JSON — missing closing brace
+    const truncated = '{"structure":"IRON CONDOR","confidence":"HIGH"';
+    mockFinalMessage.mockResolvedValue({
+      content: [{ type: 'text', text: truncated }],
+      usage: { input_tokens: 100, output_tokens: 50 },
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: { structure: string } };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
+
+  it('repairs truncated JSON with unbalanced quotes and brackets', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    // Truncated mid-string with open array
+    const truncated = '{"observations":["NCP at +50M","NPP at -40M';
+    mockFinalMessage.mockResolvedValue({
+      content: [{ type: 'text', text: truncated }],
+      usage: { input_tokens: 100, output_tokens: 50 },
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: { observations: string[] } };
+    expect(json.analysis.observations).toContain('NCP at +50M');
+  });
+
+  // ── Snapshot ID lookup ────────────────────────────────────
+
+  it('passes snapshot ID to saveAnalysis when snapshot exists', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    // Mock getDb to return a function that returns rows with a snapshot ID
+    const mockDbFn = vi.fn().mockResolvedValue([{ id: 42 }]);
+    vi.mocked(getDb).mockReturnValue(
+      mockDbFn as unknown as ReturnType<typeof getDb>,
+    );
+
+    const { saveAnalysis } = await import('../_lib/db.js');
+    const mockedSave = vi.mocked(saveAnalysis);
+    mockedSave.mockClear();
+    mockedSave.mockResolvedValueOnce(undefined);
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // saveAnalysis should have been called with snapshotId = 42
+    expect(mockedSave).toHaveBeenCalled();
+    const saveArgs = mockedSave.mock.calls[0]!;
+    expect(saveArgs[2]).toBe(42); // snapshotId parameter
+  });
+
+  // ── Opus stream throws (not finalMessage) ────────────────
+
+  it('falls back to Sonnet when Opus stream() itself throws 529', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+
+    // First stream() call throws (overloaded), second returns normally
+    const overloaded = Object.assign(new Error('overloaded'), { status: 529 });
+    mockStream
+      .mockImplementationOnce(() => {
+        throw overloaded;
+      })
+      .mockReturnValueOnce({
+        finalMessage: vi
+          .fn()
+          .mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS)),
+      });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockStream).toHaveBeenCalledTimes(2);
+    expect(mockStream.mock.calls[1]![0].model).toBe('claude-sonnet-4-6');
+  });
+
+  // ── Review mode skips position fetch ──────────────────────
+
+  it('does not fetch positions in review mode', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    vi.mocked(getLatestPositions).mockClear();
+
+    const body = makeBody({
+      context: { ...makeBody().context, mode: 'review' },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(getLatestPositions).not.toHaveBeenCalled();
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).not.toContain('Current Open Positions');
+  });
+
+  // ── Opening range context fields ──────────────────────────
+
+  it('includes opening range available YES when true', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: { ...makeBody().context, openingRangeAvailable: true },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('YES (30-min data complete)');
+  });
+
+  it('includes opening range available NO when false', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: { ...makeBody().context, openingRangeAvailable: false },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('NO (entry before 10:00 AM ET');
   });
 });

@@ -823,11 +823,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
     // The SDK handles transient retries (429, 5xx, connection errors) internally.
     // Our wrapper only handles the Opus → Sonnet model fallback.
-    const streamRequest = (
-      model: string,
-      maxTokens: number,
-      effort: string,
-    ) =>
+    const streamRequest = (model: string, maxTokens: number, effort: string) =>
       anthropic.messages
         .stream({
           model,
