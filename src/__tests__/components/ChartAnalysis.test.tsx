@@ -214,13 +214,13 @@ describe('ChartAnalysis', () => {
       expect(screen.getByText(/drop or click to upload/i)).toBeInTheDocument();
     });
 
-    it('defaults image label to Market Tide', async () => {
+    it('defaults image label to Periscope (Gamma)', async () => {
       const { container } = render(
         <ChartAnalysis th={th} results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(
-        'Market Tide',
+        'Periscope (Gamma)',
       );
     });
 
@@ -231,8 +231,8 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       const select = screen.getByRole('combobox');
-      await user.selectOptions(select, 'Net Flow (SPY)');
-      expect((select as HTMLSelectElement).value).toBe('Net Flow (SPY)');
+      await user.selectOptions(select, 'Periscope Charm (SPX)');
+      expect((select as HTMLSelectElement).value).toBe('Periscope Charm (SPX)');
     });
 
     it('limits to 9 images', async () => {
@@ -286,7 +286,7 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
-      expect(screen.getAllByText(/Market Tide/).length).toBeGreaterThanOrEqual(
+      expect(screen.getAllByText(/Periscope (Gamma)/).length).toBeGreaterThanOrEqual(
         1,
       );
     });
@@ -600,7 +600,7 @@ describe('ChartAnalysis', () => {
 
     it('chart confidence cards are always visible', async () => {
       await renderFull();
-      expect(screen.getAllByText('Market Tide').length).toBeGreaterThanOrEqual(
+      expect(screen.getAllByText('Periscope (Gamma)').length).toBeGreaterThanOrEqual(
         1,
       );
       expect(screen.getByText('BEARISH')).toBeInTheDocument();
@@ -807,7 +807,7 @@ describe('ChartAnalysis', () => {
         imageIssues: [
           {
             imageIndex: 1,
-            label: 'Market Tide',
+            label: 'Periscope (Gamma)',
             issue: 'Blurry.',
             suggestion: 'Higher res.',
           },
@@ -1476,7 +1476,7 @@ describe('ChartAnalysis', () => {
               imageIssues: [
                 {
                   imageIndex: 1,
-                  label: 'Market Tide',
+                  label: 'Periscope (Gamma)',
                   issue: 'Blurry.',
                   suggestion: 'Higher res.',
                 },
