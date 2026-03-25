@@ -39,11 +39,20 @@
     {
       "path": "/api/cron/fetch-greek-flow",
       "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-outcomes",
+      "schedule": "25 20,21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/build-features",
+      "schedule": "45 20,21 * * 1-5"
     }
   ],
   "functions": {
     "api/analyze.ts": { "maxDuration": 800 },
-    "api/cron/curate-lessons.ts": { "maxDuration": 780 }
+    "api/cron/curate-lessons.ts": { "maxDuration": 780 },
+    "api/cron/build-features.ts": { "maxDuration": 300 }
   },
   "installCommand": "npm install",
   "devCommand": "npm run dev",

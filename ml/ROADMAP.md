@@ -1,5 +1,7 @@
 # Machine Learning Roadmap
 
+> Last updated: 2026-03-24 (senior ML review applied)
+
 ## Overview
 
 The 0DTE Options Strike Calculator generates rich datasets every trading day from multiple sources:
@@ -12,6 +14,42 @@ The 0DTE Options Strike Calculator generates rich datasets every trading day fro
 Combined with **outcomes** (settlement price, actual P&L, whether stops triggered), these datasets form the foundation for predictive models that can augment the existing rule-based system.
 
 This document outlines planned ML applications as sufficient labeled data is accumulated through daily trading.
+
+---
+
+## Senior ML Review (2026-03-24)
+
+### Strengths identified
+
+- **Domain-informed feature engineering** — Flow agreement scores, gamma asymmetry ratios, and charm slopes capture spatial distribution rather than just point values. Most ML projects fail on bad features, not bad models.
+- **Time-varying covariates** for the survival model — recognizes this isn't a static classification problem.
+- **"Augment not replace" philosophy** — the right approach for a system where domain expertise and model predictions should reinforce each other.
+- **Production-grade data pipeline** — 10 cron jobs, 14 sources, ~13,500 rows/day with proper UNIQUE constraints and idempotent upserts. Better infrastructure than most ML teams start with.
+
+### Critical gaps addressed
+
+1. **Missing Phase 0: Data Infrastructure** — Raw intraday tables store time series, but every model needs daily feature vectors. A feature engineering pipeline must be built before any model. See [PHASE-0-DATA-INFRASTRUCTURE.md](PHASE-0-DATA-INFRASTRUCTURE.md).
+
+2. **Labeling pipeline was undefined** — Resolved by discovering that the EOD review analyses (`analyses` table, `mode = 'review'`) already contain structured labels in the `full_response` JSONB. Labels can be extracted automatically:
+   - `review.wasCorrect` → structure correctness
+   - `chartConfidence.periscopeCharm.signal === 'CONTRADICTS'` → charm divergence
+   - `chartConfidence.spxNetFlow.signal` → flow directional/hedging
+   - Settlement direction vs flow direction → derived flow-price label
+
+3. **No evaluation strategy** — Added mandatory requirements: temporal cross-validation (walk-forward, never random-split time series), baseline comparisons (majority class, previous day, rule-based), calibration checks, and feature importance tracking.
+
+4. **Phase priority was suboptimal** — Intraday Range Regression with 30 years of historical data sounds ready, but the value-add is in API-enriched features (GEX, charm, flow), not a vanilla volatility model. VIX already prices expected range. Reprioritized to front-load unsupervised clustering (needs zero labels) and infrastructure.
+
+5. **Model serving architecture was undefined** — Resolved: train in Python (XGBoost, scikit-learn), export to ONNX, serve via Vercel function (either Node.js with `onnxruntime-node` or Python serverless function). Decision deferred to Phase 1.
+
+6. **Market outcomes are automatable** — The `outcomes` table stores public market data (settlement, OHLC, VIX close), not account-specific P&L. An EOD cron job can populate this automatically via existing Schwab API integration, regardless of paper vs. live trading status.
+
+### Data maturity assessment
+
+- **~30+ days** of review-mode analyses with extractable labels (older reviews may have fewer fields — handled via `feature_completeness` scoring)
+- **~30 days** of raw intraday API data (flow, greeks, strike exposures)
+- **Sufficient for:** Day Type Clustering (unsupervised, no labels needed), initial feature engineering validation
+- **Accumulating toward:** Structure Classification (needs 60-80 labeled days), Charm Divergence Predictor (needs 50 labeled days)
 
 ---
 
@@ -54,9 +92,52 @@ This document outlines planned ML applications as sufficient labeled data is acc
 
 ---
 
+## Implementation Timeline (Revised)
+
+| Phase       | Model                          | Prerequisite                     | Status                  | Est. Data Ready |
+| ----------- | ------------------------------ | -------------------------------- | ----------------------- | --------------- |
+| **Phase 0** | Data Infrastructure            | Existing pipeline                | **Building now**        | Immediate       |
+| **Phase 1** | Day Type Clustering            | Phase 0 + 30 days features       | Ready after Phase 0     | April 2026      |
+| **Phase 2** | Structure Classification       | 60-80 labeled trading days       | Accumulating (~30 days) | May 2026        |
+| **Phase 3** | Charm Divergence Predictor     | 50+ days with Periscope data     | Accumulating            | May 2026        |
+| **Phase 4** | Intraday Range Regression      | 100+ days API-enriched data      | Accumulating            | June 2026       |
+| **Phase 5** | Optimal Exit Timing            | 100+ days with timestamped exits | Blocked (paper trading) | TBD             |
+| **Phase 6** | Flow-Price Divergence Detector | 150+ labeled days                | Accumulating            | Aug 2026        |
+
+### Why this order changed
+
+- **Phase 0 (Data Infrastructure)** was added as a prerequisite for everything else. Without daily feature vectors and extracted labels, no model can train.
+- **Day Type Clustering** moved from Phase 4 to Phase 1 because it's unsupervised — needs zero labels. It can run on 30 days of data and immediately reveals whether the feature engineering pipeline captures meaningful structure. It also informs which features matter for the supervised models.
+- **Intraday Range Regression** moved from Phase 1 to Phase 4 because its value is in API-enriched features (GEX, charm, flow), not historical price data. A vanilla range model without those features is just reimplementing VIX. It needs 100+ days of API data to add real value.
+- **Structure Classification** stayed high-priority — it has the most direct trading value.
+- **Charm Divergence Predictor** moved up because it's binary classification with fewer labels needed (50 days) and has high practical value.
+- **Optimal Exit Timing** moved later because it's blocked until live trading provides timestamped position data.
+
+---
+
 ## Planned Models
 
-### 1. Structure Classification — "What structure wins today?"
+### 1. Day Type Clustering — "What kind of day is this?"
+
+**Model type:** Unsupervised clustering (k-means, DBSCAN, or Gaussian mixture)
+
+**Input features:** Full snapshot feature set + first-hour API flow/GEX features, normalized
+
+**Use case:** Discover natural groupings in trading days that the current 16 rules partially capture but may not perfectly delineate. The current rule system handles known patterns (FOMC days, all-negative charm, deeply negative GEX, Friday VIX > 19, VIX1D extreme inversion, ETF Tide hedging divergence). Clustering may reveal unnamed day types.
+
+Example hypotheses:
+
+- A cluster where VIX is moderate (18-22), GEX is mildly positive, charm is mixed, and flow is neutral — a day type where ICs perform exceptionally well but the current rules don't specifically identify as high-conviction IC setups.
+- A cluster where 0DTE index flow diverges from aggregate SPX flow while ETF Tide shows hedging divergence — a day type where the "noise" in SPX flow is systematically identifiable.
+- A cluster where delta flow surges while premium flow (NCP) is flat — spread-based institutional positioning that premium flow alone misses.
+
+**Data requirement:** 30+ trading days (meaningful separation improves significantly at 200+)
+
+**Why first:** Zero labels needed. Validates feature engineering pipeline. Informs supervised model design.
+
+---
+
+### 2. Structure Classification — "What structure wins today?"
 
 **Model type:** Gradient boosted classifier (XGBoost or LightGBM)
 
@@ -104,15 +185,40 @@ _Per-strike features (engineered from strike_exposures):_
 - Max negative charm strike and distance from ATM
 - 0DTE vs all-expiry gamma agreement: do the top walls align? (binary)
 
-**Labels:** Correct structure for the day (IC, CCS, PCS, SIT OUT) — determined by end-of-day review
+**Labels:** Correct structure for the day (IC, CCS, PCS, SIT OUT) — extracted from `analyses.full_response.review.wasCorrect` + `structure`
 
 **Use case:** Pre-analysis sanity check. Before opening any charts, the model provides a probability distribution: "Based on today's snapshot, historical CCS days had similar profiles 73% of the time." This doesn't replace the Claude analysis — it sets a prior expectation that the chart analysis confirms or overrides.
 
-**Data requirement:** 100+ labeled trading days (backtests + live trades)
+**Data requirement:** 60-80 labeled trading days (walk-forward validation)
 
 ---
 
-### 2. Intraday Range Regression — "How far will SPX move today?"
+### 3. Naive vs Periscope Charm Divergence Predictor — "Is the naive chart wrong today?"
+
+**Model type:** Binary classifier (logistic regression or gradient boosted)
+
+**Training features:**
+
+- VIX level (higher VIX = more institutional hedging = more naive assumption failures)
+- VIX1D/VIX ratio
+- Aggregate GEX regime
+- SPX Net Flow NPP magnitude (high NPP = heavy put buying = customer/MM split distorted)
+- ETF Tide divergence flag
+- Flow agreement score
+- Day of week (monthly/quarterly expiration effects)
+- Naive charm pattern classification from per-strike API data
+
+**Label:** `chartConfidence.periscopeCharm.signal === 'CONTRADICTS'` (binary, extracted automatically from review)
+
+**Use case:** On days when you don't have Periscope screenshots yet (pre-market, or if UW is slow), this model predicts whether the naive charm readings are likely to be misleading. If the model says "82% chance naive charm is wrong today," the trader knows to wait for Periscope Charm before applying the all-negative protocol.
+
+This directly addresses the March 24, 2026 lesson: naive showed all-negative, Periscope showed massive positive walls. The model learns which market conditions produce these divergences.
+
+**Data requirement:** 50+ trading days with both naive and Periscope Charm readings labeled for agreement/divergence. This data is being generated daily via EOD reviews.
+
+---
+
+### 4. Intraday Range Regression — "How far will SPX move today?"
 
 **Model type:** Gradient boosted regressor or neural network
 
@@ -128,15 +234,17 @@ _Per-strike features (engineered from strike_exposures):_
 - ETF Tide divergence: hedging divergence historically produces smaller ranges
 - 0DTE Index Flow vs aggregate SPX flow divergence
 
-**Target:** Actual intraday range (high minus low) or settlement distance from open
+**Target:** Actual intraday range (high minus low) from `outcomes` table
 
-**Use case:** Directly predicts whether the straddle cone will be consumed, partially used, or exceeded. This automates and improves what Rule 16 does heuristically with GEX thresholds. A model trained on thousands of historical days would provide calibrated confidence intervals: "Today's profile produces a 40+ pt range 78% of the time."
+**Use case:** Directly predicts whether the straddle cone will be consumed, partially used, or exceeded. This automates and improves what Rule 16 does heuristically with GEX thresholds. A model trained on API-enriched data would provide calibrated confidence intervals: "Today's profile produces a 40+ pt range 78% of the time."
 
-**Data requirement:** Available now — 30+ years of historical intraday price and volatility data can be used immediately for the base model. The API data enriches this with GEX/charm features starting from the 30-day backfill.
+**Why moved later:** Without API-enriched features, this is just a VIX regression — the options market already prices expected range. The model adds value only when GEX/charm/flow features are available, which requires 100+ days of API data.
+
+**Data requirement:** 100+ days with full API feature set
 
 ---
 
-### 3. Optimal Exit Timing (Survival Analysis) — "When should I close?"
+### 5. Optimal Exit Timing (Survival Analysis) — "When should I close?"
 
 **Model type:** Cox proportional hazards or random survival forest
 
@@ -168,7 +276,7 @@ _Time-varying covariates (from intraday API data):_
 - Time to first stop condition trigger
 - Time to optimal exit (determined retrospectively from review data)
 
-**Use case:** Given today's entry conditions and structure, predict the optimal hold duration. Preliminary observations from the first two weeks of trading suggest patterns:
+**Use case:** Given today's entry conditions and structure, predict the optimal hold duration. Preliminary observations suggest patterns:
 
 - High-conviction CCS days hit 50% profit in 2-3 hours
 - All-negative charm days should exit by noon ET (unless Periscope Charm overrides)
@@ -178,50 +286,9 @@ _Time-varying covariates (from intraday API data):_
 
 The intraday API data enables time-varying covariates — the model can update its prediction every 5 minutes as new flow and GEX data arrives, rather than relying solely on entry-time features.
 
-**Data requirement:** 50-100 labeled trading days with timestamped exit data
+**Blocked:** Requires timestamped position entry/exit data, which is only available with live trading (paper money positions are not accessible via Schwab API).
 
----
-
-### 4. Day Type Clustering — "What kind of day is this?"
-
-**Model type:** Unsupervised clustering (k-means, DBSCAN, or Gaussian mixture)
-
-**Input features:** Full snapshot feature set + first-hour API flow/GEX features, normalized
-
-**Use case:** Discover natural groupings in trading days that the current 16 rules partially capture but may not perfectly delineate. The current rule system handles known patterns (FOMC days, all-negative charm, deeply negative GEX, Friday VIX > 19, VIX1D extreme inversion, ETF Tide hedging divergence). Clustering may reveal unnamed day types.
-
-Example hypotheses:
-
-- A cluster where VIX is moderate (18-22), GEX is mildly positive, charm is mixed, and flow is neutral — a day type where ICs perform exceptionally well but the current rules don't specifically identify as high-conviction IC setups.
-- A cluster where 0DTE index flow diverges from aggregate SPX flow while ETF Tide shows hedging divergence — a day type where the "noise" in SPX flow is systematically identifiable.
-- A cluster where delta flow surges while premium flow (NCP) is flat — spread-based institutional positioning that premium flow alone misses.
-
-**Data requirement:** 200+ trading days for meaningful cluster separation
-
----
-
-### 5. Naive vs Periscope Charm Divergence Predictor — "Is the naive chart wrong today?"
-
-**Model type:** Binary classifier (logistic regression or gradient boosted)
-
-**Training features:**
-
-- VIX level (higher VIX = more institutional hedging = more naive assumption failures)
-- VIX1D/VIX ratio
-- Aggregate GEX regime
-- SPX Net Flow NPP magnitude (high NPP = heavy put buying = customer/MM split distorted)
-- ETF Tide divergence flag
-- Flow agreement score
-- Day of week (monthly/quarterly expiration effects)
-- Naive charm pattern classification from per-strike API data
-
-**Label:** Did Periscope Charm materially contradict naive charm? (binary, from review data)
-
-**Use case:** On days when you don't have Periscope screenshots yet (pre-market, or if UW is slow), this model predicts whether the naive charm readings are likely to be misleading. If the model says "82% chance naive charm is wrong today," the trader knows to wait for Periscope Charm before applying the all-negative protocol.
-
-This directly addresses the March 24 lesson: naive showed all-negative, Periscope showed massive positive walls. The model learns which market conditions produce these divergences.
-
-**Data requirement:** 50+ trading days with both naive and Periscope Charm readings labeled for agreement/divergence. This data is being generated daily.
+**Data requirement:** 100+ labeled trading days with timestamped exit data
 
 ---
 
@@ -240,19 +307,19 @@ This directly addresses the March 24 lesson: naive showed all-negative, Periscop
 - 0DTE Delta Flow total/directionalized
 - VIX level (VIX 25+ regime changes interpretation per Rule 10)
 
-**Label:** Was the SPX flow directional or hedging? (from review data — determined by whether the flow predicted the settlement direction)
+**Label:** Was the SPX flow directional or hedging? Derived from outcomes: did the majority flow direction at T2 (10:30 AM) match settlement direction?
 
 **Use case:** Automates Rule 10 (SPX Net Flow Hedging Divergence). Currently the rule says "trust SPX flow at VIX 25+, discount it when 3+ signals contradict." A model trained on labeled outcomes can learn the precise conditions under which SPX flow is hedging vs directional, without relying on a fixed VIX threshold or signal-count heuristic.
 
 The new 0DTE index flow and delta flow sources provide additional features that the original Rule 10 didn't have — delta flow showing institutional positioning through spreads/combos rather than outright premium, and 0DTE-isolated flow removing weekly/monthly noise.
 
-**Data requirement:** 100+ labeled trading days
+**Data requirement:** 150+ labeled trading days
 
 ---
 
 ## Data Infrastructure
 
-The database schema captures all required training data:
+### Current tables (collecting data)
 
 | Table              | Purpose                        | Key Fields                                             | Records/Day |
 | ------------------ | ------------------------------ | ------------------------------------------------------ | ----------- |
@@ -265,34 +332,79 @@ The database schema captures all required training data:
 | `positions`        | Position-specific data         | Strikes, spreads, P&L, Greeks                          | 1-4         |
 | `lessons`          | Curated trading lessons        | Lesson text, source session, tags                      | Growing     |
 
+### New tables (Phase 0)
+
+| Table               | Purpose                        | Key Fields                                      | Records/Day |
+| ------------------- | ------------------------------ | ----------------------------------------------- | ----------- |
+| `outcomes`          | EOD settlement data            | settlement, OHLC, VIX close, VIX1D close        | 1           |
+| `training_features` | Daily ML feature vectors       | 80-100 engineered features + completeness score | 1           |
+| `day_labels`        | Structured labels from reviews | structure correct, charm diverged, flow signals | 1           |
+
 All tables are linked by date, enabling joins across features, predictions, and outcomes.
 
-### Feature Engineering Pipeline (planned)
+### Feature Engineering Pipeline (Phase 0)
 
-The raw intraday data requires feature engineering before ML consumption:
+See [PHASE-0-DATA-INFRASTRUCTURE.md](PHASE-0-DATA-INFRASTRUCTURE.md) for full specification.
 
-**Flow features:** NCP/NPP at fixed time checkpoints (30 min, 60 min, 90 min), rate of change, acceleration, NCP-NPP gap, convergence/divergence velocity, flow agreement score across sources.
+**Flow features:** NCP/NPP at 8 fixed clock-time checkpoints (10:00 AM through 3:00 PM ET, nearest candle within 2 min), rate of change, flow agreement score across sources, ETF Tide divergence flags.
 
-**GEX features:** OI GEX at checkpoints, GEX trend (slope from session start), Volume GEX offset ratio, regime transition points (when did GEX cross a threshold?).
+**GEX features:** OI/Volume/Directionalized GEX at checkpoints, GEX trend slope from session start, charm at checkpoints.
 
 **Per-strike features:** Gamma wall distance from ATM, gamma asymmetry ratio, charm slope, charm pattern classification, 0DTE vs all-expiry agreement score, max wall magnitude and location.
 
-**Derived features:** ETF Tide hedging divergence score, Periscope Charm override likelihood, flow-price divergence score, delta flow vs premium flow divergence.
+**Derived features:** ETF Tide hedging divergence score, flow-price divergence score (from outcomes), range category, settlement direction.
 
 ---
 
-## Implementation Timeline
+## Model Training and Serving Architecture
 
-| Phase       | Model                          | Prerequisite                                                           | Status                           |
-| ----------- | ------------------------------ | ---------------------------------------------------------------------- | -------------------------------- |
-| **Phase 1** | Intraday Range Regression      | 30 years historical data (available) + API backfill (30 days complete) | Ready to build                   |
-| **Phase 2** | Structure Classification       | 100+ labeled trading days                                              | Accumulating data (~8 days live) |
-| **Phase 3** | Optimal Exit Timing            | 50-100 days with timestamped exits + intraday API data                 | Accumulating data                |
-| **Phase 4** | Day Type Clustering            | 200+ trading days with full feature set                                | Accumulating data                |
-| **Phase 5** | Charm Divergence Predictor     | 50+ days with Periscope vs naive comparison                            | Accumulating data                |
-| **Phase 6** | Flow-Price Divergence Detector | 100+ labeled days with 0DTE flow data                                  | Accumulating data                |
+### Training (Python, local or Colab)
 
-Phase 1 can begin immediately using the existing historical dataset enriched with 30 days of backfilled API data. Phases 2-6 require continued daily trading with the current rule-based system, which generates labeled training data with every session.
+- Connect to Neon Postgres directly, or use the export endpoint (`GET /api/ml/export`)
+- Libraries: XGBoost or LightGBM for gradient boosted trees, scikit-learn for preprocessing, lifelines for survival analysis
+- Export trained models to ONNX format for serving
+
+### Serving (Vercel)
+
+Two options (decision deferred to Phase 1):
+
+1. **Node.js + ONNX Runtime** — `onnxruntime-node` runs ONNX models in Vercel serverless functions. Keeps the entire stack in TypeScript.
+2. **Python serverless function** — Vercel natively supports Python functions. Load the model directly with joblib. Simpler but adds a Python dependency to the project.
+
+### Prediction delivery
+
+- Pre-computed daily predictions stored in a `predictions` table after the feature engineering cron runs
+- Real-time predictions via API endpoint (`POST /api/ml/predict`) for intraday updates
+- Surfaced in the calculator UI alongside the existing rule-based signals
+
+---
+
+## Evaluation Strategy
+
+### Temporal cross-validation (mandatory for all models)
+
+Never random-split time series data. Use walk-forward validation:
+
+1. Train on days 1 through N
+2. Predict day N+1
+3. Slide forward, retrain, predict N+2
+4. Report average accuracy across all forward predictions
+
+### Baseline comparisons (mandatory)
+
+Every model must beat:
+
+- **Majority class baseline** — Always predict the most common label
+- **Previous day baseline** — Predict whatever happened yesterday
+- **Rule-based baseline** — What the existing 16 rules would predict
+
+### Calibration
+
+When a model outputs probabilities, verify calibration with reliability diagrams. "73% confident" should mean ~73% correct.
+
+### Feature importance
+
+Log feature importances after training. If a domain-critical feature ranks low, investigate whether the feature engineering is capturing the right signal.
 
 ---
 
@@ -301,7 +413,7 @@ Phase 1 can begin immediately using the existing historical dataset enriched wit
 The ML models are designed to **augment, not replace** the existing system. The 16 empirical rules and Claude-powered chart analysis remain the primary decision-making framework. ML provides:
 
 - **Pre-analysis priors** — What does historical data suggest before looking at today's charts?
-- **Calibrated thresholds** — Where should the GEX regime boundaries actually be, based on thousands of data points instead of a handful?
+- **Calibrated thresholds** — Where should the GEX regime boundaries actually be, based on hundreds of data points instead of a handful?
 - **Pattern discovery** — What day types exist that the rules don't yet name?
 - **Management optimization** — When is the statistically optimal exit time given today's entry conditions?
 - **Signal validation** — Is the naive charm chart likely to be wrong today? Is SPX flow hedging or directional?

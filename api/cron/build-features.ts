@@ -1,0 +1,1058 @@
+/**
+ * GET /api/cron/build-features
+ *
+ * Feature engineering cron that transforms raw intraday data into
+ * daily ML feature vectors (training_features) and extracts structured
+ * labels from review-mode analyses (day_labels).
+ *
+ * Runs ~15 min after fetch-outcomes to ensure settlement data is available.
+ * On first run, backfills all historical dates. After that, only processes today.
+ *
+ * Environment: DATABASE_URL, CRON_SECRET
+ */
+
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { getDb } from '../_lib/db.js';
+import logger from '../_lib/logger.js';
+import {
+  getETTime,
+  getETDayOfWeek,
+  getETDateStr,
+} from '../../src/utils/timezone.js';
+
+export const config = { maxDuration: 300 };
+
+// ── Time window check ──────────────────────────────────────
+
+function isPostClose(): boolean {
+  const now = new Date();
+  const day = getETDayOfWeek(now);
+  if (day === 0 || day === 6) return false;
+
+  const { hour, minute } = getETTime(now);
+  const totalMin = hour * 60 + minute;
+  // 4:30 PM = 990 min, 6:00 PM = 1080 min
+  return totalMin >= 990 && totalMin <= 1080;
+}
+
+// ── Checkpoint times (minutes after midnight ET) ───────────
+
+const CHECKPOINTS = [
+  { label: 't1', minutes: 600 }, // 10:00 AM
+  { label: 't2', minutes: 630 }, // 10:30 AM
+  { label: 't3', minutes: 660 }, // 11:00 AM
+  { label: 't4', minutes: 690 }, // 11:30 AM
+] as const;
+
+const TOLERANCE_MINUTES = 3;
+
+// ── Flow sources ───────────────────────────────────────────
+
+interface FlowSource {
+  source: string;
+  prefix: string;
+}
+
+const FLOW_SOURCES: FlowSource[] = [
+  { source: 'market_tide', prefix: 'mt' },
+  { source: 'spx_net_flow', prefix: 'spx' },
+  { source: 'spy_net_flow', prefix: 'spy' },
+  { source: 'qqq_net_flow', prefix: 'qqq' },
+  { source: 'spy_etf_tide', prefix: 'spy_etf' },
+  { source: 'qqq_etf_tide', prefix: 'qqq_etf' },
+  { source: 'zero_dte_flow', prefix: 'zero_dte' },
+  { source: 'delta_flow', prefix: 'delta_flow' },
+];
+
+// Sources that contribute to flow agreement (directional flow, not delta flow)
+const AGREEMENT_SOURCES = [
+  'market_tide',
+  'market_tide_otm',
+  'spx_net_flow',
+  'spy_net_flow',
+  'qqq_net_flow',
+  'spy_etf_tide',
+  'qqq_etf_tide',
+  'zero_dte_flow',
+  'zero_dte_delta_flow',
+];
+
+// ── Types ──────────────────────────────────────────────────
+
+interface FlowRow {
+  timestamp: string;
+  source: string;
+  ncp: string | null;
+  npp: string | null;
+}
+
+interface SpotRow {
+  timestamp: string;
+  gamma_oi: string | null;
+  gamma_vol: string | null;
+  gamma_dir: string | null;
+  charm_oi: string | null;
+  price: string | null;
+}
+
+interface StrikeRow {
+  strike: string;
+  price: string | null;
+  call_gamma_oi: string | null;
+  put_gamma_oi: string | null;
+  call_charm_oi: string | null;
+  put_charm_oi: string | null;
+}
+
+interface GreekRow {
+  expiry: string;
+  dte: string;
+  call_gamma: string | null;
+  put_gamma: string | null;
+  call_charm: string | null;
+  put_charm: string | null;
+}
+
+interface SnapshotRow {
+  vix: string | null;
+  vix1d: string | null;
+  vix9d: string | null;
+  vvix: string | null;
+  vix1d_vix_ratio: string | null;
+  vix_vix9d_ratio: string | null;
+  regime_zone: string | null;
+  cluster_mult: string | null;
+  dow_mult_hl: string | null;
+  dow_label: string | null;
+  spx_open: string | null;
+  sigma: string | null;
+  hours_remaining: string | null;
+  ic_ceiling: string | null;
+  put_spread_ceiling: string | null;
+  call_spread_ceiling: string | null;
+  opening_range_signal: string | null;
+  opening_range_pct_consumed: string | null;
+  is_event_day: boolean | null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FeatureRow = Record<string, any>;
+
+// ── Helpers ────────────────────────────────────────────────
+
+function num(v: string | null | undefined): number | null {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Find the flow row closest to a target ET minute, within tolerance. */
+function findNearestCandle(
+  rows: FlowRow[],
+  targetMinutes: number,
+  dateStr: string,
+): FlowRow | null {
+  let best: FlowRow | null = null;
+  let bestDiff = Infinity;
+
+  for (const row of rows) {
+    const ts = new Date(row.timestamp);
+    const tsDate = getETDateStr(ts);
+    if (tsDate !== dateStr) continue;
+
+    const { hour, minute } = getETTime(ts);
+    const totalMin = hour * 60 + minute;
+    const diff = Math.abs(totalMin - targetMinutes);
+
+    if (diff < bestDiff && diff <= TOLERANCE_MINUTES) {
+      best = row;
+      bestDiff = diff;
+    }
+  }
+
+  return best;
+}
+
+function findNearestSpot(
+  rows: SpotRow[],
+  targetMinutes: number,
+  dateStr: string,
+): SpotRow | null {
+  let best: SpotRow | null = null;
+  let bestDiff = Infinity;
+
+  for (const row of rows) {
+    const ts = new Date(row.timestamp);
+    const tsDate = getETDateStr(ts);
+    if (tsDate !== dateStr) continue;
+
+    const { hour, minute } = getETTime(ts);
+    const totalMin = hour * 60 + minute;
+    const diff = Math.abs(totalMin - targetMinutes);
+
+    if (diff < bestDiff && diff <= TOLERANCE_MINUTES) {
+      best = row;
+      bestDiff = diff;
+    }
+  }
+
+  return best;
+}
+
+/** Count how many directional flow sources agree on direction at a checkpoint. */
+function computeFlowAgreement(
+  allFlowRows: FlowRow[],
+  targetMinutes: number,
+  dateStr: string,
+): number {
+  let bullish = 0;
+  let bearish = 0;
+
+  for (const source of AGREEMENT_SOURCES) {
+    const sourceRows = allFlowRows.filter((r) => r.source === source);
+    const candle = findNearestCandle(sourceRows, targetMinutes, dateStr);
+    if (!candle) continue;
+
+    const ncp = num(candle.ncp);
+    const npp = num(candle.npp);
+    if (ncp == null || npp == null) continue;
+
+    // Bullish = NCP > 0 (calls bought) or NPP < 0 (puts sold)
+    // Use NCP direction as primary signal
+    if (ncp > 0) bullish++;
+    else if (ncp < 0) bearish++;
+  }
+
+  return Math.max(bullish, bearish);
+}
+
+/** Check if ETF Tide diverges from Net Flow at a checkpoint. */
+function computeETFDivergence(
+  allFlowRows: FlowRow[],
+  targetMinutes: number,
+  dateStr: string,
+): boolean | null {
+  const spyNet = findNearestCandle(
+    allFlowRows.filter((r) => r.source === 'spy_net_flow'),
+    targetMinutes,
+    dateStr,
+  );
+  const spyETF = findNearestCandle(
+    allFlowRows.filter((r) => r.source === 'spy_etf_tide'),
+    targetMinutes,
+    dateStr,
+  );
+
+  if (!spyNet || !spyETF) return null;
+  const netNcp = num(spyNet.ncp);
+  const etfNcp = num(spyETF.ncp);
+  if (netNcp == null || etfNcp == null) return null;
+
+  // Divergence = Net Flow and ETF Tide disagree on direction
+  return (netNcp > 0 && etfNcp < 0) || (netNcp < 0 && etfNcp > 0);
+}
+
+/** Classify charm pattern from per-strike data. */
+function classifyCharmPattern(
+  strikes: StrikeRow[],
+  atmPrice: number,
+): string | null {
+  if (strikes.length === 0) return null;
+
+  const nearby = strikes.filter((s) => {
+    const strike = num(s.strike);
+    return strike != null && Math.abs(strike - atmPrice) <= 50;
+  });
+
+  if (nearby.length < 5) return null;
+
+  let posAbove = 0;
+  let negAbove = 0;
+  let posBelow = 0;
+  let negBelow = 0;
+
+  for (const s of nearby) {
+    const strike = num(s.strike)!;
+    const netCharm = (num(s.call_charm_oi) ?? 0) + (num(s.put_charm_oi) ?? 0);
+    if (strike >= atmPrice) {
+      if (netCharm > 0) posAbove++;
+      else negAbove++;
+    } else if (netCharm > 0) posBelow++;
+    else negBelow++;
+  }
+
+  const total = nearby.length;
+  const totalNeg = negAbove + negBelow;
+  const totalPos = posAbove + posBelow;
+
+  if (totalNeg / total > 0.8) return 'all_negative';
+  if (totalPos / total > 0.8) return 'all_positive';
+  if (posAbove > negAbove * 2 && negBelow >= posBelow) return 'ccs_confirming';
+  if (posBelow > negBelow * 2 && negAbove >= posAbove) return 'pcs_confirming';
+  return 'mixed';
+}
+
+/** Engineer per-strike features: gamma walls, charm slope, etc. */
+function engineerStrikeFeatures(
+  strikes: StrikeRow[],
+  atmPrice: number,
+): FeatureRow {
+  const features: FeatureRow = {};
+  if (strikes.length === 0 || atmPrice === 0) return features;
+
+  let wallAboveDist: number | null = null;
+  let wallAboveMag: number | null = null;
+  let wallBelowDist: number | null = null;
+  let wallBelowMag: number | null = null;
+  let negNearestDist: number | null = null;
+  let negNearestMag: number | null = null;
+
+  // Compute gamma stats for threshold
+  const gammas = strikes.map(
+    (s) => (num(s.call_gamma_oi) ?? 0) + (num(s.put_gamma_oi) ?? 0),
+  );
+  const mean = gammas.reduce((a, b) => a + b, 0) / gammas.length;
+  const stddev = Math.sqrt(
+    gammas.reduce((a, b) => a + (b - mean) ** 2, 0) / gammas.length,
+  );
+  const posThreshold = mean + 1.5 * stddev;
+  const negThreshold = mean - 1.5 * stddev;
+
+  let sumPosAbove = 0;
+  let sumPosBelow = 0;
+  let charmSumAbove = 0;
+  let charmCountAbove = 0;
+  let charmSumBelow = 0;
+  let charmCountBelow = 0;
+  let maxPosCharm = -Infinity;
+  let maxPosCharmDist: number | null = null;
+  let maxNegCharm = Infinity;
+  let maxNegCharmDist: number | null = null;
+
+  for (let i = 0; i < strikes.length; i++) {
+    const s = strikes[i]!;
+    const strike = num(s.strike);
+    if (strike == null) continue;
+
+    const netGamma = gammas[i]!;
+    const netCharm = (num(s.call_charm_oi) ?? 0) + (num(s.put_charm_oi) ?? 0);
+    const dist = strike - atmPrice;
+
+    // Gamma walls
+    if (netGamma > posThreshold) {
+      if (dist > 0 && (wallAboveDist == null || dist < wallAboveDist)) {
+        wallAboveDist = dist;
+        wallAboveMag = netGamma;
+      }
+      if (
+        dist < 0 &&
+        (wallBelowDist == null || Math.abs(dist) < Math.abs(wallBelowDist))
+      ) {
+        wallBelowDist = Math.abs(dist);
+        wallBelowMag = netGamma;
+      }
+    }
+    if (netGamma < negThreshold) {
+      const absDist = Math.abs(dist);
+      if (negNearestDist == null || absDist < negNearestDist) {
+        negNearestDist = absDist;
+        negNearestMag = netGamma;
+      }
+    }
+
+    // Gamma asymmetry
+    if (netGamma > 0) {
+      if (dist > 0) sumPosAbove += netGamma;
+      else sumPosBelow += netGamma;
+    }
+
+    // Charm slope
+    if (dist > 0) {
+      charmSumAbove += netCharm;
+      charmCountAbove++;
+    } else if (dist < 0) {
+      charmSumBelow += netCharm;
+      charmCountBelow++;
+    }
+
+    // Max charm strikes
+    if (netCharm > maxPosCharm) {
+      maxPosCharm = netCharm;
+      maxPosCharmDist = dist;
+    }
+    if (netCharm < maxNegCharm) {
+      maxNegCharm = netCharm;
+      maxNegCharmDist = dist;
+    }
+  }
+
+  features.gamma_wall_above_dist = wallAboveDist;
+  features.gamma_wall_above_mag = wallAboveMag;
+  features.gamma_wall_below_dist = wallBelowDist;
+  features.gamma_wall_below_mag = wallBelowMag;
+  features.neg_gamma_nearest_dist = negNearestDist;
+  features.neg_gamma_nearest_mag = negNearestMag;
+
+  features.gamma_asymmetry = sumPosBelow > 0 ? sumPosAbove / sumPosBelow : null;
+
+  const avgCharmAbove =
+    charmCountAbove > 0 ? charmSumAbove / charmCountAbove : 0;
+  const avgCharmBelow =
+    charmCountBelow > 0 ? charmSumBelow / charmCountBelow : 0;
+  features.charm_slope = avgCharmAbove - avgCharmBelow;
+
+  features.charm_max_pos_dist =
+    maxPosCharmDist != null && Number.isFinite(maxPosCharm)
+      ? maxPosCharmDist
+      : null;
+  features.charm_max_neg_dist =
+    maxNegCharmDist != null && Number.isFinite(maxNegCharm)
+      ? maxNegCharmDist
+      : null;
+
+  features.charm_pattern = classifyCharmPattern(strikes, atmPrice);
+
+  return features;
+}
+
+/** Compute feature completeness as fraction of non-null values. */
+function computeCompleteness(features: FeatureRow): number {
+  const keys = Object.keys(features).filter(
+    (k) => k !== 'date' && k !== 'feature_completeness' && k !== 'created_at',
+  );
+  if (keys.length === 0) return 0;
+  const nonNull = keys.filter((k) => features[k] != null).length;
+  return Math.round((nonNull / keys.length) * 100) / 100;
+}
+
+// ── Build features for a single date ───────────────────────
+
+async function buildFeaturesForDate(
+  dateStr: string,
+): Promise<FeatureRow | null> {
+  const sql = getDb();
+  const features: FeatureRow = { date: dateStr };
+
+  // 1. Static features from market_snapshots (use earliest entry)
+  const snapshots = await sql`
+    SELECT vix, vix1d, vix9d, vvix, vix1d_vix_ratio, vix_vix9d_ratio,
+           regime_zone, cluster_mult, dow_mult_hl, dow_label,
+           spx_open, sigma, hours_remaining,
+           ic_ceiling, put_spread_ceiling, call_spread_ceiling,
+           opening_range_signal, opening_range_pct_consumed, is_event_day
+    FROM market_snapshots
+    WHERE date = ${dateStr}
+    ORDER BY entry_time ASC
+    LIMIT 1
+  `;
+
+  if (snapshots.length > 0) {
+    const s = snapshots[0] as SnapshotRow;
+    features.vix = num(s.vix);
+    features.vix1d = num(s.vix1d);
+    features.vix9d = num(s.vix9d);
+    features.vvix = num(s.vvix);
+    features.vix1d_vix_ratio = num(s.vix1d_vix_ratio);
+    features.vix_vix9d_ratio = num(s.vix_vix9d_ratio);
+    features.regime_zone = s.regime_zone;
+    features.cluster_mult = num(s.cluster_mult);
+    features.dow_mult = num(s.dow_mult_hl);
+    features.dow_label = s.dow_label;
+    features.spx_open = num(s.spx_open);
+    features.sigma = num(s.sigma);
+    features.hours_remaining = num(s.hours_remaining);
+    features.ic_ceiling = num(s.ic_ceiling);
+    features.put_spread_ceiling = num(s.put_spread_ceiling);
+    features.call_spread_ceiling = num(s.call_spread_ceiling);
+    features.opening_range_signal = s.opening_range_signal;
+    features.opening_range_pct_consumed = num(s.opening_range_pct_consumed);
+    features.is_event_day = s.is_event_day;
+  }
+
+  // Day of week from date string
+  const d = new Date(dateStr + 'T12:00:00-05:00');
+  features.day_of_week = d.getDay();
+  features.is_friday = d.getDay() === 5;
+
+  // 2. Flow checkpoint features
+  const allFlowRows = (await sql`
+    SELECT timestamp, source, ncp, npp
+    FROM flow_data
+    WHERE date = ${dateStr}
+    ORDER BY timestamp ASC
+  `) as FlowRow[];
+
+  for (const cp of CHECKPOINTS) {
+    for (const fs of FLOW_SOURCES) {
+      const sourceRows = allFlowRows.filter((r) => r.source === fs.source);
+      const candle = findNearestCandle(sourceRows, cp.minutes, dateStr);
+
+      if (fs.prefix === 'delta_flow') {
+        features[`${fs.prefix}_total_${cp.label}`] = candle
+          ? num(candle.ncp)
+          : null;
+        features[`${fs.prefix}_dir_${cp.label}`] = candle
+          ? num(candle.npp)
+          : null;
+      } else {
+        features[`${fs.prefix}_ncp_${cp.label}`] = candle
+          ? num(candle.ncp)
+          : null;
+        features[`${fs.prefix}_npp_${cp.label}`] = candle
+          ? num(candle.npp)
+          : null;
+      }
+    }
+
+    // Aggregated flow features
+    features[`flow_agreement_${cp.label}`] = computeFlowAgreement(
+      allFlowRows,
+      cp.minutes,
+      dateStr,
+    );
+    features[`etf_tide_divergence_${cp.label}`] = computeETFDivergence(
+      allFlowRows,
+      cp.minutes,
+      dateStr,
+    );
+
+    const spxCandle = findNearestCandle(
+      allFlowRows.filter((r) => r.source === 'spx_net_flow'),
+      cp.minutes,
+      dateStr,
+    );
+    features[`ncp_npp_gap_spx_${cp.label}`] = spxCandle
+      ? (num(spxCandle.ncp) ?? 0) - (num(spxCandle.npp) ?? 0)
+      : null;
+  }
+
+  // 3. GEX checkpoint features (from spot_exposures)
+  const spotRows = (await sql`
+    SELECT timestamp, gamma_oi, gamma_vol, gamma_dir, charm_oi, price
+    FROM spot_exposures
+    WHERE date = ${dateStr} AND ticker = 'SPX'
+    ORDER BY timestamp ASC
+  `) as SpotRow[];
+
+  const firstCp = CHECKPOINTS[0];
+  const lastCp = CHECKPOINTS.at(-1);
+  const firstSpot = firstCp
+    ? findNearestSpot(spotRows, firstCp.minutes, dateStr)
+    : null;
+  const lastSpot = lastCp
+    ? findNearestSpot(spotRows, lastCp.minutes, dateStr)
+    : null;
+
+  for (const cp of CHECKPOINTS) {
+    const spot = findNearestSpot(spotRows, cp.minutes, dateStr);
+    features[`gex_oi_${cp.label}`] = spot ? num(spot.gamma_oi) : null;
+    features[`gex_vol_${cp.label}`] = spot ? num(spot.gamma_vol) : null;
+    features[`gex_dir_${cp.label}`] = spot ? num(spot.gamma_dir) : null;
+    features[`charm_oi_${cp.label}`] = spot ? num(spot.charm_oi) : null;
+  }
+
+  // GEX trend slope: linear slope from T1 to T4
+  const firstGex = firstSpot ? num(firstSpot.gamma_oi) : null;
+  const lastGex = lastSpot ? num(lastSpot.gamma_oi) : null;
+  features.gex_oi_slope =
+    firstGex != null && lastGex != null ? lastGex - firstGex : null;
+
+  // 4. Greek exposure features
+  const greekRows = (await sql`
+    SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm
+    FROM greek_exposure
+    WHERE date = ${dateStr} AND ticker = 'SPX'
+  `) as GreekRow[];
+
+  const aggRow = greekRows.find((r) => Number(r.dte) === -1);
+  const dte0Row = greekRows.find((r) => Number(r.dte) === 0);
+
+  if (aggRow) {
+    features.agg_net_gamma =
+      (num(aggRow.call_gamma) ?? 0) + (num(aggRow.put_gamma) ?? 0);
+  }
+
+  if (dte0Row) {
+    features.dte0_net_charm =
+      (num(dte0Row.call_charm) ?? 0) + (num(dte0Row.put_charm) ?? 0);
+
+    // 0DTE charm as % of total
+    const totalCharm = greekRows.reduce(
+      (sum, r) =>
+        sum + Math.abs((num(r.call_charm) ?? 0) + (num(r.put_charm) ?? 0)),
+      0,
+    );
+    const dte0Charm = Math.abs(features.dte0_net_charm as number);
+    features.dte0_charm_pct =
+      totalCharm > 0
+        ? Math.round((dte0Charm / totalCharm) * 10000) / 10000
+        : null;
+  }
+
+  // 5. Per-strike features (latest snapshot)
+  const strikeRows = (await sql`
+    WITH latest AS (
+      SELECT MAX(timestamp) AS ts
+      FROM strike_exposures
+      WHERE date = ${dateStr} AND ticker = 'SPX' AND expiry = ${dateStr}::date
+    )
+    SELECT s.strike, s.price, s.call_gamma_oi, s.put_gamma_oi,
+           s.call_charm_oi, s.put_charm_oi
+    FROM strike_exposures s, latest l
+    WHERE s.date = ${dateStr} AND s.ticker = 'SPX'
+      AND s.expiry = ${dateStr}::date AND s.timestamp = l.ts
+    ORDER BY s.strike ASC
+  `) as StrikeRow[];
+
+  const atmPrice = strikeRows.length > 0 ? (num(strikeRows[0]!.price) ?? 0) : 0;
+  const strikeFeatures = engineerStrikeFeatures(strikeRows, atmPrice);
+  Object.assign(features, strikeFeatures);
+
+  // 0DTE vs all-expiry gamma agreement
+  const allExpStrikes = (await sql`
+    WITH latest AS (
+      SELECT MAX(timestamp) AS ts
+      FROM strike_exposures
+      WHERE date = ${dateStr} AND ticker = 'SPX' AND expiry = '1970-01-01'
+    )
+    SELECT s.strike, s.call_gamma_oi, s.put_gamma_oi
+    FROM strike_exposures s, latest l
+    WHERE s.date = ${dateStr} AND s.ticker = 'SPX'
+      AND s.expiry = '1970-01-01' AND s.timestamp = l.ts
+    ORDER BY s.strike ASC
+  `) as StrikeRow[];
+
+  if (strikeRows.length > 0 && allExpStrikes.length > 0) {
+    // Compare: do the top gamma walls align?
+    const topZeroDte = strikeRows
+      .map((s) => ({
+        strike: num(s.strike)!,
+        gamma: (num(s.call_gamma_oi) ?? 0) + (num(s.put_gamma_oi) ?? 0),
+      }))
+      .sort((a, b) => b.gamma - a.gamma)
+      .slice(0, 3);
+
+    const topAllExp = allExpStrikes
+      .map((s) => ({
+        strike: num(s.strike)!,
+        gamma: (num(s.call_gamma_oi) ?? 0) + (num(s.put_gamma_oi) ?? 0),
+      }))
+      .sort((a, b) => b.gamma - a.gamma)
+      .slice(0, 3);
+
+    // Agreement = at least 1 top wall within ±10 pts
+    const agrees = topZeroDte.some((z) =>
+      topAllExp.some((a) => Math.abs(z.strike - a.strike) <= 10),
+    );
+    features.gamma_0dte_allexp_agree = agrees;
+  }
+
+  features.feature_completeness = computeCompleteness(features);
+
+  return features;
+}
+
+// ── Label extraction from review analyses ──────────────────
+
+async function extractLabelsForDate(
+  dateStr: string,
+): Promise<FeatureRow | null> {
+  const sql = getDb();
+
+  const reviews = await sql`
+    SELECT id, full_response
+    FROM analyses
+    WHERE date = ${dateStr} AND mode = 'review'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+
+  if (reviews.length === 0) return null;
+
+  const row = reviews[0]!;
+  const analysisId = row.id as number;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let resp: any;
+  try {
+    resp =
+      typeof row.full_response === 'string'
+        ? JSON.parse(row.full_response as string)
+        : row.full_response;
+  } catch {
+    logger.warn({ date: dateStr }, 'Failed to parse review full_response');
+    return null;
+  }
+
+  const review = resp?.review ?? {};
+  const chartConf = resp?.chartConfidence ?? {};
+
+  const labels: FeatureRow = {
+    date: dateStr,
+    analysis_id: analysisId,
+    structure_correct: review.wasCorrect ?? null,
+    recommended_structure: resp?.structure ?? null,
+    confidence: resp?.confidence ?? null,
+    suggested_delta: resp?.suggestedDelta ?? null,
+    charm_diverged: chartConf?.periscopeCharm?.signal === 'CONTRADICTS' || null,
+    naive_charm_signal: chartConf?.netCharm?.signal ?? null,
+    spx_flow_signal: chartConf?.spxNetFlow?.signal ?? null,
+    market_tide_signal: chartConf?.marketTide?.signal ?? null,
+    spy_flow_signal: chartConf?.spyNetFlow?.signal ?? null,
+    gex_signal: chartConf?.aggregateGex?.signal ?? null,
+  };
+
+  // Derived labels from outcomes
+  const outcomes = await sql`
+    SELECT settlement, day_open, day_high, day_low, day_range_pts
+    FROM outcomes
+    WHERE date = ${dateStr}
+    LIMIT 1
+  `;
+
+  if (outcomes.length > 0) {
+    const o = outcomes[0]!;
+    const settlement = Number(o.settlement);
+    const dayOpen = Number(o.day_open);
+    const rangePts = Number(o.day_range_pts);
+
+    labels.settlement_direction =
+      settlement > dayOpen ? 'UP' : settlement < dayOpen ? 'DOWN' : 'FLAT';
+
+    labels.range_category =
+      rangePts < 30
+        ? 'NARROW'
+        : rangePts < 60
+          ? 'NORMAL'
+          : rangePts < 100
+            ? 'WIDE'
+            : 'EXTREME';
+
+    // Flow was directional? Compare majority flow at T2 vs settlement direction
+    const flowRows = await sql`
+      SELECT source, ncp
+      FROM flow_data
+      WHERE date = ${dateStr}
+      ORDER BY timestamp ASC
+    `;
+
+    // Get T2 (10:30 AM = 630 min) flow direction
+    const allFlowT2 = flowRows as FlowRow[];
+    let bullishCount = 0;
+    let bearishCount = 0;
+
+    for (const source of AGREEMENT_SOURCES) {
+      const sourceRows = allFlowT2.filter((r) => r.source === source);
+      const candle = findNearestCandle(sourceRows, 630, dateStr);
+      if (!candle) continue;
+      const ncp = num(candle.ncp);
+      if (ncp == null) continue;
+      if (ncp > 0) bullishCount++;
+      else if (ncp < 0) bearishCount++;
+    }
+
+    const flowDirection =
+      bullishCount > bearishCount
+        ? 'UP'
+        : bearishCount > bullishCount
+          ? 'DOWN'
+          : null;
+    labels.flow_was_directional =
+      flowDirection != null
+        ? flowDirection === labels.settlement_direction
+        : null;
+  }
+
+  // Compute label completeness
+  const labelKeys = [
+    'structure_correct',
+    'charm_diverged',
+    'naive_charm_signal',
+    'spx_flow_signal',
+    'market_tide_signal',
+    'gex_signal',
+    'settlement_direction',
+    'range_category',
+    'flow_was_directional',
+  ];
+  const nonNull = labelKeys.filter((k) => labels[k] != null).length;
+  labels.label_completeness =
+    Math.round((nonNull / labelKeys.length) * 100) / 100;
+
+  return labels;
+}
+
+// ── Upsert helpers ─────────────────────────────────────────
+
+async function upsertFeatures(f: FeatureRow): Promise<void> {
+  const sql = getDb();
+  await sql`
+    INSERT INTO training_features (
+      date, vix, vix1d, vix9d, vvix, vix1d_vix_ratio, vix_vix9d_ratio,
+      regime_zone, cluster_mult, dow_mult, dow_label,
+      spx_open, sigma, hours_remaining,
+      ic_ceiling, put_spread_ceiling, call_spread_ceiling,
+      opening_range_signal, opening_range_pct_consumed,
+      day_of_week, is_friday, is_event_day,
+      mt_ncp_t1, mt_npp_t1, mt_ncp_t2, mt_npp_t2,
+      mt_ncp_t3, mt_npp_t3, mt_ncp_t4, mt_npp_t4,
+      spx_ncp_t1, spx_npp_t1, spx_ncp_t2, spx_npp_t2,
+      spx_ncp_t3, spx_npp_t3, spx_ncp_t4, spx_npp_t4,
+      spy_ncp_t1, spy_npp_t1, spy_ncp_t2, spy_npp_t2,
+      qqq_ncp_t1, qqq_npp_t1, qqq_ncp_t2, qqq_npp_t2,
+      spy_etf_ncp_t1, spy_etf_npp_t1, spy_etf_ncp_t2, spy_etf_npp_t2,
+      qqq_etf_ncp_t1, qqq_etf_npp_t1, qqq_etf_ncp_t2, qqq_etf_npp_t2,
+      zero_dte_ncp_t1, zero_dte_npp_t1, zero_dte_ncp_t2, zero_dte_npp_t2,
+      delta_flow_total_t1, delta_flow_dir_t1, delta_flow_total_t2, delta_flow_dir_t2,
+      flow_agreement_t1, flow_agreement_t2,
+      etf_tide_divergence_t1, etf_tide_divergence_t2,
+      ncp_npp_gap_spx_t1, ncp_npp_gap_spx_t2,
+      gex_oi_t1, gex_oi_t2, gex_oi_t3, gex_oi_t4,
+      gex_vol_t1, gex_vol_t2, gex_dir_t1, gex_dir_t2,
+      gex_oi_slope, charm_oi_t1, charm_oi_t2,
+      agg_net_gamma, dte0_net_charm, dte0_charm_pct,
+      gamma_wall_above_dist, gamma_wall_above_mag,
+      gamma_wall_below_dist, gamma_wall_below_mag,
+      neg_gamma_nearest_dist, neg_gamma_nearest_mag,
+      gamma_asymmetry, charm_slope,
+      charm_max_pos_dist, charm_max_neg_dist,
+      gamma_0dte_allexp_agree, charm_pattern,
+      feature_completeness
+    ) VALUES (
+      ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
+      ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
+      ${f.regime_zone}, ${f.cluster_mult}, ${f.dow_mult}, ${f.dow_label},
+      ${f.spx_open}, ${f.sigma}, ${f.hours_remaining},
+      ${f.ic_ceiling}, ${f.put_spread_ceiling}, ${f.call_spread_ceiling},
+      ${f.opening_range_signal}, ${f.opening_range_pct_consumed},
+      ${f.day_of_week}, ${f.is_friday}, ${f.is_event_day},
+      ${f.mt_ncp_t1}, ${f.mt_npp_t1}, ${f.mt_ncp_t2}, ${f.mt_npp_t2},
+      ${f.mt_ncp_t3}, ${f.mt_npp_t3}, ${f.mt_ncp_t4}, ${f.mt_npp_t4},
+      ${f.spx_ncp_t1}, ${f.spx_npp_t1}, ${f.spx_ncp_t2}, ${f.spx_npp_t2},
+      ${f.spx_ncp_t3}, ${f.spx_npp_t3}, ${f.spx_ncp_t4}, ${f.spx_npp_t4},
+      ${f.spy_ncp_t1}, ${f.spy_npp_t1}, ${f.spy_ncp_t2}, ${f.spy_npp_t2},
+      ${f.qqq_ncp_t1}, ${f.qqq_npp_t1}, ${f.qqq_ncp_t2}, ${f.qqq_npp_t2},
+      ${f.spy_etf_ncp_t1}, ${f.spy_etf_npp_t1}, ${f.spy_etf_ncp_t2}, ${f.spy_etf_npp_t2},
+      ${f.qqq_etf_ncp_t1}, ${f.qqq_etf_npp_t1}, ${f.qqq_etf_ncp_t2}, ${f.qqq_etf_npp_t2},
+      ${f.zero_dte_ncp_t1}, ${f.zero_dte_npp_t1}, ${f.zero_dte_ncp_t2}, ${f.zero_dte_npp_t2},
+      ${f.delta_flow_total_t1}, ${f.delta_flow_dir_t1},
+      ${f.delta_flow_total_t2}, ${f.delta_flow_dir_t2},
+      ${f.flow_agreement_t1}, ${f.flow_agreement_t2},
+      ${f.etf_tide_divergence_t1}, ${f.etf_tide_divergence_t2},
+      ${f.ncp_npp_gap_spx_t1}, ${f.ncp_npp_gap_spx_t2},
+      ${f.gex_oi_t1}, ${f.gex_oi_t2}, ${f.gex_oi_t3}, ${f.gex_oi_t4},
+      ${f.gex_vol_t1}, ${f.gex_vol_t2}, ${f.gex_dir_t1}, ${f.gex_dir_t2},
+      ${f.gex_oi_slope}, ${f.charm_oi_t1}, ${f.charm_oi_t2},
+      ${f.agg_net_gamma}, ${f.dte0_net_charm}, ${f.dte0_charm_pct},
+      ${f.gamma_wall_above_dist}, ${f.gamma_wall_above_mag},
+      ${f.gamma_wall_below_dist}, ${f.gamma_wall_below_mag},
+      ${f.neg_gamma_nearest_dist}, ${f.neg_gamma_nearest_mag},
+      ${f.gamma_asymmetry}, ${f.charm_slope},
+      ${f.charm_max_pos_dist}, ${f.charm_max_neg_dist},
+      ${f.gamma_0dte_allexp_agree}, ${f.charm_pattern},
+      ${f.feature_completeness}
+    )
+    ON CONFLICT (date) DO UPDATE SET
+      vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
+      vvix = EXCLUDED.vvix, vix1d_vix_ratio = EXCLUDED.vix1d_vix_ratio,
+      vix_vix9d_ratio = EXCLUDED.vix_vix9d_ratio,
+      regime_zone = EXCLUDED.regime_zone, cluster_mult = EXCLUDED.cluster_mult,
+      dow_mult = EXCLUDED.dow_mult, dow_label = EXCLUDED.dow_label,
+      spx_open = EXCLUDED.spx_open, sigma = EXCLUDED.sigma,
+      hours_remaining = EXCLUDED.hours_remaining,
+      ic_ceiling = EXCLUDED.ic_ceiling,
+      put_spread_ceiling = EXCLUDED.put_spread_ceiling,
+      call_spread_ceiling = EXCLUDED.call_spread_ceiling,
+      opening_range_signal = EXCLUDED.opening_range_signal,
+      opening_range_pct_consumed = EXCLUDED.opening_range_pct_consumed,
+      day_of_week = EXCLUDED.day_of_week, is_friday = EXCLUDED.is_friday,
+      is_event_day = EXCLUDED.is_event_day,
+      mt_ncp_t1 = EXCLUDED.mt_ncp_t1, mt_npp_t1 = EXCLUDED.mt_npp_t1,
+      mt_ncp_t2 = EXCLUDED.mt_ncp_t2, mt_npp_t2 = EXCLUDED.mt_npp_t2,
+      mt_ncp_t3 = EXCLUDED.mt_ncp_t3, mt_npp_t3 = EXCLUDED.mt_npp_t3,
+      mt_ncp_t4 = EXCLUDED.mt_ncp_t4, mt_npp_t4 = EXCLUDED.mt_npp_t4,
+      spx_ncp_t1 = EXCLUDED.spx_ncp_t1, spx_npp_t1 = EXCLUDED.spx_npp_t1,
+      spx_ncp_t2 = EXCLUDED.spx_ncp_t2, spx_npp_t2 = EXCLUDED.spx_npp_t2,
+      spx_ncp_t3 = EXCLUDED.spx_ncp_t3, spx_npp_t3 = EXCLUDED.spx_npp_t3,
+      spx_ncp_t4 = EXCLUDED.spx_ncp_t4, spx_npp_t4 = EXCLUDED.spx_npp_t4,
+      spy_ncp_t1 = EXCLUDED.spy_ncp_t1, spy_npp_t1 = EXCLUDED.spy_npp_t1,
+      spy_ncp_t2 = EXCLUDED.spy_ncp_t2, spy_npp_t2 = EXCLUDED.spy_npp_t2,
+      qqq_ncp_t1 = EXCLUDED.qqq_ncp_t1, qqq_npp_t1 = EXCLUDED.qqq_npp_t1,
+      qqq_ncp_t2 = EXCLUDED.qqq_ncp_t2, qqq_npp_t2 = EXCLUDED.qqq_npp_t2,
+      spy_etf_ncp_t1 = EXCLUDED.spy_etf_ncp_t1, spy_etf_npp_t1 = EXCLUDED.spy_etf_npp_t1,
+      spy_etf_ncp_t2 = EXCLUDED.spy_etf_ncp_t2, spy_etf_npp_t2 = EXCLUDED.spy_etf_npp_t2,
+      qqq_etf_ncp_t1 = EXCLUDED.qqq_etf_ncp_t1, qqq_etf_npp_t1 = EXCLUDED.qqq_etf_npp_t1,
+      qqq_etf_ncp_t2 = EXCLUDED.qqq_etf_ncp_t2, qqq_etf_npp_t2 = EXCLUDED.qqq_etf_npp_t2,
+      zero_dte_ncp_t1 = EXCLUDED.zero_dte_ncp_t1, zero_dte_npp_t1 = EXCLUDED.zero_dte_npp_t1,
+      zero_dte_ncp_t2 = EXCLUDED.zero_dte_ncp_t2, zero_dte_npp_t2 = EXCLUDED.zero_dte_npp_t2,
+      delta_flow_total_t1 = EXCLUDED.delta_flow_total_t1,
+      delta_flow_dir_t1 = EXCLUDED.delta_flow_dir_t1,
+      delta_flow_total_t2 = EXCLUDED.delta_flow_total_t2,
+      delta_flow_dir_t2 = EXCLUDED.delta_flow_dir_t2,
+      flow_agreement_t1 = EXCLUDED.flow_agreement_t1,
+      flow_agreement_t2 = EXCLUDED.flow_agreement_t2,
+      etf_tide_divergence_t1 = EXCLUDED.etf_tide_divergence_t1,
+      etf_tide_divergence_t2 = EXCLUDED.etf_tide_divergence_t2,
+      ncp_npp_gap_spx_t1 = EXCLUDED.ncp_npp_gap_spx_t1,
+      ncp_npp_gap_spx_t2 = EXCLUDED.ncp_npp_gap_spx_t2,
+      gex_oi_t1 = EXCLUDED.gex_oi_t1, gex_oi_t2 = EXCLUDED.gex_oi_t2,
+      gex_oi_t3 = EXCLUDED.gex_oi_t3, gex_oi_t4 = EXCLUDED.gex_oi_t4,
+      gex_vol_t1 = EXCLUDED.gex_vol_t1, gex_vol_t2 = EXCLUDED.gex_vol_t2,
+      gex_dir_t1 = EXCLUDED.gex_dir_t1, gex_dir_t2 = EXCLUDED.gex_dir_t2,
+      gex_oi_slope = EXCLUDED.gex_oi_slope,
+      charm_oi_t1 = EXCLUDED.charm_oi_t1, charm_oi_t2 = EXCLUDED.charm_oi_t2,
+      agg_net_gamma = EXCLUDED.agg_net_gamma,
+      dte0_net_charm = EXCLUDED.dte0_net_charm,
+      dte0_charm_pct = EXCLUDED.dte0_charm_pct,
+      gamma_wall_above_dist = EXCLUDED.gamma_wall_above_dist,
+      gamma_wall_above_mag = EXCLUDED.gamma_wall_above_mag,
+      gamma_wall_below_dist = EXCLUDED.gamma_wall_below_dist,
+      gamma_wall_below_mag = EXCLUDED.gamma_wall_below_mag,
+      neg_gamma_nearest_dist = EXCLUDED.neg_gamma_nearest_dist,
+      neg_gamma_nearest_mag = EXCLUDED.neg_gamma_nearest_mag,
+      gamma_asymmetry = EXCLUDED.gamma_asymmetry,
+      charm_slope = EXCLUDED.charm_slope,
+      charm_max_pos_dist = EXCLUDED.charm_max_pos_dist,
+      charm_max_neg_dist = EXCLUDED.charm_max_neg_dist,
+      gamma_0dte_allexp_agree = EXCLUDED.gamma_0dte_allexp_agree,
+      charm_pattern = EXCLUDED.charm_pattern,
+      feature_completeness = EXCLUDED.feature_completeness
+  `;
+}
+
+async function upsertLabels(l: FeatureRow): Promise<void> {
+  const sql = getDb();
+  await sql`
+    INSERT INTO day_labels (
+      date, analysis_id,
+      structure_correct, recommended_structure, confidence, suggested_delta,
+      charm_diverged, naive_charm_signal, spx_flow_signal,
+      market_tide_signal, spy_flow_signal, gex_signal,
+      flow_was_directional, settlement_direction, range_category,
+      label_completeness
+    ) VALUES (
+      ${l.date}, ${l.analysis_id},
+      ${l.structure_correct}, ${l.recommended_structure},
+      ${l.confidence}, ${l.suggested_delta},
+      ${l.charm_diverged}, ${l.naive_charm_signal}, ${l.spx_flow_signal},
+      ${l.market_tide_signal}, ${l.spy_flow_signal}, ${l.gex_signal},
+      ${l.flow_was_directional}, ${l.settlement_direction}, ${l.range_category},
+      ${l.label_completeness}
+    )
+    ON CONFLICT (date) DO UPDATE SET
+      analysis_id = EXCLUDED.analysis_id,
+      structure_correct = EXCLUDED.structure_correct,
+      recommended_structure = EXCLUDED.recommended_structure,
+      confidence = EXCLUDED.confidence,
+      suggested_delta = EXCLUDED.suggested_delta,
+      charm_diverged = EXCLUDED.charm_diverged,
+      naive_charm_signal = EXCLUDED.naive_charm_signal,
+      spx_flow_signal = EXCLUDED.spx_flow_signal,
+      market_tide_signal = EXCLUDED.market_tide_signal,
+      spy_flow_signal = EXCLUDED.spy_flow_signal,
+      gex_signal = EXCLUDED.gex_signal,
+      flow_was_directional = EXCLUDED.flow_was_directional,
+      settlement_direction = EXCLUDED.settlement_direction,
+      range_category = EXCLUDED.range_category,
+      label_completeness = EXCLUDED.label_completeness
+  `;
+}
+
+// ── Handler ─────────────────────────────────────────────────
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'GET only' });
+  }
+
+  const cronSecret = process.env.CRON_SECRET;
+  const authHeader = req.headers.authorization;
+  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const backfill = req.query.backfill === 'true';
+
+  if (!backfill && !isPostClose()) {
+    return res.status(200).json({
+      skipped: true,
+      reason: 'Outside post-close window (4:30-6:00 PM ET)',
+    });
+  }
+
+  const sql = getDb();
+
+  try {
+    // Determine which dates to process
+    let dates: string[];
+
+    if (backfill) {
+      // Process all historical dates with flow data
+      const rows = await sql`
+        SELECT DISTINCT date FROM flow_data ORDER BY date ASC
+      `;
+      dates = rows.map((r) => r.date as string);
+    } else {
+      // Check if table is empty (first run = automatic backfill)
+      const countResult =
+        await sql`SELECT COUNT(*) AS cnt FROM training_features`;
+      const count = Number(countResult[0]!.cnt);
+
+      if (count === 0) {
+        const rows = await sql`
+          SELECT DISTINCT date FROM flow_data ORDER BY date ASC
+        `;
+        dates = rows.map((r) => r.date as string);
+        logger.info(
+          { dates: dates.length },
+          'build-features: empty table, backfilling all dates',
+        );
+      } else {
+        dates = [getETDateStr(new Date())];
+      }
+    }
+
+    let featuresBuilt = 0;
+    let labelsExtracted = 0;
+    let errors = 0;
+
+    for (const dateStr of dates) {
+      try {
+        const features = await buildFeaturesForDate(dateStr);
+        if (features) {
+          await upsertFeatures(features);
+          featuresBuilt++;
+        }
+
+        const labels = await extractLabelsForDate(dateStr);
+        if (labels) {
+          await upsertLabels(labels);
+          labelsExtracted++;
+        }
+      } catch (err) {
+        logger.warn(
+          { err, date: dateStr },
+          'build-features: error processing date',
+        );
+        errors++;
+      }
+    }
+
+    logger.info(
+      { dates: dates.length, featuresBuilt, labelsExtracted, errors },
+      'build-features: completed',
+    );
+
+    return res.status(200).json({
+      dates: dates.length,
+      featuresBuilt,
+      labelsExtracted,
+      errors,
+    });
+  } catch (err) {
+    logger.error({ err }, 'build-features error');
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : 'Build failed',
+    });
+  }
+}

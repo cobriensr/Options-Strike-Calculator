@@ -429,6 +429,142 @@ const MIGRATIONS: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_strike_exp_timestamp ON strike_exposures (timestamp)`;
     },
   },
+  {
+    id: 9,
+    description: 'Create training_features table for daily ML feature vectors',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS training_features (
+          date                    DATE PRIMARY KEY,
+
+          -- Static features (from market_snapshots)
+          vix                     DECIMAL(6,2),
+          vix1d                   DECIMAL(6,2),
+          vix9d                   DECIMAL(6,2),
+          vvix                    DECIMAL(6,2),
+          vix1d_vix_ratio         DECIMAL(6,4),
+          vix_vix9d_ratio         DECIMAL(6,4),
+          regime_zone             TEXT,
+          cluster_mult            DECIMAL(6,4),
+          dow_mult                DECIMAL(6,4),
+          dow_label               TEXT,
+          spx_open                DECIMAL(10,2),
+          sigma                   DECIMAL(8,6),
+          hours_remaining         DECIMAL(6,2),
+          ic_ceiling              INTEGER,
+          put_spread_ceiling      INTEGER,
+          call_spread_ceiling     INTEGER,
+          opening_range_signal    TEXT,
+          opening_range_pct_consumed DECIMAL(6,4),
+          day_of_week             INTEGER,
+          is_friday               BOOLEAN,
+          is_event_day            BOOLEAN,
+
+          -- Flow checkpoint features (T1-T8)
+          -- Market Tide
+          mt_ncp_t1 DECIMAL(14,2), mt_npp_t1 DECIMAL(14,2),
+          mt_ncp_t2 DECIMAL(14,2), mt_npp_t2 DECIMAL(14,2),
+          mt_ncp_t3 DECIMAL(14,2), mt_npp_t3 DECIMAL(14,2),
+          mt_ncp_t4 DECIMAL(14,2), mt_npp_t4 DECIMAL(14,2),
+          -- SPX Net Flow
+          spx_ncp_t1 DECIMAL(14,2), spx_npp_t1 DECIMAL(14,2),
+          spx_ncp_t2 DECIMAL(14,2), spx_npp_t2 DECIMAL(14,2),
+          spx_ncp_t3 DECIMAL(14,2), spx_npp_t3 DECIMAL(14,2),
+          spx_ncp_t4 DECIMAL(14,2), spx_npp_t4 DECIMAL(14,2),
+          -- SPY Net Flow
+          spy_ncp_t1 DECIMAL(14,2), spy_npp_t1 DECIMAL(14,2),
+          spy_ncp_t2 DECIMAL(14,2), spy_npp_t2 DECIMAL(14,2),
+          -- QQQ Net Flow
+          qqq_ncp_t1 DECIMAL(14,2), qqq_npp_t1 DECIMAL(14,2),
+          qqq_ncp_t2 DECIMAL(14,2), qqq_npp_t2 DECIMAL(14,2),
+          -- ETF Tide
+          spy_etf_ncp_t1 DECIMAL(14,2), spy_etf_npp_t1 DECIMAL(14,2),
+          spy_etf_ncp_t2 DECIMAL(14,2), spy_etf_npp_t2 DECIMAL(14,2),
+          qqq_etf_ncp_t1 DECIMAL(14,2), qqq_etf_npp_t1 DECIMAL(14,2),
+          qqq_etf_ncp_t2 DECIMAL(14,2), qqq_etf_npp_t2 DECIMAL(14,2),
+          -- 0DTE flows
+          zero_dte_ncp_t1 DECIMAL(14,2), zero_dte_npp_t1 DECIMAL(14,2),
+          zero_dte_ncp_t2 DECIMAL(14,2), zero_dte_npp_t2 DECIMAL(14,2),
+          delta_flow_total_t1 DECIMAL(14,2), delta_flow_dir_t1 DECIMAL(14,2),
+          delta_flow_total_t2 DECIMAL(14,2), delta_flow_dir_t2 DECIMAL(14,2),
+
+          -- Aggregated flow features
+          flow_agreement_t1       INTEGER,
+          flow_agreement_t2       INTEGER,
+          etf_tide_divergence_t1  BOOLEAN,
+          etf_tide_divergence_t2  BOOLEAN,
+          ncp_npp_gap_spx_t1      DECIMAL(14,2),
+          ncp_npp_gap_spx_t2      DECIMAL(14,2),
+
+          -- GEX checkpoint features (from spot_exposures)
+          gex_oi_t1 DECIMAL(20,4), gex_oi_t2 DECIMAL(20,4),
+          gex_oi_t3 DECIMAL(20,4), gex_oi_t4 DECIMAL(20,4),
+          gex_vol_t1 DECIMAL(20,4), gex_vol_t2 DECIMAL(20,4),
+          gex_dir_t1 DECIMAL(20,4), gex_dir_t2 DECIMAL(20,4),
+          gex_oi_slope            DECIMAL(20,4),
+          charm_oi_t1 DECIMAL(20,4), charm_oi_t2 DECIMAL(20,4),
+
+          -- Greek exposure features
+          agg_net_gamma           DECIMAL(20,4),
+          dte0_net_charm          DECIMAL(20,4),
+          dte0_charm_pct          DECIMAL(6,4),
+
+          -- Per-strike engineered features
+          gamma_wall_above_dist   DECIMAL(10,2),
+          gamma_wall_above_mag    DECIMAL(20,4),
+          gamma_wall_below_dist   DECIMAL(10,2),
+          gamma_wall_below_mag    DECIMAL(20,4),
+          neg_gamma_nearest_dist  DECIMAL(10,2),
+          neg_gamma_nearest_mag   DECIMAL(20,4),
+          gamma_asymmetry         DECIMAL(10,4),
+          charm_slope             DECIMAL(20,4),
+          charm_max_pos_dist      DECIMAL(10,2),
+          charm_max_neg_dist      DECIMAL(10,2),
+          gamma_0dte_allexp_agree BOOLEAN,
+          charm_pattern           TEXT,
+
+          -- Metadata
+          feature_completeness    DECIMAL(4,2),
+          created_at              TIMESTAMPTZ DEFAULT NOW()
+        )
+      `;
+    },
+  },
+  {
+    id: 10,
+    description: 'Create day_labels table for ML labels extracted from reviews',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS day_labels (
+          date                    DATE PRIMARY KEY,
+          analysis_id             INTEGER REFERENCES analyses(id),
+
+          -- From review JSON
+          structure_correct       BOOLEAN,
+          recommended_structure   TEXT,
+          confidence              TEXT,
+          suggested_delta         INTEGER,
+
+          -- Chart confidence signals
+          charm_diverged          BOOLEAN,
+          naive_charm_signal      TEXT,
+          spx_flow_signal         TEXT,
+          market_tide_signal      TEXT,
+          spy_flow_signal         TEXT,
+          gex_signal              TEXT,
+
+          -- Derived from outcomes + features
+          flow_was_directional    BOOLEAN,
+          settlement_direction    TEXT,
+          range_category          TEXT,
+
+          label_completeness      DECIMAL(4,2),
+          created_at              TIMESTAMPTZ DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_day_labels_analysis ON day_labels (analysis_id)`;
+    },
+  },
 ];
 
 /**

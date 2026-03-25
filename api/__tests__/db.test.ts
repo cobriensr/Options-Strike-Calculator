@@ -30,6 +30,70 @@ import {
 import type { GreekExposureRow, SpotExposureRow } from '../_lib/db.js';
 import { neon } from '@neondatabase/serverless';
 
+// ── Helper factories (outer scope for SonarLint S7721) ──────
+
+function makeAggRow(
+  netGamma: number,
+  overrides: Partial<GreekExposureRow> = {},
+): GreekExposureRow {
+  return {
+    expiry: '2026-03-24',
+    dte: -1,
+    callGamma: Math.max(netGamma, 0),
+    putGamma: Math.min(netGamma, 0),
+    netGamma,
+    callCharm: 500_000,
+    putCharm: -300_000,
+    netCharm: 200_000,
+    callDelta: 1_000_000,
+    putDelta: -800_000,
+    netDelta: 200_000,
+    callVanna: 100_000,
+    putVanna: -60_000,
+    ...overrides,
+  };
+}
+
+function makeZeroDteRow(
+  overrides: Partial<GreekExposureRow> = {},
+): GreekExposureRow {
+  return {
+    expiry: '2026-03-24',
+    dte: 0,
+    callGamma: null,
+    putGamma: null,
+    netGamma: null,
+    callCharm: 100_000,
+    putCharm: -80_000,
+    netCharm: 20_000,
+    callDelta: 200_000,
+    putDelta: -150_000,
+    netDelta: 50_000,
+    callVanna: 25_000,
+    putVanna: -15_000,
+    ...overrides,
+  };
+}
+
+function makeSpotRow(
+  overrides: Partial<SpotExposureRow> = {},
+): SpotExposureRow {
+  return {
+    timestamp: '2026-03-24T14:00:00.000Z',
+    price: 5825,
+    gammaOi: 100_000_000_000,
+    gammaVol: 50_000_000_000,
+    gammaDir: 30_000_000_000,
+    charmOi: -500_000_000_000,
+    charmVol: -100_000_000_000,
+    charmDir: -80_000_000_000,
+    vannaOi: 300_000_000_000,
+    vannaVol: 50_000_000_000,
+    vannaDir: 40_000_000_000,
+    ...overrides,
+  };
+}
+
 describe('db.ts', () => {
   const originalEnv = process.env;
 
@@ -366,6 +430,8 @@ describe('db.ts', () => {
         { id: 6 },
         { id: 7 },
         { id: 8 },
+        { id: 9 },
+        { id: 10 },
       ]);
 
       const applied = await migrateDb();
@@ -392,9 +458,11 @@ describe('db.ts', () => {
         '#6: Add dte to greek_exposure unique constraint',
         '#7: Create spot_exposures table for intraday GEX panel data',
         '#8: Create strike_exposures table for per-strike Greek profile',
+        '#9: Create training_features table for daily ML feature vectors',
+        '#10: Create day_labels table for ML labels extracted from reviews',
       ]);
-      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert + 3 migration #4 + 1 insert + 3 migration #5 + 1 insert + 2 migration #6 + 1 insert + 2 migration #7 + 1 insert + 4 migration #8 + 1 insert = 32
-      expect(mockSql).toHaveBeenCalledTimes(32);
+      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert + 3 migration #4 + 1 insert + 3 migration #5 + 1 insert + 2 migration #6 + 1 insert + 2 migration #7 + 1 insert + 4 migration #8 + 1 insert + 1 migration #9 + 1 insert + 2 migration #10 + 1 insert = 37
+      expect(mockSql).toHaveBeenCalledTimes(37);
     });
 
     it('propagates errors from migration SQL', async () => {
@@ -1027,49 +1095,6 @@ describe('db.ts', () => {
   // formatGreekExposureForClaude
   // ============================================================
 
-  function makeAggRow(
-    netGamma: number,
-    overrides: Partial<GreekExposureRow> = {},
-  ): GreekExposureRow {
-    return {
-      expiry: '2026-03-24',
-      dte: -1,
-      callGamma: Math.max(netGamma, 0),
-      putGamma: Math.min(netGamma, 0),
-      netGamma,
-      callCharm: 500_000,
-      putCharm: -300_000,
-      netCharm: 200_000,
-      callDelta: 1_000_000,
-      putDelta: -800_000,
-      netDelta: 200_000,
-      callVanna: 100_000,
-      putVanna: -60_000,
-      ...overrides,
-    };
-  }
-
-  function makeZeroDteRow(
-    overrides: Partial<GreekExposureRow> = {},
-  ): GreekExposureRow {
-    return {
-      expiry: '2026-03-24',
-      dte: 0,
-      callGamma: null,
-      putGamma: null,
-      netGamma: null,
-      callCharm: 100_000,
-      putCharm: -80_000,
-      netCharm: 20_000,
-      callDelta: 200_000,
-      putDelta: -150_000,
-      netDelta: 50_000,
-      callVanna: 25_000,
-      putVanna: -15_000,
-      ...overrides,
-    };
-  }
-
   describe('formatGreekExposureForClaude', () => {
     it('returns null for empty rows', () => {
       expect(formatGreekExposureForClaude([], '2026-03-24')).toBeNull();
@@ -1236,25 +1261,6 @@ describe('db.ts', () => {
   // ============================================================
   // formatSpotExposuresForClaude
   // ============================================================
-
-  function makeSpotRow(
-    overrides: Partial<SpotExposureRow> = {},
-  ): SpotExposureRow {
-    return {
-      timestamp: '2026-03-24T14:00:00.000Z',
-      price: 5825,
-      gammaOi: 100_000_000_000, // ÷1M = 100_000 → POSITIVE
-      gammaVol: 50_000_000_000,
-      gammaDir: 30_000_000_000,
-      charmOi: -500_000_000_000,
-      charmVol: -100_000_000_000,
-      charmDir: -80_000_000_000,
-      vannaOi: 300_000_000_000,
-      vannaVol: 50_000_000_000,
-      vannaDir: 40_000_000_000,
-      ...overrides,
-    };
-  }
 
   describe('formatSpotExposuresForClaude', () => {
     it('returns null for empty rows', () => {
