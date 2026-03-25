@@ -1145,6 +1145,172 @@ describe('ChartAnalysis', () => {
         expect(screen.getByText('Bad CSV')).toBeInTheDocument();
       });
     });
+
+    it('shows warning when CSV parsed but not saved', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              saved: false,
+              positions: { stats: { totalSpreads: 2 } },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+      );
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(container);
+
+      const csvInput = container.querySelector(
+        'input[accept=".csv"]',
+      ) as HTMLInputElement;
+      const csvFile = new File(['csv data'], 'positions.csv', {
+        type: 'text/csv',
+      });
+      fireEvent.change(csvInput, { target: { files: [csvFile] } });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Parsed 2 spreads but failed to save/),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('handles CSV upload when res.json() fails on non-ok response', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response('not json', {
+            status: 500,
+            headers: { 'Content-Type': 'text/plain' },
+          }),
+        ),
+      );
+      const { container } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext()}
+        />,
+      );
+      await addImageViaInput(container);
+
+      const csvInput = container.querySelector(
+        'input[accept=".csv"]',
+      ) as HTMLInputElement;
+      const csvFile = new File(['csv data'], 'positions.csv', {
+        type: 'text/csv',
+      });
+      fireEvent.change(csvInput, { target: { files: [csvFile] } });
+
+      await waitFor(() => {
+        expect(screen.getByText('Upload failed')).toBeInTheDocument();
+      });
+    });
+  });
+
+  // ── MODE AUTO-SWITCH ──
+
+  describe('mode auto-switch based on existing analyses', () => {
+    it('switches to midday when entry analysis exists for selected date', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              analyses: [{ mode: 'entry' }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+      );
+
+      render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext({ selectedDate: '2026-03-24' })}
+        />,
+      );
+
+      // Mid-Day uses th.caution color when active
+      await waitFor(() => {
+        const midDayBtn = screen.getByText('Mid-Day');
+        expect(midDayBtn).toHaveStyle({ color: th.caution });
+      });
+    });
+
+    it('switches to review when both entry and review analyses exist', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              analyses: [{ mode: 'entry' }, { mode: 'review' }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+      );
+
+      render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext({ selectedDate: '2026-03-24' })}
+        />,
+      );
+
+      // Review uses th.green color when active
+      await waitFor(() => {
+        const reviewBtn = screen.getByText('Review');
+        expect(reviewBtn).toHaveStyle({ color: th.green });
+      });
+    });
+
+    it('resets mode state when selectedDate is cleared', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ analyses: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+
+      const { rerender } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext({ selectedDate: undefined })}
+        />,
+      );
+
+      // Pre-Trade should remain selected when no date
+      expect(screen.getByText('Pre-Trade')).toHaveStyle({
+        color: 'var(--color-accent)',
+      });
+
+      rerender(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext({ selectedDate: undefined })}
+        />,
+      );
+
+      expect(screen.getByText('Pre-Trade')).toHaveStyle({
+        color: 'var(--color-accent)',
+      });
+    });
   });
 
   // ── RAW FALLBACK ──

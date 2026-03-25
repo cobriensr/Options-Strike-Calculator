@@ -33,6 +33,12 @@ import {
   getSpotExposures,
   formatSpotExposuresForClaude,
 } from './_lib/db.js';
+import {
+  getStrikeExposures,
+  formatStrikeExposuresForClaude,
+  getAllExpiryStrikeExposures,
+  formatAllExpiryStrikesForClaude,
+} from './_lib/db-strike-helpers.js';
 import { analyzeBodySchema } from './_lib/validation.js';
 import logger from './_lib/logger.js';
 import { getActiveLessons, formatLessonsBlock } from './_lib/lessons.js';
@@ -688,6 +694,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let qqqEtfTideContext: string | null = null;
   let greekExposureContext: string | null = null;
   let spotGexContext: string | null = null;
+  let strikeExposureContext: string | null = null;
+  let allExpiryStrikeContext: string | null = null;
 
   try {
     const [
@@ -700,6 +708,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       qqqEtfRows,
       greekRows,
       spotGexRows,
+      strikeRows,
+      allExpiryStrikeRows,
     ] = await Promise.all([
       getFlowData(analysisDate, 'market_tide'),
       getFlowData(analysisDate, 'market_tide_otm'),
@@ -710,6 +720,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       getFlowData(analysisDate, 'qqq_etf_tide'),
       getGreekExposure(analysisDate),
       getSpotExposures(analysisDate),
+      getStrikeExposures(analysisDate),
+      getStrikeExposures(analysisDate),
+      getAllExpiryStrikeExposures(analysisDate),
     ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,
@@ -735,6 +748,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       analysisDate,
     );
     spotGexContext = formatSpotExposuresForClaude(spotGexRows);
+    strikeExposureContext = formatStrikeExposuresForClaude(strikeRows);
+    allExpiryStrikeContext = formatAllExpiryStrikesForClaude(
+      allExpiryStrikeRows,
+      strikeRows,
+    );
   } catch (flowErr) {
     logger.error({ err: flowErr }, 'Failed to fetch flow data for analysis');
   }
@@ -789,6 +807,8 @@ ${spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min i
 ${qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${qqqEtfTideContext}\n` : ''}
 ${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${greekExposureContext}\n` : ''}
 ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}
+${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
+${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.

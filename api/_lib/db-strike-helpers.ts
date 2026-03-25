@@ -246,3 +246,204 @@ function fmtStrike(value: number): string {
   if (abs >= 1) return `${sign}${abs.toFixed(0)}`;
   return `${sign}${abs.toFixed(2)}`;
 }
+
+// ============================================================
+// ADD TO END OF db.ts — ALL-EXPIRY STRIKE EXPOSURE HELPERS
+// ============================================================
+
+// Uses the same StrikeExposureRow interface as the 0DTE helpers.
+// The sentinel value '1970-01-01' in the expiry column distinguishes
+// all-expiry rows from 0DTE rows.
+
+const ALL_EXPIRY_SENTINEL = '1970-01-01';
+
+/**
+ * Get the most recent all-expiry per-strike exposure snapshot for a given date.
+ * Returns strikes ordered by strike price ascending.
+ */
+export async function getAllExpiryStrikeExposures(
+  date: string,
+  ticker: string = 'SPX',
+): Promise<StrikeExposureRow[]> {
+  const db = getDb();
+
+  // Find the latest timestamp for all-expiry rows on this date
+  const tsRows = await db`
+    SELECT MAX(timestamp) as latest_ts
+    FROM strike_exposures
+    WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${ALL_EXPIRY_SENTINEL}
+  `;
+  const latestTs = tsRows[0]?.latest_ts;
+  if (!latestTs) return [];
+
+  const rows = await db`
+    SELECT strike, price, timestamp,
+           call_gamma_oi, put_gamma_oi,
+           call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+           call_charm_oi, put_charm_oi,
+           call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+           call_delta_oi, put_delta_oi,
+           call_vanna_oi, put_vanna_oi
+    FROM strike_exposures
+    WHERE date = ${date} AND ticker = ${ticker}
+      AND timestamp = ${latestTs}
+      AND expiry = ${ALL_EXPIRY_SENTINEL}
+    ORDER BY strike ASC
+  `;
+
+  return rows.map((r) => {
+    const callGOi = Number(r.call_gamma_oi) || 0;
+    const putGOi = Number(r.put_gamma_oi) || 0;
+    const callCOi = Number(r.call_charm_oi) || 0;
+    const putCOi = Number(r.put_charm_oi) || 0;
+
+    return {
+      strike: Number(r.strike),
+      price: Number(r.price),
+      timestamp: r.timestamp as string,
+      netGamma: callGOi + putGOi,
+      netCharm: callCOi + putCOi,
+      netDelta: (Number(r.call_delta_oi) || 0) + (Number(r.put_delta_oi) || 0),
+      callGammaOi: callGOi,
+      putGammaOi: putGOi,
+      callCharmOi: callCOi,
+      putCharmOi: putCOi,
+      dirGamma:
+        (Number(r.call_gamma_ask) || 0) +
+        (Number(r.call_gamma_bid) || 0) +
+        (Number(r.put_gamma_ask) || 0) +
+        (Number(r.put_gamma_bid) || 0),
+      dirCharm:
+        (Number(r.call_charm_ask) || 0) +
+        (Number(r.call_charm_bid) || 0) +
+        (Number(r.put_charm_ask) || 0) +
+        (Number(r.put_charm_bid) || 0),
+    };
+  });
+}
+
+/**
+ * Format all-expiry per-strike data for Claude's context.
+ * Focuses on identifying multi-day gamma anchors and comparing against 0DTE profile.
+ *
+ * @param allRows - All-expiry strike rows
+ * @param zeroDteRows - Optional 0DTE strike rows for comparison
+ * @returns Formatted text block, or null if no data
+ */
+export function formatAllExpiryStrikesForClaude(
+  allRows: StrikeExposureRow[],
+  zeroDteRows?: StrikeExposureRow[],
+): string | null {
+  if (allRows.length === 0) return null;
+
+  const price = allRows[0]!.price;
+  const timestamp = allRows[0]!.timestamp;
+
+  const time = new Date(timestamp).toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+
+  const lines: string[] = [];
+
+  lines.push(
+    `SPX All-Expiry Per-Strike Profile (from API, ${time} ET):`,
+    `  ATM: ${price}`,
+    `  Includes gamma/charm from ALL expirations (0DTE + weeklies + monthly + quarterly)`,
+    '',
+  );
+
+  // ── Key structural features ───────────────────────────────
+
+  const positiveGamma = allRows
+    .filter((r) => r.netGamma > 0)
+    .sort((a, b) => b.netGamma - a.netGamma);
+  const negativeGamma = allRows
+    .filter((r) => r.netGamma < 0)
+    .sort((a, b) => a.netGamma - b.netGamma);
+
+  const topWalls = positiveGamma.slice(0, 5);
+  const topDanger = negativeGamma.slice(0, 5);
+
+  lines.push(
+    '  Multi-Day Gamma Anchors (strongest walls across all expirations):',
+  );
+  if (topWalls.length > 0) {
+    for (const w of topWalls) {
+      const loc =
+        w.strike < price
+          ? `${Math.round(price - w.strike)} pts below`
+          : `${Math.round(w.strike - price)} pts above`;
+      lines.push(
+        `    ${w.strike} (${loc}): γ ${fmtStrike(w.netGamma)} | charm ${fmtStrike(w.netCharm)} (${w.netCharm > 0 ? 'strengthens' : 'decays'})`,
+      );
+    }
+  }
+
+  if (topDanger.length > 0) {
+    lines.push('  All-Expiry Acceleration Zones:');
+    for (const d of topDanger) {
+      const loc =
+        d.strike < price
+          ? `${Math.round(price - d.strike)} pts below`
+          : `${Math.round(d.strike - price)} pts above`;
+      lines.push(
+        `    ${d.strike} (${loc}): γ ${fmtStrike(d.netGamma)} | charm ${fmtStrike(d.netCharm)}`,
+      );
+    }
+  }
+
+  // ── 0DTE vs All-Expiry comparison ─────────────────────────
+
+  if (zeroDteRows && zeroDteRows.length > 0) {
+    lines.push('', '  0DTE vs All-Expiry Comparison (key strikes):');
+
+    // Find strikes that differ significantly between 0DTE and all-expiry
+    const zeroDteMap = new Map(zeroDteRows.map((r) => [r.strike, r]));
+
+    const divergences: {
+      strike: number;
+      zeroDteGamma: number;
+      allGamma: number;
+      note: string;
+    }[] = [];
+
+    for (const all of allRows) {
+      const dte = zeroDteMap.get(all.strike);
+      if (!dte) continue;
+
+      // Check if 0DTE and all-expiry disagree on sign
+      if (dte.netGamma > 0 && all.netGamma < 0) {
+        divergences.push({
+          strike: all.strike,
+          zeroDteGamma: dte.netGamma,
+          allGamma: all.netGamma,
+          note: '0DTE wall but all-expiry danger zone — wall may fail under sustained pressure from longer-dated gamma',
+        });
+      } else if (dte.netGamma < 0 && all.netGamma > 0) {
+        divergences.push({
+          strike: all.strike,
+          zeroDteGamma: dte.netGamma,
+          allGamma: all.netGamma,
+          note: '0DTE danger zone but all-expiry wall — longer-dated gamma provides backstop',
+        });
+      }
+    }
+
+    if (divergences.length > 0) {
+      for (const d of divergences.slice(0, 5)) {
+        lines.push(
+          `    ${d.strike}: 0DTE γ ${fmtStrike(d.zeroDteGamma)} vs All γ ${fmtStrike(d.allGamma)} — ${d.note}`,
+        );
+      }
+    } else {
+      lines.push(
+        '    No major sign divergences between 0DTE and all-expiry profiles — gamma structure is consistent.',
+      );
+    }
+  }
+
+  return lines.join('\n');
+}

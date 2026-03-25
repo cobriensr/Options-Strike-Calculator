@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import BacktestDiag from '../../components/BacktestDiag';
 import type {
   HistorySnapshot,
@@ -288,5 +288,29 @@ describe('BacktestDiag', () => {
     );
     const noDataCell = screen.getAllByText('no data')[0]!;
     expect(noDataCell).toHaveStyle({ color: '#f44' });
+  });
+
+  it('collapses and expands when header is clicked', () => {
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+
+    // Table should be visible initially
+    expect(screen.getByText('5800.25')).toBeInTheDocument();
+    expect(screen.getByText('▼')).toBeInTheDocument();
+
+    // Click to collapse
+    fireEvent.click(screen.getByText('Backtest Diagnostic'));
+    expect(screen.queryByText('5800.25')).not.toBeInTheDocument();
+    expect(screen.getByText('▲')).toBeInTheDocument();
+
+    // Click to expand
+    fireEvent.click(screen.getByText('Backtest Diagnostic'));
+    expect(screen.getByText('5800.25')).toBeInTheDocument();
+    expect(screen.getByText('▼')).toBeInTheDocument();
   });
 });
