@@ -744,7 +744,7 @@ async function extractLabelsForDate(
 
     // Flow was directional? Compare majority flow at T2 vs settlement direction
     const flowRows = await sql`
-      SELECT source, ncp
+      SELECT timestamp, source, ncp
       FROM flow_data
       WHERE date = ${dateStr}
       ORDER BY timestamp ASC
