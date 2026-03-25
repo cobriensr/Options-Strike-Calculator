@@ -18,6 +18,13 @@ export interface StrikeExposureRow {
   dirCharm: number;
 }
 
+export interface FlowDataRow {
+  timestamp: string;
+  ncp: number;
+  npp: number;
+  netVolume: number | null;
+}
+
 /**
  * Get the most recent per-strike exposure snapshot for a given date.
  * Returns strikes ordered by strike price ascending.
@@ -446,4 +453,99 @@ export function formatAllExpiryStrikesForClaude(
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Format 0DTE Greek flow data for Claude's context.
+ * This source stores total_delta_flow in the ncp column and dir_delta_flow in npp.
+ * The formatter relabels these appropriately since they're NOT premium flow.
+ *
+ * @param rows - Flow data rows from getFlowData(date, 'zero_dte_greek_flow')
+ * @returns Formatted text block, or null if no data
+ */
+export function formatGreekFlowForClaude(
+  rows: FlowDataRow[],
+): string | null {
+  if (rows.length === 0) return null;
+
+  const latest = rows.at(-1)!;
+  const first = rows[0]!;
+
+  const lines: string[] = [];
+
+  lines.push(
+    '0DTE SPX Delta Flow (from API — 5-min intervals):',
+    '  Delta flow measures directional exposure being ADDED per minute via 0DTE SPX options.',
+    '  When delta flow surges while premium flow (NCP) is flat, institutions are adding',
+    '  directional delta through spreads/combos — higher conviction than premium alone.',
+    '',
+  );
+
+  // Latest values
+  const latestTime = new Date(latest.timestamp).toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+
+  lines.push(
+    `  Latest (${latestTime} ET):`,
+    `    Total Delta Flow: ${formatDeltaVal(latest.ncp)}`,
+    `    Directionalized Delta Flow: ${formatDeltaVal(latest.npp)}`,
+    `    Volume: ${latest.netVolume?.toLocaleString() ?? 'N/A'}`,
+  );
+
+  // Direction
+  const deltaDir = latest.ncp > first.ncp ? 'rising (bullish delta accumulation)' :
+                    latest.ncp < first.ncp ? 'falling (bearish delta accumulation)' : 'flat';
+  const dirDeltaDir = latest.npp > first.npp ? 'rising (intent-weighted bullish)' :
+                      latest.npp < first.npp ? 'falling (intent-weighted bearish)' : 'flat';
+
+  lines.push(
+    '',
+    `  Direction: Total delta ${deltaDir}`,
+    `  Dir delta: ${dirDeltaDir}`,
+  );
+
+  // Divergence check: total vs directionalized
+  if (latest.ncp > 0 && latest.npp < 0) {
+    lines.push('  DIVERGENCE: Total delta positive but directionalized negative — net delta from ask-side trades is bearish despite aggregate bullish. Institutions may be selling delta at the ask.');
+  } else if (latest.ncp < 0 && latest.npp > 0) {
+    lines.push('  DIVERGENCE: Total delta negative but directionalized positive — ask-side trades are adding bullish delta despite aggregate bearish. Possible institutional accumulation.');
+  }
+
+  // Time series (last 6 data points)
+  if (rows.length > 1) {
+    const recentRows = rows.slice(-6);
+    lines.push(
+      '',
+      '  Recent History (5-min intervals):',
+    );
+    for (const row of recentRows) {
+      const time = new Date(row.timestamp).toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      });
+      lines.push(
+        `    ${time} ET — Total Δ: ${formatDeltaVal(row.ncp)} | Dir Δ: ${formatDeltaVal(row.npp)} | Vol: ${row.netVolume?.toLocaleString() ?? 'N/A'}`,
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format a delta flow value for display.
+ */
+function formatDeltaVal(value: number): string {
+  const abs = Math.abs(value);
+  const sign = value >= 0 ? '+' : '-';
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
+  if (abs === 0) return '0';
+  return `${sign}${abs.toFixed(0)}`;
 }

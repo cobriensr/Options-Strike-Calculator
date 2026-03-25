@@ -35,6 +35,10 @@
     {
       "path": "/api/cron/fetch-zero-dte-flow",
       "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-greek-flow",
+      "schedule": "*/5 13-21 * * 1-5"
     }
   ],
   "functions": {
