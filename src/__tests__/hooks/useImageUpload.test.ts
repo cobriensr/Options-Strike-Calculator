@@ -46,7 +46,7 @@ describe('useImageUpload', () => {
     expect(result.current.images).toHaveLength(1);
     expect(result.current.images[0]!.file).toBe(file);
     expect(result.current.images[0]!.preview).toBe('blob:mock-url');
-    expect(result.current.images[0]!.label).toBe('Market Tide');
+    expect(result.current.images[0]!.label).toBe('Periscope (Gamma)');
     expect(result.current.images[0]!.id).toMatch(/^img-/);
     expect(mockCreateObjectURL).toHaveBeenCalledWith(file);
   });
@@ -61,8 +61,8 @@ describe('useImageUpload', () => {
       result.current.addImage(makeFile('b.png'));
     });
 
-    expect(result.current.images[0]!.label).toBe('Market Tide');
-    expect(result.current.images[1]!.label).toBe('Net Flow (SPY)');
+    expect(result.current.images[0]!.label).toBe('Periscope (Gamma)');
+    expect(result.current.images[1]!.label).toBe('Periscope Charm (SPX)');
   });
 
   it('respects the 2 image limit', () => {
