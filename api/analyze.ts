@@ -560,39 +560,33 @@ Notes on the response:
 // ============================================================
 // HANDLER
 // ============================================================
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/analyze');
   if (req.method !== 'POST') {
     done({ status: 405 });
     return res.status(405).json({ error: 'POST only' });
   }
-
   const botCheck = await checkBot(req);
   if (botCheck.isBot) {
     done({ status: 403 });
     return res.status(403).json({ error: 'Access denied' });
   }
-
   const ownerCheck = rejectIfNotOwner(req, res);
   if (ownerCheck) {
     done({ status: 401 });
     return ownerCheck;
   }
-
   // Rate limit: max 3 analyses per minute (each call hits Claude Opus with images)
   const rateLimited = await rejectIfRateLimited(req, res, 'analyze', 3);
   if (rateLimited) {
     done({ status: 429 });
     return;
   }
-
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     done({ status: 500, error: 'missing_api_key' });
     return res.status(500).json({ error: 'Server configuration error' });
   }
-
   const parsed = analyzeBodySchema.safeParse(req.body);
   if (!parsed.success) {
     const firstError = parsed.error.issues[0];
@@ -601,12 +595,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       error: firstError?.message ?? 'Invalid request body',
     });
   }
-
   const { images, context } = parsed.data;
-
   // Build the user message with images + context
   const content: Array<Record<string, unknown>> = [];
-
   // Add each image with its label
   for (let idx = 0; idx < images.length; idx++) {
     const img = images[idx]!;
@@ -625,19 +616,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     );
   }
-
   // Add context as text
   const mode = context.mode ?? 'entry';
-
   // Auto-fetch open positions from DB for this date (if any)
   let positionSummary: string | null = null;
   // Auto-fetch previous recommendation from DB for continuity
   let previousRec: string | null = null;
-
   const analysisDate =
     (context.selectedDate as string | undefined) ??
     new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-
   if (!context.isBacktest && mode !== 'review') {
     try {
       const posData = await getLatestPositions(analysisDate);
@@ -648,7 +635,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       logger.error({ err: posErr }, 'Failed to fetch positions for analysis');
     }
   }
-
   // Always fetch previous recommendation (works for both live and backtest)
   if (mode === 'midday' || mode === 'review') {
     try {
@@ -657,7 +643,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       logger.error({ err: recErr }, 'Failed to fetch previous recommendation');
     }
   }
-
   // Use DB positions if available, fall back to manually provided currentPosition
   // Review mode doesn't need positions — it evaluates the recommendation, not trades
   const positionContext =
@@ -671,7 +656,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     previousRec ??
     (context.previousRecommendation as string | undefined) ??
     null;
-
   // Auto-fetch flow data from DB (populated by crons)
   let marketTideContext: string | null = null;
   let marketTideOtmContext: string | null = null;
@@ -686,7 +670,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let strikeExposureContext: string | null = null;
   let allExpiryStrikeContext: string | null = null;
   let greekFlowContext: string | null = null;
-
   try {
     const [
       tideRows,
@@ -754,16 +737,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (flowErr) {
     logger.error({ err: flowErr }, 'Failed to fetch flow data for analysis');
   }
-
   const marketTideOtmSection = marketTideOtmContext
     ? `\n${marketTideOtmContext}\n`
     : '';
-
   const contextText = `
 ## Analysis Mode: ${mode === 'review' ? 'END-OF-DAY REVIEW' : mode === 'midday' ? 'MID-DAY RE-ANALYSIS' : 'PRE-TRADE ENTRY'}
-
 ## Current Calculator Context
-
 - Date: ${context.selectedDate ?? 'today'}
 - Entry time: ${context.entryTime ?? 'N/A'} (analyze charts ONLY up to this time — ignore any data after it)
 - SPX: ${context.spx ?? 'N/A'}
@@ -812,11 +791,8 @@ ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nT
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
-
 Provide your complete analysis as JSON. Mode is "${mode}".`;
-
   content.push({ type: 'text', text: contextText });
-
   // Fetch active lessons for system prompt injection
   let lessonsBlock = '';
   try {
@@ -827,6 +803,15 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     // Non-fatal — analysis works without lessons
   }
 
+  // Build the system prompt text (shared between Opus and Sonnet)
+  const systemText = lessonsBlock
+    ? SYSTEM_PROMPT_PART1 +
+      '\n \n' +
+      lessonsBlock +
+      '\n \n' +
+      SYSTEM_PROMPT_PART2
+    : SYSTEM_PROMPT_PART1 + '\n \n' + SYSTEM_PROMPT_PART2;
+
   const analyzeStart = Date.now();
   try {
     const anthropic = new Anthropic({
@@ -834,50 +819,45 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       timeout: 720_000, // 12 minutes — Opus with adaptive thinking can take 5+ min
       maxRetries: 3, // SDK retries with exponential backoff (0.5s → 1s → 2s)
     });
-
     // Stream the response — Anthropic sends headers immediately with streaming,
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
     // The SDK handles transient retries (429, 5xx, connection errors) internally.
     // Our wrapper only handles the Opus → Sonnet model fallback.
-    const streamRequest = (model: string) =>
+    const streamRequest = (
+      model: string,
+      maxTokens: number,
+      effort: string,
+    ) =>
       anthropic.messages
         .stream({
           model,
-          max_tokens: 35000,
+          max_tokens: maxTokens,
           thinking: { type: 'adaptive' },
-          output_config: { effort: 'high' },
+          output_config: { effort },
           system: [
             {
               type: 'text' as const,
-              text: lessonsBlock
-                ? SYSTEM_PROMPT_PART1 +
-                  '\n \n' +
-                  lessonsBlock +
-                  '\n \n' +
-                  SYSTEM_PROMPT_PART2
-                : SYSTEM_PROMPT_PART1 + '\n \n' + SYSTEM_PROMPT_PART2,
+              text: systemText,
               cache_control: { type: 'ephemeral', ttl: '1h' },
             },
           ],
           messages: [{ role: 'user' as const, content }],
         } as unknown as Parameters<typeof anthropic.messages.stream>[0])
         .finalMessage();
-
     let data: Awaited<ReturnType<typeof streamRequest>>;
     let usedModel = 'claude-opus-4-6';
     try {
-      data = await streamRequest('claude-opus-4-6');
+      data = await streamRequest('claude-opus-4-6', 128000, 'high');
     } catch (opusErr) {
       // SDK already retried 3× with backoff. If we're here, Opus is genuinely down.
-      // Fall back to Sonnet rather than failing the request.
+      // Fall back to Sonnet with higher token budget and reduced effort.
       logger.info(
         { err: opusErr },
         'Opus exhausted SDK retries, falling back to Sonnet 4.6',
       );
       usedModel = 'claude-sonnet-4-6';
-      data = await streamRequest('claude-sonnet-4-6');
+      data = await streamRequest('claude-sonnet-4-6', 64000, 'high');
     }
-
     // Log usage for cost monitoring
     if (data.usage) {
       const u = data.usage;
@@ -893,23 +873,45 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         'analyze usage',
       );
     }
-
     // Filter to text blocks only — thinking blocks are excluded
     const text =
       data.content
         ?.filter((c) => c.type === 'text')
         .map((c) => ('text' in c ? c.text : ''))
         .join('') ?? '';
-
     // Parse the JSON response
     let analysis: Record<string, unknown> | null = null;
     try {
       const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
       analysis = JSON.parse(cleaned);
     } catch {
-      // JSON parse failed — will return raw text below
+      // JSON parse failed — attempt repair on truncated responses
+      try {
+        const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
+        let repaired = cleaned;
+        // If truncated mid-string, close the string
+        const quoteCount = (repaired.match(/(?<!\\)"/g) || []).length;
+        if (quoteCount % 2 !== 0) repaired += '"';
+        // Close open brackets/braces by counting unmatched openers
+        const stack: string[] = [];
+        for (const ch of repaired) {
+          if (ch === '{' || ch === '[') stack.push(ch);
+          else if (ch === '}' || ch === ']') stack.pop();
+        }
+        // Close in reverse order
+        while (stack.length > 0) {
+          const opener = stack.pop();
+          repaired += opener === '{' ? '}' : ']';
+        }
+        analysis = JSON.parse(repaired);
+        logger.info(
+          { closedBrackets: stack.length },
+          'Repaired truncated JSON response',
+        );
+      } catch {
+        // Repair also failed — will return raw text below
+      }
     }
-
     // Save to Postgres before responding (Vercel kills the function after res.json).
     // Retry the save up to 2 extra times — after a long Anthropic retry the first
     // Neon call can fail due to connection pressure / cold-start latency.
@@ -953,7 +955,6 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         logger.error('analyze DB save exhausted all retries');
       }
     }
-
     metrics.analyzeCall({
       model: usedModel,
       mode: String(mode),
@@ -970,7 +971,6 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     logger.error({ err }, 'analyze unhandled error');
-
     // Map Anthropic SDK errors to client-friendly messages
     if (
       err instanceof Error &&
@@ -986,7 +986,6 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
             : `Analysis service error (${status}). Please retry.`;
       return res.status(502).json({ error: clientMsg });
     }
-
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Analysis failed',
     });
