@@ -48,4 +48,3 @@ __snapshots__/
 # ML
 ml/.venv/
 ml/*.csv
-ml/plots/
