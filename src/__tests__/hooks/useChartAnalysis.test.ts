@@ -33,7 +33,7 @@ Object.defineProperty(mockFile, 'arrayBuffer', {
 });
 
 const defaultImages: UploadedImage[] = [
-  { id: '1', file: mockFile, preview: 'blob:url', label: 'Market Tide' },
+  { id: '1', file: mockFile, preview: 'blob:url', label: 'Periscope (Gamma)' },
 ];
 
 function defaultOpts(overrides: Record<string, unknown> = {}) {
@@ -115,7 +115,7 @@ describe('useChartAnalysis', () => {
 
     const body = JSON.parse(options.body);
     expect(body.images).toHaveLength(1);
-    expect(body.images[0].label).toBe('Market Tide');
+    expect(body.images[0].label).toBe('Periscope (Gamma)');
     expect(body.context.mode).toBe('entry');
     expect(body.context.selectedDate).toBe('2025-01-15');
   });
