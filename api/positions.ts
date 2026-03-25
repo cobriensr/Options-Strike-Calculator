@@ -201,15 +201,17 @@ function buildSummary(
   spreads: Spread[],
   legs: PositionLeg[],
   spxPrice?: number,
+  closed?: boolean,
 ): string {
   if (spreads.length === 0) return 'No open SPX 0DTE positions.';
 
   const callSpreads = spreads.filter((s) => s.type === 'CALL CREDIT SPREAD');
   const putSpreads = spreads.filter((s) => s.type === 'PUT CREDIT SPREAD');
 
+  const label = closed ? 'Closed' : 'Open';
   const lines: string[] = [];
   lines.push(
-    `=== Open SPX 0DTE Positions (${spreads.length} spread${spreads.length > 1 ? 's' : ''}) ===`,
+    `=== ${label} SPX 0DTE Positions (${spreads.length} spread${spreads.length > 1 ? 's' : ''}) ===`,
   );
   if (spxPrice) lines.push(`SPX at fetch time: ${spxPrice}`);
   lines.push('');
@@ -337,18 +339,36 @@ export function parseTosMarkValue(raw: string): number {
  *
  * Expected columns:
  *   Symbol, Option Code, Exp, Strike, Type, Qty, Trade Price, Mark, Mark Value
+ *
+ * Falls back to parsing the "Account Trade History" section when no Options
+ * section is present (e.g. when all positions have been closed for the day).
  */
-export function parsePaperMoneyCSV(csv: string): PositionLeg[] {
+export function parsePaperMoneyCSV(csv: string): {
+  legs: PositionLeg[];
+  closed: boolean;
+} {
   const lines = csv.split(/\r?\n/);
 
-  // Find the Options section header
+  // Try the Options section first (open positions)
   const headerIdx = lines.findIndex((line) =>
     line.startsWith(
       'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark,Mark Value',
     ),
   );
-  if (headerIdx < 0) return [];
 
+  if (headerIdx >= 0) {
+    return { legs: parseOptionsSection(lines, headerIdx), closed: false };
+  }
+
+  // Fallback: parse Account Trade History (closed positions)
+  return { legs: parseTradeHistory(lines), closed: true };
+}
+
+/** Parse the structured "Options" section (open positions). */
+function parseOptionsSection(
+  lines: string[],
+  headerIdx: number,
+): PositionLeg[] {
   const legs: PositionLeg[] = [];
 
   for (let i = headerIdx + 1; i < lines.length; i++) {
@@ -393,7 +413,6 @@ export function parsePaperMoneyCSV(csv: string): PositionLeg[] {
       quantity,
       averagePrice: avgPrice,
       marketValue,
-      // Mark price is available but not the same as Greeks
       delta: undefined,
       theta: undefined,
       gamma: undefined,
@@ -401,6 +420,109 @@ export function parsePaperMoneyCSV(csv: string): PositionLeg[] {
   }
 
   return legs;
+}
+
+/**
+ * Parse the "Account Trade History" section to reconstruct positions from
+ * completed trades. Used when all positions have been closed and there is
+ * no "Options" section in the export.
+ *
+ * TO OPEN legs become the position legs (with their open trade prices).
+ * TO CLOSE leg prices are used for marketValue so P&L calculates correctly.
+ *
+ * Account Trade History columns:
+ *   (empty), Exec Time, Spread, Side, Qty, Pos Effect, Symbol, Exp, Strike, Type, Price, Net Price, Order Type
+ *
+ * Continuation rows for multi-leg spreads start with ,,, (first 3 fields empty).
+ */
+function parseTradeHistory(lines: string[]): PositionLeg[] {
+  // Find "Account Trade History" section
+  const sectionIdx = lines.findIndex(
+    (line) => line.trim() === 'Account Trade History',
+  );
+  if (sectionIdx < 0) return [];
+
+  // Find column header row (contains "Exec Time" and "Strike")
+  let headerIdx = -1;
+  for (
+    let i = sectionIdx + 1;
+    i < Math.min(sectionIdx + 5, lines.length);
+    i++
+  ) {
+    if (lines[i]!.includes('Exec Time') && lines[i]!.includes('Strike')) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx < 0) return [];
+
+  const openLegs: PositionLeg[] = [];
+  // Map strike_putCall → close price for filling marketValue
+  const closePrices = new Map<string, number>();
+
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!line.trim()) continue;
+    // Stop at the next section (line that doesn't start with comma)
+    if (!line.startsWith(',')) break;
+
+    const fields = parseCSVLine(line);
+    // fields[0] is always empty (leading comma)
+    // Primary row: [empty, execTime, spread, side, qty, posEffect, symbol, exp, strike, type, price, netPrice, orderType]
+    // Continuation: [empty, empty, empty, side, qty, posEffect, symbol, exp, strike, type, price, netPrice/CREDIT/DEBIT, empty]
+
+    const qtyStr = fields[4]?.trim();
+    const posEffect = fields[5]?.trim();
+    const symbol = fields[6]?.trim();
+    const exp = fields[7]?.trim();
+    const strikeStr = fields[8]?.trim();
+    const type = fields[9]?.trim();
+    const priceStr = fields[10]?.trim();
+
+    if (!symbol || symbol !== 'SPX') continue;
+    if (!type || !strikeStr || !priceStr) continue;
+
+    const putCall = type.toUpperCase() as 'PUT' | 'CALL';
+    if (putCall !== 'PUT' && putCall !== 'CALL') continue;
+
+    const strike = Number.parseFloat(strikeStr);
+    const legPrice = Number.parseFloat(priceStr);
+    if (Number.isNaN(strike) || Number.isNaN(legPrice)) continue;
+
+    const quantity = Number.parseInt(qtyStr?.replace('+', '') ?? '0', 10);
+    if (quantity === 0 || Number.isNaN(quantity)) continue;
+
+    const expiration = parseTosExpiration(exp!);
+    const key = `${strike}_${putCall}`;
+
+    if (posEffect === 'TO OPEN') {
+      openLegs.push({
+        putCall,
+        symbol: `SPX_${strike}${putCall[0]}`,
+        strike,
+        expiration,
+        quantity,
+        averagePrice: legPrice,
+        marketValue: 0, // Filled from close trades below
+        delta: undefined,
+        theta: undefined,
+        gamma: undefined,
+      });
+    } else if (posEffect === 'TO CLOSE') {
+      closePrices.set(key, legPrice);
+    }
+  }
+
+  // Fill marketValue from close prices so P&L calculates correctly:
+  // marketValue = closePrice × quantity × 100 (same sign convention as Options section)
+  for (const leg of openLegs) {
+    const closePrice = closePrices.get(`${leg.strike}_${leg.putCall}`);
+    if (closePrice !== undefined) {
+      leg.marketValue = closePrice * leg.quantity * 100;
+    }
+  }
+
+  return openLegs;
 }
 
 /** Parse a single CSV line, handling quoted fields with commas */
@@ -428,11 +550,15 @@ function parseCSVLine(line: string): string[] {
 // SHARED RESPONSE BUILDER
 // ============================================================
 
-function buildPositionResponse(spxLegs: PositionLeg[], spxPrice?: number) {
+function buildPositionResponse(
+  spxLegs: PositionLeg[],
+  spxPrice?: number,
+  closed?: boolean,
+) {
   const spreads = groupIntoSpreads(spxLegs);
   const callSpreads = spreads.filter((s) => s.type === 'CALL CREDIT SPREAD');
   const putSpreads = spreads.filter((s) => s.type === 'PUT CREDIT SPREAD');
-  const summary = buildSummary(spreads, spxLegs, spxPrice);
+  const summary = buildSummary(spreads, spxLegs, spxPrice, closed);
 
   const totalPnl = spreads.reduce((sum, s) => sum + s.pnl, 0);
   const totalCredit = spreads.reduce(
@@ -533,11 +659,11 @@ async function handleCSVUpload(
       return res.status(400).json({ error: 'Empty CSV body' });
     }
 
-    const spxLegs = parsePaperMoneyCSV(csv);
+    const { legs: spxLegs, closed } = parsePaperMoneyCSV(csv);
     if (spxLegs.length === 0) {
       return res.status(400).json({
         error:
-          'No SPX options found in CSV. Ensure the file contains an "Options" section.',
+          'No SPX options found in CSV. Ensure the file contains an "Options" or "Account Trade History" section with SPX trades.',
       });
     }
 
@@ -545,7 +671,7 @@ async function handleCSVUpload(
       ? Number.parseFloat(req.query.spx as string)
       : undefined;
 
-    const r = buildPositionResponse(spxLegs, spxPrice);
+    const r = buildPositionResponse(spxLegs, spxPrice, closed);
 
     // Find matching snapshot
     const db = getDb();

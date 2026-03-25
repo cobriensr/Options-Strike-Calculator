@@ -67,6 +67,69 @@ SPX,SPXW260317P5780,17 MAR 26,5780,PUT,+5,.60,.20,$100.00
 ,OVERALL TOTALS,,,,,,,"($150.00)"
 `;
 
+// ── Sample CSV with all positions closed (no Options section) ─────
+const CLOSED_POSITIONS_CSV = `This document was exported from the paperMoney platform.
+
+Account Statement for D-70001650 (ira) since 3/24/26 through 3/24/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+3/25/26,00:00:00,BAL,,Cash balance at the start of business day 25.03 CST,,,,"265,519.61"
+3/25/26,09:23:22,TRD,="5319289492",SOLD -20 VERTICAL SPX 100 (Weeklys) 25 MAR 26 6535/6515 PUT @1.05,-21.04,-26.00,"2,100.00","267,572.57"
+3/25/26,14:20:49,TRD,="5319624867",BOT +20 VERTICAL SPX 100 (Weeklys) 25 MAR 26 6535/6515 PUT @.05,-17.44,-26.00,-100.00,"277,388.01"
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+
+Forex Statements
+,Date,Time,Type,Ref #,Description,Commissions & Fees,Amount,Amount(USD),Balance
+
+Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,3/25/26 14:20:49,VERTICAL,BUY,+20,TO CLOSE,SPX,25 MAR 26,6535,PUT,.15,.05,LMT
+,,,SELL,-20,TO CLOSE,SPX,25 MAR 26,6515,PUT,.10,DEBIT,
+,3/25/26 09:23:22,VERTICAL,SELL,-20,TO OPEN,SPX,25 MAR 26,6535,PUT,2.65,1.05,LMT
+,,,BUY,+20,TO OPEN,SPX,25 MAR 26,6515,PUT,1.60,CREDIT,
+
+Profits and Losses
+Symbol,Description,P/L Open
+`;
+
+// ── Larger closed CSV with multiple spreads (matches user's actual export) ─────
+const CLOSED_MULTI_SPREAD_CSV = `This document was exported from the paperMoney platform.
+
+Account Statement for D-70001650 (ira) since 3/24/26 through 3/24/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+3/25/26,00:00:00,BAL,,Cash balance at the start of business day 25.03 CST,,,,"265,519.61"
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+
+Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,3/25/26 14:35:16,VERTICAL,BUY,+20,TO CLOSE,SPX,25 MAR 26,6550,PUT,.15,.05,LMT
+,,,SELL,-20,TO CLOSE,SPX,25 MAR 26,6530,PUT,.10,DEBIT,
+,3/25/26 14:27:54,VERTICAL,BUY,+20,TO CLOSE,SPX,25 MAR 26,6545,PUT,.15,.05,LMT
+,,,SELL,-20,TO CLOSE,SPX,25 MAR 26,6525,PUT,.10,DEBIT,
+,3/25/26 14:21:05,VERTICAL,BUY,+20,TO CLOSE,SPX,25 MAR 26,6540,PUT,.15,.05,LMT
+,,,SELL,-20,TO CLOSE,SPX,25 MAR 26,6520,PUT,.10,DEBIT,
+,3/25/26 14:20:49,VERTICAL,BUY,+20,TO CLOSE,SPX,25 MAR 26,6535,PUT,.15,.05,LMT
+,,,SELL,-20,TO CLOSE,SPX,25 MAR 26,6515,PUT,.10,DEBIT,
+,3/25/26 09:24:39,VERTICAL,SELL,-20,TO OPEN,SPX,25 MAR 26,6550,PUT,5.00,2.20,LMT
+,,,BUY,+20,TO OPEN,SPX,25 MAR 26,6530,PUT,2.80,CREDIT,
+,3/25/26 09:24:13,VERTICAL,SELL,-20,TO OPEN,SPX,25 MAR 26,6545,PUT,3.70,1.55,LMT
+,,,BUY,+20,TO OPEN,SPX,25 MAR 26,6525,PUT,2.15,CREDIT,
+,3/25/26 09:23:56,VERTICAL,SELL,-20,TO OPEN,SPX,25 MAR 26,6540,PUT,3.10,1.30,LMT
+,,,BUY,+20,TO OPEN,SPX,25 MAR 26,6520,PUT,1.80,CREDIT,
+,3/25/26 09:23:22,VERTICAL,SELL,-20,TO OPEN,SPX,25 MAR 26,6535,PUT,2.65,1.05,LMT
+,,,BUY,+20,TO OPEN,SPX,25 MAR 26,6515,PUT,1.60,CREDIT,
+
+Profits and Losses
+Symbol,Description,P/L Open
+`;
+
 describe('parseTosExpiration', () => {
   it('parses "17 MAR 26" → "2026-03-17"', () => {
     expect(parseTosExpiration('17 MAR 26')).toBe('2026-03-17');
@@ -103,27 +166,27 @@ describe('parseTosMarkValue', () => {
   });
 });
 
-describe('parsePaperMoneyCSV', () => {
-  it('extracts all 8 SPX legs from the sample CSV', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
+describe('parsePaperMoneyCSV — Options section (open positions)', () => {
+  it('extracts all 8 SPX legs and marks as not closed', () => {
+    const { legs, closed } = parsePaperMoneyCSV(SAMPLE_CSV);
     expect(legs).toHaveLength(8);
+    expect(closed).toBe(false);
   });
 
   it('correctly parses short legs (negative quantity)', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
+    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
     const shorts = legs.filter((l) => l.quantity < 0);
     expect(shorts).toHaveLength(4);
     expect(shorts.map((l) => l.strike).sort((a, b) => a - b)).toEqual([
       6680, 6685, 6690, 6695,
     ]);
-    // All short legs have quantity -20
     for (const leg of shorts) {
       expect(leg.quantity).toBe(-20);
     }
   });
 
   it('correctly parses long legs (positive quantity)', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
+    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
     const longs = legs.filter((l) => l.quantity > 0);
     expect(longs).toHaveLength(4);
     expect(longs.map((l) => l.strike).sort((a, b) => a - b)).toEqual([
@@ -132,27 +195,27 @@ describe('parsePaperMoneyCSV', () => {
   });
 
   it('sets putCall to PUT for all legs', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
+    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
     for (const leg of legs) {
       expect(leg.putCall).toBe('PUT');
     }
   });
 
   it('parses expiration dates correctly', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
+    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
     for (const leg of legs) {
       expect(leg.expiration).toBe('2026-03-17');
     }
   });
 
   it('parses averagePrice (Trade Price) correctly', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
+    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
     const leg6695 = legs.find((l) => l.strike === 6695);
     expect(leg6695?.averagePrice).toBe(2.3);
   });
 
   it('parses marketValue (Mark Value) correctly including negatives', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
+    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
     const long6660 = legs.find((l) => l.strike === 6660 && l.quantity > 0);
     expect(long6660?.marketValue).toBe(450);
 
@@ -161,7 +224,7 @@ describe('parsePaperMoneyCSV', () => {
   });
 
   it('sets symbol from Option Code column', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
+    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
     const leg = legs.find((l) => l.strike === 6660);
     expect(leg?.symbol).toBe('SPXW260317P6660');
   });
@@ -173,20 +236,80 @@ AAPL,AAPL260317C150,17 MAR 26,150,CALL,+10,2.00,2.50,$2500.00
 SPX,SPXW260317P6680,17 MAR 26,6680,PUT,-20,1.575,.325,($650.00)
 ,OVERALL TOTALS,,,,,,,$1850.00
 `;
-    const legs = parsePaperMoneyCSV(csvWithNonSPX);
+    const { legs } = parsePaperMoneyCSV(csvWithNonSPX);
     expect(legs).toHaveLength(1);
     expect(legs[0]?.strike).toBe(6680);
   });
 
-  it('returns empty array if no Options section found', () => {
+  it('returns empty legs if no Options or Trade History section found', () => {
     const noOptions = 'Cash Balance\nDATE,TIME,AMOUNT\n3/17/26,00:00:00,1000';
-    expect(parsePaperMoneyCSV(noOptions)).toEqual([]);
+    const { legs } = parsePaperMoneyCSV(noOptions);
+    expect(legs).toEqual([]);
   });
 
   it('stops parsing at OVERALL TOTALS row', () => {
-    const legs = parsePaperMoneyCSV(SAMPLE_CSV);
-    // Should not include the OVERALL TOTALS or anything after
+    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
     expect(legs).toHaveLength(8);
+  });
+});
+
+describe('parsePaperMoneyCSV — Account Trade History (closed positions)', () => {
+  it('extracts TO OPEN legs from trade history and marks as closed', () => {
+    const { legs, closed } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
+    expect(closed).toBe(true);
+    expect(legs).toHaveLength(2);
+  });
+
+  it('parses short and long legs with correct quantities', () => {
+    const { legs } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
+    const short = legs.find((l) => l.quantity < 0);
+    const long = legs.find((l) => l.quantity > 0);
+    expect(short?.strike).toBe(6535);
+    expect(short?.quantity).toBe(-20);
+    expect(long?.strike).toBe(6515);
+    expect(long?.quantity).toBe(20);
+  });
+
+  it('sets averagePrice from the TO OPEN trade price', () => {
+    const { legs } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
+    const short = legs.find((l) => l.strike === 6535);
+    const long = legs.find((l) => l.strike === 6515);
+    expect(short?.averagePrice).toBe(2.65);
+    expect(long?.averagePrice).toBe(1.6);
+  });
+
+  it('fills marketValue from TO CLOSE prices for P&L calculation', () => {
+    const { legs } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
+    // Short 6535 closed at 0.15 → marketValue = 0.15 * -20 * 100 = -300
+    const short = legs.find((l) => l.strike === 6535);
+    expect(short?.marketValue).toBe(-300);
+    // Long 6515 closed at 0.10 → marketValue = 0.10 * 20 * 100 = 200
+    const long = legs.find((l) => l.strike === 6515);
+    expect(long?.marketValue).toBe(200);
+  });
+
+  it('parses expiration correctly from trade history', () => {
+    const { legs } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
+    for (const leg of legs) {
+      expect(leg.expiration).toBe('2026-03-25');
+    }
+  });
+
+  it('extracts all 4 spreads (8 legs) from multi-spread closed CSV', () => {
+    const { legs, closed } = parsePaperMoneyCSV(CLOSED_MULTI_SPREAD_CSV);
+    expect(closed).toBe(true);
+    expect(legs).toHaveLength(8);
+
+    const shorts = legs.filter((l) => l.quantity < 0);
+    const longs = legs.filter((l) => l.quantity > 0);
+    expect(shorts).toHaveLength(4);
+    expect(longs).toHaveLength(4);
+    expect(shorts.map((l) => l.strike).sort((a, b) => a - b)).toEqual([
+      6535, 6540, 6545, 6550,
+    ]);
+    expect(longs.map((l) => l.strike).sort((a, b) => a - b)).toEqual([
+      6515, 6520, 6525, 6530,
+    ]);
   });
 });
 
