@@ -40,7 +40,7 @@ export async function getStrikeExposures(
   const tsRows = await db`
     SELECT MAX(timestamp) as latest_ts
     FROM strike_exposures
-    WHERE date = ${date} AND ticker = ${ticker}
+    WHERE date = ${date} AND ticker = ${ticker} AND expiry != '1970-01-01'
   `;
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
@@ -54,7 +54,7 @@ export async function getStrikeExposures(
            call_delta_oi, put_delta_oi,
            call_vanna_oi, put_vanna_oi
     FROM strike_exposures
-    WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs}
+    WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs} AND expiry != '1970-01-01'
     ORDER BY strike ASC
   `;
 
