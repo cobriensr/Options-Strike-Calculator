@@ -83,11 +83,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  if (!isAfterClose()) {
+  const force = req.query.force === 'true';
+  if (!force && !isAfterClose()) {
     return res.status(200).json({
       skipped: true,
       reason: 'Outside post-close window (4:15-5:30 PM ET)',
     });
+  }
+
+  const backfill = req.query.backfill === 'true';
+
+  if (backfill) {
+    return handleBackfill(res);
   }
 
   const now = new Date();
@@ -185,6 +192,95 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'fetch-outcomes error');
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Fetch failed',
+    });
+  }
+}
+
+// ── Backfill handler ────────────────────────────────────────
+
+interface DailyCandle {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  datetime: number; // Unix ms (midnight UTC of trading day)
+}
+
+interface DailyHistoryResponse {
+  candles: DailyCandle[];
+  symbol: string;
+  empty: boolean;
+}
+
+async function handleBackfill(res: VercelResponse) {
+  try {
+    // Fetch ~2 months of daily SPX candles
+    const now = Date.now();
+    const twoMonthsAgo = now - 62 * 24 * 60 * 60 * 1000;
+
+    const spxResult = await schwabFetch<DailyHistoryResponse>(
+      `/$SPX/pricehistory?periodType=month&period=2&frequencyType=daily&frequency=1`,
+    );
+
+    if ('error' in spxResult) {
+      return res.status(502).json({ error: spxResult.error });
+    }
+
+    // Also fetch VIX daily candles for the same period
+    const vixResult = await schwabFetch<DailyHistoryResponse>(
+      `/$VIX/pricehistory?periodType=month&period=2&frequencyType=daily&frequency=1`,
+    );
+
+    const vixByDate = new Map<string, DailyCandle>();
+    if (!('error' in vixResult)) {
+      for (const c of vixResult.data.candles) {
+        const d = getETDateStr(new Date(c.datetime));
+        vixByDate.set(d, c);
+      }
+    }
+
+    let saved = 0;
+    let skipped = 0;
+
+    // Filter to only completed days (exclude today if market still open)
+    const todayStr = getETDateStr(new Date());
+    const candles = spxResult.data.candles.filter((c) => {
+      const d = getETDateStr(new Date(c.datetime));
+      return d !== todayStr && c.datetime >= twoMonthsAgo;
+    });
+
+    for (const candle of candles) {
+      const dateStr = getETDateStr(new Date(candle.datetime));
+
+      try {
+        const vixCandle = vixByDate.get(dateStr);
+
+        await saveOutcome({
+          date: dateStr,
+          settlement: candle.close,
+          dayOpen: candle.open,
+          dayHigh: candle.high,
+          dayLow: candle.low,
+          vixClose: vixCandle?.close,
+          vix1dClose: undefined, // VIX1D not available in daily history
+        });
+        saved++;
+      } catch {
+        skipped++;
+      }
+    }
+
+    logger.info(
+      { saved, skipped, total: candles.length },
+      'fetch-outcomes: backfill complete',
+    );
+
+    return res.status(200).json({ backfill: true, saved, skipped });
+  } catch (err) {
+    logger.error({ err }, 'fetch-outcomes: backfill error');
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : 'Backfill failed',
     });
   }
 }

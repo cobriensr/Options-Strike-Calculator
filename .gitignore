@@ -45,6 +45,10 @@ __snapshots__/
 # Serena
 .serena/
 
+# ML
+ml/.venv/
+ml/*.csv
+
 # Superpowers
 .docs/
 .docs/superpowers/
