@@ -114,7 +114,7 @@ def print_summary(df: pd.DataFrame) -> None:
         print(f"Outcomes: {outcomes}/{len(df)} days ({outcomes/len(df):.0%})")
 
     # Key feature distributions
-    print(f"\n--- Key Features ---")
+    print("\n--- Key Features ---")
     numeric_features = [
         "vix", "vix1d", "vix1d_vix_ratio",
         "gex_oi_t1", "gex_oi_t4",
@@ -127,15 +127,15 @@ def print_summary(df: pd.DataFrame) -> None:
 
     # Label distribution
     if "recommended_structure" in df.columns:
-        print(f"\n--- Structure Distribution ---")
+        print("\n--- Structure Distribution ---")
         print(df["recommended_structure"].value_counts().to_string())
 
     if "charm_pattern" in df.columns:
-        print(f"\n--- Charm Pattern Distribution ---")
+        print("\n--- Charm Pattern Distribution ---")
         print(df["charm_pattern"].value_counts().to_string())
 
     if "range_category" in df.columns:
-        print(f"\n--- Range Category Distribution ---")
+        print("\n--- Range Category Distribution ---")
         print(df["range_category"].value_counts().to_string())
 
     # Correlation highlights
@@ -143,7 +143,7 @@ def print_summary(df: pd.DataFrame) -> None:
         range_cols = [c for c in ["day_range_pts", "vix", "vix1d", "vix1d_vix_ratio",
                                     "gex_oi_t1", "gamma_asymmetry"] if c in df.columns]
         if len(range_cols) > 1 and "day_range_pts" in df.columns:
-            print(f"\n--- Correlations with Day Range ---")
+            print("\n--- Correlations with Day Range ---")
             corr = df[range_cols].astype(float).corrwith(df["day_range_pts"].astype(float))
             for col, val in corr.items():
                 if col != "day_range_pts" and pd.notna(val):
