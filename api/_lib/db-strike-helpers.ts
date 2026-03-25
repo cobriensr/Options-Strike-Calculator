@@ -463,9 +463,7 @@ export function formatAllExpiryStrikesForClaude(
  * @param rows - Flow data rows from getFlowData(date, 'zero_dte_greek_flow')
  * @returns Formatted text block, or null if no data
  */
-export function formatGreekFlowForClaude(
-  rows: FlowDataRow[],
-): string | null {
+export function formatGreekFlowForClaude(rows: FlowDataRow[]): string | null {
   if (rows.length === 0) return null;
 
   const latest = rows.at(-1)!;
@@ -497,10 +495,18 @@ export function formatGreekFlowForClaude(
   );
 
   // Direction
-  const deltaDir = latest.ncp > first.ncp ? 'rising (bullish delta accumulation)' :
-                    latest.ncp < first.ncp ? 'falling (bearish delta accumulation)' : 'flat';
-  const dirDeltaDir = latest.npp > first.npp ? 'rising (intent-weighted bullish)' :
-                      latest.npp < first.npp ? 'falling (intent-weighted bearish)' : 'flat';
+  const deltaDir =
+    latest.ncp > first.ncp
+      ? 'rising (bullish delta accumulation)'
+      : latest.ncp < first.ncp
+        ? 'falling (bearish delta accumulation)'
+        : 'flat';
+  const dirDeltaDir =
+    latest.npp > first.npp
+      ? 'rising (intent-weighted bullish)'
+      : latest.npp < first.npp
+        ? 'falling (intent-weighted bearish)'
+        : 'flat';
 
   lines.push(
     '',
@@ -510,18 +516,19 @@ export function formatGreekFlowForClaude(
 
   // Divergence check: total vs directionalized
   if (latest.ncp > 0 && latest.npp < 0) {
-    lines.push('  DIVERGENCE: Total delta positive but directionalized negative — net delta from ask-side trades is bearish despite aggregate bullish. Institutions may be selling delta at the ask.');
+    lines.push(
+      '  DIVERGENCE: Total delta positive but directionalized negative — net delta from ask-side trades is bearish despite aggregate bullish. Institutions may be selling delta at the ask.',
+    );
   } else if (latest.ncp < 0 && latest.npp > 0) {
-    lines.push('  DIVERGENCE: Total delta negative but directionalized positive — ask-side trades are adding bullish delta despite aggregate bearish. Possible institutional accumulation.');
+    lines.push(
+      '  DIVERGENCE: Total delta negative but directionalized positive — ask-side trades are adding bullish delta despite aggregate bearish. Possible institutional accumulation.',
+    );
   }
 
   // Time series (last 6 data points)
   if (rows.length > 1) {
     const recentRows = rows.slice(-6);
-    lines.push(
-      '',
-      '  Recent History (5-min intervals):',
-    );
+    lines.push('', '  Recent History (5-min intervals):');
     for (const row of recentRows) {
       const time = new Date(row.timestamp).toLocaleTimeString('en-US', {
         timeZone: 'America/New_York',

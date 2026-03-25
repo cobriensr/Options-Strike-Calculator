@@ -19,33 +19,33 @@ This document outlines planned ML applications as sufficient labeled data is acc
 
 ### API Data Sources (10 crons, 14 sources)
 
-| Source | Table | Cron | Update Freq | Key Fields |
-|--------|-------|------|-------------|------------|
-| Market Tide (all-in) | `flow_data` | `fetch-flow` | 5 min | NCP, NPP, net_volume |
-| Market Tide (OTM) | `flow_data` | `fetch-flow` | 5 min | NCP, NPP, net_volume |
-| SPX Net Flow | `flow_data` | `fetch-net-flow` | 5 min | NCP, NPP, net_volume |
-| SPY Net Flow | `flow_data` | `fetch-net-flow` | 5 min | NCP, NPP, net_volume |
-| QQQ Net Flow | `flow_data` | `fetch-net-flow` | 5 min | NCP, NPP, net_volume |
-| SPY ETF Tide | `flow_data` | `fetch-etf-tide` | 5 min | NCP, NPP, net_volume |
-| QQQ ETF Tide | `flow_data` | `fetch-etf-tide` | 5 min | NCP, NPP, net_volume |
-| 0DTE Index Flow | `flow_data` | `fetch-zero-dte-flow` | 5 min | NCP, NPP, net_volume |
-| 0DTE Delta Flow | `flow_data` | `fetch-greek-flow` | 5 min | total_delta, dir_delta, volume |
-| Greek Exposure (agg) | `greek_exposure` | `fetch-greek-exposure` | 5 min | gamma, charm, delta, vanna (all expiries) |
-| Greek Exposure (by expiry) | `greek_exposure` | `fetch-greek-exposure` | 5 min | charm, delta, vanna per expiration |
-| Spot GEX Panel | `spot_exposures` | `fetch-spot-gex` | 5 min | OI/Vol/Dir gamma, charm, vanna + price |
-| Per-Strike 0DTE | `strike_exposures` | `fetch-strike-exposure` | 5 min | gamma, charm, delta per strike (0DTE only) |
-| Per-Strike All-Expiry | `strike_exposures` | `fetch-strike-all` | 5 min | gamma, charm, delta per strike (all expiries) |
+| Source                     | Table              | Cron                    | Update Freq | Key Fields                                    |
+| -------------------------- | ------------------ | ----------------------- | ----------- | --------------------------------------------- |
+| Market Tide (all-in)       | `flow_data`        | `fetch-flow`            | 5 min       | NCP, NPP, net_volume                          |
+| Market Tide (OTM)          | `flow_data`        | `fetch-flow`            | 5 min       | NCP, NPP, net_volume                          |
+| SPX Net Flow               | `flow_data`        | `fetch-net-flow`        | 5 min       | NCP, NPP, net_volume                          |
+| SPY Net Flow               | `flow_data`        | `fetch-net-flow`        | 5 min       | NCP, NPP, net_volume                          |
+| QQQ Net Flow               | `flow_data`        | `fetch-net-flow`        | 5 min       | NCP, NPP, net_volume                          |
+| SPY ETF Tide               | `flow_data`        | `fetch-etf-tide`        | 5 min       | NCP, NPP, net_volume                          |
+| QQQ ETF Tide               | `flow_data`        | `fetch-etf-tide`        | 5 min       | NCP, NPP, net_volume                          |
+| 0DTE Index Flow            | `flow_data`        | `fetch-zero-dte-flow`   | 5 min       | NCP, NPP, net_volume                          |
+| 0DTE Delta Flow            | `flow_data`        | `fetch-greek-flow`      | 5 min       | total_delta, dir_delta, volume                |
+| Greek Exposure (agg)       | `greek_exposure`   | `fetch-greek-exposure`  | 5 min       | gamma, charm, delta, vanna (all expiries)     |
+| Greek Exposure (by expiry) | `greek_exposure`   | `fetch-greek-exposure`  | 5 min       | charm, delta, vanna per expiration            |
+| Spot GEX Panel             | `spot_exposures`   | `fetch-spot-gex`        | 5 min       | OI/Vol/Dir gamma, charm, vanna + price        |
+| Per-Strike 0DTE            | `strike_exposures` | `fetch-strike-exposure` | 5 min       | gamma, charm, delta per strike (0DTE only)    |
+| Per-Strike All-Expiry      | `strike_exposures` | `fetch-strike-all`      | 5 min       | gamma, charm, delta per strike (all expiries) |
 
 ### Data Volume Estimates
 
-| Metric | Per Day | Per Month (21 trading days) | 30-Day Backfill |
-|--------|---------|---------------------------|-----------------|
-| Flow candles (9 sources x ~78 candles) | ~700 | ~14,700 | ~21,000 |
-| Greek exposure rows | ~56 | ~1,176 | ~1,680 |
-| Spot GEX candles | ~112 | ~2,352 | ~3,360 |
-| Strike exposure rows (0DTE, ~81 strikes x ~78 snapshots) | ~6,318 | ~132,678 | Cron-only |
-| Strike exposure rows (all-expiry) | ~6,318 | ~132,678 | Cron-only |
-| **Total rows/day** | **~13,500** | **~283,500** | Backfill complete |
+| Metric                                                   | Per Day     | Per Month (21 trading days) | 30-Day Backfill   |
+| -------------------------------------------------------- | ----------- | --------------------------- | ----------------- |
+| Flow candles (9 sources x ~78 candles)                   | ~700        | ~14,700                     | ~21,000           |
+| Greek exposure rows                                      | ~56         | ~1,176                      | ~1,680            |
+| Spot GEX candles                                         | ~112        | ~2,352                      | ~3,360            |
+| Strike exposure rows (0DTE, ~81 strikes x ~78 snapshots) | ~6,318      | ~132,678                    | Cron-only         |
+| Strike exposure rows (all-expiry)                        | ~6,318      | ~132,678                    | Cron-only         |
+| **Total rows/day**                                       | **~13,500** | **~283,500**                | Backfill complete |
 
 ### API Usage
 
@@ -62,7 +62,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 
 **Training features (from market snapshots + API data):**
 
-*Static features (from calculator context):*
+_Static features (from calculator context):_
 
 - VIX, VIX1D, VIX9D, VVIX
 - VIX1D/VIX ratio, VIX/VIX9D ratio
@@ -72,7 +72,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 - Overnight gap, previous close distance
 - Delta guide ceilings (IC, CCS, PCS)
 
-*Flow features (from API — first 30 min):*
+_Flow features (from API — first 30 min):_
 
 - Market Tide NCP/NPP at 30 min, direction, divergence magnitude
 - SPX Net Flow NCP/NPP at 30 min, NCP-NPP gap
@@ -84,7 +84,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 - Flow agreement score: how many of the 9 flow sources agree on direction (0-9)
 - ETF Tide divergence flag: SPY/QQQ Net Flow vs ETF Tide disagree (binary)
 
-*Greek/GEX features (from API):*
+_Greek/GEX features (from API):_
 
 - Aggregate OI Net Gamma (Rule 16 regime)
 - Volume GEX and Directionalized GEX
@@ -93,7 +93,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 - 0DTE charm as % of total charm
 - Charm pattern classification: CCS-confirming, PCS-confirming, all-negative, all-positive, mixed
 
-*Per-strike features (engineered from strike_exposures):*
+_Per-strike features (engineered from strike_exposures):_
 
 - Nearest positive gamma wall above ATM: distance (pts) and magnitude
 - Nearest positive gamma wall below ATM: distance (pts) and magnitude
@@ -142,7 +142,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 
 **Training features:**
 
-*Entry-time features:*
+_Entry-time features:_
 
 - Entry snapshot features
 - Structure selected (IC, CCS, PCS)
@@ -154,7 +154,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 - Flow agreement score at entry
 - Delta flow direction at entry (from 0DTE Greek flow)
 
-*Time-varying covariates (from intraday API data):*
+_Time-varying covariates (from intraday API data):_
 
 - GEX trend: is OI GEX improving or deteriorating since entry?
 - Flow reversal: has the NCP/NPP relationship changed since entry?
@@ -254,16 +254,16 @@ The new 0DTE index flow and delta flow sources provide additional features that 
 
 The database schema captures all required training data:
 
-| Table | Purpose | Key Fields | Records/Day |
-|-------|---------|------------|-------------|
-| `market_snapshots` | Static feature vectors | 50+ calculator state fields per analysis run | 1-4 |
-| `flow_data` | Intraday flow time series | NCP, NPP, net_volume across 9 sources | ~700 |
-| `greek_exposure` | Daily Greek exposure by expiry | gamma, charm, delta, vanna per expiration | ~56 |
-| `spot_exposures` | Intraday GEX panel | OI/Vol/Dir gamma, charm, vanna + price | ~112 |
-| `strike_exposures` | Per-strike Greek profile | gamma, charm, delta per strike (0DTE + all-expiry) | ~12,600 |
-| `analyses` | Model outputs + labels | Structure, confidence, delta, chart signals, full JSON | 1-4 |
-| `positions` | Position-specific data | Strikes, spreads, P&L, Greeks | 1-4 |
-| `lessons` | Curated trading lessons | Lesson text, source session, tags | Growing |
+| Table              | Purpose                        | Key Fields                                             | Records/Day |
+| ------------------ | ------------------------------ | ------------------------------------------------------ | ----------- |
+| `market_snapshots` | Static feature vectors         | 50+ calculator state fields per analysis run           | 1-4         |
+| `flow_data`        | Intraday flow time series      | NCP, NPP, net_volume across 9 sources                  | ~700        |
+| `greek_exposure`   | Daily Greek exposure by expiry | gamma, charm, delta, vanna per expiration              | ~56         |
+| `spot_exposures`   | Intraday GEX panel             | OI/Vol/Dir gamma, charm, vanna + price                 | ~112        |
+| `strike_exposures` | Per-strike Greek profile       | gamma, charm, delta per strike (0DTE + all-expiry)     | ~12,600     |
+| `analyses`         | Model outputs + labels         | Structure, confidence, delta, chart signals, full JSON | 1-4         |
+| `positions`        | Position-specific data         | Strikes, spreads, P&L, Greeks                          | 1-4         |
+| `lessons`          | Curated trading lessons        | Lesson text, source session, tags                      | Growing     |
 
 All tables are linked by date, enabling joins across features, predictions, and outcomes.
 
@@ -283,14 +283,14 @@ The raw intraday data requires feature engineering before ML consumption:
 
 ## Implementation Timeline
 
-| Phase | Model | Prerequisite | Status |
-|-------|-------|-------------|--------|
-| **Phase 1** | Intraday Range Regression | 30 years historical data (available) + API backfill (30 days complete) | Ready to build |
-| **Phase 2** | Structure Classification | 100+ labeled trading days | Accumulating data (~8 days live) |
-| **Phase 3** | Optimal Exit Timing | 50-100 days with timestamped exits + intraday API data | Accumulating data |
-| **Phase 4** | Day Type Clustering | 200+ trading days with full feature set | Accumulating data |
-| **Phase 5** | Charm Divergence Predictor | 50+ days with Periscope vs naive comparison | Accumulating data |
-| **Phase 6** | Flow-Price Divergence Detector | 100+ labeled days with 0DTE flow data | Accumulating data |
+| Phase       | Model                          | Prerequisite                                                           | Status                           |
+| ----------- | ------------------------------ | ---------------------------------------------------------------------- | -------------------------------- |
+| **Phase 1** | Intraday Range Regression      | 30 years historical data (available) + API backfill (30 days complete) | Ready to build                   |
+| **Phase 2** | Structure Classification       | 100+ labeled trading days                                              | Accumulating data (~8 days live) |
+| **Phase 3** | Optimal Exit Timing            | 50-100 days with timestamped exits + intraday API data                 | Accumulating data                |
+| **Phase 4** | Day Type Clustering            | 200+ trading days with full feature set                                | Accumulating data                |
+| **Phase 5** | Charm Divergence Predictor     | 50+ days with Periscope vs naive comparison                            | Accumulating data                |
+| **Phase 6** | Flow-Price Divergence Detector | 100+ labeled days with 0DTE flow data                                  | Accumulating data                |
 
 Phase 1 can begin immediately using the existing historical dataset enriched with 30 days of backfilled API data. Phases 2-6 require continued daily trading with the current rule-based system, which generates labeled training data with every session.
 

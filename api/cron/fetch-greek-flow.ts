@@ -71,11 +71,13 @@ interface GreekFlowTick {
 
 // ── Fetch helper ────────────────────────────────────────────
 
-async function fetchGreekFlow(apiKey: string, today: string): Promise<GreekFlowTick[]> {
-  const res = await fetch(
-    `${UW_BASE}/stock/SPX/greek-flow/${today}`,
-    { headers: { Authorization: `Bearer ${apiKey}` } },
-  );
+async function fetchGreekFlow(
+  apiKey: string,
+  today: string,
+): Promise<GreekFlowTick[]> {
+  const res = await fetch(`${UW_BASE}/stock/SPX/greek-flow/${today}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -88,7 +90,10 @@ async function fetchGreekFlow(apiKey: string, today: string): Promise<GreekFlowT
 
 // ── Sample to 5-min + store ─────────────────────────────────
 
-async function storeLatest(ticks: GreekFlowTick[], today: string): Promise<{ stored: number; skipped: number }> {
+async function storeLatest(
+  ticks: GreekFlowTick[],
+  today: string,
+): Promise<{ stored: number; skipped: number }> {
   if (ticks.length === 0) return { stored: 0, skipped: 0 };
 
   // Sample to 5-min intervals, keep last tick per window
@@ -143,7 +148,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (!isMarketHours()) {
-    return res.status(200).json({ skipped: true, reason: 'Outside market hours' });
+    return res
+      .status(200)
+      .json({ skipped: true, reason: 'Outside market hours' });
   }
 
   const apiKey = process.env.UW_API_KEY;

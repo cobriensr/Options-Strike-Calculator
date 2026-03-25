@@ -33,7 +33,15 @@ export function useChartAnalysis(opts: {
   onAnalysisSaved?: () => void;
   onModeCompleted?: (mode: AnalysisMode) => void;
 }) {
-  const { images, context, results, mode, onAnalysisSaved, onModeCompleted, hasCSVPositions } = opts;
+  const {
+    images,
+    context,
+    results,
+    mode,
+    onAnalysisSaved,
+    onModeCompleted,
+    hasCSVPositions,
+  } = opts;
 
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [rawResponse, setRawResponse] = useState<string | null>(null);
@@ -220,7 +228,15 @@ export function useChartAnalysis(opts: {
       abortRef.current = null;
       setLoading(false);
     }
-  }, [images, context, results, mode, hasCSVPositions, onAnalysisSaved, onModeCompleted]);
+  }, [
+    images,
+    context,
+    results,
+    mode,
+    hasCSVPositions,
+    onAnalysisSaved,
+    onModeCompleted,
+  ]);
 
   return {
     analysis,
