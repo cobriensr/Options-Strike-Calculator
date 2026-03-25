@@ -48,9 +48,3 @@ __snapshots__/
 # ML
 ml/.venv/
 ml/*.csv
-
-# Superpowers
-.docs/
-.docs/superpowers/
-.docs/superpowers/plans
-.docs/superpowers/specs

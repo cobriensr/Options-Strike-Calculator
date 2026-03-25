@@ -55,26 +55,26 @@ interface FlowSource {
 
 const FLOW_SOURCES: FlowSource[] = [
   { source: 'market_tide', prefix: 'mt' },
-  { source: 'spx_net_flow', prefix: 'spx' },
-  { source: 'spy_net_flow', prefix: 'spy' },
-  { source: 'qqq_net_flow', prefix: 'qqq' },
+  { source: 'spx_flow', prefix: 'spx' },
+  { source: 'spy_flow', prefix: 'spy' },
+  { source: 'qqq_flow', prefix: 'qqq' },
   { source: 'spy_etf_tide', prefix: 'spy_etf' },
   { source: 'qqq_etf_tide', prefix: 'qqq_etf' },
-  { source: 'zero_dte_flow', prefix: 'zero_dte' },
-  { source: 'delta_flow', prefix: 'delta_flow' },
+  { source: 'zero_dte_index', prefix: 'zero_dte' },
+  { source: 'zero_dte_greek_flow', prefix: 'delta_flow' },
 ];
 
 // Sources that contribute to flow agreement (directional flow, not delta flow)
 const AGREEMENT_SOURCES = [
   'market_tide',
   'market_tide_otm',
-  'spx_net_flow',
-  'spy_net_flow',
-  'qqq_net_flow',
+  'spx_flow',
+  'spy_flow',
+  'qqq_flow',
   'spy_etf_tide',
   'qqq_etf_tide',
-  'zero_dte_flow',
-  'zero_dte_delta_flow',
+  'zero_dte_index',
+  'zero_dte_greek_flow',
 ];
 
 // ── Types ──────────────────────────────────────────────────
