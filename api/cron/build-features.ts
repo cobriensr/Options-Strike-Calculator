@@ -417,9 +417,14 @@ function engineerStrikeFeatures(
 
 /** Normalize a Neon DATE value to YYYY-MM-DD string. */
 function toDateStr(val: unknown): string {
+  // Neon returns DATE columns as native JS Date objects
+  if (val instanceof Date) {
+    return val.toISOString().split('T')[0]!;
+  }
   const s = String(val);
-  // Neon returns DATE as "2026-02-09T00:00:00.000Z" — extract just the date part
-  if (s.includes('T')) return s.split('T')[0]!;
+  // Handle ISO strings like "2026-02-09T00:00:00.000Z" — use regex to avoid matching T in GMT
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(s);
+  if (match) return match[1]!;
   return s;
 }
 
@@ -1020,6 +1025,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         dates = [getETDateStr(new Date())];
       }
     }
+
+    // Filter to valid YYYY-MM-DD dates only
+    dates = dates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
 
     let featuresBuilt = 0;
     let labelsExtracted = 0;
