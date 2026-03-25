@@ -55,6 +55,17 @@ describe('GET /api/auth/init', () => {
     );
   });
 
+  it('returns 500 when handler throws unexpected error', () => {
+    vi.mocked(getAuthUrl).mockImplementation(() => {
+      throw new Error('Crash');
+    });
+
+    const res = mockResponse();
+    handler(mockRequest({ headers: { host: 'example.com' } }), res);
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal server error' });
+  });
+
   it('uses http for localhost', () => {
     vi.mocked(getAuthUrl).mockReturnValue(
       'https://api.schwabapi.com/v1/oauth/authorize',

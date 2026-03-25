@@ -14,8 +14,9 @@ import {
   formatStrikeExposuresForClaude,
   getAllExpiryStrikeExposures,
   formatAllExpiryStrikesForClaude,
+  formatGreekFlowForClaude,
 } from '../_lib/db-strike-helpers.js';
-import type { StrikeExposureRow } from '../_lib/db-strike-helpers.js';
+import type { StrikeExposureRow, FlowDataRow } from '../_lib/db-strike-helpers.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -784,6 +785,153 @@ describe('db-strike-helpers', () => {
       const result = formatAllExpiryStrikesForClaude(allRows, [])!;
 
       expect(result).not.toContain('0DTE vs All-Expiry Comparison');
+    });
+  });
+
+  // ================================================================
+  // formatGreekFlowForClaude
+  // ================================================================
+  describe('formatGreekFlowForClaude', () => {
+    function makeFlowRow(overrides: Partial<FlowDataRow> = {}): FlowDataRow {
+      return {
+        timestamp: '2026-03-24T15:00:00Z',
+        ncp: 500000,
+        npp: 300000,
+        netVolume: 120000,
+        ...overrides,
+      };
+    }
+
+    it('returns null for empty array', () => {
+      expect(formatGreekFlowForClaude([])).toBeNull();
+    });
+
+    it('returns header with "0DTE SPX Delta Flow" label', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow()])!;
+
+      expect(result).toContain('0DTE SPX Delta Flow');
+    });
+
+    it('shows latest values (Total Delta Flow, Directionalized Delta Flow, Volume)', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow()])!;
+
+      expect(result).toContain('Total Delta Flow:');
+      expect(result).toContain('Directionalized Delta Flow:');
+      expect(result).toContain('Volume: 120,000');
+    });
+
+    it('shows direction: rising/falling/flat for total delta and dir delta', () => {
+      const rows = [
+        makeFlowRow({ timestamp: '2026-03-24T14:00:00Z', ncp: 100000, npp: 400000 }),
+        makeFlowRow({ timestamp: '2026-03-24T15:00:00Z', ncp: 500000, npp: 200000 }),
+      ];
+      const result = formatGreekFlowForClaude(rows)!;
+
+      expect(result).toContain('rising (bullish delta accumulation)');
+      expect(result).toContain('falling (intent-weighted bearish)');
+    });
+
+    it('shows direction: flat when latest equals first', () => {
+      const rows = [
+        makeFlowRow({ timestamp: '2026-03-24T14:00:00Z', ncp: 500000, npp: 300000 }),
+        makeFlowRow({ timestamp: '2026-03-24T15:00:00Z', ncp: 500000, npp: 300000 }),
+      ];
+      const result = formatGreekFlowForClaude(rows)!;
+
+      expect(result).toContain('Direction: Total delta flat');
+      expect(result).toContain('Dir delta: flat');
+    });
+
+    it('detects DIVERGENCE: Total delta positive but directionalized negative', () => {
+      const rows = [
+        makeFlowRow({ ncp: 500000, npp: -200000 }),
+      ];
+      const result = formatGreekFlowForClaude(rows)!;
+
+      expect(result).toContain('DIVERGENCE: Total delta positive but directionalized negative');
+    });
+
+    it('detects DIVERGENCE: Total delta negative but directionalized positive', () => {
+      const rows = [
+        makeFlowRow({ ncp: -500000, npp: 200000 }),
+      ];
+      const result = formatGreekFlowForClaude(rows)!;
+
+      expect(result).toContain('DIVERGENCE: Total delta negative but directionalized positive');
+    });
+
+    it('no divergence line when signs agree', () => {
+      const rows = [
+        makeFlowRow({ ncp: 500000, npp: 300000 }),
+      ];
+      const result = formatGreekFlowForClaude(rows)!;
+
+      expect(result).not.toContain('DIVERGENCE');
+    });
+
+    it('shows recent history section when rows.length > 1', () => {
+      const rows = [
+        makeFlowRow({ timestamp: '2026-03-24T14:00:00Z' }),
+        makeFlowRow({ timestamp: '2026-03-24T15:00:00Z' }),
+      ];
+      const result = formatGreekFlowForClaude(rows)!;
+
+      expect(result).toContain('Recent History (5-min intervals)');
+    });
+
+    it('omits recent history when only 1 row', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow()])!;
+
+      expect(result).not.toContain('Recent History');
+    });
+
+    it('shows at most 6 recent rows in history', () => {
+      const rows = Array.from({ length: 10 }, (_, i) =>
+        makeFlowRow({ timestamp: `2026-03-24T14:${String(i * 5).padStart(2, '0')}:00Z` }),
+      );
+      const result = formatGreekFlowForClaude(rows)!;
+
+      const historySection = result.split('Recent History (5-min intervals):')[1]!;
+      const historyLines = historySection
+        .split('\n')
+        .filter((l) => l.includes('ET —'));
+      expect(historyLines).toHaveLength(6);
+    });
+
+    it('handles null netVolume (shows N/A)', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow({ netVolume: null })])!;
+
+      expect(result).toContain('Volume: N/A');
+    });
+
+    it('formatDeltaVal formats millions (output contains "+X.XM")', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow({ ncp: 2_500_000 })])!;
+
+      expect(result).toContain('+2.5M');
+    });
+
+    it('formatDeltaVal formats thousands (output contains "+X.XK")', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow({ ncp: 45_000 })])!;
+
+      expect(result).toContain('+45.0K');
+    });
+
+    it('formatDeltaVal formats zero as "0"', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow({ ncp: 0, npp: 0 })])!;
+
+      expect(result).toMatch(/Total Delta Flow: 0/);
+    });
+
+    it('formatDeltaVal formats small values', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow({ ncp: 750 })])!;
+
+      expect(result).toContain('+750');
+    });
+
+    it('formatDeltaVal formats negative values', () => {
+      const result = formatGreekFlowForClaude([makeFlowRow({ ncp: -1_200_000 })])!;
+
+      expect(result).toContain('-1.2M');
     });
   });
 });

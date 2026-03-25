@@ -27,6 +27,8 @@ vi.mock('../_lib/db.js', () => ({
 vi.mock('../_lib/db-strike-helpers.js', () => ({
   getStrikeExposures: vi.fn().mockResolvedValue([]),
   formatStrikeExposuresForClaude: vi.fn().mockReturnValue(null),
+  getAllExpiryStrikeExposures: vi.fn().mockResolvedValue([]),
+  formatAllExpiryStrikesForClaude: vi.fn().mockReturnValue(null),
 }));
 
 vi.mock('../_lib/lessons.js', () => ({
@@ -57,6 +59,7 @@ vi.mock('@anthropic-ai/sdk', () => {
 import handler from '../analyze.js';
 import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { getActiveLessons, formatLessonsBlock } from '../_lib/lessons.js';
+import { getFlowData } from '../_lib/db.js';
 
 /** Minimal valid request body */
 function makeBody(
@@ -165,10 +168,10 @@ describe('POST /api/analyze', () => {
     expect(res._json).toEqual({ error: 'At least one image is required' });
   });
 
-  it('returns 400 when more than 9 images', async () => {
+  it('returns 400 when more than 2 images', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
-    const images = Array.from({ length: 10 }, () => ({
+    const images = Array.from({ length: 3 }, () => ({
       data: 'base64',
       mediaType: 'image/png',
     }));
@@ -177,7 +180,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Maximum 9 images allowed' });
+    expect(res._json).toEqual({ error: 'Maximum 2 images allowed' });
   });
 
   it('returns parsed analysis on success', async () => {
@@ -226,7 +229,6 @@ describe('POST /api/analyze', () => {
     const images = [
       { data: 'img1', mediaType: 'image/png' },
       { data: 'img2', mediaType: 'image/jpeg' },
-      { data: 'img3', mediaType: 'image/png' },
     ];
     const req = mockRequest({ method: 'POST', body: makeBody({ images }) });
     const res = mockResponse();
@@ -234,8 +236,8 @@ describe('POST /api/analyze', () => {
 
     expect(res._status).toBe(200);
     const params = mockStream.mock.calls[0]![0];
-    // 3 × (text label + image block) + 1 context text block = 7
-    expect(params.messages[0].content).toHaveLength(7);
+    // 2 × (text label + image block) + 1 context text block = 5
+    expect(params.messages[0].content).toHaveLength(5);
   });
 
   it('returns 502 when Anthropic API returns 429', async () => {
@@ -670,5 +672,45 @@ describe('POST /api/analyze', () => {
     // Structure rules and data handling should still be present
     expect(systemText).toContain('</structure_selection_rules>');
     expect(systemText).toContain('<data_handling>');
+  });
+
+  it('continues analysis when flow data fetch throws', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    // Make one of the flow data functions throw
+    vi.mocked(getFlowData).mockRejectedValueOnce(
+      new Error('DB connection lost'),
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Analysis should still succeed despite flow data failure
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
+
+  it('continues analysis when lessons fetch throws', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    vi.mocked(getActiveLessons).mockRejectedValueOnce(
+      new Error('Lessons DB error'),
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+    // System prompt should NOT contain lessons block
+    const params = mockStream.mock.calls[0]![0];
+    const systemText = params.system[0].text;
+    expect(systemText).not.toContain('<lessons_learned>');
   });
 });

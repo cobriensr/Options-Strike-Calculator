@@ -13,7 +13,7 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import handler from '../journal/migrate.js';
-import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
 import { migrateDb } from '../_lib/db.js';
 
 describe('POST /api/journal/migrate', () => {
@@ -70,6 +70,15 @@ describe('POST /api/journal/migrate', () => {
 
     expect(res._status).toBe(500);
     expect((res._json as { error: string }).error).toBe('DB unreachable');
+  });
+
+  it('returns 403 when bot detected', async () => {
+    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'POST' }), res);
+    expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
   });
 
   it('is idempotent (safe to call multiple times)', async () => {

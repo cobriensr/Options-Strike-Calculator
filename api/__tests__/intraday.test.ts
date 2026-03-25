@@ -16,6 +16,7 @@ import {
   rejectIfNotOwner,
   schwabFetch,
   isMarketOpen,
+  checkBot,
 } from '../_lib/api-helpers.js';
 
 /**
@@ -109,6 +110,28 @@ describe('GET /api/intraday', () => {
     expect(json).toHaveProperty('today');
     expect(json).toHaveProperty('openingRange');
     expect(json).toHaveProperty('candleCount');
+  });
+
+  it('returns 403 when bot detected', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+    expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
+  });
+
+  it('returns 500 when handler throws unexpected error', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(schwabFetch).mockImplementation(() => {
+      throw new Error('Crash');
+    });
+
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal server error' });
   });
 
   it('handles empty candle data', async () => {
