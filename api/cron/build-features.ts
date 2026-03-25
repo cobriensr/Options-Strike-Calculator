@@ -415,6 +415,14 @@ function engineerStrikeFeatures(
   return features;
 }
 
+/** Normalize a Neon DATE value to YYYY-MM-DD string. */
+function toDateStr(val: unknown): string {
+  const s = String(val);
+  // Neon returns DATE as "2026-02-09T00:00:00.000Z" — extract just the date part
+  if (s.includes('T')) return s.split('T')[0]!;
+  return s;
+}
+
 /** Compute feature completeness as fraction of non-null values. */
 function computeCompleteness(features: FeatureRow): number {
   const keys = Object.keys(features).filter(
@@ -469,10 +477,11 @@ async function buildFeaturesForDate(
     features.is_event_day = s.is_event_day;
   }
 
-  // Day of week from date string
-  const d = new Date(dateStr + 'T12:00:00-05:00');
-  features.day_of_week = d.getDay();
-  features.is_friday = d.getDay() === 5;
+  // Day of week from date string (use noon ET to avoid DST edge cases)
+  const d = new Date(`${dateStr}T12:00:00-05:00`);
+  const dow = Number.isNaN(d.getTime()) ? null : d.getDay();
+  features.day_of_week = dow;
+  features.is_friday = dow === 5;
 
   // 2. Flow checkpoint features
   const allFlowRows = (await sql`
@@ -991,7 +1000,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const rows = await sql`
         SELECT DISTINCT date FROM flow_data ORDER BY date ASC
       `;
-      dates = rows.map((r) => r.date as string);
+      dates = rows.map((r) => toDateStr(r.date));
     } else {
       // Check if table is empty (first run = automatic backfill)
       const countResult =
@@ -1002,7 +1011,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const rows = await sql`
           SELECT DISTINCT date FROM flow_data ORDER BY date ASC
         `;
-        dates = rows.map((r) => r.date as string);
+        dates = rows.map((r) => toDateStr(r.date));
         logger.info(
           { dates: dates.length },
           'build-features: empty table, backfilling all dates',
