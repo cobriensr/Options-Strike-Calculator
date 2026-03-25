@@ -106,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const end = now.getTime();
 
     const intradayResult = await schwabFetch<PriceHistoryResponse>(
-      `/$SPX/pricehistory?periodType=day&frequencyType=minute&frequency=5` +
+      `/pricehistory?symbol=$SPX&periodType=day&frequencyType=minute&frequency=5` +
         `&startDate=${start}&endDate=${end}&needExtendedHoursData=false`,
     );
 
@@ -220,7 +220,7 @@ async function handleBackfill(res: VercelResponse) {
     const twoMonthsAgo = now - 62 * 24 * 60 * 60 * 1000;
 
     const spxResult = await schwabFetch<DailyHistoryResponse>(
-      `/$SPX/pricehistory?periodType=month&period=2&frequencyType=daily&frequency=1`,
+      `/pricehistory?symbol=$SPX&periodType=month&period=2&frequencyType=daily&frequency=1`,
     );
 
     if ('error' in spxResult) {
@@ -229,7 +229,7 @@ async function handleBackfill(res: VercelResponse) {
 
     // Also fetch VIX daily candles for the same period
     const vixResult = await schwabFetch<DailyHistoryResponse>(
-      `/$VIX/pricehistory?periodType=month&period=2&frequencyType=daily&frequency=1`,
+      `/pricehistory?symbol=$VIX&periodType=month&period=2&frequencyType=daily&frequency=1`,
     );
 
     const vixByDate = new Map<string, DailyCandle>();
