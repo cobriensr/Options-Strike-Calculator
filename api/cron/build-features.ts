@@ -661,6 +661,154 @@ async function buildFeaturesForDate(
     features.gamma_0dte_allexp_agree = agrees;
   }
 
+  // 6. Phase 2 features: Previous day, realized vol, events, VIX term structure
+
+  // Previous day features (from outcomes table)
+  const prevDayRows = await sql`
+    SELECT date, day_range_pts, close_vs_open, vix_close,
+           CASE WHEN close_vs_open > 0 THEN 'UP' ELSE 'DOWN' END AS direction,
+           CASE
+             WHEN day_range_pts < 30 THEN 'NARROW'
+             WHEN day_range_pts < 60 THEN 'NORMAL'
+             WHEN day_range_pts < 100 THEN 'WIDE'
+             ELSE 'EXTREME'
+           END AS range_cat
+    FROM outcomes
+    WHERE date < ${dateStr}
+    ORDER BY date DESC
+    LIMIT 10
+  `;
+
+  if (prevDayRows.length > 0) {
+    const prev = prevDayRows[0]!;
+    features.prev_day_range_pts = num(prev.day_range_pts);
+    features.prev_day_direction = prev.direction as string;
+    features.prev_day_range_cat = prev.range_cat as string;
+
+    // VIX change: today's VIX minus yesterday's VIX close
+    if (features.vix != null && prev.vix_close != null) {
+      features.prev_day_vix_change = features.vix - Number(prev.vix_close);
+    }
+  }
+
+  // Realized volatility (from recent outcomes)
+  if (prevDayRows.length >= 5) {
+    const returns5 = prevDayRows.slice(0, 5).map((r) => {
+      const range = Number(r.day_range_pts ?? 0);
+      return range; // Use range as vol proxy
+    });
+    if (returns5.length >= 5) {
+      const mean5 = returns5.reduce((a, b) => a + b, 0) / returns5.length;
+      const variance5 =
+        returns5.reduce((a, b) => a + (b - mean5) ** 2, 0) /
+        (returns5.length - 1);
+      features.realized_vol_5d = Math.sqrt(variance5);
+    }
+  }
+
+  if (prevDayRows.length >= 10) {
+    const returns10 = prevDayRows
+      .slice(0, 10)
+      .map((r) => Number(r.day_range_pts ?? 0));
+    const mean10 = returns10.reduce((a, b) => a + b, 0) / returns10.length;
+    const variance10 =
+      returns10.reduce((a, b) => a + (b - mean10) ** 2, 0) /
+      (returns10.length - 1);
+    features.realized_vol_10d = Math.sqrt(variance10);
+  }
+
+  // RV/IV ratio
+  if (
+    features.realized_vol_5d != null &&
+    features.vix != null &&
+    features.vix > 0
+  ) {
+    // VIX is annualized %, realized_vol_5d is in pts - normalize by dividing by SPX level
+    const spx = features.spx_open ?? 5500;
+    const rv_pct = (features.realized_vol_5d / spx) * Math.sqrt(252) * 100;
+    features.rv_iv_ratio = rv_pct / features.vix;
+  }
+
+  // VIX term structure
+  if (
+    features.vix1d != null &&
+    features.vix9d != null &&
+    features.vix != null &&
+    features.vix > 0
+  ) {
+    features.vix_term_slope = (features.vix9d - features.vix1d) / features.vix;
+  }
+
+  // VVIX percentile (trailing 20-day)
+  if (features.vvix != null) {
+    const vvixHistory = await sql`
+      SELECT vvix FROM training_features
+      WHERE date < ${dateStr} AND vvix IS NOT NULL
+      ORDER BY date DESC LIMIT 20
+    `;
+    if (vvixHistory.length >= 10) {
+      const vvixValues = vvixHistory.map((r) => Number(r.vvix));
+      const belowCount = vvixValues.filter((v) => v <= features.vvix!).length;
+      features.vvix_percentile = belowCount / vvixValues.length;
+    }
+  }
+
+  // Economic event features (from economic_events table)
+  const eventRows = await sql`
+    SELECT event_name, event_type, event_time
+    FROM economic_events
+    WHERE date = ${dateStr}
+  `;
+
+  if (eventRows.length > 0) {
+    features.event_count = eventRows.length;
+    // Use the most significant event type
+    const types = new Set(eventRows.map((r) => r.event_type as string));
+    const priority = [
+      'FOMC',
+      'CPI',
+      'PCE',
+      'JOBS',
+      'GDP',
+      'PMI',
+      'RETAIL',
+      'SENTIMENT',
+      'OTHER',
+    ];
+    features.event_type = priority.find((p) => types.has(p)) ?? null;
+    features.is_fomc = types.has('FOMC');
+    features.is_opex = false; // Will be derived from date (3rd Friday logic)
+  } else {
+    features.event_count = 0;
+    features.is_fomc = false;
+  }
+
+  // Check if today is OPEX (3rd Friday of month)
+  const opexDate = new Date(`${dateStr}T12:00:00-05:00`);
+  if (!Number.isNaN(opexDate.getTime()) && opexDate.getDay() === 5) {
+    const dayOfMonth = opexDate.getDate();
+    features.is_opex = dayOfMonth >= 15 && dayOfMonth <= 21;
+  }
+
+  // Days to next event
+  const nextEventRow = await sql`
+    SELECT MIN(date) AS next_date
+    FROM economic_events
+    WHERE date > ${dateStr}
+  `;
+  if (nextEventRow.length > 0 && nextEventRow[0]!.next_date != null) {
+    const nextDate = new Date(String(nextEventRow[0]!.next_date));
+    const thisDate = new Date(`${dateStr}T12:00:00-05:00`);
+    if (
+      !Number.isNaN(nextDate.getTime()) &&
+      !Number.isNaN(thisDate.getTime())
+    ) {
+      features.days_to_next_event = Math.round(
+        (nextDate.getTime() - thisDate.getTime()) / (24 * 60 * 60 * 1000),
+      );
+    }
+  }
+
   features.feature_completeness = computeCompleteness(features);
 
   return features;
@@ -831,7 +979,11 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       gamma_asymmetry, charm_slope,
       charm_max_pos_dist, charm_max_neg_dist,
       gamma_0dte_allexp_agree, charm_pattern,
-      feature_completeness
+      feature_completeness,
+      prev_day_range_pts, prev_day_direction, prev_day_vix_change, prev_day_range_cat,
+      realized_vol_5d, realized_vol_10d, rv_iv_ratio,
+      vix_term_slope, vvix_percentile,
+      event_type, is_fomc, is_opex, days_to_next_event, event_count
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -864,7 +1016,11 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.gamma_asymmetry}, ${f.charm_slope},
       ${f.charm_max_pos_dist}, ${f.charm_max_neg_dist},
       ${f.gamma_0dte_allexp_agree}, ${f.charm_pattern},
-      ${f.feature_completeness}
+      ${f.feature_completeness},
+      ${f.prev_day_range_pts}, ${f.prev_day_direction}, ${f.prev_day_vix_change}, ${f.prev_day_range_cat},
+      ${f.realized_vol_5d}, ${f.realized_vol_10d}, ${f.rv_iv_ratio},
+      ${f.vix_term_slope}, ${f.vvix_percentile},
+      ${f.event_type}, ${f.is_fomc}, ${f.is_opex}, ${f.days_to_next_event}, ${f.event_count}
     )
     ON CONFLICT (date) DO UPDATE SET
       vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
@@ -930,7 +1086,21 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       charm_max_neg_dist = EXCLUDED.charm_max_neg_dist,
       gamma_0dte_allexp_agree = EXCLUDED.gamma_0dte_allexp_agree,
       charm_pattern = EXCLUDED.charm_pattern,
-      feature_completeness = EXCLUDED.feature_completeness
+      feature_completeness = EXCLUDED.feature_completeness,
+      prev_day_range_pts = EXCLUDED.prev_day_range_pts,
+      prev_day_direction = EXCLUDED.prev_day_direction,
+      prev_day_vix_change = EXCLUDED.prev_day_vix_change,
+      prev_day_range_cat = EXCLUDED.prev_day_range_cat,
+      realized_vol_5d = EXCLUDED.realized_vol_5d,
+      realized_vol_10d = EXCLUDED.realized_vol_10d,
+      rv_iv_ratio = EXCLUDED.rv_iv_ratio,
+      vix_term_slope = EXCLUDED.vix_term_slope,
+      vvix_percentile = EXCLUDED.vvix_percentile,
+      event_type = EXCLUDED.event_type,
+      is_fomc = EXCLUDED.is_fomc,
+      is_opex = EXCLUDED.is_opex,
+      days_to_next_event = EXCLUDED.days_to_next_event,
+      event_count = EXCLUDED.event_count
   `;
 }
 

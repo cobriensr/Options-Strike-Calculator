@@ -432,6 +432,7 @@ describe('db.ts', () => {
         { id: 8 },
         { id: 9 },
         { id: 10 },
+        { id: 11 },
       ]);
 
       const applied = await migrateDb();
@@ -460,9 +461,10 @@ describe('db.ts', () => {
         '#8: Create strike_exposures table for per-strike Greek profile',
         '#9: Create training_features table for daily ML feature vectors',
         '#10: Create day_labels table for ML labels extracted from reviews',
+        '#11: Create economic_events table and add Phase 2 features to training_features',
       ]);
-      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert + 3 migration #4 + 1 insert + 3 migration #5 + 1 insert + 2 migration #6 + 1 insert + 2 migration #7 + 1 insert + 4 migration #8 + 1 insert + 1 migration #9 + 1 insert + 2 migration #10 + 1 insert = 37
-      expect(mockSql).toHaveBeenCalledTimes(37);
+      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert + 3 migration #4 + 1 insert + 3 migration #5 + 1 insert + 2 migration #6 + 1 insert + 2 migration #7 + 1 insert + 4 migration #8 + 1 insert + 1 migration #9 + 1 insert + 2 migration #10 + 1 insert + 3 migration #11 + 1 insert = 41
+      expect(mockSql).toHaveBeenCalledTimes(41);
     });
 
     it('propagates errors from migration SQL', async () => {

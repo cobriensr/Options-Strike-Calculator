@@ -491,10 +491,19 @@ describe('build-features handler', () => {
       { strike: '5700', call_gamma_oi: '100000', put_gamma_oi: '80000' },
     ]);
 
-    // Call 8: upsertFeatures INSERT
+    // Call 8: prev day outcomes
+    mockSql.mockResolvedValueOnce([]);
+    // Call 9: vvixHistory (runs because snapshot has vvix)
+    mockSql.mockResolvedValueOnce([]);
+    // Call 10: economic events
+    mockSql.mockResolvedValueOnce([]);
+    // Call 11: next event
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 9: extractLabelsForDate — analyses (no review found)
+    // Call 12: upsertFeatures INSERT
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 13: extractLabelsForDate — analyses (no review found)
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
@@ -509,8 +518,7 @@ describe('build-features handler', () => {
       errors: 0,
     });
 
-    // Verify upsertFeatures was called (call index 7 = the INSERT call)
-    expect(mockSql).toHaveBeenCalledTimes(9);
+    expect(mockSql).toHaveBeenCalledTimes(13);
   });
 
   it('extracts labels from review analyses with outcomes', async () => {
@@ -521,13 +529,14 @@ describe('build-features handler', () => {
     // Call 1 (handler): SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
 
-    // Calls 2-7 (buildFeaturesForDate): all empty
-    for (let i = 0; i < 6; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-10 (buildFeaturesForDate): all empty
+    // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
 
-    // Call 8: upsertFeatures INSERT
+    // Call 11: upsertFeatures INSERT
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 9 (extractLabelsForDate): SELECT from analyses
+    // Call 12 (extractLabelsForDate): SELECT from analyses
     mockSql.mockResolvedValueOnce([
       {
         id: 42,
@@ -548,7 +557,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 10 (extractLabelsForDate): SELECT from outcomes
+    // Call 13 (extractLabelsForDate): SELECT from outcomes
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5720,
@@ -559,14 +568,14 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 11 (extractLabelsForDate): SELECT from flow_data (for flow_was_directional)
+    // Call 14 (extractLabelsForDate): SELECT from flow_data (for flow_was_directional)
     mockSql.mockResolvedValueOnce([
       { timestamp: ts(14, 30), source: 'market_tide', ncp: '500000' },
       { timestamp: ts(14, 30), source: 'spx_flow', ncp: '300000' },
       { timestamp: ts(14, 30), source: 'spy_flow', ncp: '200000' },
     ]);
 
-    // Call 12: upsertLabels INSERT
+    // Call 15: upsertLabels INSERT
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
@@ -587,12 +596,13 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-7: buildFeaturesForDate queries → empty
-    for (let i = 0; i < 6; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 8: upsertFeatures
+    // Calls 2-10: buildFeaturesForDate queries → empty
+    // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 9: analyses — full_response is already an object (not a string)
+    // Call 13: analyses — full_response is already an object (not a string)
     mockSql.mockResolvedValueOnce([
       {
         id: 99,
@@ -606,7 +616,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 10: outcomes — settlement < open → DOWN
+    // Call 14: outcomes — settlement < open → DOWN
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5680,
@@ -617,10 +627,10 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 11: flow_data for flow_was_directional
+    // Call 15: flow_data for flow_was_directional
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 12: upsertLabels
+    // Call 16: upsertLabels
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
@@ -636,12 +646,13 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-7: buildFeaturesForDate → empty
-    for (let i = 0; i < 6; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 8: upsertFeatures
+    // Calls 2-10: buildFeaturesForDate queries → empty
+    // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 9: analyses — invalid JSON in full_response
+    // Call 13: analyses — invalid JSON in full_response
     mockSql.mockResolvedValueOnce([{ id: 55, full_response: '{invalid json' }]);
 
     const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
@@ -673,12 +684,13 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-7: buildFeaturesForDate → empty
-    for (let i = 0; i < 6; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 8: upsertFeatures
+    // Calls 2-10: buildFeaturesForDate queries → empty
+    // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 9: analyses with minimal review
+    // Call 13: analyses with minimal review
     mockSql.mockResolvedValueOnce([
       {
         id: 10,
@@ -686,7 +698,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 10: outcomes — EXTREME range (120 pts), FLAT settlement
+    // Call 14: outcomes — EXTREME range (120 pts), FLAT settlement
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5700,
@@ -697,10 +709,10 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 11: flow_data
+    // Call 15: flow_data
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 12: upsertLabels
+    // Call 16: upsertLabels
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });

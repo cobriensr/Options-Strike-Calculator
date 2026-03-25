@@ -565,6 +565,45 @@ const MIGRATIONS: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_day_labels_analysis ON day_labels (analysis_id)`;
     },
   },
+  {
+    id: 11,
+    description:
+      'Create economic_events table and add Phase 2 features to training_features',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS economic_events (
+          id              SERIAL PRIMARY KEY,
+          date            DATE NOT NULL,
+          event_name      TEXT NOT NULL,
+          event_time      TIMESTAMPTZ,
+          event_type      TEXT NOT NULL,
+          forecast        TEXT,
+          previous        TEXT,
+          reported_period TEXT,
+          created_at      TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(date, event_name, event_time)
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_economic_events_date ON economic_events(date)`;
+      await sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS prev_day_range_pts   DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS prev_day_direction   TEXT,
+          ADD COLUMN IF NOT EXISTS prev_day_vix_change  DECIMAL(6,2),
+          ADD COLUMN IF NOT EXISTS prev_day_range_cat   TEXT,
+          ADD COLUMN IF NOT EXISTS realized_vol_5d      DECIMAL(10,6),
+          ADD COLUMN IF NOT EXISTS realized_vol_10d     DECIMAL(10,6),
+          ADD COLUMN IF NOT EXISTS rv_iv_ratio          DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS vix_term_slope       DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS vvix_percentile      DECIMAL(5,4),
+          ADD COLUMN IF NOT EXISTS event_type           TEXT,
+          ADD COLUMN IF NOT EXISTS is_fomc              BOOLEAN,
+          ADD COLUMN IF NOT EXISTS is_opex              BOOLEAN,
+          ADD COLUMN IF NOT EXISTS days_to_next_event   INTEGER,
+          ADD COLUMN IF NOT EXISTS event_count          INTEGER
+      `;
+    },
+  },
 ];
 
 /**
