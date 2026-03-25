@@ -147,7 +147,7 @@ describe('useImageUpload', () => {
 
     const files = [makeFile('a.png'), makeFile('b.png')];
     const event = {
-      target: { files, value: 'C:\\fakepath\\a.png' },
+      target: { files, value: String.raw`C:\fakepath\a.png` },
     } as unknown as React.ChangeEvent<HTMLInputElement>;
 
     act(() => {

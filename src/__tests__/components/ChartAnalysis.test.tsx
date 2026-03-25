@@ -286,9 +286,9 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
-      expect(screen.getAllByText(/Periscope (Gamma)/).length).toBeGreaterThanOrEqual(
-        1,
-      );
+      expect(
+        screen.getAllByText(/Periscope \(Gamma\)/).length,
+      ).toBeGreaterThanOrEqual(1);
     });
 
     it('returns to normal state when Go Back is clicked', async () => {
@@ -600,9 +600,9 @@ describe('ChartAnalysis', () => {
 
     it('chart confidence cards are always visible', async () => {
       await renderFull();
-      expect(screen.getAllByText('Periscope (Gamma)').length).toBeGreaterThanOrEqual(
-        1,
-      );
+      expect(
+        screen.getAllByText('Periscope (Gamma)').length,
+      ).toBeGreaterThanOrEqual(1);
       expect(screen.getByText('BEARISH')).toBeInTheDocument();
     });
 
