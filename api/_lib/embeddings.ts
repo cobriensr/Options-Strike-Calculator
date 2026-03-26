@@ -10,6 +10,7 @@
 
 import OpenAI from 'openai';
 import { getDb } from './db.js';
+import logger from './logger.js';
 
 // ============================================================
 // OPENAI CLIENT (lazy singleton, same pattern as db.ts)
@@ -54,7 +55,7 @@ export async function generateEmbedding(
     });
     return response.data[0]?.embedding ?? null;
   } catch (err) {
-    console.error('Embedding error:', err instanceof Error ? err.message : err);
+    logger.error({ err }, 'Embedding generation failed');
     return null;
   }
 }
@@ -79,6 +80,10 @@ export async function findSimilarLessons(
   embedding: number[],
   limit: number = 5,
 ): Promise<SimilarLesson[]> {
+  if (!embedding.every((v) => typeof v === 'number' && Number.isFinite(v))) {
+    throw new Error('Invalid embedding: all values must be finite numbers');
+  }
+  const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 50);
   const sql = getDb();
   const vectorLiteral = `[${embedding.join(',')}]`;
 
@@ -87,7 +92,7 @@ export async function findSimilarLessons(
     FROM lessons
     WHERE status = 'active'
     ORDER BY embedding <=> ${vectorLiteral}::vector
-    LIMIT ${limit}
+    LIMIT ${safeLimit}
   `;
 
   return rows.map((row) => ({

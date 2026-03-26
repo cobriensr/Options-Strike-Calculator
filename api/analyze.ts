@@ -638,7 +638,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         type: 'image',
         source: {
           type: 'base64',
-          media_type: img.mediaType as ImageMediaType,
+          media_type: img.mediaType,
           data: img.data,
         },
       },

@@ -16,9 +16,11 @@
  * Environment: DATABASE_URL, OWNER_SECRET
  */
 
+import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
+import logger from '../_lib/logger.js';
 
 /** Normalize Neon Date objects to YYYY-MM-DD strings in result rows. */
 function normalizeDates(
@@ -35,11 +37,23 @@ function normalizeDates(
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const done = metrics.request('/api/ml/export');
+
   if (req.method !== 'GET') {
+    done({ status: 405 });
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (rejectIfNotOwner(req, res)) return;
+  const botCheck = await checkBot(req);
+  if (botCheck.isBot) {
+    done({ status: 403 });
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  if (rejectIfNotOwner(req, res)) {
+    done({ status: 401 });
+    return;
+  }
 
   const after = (req.query.after as string) || null;
   const before = (req.query.before as string) || null;
@@ -106,14 +120,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         'Content-Disposition',
         'attachment; filename="ml-training-data.csv"',
       );
+      done({ status: 200 });
       return res.status(200).send(csvLines.join('\n'));
     }
 
     res.setHeader('Cache-Control', 'no-store');
+    done({ status: 200 });
     return res.status(200).json(normalized);
   } catch (err) {
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : 'Export failed',
-    });
+    done({ status: 500, error: 'unhandled' });
+    Sentry.captureException(err);
+    logger.error({ err }, 'ml/export error');
+    return res.status(500).json({ error: 'Internal error' });
   }
 }

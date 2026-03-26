@@ -77,13 +77,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     Sentry.captureException(err);
     return res.status(500).json({
       connected: false,
-      error: err instanceof Error ? err.message : 'Unknown error',
-      envVarsFound: [
-        'DATABASE_URL',
-        'POSTGRES_URL',
-        'POSTGRES_PRISMA_URL',
-        'NEON_DATABASE_URL',
-      ].filter((key) => !!process.env[key]),
+      error: 'Database connection failed',
     });
   }
 }

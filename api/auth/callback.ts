@@ -11,7 +11,7 @@
 
 import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { storeInitialTokens } from '../_lib/schwab.js';
+import { storeInitialTokens, redis } from '../_lib/schwab.js';
 import { OWNER_COOKIE, OWNER_COOKIE_MAX_AGE } from '../_lib/api-helpers.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -32,6 +32,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .status(500)
           .json({ error: 'OWNER_SECRET environment variable must be set' });
       }
+
+      const state = req.query.state;
+      if (!state || typeof state !== 'string') {
+        done({ status: 400 });
+        return res
+          .status(400)
+          .json({ error: 'Missing state parameter' });
+      }
+
+      const validState = await redis.get(`oauth:state:${state}`);
+      if (!validState) {
+        done({ status: 400 });
+        return res
+          .status(400)
+          .json({ error: 'Invalid or expired state parameter' });
+      }
+      await redis.del(`oauth:state:${state}`);
 
       const host = req.headers.host || 'localhost:3000';
       const protocol = host.includes('localhost') ? 'http' : 'https';

@@ -147,8 +147,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     logger.error({ err }, 'analyses endpoint error');
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : 'Failed to fetch analyses',
-    });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }

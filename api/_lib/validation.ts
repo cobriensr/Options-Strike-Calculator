@@ -19,7 +19,7 @@ export const analyzeImageSchema = z.object({
     .string()
     .min(1, 'Image data is required')
     .max(MAX_IMAGE_SIZE, 'Image too large. Maximum 5MB per image.'),
-  mediaType: z.string().min(1, 'mediaType is required'),
+  mediaType: z.enum(['image/jpeg', 'image/png', 'image/gif', 'image/webp']),
   label: z.string().optional(),
 });
 

@@ -126,8 +126,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const cronSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers.authorization;
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -165,8 +164,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (err) {
     logger.error({ err }, 'fetch-zero-dte-flow error');
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : 'Fetch failed',
-    });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }

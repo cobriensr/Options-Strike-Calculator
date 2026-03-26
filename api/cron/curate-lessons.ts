@@ -113,8 +113,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Auth check
-  const expected = `Bearer ${process.env.CRON_SECRET}`;
-  if (req.headers.authorization !== expected) {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -500,11 +500,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.end();
   } catch (err) {
     logger.error({ err }, 'Curation cron failed');
-    return res.status(500).json({
-      error: 'Curation failed',
-      message: err instanceof Error ? err.message : String(err),
-      stack: err instanceof Error ? err.stack : undefined,
-    });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }
 

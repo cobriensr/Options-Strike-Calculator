@@ -15,6 +15,8 @@
  *   UPSTASH_REDIS_REST_TOKEN — Auto-set when Upstash Redis is linked in Vercel
  */
 
+import { randomBytes } from 'crypto';
+
 import { Redis } from '@upstash/redis';
 import logger from './logger.js';
 
@@ -357,16 +359,27 @@ export async function storeInitialTokens(
 
 /**
  * Build the Schwab OAuth authorization URL for manual login.
+ * Generates a random state nonce and stores it in Redis (10 min TTL)
+ * to prevent CSRF attacks on the OAuth callback.
  */
-export function getAuthUrl(redirectUri: string): string | null {
+export async function getAuthUrl(
+  redirectUri: string,
+): Promise<{ url: string; state: string } | null> {
   const creds = getCredentials();
   if (!creds) return null;
+
+  const state = randomBytes(32).toString('hex');
+  await redis.set(`oauth:state:${state}`, '1', { ex: 600 });
 
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: creds.clientId,
     redirect_uri: redirectUri,
+    state,
   });
 
-  return `https://api.schwabapi.com/v1/oauth/authorize?${params.toString()}`;
+  return {
+    url: `https://api.schwabapi.com/v1/oauth/authorize?${params.toString()}`,
+    state,
+  };
 }

@@ -463,9 +463,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const fredKey = process.env.FRED_API_KEY;
       if (!fredKey) {
         done({ status: 500 });
+        logger.error('FRED_API_KEY not configured');
         return res
           .status(500)
-          .json({ error: 'FRED_API_KEY environment variable must be set' });
+          .json({ error: 'Service temporarily unavailable' });
       }
       const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
 

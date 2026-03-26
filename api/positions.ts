@@ -659,6 +659,11 @@ async function handleCSVUpload(
       return res.status(400).json({ error: 'Empty CSV body' });
     }
 
+    const MAX_CSV_BYTES = 1_024_000; // ~1MB
+    if (csv.length > MAX_CSV_BYTES) {
+      return res.status(413).json({ error: 'CSV too large. Maximum 1MB.' });
+    }
+
     const { legs: spxLegs, closed } = parsePaperMoneyCSV(csv);
     if (spxLegs.length === 0) {
       return res.status(400).json({
