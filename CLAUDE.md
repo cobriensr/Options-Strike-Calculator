@@ -81,16 +81,16 @@ npm run format       # prettier --write
 
 Required env vars (pulled via `vercel env pull .env.local`):
 
-| Variable | Source |
-|---|---|
-| `DATABASE_URL` | Neon Postgres (Vercel Marketplace) |
-| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | Upstash Redis (Vercel Marketplace) |
-| `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET` | Schwab developer portal |
-| `ANTHROPIC_API_KEY` | Anthropic |
-| `OPENAI_API_KEY` | OpenAI |
-| `SENTRY_DSN`, `SENTRY_AUTH_TOKEN` | Sentry |
-| `CRON_SECRET` | Vercel (cron job auth) |
-| `UW_API_TOKEN` | Unusual Whales |
+| Variable                                   | Source                             |
+| ------------------------------------------ | ---------------------------------- |
+| `DATABASE_URL`                             | Neon Postgres (Vercel Marketplace) |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN`     | Upstash Redis (Vercel Marketplace) |
+| `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET` | Schwab developer portal            |
+| `ANTHROPIC_API_KEY`                        | Anthropic                          |
+| `OPENAI_API_KEY`                           | OpenAI                             |
+| `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                             |
+| `CRON_SECRET`                              | Vercel (cron job auth)             |
+| `UW_API_TOKEN`                             | Unusual Whales                     |
 
 Never edit `.env*` files with Claude. Never commit secrets.
 
