@@ -4,12 +4,10 @@ import SpotPriceSection from '../../components/SpotPriceSection';
 import { theme } from '../../themes';
 
 const th = theme;
-const inputCls = 'test-input';
 
 function defaults(overrides: Record<string, unknown> = {}) {
   return {
     th,
-    inputCls,
     spotPrice: '550',
     onSpotChange: vi.fn(),
     spxDirect: '',

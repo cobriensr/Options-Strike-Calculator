@@ -1,12 +1,12 @@
 import type { Theme } from '../themes';
 import type { VIXDayData, OHLCField } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
+import { inputCls } from '../utils/ui-utils';
 import EventDayWarning from './EventDayWarning';
 import type { EventItem } from '../types/api';
 
 interface Props {
   th: Theme;
-  inputCls: string;
   selectedDate: string;
   onDateChange: (date: string) => void;
   vixOHLC: VIXDayData | null;
@@ -17,7 +17,6 @@ interface Props {
 
 export default function DateLookupSection({
   th,
-  inputCls,
   selectedDate,
   onDateChange,
   vixOHLC,

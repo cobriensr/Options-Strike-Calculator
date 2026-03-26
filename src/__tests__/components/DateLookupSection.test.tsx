@@ -6,7 +6,6 @@ import { theme } from '../../themes';
 import type { VIXDayData, OHLCField } from '../../types';
 
 const th = theme;
-const inputCls = 'test-input';
 
 function renderSection(
   overrides: Partial<{
@@ -20,7 +19,6 @@ function renderSection(
   return render(
     <DateLookupSection
       th={th}
-      inputCls={inputCls}
       selectedDate={overrides.selectedDate ?? '2026-03-12'}
       onDateChange={overrides.onDateChange ?? vi.fn()}
       vixOHLC={overrides.vixOHLC ?? null}

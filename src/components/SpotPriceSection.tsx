@@ -1,10 +1,9 @@
 import type { Theme } from '../themes';
 import { SectionBox, ErrorMsg } from './ui';
-import { tinyLbl } from '../utils/ui-utils';
+import { tinyLbl, inputCls } from '../utils/ui-utils';
 
 interface Props {
   th: Theme;
-  inputCls: string;
   spotPrice: string;
   onSpotChange: (v: string) => void;
   spxDirect: string;
@@ -20,7 +19,6 @@ interface Props {
 
 export default function SpotPriceSection({
   th,
-  inputCls,
   spotPrice,
   onSpotChange,
   spxDirect,

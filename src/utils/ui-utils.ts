@@ -62,6 +62,11 @@ export function riskColor(pct: number): string {
 export const tinyLbl =
   'block text-[10px] font-bold uppercase tracking-[0.08em] text-tertiary font-sans mb-1';
 
-/** Standard full-width text input styling — used across volatility/range input sections */
+/** Standard full-width text input styling — used across all input sections */
 export const inputCls =
-  'bg-input border-[1.5px] border-edge-strong rounded-lg text-primary py-[11px] px-[14px] text-base font-mono outline-none w-full transition-[border-color] duration-150';
+  'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[11px_14px] text-base font-mono outline-none w-full box-border transition-[border-color] duration-150';
+
+/** Standard full-width select styling — extends inputCls with chevron appearance */
+export const selectCls =
+  inputCls +
+  ' cursor-pointer appearance-none bg-no-repeat bg-[length:14px_14px] bg-[position:right_12px_center] pr-[34px]';

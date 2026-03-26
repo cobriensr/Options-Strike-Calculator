@@ -2,7 +2,7 @@ import { memo, useEffect, useRef } from 'react';
 import type { Theme } from '../themes';
 import type { AmPm, Timezone } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
-import { tinyLbl } from '../utils/ui-utils';
+import { tinyLbl, inputCls, selectCls } from '../utils/ui-utils';
 import EventDayWarning from './EventDayWarning';
 import type { EventItem } from '../types/api';
 
@@ -48,8 +48,6 @@ const DateInput = memo(function DateInput({
 
 interface Props {
   th: Theme;
-  inputCls: string;
-  selectCls: string;
   chevronUrl: string;
   selectedDate: string;
   onDateChange: (date: string) => void;
@@ -68,8 +66,6 @@ interface Props {
 
 export default function DateTimeSection({
   th,
-  inputCls,
-  selectCls,
   chevronUrl,
   selectedDate,
   onDateChange,

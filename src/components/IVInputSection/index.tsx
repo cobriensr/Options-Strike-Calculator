@@ -3,7 +3,7 @@ import type { Theme } from '../../themes';
 import type { IVMode, CalculationResults } from '../../types';
 import { IV_MODES } from '../../constants';
 import { SectionBox, Chip, ErrorMsg } from '../ui';
-import { tinyLbl, tint } from '../../utils/ui-utils';
+import { tinyLbl, tint, inputCls } from '../../utils/ui-utils';
 import VIXRegimeCard from '../VIXRegimeCard';
 import VIXTermStructure from '../VIXTermStructure';
 import type { MarketDataState } from '../../hooks/useMarketData';
@@ -12,7 +12,6 @@ import IVTooltip from './IVTooltip';
 
 interface Props {
   th: Theme;
-  inputCls: string;
   ivMode: IVMode;
   onIvModeChange: (mode: IVMode) => void;
   vixInput: string;
@@ -33,7 +32,6 @@ interface Props {
 
 export default function IVInputSection({
   th,
-  inputCls,
   ivMode,
   onIvModeChange,
   vixInput,

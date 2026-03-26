@@ -30,15 +30,6 @@ import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 
 // ============================================================
-// SHARED CSS CLASSES (static — no per-render cost)
-// ============================================================
-const INPUT_CLS =
-  'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[11px_14px] text-base font-mono outline-none w-full box-border transition-[border-color] duration-150';
-const SELECT_CLS =
-  INPUT_CLS +
-  ' cursor-pointer appearance-none bg-no-repeat bg-[length:14px_14px] bg-[position:right_12px_center] pr-[34px]';
-
-// ============================================================
 // MAIN COMPONENT
 // ============================================================
 export default function StrikeCalculator() {
@@ -333,8 +324,6 @@ export default function StrikeCalculator() {
             <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
               <DateTimeSection
                 th={th}
-                inputCls={INPUT_CLS}
-                selectCls={SELECT_CLS}
                 chevronUrl={chevronUrl}
                 selectedDate={vix.selectedDate}
                 onDateChange={vix.setSelectedDate}
@@ -353,7 +342,6 @@ export default function StrikeCalculator() {
 
               <SpotPriceSection
                 th={th}
-                inputCls={INPUT_CLS}
                 spotPrice={spotPrice}
                 onSpotChange={handleSpotChange}
                 spxDirect={spxDirect}
@@ -389,7 +377,6 @@ export default function StrikeCalculator() {
 
               <IVInputSection
                 th={th}
-                inputCls={INPUT_CLS}
                 ivMode={ivMode}
                 onIvModeChange={setIvMode}
                 vixInput={vixInput}

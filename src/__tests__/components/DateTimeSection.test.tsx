@@ -3,10 +3,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DateTimeSection from '../../components/DateTimeSection';
 import { theme } from '../../themes';
+import { inputCls as INPUT_CLS, selectCls as SELECT_CLS } from '../../utils/ui-utils';
 const th = theme;
 
-const INPUT_CLS = 'test-input';
-const SELECT_CLS = 'test-select';
 const CHEVRON_URL = 'url(test)';
 
 function renderSection(
@@ -14,8 +13,6 @@ function renderSection(
 ) {
   const props = {
     th,
-    inputCls: INPUT_CLS,
-    selectCls: SELECT_CLS,
     chevronUrl: CHEVRON_URL,
     selectedDate: '2026-03-15',
     onDateChange: vi.fn(),
@@ -255,8 +252,6 @@ describe('DateTimeSection', () => {
       const { container } = render(
         <DateTimeSection
           th={th}
-          inputCls={INPUT_CLS}
-          selectCls={SELECT_CLS}
           chevronUrl={CHEVRON_URL}
           selectedDate="2026-03-15"
           onDateChange={vi.fn()}
@@ -280,8 +275,6 @@ describe('DateTimeSection', () => {
       const { container } = render(
         <DateTimeSection
           th={th}
-          inputCls={INPUT_CLS}
-          selectCls={SELECT_CLS}
           chevronUrl={CHEVRON_URL}
           selectedDate="2026-03-15"
           onDateChange={vi.fn()}

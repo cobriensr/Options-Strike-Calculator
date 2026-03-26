@@ -25,7 +25,6 @@ const mockMarket = {
 function renderSection(overrides: Record<string, unknown> = {}) {
   const defaults = {
     th,
-    inputCls: 'test-input',
     ivMode: 'vix' as const,
     onIvModeChange: vi.fn(),
     vixInput: '',
