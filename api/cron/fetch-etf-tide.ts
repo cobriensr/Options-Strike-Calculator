@@ -58,6 +58,7 @@ async function fetchEtfTide(
 ): Promise<EtfTideRow[]> {
   const res = await fetch(`${UW_BASE}/market/${ticker}/etf-tide`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

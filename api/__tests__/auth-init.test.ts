@@ -20,6 +20,7 @@ describe('GET /api/auth/init', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    process.env.APP_URL = 'https://example.com';
     vi.restoreAllMocks();
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
   });
@@ -28,10 +29,22 @@ describe('GET /api/auth/init', () => {
     process.env = originalEnv;
   });
 
+  it('returns 500 when APP_URL is not configured', async () => {
+    delete process.env.APP_URL;
+    vi.mocked(getAuthUrl).mockResolvedValue({
+      url: 'https://api.schwabapi.com/v1/oauth/authorize',
+      state: 'abc123',
+    });
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+    expect(res._status).toBe(500);
+    expect((res._json as { error: string }).error).toContain('APP_URL');
+  });
+
   it('returns 500 when getAuthUrl returns null (missing creds)', async () => {
     vi.mocked(getAuthUrl).mockResolvedValue(null);
     const res = mockResponse();
-    await handler(mockRequest({ headers: { host: 'example.com' } }), res);
+    await handler(mockRequest(), res);
     expect(res._status).toBe(500);
     expect((res._json as { error: string }).error).toContain(
       'OAuth credentials not configured',
@@ -39,27 +52,25 @@ describe('GET /api/auth/init', () => {
   });
 
   it('redirects to Schwab OAuth URL', async () => {
+    process.env.APP_URL = 'https://myapp.vercel.app';
     vi.mocked(getAuthUrl).mockResolvedValue({
       url: 'https://api.schwabapi.com/v1/oauth/authorize?client_id=test',
       state: 'abc123',
     });
     const res = mockResponse();
-    await handler(mockRequest({ headers: { host: 'myapp.vercel.app' } }), res);
+    await handler(mockRequest(), res);
     expect(res._redirectStatus).toBe(302);
     expect(res._redirectUrl).toContain('schwabapi.com');
   });
 
-  it('uses https for non-localhost hosts', async () => {
-    vi.mocked(getAuthUrl).mockImplementation(async (redirectUri: string) => {
-      // Verify the redirect URI uses https
-      expect(redirectUri.startsWith('https://')).toBe(true);
-      return {
-        url: 'https://api.schwabapi.com/v1/oauth/authorize',
-        state: 'abc123',
-      };
+  it('uses APP_URL directly for the redirect URI', async () => {
+    process.env.APP_URL = 'https://myapp.vercel.app';
+    vi.mocked(getAuthUrl).mockResolvedValue({
+      url: 'https://api.schwabapi.com/v1/oauth/authorize',
+      state: 'abc123',
     });
     const res = mockResponse();
-    await handler(mockRequest({ headers: { host: 'myapp.vercel.app' } }), res);
+    await handler(mockRequest(), res);
     expect(getAuthUrl).toHaveBeenCalledWith(
       'https://myapp.vercel.app/api/auth/callback',
     );
@@ -69,18 +80,19 @@ describe('GET /api/auth/init', () => {
     vi.mocked(getAuthUrl).mockRejectedValue(new Error('Crash'));
 
     const res = mockResponse();
-    await handler(mockRequest({ headers: { host: 'example.com' } }), res);
+    await handler(mockRequest(), res);
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal server error' });
   });
 
-  it('uses http for localhost', async () => {
+  it('uses http for localhost APP_URL', async () => {
+    process.env.APP_URL = 'http://localhost:3000';
     vi.mocked(getAuthUrl).mockResolvedValue({
       url: 'https://api.schwabapi.com/v1/oauth/authorize',
       state: 'abc123',
     });
     const res = mockResponse();
-    await handler(mockRequest({ headers: { host: 'localhost:3000' } }), res);
+    await handler(mockRequest(), res);
     expect(getAuthUrl).toHaveBeenCalledWith(
       'http://localhost:3000/api/auth/callback',
     );
@@ -89,7 +101,7 @@ describe('GET /api/auth/init', () => {
   it('returns 429 when rate limited', async () => {
     vi.mocked(rejectIfRateLimited).mockResolvedValue(true);
     const res = mockResponse();
-    await handler(mockRequest({ headers: { host: 'example.com' } }), res);
+    await handler(mockRequest(), res);
     // Rate limiting is handled by rejectIfRateLimited itself
     // (it sets the response), so we just verify it was called
     expect(rejectIfRateLimited).toHaveBeenCalledWith(

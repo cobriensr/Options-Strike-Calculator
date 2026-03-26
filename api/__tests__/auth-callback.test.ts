@@ -26,6 +26,7 @@ describe('GET /api/auth/callback', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    process.env.APP_URL = 'https://example.com';
     vi.restoreAllMocks();
   });
 
@@ -93,6 +94,19 @@ describe('GET /api/auth/callback', () => {
     expect(mockRedis.del).not.toHaveBeenCalled();
   });
 
+  it('returns 500 when APP_URL is not configured', async () => {
+    process.env.OWNER_SECRET = 'secret';
+    delete process.env.APP_URL;
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ query: { code: 'auth-code-123', state: 'valid-state' } }),
+      res,
+    );
+    expect(res._status).toBe(500);
+    expect((res._json as { error: string }).error).toContain('APP_URL');
+  });
+
   it('returns 500 when token exchange fails', async () => {
     process.env.OWNER_SECRET = 'secret';
     vi.mocked(storeInitialTokens).mockResolvedValue({
@@ -103,7 +117,6 @@ describe('GET /api/auth/callback', () => {
     await handler(
       mockRequest({
         query: { code: 'auth-code-123', state: 'valid-state' },
-        headers: { host: 'example.com' },
       }),
       res,
     );
@@ -113,13 +126,13 @@ describe('GET /api/auth/callback', () => {
 
   it('sets owner cookie and returns HTML on success', async () => {
     process.env.OWNER_SECRET = 'my-secret';
+    process.env.APP_URL = 'https://myapp.vercel.app';
     vi.mocked(storeInitialTokens).mockResolvedValue({ success: true });
 
     const res = mockResponse();
     await handler(
       mockRequest({
         query: { code: 'auth-code-123', state: 'valid-state' },
-        headers: { host: 'myapp.vercel.app' },
       }),
       res,
     );
@@ -139,15 +152,15 @@ describe('GET /api/auth/callback', () => {
     expect(res._body).toContain('Authenticated');
   });
 
-  it('omits Secure flag for localhost', async () => {
+  it('omits Secure flag for localhost APP_URL', async () => {
     process.env.OWNER_SECRET = 'my-secret';
+    process.env.APP_URL = 'http://localhost:3000';
     vi.mocked(storeInitialTokens).mockResolvedValue({ success: true });
 
     const res = mockResponse();
     await handler(
       mockRequest({
         query: { code: 'auth-code-123', state: 'valid-state' },
-        headers: { host: 'localhost:3000' },
       }),
       res,
     );
@@ -160,13 +173,13 @@ describe('GET /api/auth/callback', () => {
 
   it('passes correct redirect URI to storeInitialTokens', async () => {
     process.env.OWNER_SECRET = 'secret';
+    process.env.APP_URL = 'https://myapp.vercel.app';
     vi.mocked(storeInitialTokens).mockResolvedValue({ success: true });
 
     const res = mockResponse();
     await handler(
       mockRequest({
         query: { code: 'my-code', state: 'valid-state' },
-        headers: { host: 'myapp.vercel.app' },
       }),
       res,
     );

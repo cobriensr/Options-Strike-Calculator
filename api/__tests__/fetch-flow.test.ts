@@ -289,4 +289,27 @@ describe('fetch-flow handler', () => {
     expect(res._json).toMatchObject({ error: 'Internal error' });
     vi.unstubAllGlobals();
   });
+
+  it('returns 500 when fetch times out (AbortError)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockRejectedValue(
+          new DOMException('The operation was aborted.', 'AbortError'),
+        ),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    vi.unstubAllGlobals();
+  });
 });

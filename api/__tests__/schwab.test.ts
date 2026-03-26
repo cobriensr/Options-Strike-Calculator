@@ -219,6 +219,38 @@ describe('schwab', () => {
       vi.unstubAllGlobals();
     });
 
+    it('returns token_error when token refresh fetch times out (AbortError)', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'old-tok',
+        refreshToken: 'ref-tok',
+        expiresAt: Date.now() + 30_000,
+        refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockRejectedValue(
+            new DOMException('The operation was aborted.', 'AbortError'),
+          ),
+      );
+
+      const result = await getAccessToken();
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error.type).toBe('token_error');
+      }
+
+      vi.unstubAllGlobals();
+    });
+
     it('handles Redis get failure gracefully (returns null tokens)', async () => {
       process.env.SCHWAB_CLIENT_ID = 'id';
       process.env.SCHWAB_CLIENT_SECRET = 'secret';
@@ -541,6 +573,31 @@ describe('schwab', () => {
       expect(result).toEqual({ success: true });
       // Should have stored tokens in Redis
       expect(mockRedisSet).toHaveBeenCalled();
+
+      vi.unstubAllGlobals();
+    });
+
+    it('returns token_error when fetch times out (AbortError)', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockRejectedValue(
+            new DOMException('The operation was aborted.', 'AbortError'),
+          ),
+      );
+
+      const result = await storeInitialTokens(
+        'auth-code',
+        'http://example.com',
+      );
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error.type).toBe('token_error');
+      }
 
       vi.unstubAllGlobals();
     });

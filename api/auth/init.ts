@@ -24,9 +24,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return;
       }
 
-      const host = req.headers.host || 'localhost:3000';
-      const protocol = host.includes('localhost') ? 'http' : 'https';
-      const redirectUri = `${protocol}://${host}/api/auth/callback`;
+      const appUrl = process.env.APP_URL;
+      if (!appUrl) {
+        done({ status: 500 });
+        return res.status(500).json({ error: 'APP_URL not configured' });
+      }
+      const redirectUri = `${appUrl}/api/auth/callback`;
 
       const authResult = await getAuthUrl(redirectUri);
       if (!authResult) {

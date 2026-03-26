@@ -60,7 +60,6 @@ const anthropic = new Anthropic({
 
 type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
-
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
 // ============================================================
@@ -926,13 +925,23 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         .join('') ?? '';
     let analysis: AnalysisResponse | null = null;
     try {
-      const parsed = JSON.parse(text);
+      // Strip markdown code fences if Claude wraps output despite instructions
+      const jsonStr = text.trim().startsWith('```')
+        ? text
+            .trim()
+            .replace(/^```(?:json)?\s*\n?/, '')
+            .replace(/\n?```\s*$/, '')
+        : text.trim();
+      const parsed = JSON.parse(jsonStr);
       const validated = analysisResponseSchema.safeParse(parsed);
       if (validated.success) {
         analysis = validated.data;
       } else {
         logger.warn(
-          { issues: validated.error.issues.slice(0, 5), stopReason: data.stop_reason },
+          {
+            issues: validated.error.issues.slice(0, 5),
+            stopReason: data.stop_reason,
+          },
           'Analysis response schema mismatch — using raw parsed output',
         );
         analysis = parsed as AnalysisResponse;

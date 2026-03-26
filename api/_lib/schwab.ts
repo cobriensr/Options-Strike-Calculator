@@ -176,6 +176,7 @@ async function refreshAccessToken(
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
     }),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
@@ -320,41 +321,51 @@ export async function storeInitialTokens(
     };
   }
 
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: basicAuthHeader(creds.clientId, creds.clientSecret),
-    },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code: authCode,
-      redirect_uri: redirectUri,
-    }),
-  });
+  try {
+    const res = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: basicAuthHeader(creds.clientId, creds.clientSecret),
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: authCode,
+        redirect_uri: redirectUri,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
 
-  if (!res.ok) {
-    const body = await res.text();
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        error: {
+          type: 'token_error',
+          message: `Initial token exchange failed (${res.status}): ${body}`,
+        },
+      };
+    }
+
+    const data: SchwabTokenResponse = await res.json();
+    const now = Date.now();
+
+    const tokens: SchwabTokens = {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      expiresAt: now + data.expires_in * 1000,
+      refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
+    };
+
+    await storeTokens(tokens);
+    return { success: true };
+  } catch (err) {
     return {
       error: {
         type: 'token_error',
-        message: `Initial token exchange failed (${res.status}): ${body}`,
+        message: err instanceof Error ? err.message : 'Token exchange failed',
       },
     };
   }
-
-  const data: SchwabTokenResponse = await res.json();
-  const now = Date.now();
-
-  const tokens: SchwabTokens = {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAt: now + data.expires_in * 1000,
-    refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
-  };
-
-  await storeTokens(tokens);
-  return { success: true };
 }
 
 /**

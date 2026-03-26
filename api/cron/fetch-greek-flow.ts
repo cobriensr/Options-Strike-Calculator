@@ -77,6 +77,7 @@ async function fetchGreekFlow(
 ): Promise<GreekFlowTick[]> {
   const res = await fetch(`${UW_BASE}/stock/SPX/greek-flow/${today}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

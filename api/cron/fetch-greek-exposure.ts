@@ -73,6 +73,7 @@ interface ExpiryRow {
 async function fetchAggregate(apiKey: string): Promise<AggregateRow[]> {
   const res = await fetch(`${UW_BASE}/stock/SPX/greek-exposure`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
@@ -87,6 +88,7 @@ async function fetchAggregate(apiKey: string): Promise<AggregateRow[]> {
 async function fetchByExpiry(apiKey: string): Promise<ExpiryRow[]> {
   const res = await fetch(`${UW_BASE}/stock/SPX/greek-exposure/expiry`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

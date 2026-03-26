@@ -62,6 +62,7 @@ interface SpotExposureRow {
 async function fetchSpotExposures(apiKey: string): Promise<SpotExposureRow[]> {
   const res = await fetch(`${UW_BASE}/stock/SPX/spot-exposures`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

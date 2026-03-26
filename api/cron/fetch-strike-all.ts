@@ -83,7 +83,10 @@ interface StrikeRow {
 async function fetchStrikeAll(apiKey: string): Promise<StrikeRow[]> {
   const res = await fetch(
     `${UW_BASE}/stock/SPX/spot-exposures/strike?limit=500`,
-    { headers: { Authorization: `Bearer ${apiKey}` } },
+    {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(30_000),
+    },
   );
 
   if (!res.ok) {
@@ -112,6 +115,8 @@ async function storeStrikes(
     return s >= minStrike && s <= maxStrike;
   });
 
+  if (filtered.length === 0) return { stored: 0, skipped: 0 };
+
   // Round timestamp to 5-min
   const dataTime = new Date(rows[0]!.time);
   const minutes = dataTime.getMinutes();
@@ -119,47 +124,46 @@ async function storeStrikes(
   const timestamp = dataTime.toISOString();
 
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
 
-  for (const row of filtered) {
-    try {
-      const result = await sql`
-        INSERT INTO strike_exposures (
-          date, timestamp, ticker, expiry, strike, price,
-          call_gamma_oi, put_gamma_oi,
-          call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
-          call_charm_oi, put_charm_oi,
-          call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
-          call_delta_oi, put_delta_oi,
-          call_vanna_oi, put_vanna_oi
-        )
-        VALUES (
-          ${today}, ${timestamp}, 'SPX', ${ALL_EXPIRY_SENTINEL}, ${row.strike}, ${row.price},
-          ${row.call_gamma_oi}, ${row.put_gamma_oi},
-          ${row.call_gamma_ask}, ${row.call_gamma_bid},
-          ${row.put_gamma_ask}, ${row.put_gamma_bid},
-          ${row.call_charm_oi}, ${row.put_charm_oi},
-          ${row.call_charm_ask}, ${row.call_charm_bid},
-          ${row.put_charm_ask}, ${row.put_charm_bid},
-          ${row.call_delta_oi}, ${row.put_delta_oi},
-          ${row.call_vanna_oi}, ${row.put_vanna_oi}
-        )
-        ON CONFLICT (date, timestamp, ticker, strike, expiry) DO NOTHING
-        RETURNING id
-      `;
+  try {
+    const results = await sql.transaction((txn) =>
+      filtered.map(
+        (row) => txn`
+          INSERT INTO strike_exposures (
+            date, timestamp, ticker, expiry, strike, price,
+            call_gamma_oi, put_gamma_oi,
+            call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+            call_charm_oi, put_charm_oi,
+            call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+            call_delta_oi, put_delta_oi,
+            call_vanna_oi, put_vanna_oi
+          )
+          VALUES (
+            ${today}, ${timestamp}, 'SPX', ${ALL_EXPIRY_SENTINEL}, ${row.strike}, ${row.price},
+            ${row.call_gamma_oi}, ${row.put_gamma_oi},
+            ${row.call_gamma_ask}, ${row.call_gamma_bid},
+            ${row.put_gamma_ask}, ${row.put_gamma_bid},
+            ${row.call_charm_oi}, ${row.put_charm_oi},
+            ${row.call_charm_ask}, ${row.call_charm_bid},
+            ${row.put_charm_ask}, ${row.put_charm_bid},
+            ${row.call_delta_oi}, ${row.put_delta_oi},
+            ${row.call_vanna_oi}, ${row.put_vanna_oi}
+          )
+          ON CONFLICT (date, timestamp, ticker, strike, expiry) DO NOTHING
+          RETURNING id
+        `,
+      ),
+    );
+
+    let stored = 0;
+    for (const result of results) {
       if (result.length > 0) stored++;
-      else skipped++;
-    } catch (err) {
-      logger.warn(
-        { err, strike: row.strike },
-        'All-expiry strike insert failed',
-      );
-      skipped++;
     }
+    return { stored, skipped: filtered.length - stored };
+  } catch (err) {
+    logger.warn({ err }, 'Batch all-expiry strike insert failed');
+    return { stored: 0, skipped: filtered.length };
   }
-
-  return { stored, skipped };
 }
 
 // ── Handler ─────────────────────────────────────────────────

@@ -48,9 +48,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       await redis.del(`oauth:state:${state}`);
 
-      const host = req.headers.host || 'localhost:3000';
-      const protocol = host.includes('localhost') ? 'http' : 'https';
-      const redirectUri = `${protocol}://${host}/api/auth/callback`;
+      const appUrl = process.env.APP_URL;
+      if (!appUrl) {
+        done({ status: 500 });
+        return res.status(500).json({ error: 'APP_URL not configured' });
+      }
+      const redirectUri = `${appUrl}/api/auth/callback`;
 
       const result = await storeInitialTokens(code, redirectUri);
 
@@ -65,7 +68,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // SameSite=Strict: not sent on cross-site requests (CSRF safe)
       // Path=/:      available to all endpoints
       // Max-Age=7d:  matches Schwab refresh token lifetime
-      const isLocal = host.includes('localhost');
+      const isLocal = appUrl.includes('localhost');
       const cookieParts = [
         `${OWNER_COOKIE}=${ownerSecret}`,
         `Path=/`,

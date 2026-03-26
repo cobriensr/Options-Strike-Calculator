@@ -289,6 +289,30 @@ describe('GET /api/events', () => {
     vi.unstubAllGlobals();
   });
 
+  it('returns 500 when fetch times out (AbortError)', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(redis.get).mockResolvedValue(null);
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockRejectedValue(
+          new DOMException('The operation was aborted.', 'AbortError'),
+        ),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ query: { days: '30' } }), res);
+
+    expect(res._status).toBe(500);
+    expect((res._json as { error: string }).error).toBe(
+      'Internal server error',
+    );
+
+    vi.unstubAllGlobals();
+  });
+
   it('handles Redis cache write failure gracefully', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.FRED_API_KEY = 'fred-key';

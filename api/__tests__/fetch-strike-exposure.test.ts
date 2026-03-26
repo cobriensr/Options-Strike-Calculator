@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -70,7 +74,16 @@ describe('fetch-strike-exposure handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Re-attach transaction after resetAllMocks clears mock state
+    mockSql.transaction = mockTransaction;
+    // Default: all rows inserted (returns [{id:1}] per query)
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -203,7 +216,7 @@ describe('fetch-strike-exposure handler', () => {
       stored: 1,
       skipped: 0,
     });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('returns correct response for empty API data', async () => {
@@ -222,13 +235,19 @@ describe('fetch-strike-exposure handler', () => {
       stored: false,
       reason: 'No 0DTE strike data',
     });
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Empty result = ON CONFLICT DO NOTHING (duplicate)
-    mockSql.mockResolvedValue([]);
+    // Override: all rows conflict (DO NOTHING returns empty)
+    mockTransaction.mockImplementationOnce(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => []);
+      },
+    );
     stubFetch([makeStrikeRow()]);
 
     const req = mockRequest({
@@ -266,7 +285,7 @@ describe('fetch-strike-exposure handler', () => {
       stored: 1,
       skipped: 0,
     });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   // ── Error handling ────────────────────────────────────────
@@ -311,9 +330,9 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
-  it('handles insert errors gracefully and logs warning', async () => {
+  it('handles batch insert errors gracefully and logs warning', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
+    mockTransaction.mockRejectedValueOnce(new Error('DB batch insert failed'));
     stubFetch([makeStrikeRow()]);
 
     const req = mockRequest({
@@ -330,8 +349,8 @@ describe('fetch-strike-exposure handler', () => {
       skipped: 1,
     });
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ strike: '5800' }),
-      'Strike exposure insert failed',
+      expect.objectContaining({ err: expect.any(Error) }),
+      'Batch strike exposure insert failed',
     );
   });
 });

@@ -55,6 +55,7 @@ async function fetchMarketTide(
 
   const res = await fetch(`${UW_BASE}/market/market-tide?${params}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

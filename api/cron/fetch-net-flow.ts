@@ -76,6 +76,7 @@ async function fetchNetFlow(
 ): Promise<CumulatedTick[]> {
   const res = await fetch(`${UW_BASE}/stock/${ticker}/net-prem-ticks`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

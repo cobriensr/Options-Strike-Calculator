@@ -248,7 +248,7 @@ async function fetchMegaCapEarnings(
     });
 
     const url = `${FINNHUB_BASE}/calendar/earnings?${params.toString()}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
 
     if (!res.ok) {
       logger.error({ status: res.status }, 'Finnhub earnings API error');
@@ -331,7 +331,7 @@ async function fetchReleaseDates(
   });
 
   const url = `${FRED_BASE}/release/dates?${params.toString()}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
 
   if (!res.ok) {
     logger.error({ releaseId, status: res.status }, 'FRED API error');

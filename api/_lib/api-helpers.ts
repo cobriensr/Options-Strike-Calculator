@@ -192,6 +192,7 @@ async function schwabApiFetch<T>(
       Authorization: `Bearer ${authResult.token}`,
       Accept: 'application/json',
     },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
