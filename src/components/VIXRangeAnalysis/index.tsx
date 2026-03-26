@@ -146,7 +146,11 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
         Iron Condor Survival Rate
       </div>
 
-      <div className="mb-3 flex gap-1.5">
+      <div
+        className="mb-3 flex gap-1.5"
+        role="radiogroup"
+        aria-label="Survival mode"
+      >
         <Chip
           active={survMode === 'settle'}
           onClick={() => setSurvMode('settle')}

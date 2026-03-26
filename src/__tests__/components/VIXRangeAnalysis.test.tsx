@@ -521,6 +521,18 @@ describe('VIXRangeAnalysis: edge cases', () => {
 });
 
 // ============================================================
+// ACCESSIBILITY: radiogroup
+// ============================================================
+describe('VIXRangeAnalysis: accessibility', () => {
+  it('survival mode chips are inside a radiogroup', () => {
+    render(<VIXRangeAnalysis th={theme} vix={20} spot={6800} />);
+    const group = screen.getByRole('radiogroup', { name: /survival mode/i });
+    expect(group).toBeInTheDocument();
+    expect(within(group).getAllByRole('radio').length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ============================================================
 // SURVIVAL HEATMAP VALUES: spot checks
 // ============================================================
 describe('VIXRangeAnalysis: survival value spot checks', () => {
