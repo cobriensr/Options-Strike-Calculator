@@ -84,6 +84,35 @@ export function useVixData(
     }
   }, [selectedDate, vixData]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // API fallback: fetch from /api/vix-ohlc when static data has no entry
+  useEffect(() => {
+    if (!vixDataLoaded || !selectedDate) return;
+    if (vixData[selectedDate] != null) return; // static data covers this date
+
+    const controller = new AbortController();
+
+    fetch(`/api/vix-ohlc?date=${selectedDate}`, { signal: controller.signal })
+      .then((r) => {
+        if (!r.ok) return null;
+        return r.json() as Promise<{
+          open: number | null;
+          high: number | null;
+          low: number | null;
+          close: number | null;
+          count: number;
+        }>;
+      })
+      .then((data) => {
+        if (!data || data.count === 0) return;
+        setVixOHLC({ open: data.open, high: data.high, low: data.low, close: data.close });
+      })
+      .catch(() => {
+        // Silently ignore AbortError on cleanup, network errors, and 401 for guests
+      });
+
+    return () => controller.abort();
+  }, [selectedDate, vixData, vixDataLoaded]);
+
   // Re-apply OHLC selection when field or time changes
   useEffect(() => {
     if (!vixOHLC || ivMode !== IV_MODES.VIX) return;

@@ -331,6 +331,137 @@ describe('useVixData', () => {
   });
 
   // --------------------------------------------------------
+  // API fallback for dates not in static data
+  // --------------------------------------------------------
+  describe('API fallback for dates not in static data', () => {
+    beforeEach(() => {
+      mockedLoadCached.mockReturnValue({
+        data: mockVixMap, // only has 2026-03-11 and 2026-03-10
+        source: 'test',
+      });
+    });
+
+    it('fetches /api/vix-ohlc when selected date is absent from static data', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          open: 20.0,
+          high: 21.5,
+          low: 19.5,
+          close: 21.0,
+          count: 2,
+        }),
+      } as Response);
+
+      const { result } = renderWith();
+
+      await waitFor(() => expect(result.current.vixDataLoaded).toBe(true));
+
+      act(() => {
+        result.current.setSelectedDate('2026-03-26'); // not in mockVixMap
+      });
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledWith(
+          '/api/vix-ohlc?date=2026-03-26',
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        );
+      });
+
+      await waitFor(() => {
+        expect(result.current.vixOHLC).toEqual({
+          open: 20.0,
+          high: 21.5,
+          low: 19.5,
+          close: 21.0,
+        });
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    it('leaves vixOHLC null when API returns count 0', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          open: null,
+          high: null,
+          low: null,
+          close: null,
+          count: 0,
+        }),
+      } as Response);
+
+      const { result } = renderWith();
+
+      await waitFor(() => expect(result.current.vixDataLoaded).toBe(true));
+
+      act(() => {
+        result.current.setSelectedDate('2099-01-01');
+      });
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalled();
+      });
+
+      await waitFor(() => {
+        expect(result.current.vixOHLC).toBeNull();
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    it('leaves vixOHLC null when API fetch fails', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 401,
+      } as Response);
+
+      const { result } = renderWith();
+
+      await waitFor(() => expect(result.current.vixDataLoaded).toBe(true));
+
+      act(() => {
+        result.current.setSelectedDate('2026-03-26');
+      });
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalled();
+      });
+
+      expect(result.current.vixOHLC).toBeNull();
+
+      fetchSpy.mockRestore();
+    });
+
+    it('does NOT fetch when date IS in static data', async () => {
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('network'));
+
+      const { result } = renderWith();
+
+      await waitFor(() => expect(result.current.vixDataLoaded).toBe(true));
+
+      // Clear any fetch calls made for the initial selectedDate (today's date,
+      // which may not be in mockVixMap) before testing our assertion.
+      fetchSpy.mockClear();
+
+      act(() => {
+        result.current.setSelectedDate('2026-03-11'); // IS in mockVixMap
+      });
+
+      await waitFor(() => {
+        expect(result.current.vixOHLC).toEqual(mockVixMap['2026-03-11']);
+      });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      fetchSpy.mockRestore();
+    });
+  });
+
+  // --------------------------------------------------------
   // Does not call setVixInput in direct IV mode
   // --------------------------------------------------------
   it('does not call setVixInput when ivMode is direct', async () => {
