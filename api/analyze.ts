@@ -16,7 +16,6 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
-import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import {
   rejectIfNotOwner,
   rejectIfRateLimited,
@@ -61,8 +60,6 @@ const anthropic = new Anthropic({
 
 type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
-// Pre-compute structured output format — schema compiled once, cached 24h server-side
-const analysisOutputFormat = zodOutputFormat(analysisResponseSchema);
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
@@ -850,7 +847,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
           model,
           max_tokens: maxTokens,
           thinking: { type: 'adaptive' },
-          output_config: { effort, format: analysisOutputFormat },
+          output_config: { effort },
           system: [
             {
               type: 'text' as const,
@@ -927,15 +924,23 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         ?.filter((c) => c.type === 'text')
         .map((c) => ('text' in c ? c.text : ''))
         .join('') ?? '';
-    // Structured outputs guarantees valid JSON matching the schema —
-    // no repair code needed. Simple JSON.parse suffices.
     let analysis: AnalysisResponse | null = null;
     try {
-      analysis = JSON.parse(text);
+      const parsed = JSON.parse(text);
+      const validated = analysisResponseSchema.safeParse(parsed);
+      if (validated.success) {
+        analysis = validated.data;
+      } else {
+        logger.warn(
+          { issues: validated.error.issues.slice(0, 5), stopReason: data.stop_reason },
+          'Analysis response schema mismatch — using raw parsed output',
+        );
+        analysis = parsed as AnalysisResponse;
+      }
     } catch {
       logger.error(
         { raw: text.slice(0, 500), stopReason: data.stop_reason },
-        'Structured output JSON parse failed',
+        'Analysis response JSON parse failed',
       );
     }
     // Save to Postgres before responding (Vercel kills the function after res.json).
