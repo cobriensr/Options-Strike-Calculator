@@ -115,10 +115,8 @@ export default function ChartAnalysis({
         if (!cancelled) {
           setEntryExistsToday(hasEntry);
           setReviewExistsToday(hasReview);
-          // Auto-switch to the next logical mode
-          if (hasReview && (mode === 'entry' || mode === 'midday'))
-            setMode('review');
-          else if (hasEntry && mode === 'entry') setMode('midday');
+          if (hasReview) setMode('review');
+          else if (hasEntry) setMode('midday');
         }
       } catch {
         // Non-critical — leave buttons enabled if check fails
@@ -127,7 +125,7 @@ export default function ChartAnalysis({
     return () => {
       cancelled = true;
     };
-  }, [context.selectedDate, mode]);
+  }, [context.selectedDate]); // mode intentionally omitted — only re-fetch on date change
 
   const handleCSVUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {

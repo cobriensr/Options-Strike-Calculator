@@ -1602,4 +1602,66 @@ describe('ChartAnalysis', () => {
       });
     });
   });
+
+  // ── MODE-CHECK EFFECT ──
+
+  describe('mode-check effect', () => {
+    it('fetches analyses only on date change, not on mode tab click', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ analyses: [] }), { status: 200 }),
+      );
+      vi.stubGlobal('fetch', mockFetch);
+
+      const { rerender } = render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext({ selectedDate: '2026-01-10' })}
+        />,
+      );
+
+      // Initial fetch on mount
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+      // Click a mode tab — should NOT trigger another fetch
+      await userEvent.click(screen.getByRole('button', { name: /mid.day/i }));
+      expect(mockFetch).toHaveBeenCalledTimes(1); // still 1
+
+      // Change the date — SHOULD trigger a new fetch
+      rerender(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext({ selectedDate: '2026-01-11' })}
+        />,
+      );
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    });
+
+    it('auto-switches to midday when entry already exists for the date', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({ analyses: [{ mode: 'entry' }] }),
+            { status: 200 },
+          ),
+        ),
+      );
+
+      render(
+        <ChartAnalysis
+          th={th}
+          results={makeResults()}
+          context={makeContext({ selectedDate: '2026-01-10' })}
+        />,
+      );
+
+      // After the effect runs, the Pre-Trade (entry) button should be
+      // disabled (checkmark shown) and Mid-Day should be active
+      await waitFor(() => {
+        expect(screen.getByText('Mid-Day')).toHaveStyle({ color: th.caution });
+      });
+    });
+  });
 });
