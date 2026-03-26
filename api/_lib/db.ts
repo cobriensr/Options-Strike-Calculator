@@ -1154,13 +1154,16 @@ export async function getPreviousRecommendation(
   // Include entry plan status
   const plan = fullResponse.entryPlan as Record<string, unknown> | undefined;
   if (plan) {
+    lines.push(
+      'Entry plan (RECOMMENDED strikes — actual fills are in "Current Open Positions"):',
+    );
     if (plan.maxTotalSize) lines.push(`Max total size: ${plan.maxTotalSize}`);
     const e1 = plan.entry1 as Record<string, unknown> | undefined;
     const e2 = plan.entry2 as Record<string, unknown> | undefined;
     const e3 = plan.entry3 as Record<string, unknown> | undefined;
     if (e1?.sizePercent)
       lines.push(
-        `Entry 1: ${e1.structure} ${e1.delta}Δ at ${e1.sizePercent}% — ${e1.note ?? ''}`,
+        `Entry 1 (recommended): ${e1.structure} ${e1.delta}Δ at ${e1.sizePercent}% — ${e1.note ?? ''}`,
       );
     if (e2?.condition) lines.push(`Entry 2 condition: ${e2.condition}`);
     if (e3?.condition) lines.push(`Entry 3 condition: ${e3.condition}`);
