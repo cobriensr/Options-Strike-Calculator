@@ -137,6 +137,7 @@ export default function AdvancedSection({
               </label>
               <div className="flex items-center">
                 <button
+                  type="button"
                   onClick={() => onContractsChange(Math.max(1, contracts - 1))}
                   aria-label="Decrease contracts"
                   className="border-edge-strong bg-chip-bg text-primary flex h-8 w-8 cursor-pointer items-center justify-center rounded-l-md border-[1.5px] border-r-0 font-mono text-base font-bold"
@@ -158,6 +159,7 @@ export default function AdvancedSection({
                   aria-label="Number of contracts"
                 />
                 <button
+                  type="button"
                   onClick={() =>
                     onContractsChange(Math.min(999, contracts + 1))
                   }

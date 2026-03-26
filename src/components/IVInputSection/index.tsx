@@ -119,6 +119,7 @@ export default function IVInputSection({
                 0DTE Adj.
               </label>
               <button
+                type="button"
                 onClick={() => setTooltipOpen(!tooltipOpen)}
                 aria-expanded={tooltipOpen}
                 aria-label="What is the 0DTE adjustment?"

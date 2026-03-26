@@ -53,6 +53,7 @@ export function Chip({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       role="radio"
       aria-checked={active}

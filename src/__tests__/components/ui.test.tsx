@@ -66,6 +66,14 @@ describe('Chip', () => {
     const chip = screen.getByRole('radio', { name: 'Option C' });
     expect(chip.className).toContain('border-chip-border');
   });
+
+  it('renders with type="button"', () => {
+    render(<Chip active={false} onClick={() => {}} label="Test" />);
+    expect(screen.getByRole('radio', { name: 'Test' })).toHaveAttribute(
+      'type',
+      'button',
+    );
+  });
 });
 
 describe('ScrollHint', () => {

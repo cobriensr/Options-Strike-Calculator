@@ -56,6 +56,7 @@ export default function MarketRegimeSection({
       badge={results ? 'VIX ' + (Number.parseFloat(dVix) || '\u2014') : null}
       headerRight={
         <button
+          type="button"
           onClick={() => setShowRegime(!showRegime)}
           className={
             'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +

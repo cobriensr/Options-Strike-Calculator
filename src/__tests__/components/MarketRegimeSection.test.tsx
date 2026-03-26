@@ -346,6 +346,27 @@ describe('MarketRegimeSection', () => {
     expect(screen.getByText('Settlement Check')).toBeInTheDocument();
   });
 
+  it('Hide/Show Analysis button has type="button"', () => {
+    render(
+      <MarketRegimeSection
+        th={th}
+        dVix="20"
+        results={null}
+        errors={{}}
+        skewPct={0}
+        selectedDate="2026-03-12"
+        market={mockMarket}
+        onClusterMultChange={vi.fn()}
+        clusterMult={1.0}
+        signals={defaultSignals}
+        chain={null}
+      />,
+    );
+    // Default showRegime=true so the button reads "Hide Analysis"
+    const btn = screen.getByRole('button', { name: 'Hide Analysis' });
+    expect(btn).toHaveAttribute('type', 'button');
+  });
+
   it('does not render SettlementCheck when historyCandles is empty', () => {
     const snapshot: HistorySnapshot = {
       spot: 5700,

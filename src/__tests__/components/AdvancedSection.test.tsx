@@ -529,6 +529,16 @@ describe('AdvancedSection', () => {
     expect(screen.queryByText('Max Loss')).not.toBeInTheDocument();
   });
 
+  it('contracts +/- buttons have type="button"', () => {
+    render(<AdvancedSection {...defaultProps({ showIC: true })} />);
+    expect(
+      screen.getByRole('button', { name: /decrease contracts/i }),
+    ).toHaveAttribute('type', 'button');
+    expect(
+      screen.getByRole('button', { name: /increase contracts/i }),
+    ).toHaveAttribute('type', 'button');
+  });
+
   it('does not show Max Loss when 10-delta row has an error', () => {
     render(
       <AdvancedSection

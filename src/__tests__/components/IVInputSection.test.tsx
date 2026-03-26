@@ -140,6 +140,14 @@ describe('IVInputSection', () => {
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 
+  it('"?" tooltip button has type="button"', () => {
+    renderSection({ ivMode: 'vix' });
+    const tooltipBtn = screen.getByRole('button', {
+      name: /what is the 0dte adjustment/i,
+    });
+    expect(tooltipBtn).toHaveAttribute('type', 'button');
+  });
+
   it('calls onVixChange in direct IV mode (regime-only VIX input)', async () => {
     const user = userEvent.setup();
     const { props } = renderSection({ ivMode: 'direct' });
