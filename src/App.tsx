@@ -1,5 +1,5 @@
 import { IV_MODES } from './constants';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
 import { useAppState } from './hooks/useAppState';
@@ -213,7 +213,103 @@ export default function StrikeCalculator() {
     [],
   );
 
-  const chevronUrl = buildChevronUrl(th.chevronColor);
+  const handleVixCsvClick = useCallback(
+    () => vixFileInputRef.current?.click(),
+    [vixFileInputRef],
+  );
+
+  const handleDarkModeToggle = useCallback(
+    () => setDarkMode(!darkMode),
+    [darkMode, setDarkMode],
+  );
+
+  const handleToggleIC = useCallback(
+    () => setShowIC((v) => !v),
+    [setShowIC],
+  );
+
+  const handleUseVix1dAsSigma = useCallback(
+    (sigma: number) => {
+      setIvMode(IV_MODES.DIRECT);
+      setDirectIVInput(sigma.toFixed(4));
+    },
+    [setIvMode, setDirectIVInput],
+  );
+
+  const chevronUrl = useMemo(
+    () => buildChevronUrl(th.chevronColor),
+    [th.chevronColor],
+  );
+
+  const analysisContext = useMemo(
+    () =>
+      ({
+        selectedDate: vix.selectedDate,
+        entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
+        spx: results?.spot,
+        spy: Number.parseFloat(dSpot) || undefined,
+        vix: Number.parseFloat(dVix) || undefined,
+        vix1d: signals.vix1d,
+        vix9d: signals.vix9d,
+        vvix: signals.vvix,
+        sigma: results?.sigma,
+        sigmaSource: signals.sigmaSource,
+        T: results?.T,
+        hoursRemaining: results?.hoursRemaining,
+        deltaCeiling: signals.icCeiling ?? undefined,
+        putSpreadCeiling: signals.putSpreadCeiling ?? undefined,
+        callSpreadCeiling: signals.callSpreadCeiling ?? undefined,
+        regimeZone: signals.regimeZone ?? undefined,
+        clusterMult,
+        dowLabel: signals.dowLabel ?? undefined,
+        openingRangeSignal: signals.openingRangeSignal ?? undefined,
+        openingRangeAvailable: signals.openingRangeAvailable,
+        vixTermSignal: signals.vixTermSignal ?? undefined,
+        vixTermShape: signals.vixTermShape ?? undefined,
+        clusterPutMult: signals.clusterPutMult ?? undefined,
+        clusterCallMult: signals.clusterCallMult ?? undefined,
+        rvIvRatio:
+          signals.rvIvRatio == null
+            ? undefined
+            : `${signals.rvIvRatio.toFixed(2)} (${signals.rvIvLabel})`,
+        rvAnnualized: signals.rvAnnualized ?? undefined,
+        ivAccelMult: (() => {
+          const row = results?.allDeltas.find((r) => !('error' in r));
+          return row && !('error' in row) ? row.ivAccelMult : undefined;
+        })(),
+        overnightGap:
+          signals.overnightGap == null
+            ? undefined
+            : String(signals.overnightGap),
+        isBacktest: !!historySnapshot,
+        dataNote: signals.dataNote,
+        events: (market.data.events?.events ?? [])
+          .filter(
+            (e) =>
+              (e.severity === 'high' || e.severity === 'medium') &&
+              e.date === vix.selectedDate,
+          )
+          .map((e) => ({
+            event: e.event,
+            time: e.time,
+            severity: e.severity,
+          })),
+      }) satisfies AnalysisContext,
+    [
+      vix.selectedDate,
+      timeHour,
+      timeMinute,
+      timeAmPm,
+      timezone,
+      results,
+      dSpot,
+      dVix,
+      signals,
+      clusterMult,
+      historySnapshot,
+      market.data.events?.events,
+    ],
+  );
 
   return (
     <>
@@ -291,7 +387,7 @@ export default function StrikeCalculator() {
                 aria-label="Upload VIX OHLC CSV file"
               />
               <button
-                onClick={() => vixFileInputRef.current?.click()}
+                onClick={handleVixCsvClick}
                 className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
               >
                 <span className="text-[11px] font-semibold">
@@ -299,7 +395,7 @@ export default function StrikeCalculator() {
                 </span>
               </button>
               <button
-                onClick={() => setDarkMode(!darkMode)}
+                onClick={handleDarkModeToggle}
                 aria-label={
                   darkMode ? 'Switch to light mode' : 'Switch to dark mode'
                 }
@@ -362,7 +458,7 @@ export default function StrikeCalculator() {
                 skewPct={skewPct}
                 onSkewChange={setSkewPct}
                 showIC={showIC}
-                onToggleIC={() => setShowIC(!showIC)}
+                onToggleIC={handleToggleIC}
                 wingWidth={wingWidth}
                 onWingWidthChange={setWingWidth}
                 contracts={contracts}
@@ -390,10 +486,7 @@ export default function StrikeCalculator() {
                 errors={errors}
                 market={market}
                 historySnapshot={historySnapshot}
-                onUseVix1dAsSigma={(sigma) => {
-                  setIvMode(IV_MODES.DIRECT);
-                  setDirectIVInput(sigma.toFixed(4));
-                }}
+                onUseVix1dAsSigma={handleUseVix1dAsSigma}
                 termShape={signals.vixTermShape}
                 termShapeAdvice={signals.vixTermShapeAdvice}
               />
@@ -433,66 +526,7 @@ export default function StrikeCalculator() {
                   th={th}
                   results={results}
                   onAnalysisSaved={handleAnalysisSaved}
-                  context={
-                    {
-                      selectedDate: vix.selectedDate,
-                      entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
-                      spx: results?.spot,
-                      spy: Number.parseFloat(dSpot) || undefined,
-                      vix: Number.parseFloat(dVix) || undefined,
-                      vix1d: signals.vix1d,
-                      vix9d: signals.vix9d,
-                      vvix: signals.vvix,
-                      sigma: results?.sigma,
-                      sigmaSource: signals.sigmaSource,
-                      T: results?.T,
-                      hoursRemaining: results?.hoursRemaining,
-                      deltaCeiling: signals.icCeiling ?? undefined,
-                      putSpreadCeiling: signals.putSpreadCeiling ?? undefined,
-                      callSpreadCeiling: signals.callSpreadCeiling ?? undefined,
-                      regimeZone: signals.regimeZone ?? undefined,
-                      clusterMult,
-                      dowLabel: signals.dowLabel ?? undefined,
-                      openingRangeSignal:
-                        signals.openingRangeSignal ?? undefined,
-                      openingRangeAvailable: signals.openingRangeAvailable,
-                      vixTermSignal: signals.vixTermSignal ?? undefined,
-                      vixTermShape: signals.vixTermShape ?? undefined,
-                      clusterPutMult: signals.clusterPutMult ?? undefined,
-                      clusterCallMult: signals.clusterCallMult ?? undefined,
-                      rvIvRatio:
-                        signals.rvIvRatio == null
-                          ? undefined
-                          : `${signals.rvIvRatio.toFixed(2)} (${signals.rvIvLabel})`,
-                      rvAnnualized: signals.rvAnnualized ?? undefined,
-                      ivAccelMult: (() => {
-                        const row = results?.allDeltas.find(
-                          (r) => !('error' in r),
-                        );
-                        return row && !('error' in row)
-                          ? row.ivAccelMult
-                          : undefined;
-                      })(),
-                      overnightGap:
-                        signals.overnightGap == null
-                          ? undefined
-                          : String(signals.overnightGap),
-                      isBacktest: !!historySnapshot,
-                      dataNote: signals.dataNote,
-                      events: (market.data.events?.events ?? [])
-                        .filter(
-                          (e) =>
-                            (e.severity === 'high' ||
-                              e.severity === 'medium') &&
-                            e.date === vix.selectedDate,
-                        )
-                        .map((e) => ({
-                          event: e.event,
-                          time: e.time,
-                          severity: e.severity,
-                        })),
-                    } satisfies AnalysisContext
-                  }
+                  context={analysisContext}
                 />
               </ErrorBoundary>
             )}
