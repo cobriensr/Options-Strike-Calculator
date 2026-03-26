@@ -41,6 +41,9 @@
     "xlsx": "^0.18.5",
     "zod": "^4.3.6"
   },
+  "overrides": {
+    "@opentelemetry/instrumentation-http": "0.214.0"
+  },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.1",
     "@eslint/js": "^9.39.4",
