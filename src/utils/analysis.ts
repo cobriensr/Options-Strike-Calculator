@@ -14,7 +14,7 @@ export function buildPreviousRecommendation(prev: AnalysisResult): string {
   ];
   const e1 = prev.entryPlan?.entry1;
   if (e1) {
-    const timing = e1.timing ?? e1.condition ?? '';
+    const timing = e1.timing || e1.condition || '';
     parts.push(`Entry 1: ${e1.structure} ${String(e1.delta)}Δ at ${timing}`);
   }
   if (prev.hedge) {

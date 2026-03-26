@@ -127,8 +127,8 @@ const chartConfidenceEntry = z.object({
 });
 
 const entryStep = z.object({
-  timing: z.string().nullable(),
-  condition: z.string().nullable(),
+  timing: z.string(),
+  condition: z.string(),
   sizePercent: z.number(),
   delta: z.number(),
   structure: z.string(),
@@ -198,9 +198,9 @@ export const analysisResponseSchema = z.object({
         'REDUCED SIZE',
         'SKIP',
       ]),
-      description: z.string().nullable(),
+      description: z.string(),
       rationale: z.string(),
-      estimatedCost: z.string().nullable(),
+      estimatedCost: z.string(),
     })
     .nullable(),
   periscopeNotes: z.string().nullable(),

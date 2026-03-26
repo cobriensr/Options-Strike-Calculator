@@ -133,7 +133,7 @@ export default function AnalysisResults({
               </span>
               <span className="text-muted">{'\u2022'}</span>
               <span className="text-muted italic">
-                {analysis.entryPlan.entry1.timing ??
+                {analysis.entryPlan.entry1.timing ||
                   analysis.entryPlan.entry1.condition}
               </span>
             </div>
@@ -325,7 +325,7 @@ export default function AnalysisResults({
                       </span>
                     </div>
                     <div className="text-muted text-[10px]">
-                      {entry.timing ?? entry.condition}
+                      {entry.timing || entry.condition}
                     </div>
                     <div className="text-secondary mt-0.5 text-[10px] italic">
                       {entry.note}
