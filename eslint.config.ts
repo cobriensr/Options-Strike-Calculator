@@ -6,7 +6,7 @@ import sonarjs from 'eslint-plugin-sonarjs';
 import prettier from 'eslint-config-prettier';
 
 export default [
-  { ignores: ['dist', 'coverage', 'scripts', 'ml/.venv'] },
+  { ignores: ['dist', 'coverage', 'scripts', 'ml/.venv', '.claude/skills'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   sonarjs.configs!.recommended!,
