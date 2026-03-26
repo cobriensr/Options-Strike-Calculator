@@ -26,7 +26,8 @@ import {
   estimateRange,
   getDowMultiplier,
 } from '../data/vixRangeStats';
-import { getEventsForDate, getEarlyCloseHourET } from '../data/eventCalendar';
+import { getEarlyCloseHourET } from '../data/marketHours';
+import type { EventItem } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
 
 // ============================================================
@@ -329,6 +330,9 @@ interface HookInputs {
   // Prior 5 trading days (for rolling Parkinson RV)
   livePriorDays?: ReadonlyArray<{ high: number; low: number }>;
 
+  // Live events from /api/events
+  liveEvents?: readonly EventItem[];
+
   // History (null when viewing today)
   historySnapshot: HistorySnapshot | null;
 }
@@ -356,6 +360,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     liveYesterdayOpen,
     liveYesterdayClose,
     livePriorDays,
+    liveEvents,
     historySnapshot,
   } = inputs;
 
@@ -434,9 +439,10 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
 
     // ── Events ───────────────────────────────────────────────
     if (selectedDate) {
-      const events = getEventsForDate(selectedDate);
-      result.isEventDay = events.length > 0;
-      result.eventNames = events.map((e) => e.event);
+      const eventsForDate =
+        liveEvents?.filter((e) => e.date === selectedDate) ?? [];
+      result.isEventDay = eventsForDate.length > 0;
+      result.eventNames = eventsForDate.map((e) => e.event);
       result.isEarlyClose = getEarlyCloseHourET(selectedDate) != null;
     }
 
@@ -679,6 +685,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     liveYesterdayOpen,
     liveYesterdayClose,
     livePriorDays,
+    liveEvents,
     historySnapshot,
   ]);
 }

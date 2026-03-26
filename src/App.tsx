@@ -12,7 +12,7 @@ import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
-import { getEarlyCloseHourET } from './data/eventCalendar';
+import { getEarlyCloseHourET } from './data/marketHours';
 import DateTimeSection from './components/DateTimeSection';
 import SpotPriceSection from './components/SpotPriceSection';
 import IVInputSection from './components/IVInputSection';
@@ -197,6 +197,7 @@ export default function StrikeCalculator() {
     liveYesterdayLow: market.data.yesterday?.yesterday?.low ?? undefined,
     liveYesterdayOpen: market.data.yesterday?.yesterday?.open ?? undefined,
     liveYesterdayClose: market.data.yesterday?.yesterday?.close ?? undefined,
+    liveEvents: market.data.events?.events,
     historySnapshot,
   });
 

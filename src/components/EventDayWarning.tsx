@@ -1,12 +1,11 @@
 import type { Theme } from '../themes';
 import { tint } from '../utils/ui-utils';
-import { getEventsForDate, getMaxSeverity } from '../data/eventCalendar';
 import type { EventItem } from '../types/api';
 
 interface Props {
   readonly th: Theme;
   readonly selectedDate: string; // YYYY-MM-DD
-  readonly liveEvents?: readonly EventItem[]; // From FRED API
+  readonly liveEvents?: readonly EventItem[];
 }
 
 /**
@@ -14,7 +13,7 @@ interface Props {
  * Shows a prominent warning when the selected date has scheduled
  * high-impact economic events (FOMC, CPI, NFP, GDP, PCE, PPI, etc).
  *
- * Uses live FRED API events when available, falls back to static data.
+ * Powered entirely by the /api/events endpoint.
  * Renders nothing when no events are scheduled.
  */
 export default function EventDayWarning({
@@ -24,25 +23,11 @@ export default function EventDayWarning({
 }: Props) {
   if (!selectedDate) return null;
 
-  // Use live events for the selected date if available, else static
-  const liveForDate = liveEvents?.filter((e) => e.date === selectedDate) ?? [];
-  const useStatic = liveForDate.length === 0;
-
-  const events: readonly {
-    event: string;
-    description: string;
-    time: string;
-    severity: 'high' | 'medium';
-  }[] = useStatic ? getEventsForDate(selectedDate) : liveForDate;
+  const events = liveEvents?.filter((e) => e.date === selectedDate) ?? [];
 
   if (events.length === 0) return null;
 
-  const severity = useStatic
-    ? getMaxSeverity(selectedDate)
-    : events.some((e) => e.severity === 'high')
-      ? 'high'
-      : 'medium';
-  const isHigh = severity === 'high';
+  const isHigh = events.some((e) => e.severity === 'high');
 
   const color = isHigh ? th.red : th.caution;
   const bg = isHigh ? tint(th.red, '12') : tint(th.caution, '12');

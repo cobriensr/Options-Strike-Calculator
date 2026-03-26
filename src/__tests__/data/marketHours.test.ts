@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   getMarketCloseHourET,
   getEarlyCloseHourET,
-} from '../../data/eventCalendar';
+} from '../../data/marketHours';
 
 describe('getMarketCloseHourET', () => {
   it('returns null for market-closed dates', () => {

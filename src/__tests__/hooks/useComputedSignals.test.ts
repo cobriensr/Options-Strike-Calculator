@@ -26,11 +26,7 @@ vi.mock('../../data/vixRangeStats', () => ({
   })),
 }));
 
-vi.mock('../../data/eventCalendar', () => ({
-  getEventsForDate: vi.fn((date: string) => {
-    if (date === '2026-03-20') return [{ event: 'Triple Witching' }];
-    return [];
-  }),
+vi.mock('../../data/marketHours', () => ({
   getEarlyCloseHourET: vi.fn((date: string) => {
     if (date === '2026-12-24') return 13;
     return undefined;
@@ -503,14 +499,26 @@ describe('useComputedSignals', () => {
   // ── Events ──────────────────────────────────────────────
 
   describe('events', () => {
-    it('detects event day', () => {
-      const s = compute({ selectedDate: '2026-03-20' });
+    it('detects event day from liveEvents', () => {
+      const s = compute({
+        selectedDate: '2026-03-20',
+        liveEvents: [
+          {
+            date: '2026-03-20',
+            event: 'Triple Witching',
+            description: 'Options expiration',
+            time: 'All Day',
+            severity: 'high' as const,
+            source: 'static' as const,
+          },
+        ],
+      });
       expect(s.isEventDay).toBe(true);
       expect(s.eventNames).toContain('Triple Witching');
     });
 
     it('no events on normal day', () => {
-      const s = compute({ selectedDate: '2026-03-10' });
+      const s = compute({ selectedDate: '2026-03-10', liveEvents: [] });
       expect(s.isEventDay).toBe(false);
       expect(s.eventNames).toHaveLength(0);
     });

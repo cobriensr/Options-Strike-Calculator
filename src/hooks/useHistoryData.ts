@@ -14,7 +14,7 @@ import type {
   SymbolDayData,
 } from '../types/api';
 import { getETTotalMinutes } from '../utils/timezone';
-import { getMarketCloseHourET } from '../data/eventCalendar';
+import { getMarketCloseHourET } from '../data/marketHours';
 
 // ============================================================
 // TYPES
