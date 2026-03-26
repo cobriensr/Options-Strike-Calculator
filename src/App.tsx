@@ -225,7 +225,7 @@ export default function StrikeCalculator() {
   const chevronUrl = buildChevronUrl(th.chevronColor);
 
   return (
-    <div className={darkMode ? 'dark' : ''}>
+    <>
       <div
         id="app-shell"
         className="text-primary min-h-screen font-serif transition-[background-color,color] duration-[250ms]"
@@ -539,6 +539,6 @@ export default function StrikeCalculator() {
       />
       <Analytics />
       <SpeedInsights />
-    </div>
+    </>
   );
 }
