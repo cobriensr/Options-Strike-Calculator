@@ -1,9 +1,8 @@
-import type { Theme } from '../themes';
+import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
 import type { EventItem } from '../types/api';
 
 interface Props {
-  readonly th: Theme;
   readonly selectedDate: string; // YYYY-MM-DD
   readonly liveEvents?: readonly EventItem[];
 }
@@ -17,7 +16,6 @@ interface Props {
  * Renders nothing when no events are scheduled.
  */
 export default function EventDayWarning({
-  th,
   selectedDate,
   liveEvents,
 }: Props) {
@@ -29,9 +27,9 @@ export default function EventDayWarning({
 
   const isHigh = events.some((e) => e.severity === 'high');
 
-  const color = isHigh ? th.red : th.caution;
-  const bg = isHigh ? tint(th.red, '12') : tint(th.caution, '12');
-  const border = isHigh ? tint(th.red, '35') : tint(th.caution, '35');
+  const color = isHigh ? theme.red : theme.caution;
+  const bg = isHigh ? tint(theme.red, '12') : tint(theme.caution, '12');
+  const border = isHigh ? tint(theme.red, '35') : tint(theme.caution, '35');
 
   return (
     <div
@@ -67,7 +65,7 @@ export default function EventDayWarning({
 
       {/* Event list */}
       {events.map((evt, i) => (
-        <EventRow key={i} th={th} event={evt} />
+        <EventRow key={i} event={evt} />
       ))}
 
       {/* Advice */}
@@ -110,10 +108,8 @@ export default function EventDayWarning({
 }
 
 function EventRow({
-  th,
   event,
 }: {
-  th: Theme;
   event: {
     event: string;
     description: string;
@@ -121,7 +117,7 @@ function EventRow({
     severity: 'high' | 'medium';
   };
 }) {
-  const tagColor = event.severity === 'high' ? th.red : th.caution;
+  const tagColor = event.severity === 'high' ? theme.red : theme.caution;
 
   return (
     <div className="flex items-center gap-2.5 py-1.5">

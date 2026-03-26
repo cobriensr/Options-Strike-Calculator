@@ -13,7 +13,6 @@ import type { AnalysisContext } from '../../components/ChartAnalysis';
 import { theme } from '../../themes';
 import type { CalculationResults } from '../../types';
 
-const th = theme;
 
 // ============================================================
 // HELPERS
@@ -126,7 +125,7 @@ async function renderAndAnalyze(
       ),
   );
   const view = render(
-    <ChartAnalysis th={th} results={makeResults()} context={makeContext()} />,
+    <ChartAnalysis results={makeResults()} context={makeContext()} />,
   );
   await addImageViaInput(view.container);
   await clickAnalyzeAndConfirm(user);
@@ -156,17 +155,17 @@ describe('ChartAnalysis', () => {
   });
 
   it('renders the section heading', () => {
-    render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+    render(<ChartAnalysis results={null} context={makeContext()} />);
     expect(screen.getByText('Chart Analysis')).toBeInTheDocument();
   });
 
   it('shows upload prompt when no images', () => {
-    render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+    render(<ChartAnalysis results={null} context={makeContext()} />);
     expect(screen.getByText(/drop or click to upload/i)).toBeInTheDocument();
   });
 
   it('does not show analyze button when no images', () => {
-    render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+    render(<ChartAnalysis results={null} context={makeContext()} />);
     expect(
       screen.queryByRole('button', { name: /analyze/i }),
     ).not.toBeInTheDocument();
@@ -177,7 +176,7 @@ describe('ChartAnalysis', () => {
   describe('image management', () => {
     it('shows image count after adding an image', async () => {
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       expect(screen.getByText(/1\/2 images/)).toBeInTheDocument();
@@ -185,7 +184,7 @@ describe('ChartAnalysis', () => {
 
     it('shows analyze button after adding an image', async () => {
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       expect(
@@ -195,7 +194,7 @@ describe('ChartAnalysis', () => {
 
     it('pluralizes button text for multiple images', async () => {
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container, createImageFile('chart1.png'));
       await addImageViaInput(container, createImageFile('chart2.png'));
@@ -207,7 +206,7 @@ describe('ChartAnalysis', () => {
     it('removes an image when X button is clicked', async () => {
       const user = userEvent.setup();
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /remove image/i }));
@@ -216,7 +215,7 @@ describe('ChartAnalysis', () => {
 
     it('defaults image label to Periscope (Gamma)', async () => {
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(
@@ -227,7 +226,7 @@ describe('ChartAnalysis', () => {
     it('allows changing the image label', async () => {
       const user = userEvent.setup();
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       const select = screen.getByRole('combobox');
@@ -237,7 +236,7 @@ describe('ChartAnalysis', () => {
 
     it('limits to 2 images', async () => {
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       for (let i = 0; i < 5; i++)
         await addImageViaInput(container, createImageFile(`chart${i}.png`));
@@ -245,7 +244,7 @@ describe('ChartAnalysis', () => {
     });
 
     it('handles drag and drop', async () => {
-      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      render(<ChartAnalysis results={null} context={makeContext()} />);
       const dropZone = screen.getByRole('button', {
         name: /upload chart images/i,
       });
@@ -266,7 +265,7 @@ describe('ChartAnalysis', () => {
     it('shows confirmation bar when analyze is clicked', async () => {
       const user = userEvent.setup();
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
@@ -282,7 +281,7 @@ describe('ChartAnalysis', () => {
     it('shows image labels in confirmation', async () => {
       const user = userEvent.setup();
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
@@ -294,7 +293,7 @@ describe('ChartAnalysis', () => {
     it('returns to normal state when Go Back is clicked', async () => {
       const user = userEvent.setup();
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
@@ -320,7 +319,6 @@ describe('ChartAnalysis', () => {
       vi.stubGlobal('fetch', mockFetch);
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -354,7 +352,6 @@ describe('ChartAnalysis', () => {
       );
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -378,7 +375,7 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup();
       vi.mocked(globalThis.fetch).mockReturnValue(new Promise(() => {}));
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -389,7 +386,7 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup();
       vi.mocked(globalThis.fetch).mockReturnValue(new Promise(() => {}));
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -402,7 +399,7 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup();
       vi.mocked(globalThis.fetch).mockReturnValue(new Promise(() => {}));
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -413,7 +410,7 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup();
       vi.mocked(globalThis.fetch).mockReturnValue(new Promise(() => {}));
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -431,7 +428,7 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       vi.mocked(globalThis.fetch).mockRejectedValue(new Error('Network error'));
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -454,7 +451,7 @@ describe('ChartAnalysis', () => {
         ),
       );
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -770,7 +767,7 @@ describe('ChartAnalysis', () => {
   describe('mode selector', () => {
     it('switches modes', async () => {
       const user = userEvent.setup();
-      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      render(<ChartAnalysis results={null} context={makeContext()} />);
       expect(
         screen.getByText('Full analysis before opening a position'),
       ).toBeInTheDocument();
@@ -785,7 +782,7 @@ describe('ChartAnalysis', () => {
     it('mode in button text', async () => {
       const user = userEvent.setup();
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       expect(
@@ -827,7 +824,7 @@ describe('ChartAnalysis', () => {
     it('replaces without adding', async () => {
       vi.stubGlobal('fetch', vi.fn());
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       const inputs = container.querySelectorAll('input[type="file"]');
@@ -842,7 +839,7 @@ describe('ChartAnalysis', () => {
 
   describe('paste handling', () => {
     it('adds image from clipboard', async () => {
-      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      render(<ChartAnalysis results={null} context={makeContext()} />);
       const evt = new Event('paste', { bubbles: true }) as any;
       evt.clipboardData = {
         items: [{ type: 'image/png', getAsFile: () => createImageFile() }],
@@ -855,7 +852,7 @@ describe('ChartAnalysis', () => {
     });
 
     it('ignores non-image paste', () => {
-      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      render(<ChartAnalysis results={null} context={makeContext()} />);
       const evt = new Event('paste', { bubbles: true }) as any;
       evt.clipboardData = {
         items: [{ type: 'text/plain', getAsFile: () => null }],
@@ -880,7 +877,7 @@ describe('ChartAnalysis', () => {
         }),
       );
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -905,7 +902,7 @@ describe('ChartAnalysis', () => {
         ),
       );
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -921,7 +918,7 @@ describe('ChartAnalysis', () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue('string'));
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -938,7 +935,7 @@ describe('ChartAnalysis', () => {
   describe('upload button', () => {
     it('opens file picker on click', async () => {
       const user = userEvent.setup();
-      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      render(<ChartAnalysis results={null} context={makeContext()} />);
       await user.click(
         screen.getByRole('button', { name: /upload chart images/i }),
       );
@@ -966,7 +963,6 @@ describe('ChartAnalysis', () => {
       );
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
           onAnalysisSaved={onAnalysisSaved}
@@ -993,7 +989,6 @@ describe('ChartAnalysis', () => {
       );
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
           onAnalysisSaved={onAnalysisSaved}
@@ -1031,7 +1026,6 @@ describe('ChartAnalysis', () => {
       );
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -1058,7 +1052,6 @@ describe('ChartAnalysis', () => {
       vi.stubGlobal('fetch', mockFn);
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext({ isBacktest: true })}
         />,
@@ -1092,7 +1085,6 @@ describe('ChartAnalysis', () => {
       );
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -1126,7 +1118,6 @@ describe('ChartAnalysis', () => {
       );
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -1161,7 +1152,6 @@ describe('ChartAnalysis', () => {
       );
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -1195,7 +1185,6 @@ describe('ChartAnalysis', () => {
       );
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -1234,16 +1223,15 @@ describe('ChartAnalysis', () => {
 
       render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext({ selectedDate: '2026-03-24' })}
         />,
       );
 
-      // Mid-Day uses th.caution color when active
+      // Mid-Day uses theme.caution color when active
       await waitFor(() => {
         const midDayBtn = screen.getByText('Mid-Day');
-        expect(midDayBtn).toHaveStyle({ color: th.caution });
+        expect(midDayBtn).toHaveStyle({ color: theme.caution });
       });
     });
 
@@ -1262,16 +1250,15 @@ describe('ChartAnalysis', () => {
 
       render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext({ selectedDate: '2026-03-24' })}
         />,
       );
 
-      // Review uses th.green color when active
+      // Review uses theme.green color when active
       await waitFor(() => {
         const reviewBtn = screen.getByText('Review');
-        expect(reviewBtn).toHaveStyle({ color: th.green });
+        expect(reviewBtn).toHaveStyle({ color: theme.green });
       });
     });
 
@@ -1288,7 +1275,6 @@ describe('ChartAnalysis', () => {
 
       const { rerender } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext({ selectedDate: undefined })}
         />,
@@ -1301,7 +1287,6 @@ describe('ChartAnalysis', () => {
 
       rerender(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext({ selectedDate: undefined })}
         />,
@@ -1330,7 +1315,7 @@ describe('ChartAnalysis', () => {
           ),
       );
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -1351,7 +1336,7 @@ describe('ChartAnalysis', () => {
         ),
       );
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -1412,7 +1397,6 @@ describe('ChartAnalysis', () => {
 
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -1490,7 +1474,6 @@ describe('ChartAnalysis', () => {
 
       const { container } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext()}
         />,
@@ -1520,7 +1503,7 @@ describe('ChartAnalysis', () => {
     it('handleReplaceFile does nothing with out-of-bounds index', async () => {
       vi.stubGlobal('fetch', vi.fn());
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
 
@@ -1571,7 +1554,7 @@ describe('ChartAnalysis', () => {
 
   describe('drag over', () => {
     it('prevents default on dragOver', () => {
-      render(<ChartAnalysis th={th} results={null} context={makeContext()} />);
+      render(<ChartAnalysis results={null} context={makeContext()} />);
       const dropZone = screen.getByRole('button', {
         name: /upload chart images/i,
       });
@@ -1592,7 +1575,7 @@ describe('ChartAnalysis', () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
 
       const { container } = render(
-        <ChartAnalysis th={th} results={null} context={makeContext()} />,
+        <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -1614,7 +1597,6 @@ describe('ChartAnalysis', () => {
 
       const { rerender } = render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext({ selectedDate: '2026-01-10' })}
         />,
@@ -1630,7 +1612,6 @@ describe('ChartAnalysis', () => {
       // Change the date — SHOULD trigger a new fetch
       rerender(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext({ selectedDate: '2026-01-11' })}
         />,
@@ -1651,7 +1632,6 @@ describe('ChartAnalysis', () => {
 
       render(
         <ChartAnalysis
-          th={th}
           results={makeResults()}
           context={makeContext({ selectedDate: '2026-01-10' })}
         />,
@@ -1660,7 +1640,7 @@ describe('ChartAnalysis', () => {
       // After the effect runs, the Pre-Trade (entry) button should be
       // disabled (checkmark shown) and Mid-Day should be active
       await waitFor(() => {
-        expect(screen.getByText('Mid-Day')).toHaveStyle({ color: th.caution });
+        expect(screen.getByText('Mid-Day')).toHaveStyle({ color: theme.caution });
       });
     });
   });

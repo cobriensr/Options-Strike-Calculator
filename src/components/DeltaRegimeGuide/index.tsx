@@ -1,4 +1,4 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { DeltaRow, DeltaRowError } from '../../types';
 import {
@@ -19,7 +19,6 @@ import DeltaThresholdsTable from './DeltaThresholdsTable';
 import type { ThresholdDelta } from './types';
 
 interface Props {
-  readonly th: Theme;
   readonly vix: number;
   readonly spot: number;
   readonly T: number;
@@ -50,7 +49,6 @@ interface RangeThreshold {
  * 2. Your standard deltas → which thresholds they clear (the verification)
  */
 export default function DeltaRegimeGuide({
-  th,
   vix,
   spot,
   T,
@@ -169,10 +167,10 @@ export default function DeltaRegimeGuide({
   // Zone color
   const zoneColor =
     bucket.zone === 'go'
-      ? th.green
+      ? theme.green
       : bucket.zone === 'caution'
-        ? th.caution
-        : th.red;
+        ? theme.caution
+        : theme.red;
 
   return (
     <div className="mt-4">
@@ -187,16 +185,16 @@ export default function DeltaRegimeGuide({
                 style={{
                   backgroundColor:
                     dowHL < 0.97
-                      ? tint(th.green, '18')
+                      ? tint(theme.green, '18')
                       : dowHL > 1.03
-                        ? tint(th.caution, '18')
-                        : th.surfaceAlt,
+                        ? tint(theme.caution, '18')
+                        : theme.surfaceAlt,
                   color:
                     dowHL < 0.97
-                      ? th.green
+                      ? theme.green
                       : dowHL > 1.03
-                        ? th.caution
-                        : th.textMuted,
+                        ? theme.caution
+                        : theme.textMuted,
                 }}
               >
                 {dowMult.dayShort}{' '}
@@ -210,8 +208,8 @@ export default function DeltaRegimeGuide({
             className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
             style={{
               backgroundColor:
-                cMult > 1.15 ? tint(th.red, '18') : tint(th.caution, '18'),
-              color: cMult > 1.15 ? th.red : th.caution,
+                cMult > 1.15 ? tint(theme.red, '18') : tint(theme.caution, '18'),
+              color: cMult > 1.15 ? theme.red : theme.caution,
             }}
           >
             {'\u26A1'} {cMult.toFixed(2)}x cluster
@@ -221,8 +219,8 @@ export default function DeltaRegimeGuide({
           <span
             className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
             style={{
-              backgroundColor: tint(th.green, '18'),
-              color: th.green,
+              backgroundColor: tint(theme.green, '18'),
+              color: theme.green,
             }}
           >
             {'\u2193'} {cMult.toFixed(2)}x calm
@@ -233,7 +231,7 @@ export default function DeltaRegimeGuide({
       {/* Recommendation Banner */}
       {settlementTarget && (
         <RecommendationBanner
-          th={th}
+         
           bucket={bucket}
           zoneColor={zoneColor}
           recommendedDelta={recommendedDelta}

@@ -2,16 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AdvancedSection from '../../components/AdvancedSection';
-import { theme } from '../../themes';
 import type { VIXDayData, OHLCField } from '../../types';
 
-const th = theme;
 
 function defaultProps(
   overrides: Partial<Parameters<typeof AdvancedSection>[0]> = {},
 ) {
   return {
-    th,
     skewPct: 0,
     onSkewChange: vi.fn(),
     showIC: false,

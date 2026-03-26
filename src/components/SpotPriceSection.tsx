@@ -1,9 +1,8 @@
-import type { Theme } from '../themes';
+import { theme } from '../themes';
 import { SectionBox, ErrorMsg } from './ui';
 import { tinyLbl, inputCls } from '../utils/ui-utils';
 
 interface Props {
-  th: Theme;
   spotPrice: string;
   onSpotChange: (v: string) => void;
   spxDirect: string;
@@ -18,7 +17,6 @@ interface Props {
 }
 
 export default function SpotPriceSection({
-  th,
   spotPrice,
   onSpotChange,
   spxDirect,
@@ -115,7 +113,7 @@ export default function SpotPriceSection({
                 aria-valuemax={10.05}
                 aria-valuenow={spxRatio}
                 className="m-0 w-full cursor-pointer"
-                style={{ accentColor: th.accent }}
+                style={{ accentColor: theme.accent }}
               />
               <div className="text-muted mt-1 flex justify-between font-mono text-[10px]">
                 <span>9.95</span>

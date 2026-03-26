@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import PreTradeSignals from '../../components/PreTradeSignals';
-import { theme } from '../../themes';
 import type {
   QuotesResponse,
   YesterdayResponse,
@@ -10,7 +9,6 @@ import type {
   MoverSlice,
 } from '../../types/api';
 
-const th = theme;
 
 // ============================================================
 // HELPERS
@@ -104,7 +102,7 @@ function makeMovers(
 describe('PreTradeSignals', () => {
   it('renders nothing when all data is null', () => {
     const { container } = render(
-      <PreTradeSignals th={th} quotes={null} yesterday={null} movers={null} />,
+      <PreTradeSignals quotes={null} yesterday={null} movers={null} />,
     );
     expect(container.innerHTML).toBe('');
   });
@@ -112,7 +110,6 @@ describe('PreTradeSignals', () => {
   it('renders the section heading when signals exist', () => {
     render(
       <PreTradeSignals
-        th={th}
         quotes={makeQuotes()}
         yesterday={makeYesterday()}
         movers={null}
@@ -130,7 +127,6 @@ describe('PreTradeSignals', () => {
       // rangePct = 0.5 → ratio ≈ 0.397 → green
       render(
         <PreTradeSignals
-          th={th}
           quotes={makeQuotes({ vix: { prevClose: 20 } })}
           yesterday={makeYesterday(0.5)}
           movers={null}
@@ -145,7 +141,6 @@ describe('PreTradeSignals', () => {
       // rangePct = 0.9 → ratio ≈ 0.952 → yellow
       render(
         <PreTradeSignals
-          th={th}
           quotes={makeQuotes({ vix: { prevClose: 15 } })}
           yesterday={makeYesterday(0.9)}
           movers={null}
@@ -159,7 +154,6 @@ describe('PreTradeSignals', () => {
       // rangePct = 1.5 → ratio ≈ 1.984 → red
       render(
         <PreTradeSignals
-          th={th}
           quotes={makeQuotes({ vix: { prevClose: 12 } })}
           yesterday={makeYesterday(1.5)}
           movers={null}
@@ -171,7 +165,6 @@ describe('PreTradeSignals', () => {
     it('does not render when yesterday data is missing', () => {
       render(
         <PreTradeSignals
-          th={th}
           quotes={makeQuotes()}
           yesterday={null}
           movers={null}
@@ -191,7 +184,6 @@ describe('PreTradeSignals', () => {
       // prevClose = 5780, open = 5790 → gap ≈ 0.17% → green
       render(
         <PreTradeSignals
-          th={th}
           quotes={makeQuotes({ spx: { open: 5790, prevClose: 5780 } })}
           yesterday={null}
           movers={null}
@@ -205,7 +197,6 @@ describe('PreTradeSignals', () => {
       // prevClose = 5000, open = 5025 → gap = 0.5% → yellow
       render(
         <PreTradeSignals
-          th={th}
           quotes={makeQuotes({ spx: { open: 5025, prevClose: 5000 } })}
           yesterday={null}
           movers={null}
@@ -219,7 +210,6 @@ describe('PreTradeSignals', () => {
       // prevClose = 5000, open = 4950 → gap = -1.0% → red
       render(
         <PreTradeSignals
-          th={th}
           quotes={makeQuotes({ spx: { open: 4950, prevClose: 5000 } })}
           yesterday={null}
           movers={null}
@@ -234,7 +224,6 @@ describe('PreTradeSignals', () => {
       // prevClose = 5000, open = 5050 → gap = +1.0% → red, up
       render(
         <PreTradeSignals
-          th={th}
           quotes={makeQuotes({ spx: { open: 5050, prevClose: 5000 } })}
           yesterday={null}
           movers={null}
@@ -257,7 +246,6 @@ describe('PreTradeSignals', () => {
       };
       render(
         <PreTradeSignals
-          th={th}
           quotes={quotes}
           yesterday={null}
           movers={null}
@@ -274,7 +262,6 @@ describe('PreTradeSignals', () => {
     it('shows green / CONCENTRATED when move is concentrated', () => {
       render(
         <PreTradeSignals
-          th={th}
           quotes={null}
           yesterday={null}
           movers={makeMovers({ concentrated: true, megaCapCount: 1 })}
@@ -287,7 +274,6 @@ describe('PreTradeSignals', () => {
     it('shows yellow / BROAD / MIXED when not concentrated and bias is mixed', () => {
       render(
         <PreTradeSignals
-          th={th}
           quotes={null}
           yesterday={null}
           movers={makeMovers({ concentrated: false, bias: 'mixed' })}
@@ -299,7 +285,6 @@ describe('PreTradeSignals', () => {
     it('shows red / BROAD RALLY for broad bullish', () => {
       render(
         <PreTradeSignals
-          th={th}
           quotes={null}
           yesterday={null}
           movers={makeMovers({ concentrated: false, bias: 'bullish' })}
@@ -312,7 +297,6 @@ describe('PreTradeSignals', () => {
     it('shows red / BROAD SELLOFF for broad bearish', () => {
       render(
         <PreTradeSignals
-          th={th}
           quotes={null}
           yesterday={null}
           movers={makeMovers({ concentrated: false, bias: 'bearish' })}
@@ -325,7 +309,6 @@ describe('PreTradeSignals', () => {
     it('does not render when movers is null', () => {
       render(
         <PreTradeSignals
-          th={th}
           quotes={null}
           yesterday={null}
           movers={null}
@@ -351,7 +334,6 @@ describe('PreTradeSignals', () => {
       };
       render(
         <PreTradeSignals
-          th={th}
           quotes={null}
           yesterday={null}
           movers={emptyMovers}
@@ -367,7 +349,6 @@ describe('PreTradeSignals', () => {
   it('renders all three signal cards when all data is provided', () => {
     render(
       <PreTradeSignals
-        th={th}
         quotes={makeQuotes({
           vix: { prevClose: 20 },
           spx: { open: 5790, prevClose: 5780 },

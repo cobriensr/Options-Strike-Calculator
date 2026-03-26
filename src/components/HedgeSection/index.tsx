@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type {
   IronCondorLegs,
   CalculationResults,
@@ -12,7 +12,6 @@ import StatBox from './StatBox';
 import ScenarioTable from './ScenarioTable';
 
 interface Props {
-  th: Theme;
   results: CalculationResults;
   ic: IronCondorLegs;
   contracts: number;
@@ -23,7 +22,6 @@ interface Props {
 }
 
 export default function HedgeSection({
-  th,
   results,
   ic,
   contracts,
@@ -144,7 +142,7 @@ export default function HedgeSection({
               <StatBox
                 label="Buy Puts"
                 value={String(hedge.recommendedPuts)}
-                accent={th.red}
+                accent={theme.red}
                 large
               />
               <StatBox label="Strike" value={String(hedge.putStrikeSnapped)} />
@@ -176,7 +174,7 @@ export default function HedgeSection({
               <StatBox
                 label="Buy Calls"
                 value={String(hedge.recommendedCalls)}
-                accent={th.green}
+                accent={theme.green}
                 large
               />
               <StatBox label="Strike" value={String(hedge.callStrikeSnapped)} />
@@ -205,17 +203,17 @@ export default function HedgeSection({
           <StatBox
             label={hedgeDte > 1 ? 'Net Daily Cost' : 'Daily Hedge Cost'}
             value={'$' + fmtDollar(hedge.dailyCostDollars)}
-            accent={th.red}
+            accent={theme.red}
           />
           <StatBox
             label="IC Credit"
             value={'$' + fmtDollar(ic.creditReceived * 100 * contracts)}
-            accent={th.green}
+            accent={theme.green}
           />
           <StatBox
             label="Net Credit After Hedge"
             value={'$' + fmtDollar(hedge.netCreditAfterHedge)}
-            accent={hedge.netCreditAfterHedge > 0 ? th.green : th.red}
+            accent={hedge.netCreditAfterHedge > 0 ? theme.green : theme.red}
           />
           <StatBox
             label="Hedge % of Credit"
@@ -278,7 +276,7 @@ export default function HedgeSection({
             Crash Scenarios (SPX drops)
           </div>
           <ScenarioTable
-            th={th}
+           
             scenarios={crashScenarios}
             spot={results.spot}
             direction="crash"
@@ -289,7 +287,7 @@ export default function HedgeSection({
             Rally Scenarios (SPX rises)
           </div>
           <ScenarioTable
-            th={th}
+           
             scenarios={rallyScenarios}
             spot={results.spot}
             direction="rally"

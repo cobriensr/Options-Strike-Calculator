@@ -1,17 +1,15 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type { IronCondorLegs } from '../../types';
 import { mkTh, mkTd, fmtDollar } from '../../utils/ui-utils';
 import { ScrollHint } from '../ui';
 
 interface Props {
-  th: Theme;
   icRows: IronCondorLegs[];
   contracts: number;
   effectiveRatio: number;
 }
 
 export default function PnLProfileTable({
-  th,
   icRows,
   contracts,
   effectiveRatio,
@@ -55,7 +53,7 @@ export default function PnLProfileTable({
                   {
                     key: ic.delta + '-put',
                     side: 'Put Spread',
-                    sideColor: th.red,
+                    sideColor: theme.red,
                     credit: ic.putSpreadCredit,
                     maxLoss: ic.putSpreadMaxLoss,
                     ror: ic.putSpreadRoR,
@@ -71,7 +69,7 @@ export default function PnLProfileTable({
                   {
                     key: ic.delta + '-call',
                     side: 'Call Spread',
-                    sideColor: th.green,
+                    sideColor: theme.green,
                     credit: ic.callSpreadCredit,
                     maxLoss: ic.callSpreadMaxLoss,
                     ror: ic.callSpreadRoR,
@@ -87,7 +85,7 @@ export default function PnLProfileTable({
                   {
                     key: ic.delta + '-ic',
                     side: 'Iron Condor',
-                    sideColor: th.accent,
+                    sideColor: theme.accent,
                     credit: ic.creditReceived,
                     maxLoss: ic.maxLoss,
                     ror: ic.returnOnRisk,
@@ -187,7 +185,7 @@ export default function PnLProfileTable({
                           : '1px solid var(--color-edge)',
                       }}
                     >
-                      <span style={{ color: th.green }}>
+                      <span style={{ color: theme.green }}>
                         {(r.adjPop * 100).toFixed(1)}%
                       </span>
                       <div

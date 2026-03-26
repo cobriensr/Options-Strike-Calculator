@@ -1,9 +1,8 @@
-import type { Theme } from '../themes';
+import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
 import { findBucket, findFineStat, estimateRange } from '../data/vixRangeStats';
 
 interface Props {
-  readonly th: Theme;
   readonly vix: number;
   readonly spot: number; // SPX spot for points display
 }
@@ -12,7 +11,7 @@ interface Props {
  * Compact contextual card showing historical regime stats for the current VIX level.
  * Designed to sit directly below the VIX input inside the IV SectionBox.
  */
-export default function VIXRegimeCard({ th, vix, spot }: Props) {
+export default function VIXRegimeCard({ vix, spot }: Props) {
   const bucket = findBucket(vix);
   const fine = findFineStat(vix);
   const est = estimateRange(vix);
@@ -21,30 +20,30 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
   const zone = bucket.zone;
   const zoneConfig = {
     go: {
-      color: th.green,
-      bg: tint(th.green, '12'),
-      border: tint(th.green, '30'),
+      color: theme.green,
+      bg: tint(theme.green, '12'),
+      border: tint(theme.green, '30'),
       label: 'GREEN',
       advice: 'Favorable for iron condors',
     },
     caution: {
-      color: th.caution,
-      bg: tint(th.caution, '12'),
-      border: tint(th.caution, '30'),
+      color: theme.caution,
+      bg: tint(theme.caution, '12'),
+      border: tint(theme.caution, '30'),
       label: 'CAUTION',
       advice: 'Widen strikes or reduce size',
     },
     stop: {
-      color: th.red,
-      bg: tint(th.red, '12'),
-      border: tint(th.red, '30'),
+      color: theme.red,
+      bg: tint(theme.red, '12'),
+      border: tint(theme.red, '30'),
       label: 'ELEVATED',
       advice: 'Consider sitting out',
     },
     danger: {
-      color: th.red,
-      bg: tint(th.red, '18'),
-      border: tint(th.red, '40'),
+      color: theme.red,
+      bg: tint(theme.red, '18'),
+      border: tint(theme.red, '40'),
       label: 'EXTREME',
       advice: 'Do not sell iron condors',
     },
@@ -90,19 +89,19 @@ export default function VIXRegimeCard({ th, vix, spot }: Props) {
           label="Median Range"
           value={est.medHL.toFixed(2) + '%'}
           sub={medPts + ' pts'}
-          color={th.accent}
+          color={theme.accent}
         />
         <MiniStat
           label="90th Pctile"
           value={est.p90HL.toFixed(2) + '%'}
           sub={p90Pts + ' pts'}
-          color={zone === 'go' ? th.accent : zoneConfig.color}
+          color={zone === 'go' ? theme.accent : zoneConfig.color}
         />
         <MiniStat
           label={'Med. O\u2192C'}
           value={est.medOC.toFixed(2) + '%'}
           sub={medOCPts + ' pts settle'}
-          color={th.green}
+          color={theme.green}
         />
       </div>
 

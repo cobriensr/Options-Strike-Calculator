@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import type { Theme } from '../../themes';
 import type { DeltaRow, CalculationResults } from '../../types';
 import { buildIronCondor } from '../../utils/calculator';
 import HedgeSection from '../HedgeSection';
@@ -7,7 +6,6 @@ import LegsTable from './LegsTable';
 import PnLProfileTable from './PnLProfileTable';
 
 interface Props {
-  th: Theme;
   results: CalculationResults;
   wingWidth: number;
   contracts: number;
@@ -16,7 +14,6 @@ interface Props {
 }
 
 export default function IronCondorSection({
-  th,
   results,
   wingWidth,
   contracts,
@@ -52,7 +49,7 @@ export default function IronCondorSection({
 
       {/* P&L Profile Table */}
       <PnLProfileTable
-        th={th}
+       
         icRows={icRows}
         contracts={contracts}
         effectiveRatio={effectiveRatio}
@@ -70,7 +67,7 @@ export default function IronCondorSection({
       {/* Hedge Section — always visible */}
       {hedgeIc && (
         <HedgeSection
-          th={th}
+         
           results={results}
           ic={hedgeIc}
           contracts={contracts}

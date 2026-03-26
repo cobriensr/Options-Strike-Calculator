@@ -1,21 +1,20 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { SignalResult } from './classifiers';
 
 interface Props {
-  th: Theme;
   title: string;
   subtitle: string;
   result: SignalResult;
 }
 
-export default function SignalCard({ th, title, subtitle, result }: Props) {
+export default function SignalCard({ title, subtitle, result }: Props) {
   const color =
     result.signal === 'green'
-      ? th.green
+      ? theme.green
       : result.signal === 'yellow'
-        ? th.caution
-        : th.red;
+        ? theme.caution
+        : theme.red;
 
   return (
     <div className="bg-surface border-edge rounded-[10px] border p-3 sm:p-3.5">

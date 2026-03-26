@@ -2,10 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IronCondorSection from '../../components/IronCondorSection';
-import { theme } from '../../themes';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
 
-const th = theme;
 
 // ============================================================
 // HELPERS
@@ -62,7 +60,6 @@ function renderSection(
 ) {
   return render(
     <IronCondorSection
-      th={th}
       results={makeResults(overrides)}
       wingWidth={props?.wingWidth ?? 25}
       contracts={props?.contracts ?? 1}

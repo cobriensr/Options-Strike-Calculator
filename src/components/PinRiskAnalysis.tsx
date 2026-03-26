@@ -1,15 +1,14 @@
-import type { Theme } from '../themes';
+import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
 import { getTopOIStrikes, formatOI } from '../utils/pin-risk';
 import type { ChainResponse } from '../types/api';
 
 interface Props {
-  th: Theme;
   chain: ChainResponse;
   spot: number;
 }
 
-export default function PinRiskAnalysis({ th, chain, spot }: Props) {
+export default function PinRiskAnalysis({ chain, spot }: Props) {
   const topStrikes = getTopOIStrikes(chain.puts, chain.calls, spot);
 
   if (topStrikes.length === 0) {
@@ -35,21 +34,21 @@ export default function PinRiskAnalysis({ th, chain, spot }: Props) {
         <div
           className="mb-3 flex items-start gap-3 rounded-[10px] p-3 sm:items-center sm:p-4"
           style={{
-            backgroundColor: tint(th.caution, '10'),
-            border: '1.5px solid ' + tint(th.caution, '30'),
+            backgroundColor: tint(theme.caution, '10'),
+            border: '1.5px solid ' + tint(theme.caution, '30'),
           }}
         >
           <div
             className="h-3 w-3 shrink-0 rounded-full"
             style={{
-              backgroundColor: th.caution,
-              boxShadow: '0 0 8px ' + tint(th.caution, '66'),
+              backgroundColor: theme.caution,
+              boxShadow: '0 0 8px ' + tint(theme.caution, '66'),
             }}
           />
           <div>
             <span
               className="font-sans text-[10px] font-bold tracking-widest uppercase"
-              style={{ color: th.caution }}
+              style={{ color: theme.caution }}
             >
               PIN RISK
             </span>
@@ -92,10 +91,10 @@ export default function PinRiskAnalysis({ th, chain, spot }: Props) {
               const isNearSpot = Math.abs(s.distFromSpot / spot) < 0.005;
               const barColor =
                 s.side === 'put'
-                  ? th.red
+                  ? theme.red
                   : s.side === 'call'
-                    ? th.green
-                    : th.accent;
+                    ? theme.green
+                    : theme.accent;
 
               return (
                 <tr
@@ -103,21 +102,21 @@ export default function PinRiskAnalysis({ th, chain, spot }: Props) {
                   className="border-edge border-b last:border-b-0"
                   style={
                     isNearSpot
-                      ? { backgroundColor: tint(th.caution, '08') }
+                      ? { backgroundColor: tint(theme.caution, '08') }
                       : undefined
                   }
                 >
                   <td className="px-3 py-1.5">
                     <span
                       className="font-bold"
-                      style={isNearSpot ? { color: th.caution } : undefined}
+                      style={isNearSpot ? { color: theme.caution } : undefined}
                     >
                       {s.strike}
                     </span>
                     {isNearSpot && (
                       <span
                         className="ml-1.5 font-sans text-[8px] font-bold"
-                        style={{ color: th.caution }}
+                        style={{ color: theme.caution }}
                       >
                         PIN
                       </span>
@@ -125,13 +124,13 @@ export default function PinRiskAnalysis({ th, chain, spot }: Props) {
                   </td>
                   <td
                     className="px-3 py-1.5 text-right"
-                    style={{ color: s.putOI > s.callOI ? th.red : undefined }}
+                    style={{ color: s.putOI > s.callOI ? theme.red : undefined }}
                   >
                     {formatOI(s.putOI)}
                   </td>
                   <td
                     className="px-3 py-1.5 text-right"
-                    style={{ color: s.callOI > s.putOI ? th.green : undefined }}
+                    style={{ color: s.callOI > s.putOI ? theme.green : undefined }}
                   >
                     {formatOI(s.callOI)}
                   </td>

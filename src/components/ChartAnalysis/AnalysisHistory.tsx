@@ -7,7 +7,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type { AnalysisMode, AnalysisResult } from './types';
 import { MODE_LABELS } from './types';
 import { SectionBox } from '../ui';
@@ -44,12 +44,11 @@ type ModeFilter = 'all' | 'entry' | 'midday' | 'review';
 // ── Component ──────────────────────────────────────────────
 
 interface Props {
-  readonly th: Theme;
   /** Bump this to trigger a refetch of analysis dates */
   readonly refreshKey?: number;
 }
 
-export default function AnalysisHistory({ th, refreshKey }: Props) {
+export default function AnalysisHistory({ refreshKey }: Props) {
   const [allDates, setAllDates] = useState<DateEntry[]>([]);
   const [modeFilter, setModeFilter] = useState<ModeFilter>('all');
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -217,8 +216,8 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
   // ── Helpers ────────────────────────────────────────────
 
   const modeColor = (m: string) => {
-    if (m === 'entry') return th.accent;
-    if (m === 'midday') return th.caution;
+    if (m === 'entry') return theme.accent;
+    if (m === 'midday') return theme.caution;
     return '#A78BFA';
   };
 
@@ -251,7 +250,7 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
       <SectionBox label="Analysis History">
         <div
           className="rounded-lg px-3 py-6 text-center font-sans text-[11px]"
-          style={{ color: th.textMuted }}
+          style={{ color: theme.textMuted }}
         >
           No saved analyses yet. Run a chart analysis to get started.
         </div>
@@ -274,11 +273,11 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
           const active = modeFilter === key;
           const color =
             key === 'all'
-              ? th.text
+              ? theme.text
               : key === 'entry'
-                ? th.accent
+                ? theme.accent
                 : key === 'midday'
-                  ? th.caution
+                  ? theme.caution
                   : '#A78BFA';
           return (
             <button
@@ -288,8 +287,8 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
               className="cursor-pointer rounded-full px-3 py-1.5 font-mono text-[10px] font-semibold transition-all duration-100"
               style={{
                 backgroundColor: active ? tint(color, '15') : 'transparent',
-                color: active ? color : th.textMuted,
-                border: `1.5px solid ${active ? color + '40' : th.border}`,
+                color: active ? color : theme.textMuted,
+                border: `1.5px solid ${active ? color + '40' : theme.border}`,
               }}
             >
               {label}
@@ -313,7 +312,7 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
             className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] transition-[border-color] duration-150 outline-none"
-            style={{ color: th.text }}
+            style={{ color: theme.text }}
           >
             <option value="">Select a date...</option>
             {filteredDates.map((d) => {
@@ -341,7 +340,7 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
               value={selectedTime}
               onChange={(e) => handleTimeChange(e.target.value)}
               className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] transition-[border-color] duration-150 outline-none"
-              style={{ color: th.text }}
+              style={{ color: theme.text }}
             >
               {availableTimes.map((t) => (
                 <option key={t} value={t}>
@@ -373,8 +372,8 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
                       backgroundColor: active
                         ? tint(modeColor(m), '18')
                         : 'transparent',
-                      color: active ? modeColor(m) : th.textMuted,
-                      border: `1.5px solid ${active ? modeColor(m) + '40' : th.border}`,
+                      color: active ? modeColor(m) : theme.textMuted,
+                      border: `1.5px solid ${active ? modeColor(m) + '40' : theme.border}`,
                     }}
                   >
                     {MODE_LABELS[m].label}
@@ -390,7 +389,7 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
       {loading && (
         <div
           className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
-          style={{ color: th.textMuted }}
+          style={{ color: theme.textMuted }}
         >
           Loading...
         </div>
@@ -420,12 +419,12 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
                 style={{
                   color:
                     selectedAnalysis.structure === 'IRON CONDOR'
-                      ? th.accent
+                      ? theme.accent
                       : selectedAnalysis.structure === 'PUT CREDIT SPREAD'
-                        ? th.red
+                        ? theme.red
                         : selectedAnalysis.structure === 'CALL CREDIT SPREAD'
-                          ? th.green
-                          : th.caution,
+                          ? theme.green
+                          : theme.caution,
                 }}
               >
                 {selectedAnalysis.structure}
@@ -435,10 +434,10 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
                 style={{
                   color:
                     selectedAnalysis.confidence === 'HIGH'
-                      ? th.green
+                      ? theme.green
                       : selectedAnalysis.confidence === 'MODERATE'
-                        ? th.caution
-                        : th.red,
+                        ? theme.caution
+                        : theme.red,
                 }}
               >
                 {selectedAnalysis.confidence}
@@ -463,7 +462,7 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
           </div>
 
           <AnalysisResultsView
-            th={th}
+           
             analysis={selectedAnalysis.analysis}
             mode={selectedAnalysis.mode}
             onReplaceImage={noopReplace}
@@ -476,7 +475,7 @@ export default function AnalysisHistory({ th, refreshKey }: Props) {
       {selectedDate && !loading && filteredAnalyses.length === 0 && (
         <div
           className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
-          style={{ color: th.textMuted }}
+          style={{ color: theme.textMuted }}
         >
           No{' '}
           {modeFilter === 'all'

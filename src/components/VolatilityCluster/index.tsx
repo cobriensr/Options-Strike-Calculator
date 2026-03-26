@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
 import {
   getClusterMultiplier,
@@ -8,7 +8,6 @@ import {
 import PercentileBar from './PercentileBar';
 
 interface Props {
-  readonly th: Theme;
   readonly vix: number | null;
   readonly spot: number | null;
   readonly onMultiplierChange?: (mult: number) => void;
@@ -28,7 +27,6 @@ interface Props {
  * the clustering multiplier for today's expected range.
  */
 export default function VolatilityCluster({
-  th,
   vix,
   spot,
   onMultiplierChange,
@@ -80,13 +78,13 @@ export default function VolatilityCluster({
   // Determine signal color
   const signalColor = cluster
     ? cluster.mult < 0.96
-      ? th.green
+      ? theme.green
       : cluster.mult < 1.05
-        ? th.accent
+        ? theme.accent
         : cluster.mult < 1.2
-          ? th.caution
-          : th.red
-    : th.textMuted;
+          ? theme.caution
+          : theme.red
+    : theme.textMuted;
 
   const signalLabel = cluster
     ? cluster.mult < 0.96
@@ -284,8 +282,8 @@ export default function VolatilityCluster({
                         style={{
                           color:
                             clusterPutMult > clusterCallMult
-                              ? th.red
-                              : th.textMuted,
+                              ? theme.red
+                              : theme.textMuted,
                         }}
                       >
                         {clusterPutMult.toFixed(3)}x
@@ -296,7 +294,7 @@ export default function VolatilityCluster({
                         className="absolute top-0 left-0 h-full rounded-[3px]"
                         style={{
                           width: Math.min(clusterPutMult / 1.5, 1) * 100 + '%',
-                          backgroundColor: th.red,
+                          backgroundColor: theme.red,
                           opacity: 0.6,
                         }}
                       />
@@ -312,8 +310,8 @@ export default function VolatilityCluster({
                         style={{
                           color:
                             clusterCallMult > clusterPutMult
-                              ? th.green
-                              : th.textMuted,
+                              ? theme.green
+                              : theme.textMuted,
                         }}
                       >
                         {clusterCallMult.toFixed(3)}x
@@ -324,7 +322,7 @@ export default function VolatilityCluster({
                         className="absolute top-0 left-0 h-full rounded-[3px]"
                         style={{
                           width: Math.min(clusterCallMult / 1.5, 1) * 100 + '%',
-                          backgroundColor: th.green,
+                          backgroundColor: theme.green,
                           opacity: 0.6,
                         }}
                       />
@@ -342,7 +340,7 @@ export default function VolatilityCluster({
           {/* Percentile reference bar */}
           {thresholds && (
             <PercentileBar
-              th={th}
+             
               thresholds={thresholds}
               yestRangePct={yestRangePct}
               signalColor={signalColor}

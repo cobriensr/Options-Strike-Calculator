@@ -2,15 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import EntryTimeSection from '../../components/EntryTimeSection';
-import { theme } from '../../themes';
 
-const th = theme;
 
 function renderSection(
   overrides: Partial<Parameters<typeof EntryTimeSection>[0]> = {},
 ) {
   const props = {
-    th,
     selectCls: 'test-select',
     chevronUrl: 'url(test)',
     timeHour: '9',

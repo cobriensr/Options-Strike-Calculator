@@ -2,9 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IVInputSection from '../../components/IVInputSection';
-import { theme } from '../../themes';
 
-const th = theme;
 
 const mockMarket = {
   data: {
@@ -24,7 +22,6 @@ const mockMarket = {
 
 function renderSection(overrides: Record<string, unknown> = {}) {
   const defaults = {
-    th,
     ivMode: 'vix' as const,
     onIvModeChange: vi.fn(),
     vixInput: '',

@@ -2,13 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import MarketRegimeSection from '../../components/MarketRegimeSection';
-import { theme } from '../../themes';
 import type { CalculationResults, DeltaRow } from '../../types';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
 import type { ComputedSignals } from '../../hooks/useComputedSignals';
 import type { HistoryCandle } from '../../types/api';
 
-const th = theme;
 
 const defaultSignals: ComputedSignals = {
   vix1d: undefined,
@@ -118,7 +116,6 @@ describe('MarketRegimeSection', () => {
   it('renders section heading', () => {
     render(
       <MarketRegimeSection
-        th={th}
         dVix="20"
         results={null}
         errors={{}}
@@ -137,7 +134,6 @@ describe('MarketRegimeSection', () => {
   it('shows description text', () => {
     render(
       <MarketRegimeSection
-        th={th}
         dVix="20"
         results={null}
         errors={{}}
@@ -158,7 +154,6 @@ describe('MarketRegimeSection', () => {
   it('shows Hide/Show analysis toggle button', () => {
     render(
       <MarketRegimeSection
-        th={th}
         dVix="20"
         results={null}
         errors={{}}
@@ -179,7 +174,6 @@ describe('MarketRegimeSection', () => {
     const user = userEvent.setup();
     render(
       <MarketRegimeSection
-        th={th}
         dVix="20"
         results={null}
         errors={{}}
@@ -199,7 +193,6 @@ describe('MarketRegimeSection', () => {
   it('shows VIX badge when results exist', () => {
     render(
       <MarketRegimeSection
-        th={th}
         dVix="18.5"
         results={makeResults()}
         errors={{}}
@@ -218,7 +211,6 @@ describe('MarketRegimeSection', () => {
   it('shows dash in VIX badge when dVix is not parseable', () => {
     render(
       <MarketRegimeSection
-        th={th}
         dVix=""
         results={makeResults()}
         errors={{}}
@@ -238,7 +230,6 @@ describe('MarketRegimeSection', () => {
     // This exercises L74: dVix ? Number.parseFloat(dVix) : null
     render(
       <MarketRegimeSection
-        th={th}
         dVix=""
         results={null}
         errors={{}}
@@ -325,7 +316,6 @@ describe('MarketRegimeSection', () => {
 
     render(
       <MarketRegimeSection
-        th={th}
         dVix="18"
         results={makeResults()}
         errors={{}}
@@ -349,7 +339,6 @@ describe('MarketRegimeSection', () => {
   it('Hide/Show Analysis button has type="button"', () => {
     render(
       <MarketRegimeSection
-        th={th}
         dVix="20"
         results={null}
         errors={{}}
@@ -394,7 +383,6 @@ describe('MarketRegimeSection', () => {
 
     render(
       <MarketRegimeSection
-        th={th}
         dVix="18"
         results={makeResults()}
         errors={{}}

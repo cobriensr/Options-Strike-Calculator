@@ -1,11 +1,10 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { VIXBucket } from '../../data/vixRangeStats';
 import GuidanceCell from './GuidanceCell';
 import type { ThresholdDelta } from './types';
 
 interface Props {
-  readonly th: Theme;
   readonly bucket: VIXBucket;
   readonly zoneColor: string;
   readonly recommendedDelta: number | null;
@@ -16,7 +15,6 @@ interface Props {
 }
 
 export default function RecommendationBanner({
-  th,
   bucket,
   zoneColor,
   recommendedDelta,
@@ -38,16 +36,16 @@ export default function RecommendationBanner({
     return (
       <div
         className="mb-3.5 overflow-hidden rounded-[10px]"
-        style={{ border: '1.5px solid ' + tint(th.red, '30') }}
+        style={{ border: '1.5px solid ' + tint(theme.red, '30') }}
       >
         <div
           className="flex flex-col gap-2.5 p-3.5 px-4.5 md:flex-row md:items-center md:justify-between"
-          style={{ backgroundColor: tint(th.red, '10') }}
+          style={{ backgroundColor: tint(theme.red, '10') }}
         >
           <div>
             <div
               className="mb-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
-              style={{ color: th.red }}
+              style={{ color: theme.red }}
             >
               No safe delta {'\u2014'} consider sitting out
             </div>
@@ -65,7 +63,7 @@ export default function RecommendationBanner({
             </div>
             <div
               className="font-mono text-[28px] leading-none font-extrabold"
-              style={{ color: th.red }}
+              style={{ color: theme.red }}
             >
               SIT OUT
             </div>
@@ -74,12 +72,12 @@ export default function RecommendationBanner({
         <div
           className="text-secondary px-4.5 py-2 font-sans text-[11px] leading-normal"
           style={{
-            backgroundColor: tint(th.red, '08'),
-            borderTop: '1px solid ' + tint(th.red, '15'),
+            backgroundColor: tint(theme.red, '08'),
+            borderTop: '1px solid ' + tint(theme.red, '15'),
           }}
         >
           {'\u26A0\uFE0F'}{' '}
-          <strong style={{ color: th.red }}>Extreme conditions</strong>{' '}
+          <strong style={{ color: theme.red }}>Extreme conditions</strong>{' '}
           {'\u2014'} if you must trade, use the absolute minimum size and the
           widest wings available. But the data says today is one of the days
           that breaks iron condors.
@@ -147,13 +145,13 @@ export default function RecommendationBanner({
             <div className="text-center">
               <div
                 className="mb-0.5 font-sans text-[10px] font-semibold tracking-wider"
-                style={{ color: tint(th.red, 'CC') }}
+                style={{ color: tint(theme.red, 'CC') }}
               >
                 PUT SPREAD
               </div>
               <div
                 className="font-mono text-[28px] leading-none font-extrabold"
-                style={{ color: th.red }}
+                style={{ color: theme.red }}
               >
                 {putSpreadCeiling}
                 {'\u0394'}
@@ -166,13 +164,13 @@ export default function RecommendationBanner({
             <div className="text-center">
               <div
                 className="mb-0.5 font-sans text-[10px] font-semibold tracking-wider"
-                style={{ color: tint(th.green, 'CC') }}
+                style={{ color: tint(theme.green, 'CC') }}
               >
                 CALL SPREAD
               </div>
               <div
                 className="font-mono text-[28px] leading-none font-extrabold"
-                style={{ color: th.green }}
+                style={{ color: theme.green }}
               >
                 {callSpreadCeiling}
                 {'\u0394'}
@@ -209,7 +207,7 @@ export default function RecommendationBanner({
                 label="Moderate"
                 delta={intradayDelta!}
                 desc="90% intraday safe"
-                color={th.accent}
+                color={theme.accent}
               />
             )}
             {showConserv && (
@@ -217,7 +215,7 @@ export default function RecommendationBanner({
                 label="Conservative"
                 delta={conservD}
                 desc="Extra cushion"
-                color={th.green}
+                color={theme.green}
               />
             )}
           </div>

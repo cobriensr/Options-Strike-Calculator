@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import VolatilityCluster from '../../components/VolatilityCluster';
-import { theme } from '../../themes';
 
 function setInput(label: RegExp, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
@@ -18,33 +17,33 @@ function enterYesterday(open: string, high: string, low: string) {
 // ============================================================
 describe('VolatilityCluster: rendering', () => {
   it('renders without crashing', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     expect(
       screen.getAllByText(/volatility clustering/i).length,
     ).toBeGreaterThanOrEqual(1);
   });
 
   it('renders in dark mode', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     expect(
       screen.getAllByText(/volatility clustering/i).length,
     ).toBeGreaterThanOrEqual(1);
   });
 
   it('shows all three input fields', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     expect(screen.getByLabelText(/yesterday open/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/yesterday high/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/yesterday low/i)).toBeInTheDocument();
   });
 
   it('shows empty state when VIX is null', () => {
-    render(<VolatilityCluster th={theme} vix={null} spot={6800} />);
+    render(<VolatilityCluster vix={null} spot={6800} />);
     expect(screen.getByText(/enter a vix value/i)).toBeInTheDocument();
   });
 
   it('shows hint when VIX set but no range entered', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     expect(
       screen.getAllByText(/enter yesterday/i).length,
     ).toBeGreaterThanOrEqual(1);
@@ -58,7 +57,7 @@ describe('VolatilityCluster: signals', () => {
   // VIX 15 (low regime): p50=0.73, p75=1.01, p90=1.32
 
   it('shows TAILWIND for calm yesterday at low VIX', () => {
-    render(<VolatilityCluster th={theme} vix={15} spot={6800} />);
+    render(<VolatilityCluster vix={15} spot={6800} />);
     // 30 pts / 6800 = 0.44% → below p50 (0.73%)
     enterYesterday('6800', '6815', '6785');
     expect(screen.getByText('TAILWIND')).toBeInTheDocument();
@@ -66,14 +65,14 @@ describe('VolatilityCluster: signals', () => {
   });
 
   it('shows NEUTRAL for normal yesterday', () => {
-    render(<VolatilityCluster th={theme} vix={15} spot={6800} />);
+    render(<VolatilityCluster vix={15} spot={6800} />);
     // 60 pts / 6800 = 0.88% → between p50 (0.73) and p75 (1.01)
     enterYesterday('6800', '6830', '6770');
     expect(screen.getByText('NEUTRAL')).toBeInTheDocument();
   });
 
   it('shows CLUSTERING for active yesterday', () => {
-    render(<VolatilityCluster th={theme} vix={15} spot={6800} />);
+    render(<VolatilityCluster vix={15} spot={6800} />);
     // 80 pts / 6800 = 1.18% → between p75 (1.01) and p90 (1.32)
     enterYesterday('6800', '6840', '6760');
     expect(screen.getByText('CLUSTERING')).toBeInTheDocument();
@@ -81,7 +80,7 @@ describe('VolatilityCluster: signals', () => {
   });
 
   it('shows HIGH CLUSTERING for extreme yesterday at high VIX', () => {
-    render(<VolatilityCluster th={theme} vix={30} spot={6800} />);
+    render(<VolatilityCluster vix={30} spot={6800} />);
     // 300 pts / 6800 = 4.41% → above p90 (3.78%)
     enterYesterday('6800', '6950', '6650');
     expect(screen.getByText('HIGH CLUSTERING')).toBeInTheDocument();
@@ -94,21 +93,21 @@ describe('VolatilityCluster: signals', () => {
 // ============================================================
 describe('VolatilityCluster: multipliers', () => {
   it('shows multiplier < 1 for calm yesterday', () => {
-    render(<VolatilityCluster th={theme} vix={15} spot={6800} />);
+    render(<VolatilityCluster vix={15} spot={6800} />);
     enterYesterday('6800', '6815', '6785');
     expect(screen.getByText('0.914x')).toBeInTheDocument();
     expect(screen.getByText('narrower')).toBeInTheDocument();
   });
 
   it('shows multiplier > 1 for hot yesterday at VIX 25+', () => {
-    render(<VolatilityCluster th={theme} vix={30} spot={6800} />);
+    render(<VolatilityCluster vix={30} spot={6800} />);
     enterYesterday('6800', '6950', '6650');
     expect(screen.getByText('1.872x')).toBeInTheDocument();
     expect(screen.getByText('wider')).toBeInTheDocument();
   });
 
   it('shows correct classification label', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     // 100 pts / 6800 = 1.47% → between p50 (1.24) and p75 (1.64) for mid VIX
     enterYesterday('6800', '6850', '6750');
     expect(screen.getByText(/Normal \(p50/)).toBeInTheDocument();
@@ -120,7 +119,7 @@ describe('VolatilityCluster: multipliers', () => {
 // ============================================================
 describe('VolatilityCluster: range computation', () => {
   it('computes range % from open price', () => {
-    render(<VolatilityCluster th={theme} vix={15} spot={6800} />);
+    render(<VolatilityCluster vix={15} spot={6800} />);
     // 40 pts / 6800 open = 0.59%
     enterYesterday('6800', '6820', '6780');
     expect(screen.getByText('0.59%')).toBeInTheDocument();
@@ -128,7 +127,7 @@ describe('VolatilityCluster: range computation', () => {
   });
 
   it('uses spot as fallback when open not entered', () => {
-    render(<VolatilityCluster th={theme} vix={15} spot={6800} />);
+    render(<VolatilityCluster vix={15} spot={6800} />);
     setInput(/yesterday open/i, '');
     setInput(/yesterday high/i, '6820');
     setInput(/yesterday low/i, '6780');
@@ -137,7 +136,7 @@ describe('VolatilityCluster: range computation', () => {
   });
 
   it('shows the VIX regime', () => {
-    render(<VolatilityCluster th={theme} vix={22} spot={6800} />);
+    render(<VolatilityCluster vix={22} spot={6800} />);
     enterYesterday('6800', '6850', '6750');
     expect(screen.getByText(/VIX 18/)).toBeInTheDocument();
   });
@@ -151,14 +150,14 @@ describe('VolatilityCluster: VIX sensitivity', () => {
     // 100 pts / 6800 = 1.47%
     // At VIX 12: p90 is 1.32% → this is >p90 → Hot
     const { unmount } = render(
-      <VolatilityCluster th={theme} vix={12} spot={6800} />,
+      <VolatilityCluster vix={12} spot={6800} />,
     );
     enterYesterday('6800', '6850', '6750');
     expect(screen.getByText('HIGH CLUSTERING')).toBeInTheDocument();
     unmount();
 
     // At VIX 30: p50 is 1.99% → this is <p50 → Calm
-    render(<VolatilityCluster th={theme} vix={30} spot={6800} />);
+    render(<VolatilityCluster vix={30} spot={6800} />);
     enterYesterday('6800', '6850', '6750');
     expect(screen.getByText('TAILWIND')).toBeInTheDocument();
   });
@@ -169,21 +168,21 @@ describe('VolatilityCluster: VIX sensitivity', () => {
 // ============================================================
 describe('VolatilityCluster: edge cases', () => {
   it('shows error when high <= low', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     setInput(/yesterday high/i, '6780');
     setInput(/yesterday low/i, '6820');
     expect(screen.getByText(/high must be greater/i)).toBeInTheDocument();
   });
 
   it('handles non-numeric input', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     setInput(/yesterday high/i, 'abc');
     setInput(/yesterday low/i, '6780');
     expect(screen.queryByText(/multiplier/i)).not.toBeInTheDocument();
   });
 
   it('works without spot (uses midpoint)', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={null} />);
+    render(<VolatilityCluster vix={20} spot={null} />);
     setInput(/yesterday open/i, '');
     setInput(/yesterday high/i, '6820');
     setInput(/yesterday low/i, '6780');
@@ -191,7 +190,7 @@ describe('VolatilityCluster: edge cases', () => {
   });
 
   it('renders percentile reference bar', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     enterYesterday('6800', '6850', '6750');
     expect(screen.getAllByText(/p50/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/p75/).length).toBeGreaterThanOrEqual(1);
@@ -204,13 +203,13 @@ describe('VolatilityCluster: edge cases', () => {
 // ============================================================
 describe('VolatilityCluster: theme support', () => {
   it('renders in light theme', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     enterYesterday('6800', '6850', '6750');
     expect(screen.getByText(/multiplier/i)).toBeInTheDocument();
   });
 
   it('renders in dark theme', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     enterYesterday('6800', '6850', '6750');
     expect(screen.getByText(/multiplier/i)).toBeInTheDocument();
   });
@@ -224,7 +223,6 @@ describe('VolatilityCluster: onMultiplierChange callback', () => {
     const onMult = vi.fn();
     render(
       <VolatilityCluster
-        th={theme}
         vix={20}
         spot={6800}
         onMultiplierChange={onMult}
@@ -240,7 +238,6 @@ describe('VolatilityCluster: onMultiplierChange callback', () => {
     const onMult = vi.fn();
     render(
       <VolatilityCluster
-        th={theme}
         vix={20}
         spot={6800}
         onMultiplierChange={onMult}
@@ -260,7 +257,6 @@ describe('VolatilityCluster: auto-fill from live data', () => {
   it('auto-fills yesterday OHLC when initialYesterday is provided', () => {
     render(
       <VolatilityCluster
-        th={theme}
         vix={20}
         spot={6800}
         initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
@@ -283,7 +279,6 @@ describe('VolatilityCluster: auto-fill from live data', () => {
   it('shows clustering signal when auto-filled', () => {
     render(
       <VolatilityCluster
-        th={theme}
         vix={20}
         spot={6800}
         initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
@@ -297,7 +292,6 @@ describe('VolatilityCluster: auto-fill from live data', () => {
     const onMult = vi.fn();
     render(
       <VolatilityCluster
-        th={theme}
         vix={20}
         spot={6800}
         onMultiplierChange={onMult}
@@ -312,7 +306,6 @@ describe('VolatilityCluster: auto-fill from live data', () => {
   it('does not overwrite user input with initialYesterday', () => {
     render(
       <VolatilityCluster
-        th={theme}
         vix={20}
         spot={6800}
         initialYesterday={{ open: 6681.78, high: 6810.44, low: 6636.04 }}
@@ -327,7 +320,7 @@ describe('VolatilityCluster: auto-fill from live data', () => {
   });
 
   it('shows seeded defaults when no initialYesterday provided', () => {
-    render(<VolatilityCluster th={theme} vix={20} spot={6800} />);
+    render(<VolatilityCluster vix={20} spot={6800} />);
     const openInput = screen.getByLabelText(
       /yesterday open/i,
     ) as HTMLInputElement;

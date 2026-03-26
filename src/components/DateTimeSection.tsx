@@ -1,5 +1,4 @@
 import { memo, useEffect, useRef } from 'react';
-import type { Theme } from '../themes';
 import type { AmPm, Timezone } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 import { tinyLbl, inputCls, selectCls } from '../utils/ui-utils';
@@ -47,7 +46,6 @@ const DateInput = memo(function DateInput({
 });
 
 interface Props {
-  th: Theme;
   chevronUrl: string;
   selectedDate: string;
   onDateChange: (date: string) => void;
@@ -65,7 +63,6 @@ interface Props {
 }
 
 export default function DateTimeSection({
-  th,
   chevronUrl,
   selectedDate,
   onDateChange,
@@ -175,7 +172,7 @@ export default function DateTimeSection({
       </div>
 
       <EventDayWarning
-        th={th}
+       
         selectedDate={selectedDate}
         liveEvents={liveEvents}
       />

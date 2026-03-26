@@ -1,15 +1,14 @@
-import type { Theme } from '../themes';
+import { theme } from '../themes';
 import type { DeltaRow, DeltaRowError } from '../types';
 import { mkTh, mkTd, tint } from '../utils/ui-utils';
 import { ScrollHint } from './ui';
 
 interface Props {
-  th: Theme;
   allDeltas: ReadonlyArray<DeltaRow | DeltaRowError>;
   spot: number;
 }
 
-export default function DeltaStrikesTable({ th, allDeltas, spot }: Props) {
+export default function DeltaStrikesTable({ allDeltas, spot }: Props) {
   // Get IV acceleration mult from first non-error row
   const firstRow = allDeltas.find((r) => !('error' in r));
   const ivAccelMult =
@@ -132,20 +131,20 @@ export default function DeltaStrikesTable({ th, allDeltas, spot }: Props) {
           style={{
             backgroundColor: tint(
               ivAccelMult > 1.2
-                ? th.red
+                ? theme.red
                 : ivAccelMult > 1.08
-                  ? th.caution
-                  : th.accent,
+                  ? theme.caution
+                  : theme.accent,
               '10',
             ),
             border:
               '1px solid ' +
               tint(
                 ivAccelMult > 1.2
-                  ? th.red
+                  ? theme.red
                   : ivAccelMult > 1.08
-                    ? th.caution
-                    : th.accent,
+                    ? theme.caution
+                    : theme.accent,
                 '25',
               ),
           }}
@@ -155,10 +154,10 @@ export default function DeltaStrikesTable({ th, allDeltas, spot }: Props) {
             style={{
               color:
                 ivAccelMult > 1.2
-                  ? th.red
+                  ? theme.red
                   : ivAccelMult > 1.08
-                    ? th.caution
-                    : th.accent,
+                    ? theme.caution
+                    : theme.accent,
             }}
           >
             {'\u03C3'} {'\u00D7'} {ivAccelMult.toFixed(2)}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
 import type { Signal } from './classifiers';
 import {
@@ -11,7 +11,6 @@ import RatioCard from './RatioCard';
 import VvixCard from './VvixCard';
 
 interface Props {
-  readonly th: Theme;
   readonly vix: number | null; // Current VIX from parent (already entered)
   readonly onUseVix1dAsSigma?: (sigma: number) => void; // Optional: let parent switch to VIX1D-derived σ
   readonly isVix1dActive?: boolean; // True when VIX1D is already being used as σ (Direct IV mode)
@@ -28,7 +27,6 @@ interface Props {
  * and provides actionable trading signals for 0DTE iron condor positioning.
  */
 export default function VIXTermStructure({
-  th,
   vix,
   onUseVix1dAsSigma,
   isVix1dActive,
@@ -61,10 +59,10 @@ export default function VIXTermStructure({
   const vix1dRatio = hasVix && hasVix1d ? vix1d / vix : null;
   const vix9dRatio = hasVix && hasVix9d ? vix9d / vix : null;
   const vix1dResult =
-    vix1dRatio == null ? null : classifyVix1dRatio(vix1dRatio, th);
+    vix1dRatio == null ? null : classifyVix1dRatio(vix1dRatio);
   const vix9dResult =
-    vix9dRatio == null ? null : classifyVix9dRatio(vix9dRatio, th);
-  const vvixResult = hasVvix ? classifyVvix(initialVvix, th) : null;
+    vix9dRatio == null ? null : classifyVix9dRatio(vix9dRatio);
+  const vvixResult = hasVvix ? classifyVvix(initialVvix) : null;
 
   // Combined signal: worst of all available signals
   const combinedSignal: Signal | null = (() => {
@@ -82,14 +80,14 @@ export default function VIXTermStructure({
 
   const combinedColor =
     combinedSignal === 'calm'
-      ? th.green
+      ? theme.green
       : combinedSignal === 'normal'
-        ? th.accent
+        ? theme.accent
         : combinedSignal === 'elevated'
-          ? th.caution
+          ? theme.caution
           : combinedSignal === 'extreme'
-            ? th.red
-            : th.textMuted;
+            ? theme.red
+            : theme.textMuted;
 
   const combinedLabel =
     combinedSignal === 'calm'
@@ -208,22 +206,22 @@ export default function VIXTermStructure({
                   style={{
                     backgroundColor: tint(
                       termShape === 'contango'
-                        ? th.green
+                        ? theme.green
                         : termShape === 'fear-spike'
-                          ? th.red
+                          ? theme.red
                           : termShape === 'backwardation'
-                            ? th.caution
-                            : th.accent,
+                            ? theme.caution
+                            : theme.accent,
                       '18',
                     ),
                     color:
                       termShape === 'contango'
-                        ? th.green
+                        ? theme.green
                         : termShape === 'fear-spike'
-                          ? th.red
+                          ? theme.red
                           : termShape === 'backwardation'
-                            ? th.caution
-                            : th.accent,
+                            ? theme.caution
+                            : theme.accent,
                   }}
                 >
                   {termShape === 'contango'
@@ -253,7 +251,7 @@ export default function VIXTermStructure({
           >
             {vix1dResult && (
               <RatioCard
-                th={th}
+               
                 title="VIX1D / VIX"
                 subtitle="Today vs. 30-day"
                 ratio={vix1dResult.ratio}
@@ -264,7 +262,7 @@ export default function VIXTermStructure({
             )}
             {vix9dResult && (
               <RatioCard
-                th={th}
+               
                 title="VIX9D / VIX"
                 subtitle="9-day vs. 30-day"
                 ratio={vix9dResult.ratio}
@@ -278,7 +276,7 @@ export default function VIXTermStructure({
           {/* VVIX card — full width below the ratio cards */}
           {vvixResult && (
             <div className="mt-2.5">
-              <VvixCard th={th} result={vvixResult} />
+              <VvixCard result={vvixResult} />
             </div>
           )}
         </div>
@@ -291,9 +289,9 @@ export default function VIXTermStructure({
             <>
               <span
                 className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
-                style={{ backgroundColor: th.backtest }}
+                style={{ backgroundColor: theme.backtest }}
               />
-              <strong style={{ color: th.backtest }}>Active:</strong> Strike
+              <strong style={{ color: theme.backtest }}>Active:</strong> Strike
               pricing uses VIX1D ({vix1d.toFixed(2)}) as {'\u03C3'} ={' '}
               {vix1dSigma.toFixed(4)}. No 0DTE adjustment applied.
             </>

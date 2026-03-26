@@ -1,13 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import SpotPriceSection from '../../components/SpotPriceSection';
-import { theme } from '../../themes';
 
-const th = theme;
 
 function defaults(overrides: Record<string, unknown> = {}) {
   return {
-    th,
     spotPrice: '550',
     onSpotChange: vi.fn(),
     spxDirect: '',

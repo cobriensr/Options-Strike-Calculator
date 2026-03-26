@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import EventDayWarning from '../../components/EventDayWarning';
-import { theme } from '../../themes';
 import type { EventItem } from '../../types/api';
 
 // Helper to build a live event
@@ -23,21 +22,21 @@ function evt(
 describe('EventDayWarning: rendering', () => {
   it('renders nothing when no live events match the date', () => {
     const { container } = render(
-      <EventDayWarning th={theme} selectedDate="2026-03-15" liveEvents={[]} />,
+      <EventDayWarning selectedDate="2026-03-15" liveEvents={[]} />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing for empty date', () => {
     const { container } = render(
-      <EventDayWarning th={theme} selectedDate="" />,
+      <EventDayWarning selectedDate="" />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing when liveEvents is undefined', () => {
     const { container } = render(
-      <EventDayWarning th={theme} selectedDate="2026-01-28" />,
+      <EventDayWarning selectedDate="2026-01-28" />,
     );
     expect(container.innerHTML).toBe('');
   });
@@ -54,7 +53,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-01-28"
         liveEvents={liveEvents}
       />,
@@ -73,7 +71,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-03-11"
         liveEvents={liveEvents}
       />,
@@ -93,7 +90,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-03-06"
         liveEvents={liveEvents}
       />,
@@ -114,7 +110,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-01-28"
         liveEvents={liveEvents}
       />,
@@ -139,7 +134,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-12-09"
         liveEvents={liveEvents}
       />,
@@ -159,7 +153,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-04-29"
         liveEvents={liveEvents}
       />,
@@ -183,7 +176,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-01-19"
         liveEvents={liveEvents}
       />,
@@ -210,7 +202,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-11-27"
         liveEvents={liveEvents}
       />,
@@ -233,7 +224,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-11-27"
         liveEvents={liveEvents}
       />,
@@ -260,7 +250,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-07-15"
         liveEvents={liveEvents}
       />,
@@ -280,7 +269,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-07-15"
         liveEvents={liveEvents}
       />,
@@ -302,7 +290,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-01-19"
         liveEvents={liveEvents}
       />,
@@ -323,7 +310,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-11-27"
         liveEvents={liveEvents}
       />,
@@ -343,7 +329,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-07-15"
         liveEvents={liveEvents}
       />,
@@ -362,7 +347,6 @@ describe('EventDayWarning: rendering', () => {
     ];
     render(
       <EventDayWarning
-        th={theme}
         selectedDate="2026-04-29"
         liveEvents={liveEvents}
       />,

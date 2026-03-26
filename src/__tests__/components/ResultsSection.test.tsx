@@ -1,10 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import ResultsSection from '../../components/ResultsSection';
-import { theme } from '../../themes';
 import type { CalculationResults, DeltaRow } from '../../types';
 
-const th = theme;
 
 function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
   return {
@@ -52,7 +50,6 @@ describe('ResultsSection', () => {
   it('shows placeholder when no results', () => {
     render(
       <ResultsSection
-        th={th}
         results={null}
         effectiveRatio={10}
         spxDirectActive={false}
@@ -68,7 +65,6 @@ describe('ResultsSection', () => {
   it('shows results section when results exist', () => {
     render(
       <ResultsSection
-        th={th}
         results={makeResults()}
         effectiveRatio={10}
         spxDirectActive={false}
@@ -84,7 +80,6 @@ describe('ResultsSection', () => {
   it('renders parameter summary', () => {
     render(
       <ResultsSection
-        th={th}
         results={makeResults()}
         effectiveRatio={10}
         spxDirectActive={false}
@@ -101,7 +96,6 @@ describe('ResultsSection', () => {
   it('renders delta strikes table', () => {
     render(
       <ResultsSection
-        th={th}
         results={makeResults()}
         effectiveRatio={10}
         spxDirectActive={false}
@@ -119,7 +113,6 @@ describe('ResultsSection', () => {
   it('does not show IC section when showIC is false', () => {
     render(
       <ResultsSection
-        th={th}
         results={makeResults()}
         effectiveRatio={10}
         spxDirectActive={false}
@@ -135,7 +128,6 @@ describe('ResultsSection', () => {
   it('shows IC section when showIC is true', () => {
     render(
       <ResultsSection
-        th={th}
         results={makeResults()}
         effectiveRatio={10}
         spxDirectActive={false}
@@ -151,7 +143,6 @@ describe('ResultsSection', () => {
   it('shows skew disclaimer when skewPct > 0', () => {
     render(
       <ResultsSection
-        th={th}
         results={makeResults()}
         effectiveRatio={10}
         spxDirectActive={false}
@@ -167,7 +158,6 @@ describe('ResultsSection', () => {
   it('does not show skew disclaimer when skewPct is 0', () => {
     render(
       <ResultsSection
-        th={th}
         results={makeResults()}
         effectiveRatio={10}
         spxDirectActive={false}
@@ -183,7 +173,6 @@ describe('ResultsSection', () => {
   it('shows derived label when spxDirectActive', () => {
     render(
       <ResultsSection
-        th={th}
         results={makeResults()}
         effectiveRatio={10.0134}
         spxDirectActive={true}

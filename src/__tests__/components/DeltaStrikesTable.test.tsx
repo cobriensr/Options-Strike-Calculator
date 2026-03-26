@@ -1,10 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import DeltaStrikesTable from '../../components/DeltaStrikesTable';
-import { theme } from '../../themes';
 import type { DeltaRow, DeltaRowError } from '../../types';
 
-const th = theme;
 
 function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
   return {
@@ -41,7 +39,7 @@ function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
 describe('DeltaStrikesTable', () => {
   it('renders the table with aria-label', () => {
     render(
-      <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow()]} spot={5700} />,
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
     );
     expect(
       screen.getByRole('table', { name: 'Strike prices by delta' }),
@@ -50,7 +48,7 @@ describe('DeltaStrikesTable', () => {
 
   it('renders column headers', () => {
     render(
-      <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow()]} spot={5700} />,
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
     );
     expect(screen.getByText('Delta')).toBeInTheDocument();
     expect(screen.getByText(/Put \(SPX\)/)).toBeInTheDocument();
@@ -60,7 +58,7 @@ describe('DeltaStrikesTable', () => {
 
   it('renders a data row with strike values', () => {
     render(
-      <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow()]} spot={5700} />,
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
     );
     expect(screen.getByText('5630')).toBeInTheDocument();
     expect(screen.getByText('5770')).toBeInTheDocument();
@@ -70,14 +68,14 @@ describe('DeltaStrikesTable', () => {
 
   it('renders delta label with delta symbol', () => {
     render(
-      <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow(10)]} spot={5700} />,
+      <DeltaStrikesTable allDeltas={[makeDeltaRow(10)]} spot={5700} />,
     );
     expect(screen.getByText(/10\u0394/)).toBeInTheDocument();
   });
 
   it('renders premium values', () => {
     render(
-      <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow()]} spot={5700} />,
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
     );
     expect(screen.getByText('1.85')).toBeInTheDocument();
     expect(screen.getByText('1.72')).toBeInTheDocument();
@@ -85,7 +83,7 @@ describe('DeltaStrikesTable', () => {
 
   it('renders width with percentage', () => {
     render(
-      <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow()]} spot={5700} />,
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
     );
     expect(screen.getByText('139')).toBeInTheDocument(); // callStrike - putStrike
   });
@@ -94,7 +92,6 @@ describe('DeltaStrikesTable', () => {
     const errorRow: DeltaRowError = { delta: 5, error: 'Too far OTM' };
     render(
       <DeltaStrikesTable
-        th={th}
         allDeltas={[errorRow, makeDeltaRow(10)]}
         spot={5700}
       />,
@@ -107,7 +104,6 @@ describe('DeltaStrikesTable', () => {
   it('renders multiple rows', () => {
     render(
       <DeltaStrikesTable
-        th={th}
         allDeltas={[makeDeltaRow(5), makeDeltaRow(10), makeDeltaRow(15)]}
         spot={5700}
       />,
@@ -118,7 +114,7 @@ describe('DeltaStrikesTable', () => {
   });
 
   it('renders empty table when no deltas', () => {
-    render(<DeltaStrikesTable th={th} allDeltas={[]} spot={5700} />);
+    render(<DeltaStrikesTable allDeltas={[]} spot={5700} />);
     expect(
       screen.getByRole('table', { name: 'Strike prices by delta' }),
     ).toBeInTheDocument();
@@ -128,34 +124,34 @@ describe('DeltaStrikesTable', () => {
 
   it('does not show IV acceleration indicator when ivAccelMult is 1.0', () => {
     render(
-      <DeltaStrikesTable th={th} allDeltas={[makeDeltaRow()]} spot={5700} />,
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
     );
     expect(screen.queryByText(/IV acceleration/)).not.toBeInTheDocument();
   });
 
   it('does not show IV acceleration indicator when ivAccelMult is barely above 1', () => {
     const row = { ...makeDeltaRow(), ivAccelMult: 1.005 };
-    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    render(<DeltaStrikesTable allDeltas={[row]} spot={5700} />);
     expect(screen.queryByText(/IV acceleration/)).not.toBeInTheDocument();
   });
 
   it('shows IV acceleration indicator for mild acceleration (1.01 < mult <= 1.08)', () => {
     const row = { ...makeDeltaRow(), ivAccelMult: 1.05 };
-    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    render(<DeltaStrikesTable allDeltas={[row]} spot={5700} />);
     expect(screen.getByText(/IV acceleration/)).toBeInTheDocument();
     expect(screen.getByText(/1\.05/)).toBeInTheDocument();
   });
 
   it('shows IV acceleration indicator for moderate acceleration (1.08 < mult <= 1.2)', () => {
     const row = { ...makeDeltaRow(), ivAccelMult: 1.15 };
-    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    render(<DeltaStrikesTable allDeltas={[row]} spot={5700} />);
     expect(screen.getByText(/IV acceleration/)).toBeInTheDocument();
     expect(screen.getByText(/1\.15/)).toBeInTheDocument();
   });
 
   it('shows late session warning for high acceleration (mult > 1.2)', () => {
     const row = { ...makeDeltaRow(), ivAccelMult: 1.45 };
-    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    render(<DeltaStrikesTable allDeltas={[row]} spot={5700} />);
     expect(screen.getByText(/IV acceleration/)).toBeInTheDocument();
     expect(screen.getByText(/Late session/)).toBeInTheDocument();
     expect(screen.getByText(/1\.45/)).toBeInTheDocument();
@@ -163,7 +159,7 @@ describe('DeltaStrikesTable', () => {
 
   it('does not show late session text for moderate acceleration', () => {
     const row = { ...makeDeltaRow(), ivAccelMult: 1.1 };
-    render(<DeltaStrikesTable th={th} allDeltas={[row]} spot={5700} />);
+    render(<DeltaStrikesTable allDeltas={[row]} spot={5700} />);
     expect(screen.getByText(/IV acceleration/)).toBeInTheDocument();
     expect(screen.queryByText(/Late session/)).not.toBeInTheDocument();
   });

@@ -2,10 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import HedgeSection from '../../components/HedgeSection';
-import { theme } from '../../themes';
 import type { CalculationResults, IronCondorLegs } from '../../types';
 
-const th = theme;
 
 // ============================================================
 // HELPERS
@@ -66,7 +64,6 @@ function makeIC(): IronCondorLegs {
 function renderHedge(overrides?: { contracts?: number; skew?: number }) {
   return render(
     <HedgeSection
-      th={th}
       results={makeResults()}
       ic={makeIC()}
       contracts={overrides?.contracts ?? 10}

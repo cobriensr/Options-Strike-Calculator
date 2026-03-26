@@ -1,15 +1,14 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { FINE_VIX_STATS } from '../../data/vixRangeStats';
 import { mkTh, mkTd, tint } from '../../utils/ui-utils';
 import { ScrollHint } from '../ui';
 
 interface Props {
-  th: Theme;
   vix: number | null;
   spot: number | null;
 }
 
-export default function FineGrainedBars({ th, vix, spot }: Props) {
+export default function FineGrainedBars({ vix, spot }: Props) {
   const activeVix = vix == null ? -1 : Math.floor(vix);
   const maxP90 = Math.max(...FINE_VIX_STATS.map((s) => s.p90HL));
 
@@ -39,7 +38,7 @@ export default function FineGrainedBars({ th, vix, spot }: Props) {
               const barWidth = (s.medHL / maxP90) * 100;
               const p90BarWidth = (s.p90HL / maxP90) * 100;
               const barColor =
-                s.vix < 18 ? th.accent : s.vix < 25 ? th.caution : th.red;
+                s.vix < 18 ? theme.accent : s.vix < 25 ? theme.caution : theme.red;
               return (
                 <tr
                   key={s.vix}
@@ -61,7 +60,7 @@ export default function FineGrainedBars({ th, vix, spot }: Props) {
                     className={`${mkTd()} text-center`}
                     style={{
                       fontWeight: isActive ? 700 : 500,
-                      color: isActive ? barColor : th.text,
+                      color: isActive ? barColor : theme.text,
                     }}
                   >
                     {s.vix}
@@ -109,7 +108,7 @@ export default function FineGrainedBars({ th, vix, spot }: Props) {
                   <td
                     className={`${mkTd()} text-right text-[11px]`}
                     style={{
-                      color: s.over2 > 15 ? th.red : th.textSecondary,
+                      color: s.over2 > 15 ? theme.red : theme.textSecondary,
                       fontWeight: s.over2 > 15 ? 600 : 400,
                     }}
                   >

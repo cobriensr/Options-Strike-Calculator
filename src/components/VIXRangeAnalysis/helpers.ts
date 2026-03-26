@@ -1,25 +1,25 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type { VIXBucket } from '../../data/vixRangeStats';
 
-export function zoneToColor(zone: VIXBucket['zone'], th: Theme): string {
+export function zoneToColor(zone: VIXBucket['zone']): string {
   switch (zone) {
     case 'go':
-      return th.green;
+      return theme.green;
     case 'caution':
-      return th.caution;
+      return theme.caution;
     case 'stop':
-      return th.red;
+      return theme.red;
     case 'danger':
-      return th.red;
+      return theme.red;
   }
 }
 
-export function heatColor(val: number, th: Theme): string {
-  if (val >= 95) return th.green;
-  if (val >= 85) return th.green;
-  if (val >= 70) return th.accent;
-  if (val >= 50) return th.caution;
-  return th.red;
+export function heatColor(val: number): string {
+  if (val >= 95) return theme.green;
+  if (val >= 85) return theme.green;
+  if (val >= 70) return theme.accent;
+  if (val >= 50) return theme.caution;
+  return theme.red;
 }
 
 export function heatBg(val: number): string {

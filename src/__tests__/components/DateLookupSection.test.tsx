@@ -2,10 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DateLookupSection from '../../components/DateLookupSection';
-import { theme } from '../../themes';
 import type { VIXDayData, OHLCField } from '../../types';
 
-const th = theme;
 
 function renderSection(
   overrides: Partial<{
@@ -18,7 +16,6 @@ function renderSection(
 ) {
   return render(
     <DateLookupSection
-      th={th}
       selectedDate={overrides.selectedDate ?? '2026-03-12'}
       onDateChange={overrides.onDateChange ?? vi.fn()}
       vixOHLC={overrides.vixOHLC ?? null}

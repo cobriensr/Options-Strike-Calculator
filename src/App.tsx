@@ -80,7 +80,6 @@ export default function StrikeCalculator() {
     spxDirectActive,
     effectiveRatio,
   } = state;
-  const th = theme;
 
   // Apply dark class to <html> so CSS vars resolve correctly everywhere
   useEffect(() => {
@@ -237,7 +236,7 @@ export default function StrikeCalculator() {
   );
 
   const chevronUrl = useMemo(
-    () => buildChevronUrl(th.chevronColor),
+    () => buildChevronUrl(theme.chevronColor),
     [darkMode],
   );
 
@@ -349,15 +348,15 @@ export default function StrikeCalculator() {
             </div>
             <div className="flex items-center gap-2">
               {historySnapshot && (
-                <StatusBadge label="BACKTEST" color={th.backtest} dot />
+                <StatusBadge label="BACKTEST" color={theme.backtest} dot />
               )}
               {historyData.loading && (
-                <StatusBadge label="Loading…" color={th.textMuted} />
+                <StatusBadge label="Loading…" color={theme.textMuted} />
               )}
               {historyData.error && !historyData.loading && (
                 <StatusBadge
                   label="NO INTRADAY"
-                  color={th.red}
+                  color={theme.red}
                   dot
                   title={historyData.error}
                 />
@@ -366,7 +365,7 @@ export default function StrikeCalculator() {
                 <StatusBadge
                   label={market.data.quotes?.marketOpen ? 'LIVE' : 'CLOSED'}
                   color={
-                    market.data.quotes?.marketOpen ? th.green : th.textMuted
+                    market.data.quotes?.marketOpen ? theme.green : theme.textMuted
                   }
                   dot
                 />
@@ -374,7 +373,7 @@ export default function StrikeCalculator() {
               {market.needsAuth && (
                 <StatusBadge
                   label="Re-authenticate"
-                  color={th.red}
+                  color={theme.red}
                   href="/api/auth/init"
                 />
               )}
@@ -410,16 +409,15 @@ export default function StrikeCalculator() {
           </div>
         </header>
 
-        <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
+<div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
           {/* Subtitle — below sticky header */}
           <p className="text-secondary mb-8 text-[15px] leading-normal">
             Black-Scholes approximation for delta-based strike placement
           </p>
 
-          <main>
+<main>
             <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
               <DateTimeSection
-                th={th}
                 chevronUrl={chevronUrl}
                 selectedDate={vix.selectedDate}
                 onDateChange={vix.setSelectedDate}
@@ -436,8 +434,7 @@ export default function StrikeCalculator() {
                 errors={errors}
               />
 
-              <SpotPriceSection
-                th={th}
+<SpotPriceSection
                 spotPrice={spotPrice}
                 onSpotChange={handleSpotChange}
                 spxDirect={spxDirect}
@@ -452,9 +449,8 @@ export default function StrikeCalculator() {
               />
             </div>
 
-            <div className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
+<div className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
               <AdvancedSection
-                th={th}
                 skewPct={skewPct}
                 onSkewChange={setSkewPct}
                 showIC={showIC}
@@ -471,8 +467,7 @@ export default function StrikeCalculator() {
                 selectedDate={vix.selectedDate}
               />
 
-              <IVInputSection
-                th={th}
+<IVInputSection
                 ivMode={ivMode}
                 onIvModeChange={setIvMode}
                 vixInput={vixInput}
@@ -492,13 +487,12 @@ export default function StrikeCalculator() {
               />
             </div>
 
-            <ErrorBoundary label="Risk Calculator">
+<ErrorBoundary label="Risk Calculator">
               <RiskCalculator />
             </ErrorBoundary>
 
-            <ErrorBoundary label="Market Regime">
+<ErrorBoundary label="Market Regime">
               <MarketRegimeSection
-                th={th}
                 dVix={dVix}
                 results={results}
                 errors={errors}
@@ -523,7 +517,6 @@ export default function StrikeCalculator() {
             {(market.hasData || !!historySnapshot) && (
               <ErrorBoundary label="Chart Analysis">
                 <ChartAnalysis
-                  th={th}
                   results={results}
                   onAnalysisSaved={handleAnalysisSaved}
                   context={analysisContext}
@@ -531,13 +524,12 @@ export default function StrikeCalculator() {
               </ErrorBoundary>
             )}
 
-            <ErrorBoundary label="Analysis History">
-              <AnalysisHistory th={th} refreshKey={historyRefreshKey} />
+<ErrorBoundary label="Analysis History">
+              <AnalysisHistory refreshKey={historyRefreshKey} />
             </ErrorBoundary>
 
-            <ErrorBoundary label="Results">
+<ErrorBoundary label="Results">
               <ResultsSection
-                th={th}
                 results={results}
                 effectiveRatio={effectiveRatio}
                 spxDirectActive={spxDirectActive}

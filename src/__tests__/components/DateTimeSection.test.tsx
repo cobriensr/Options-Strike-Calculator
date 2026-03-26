@@ -2,9 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DateTimeSection from '../../components/DateTimeSection';
-import { theme } from '../../themes';
 import { inputCls as INPUT_CLS, selectCls as SELECT_CLS } from '../../utils/ui-utils';
-const th = theme;
 
 const CHEVRON_URL = 'url(test)';
 
@@ -12,7 +10,6 @@ function renderSection(
   overrides: Partial<Parameters<typeof DateTimeSection>[0]> = {},
 ) {
   const props = {
-    th,
     chevronUrl: CHEVRON_URL,
     selectedDate: '2026-03-15',
     onDateChange: vi.fn(),
@@ -251,7 +248,6 @@ describe('DateTimeSection', () => {
     it('uses mt-auto class when vixDataLoaded is true', () => {
       const { container } = render(
         <DateTimeSection
-          th={th}
           chevronUrl={CHEVRON_URL}
           selectedDate="2026-03-15"
           onDateChange={vi.fn()}
@@ -274,7 +270,6 @@ describe('DateTimeSection', () => {
     it('does not use mt-auto class when vixDataLoaded is false', () => {
       const { container } = render(
         <DateTimeSection
-          th={th}
           chevronUrl={CHEVRON_URL}
           selectedDate="2026-03-15"
           onDateChange={vi.fn()}

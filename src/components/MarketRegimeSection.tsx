@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import type { Theme } from '../themes';
 import type { CalculationResults } from '../types';
 import { SectionBox } from './ui';
 import VIXRangeAnalysis from './VIXRangeAnalysis';
@@ -16,7 +15,6 @@ import type { ChainResponse, HistoryCandle } from '../types/api';
 import type { ComputedSignals } from '../hooks/useComputedSignals';
 
 interface Props {
-  th: Theme;
   dVix: string;
   results: CalculationResults | null;
   errors: Record<string, string>;
@@ -33,7 +31,6 @@ interface Props {
 }
 
 export default function MarketRegimeSection({
-  th,
   dVix,
   results,
   errors,
@@ -78,7 +75,7 @@ export default function MarketRegimeSection({
       {showRegime && (
         <div className="mt-4">
           <VIXRangeAnalysis
-            th={th}
+           
             vix={vixNum}
             spot={results?.spot ?? null}
           />
@@ -91,7 +88,7 @@ export default function MarketRegimeSection({
                       ? `hist-vc-${historySnapshot.candle.datetime}`
                       : 'live-vc'
                   }
-                  th={th}
+                 
                   vix={vixNum ?? 0}
                   spot={results.spot}
                   onMultiplierChange={onClusterMultChange}
@@ -105,7 +102,7 @@ export default function MarketRegimeSection({
                 />
               </div>
               <DeltaRegimeGuide
-                th={th}
+               
                 vix={vixNum ?? 0}
                 spot={results.spot}
                 T={results.T}
@@ -121,7 +118,7 @@ export default function MarketRegimeSection({
                       ? `hist-or-${historySnapshot.candle.datetime}`
                       : 'live-or'
                   }
-                  th={th}
+                 
                   vix={vixNum ?? 0}
                   spot={results.spot}
                   selectedDate={selectedDate}
@@ -134,7 +131,7 @@ export default function MarketRegimeSection({
               </div>
               <div className="mt-5">
                 <PreTradeSignals
-                  th={th}
+                 
                   quotes={historySnapshot ? null : market.data.quotes}
                   yesterday={
                     historySnapshot?.yesterday
@@ -160,7 +157,7 @@ export default function MarketRegimeSection({
                       Realized vs Implied Volatility
                     </div>
                     <RvIvCard
-                      th={th}
+                     
                       ratio={signals.rvIvRatio}
                       label={signals.rvIvLabel}
                       rvAnnualized={signals.rvAnnualized}
@@ -179,7 +176,7 @@ export default function MarketRegimeSection({
                   <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.12em] uppercase">
                     Settlement Pin Risk
                   </div>
-                  <PinRiskAnalysis th={th} chain={chain} spot={results.spot} />
+                  <PinRiskAnalysis chain={chain} spot={results.spot} />
                 </div>
               )}
 
@@ -189,7 +186,7 @@ export default function MarketRegimeSection({
                 results.allDeltas && (
                   <div className="mt-5">
                     <SettlementCheck
-                      th={th}
+                     
                       snapshot={historySnapshot}
                       allCandles={historyCandles}
                       allDeltas={results.allDeltas}

@@ -1,17 +1,15 @@
 import { useState } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { SettlementResult } from './types';
 
 interface Props {
-  th: Theme;
   r: SettlementResult;
   remainingHigh: number;
   remainingLow: number;
 }
 
 export default function DeltaRow({
-  th,
   r,
   remainingHigh,
   remainingLow,
@@ -48,18 +46,18 @@ export default function DeltaRow({
       rowColor = '#D97706';
       barColor = '#D97706';
     } else if (minCushion < WARN_PTS) {
-      rowColor = th.caution;
-      barColor = th.caution;
+      rowColor = theme.caution;
+      barColor = theme.caution;
     } else {
-      rowColor = th.green;
-      barColor = th.green;
+      rowColor = theme.green;
+      barColor = theme.green;
     }
   } else if (r.settledSafe) {
-    rowColor = th.caution;
-    barColor = th.caution;
+    rowColor = theme.caution;
+    barColor = theme.caution;
   } else {
-    rowColor = th.red;
-    barColor = th.red;
+    rowColor = theme.red;
+    barColor = theme.red;
   }
 
   // Tightness label for survived rows
@@ -106,18 +104,18 @@ export default function DeltaRow({
           ) : r.settledSafe ? (
             <span
               className="font-sans text-[11px]"
-              style={{ color: th.caution }}
+              style={{ color: theme.caution }}
             >
               Breached intraday, settled safe
               <span
                 className="font-sans text-[10px] font-bold"
-                style={{ color: th.green }}
+                style={{ color: theme.green }}
               >
                 {' \u2014 max profit'}
               </span>
             </span>
           ) : (
-            <span className="font-sans text-[11px]" style={{ color: th.red }}>
+            <span className="font-sans text-[11px]" style={{ color: theme.red }}>
               {r.callBreached && r.putBreached
                 ? `Both sides breached \u2014 settled at ${r.settlement.toFixed(0)}`
                 : r.callBreached
@@ -137,10 +135,10 @@ export default function DeltaRow({
           <span
             style={{
               color: r.putBreached
-                ? th.red
+                ? theme.red
                 : Math.abs(r.putCushion) < TIGHT_PTS
                   ? '#D97706'
-                  : th.textMuted,
+                  : theme.textMuted,
             }}
           >
             {r.putCushion >= 0
@@ -155,10 +153,10 @@ export default function DeltaRow({
           <span
             style={{
               color: r.callBreached
-                ? th.red
+                ? theme.red
                 : Math.abs(r.callCushion) < TIGHT_PTS
                   ? '#D97706'
-                  : th.textMuted,
+                  : theme.textMuted,
             }}
           >
             {r.callCushion >= 0
@@ -173,10 +171,10 @@ export default function DeltaRow({
         <div className="relative">
           {/* Strike labels */}
           <div className="mb-0.5 flex justify-between font-mono text-[8px]">
-            <span style={{ color: tint(th.red, 'AA') }}>
+            <span style={{ color: tint(theme.red, 'AA') }}>
               {r.putStrike.toFixed(0)}
             </span>
-            <span style={{ color: tint(th.green, 'AA') }}>
+            <span style={{ color: tint(theme.green, 'AA') }}>
               {r.callStrike.toFixed(0)}
             </span>
           </div>
@@ -184,7 +182,7 @@ export default function DeltaRow({
           {/* Track */}
           <div
             className="relative h-[6px] w-full overflow-visible rounded-full"
-            style={{ backgroundColor: th.surfaceAlt }}
+            style={{ backgroundColor: theme.surfaceAlt }}
           >
             {/* Actual price range — with tooltip on hover */}
             <button
@@ -252,11 +250,11 @@ export default function DeltaRow({
 
           {/* Cushion labels below the bar */}
           <div className="mt-0.5 flex justify-between font-mono text-[8px]">
-            <span style={{ color: r.putBreached ? rowColor : th.textMuted }}>
+            <span style={{ color: r.putBreached ? rowColor : theme.textMuted }}>
               {r.putCushion > 0 ? '\u2212' : '+'}
               {Math.abs(r.putCushion).toFixed(0)}
             </span>
-            <span style={{ color: r.callBreached ? rowColor : th.textMuted }}>
+            <span style={{ color: r.callBreached ? rowColor : theme.textMuted }}>
               {r.callCushion >= 0 ? '+' : '\u2212'}
               {Math.abs(r.callCushion).toFixed(0)}
             </span>

@@ -1,4 +1,4 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type { AnalysisMode, AnalysisResult } from './types';
 import { MODE_LABELS } from './types';
 import { tint } from '../../utils/ui-utils';
@@ -6,7 +6,6 @@ import BulletList from './BulletList';
 import Collapsible from './Collapsible';
 
 interface Props {
-  readonly th: Theme;
   readonly analysis: AnalysisResult;
   readonly mode: AnalysisMode;
   readonly onReplaceImage: (index: number) => void;
@@ -14,23 +13,22 @@ interface Props {
 }
 
 export default function AnalysisResults({
-  th,
   analysis,
   mode,
   onReplaceImage,
   defaultCollapsed = false,
 }: Props) {
   const structureColor = (s: string) => {
-    if (s === 'IRON CONDOR') return th.accent;
-    if (s === 'PUT CREDIT SPREAD') return th.red;
-    if (s === 'CALL CREDIT SPREAD') return th.green;
-    return th.caution;
+    if (s === 'IRON CONDOR') return theme.accent;
+    if (s === 'PUT CREDIT SPREAD') return theme.red;
+    if (s === 'CALL CREDIT SPREAD') return theme.green;
+    return theme.caution;
   };
 
   const confidenceColor = (c: string) => {
-    if (c === 'HIGH') return th.green;
-    if (c === 'MODERATE') return th.caution;
-    return th.red;
+    if (c === 'HIGH') return theme.green;
+    if (c === 'MODERATE') return theme.caution;
+    return theme.red;
   };
 
   const signalColor = (s: string) => {
@@ -41,7 +39,7 @@ export default function AnalysisResults({
       s === 'DECAYING' ||
       s === 'NEGATIVE'
     )
-      return th.red;
+      return theme.red;
     if (
       s === 'BULLISH' ||
       s === 'CONFIRMS' ||
@@ -49,9 +47,9 @@ export default function AnalysisResults({
       s === 'SUPPORTIVE' ||
       s === 'POSITIVE'
     )
-      return th.green;
-    if (s === 'NEUTRAL' || s === 'NOT PROVIDED') return th.textMuted;
-    return th.caution;
+      return theme.green;
+    if (s === 'NEUTRAL' || s === 'NOT PROVIDED') return theme.textMuted;
+    return theme.caution;
   };
 
   return (
@@ -83,8 +81,8 @@ export default function AnalysisResults({
           <span
             className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
             style={{
-              backgroundColor: tint(th.accent, '18'),
-              color: th.accent,
+              backgroundColor: tint(theme.accent, '18'),
+              color: theme.accent,
             }}
           >
             {analysis.suggestedDelta}
@@ -94,8 +92,8 @@ export default function AnalysisResults({
             <span
               className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
               style={{
-                backgroundColor: tint(th.caution, '18'),
-                color: th.caution,
+                backgroundColor: tint(theme.caution, '18'),
+                color: theme.caution,
               }}
             >
               {analysis.hedge.recommendation}
@@ -103,7 +101,7 @@ export default function AnalysisResults({
           )}
           <span
             className="text-muted rounded-full px-2 py-0.5 font-mono text-[10px]"
-            style={{ backgroundColor: th.surfaceAlt }}
+            style={{ backgroundColor: theme.surfaceAlt }}
           >
             {MODE_LABELS[analysis.mode ?? mode].label}
           </span>
@@ -123,7 +121,7 @@ export default function AnalysisResults({
         >
           {analysis.entryPlan?.entry1 && (
             <div className="flex items-center gap-2 text-[10px]">
-              <span className="font-semibold" style={{ color: th.accent }}>
+              <span className="font-semibold" style={{ color: theme.accent }}>
                 Entry 1:
               </span>
               <span className="text-secondary">
@@ -141,7 +139,7 @@ export default function AnalysisResults({
           {analysis.strikeGuidance?.adjustments &&
             analysis.strikeGuidance.adjustments.length > 0 && (
               <div className="flex items-center gap-2 text-[10px]">
-                <span className="font-semibold" style={{ color: th.accent }}>
+                <span className="font-semibold" style={{ color: theme.accent }}>
                   Strike:
                 </span>
                 <span className="text-secondary">
@@ -151,7 +149,7 @@ export default function AnalysisResults({
             )}
           {analysis.managementRules?.profitTarget && (
             <div className="flex items-center gap-2 text-[10px]">
-              <span className="font-semibold" style={{ color: th.green }}>
+              <span className="font-semibold" style={{ color: theme.green }}>
                 Target:
               </span>
               <span className="text-secondary">
@@ -161,7 +159,7 @@ export default function AnalysisResults({
           )}
           {analysis.hedge && analysis.hedge.recommendation !== 'NO HEDGE' && (
             <div className="flex items-center gap-2 text-[10px]">
-              <span className="font-semibold" style={{ color: th.caution }}>
+              <span className="font-semibold" style={{ color: theme.caution }}>
                 Hedge:
               </span>
               <span className="text-secondary">
@@ -223,15 +221,15 @@ export default function AnalysisResults({
       {/* COLLAPSIBLE DETAIL SECTIONS */}
 
       {/* Observations */}
-      <Collapsible title="Key Observations" color={th.textMuted}>
-        <BulletList defaultColor={th.textMuted} items={analysis.observations} />
+      <Collapsible title="Key Observations" color={theme.textMuted}>
+        <BulletList defaultColor={theme.textMuted} items={analysis.observations} />
       </Collapsible>
 
       {/* Strike Guidance */}
       {analysis.strikeGuidance && (
         <Collapsible
           title="Strike Placement Guidance"
-          color={th.accent}
+          color={theme.accent}
           defaultOpen={!defaultCollapsed}
         >
           <div className="grid gap-1.5">
@@ -254,7 +252,7 @@ export default function AnalysisResults({
             {analysis.strikeGuidance.straddleCone && (
               <div
                 className="text-muted mt-1 rounded-md px-2 py-1 text-[10px]"
-                style={{ backgroundColor: th.surfaceAlt }}
+                style={{ backgroundColor: theme.surfaceAlt }}
               >
                 Straddle cone: {analysis.strikeGuidance.straddleCone.lower}{' '}
                 {'\u2013'} {analysis.strikeGuidance.straddleCone.upper}
@@ -266,10 +264,10 @@ export default function AnalysisResults({
               analysis.strikeGuidance.adjustments.length > 0 && (
                 <div className="mt-1">
                   <BulletList
-                    defaultColor={th.textMuted}
+                    defaultColor={theme.textMuted}
                     items={analysis.strikeGuidance.adjustments}
                     icon={'\u2192'}
-                    color={th.accent}
+                    color={theme.accent}
                   />
                 </div>
               )}
@@ -281,7 +279,7 @@ export default function AnalysisResults({
       {analysis.entryPlan && (
         <Collapsible
           title="Entry Plan"
-          color={th.accent}
+          color={theme.accent}
           defaultOpen={!defaultCollapsed}
         >
           <div className="grid gap-2">
@@ -299,8 +297,8 @@ export default function AnalysisResults({
                   <div
                     className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-bold"
                     style={{
-                      backgroundColor: tint(th.accent, '18'),
-                      color: th.accent,
+                      backgroundColor: tint(theme.accent, '18'),
+                      color: theme.accent,
                     }}
                   >
                     {i + 1}
@@ -315,7 +313,7 @@ export default function AnalysisResults({
                       </span>
                       <span
                         className="font-mono text-[10px] font-bold"
-                        style={{ color: th.accent }}
+                        style={{ color: theme.accent }}
                       >
                         {entry.delta}
                         {'\u0394'}
@@ -344,15 +342,15 @@ export default function AnalysisResults({
                 <div className="mt-1">
                   <div
                     className="mb-0.5 text-[10px] font-bold uppercase"
-                    style={{ color: th.red }}
+                    style={{ color: theme.red }}
                   >
                     Do NOT add entries if:
                   </div>
                   <BulletList
-                    defaultColor={th.textMuted}
+                    defaultColor={theme.textMuted}
                     items={analysis.entryPlan.noEntryConditions}
                     icon={'\u2718'}
-                    color={th.red}
+                    color={theme.red}
                   />
                 </div>
               )}
@@ -362,11 +360,11 @@ export default function AnalysisResults({
 
       {/* Management Rules */}
       {analysis.managementRules && (
-        <Collapsible title="Position Management Rules" color={th.caution}>
+        <Collapsible title="Position Management Rules" color={theme.caution}>
           <div className="grid gap-1.5">
             {analysis.managementRules.profitTarget && (
               <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: th.green }}>
+                <span className="font-semibold" style={{ color: theme.green }}>
                   Profit target:{' '}
                 </span>
                 <span className="text-secondary">
@@ -379,21 +377,21 @@ export default function AnalysisResults({
                 <div>
                   <span
                     className="text-[10px] font-semibold"
-                    style={{ color: th.red }}
+                    style={{ color: theme.red }}
                   >
                     Stop conditions:
                   </span>
                   <BulletList
-                    defaultColor={th.textMuted}
+                    defaultColor={theme.textMuted}
                     items={analysis.managementRules.stopConditions}
                     icon={'\u26D4'}
-                    color={th.red}
+                    color={theme.red}
                   />
                 </div>
               )}
             {analysis.managementRules.timeRules && (
               <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: th.caution }}>
+                <span className="font-semibold" style={{ color: theme.caution }}>
                   Time rule:{' '}
                 </span>
                 <span className="text-secondary">
@@ -403,7 +401,7 @@ export default function AnalysisResults({
             )}
             {analysis.managementRules.flowReversalSignal && (
               <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: th.caution }}>
+                <span className="font-semibold" style={{ color: theme.caution }}>
                   Flow reversal:{' '}
                 </span>
                 <span className="text-secondary">
@@ -417,12 +415,12 @@ export default function AnalysisResults({
 
       {/* Risk Factors */}
       {analysis.risks.length > 0 && (
-        <Collapsible title="Risk Factors" color={th.red}>
+        <Collapsible title="Risk Factors" color={theme.red}>
           <BulletList
-            defaultColor={th.textMuted}
+            defaultColor={theme.textMuted}
             items={analysis.risks}
             icon={'\u26A0'}
-            color={th.red}
+            color={theme.red}
           />
         </Collapsible>
       )}
@@ -433,10 +431,10 @@ export default function AnalysisResults({
           title={`Hedge: ${analysis.hedge.recommendation}`}
           color={
             analysis.hedge.recommendation === 'NO HEDGE'
-              ? th.green
+              ? theme.green
               : analysis.hedge.recommendation === 'SKIP'
-                ? th.red
-                : th.caution
+                ? theme.red
+                : theme.caution
           }
         >
           <div>
@@ -445,7 +443,7 @@ export default function AnalysisResults({
               analysis.hedge.recommendation !== 'SKIP' && (
                 <span
                   className="text-muted mb-1.5 inline-block rounded-full px-1.5 py-0.5 font-mono text-[8px]"
-                  style={{ backgroundColor: th.surfaceAlt }}
+                  style={{ backgroundColor: theme.surfaceAlt }}
                 >
                   {analysis.hedge.estimatedCost}
                 </span>
@@ -464,7 +462,7 @@ export default function AnalysisResults({
 
       {/* Periscope Analysis */}
       {analysis.periscopeNotes && (
-        <Collapsible title="Periscope Analysis" color={th.textMuted}>
+        <Collapsible title="Periscope Analysis" color={theme.textMuted}>
           <div className="text-secondary text-[11px] leading-relaxed">
             {analysis.periscopeNotes}
           </div>
@@ -477,16 +475,16 @@ export default function AnalysisResults({
           className="rounded-[10px] p-3.5"
           style={{
             backgroundColor: analysis.review.wasCorrect
-              ? tint(th.green, '08')
-              : tint(th.red, '08'),
-            border: `1.5px solid ${tint(analysis.review.wasCorrect ? th.green : th.red, '20')}`,
+              ? tint(theme.green, '08')
+              : tint(theme.red, '08'),
+            border: `1.5px solid ${tint(analysis.review.wasCorrect ? theme.green : theme.red, '20')}`,
           }}
         >
           <div className="mb-2 flex items-center gap-2">
             <span
               className="font-sans text-[11px] font-bold"
               style={{
-                color: analysis.review.wasCorrect ? th.green : th.red,
+                color: analysis.review.wasCorrect ? theme.green : theme.red,
               }}
             >
               {analysis.review.wasCorrect
@@ -496,7 +494,7 @@ export default function AnalysisResults({
           </div>
           <div className="grid gap-2">
             <div className="text-[11px] leading-relaxed">
-              <span className="font-semibold" style={{ color: th.green }}>
+              <span className="font-semibold" style={{ color: theme.green }}>
                 What worked:{' '}
               </span>
               <span className="text-secondary">
@@ -504,7 +502,7 @@ export default function AnalysisResults({
               </span>
             </div>
             <div className="text-[11px] leading-relaxed">
-              <span className="font-semibold" style={{ color: th.caution }}>
+              <span className="font-semibold" style={{ color: theme.caution }}>
                 What was missed:{' '}
               </span>
               <span className="text-secondary">
@@ -512,7 +510,7 @@ export default function AnalysisResults({
               </span>
             </div>
             <div className="text-[11px] leading-relaxed">
-              <span className="font-semibold" style={{ color: th.accent }}>
+              <span className="font-semibold" style={{ color: theme.accent }}>
                 Optimal trade:{' '}
               </span>
               <span className="text-secondary">
@@ -523,15 +521,15 @@ export default function AnalysisResults({
               <div>
                 <div
                   className="mb-0.5 text-[10px] font-bold tracking-wider uppercase"
-                  style={{ color: th.accent }}
+                  style={{ color: theme.accent }}
                 >
                   Lessons for next time
                 </div>
                 <BulletList
-                  defaultColor={th.textMuted}
+                  defaultColor={theme.textMuted}
                   items={analysis.review.lessonsLearned}
                   icon={'\u{1F4A1}'}
-                  color={th.accent}
+                  color={theme.accent}
                 />
               </div>
             )}
@@ -540,7 +538,7 @@ export default function AnalysisResults({
       )}
 
       {/* Structure Rationale */}
-      <Collapsible title="Structure Rationale" color={th.textMuted}>
+      <Collapsible title="Structure Rationale" color={theme.textMuted}>
         <div className="text-secondary text-[11px] leading-relaxed italic">
           {analysis.structureRationale}
         </div>
@@ -551,13 +549,13 @@ export default function AnalysisResults({
         <div
           className="rounded-lg p-3"
           style={{
-            backgroundColor: tint(th.caution, '08'),
-            border: '1px solid ' + tint(th.caution, '20'),
+            backgroundColor: tint(theme.caution, '08'),
+            border: '1px solid ' + tint(theme.caution, '20'),
           }}
         >
           <div
             className="mb-2 font-sans text-[10px] font-bold tracking-wider uppercase"
-            style={{ color: th.caution }}
+            style={{ color: theme.caution }}
           >
             Image Issues {'\u2014'} {analysis.imageIssues.length} image
             {analysis.imageIssues.length > 1 ? 's' : ''} need
@@ -572,7 +570,7 @@ export default function AnalysisResults({
                 <div className="min-w-0 flex-1">
                   <div
                     className="mb-0.5 font-sans text-[11px] font-semibold"
-                    style={{ color: th.caution }}
+                    style={{ color: theme.caution }}
                   >
                     Image {issue.imageIndex}: {issue.label}
                   </div>
@@ -588,9 +586,9 @@ export default function AnalysisResults({
                   onClick={() => onReplaceImage(issue.imageIndex)}
                   className="shrink-0 cursor-pointer rounded-md px-2.5 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
                   style={{
-                    backgroundColor: tint(th.caution, '18'),
-                    color: th.caution,
-                    border: '1px solid ' + tint(th.caution, '30'),
+                    backgroundColor: tint(theme.caution, '18'),
+                    color: theme.caution,
+                    border: '1px solid ' + tint(theme.caution, '30'),
                   }}
                 >
                   Replace

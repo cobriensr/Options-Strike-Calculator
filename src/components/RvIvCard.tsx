@@ -1,8 +1,7 @@
-import type { Theme } from '../themes';
+import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
 
 interface Props {
-  th: Theme;
   ratio: number;
   label: string; // 'IV Rich' | 'Fair Value' | 'IV Cheap'
   rvAnnualized: number;
@@ -10,14 +9,13 @@ interface Props {
 }
 
 export default function RvIvCard({
-  th,
   ratio,
   label,
   rvAnnualized,
   iv,
 }: Props) {
   const color =
-    label === 'IV Rich' ? th.green : label === 'IV Cheap' ? th.red : th.accent;
+    label === 'IV Rich' ? theme.green : label === 'IV Cheap' ? theme.red : theme.accent;
 
   const advice =
     label === 'IV Rich'
@@ -67,20 +65,20 @@ export default function RvIvCard({
             className="absolute -top-px h-2 w-0.5"
             style={{
               left: (0.8 / 2) * 100 + '%',
-              backgroundColor: tint(th.green, '50'),
+              backgroundColor: tint(theme.green, '50'),
             }}
           />
           {/* 1.0x marker */}
           <div
             className="absolute -top-px left-1/2 h-2 w-0.5"
-            style={{ backgroundColor: tint(th.textMuted, '60') }}
+            style={{ backgroundColor: tint(theme.textMuted, '60') }}
           />
           {/* 1.2x marker (IV Cheap threshold) */}
           <div
             className="absolute -top-px h-2 w-0.5"
             style={{
               left: (1.2 / 2) * 100 + '%',
-              backgroundColor: tint(th.red, '50'),
+              backgroundColor: tint(theme.red, '50'),
             }}
           />
         </div>

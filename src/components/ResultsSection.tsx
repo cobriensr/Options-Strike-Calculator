@@ -1,4 +1,3 @@
-import type { Theme } from '../themes';
 import type { CalculationResults } from '../types';
 import { DEFAULTS } from '../constants';
 import ParameterSummary from './ParameterSummary';
@@ -6,7 +5,6 @@ import DeltaStrikesTable from './DeltaStrikesTable';
 import IronCondorSection from './IronCondorSection';
 
 interface Props {
-  th: Theme;
   results: CalculationResults | null;
   effectiveRatio: number;
   spxDirectActive: boolean;
@@ -17,7 +15,6 @@ interface Props {
 }
 
 export default function ResultsSection({
-  th,
   results,
   effectiveRatio,
   spxDirectActive,
@@ -51,14 +48,14 @@ export default function ResultsSection({
           />
 
           <DeltaStrikesTable
-            th={th}
+           
             allDeltas={results.allDeltas}
             spot={results.spot}
           />
 
           {showIC && (
             <IronCondorSection
-              th={th}
+             
               results={results}
               wingWidth={wingWidth}
               contracts={contracts}

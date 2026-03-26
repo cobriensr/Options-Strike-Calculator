@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type { IVMode, CalculationResults } from '../../types';
 import { IV_MODES } from '../../constants';
 import { SectionBox, Chip, ErrorMsg } from '../ui';
@@ -11,7 +11,6 @@ import type { HistorySnapshot } from '../../hooks/useHistoryData';
 import IVTooltip from './IVTooltip';
 
 interface Props {
-  th: Theme;
   ivMode: IVMode;
   onIvModeChange: (mode: IVMode) => void;
   vixInput: string;
@@ -31,7 +30,6 @@ interface Props {
 }
 
 export default function IVInputSection({
-  th,
   ivMode,
   onIvModeChange,
   vixInput,
@@ -157,8 +155,8 @@ export default function IVInputSection({
                 <span
                   className="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold tracking-wider uppercase"
                   style={{
-                    backgroundColor: tint(th.backtest, '18'),
-                    color: th.backtest,
+                    backgroundColor: tint(theme.backtest, '18'),
+                    color: theme.backtest,
                   }}
                 >
                   VIX1D
@@ -207,7 +205,7 @@ export default function IVInputSection({
       {/* VIX Regime Card — shown in both VIX and Direct IV modes */}
       {dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && results && (
         <VIXRegimeCard
-          th={th}
+         
           vix={Number.parseFloat(dVix)}
           spot={results.spot}
         />
@@ -225,7 +223,7 @@ export default function IVInputSection({
                 ? `hist-${historySnapshot.candle.datetime}`
                 : 'live'
             }
-            th={th}
+           
             vix={Number.parseFloat(dVix)}
             onUseVix1dAsSigma={onUseVix1dAsSigma}
             isVix1dActive={ivMode === IV_MODES.DIRECT}

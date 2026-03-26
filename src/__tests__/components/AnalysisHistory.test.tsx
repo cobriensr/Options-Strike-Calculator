@@ -2,10 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AnalysisHistory from '../../components/ChartAnalysis/AnalysisHistory';
-import { theme } from '../../themes';
 import type { AnalysisResult } from '../../components/ChartAnalysis/types';
 
-const th = theme;
 
 // ── Mock data ──────────────────────────────────────────────
 
@@ -110,7 +108,7 @@ describe('AnalysisHistory', () => {
   describe('empty state', () => {
     it('shows empty message when no dates exist', async () => {
       vi.stubGlobal('fetch', mockFetch([]));
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
@@ -122,7 +120,7 @@ describe('AnalysisHistory', () => {
         'fetch',
         vi.fn().mockRejectedValue(new Error('Network error')),
       );
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
@@ -134,7 +132,7 @@ describe('AnalysisHistory', () => {
     it('fetches dates on mount', async () => {
       const fetchMock = mockFetch();
       vi.stubGlobal('fetch', fetchMock);
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
@@ -145,7 +143,7 @@ describe('AnalysisHistory', () => {
 
     it('renders date options in the picker', async () => {
       vi.stubGlobal('fetch', mockFetch());
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -161,7 +159,7 @@ describe('AnalysisHistory', () => {
   describe('mode filter tabs', () => {
     it('renders all four filter tabs', async () => {
       vi.stubGlobal('fetch', mockFetch());
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText('All')).toBeInTheDocument();
@@ -179,7 +177,7 @@ describe('AnalysisHistory', () => {
       ];
       vi.stubGlobal('fetch', mockFetch(dates));
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText('Review')).toBeInTheDocument();
@@ -200,7 +198,7 @@ describe('AnalysisHistory', () => {
       const fetchMock = mockFetch();
       vi.stubGlobal('fetch', fetchMock);
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -219,7 +217,7 @@ describe('AnalysisHistory', () => {
     it('shows time picker after selecting a date', async () => {
       vi.stubGlobal('fetch', mockFetch());
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -236,7 +234,7 @@ describe('AnalysisHistory', () => {
     it('auto-selects first available time', async () => {
       vi.stubGlobal('fetch', mockFetch());
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -255,7 +253,7 @@ describe('AnalysisHistory', () => {
     it('shows mode tabs when multiple modes available for a time', async () => {
       vi.stubGlobal('fetch', mockFetch());
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -284,7 +282,7 @@ describe('AnalysisHistory', () => {
       ];
       vi.stubGlobal('fetch', mockFetch(DATES, analyses));
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -317,7 +315,7 @@ describe('AnalysisHistory', () => {
     it('shows structure and confidence in summary', async () => {
       vi.stubGlobal('fetch', mockFetch());
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -337,7 +335,7 @@ describe('AnalysisHistory', () => {
     it('shows SPX and VIX values when available', async () => {
       vi.stubGlobal('fetch', mockFetch());
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -371,7 +369,7 @@ describe('AnalysisHistory', () => {
       });
       vi.stubGlobal('fetch', fetchMock);
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -399,7 +397,7 @@ describe('AnalysisHistory', () => {
     it('shows empty message when no analyses match filter', async () => {
       vi.stubGlobal('fetch', mockFetch(DATES, []));
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -424,7 +422,7 @@ describe('AnalysisHistory', () => {
       ];
       vi.stubGlobal('fetch', mockFetch(DATES, analyses));
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -448,7 +446,7 @@ describe('AnalysisHistory', () => {
     it('resets date and time when mode filter changes', async () => {
       vi.stubGlobal('fetch', mockFetch());
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -475,7 +473,7 @@ describe('AnalysisHistory', () => {
     it('refetches dates when refreshKey changes', async () => {
       const fetchMock = mockFetch();
       vi.stubGlobal('fetch', fetchMock);
-      const { rerender } = render(<AnalysisHistory th={th} refreshKey={0} />);
+      const { rerender } = render(<AnalysisHistory refreshKey={0} />);
 
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
@@ -487,7 +485,7 @@ describe('AnalysisHistory', () => {
         (c[0] as string).includes('dates=true'),
       ).length;
 
-      rerender(<AnalysisHistory th={th} refreshKey={1} />);
+      rerender(<AnalysisHistory refreshKey={1} />);
 
       await waitFor(() => {
         const callsAfter = fetchMock.mock.calls.filter((c: unknown[]) =>
@@ -501,7 +499,7 @@ describe('AnalysisHistory', () => {
       const fetchMock = mockFetch();
       vi.stubGlobal('fetch', fetchMock);
       const user = userEvent.setup();
-      const { rerender } = render(<AnalysisHistory th={th} refreshKey={0} />);
+      const { rerender } = render(<AnalysisHistory refreshKey={0} />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -519,7 +517,7 @@ describe('AnalysisHistory', () => {
         (c[0] as string).includes('date=2025-03-01'),
       ).length;
 
-      rerender(<AnalysisHistory th={th} refreshKey={1} />);
+      rerender(<AnalysisHistory refreshKey={1} />);
 
       await waitFor(() => {
         const newDateCalls = fetchMock.mock.calls.filter((c: unknown[]) =>
@@ -535,7 +533,7 @@ describe('AnalysisHistory', () => {
       const analyses = [makeEntry(1, 'review', '10:00 AM')];
       vi.stubGlobal('fetch', mockFetch(DATES, analyses));
       const user = userEvent.setup();
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/Select a date/)).toBeInTheDocument();
@@ -556,7 +554,7 @@ describe('AnalysisHistory', () => {
         'fetch',
         vi.fn().mockResolvedValue(new Response('', { status: 500 })),
       );
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
@@ -573,7 +571,7 @@ describe('AnalysisHistory', () => {
           }),
         ),
       );
-      render(<AnalysisHistory th={th} />);
+      render(<AnalysisHistory />);
 
       await waitFor(() => {
         expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();

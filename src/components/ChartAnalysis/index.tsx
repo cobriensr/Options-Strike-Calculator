@@ -10,7 +10,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type { CalculationResults } from '../../types';
 import { SectionBox } from '../ui';
 import { tint } from '../../utils/ui-utils';
@@ -23,14 +23,12 @@ import { useChartAnalysis } from '../../hooks/useChartAnalysis';
 export type { AnalysisContext } from './types';
 
 interface Props {
-  readonly th: Theme;
   readonly results: CalculationResults | null;
   readonly context: import('./types').AnalysisContext;
   readonly onAnalysisSaved?: () => void;
 }
 
 export default function ChartAnalysis({
-  th,
   results,
   context,
   onAnalysisSaved,
@@ -196,10 +194,10 @@ export default function ChartAnalysis({
                   : undefined;
             const modeColor =
               m === 'entry'
-                ? th.accent
+                ? theme.accent
                 : m === 'midday'
-                  ? th.caution
-                  : th.green;
+                  ? theme.caution
+                  : theme.green;
             const isActive = mode === m;
             return (
               <button
@@ -211,8 +209,8 @@ export default function ChartAnalysis({
                 style={{
                   backgroundColor: isActive
                     ? tint(modeColor, '18')
-                    : th.surfaceAlt,
-                  color: isActive ? modeColor : th.textMuted,
+                    : theme.surfaceAlt,
+                  color: isActive ? modeColor : theme.textMuted,
                   border: `1px solid ${isActive ? tint(modeColor, '40') : 'transparent'}`,
                 }}
                 title={disabledReason ?? MODE_LABELS[m].desc}
@@ -270,9 +268,9 @@ export default function ChartAnalysis({
               onClick={clearAllImages}
               className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
               style={{
-                backgroundColor: tint(th.red, '12'),
-                color: th.red,
-                border: `1px solid ${tint(th.red, '25')}`,
+                backgroundColor: tint(theme.red, '12'),
+                color: theme.red,
+                border: `1px solid ${tint(theme.red, '25')}`,
               }}
             >
               Clear All Images
@@ -341,9 +339,9 @@ export default function ChartAnalysis({
               disabled={positionUpload.status === 'uploading'}
               className="cursor-pointer rounded-md px-4 py-2 font-sans text-xs font-semibold transition-opacity hover:opacity-80"
               style={{
-                backgroundColor: th.accent,
+                backgroundColor: theme.accent,
                 color: '#fff',
-                border: `1px solid ${th.accent}`,
+                border: `1px solid ${theme.accent}`,
               }}
             >
               {positionUpload.status === 'uploading'
@@ -351,12 +349,12 @@ export default function ChartAnalysis({
                 : 'Upload paperMoney Positions (.csv)'}
             </button>
             {positionUpload.status === 'success' && (
-              <span className="text-xs" style={{ color: th.green }}>
+              <span className="text-xs" style={{ color: theme.green }}>
                 {positionUpload.message}
               </span>
             )}
             {positionUpload.status === 'error' && (
-              <span className="text-xs" style={{ color: th.red }}>
+              <span className="text-xs" style={{ color: theme.red }}>
                 {positionUpload.message}
               </span>
             )}
@@ -369,7 +367,7 @@ export default function ChartAnalysis({
             type="button"
             onClick={() => setConfirming(true)}
             className="mb-3 w-full cursor-pointer rounded-lg px-4 py-2.5 font-sans text-[12px] font-bold tracking-wider uppercase transition-opacity"
-            style={{ backgroundColor: th.accent, color: '#fff' }}
+            style={{ backgroundColor: theme.accent, color: '#fff' }}
           >
             {`Analyze ${images.length} chart${images.length > 1 ? 's' : ''} \u2014 ${MODE_LABELS[mode].label}`}
           </button>
@@ -379,14 +377,14 @@ export default function ChartAnalysis({
           <div
             className="mb-3 flex items-center justify-between rounded-lg px-4 py-3"
             style={{
-              backgroundColor: tint(th.caution, '10'),
-              border: '1.5px solid ' + tint(th.caution, '30'),
+              backgroundColor: tint(theme.caution, '10'),
+              border: '1.5px solid ' + tint(theme.caution, '30'),
             }}
           >
             <div>
               <div
                 className="font-sans text-[11px] font-semibold"
-                style={{ color: th.caution }}
+                style={{ color: theme.caution }}
               >
                 Send {images.length} image{images.length > 1 ? 's' : ''} to
                 Opus? (~5{'\u201310'} min, billed on send)
@@ -395,12 +393,12 @@ export default function ChartAnalysis({
                 {MODE_LABELS[mode].label} {'\u2022'}{' '}
                 {images.map((img) => img.label).join(', ')}
                 {!context.isBacktest && (
-                  <span style={{ color: th.accent }}>
+                  <span style={{ color: theme.accent }}>
                     {' \u2022'} Will fetch live positions from Schwab
                   </span>
                 )}
                 {lastAnalysis && (mode === 'midday' || mode === 'review') && (
-                  <span style={{ color: th.green }}>
+                  <span style={{ color: theme.green }}>
                     {' '}
                     {'\u2022'} Includes previous {lastAnalysis.structure}{' '}
                     recommendation
@@ -413,7 +411,7 @@ export default function ChartAnalysis({
                 type="button"
                 onClick={() => setConfirming(false)}
                 className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
-                style={{ backgroundColor: th.surfaceAlt, color: th.textMuted }}
+                style={{ backgroundColor: theme.surfaceAlt, color: theme.textMuted }}
               >
                 Go Back
               </button>
@@ -424,7 +422,7 @@ export default function ChartAnalysis({
                   analyze();
                 }}
                 className="cursor-pointer rounded-md px-4 py-1.5 font-sans text-[10px] font-bold tracking-wider uppercase transition-opacity hover:opacity-90"
-                style={{ backgroundColor: th.accent, color: '#fff' }}
+                style={{ backgroundColor: theme.accent, color: '#fff' }}
               >
                 Confirm
               </button>
@@ -435,17 +433,17 @@ export default function ChartAnalysis({
         {loading && (
           <div
             className="border-edge mb-3 overflow-hidden rounded-lg border p-4"
-            style={{ backgroundColor: th.surfaceAlt }}
+            style={{ backgroundColor: theme.surfaceAlt }}
           >
             {/* Pulsing bar */}
             <div
               className="mb-3 h-1 w-full overflow-hidden rounded-full"
-              style={{ backgroundColor: tint(th.accent, '20') }}
+              style={{ backgroundColor: tint(theme.accent, '20') }}
             >
               <div
                 className="h-full rounded-full"
                 style={{
-                  backgroundColor: th.accent,
+                  backgroundColor: theme.accent,
                   width: `${Math.min(95, (elapsed / 600) * 100)}%`,
                   transition: 'width 1s linear',
                 }}
@@ -455,7 +453,7 @@ export default function ChartAnalysis({
               <div>
                 <div
                   className="mb-0.5 font-sans text-[11px] font-semibold"
-                  style={{ color: th.accent }}
+                  style={{ color: theme.accent }}
                 >
                   Opus is thinking...
                 </div>
@@ -473,7 +471,7 @@ export default function ChartAnalysis({
               <div className="flex items-center gap-3">
                 <div
                   className="font-mono text-[12px] font-bold"
-                  style={{ color: th.textMuted }}
+                  style={{ color: theme.textMuted }}
                 >
                   {elapsed}s
                 </div>
@@ -482,9 +480,9 @@ export default function ChartAnalysis({
                   onClick={cancelAnalysis}
                   className="cursor-pointer rounded-md px-3 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
                   style={{
-                    backgroundColor: tint(th.red, '18'),
-                    color: th.red,
-                    border: `1px solid ${tint(th.red, '30')}`,
+                    backgroundColor: tint(theme.red, '18'),
+                    color: theme.red,
+                    border: `1px solid ${tint(theme.red, '30')}`,
                   }}
                 >
                   Cancel
@@ -498,7 +496,7 @@ export default function ChartAnalysis({
         {error && (
           <div
             className="mb-3 rounded-lg px-3 py-2 text-[11px]"
-            style={{ backgroundColor: tint(th.red, '12'), color: th.red }}
+            style={{ backgroundColor: tint(theme.red, '12'), color: theme.red }}
           >
             {error}
           </div>
@@ -507,7 +505,7 @@ export default function ChartAnalysis({
         {/* Results */}
         {analysis && (
           <AnalysisResultsView
-            th={th}
+           
             analysis={analysis}
             mode={mode}
             onReplaceImage={replaceImage}

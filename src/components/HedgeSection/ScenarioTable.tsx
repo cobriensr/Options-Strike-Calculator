@@ -1,16 +1,14 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type { HedgeScenario } from '../../types';
 import { mkTh, mkTd, fmtDollar } from '../../utils/ui-utils';
 
 interface Props {
-  th: Theme;
   scenarios: readonly HedgeScenario[];
   spot: number;
   direction: 'crash' | 'rally';
 }
 
 export default function ScenarioTable({
-  th,
   scenarios,
   spot,
   direction,
@@ -63,14 +61,14 @@ export default function ScenarioTable({
                 </td>
                 <td
                   className={`${mkTd()} text-right font-semibold`}
-                  style={{ color: s.icPnL >= 0 ? th.green : th.red }}
+                  style={{ color: s.icPnL >= 0 ? theme.green : theme.red }}
                 >
                   {s.icPnL >= 0 ? '+' : ''}
                   {fmtDollar(s.icPnL)}
                 </td>
                 <td
                   className={`${mkTd()} text-right`}
-                  style={{ color: hedgePayout > 0 ? th.green : th.textMuted }}
+                  style={{ color: hedgePayout > 0 ? theme.green : theme.textMuted }}
                 >
                   {hedgePayout > 0 ? '+$' + fmtDollar(hedgePayout) : '$0'}
                 </td>
@@ -79,7 +77,7 @@ export default function ScenarioTable({
                 </td>
                 <td
                   className={`${mkTd()} text-right text-[13px] font-bold`}
-                  style={{ color: s.netPnL >= 0 ? th.green : th.red }}
+                  style={{ color: s.netPnL >= 0 ? theme.green : theme.red }}
                 >
                   {s.netPnL >= 0 ? '+' : ''}${fmtDollar(s.netPnL)}
                 </td>

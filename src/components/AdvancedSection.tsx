@@ -1,10 +1,9 @@
-import type { Theme } from '../themes';
+import { theme } from '../themes';
 import type { CalculationResults, VIXDayData, OHLCField } from '../types';
 import { getKurtosisFactor, WING_OPTIONS } from '../constants';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 
 interface Props {
-  th: Theme;
   skewPct: number;
   onSkewChange: (v: number) => void;
   showIC: boolean;
@@ -22,7 +21,6 @@ interface Props {
 }
 
 export default function AdvancedSection({
-  th,
   skewPct,
   onSkewChange,
   showIC,
@@ -80,7 +78,7 @@ export default function AdvancedSection({
           onChange={(e) => onSkewChange(Number.parseInt(e.target.value))}
           aria-label={'Put skew adjustment, currently ' + skewPct + ' percent'}
           className="m-0 w-full cursor-pointer"
-          style={{ accentColor: th.accent }}
+          style={{ accentColor: theme.accent }}
         />
         <div className="text-muted mt-1 flex justify-between font-mono text-[10px]">
           <span>0%</span>

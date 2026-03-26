@@ -1,13 +1,12 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { VvixResult } from './classifiers';
 
 interface Props {
-  th: Theme;
   result: VvixResult;
 }
 
-export default function VvixCard({ th, result }: Props) {
+export default function VvixCard({ result }: Props) {
   const { value, label, color, advice } = result;
 
   // Bar scale: 60–140 range
@@ -54,7 +53,7 @@ export default function VvixCard({ th, result }: Props) {
             className="absolute -top-px h-2 w-0.5"
             style={{
               left: ((100 - 60) / 80) * 100 + '%',
-              backgroundColor: tint(th.textMuted, '60'),
+              backgroundColor: tint(theme.textMuted, '60'),
             }}
           />
         </div>

@@ -1,10 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import PinRiskAnalysis from '../../components/PinRiskAnalysis';
-import { theme } from '../../themes';
 import type { ChainResponse, ChainStrike } from '../../types/api';
 
-const th = theme;
 
 function makeStrike(
   strike: number,
@@ -47,7 +45,7 @@ describe('PinRiskAnalysis', () => {
       [makeStrike(5650, 5000), makeStrike(5700, 15000)],
       [makeStrike(5650, 3000), makeStrike(5700, 10000)],
     );
-    render(<PinRiskAnalysis th={th} chain={chain} spot={5700} />);
+    render(<PinRiskAnalysis chain={chain} spot={5700} />);
     expect(screen.getByText('Strike')).toBeInTheDocument();
     expect(screen.getByText('Put OI')).toBeInTheDocument();
     expect(screen.getByText('Total')).toBeInTheDocument();
@@ -58,7 +56,7 @@ describe('PinRiskAnalysis', () => {
       [makeStrike(5700, 20000)],
       [makeStrike(5700, 15000)],
     );
-    render(<PinRiskAnalysis th={th} chain={chain} spot={5700} />);
+    render(<PinRiskAnalysis chain={chain} spot={5700} />);
     expect(screen.getByText('PIN RISK')).toBeInTheDocument();
   });
 
@@ -67,13 +65,13 @@ describe('PinRiskAnalysis', () => {
       [makeStrike(5500, 20000)],
       [makeStrike(5900, 15000)],
     );
-    render(<PinRiskAnalysis th={th} chain={chain} spot={5700} />);
+    render(<PinRiskAnalysis chain={chain} spot={5700} />);
     expect(screen.queryByText('PIN RISK')).not.toBeInTheDocument();
   });
 
   it('shows empty state when no OI data', () => {
     const chain = makeChain([makeStrike(5700, 0)], [makeStrike(5700, 0)]);
-    render(<PinRiskAnalysis th={th} chain={chain} spot={5700} />);
+    render(<PinRiskAnalysis chain={chain} spot={5700} />);
     expect(screen.getByText(/No open interest data/)).toBeInTheDocument();
   });
 
@@ -83,7 +81,7 @@ describe('PinRiskAnalysis', () => {
     );
     const calls = puts.map((p) => makeStrike(p.strike, 500));
     const chain = makeChain(puts, calls);
-    render(<PinRiskAnalysis th={th} chain={chain} spot={5700} />);
+    render(<PinRiskAnalysis chain={chain} spot={5700} />);
     const rows = screen.getAllByRole('row');
     // 1 header + 8 data rows
     expect(rows.length).toBe(9);
@@ -94,7 +92,7 @@ describe('PinRiskAnalysis', () => {
       [makeStrike(5700, 10000), makeStrike(5600, 5000)],
       [makeStrike(5700, 8000), makeStrike(5800, 3000)],
     );
-    render(<PinRiskAnalysis th={th} chain={chain} spot={5700} />);
+    render(<PinRiskAnalysis chain={chain} spot={5700} />);
     expect(screen.getByText('PIN')).toBeInTheDocument();
   });
 
@@ -103,7 +101,7 @@ describe('PinRiskAnalysis', () => {
       [makeStrike(5700, 15000)],
       [makeStrike(5700, 10000)],
     );
-    render(<PinRiskAnalysis th={th} chain={chain} spot={5700} />);
+    render(<PinRiskAnalysis chain={chain} spot={5700} />);
     expect(screen.getByText('15.0K')).toBeInTheDocument();
     expect(screen.getByText('25.0K')).toBeInTheDocument(); // total
   });

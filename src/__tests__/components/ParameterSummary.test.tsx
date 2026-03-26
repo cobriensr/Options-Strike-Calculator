@@ -1,13 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import ParameterSummary from '../../components/ParameterSummary';
-import { theme } from '../../themes';
 
-const th = theme;
 
 describe('ParameterSummary', () => {
   const defaultProps = {
-    th,
     spySpot: '550.25',
     spxLabel: 'SPX (×10.00)',
     spxValue: '5503',

@@ -1,15 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import RvIvCard from '../../components/RvIvCard';
-import { theme } from '../../themes';
 
-const th = theme;
 
 describe('RvIvCard', () => {
   it('renders the ratio value', () => {
     render(
       <RvIvCard
-        th={th}
         ratio={0.72}
         label="IV Rich"
         rvAnnualized={0.14}
@@ -22,7 +19,6 @@ describe('RvIvCard', () => {
   it('renders IV Rich label and advice', () => {
     render(
       <RvIvCard
-        th={th}
         ratio={0.72}
         label="IV Rich"
         rvAnnualized={0.14}
@@ -38,7 +34,6 @@ describe('RvIvCard', () => {
   it('renders IV Cheap label and advice', () => {
     render(
       <RvIvCard
-        th={th}
         ratio={1.35}
         label="IV Cheap"
         rvAnnualized={0.27}
@@ -54,7 +49,6 @@ describe('RvIvCard', () => {
   it('renders Fair Value label and advice', () => {
     render(
       <RvIvCard
-        th={th}
         ratio={0.95}
         label="Fair Value"
         rvAnnualized={0.19}
@@ -68,7 +62,6 @@ describe('RvIvCard', () => {
   it('displays RV and IV percentages', () => {
     render(
       <RvIvCard
-        th={th}
         ratio={0.72}
         label="IV Rich"
         rvAnnualized={0.14}
@@ -82,7 +75,6 @@ describe('RvIvCard', () => {
   it('renders the section title', () => {
     render(
       <RvIvCard
-        th={th}
         ratio={1.0}
         label="Fair Value"
         rvAnnualized={0.2}

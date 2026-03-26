@@ -1,8 +1,7 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 
 interface Props {
-  th: Theme;
   title: string;
   subtitle: string;
   ratio: number;
@@ -12,7 +11,6 @@ interface Props {
 }
 
 export default function RatioCard({
-  th,
   title,
   subtitle,
   ratio,
@@ -57,7 +55,7 @@ export default function RatioCard({
           {/* 1.0x marker */}
           <div
             className="absolute -top-px left-1/2 h-2 w-0.5"
-            style={{ backgroundColor: tint(th.textMuted, '60') }}
+            style={{ backgroundColor: tint(theme.textMuted, '60') }}
           />
         </div>
         <div className="text-muted mt-0.5 flex justify-between font-mono text-[8px]">

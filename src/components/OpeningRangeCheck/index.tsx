@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import type { TrafficSignal } from '../../types';
 import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
 import { parseDow } from '../../utils/time';
@@ -9,7 +9,6 @@ import StatCell from './StatCell';
 import RangeConsumptionBar from './RangeConsumptionBar';
 
 interface Props {
-  readonly th: Theme;
   readonly vix: number | null;
   readonly spot: number | null; // Current SPX spot from parent
   readonly selectedDate?: string; // For DOW adjustment
@@ -38,7 +37,6 @@ interface RangeAnalysis {
  * daily range for the current VIX level.
  */
 export default function OpeningRangeCheck({
-  th,
   vix,
   spot,
   selectedDate,
@@ -104,12 +102,12 @@ export default function OpeningRangeCheck({
 
   const signalColor =
     analysis?.signal === 'green'
-      ? th.green
+      ? theme.green
       : analysis?.signal === 'yellow'
-        ? th.caution
+        ? theme.caution
         : analysis?.signal === 'red'
-          ? th.red
-          : th.textMuted;
+          ? theme.red
+          : theme.textMuted;
 
   return (
     <div>
@@ -203,19 +201,19 @@ export default function OpeningRangeCheck({
               label="Expected Median"
               value={analysis.expectedMedHL.toFixed(2) + '%'}
               sub="50th pctile H-L"
-              color={th.accent}
+              color={theme.accent}
             />
             <StatCell
               label="Expected 90th"
               value={analysis.expectedP90HL.toFixed(2) + '%'}
               sub="90th pctile H-L"
-              color={th.red}
+              color={theme.red}
             />
           </div>
 
           {/* Range consumption bar */}
           <RangeConsumptionBar
-            th={th}
+           
             pctOfMedianUsed={analysis.pctOfMedianUsed}
             pctOfP90Used={analysis.pctOfP90Used}
             signalColor={signalColor}

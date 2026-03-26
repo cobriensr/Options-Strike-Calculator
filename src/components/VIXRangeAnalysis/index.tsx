@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 import { Chip } from '../ui';
 import { mkTh, mkTd, tint } from '../../utils/ui-utils';
 import {
@@ -12,7 +12,6 @@ import { zoneToColor, heatColor, heatBg } from './helpers';
 import FineGrainedBars from './FineGrainedBars';
 
 interface Props {
-  readonly th: Theme;
   readonly vix: number | null; // current VIX, null if not entered yet
   readonly spot: number | null; // SPX spot for points calculation
 }
@@ -25,7 +24,7 @@ type SurvivalMode = 'settle' | 'intraday';
  * range escalation bars. Highlights the active VIX bucket when a VIX
  * value is available from the calculator inputs.
  */
-export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
+export default function VIXRangeAnalysis({ vix, spot }: Props) {
   const [survMode, setSurvMode] = useState<SurvivalMode>('settle');
   const [showFine, setShowFine] = useState(false);
 
@@ -62,7 +61,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
           <tbody>
             {VIX_BUCKETS.map((b, i) => {
               const isActive = i === activeBucketIdx;
-              const zoneColor = zoneToColor(b.zone, th);
+              const zoneColor = zoneToColor(b.zone);
               return (
                 <tr
                   key={b.label}
@@ -122,7 +121,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
                   <td
                     className={`${mkTd()} text-right`}
                     style={{
-                      color: b.over2HL > 15 ? th.red : th.textSecondary,
+                      color: b.over2HL > 15 ? theme.red : theme.textSecondary,
                       fontWeight: b.over2HL > 15 ? 600 : 400,
                     }}
                   >
@@ -185,7 +184,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
           <tbody>
             {VIX_BUCKETS.map((b, bi) => {
               const isActive = bi === activeBucketIdx;
-              const zoneColor = zoneToColor(b.zone, th);
+              const zoneColor = zoneToColor(b.zone);
               return (
                 <tr
                   key={b.label}
@@ -211,7 +210,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
                         className={`${mkTd()} text-center`}
                         style={{
                           fontWeight: val >= 90 ? 600 : 400,
-                          color: heatColor(val, th),
+                          color: heatColor(val),
                           backgroundColor: heatBg(val),
                         }}
                       >
@@ -243,7 +242,7 @@ export default function VIXRangeAnalysis({ th, vix, spot }: Props) {
 
       {showFine && (
         <div className="mt-3">
-          <FineGrainedBars th={th} vix={vix} spot={spot} />
+          <FineGrainedBars vix={vix} spot={spot} />
         </div>
       )}
     </div>

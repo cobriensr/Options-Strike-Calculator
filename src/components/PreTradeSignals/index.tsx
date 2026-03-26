@@ -1,4 +1,3 @@
-import type { Theme } from '../../themes';
 import type {
   MoversResponse,
   QuotesResponse,
@@ -8,7 +7,6 @@ import { computeRvIv, computeGap, computeBreadth } from './classifiers';
 import SignalCard from './SignalCard';
 
 interface Props {
-  readonly th: Theme;
   readonly quotes: QuotesResponse | null;
   readonly yesterday: YesterdayResponse | null;
   readonly movers: MoversResponse | null;
@@ -18,7 +16,6 @@ interface Props {
 }
 
 export default function PreTradeSignals({
-  th,
   quotes,
   yesterday,
   movers,
@@ -48,7 +45,7 @@ export default function PreTradeSignals({
       <div className="grid grid-cols-1 gap-2.5">
         {rvIv && (
           <SignalCard
-            th={th}
+           
             title="Realized vs. Implied Vol"
             subtitle="Yesterday actual \u00F7 VIX predicted"
             result={rvIv}
@@ -56,7 +53,7 @@ export default function PreTradeSignals({
         )}
         {gap && (
           <SignalCard
-            th={th}
+           
             title="Overnight Gap"
             subtitle="SPX open vs. prior close"
             result={gap}
@@ -64,7 +61,7 @@ export default function PreTradeSignals({
         )}
         {breadth && (
           <SignalCard
-            th={th}
+           
             title="Move Breadth"
             subtitle="SPX component concentration"
             result={breadth}

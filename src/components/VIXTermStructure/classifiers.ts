@@ -1,4 +1,4 @@
-import type { Theme } from '../../themes';
+import { theme } from '../../themes';
 
 export type Signal = 'calm' | 'normal' | 'elevated' | 'extreme';
 
@@ -37,13 +37,13 @@ const VVIX_THRESHOLDS = {
   unstable: 120,
 } as const;
 
-export function classifyVix1dRatio(ratio: number, th: Theme): RatioResult {
+export function classifyVix1dRatio(ratio: number): RatioResult {
   if (ratio < VIX1D_THRESHOLDS.calm) {
     return {
       ratio,
       signal: 'calm',
       label: 'CALM',
-      color: th.green,
+      color: theme.green,
       advice:
         'Today expected quieter than average. Full position size, standard deltas.',
     };
@@ -53,7 +53,7 @@ export function classifyVix1dRatio(ratio: number, th: Theme): RatioResult {
       ratio,
       signal: 'normal',
       label: 'NORMAL',
-      color: th.accent,
+      color: theme.accent,
       advice: 'Typical day. Follow regime guide delta ceiling.',
     };
   }
@@ -62,7 +62,7 @@ export function classifyVix1dRatio(ratio: number, th: Theme): RatioResult {
       ratio,
       signal: 'elevated',
       label: 'ELEVATED',
-      color: th.caution,
+      color: theme.caution,
       advice:
         'Market pricing above-average move today. Widen deltas or reduce size.',
     };
@@ -71,19 +71,19 @@ export function classifyVix1dRatio(ratio: number, th: Theme): RatioResult {
     ratio,
     signal: 'extreme',
     label: 'EVENT RISK',
-    color: th.red,
+    color: theme.red,
     advice:
       'Major event expected (CPI, FOMC, NFP?). Consider sitting out or minimal size.',
   };
 }
 
-export function classifyVix9dRatio(ratio: number, th: Theme): RatioResult {
+export function classifyVix9dRatio(ratio: number): RatioResult {
   if (ratio < VIX9D_THRESHOLDS.calm) {
     return {
       ratio,
       signal: 'calm',
       label: 'CONTANGO',
-      color: th.green,
+      color: theme.green,
       advice: 'Near-term vol below 30-day. Favorable term structure.',
     };
   }
@@ -92,7 +92,7 @@ export function classifyVix9dRatio(ratio: number, th: Theme): RatioResult {
       ratio,
       signal: 'normal',
       label: 'FLAT',
-      color: th.accent,
+      color: theme.accent,
       advice: 'Neutral term structure. No additional signal.',
     };
   }
@@ -101,7 +101,7 @@ export function classifyVix9dRatio(ratio: number, th: Theme): RatioResult {
       ratio,
       signal: 'elevated',
       label: 'INVERTED',
-      color: th.caution,
+      color: theme.caution,
       advice: 'Near-term stress building. Caution over next 1\u20132 weeks.',
     };
   }
@@ -109,18 +109,18 @@ export function classifyVix9dRatio(ratio: number, th: Theme): RatioResult {
     ratio,
     signal: 'extreme',
     label: 'STEEP INVERSION',
-    color: th.red,
+    color: theme.red,
     advice: 'Significant near-term fear. Defensive posture warranted.',
   };
 }
 
-export function classifyVvix(vvix: number, th: Theme): VvixResult {
+export function classifyVvix(vvix: number): VvixResult {
   if (vvix < VVIX_THRESHOLDS.stable) {
     return {
       value: vvix,
       signal: 'calm',
       label: 'STABLE',
-      color: th.green,
+      color: theme.green,
       advice:
         'VIX is calm and unlikely to spike. Favorable for selling premium.',
     };
@@ -130,7 +130,7 @@ export function classifyVvix(vvix: number, th: Theme): VvixResult {
       value: vvix,
       signal: 'normal',
       label: 'NORMAL',
-      color: th.accent,
+      color: theme.accent,
       advice: 'Standard VIX volatility. No additional signal.',
     };
   }
@@ -139,7 +139,7 @@ export function classifyVvix(vvix: number, th: Theme): VvixResult {
       value: vvix,
       signal: 'elevated',
       label: 'UNSTABLE',
-      color: th.caution,
+      color: theme.caution,
       advice: 'VIX could spike mid-session. Tighten deltas or reduce size.',
     };
   }
@@ -147,7 +147,7 @@ export function classifyVvix(vvix: number, th: Theme): VvixResult {
     value: vvix,
     signal: 'extreme',
     label: 'DANGER',
-    color: th.red,
+    color: theme.red,
     advice:
       'VIX is highly volatile \u2014 significant whipsaw risk. Consider sitting out.',
   };
