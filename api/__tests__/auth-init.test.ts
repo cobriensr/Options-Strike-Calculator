@@ -7,8 +7,13 @@ vi.mock('../_lib/schwab.js', () => ({
   getAuthUrl: vi.fn(),
 }));
 
+vi.mock('../_lib/api-helpers.js', () => ({
+  rejectIfRateLimited: vi.fn(),
+}));
+
 import handler from '../auth/init.js';
 import { getAuthUrl } from '../_lib/schwab.js';
+import { rejectIfRateLimited } from '../_lib/api-helpers.js';
 
 describe('GET /api/auth/init', () => {
   const originalEnv = process.env;
@@ -16,64 +21,99 @@ describe('GET /api/auth/init', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     vi.restoreAllMocks();
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  it('returns 500 when getAuthUrl returns null (missing creds)', () => {
-    vi.mocked(getAuthUrl).mockReturnValue(null);
+  it('returns 500 when getAuthUrl returns null (missing creds)', async () => {
+    vi.mocked(getAuthUrl).mockResolvedValue(null);
     const res = mockResponse();
-    handler(mockRequest({ headers: { host: 'example.com' } }), res);
+    await handler(mockRequest({ headers: { host: 'example.com' } }), res);
     expect(res._status).toBe(500);
     expect((res._json as { error: string }).error).toContain(
-      'SCHWAB_CLIENT_ID',
+      'OAuth credentials not configured',
     );
   });
 
-  it('redirects to Schwab OAuth URL', () => {
-    vi.mocked(getAuthUrl).mockReturnValue(
-      'https://api.schwabapi.com/v1/oauth/authorize?client_id=test',
-    );
+  it('redirects to Schwab OAuth URL', async () => {
+    vi.mocked(getAuthUrl).mockResolvedValue({
+      url: 'https://api.schwabapi.com/v1/oauth/authorize?client_id=test',
+      state: 'abc123',
+    });
     const res = mockResponse();
-    handler(mockRequest({ headers: { host: 'myapp.vercel.app' } }), res);
+    await handler(
+      mockRequest({ headers: { host: 'myapp.vercel.app' } }),
+      res,
+    );
     expect(res._redirectStatus).toBe(302);
     expect(res._redirectUrl).toContain('schwabapi.com');
   });
 
-  it('uses https for non-localhost hosts', () => {
-    vi.mocked(getAuthUrl).mockImplementation((redirectUri: string) => {
-      // Verify the redirect URI uses https
-      expect(redirectUri.startsWith('https://')).toBe(true);
-      return 'https://api.schwabapi.com/v1/oauth/authorize';
-    });
+  it('uses https for non-localhost hosts', async () => {
+    vi.mocked(getAuthUrl).mockImplementation(
+      async (redirectUri: string) => {
+        // Verify the redirect URI uses https
+        expect(redirectUri.startsWith('https://')).toBe(true);
+        return {
+          url: 'https://api.schwabapi.com/v1/oauth/authorize',
+          state: 'abc123',
+        };
+      },
+    );
     const res = mockResponse();
-    handler(mockRequest({ headers: { host: 'myapp.vercel.app' } }), res);
+    await handler(
+      mockRequest({ headers: { host: 'myapp.vercel.app' } }),
+      res,
+    );
     expect(getAuthUrl).toHaveBeenCalledWith(
       'https://myapp.vercel.app/api/auth/callback',
     );
   });
 
-  it('returns 500 when handler throws unexpected error', () => {
-    vi.mocked(getAuthUrl).mockImplementation(() => {
-      throw new Error('Crash');
-    });
+  it('returns 500 when handler throws unexpected error', async () => {
+    vi.mocked(getAuthUrl).mockRejectedValue(new Error('Crash'));
 
     const res = mockResponse();
-    handler(mockRequest({ headers: { host: 'example.com' } }), res);
+    await handler(
+      mockRequest({ headers: { host: 'example.com' } }),
+      res,
+    );
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal server error' });
   });
 
-  it('uses http for localhost', () => {
-    vi.mocked(getAuthUrl).mockReturnValue(
-      'https://api.schwabapi.com/v1/oauth/authorize',
-    );
+  it('uses http for localhost', async () => {
+    vi.mocked(getAuthUrl).mockResolvedValue({
+      url: 'https://api.schwabapi.com/v1/oauth/authorize',
+      state: 'abc123',
+    });
     const res = mockResponse();
-    handler(mockRequest({ headers: { host: 'localhost:3000' } }), res);
+    await handler(
+      mockRequest({ headers: { host: 'localhost:3000' } }),
+      res,
+    );
     expect(getAuthUrl).toHaveBeenCalledWith(
       'http://localhost:3000/api/auth/callback',
+    );
+  });
+
+  it('returns 429 when rate limited', async () => {
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(true);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ headers: { host: 'example.com' } }),
+      res,
+    );
+    // Rate limiting is handled by rejectIfRateLimited itself
+    // (it sets the response), so we just verify it was called
+    expect(rejectIfRateLimited).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'auth-init',
+      5,
     );
   });
 });

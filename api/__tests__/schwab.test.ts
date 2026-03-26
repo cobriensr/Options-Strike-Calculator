@@ -53,21 +53,33 @@ describe('schwab', () => {
   // ============================================================
 
   describe('getAuthUrl', () => {
-    it('returns null when credentials are missing', () => {
+    it('returns null when credentials are missing', async () => {
       delete process.env.SCHWAB_CLIENT_ID;
       delete process.env.SCHWAB_CLIENT_SECRET;
-      expect(getAuthUrl('http://localhost/callback')).toBeNull();
+      expect(await getAuthUrl('http://localhost/callback')).toBeNull();
     });
 
-    it('returns auth URL with client_id and redirect_uri', () => {
+    it('returns auth URL with client_id, redirect_uri, and state', async () => {
       process.env.SCHWAB_CLIENT_ID = 'my-client-id';
       process.env.SCHWAB_CLIENT_SECRET = 'my-secret';
-      const url = getAuthUrl('https://example.com/callback');
-      expect(url).not.toBeNull();
-      expect(url).toContain('api.schwabapi.com/v1/oauth/authorize');
-      expect(url).toContain('client_id=my-client-id');
-      expect(url).toContain('redirect_uri=');
-      expect(url).toContain('response_type=code');
+      mockRedisSet.mockResolvedValue('OK');
+      const result = await getAuthUrl('https://example.com/callback');
+      expect(result).not.toBeNull();
+      expect(result!.url).toContain(
+        'api.schwabapi.com/v1/oauth/authorize',
+      );
+      expect(result!.url).toContain('client_id=my-client-id');
+      expect(result!.url).toContain('redirect_uri=');
+      expect(result!.url).toContain('response_type=code');
+      expect(result!.url).toContain('state=');
+      expect(result!.state).toBeTruthy();
+      expect(result!.state).toHaveLength(64); // 32 bytes hex
+      // Verify state was stored in Redis with 10 min TTL
+      expect(mockRedisSet).toHaveBeenCalledWith(
+        `oauth:state:${result!.state}`,
+        '1',
+        { ex: 600 },
+      );
     });
   });
 
