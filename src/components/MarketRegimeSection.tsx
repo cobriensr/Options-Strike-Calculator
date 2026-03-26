@@ -49,11 +49,12 @@ export default function MarketRegimeSection({
   chain,
 }: Props) {
   const [showRegime, setShowRegime] = useState(true);
+  const vixNum = dVix ? Number.parseFloat(dVix) : null;
 
   return (
     <SectionBox
       label="Market Regime"
-      badge={results ? 'VIX ' + (Number.parseFloat(dVix) || '\u2014') : null}
+      badge={results ? 'VIX ' + (vixNum || '\u2014') : null}
       headerRight={
         <button
           type="button"
@@ -78,10 +79,10 @@ export default function MarketRegimeSection({
         <div className="mt-4">
           <VIXRangeAnalysis
             th={th}
-            vix={dVix ? Number.parseFloat(dVix) : null}
+            vix={vixNum}
             spot={results?.spot ?? null}
           />
-          {results && dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && (
+          {results && dVix && !errors['vix'] && vixNum != null && vixNum > 0 && (
             <>
               <div className="mt-5">
                 <VolatilityCluster
@@ -91,7 +92,7 @@ export default function MarketRegimeSection({
                       : 'live-vc'
                   }
                   th={th}
-                  vix={Number.parseFloat(dVix)}
+                  vix={vixNum ?? 0}
                   spot={results.spot}
                   onMultiplierChange={onClusterMultChange}
                   initialYesterday={
@@ -105,7 +106,7 @@ export default function MarketRegimeSection({
               </div>
               <DeltaRegimeGuide
                 th={th}
-                vix={Number.parseFloat(dVix)}
+                vix={vixNum ?? 0}
                 spot={results.spot}
                 T={results.T}
                 skew={skewPct / 100}
@@ -121,7 +122,7 @@ export default function MarketRegimeSection({
                       : 'live-or'
                   }
                   th={th}
-                  vix={Number.parseFloat(dVix)}
+                  vix={vixNum ?? 0}
                   spot={results.spot}
                   selectedDate={selectedDate}
                   initialRange={
@@ -166,7 +167,7 @@ export default function MarketRegimeSection({
                       iv={
                         signals.vix1d
                           ? signals.vix1d / 100
-                          : ((Number.parseFloat(dVix) || 0) * 1.15) / 100
+                          : ((vixNum ?? 0) * 1.15) / 100
                       }
                     />
                   </div>
