@@ -204,7 +204,7 @@ describe('GET /api/analyses', () => {
       res,
     );
     expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toBe('DB connection failed');
+    expect((res._json as { error: string }).error).toBe('Internal error');
   });
 
   it('returns generic error message for non-Error throws', async () => {
@@ -215,9 +215,7 @@ describe('GET /api/analyses', () => {
       res,
     );
     expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toBe(
-      'Failed to fetch analyses',
-    );
+    expect((res._json as { error: string }).error).toBe('Internal error');
   });
 
   describe('parseRow', () => {

@@ -57,6 +57,7 @@ describe('fetch-economic-calendar handler', () => {
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
     vi.setSystemTime(PREMARKET_TIME);
+    process.env.CRON_SECRET = 'test-secret';
   });
 
   afterEach(() => {
@@ -112,14 +113,13 @@ describe('fetch-economic-calendar handler', () => {
     expect(res._status).not.toBe(401);
   });
 
-  it('passes auth when CRON_SECRET is not set', async () => {
+  it('returns 401 when CRON_SECRET is not set', async () => {
     delete process.env.CRON_SECRET;
     process.env.UW_API_KEY = 'uwkey';
-    stubFetch([]);
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
     await handler(req, res);
-    expect(res._status).not.toBe(401);
+    expect(res._status).toBe(401);
   });
 
   // ── Time window guard ─────────────────────────────────────
@@ -127,7 +127,10 @@ describe('fetch-economic-calendar handler', () => {
   it('skips when outside pre-market window', async () => {
     vi.setSystemTime(MARKET_TIME);
     process.env.UW_API_KEY = 'uwkey';
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -140,7 +143,10 @@ describe('fetch-economic-calendar handler', () => {
   it('skips on weekends', async () => {
     vi.setSystemTime(WEEKEND_TIME);
     process.env.UW_API_KEY = 'uwkey';
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -153,7 +159,7 @@ describe('fetch-economic-calendar handler', () => {
     stubFetch([makeCalendarEvent()]);
     const req = mockRequest({
       method: 'GET',
-      headers: {},
+      headers: { authorization: 'Bearer test-secret' },
       query: { force: 'true' },
     });
     const res = mockResponse();
@@ -167,7 +173,10 @@ describe('fetch-economic-calendar handler', () => {
 
   it('returns 500 when UW_API_KEY is not set', async () => {
     delete process.env.UW_API_KEY;
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(500);
@@ -179,7 +188,10 @@ describe('fetch-economic-calendar handler', () => {
   it('handles empty calendar data', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([]);
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -234,7 +246,10 @@ describe('fetch-economic-calendar handler', () => {
     ];
     stubFetch(events);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -275,7 +290,10 @@ describe('fetch-economic-calendar handler', () => {
     ];
     stubFetch(events);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -302,13 +320,16 @@ describe('fetch-economic-calendar handler', () => {
       }),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({
-      error: expect.stringContaining('429'),
+      error: 'Internal error',
     });
   });
 });

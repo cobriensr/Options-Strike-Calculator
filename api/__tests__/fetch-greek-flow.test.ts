@@ -64,6 +64,7 @@ describe('fetch-greek-flow handler', () => {
     mockSql.mockResolvedValue([{ id: 1 }]);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
+    process.env.CRON_SECRET = 'test-secret';
   });
 
   afterEach(() => {
@@ -119,14 +120,13 @@ describe('fetch-greek-flow handler', () => {
     expect(res._status).not.toBe(401);
   });
 
-  it('passes auth when CRON_SECRET is not set', async () => {
+  it('returns 401 when CRON_SECRET is not set', async () => {
     delete process.env.CRON_SECRET;
     process.env.UW_API_KEY = 'uwkey';
-    stubFetch();
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
     await handler(req, res);
-    expect(res._status).not.toBe(401);
+    expect(res._status).toBe(401);
   });
 
   // ── Market hours guard ────────────────────────────────────
@@ -134,7 +134,10 @@ describe('fetch-greek-flow handler', () => {
   it('skips when outside market hours (early morning)', async () => {
     vi.setSystemTime(OFF_HOURS_TIME);
     process.env.UW_API_KEY = 'uwkey';
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -147,7 +150,10 @@ describe('fetch-greek-flow handler', () => {
   it('skips on weekends', async () => {
     vi.setSystemTime(WEEKEND_TIME);
     process.env.UW_API_KEY = 'uwkey';
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -158,7 +164,10 @@ describe('fetch-greek-flow handler', () => {
 
   it('returns 500 when UW_API_KEY is not set', async () => {
     delete process.env.UW_API_KEY;
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(500);
@@ -171,7 +180,10 @@ describe('fetch-greek-flow handler', () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([makeGreekFlowTick()]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -188,7 +200,10 @@ describe('fetch-greek-flow handler', () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -210,7 +225,10 @@ describe('fetch-greek-flow handler', () => {
       makeGreekFlowTick({ timestamp: '2026-03-24T14:33:00Z' }),
     ]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -227,7 +245,10 @@ describe('fetch-greek-flow handler', () => {
       makeGreekFlowTick({ timestamp: '2026-03-24T14:36:00Z' }),
     ]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -245,7 +266,10 @@ describe('fetch-greek-flow handler', () => {
     mockSql.mockResolvedValue([]);
     stubFetch([makeGreekFlowTick()]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -269,12 +293,15 @@ describe('fetch-greek-flow handler', () => {
       }),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: expect.stringContaining('500') });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
   it('returns 500 when fetch throws (network error)', async () => {
@@ -284,12 +311,15 @@ describe('fetch-greek-flow handler', () => {
       vi.fn().mockRejectedValue(new Error('Network error')),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Network error' });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
   it('handles insert errors gracefully (counts as skipped)', async () => {
@@ -297,7 +327,10 @@ describe('fetch-greek-flow handler', () => {
     mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
     stubFetch([makeGreekFlowTick()]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -314,7 +347,10 @@ describe('fetch-greek-flow handler', () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([makeGreekFlowTick()]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 

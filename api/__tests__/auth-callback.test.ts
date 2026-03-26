@@ -3,8 +3,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
+const mockRedis = vi.hoisted(() => ({
+  get: vi.fn().mockResolvedValue('valid'),
+  del: vi.fn().mockResolvedValue(1),
+}));
+
 vi.mock('../_lib/schwab.js', () => ({
   storeInitialTokens: vi.fn(),
+  redis: mockRedis,
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -47,13 +53,44 @@ describe('GET /api/auth/callback', () => {
     const res = mockResponse();
     await handler(
       mockRequest({
-        query: { code: 'auth-code-123' },
+        query: { code: 'auth-code-123', state: 'valid-state' },
         headers: { host: 'example.com' },
       }),
       res,
     );
     expect(res._status).toBe(500);
     expect((res._json as { error: string }).error).toContain('OWNER_SECRET');
+  });
+
+  it('returns 400 when state parameter is missing', async () => {
+    process.env.OWNER_SECRET = 'secret';
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        query: { code: 'auth-code-123' },
+        headers: { host: 'example.com' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect((res._json as { error: string }).error).toContain('state');
+  });
+
+  it('returns 400 when state is invalid or expired', async () => {
+    process.env.OWNER_SECRET = 'secret';
+    mockRedis.get.mockResolvedValueOnce(null);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        query: { code: 'auth-code-123', state: 'unknown-nonce' },
+        headers: { host: 'example.com' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect((res._json as { error: string }).error).toContain('state');
+    // Nonce must not be consumed on rejection
+    expect(mockRedis.del).not.toHaveBeenCalled();
   });
 
   it('returns 500 when token exchange fails', async () => {
@@ -65,7 +102,7 @@ describe('GET /api/auth/callback', () => {
     const res = mockResponse();
     await handler(
       mockRequest({
-        query: { code: 'auth-code-123' },
+        query: { code: 'auth-code-123', state: 'valid-state' },
         headers: { host: 'example.com' },
       }),
       res,
@@ -81,7 +118,7 @@ describe('GET /api/auth/callback', () => {
     const res = mockResponse();
     await handler(
       mockRequest({
-        query: { code: 'auth-code-123' },
+        query: { code: 'auth-code-123', state: 'valid-state' },
         headers: { host: 'myapp.vercel.app' },
       }),
       res,
@@ -109,7 +146,7 @@ describe('GET /api/auth/callback', () => {
     const res = mockResponse();
     await handler(
       mockRequest({
-        query: { code: 'auth-code-123' },
+        query: { code: 'auth-code-123', state: 'valid-state' },
         headers: { host: 'localhost:3000' },
       }),
       res,
@@ -128,7 +165,7 @@ describe('GET /api/auth/callback', () => {
     const res = mockResponse();
     await handler(
       mockRequest({
-        query: { code: 'my-code' },
+        query: { code: 'my-code', state: 'valid-state' },
         headers: { host: 'myapp.vercel.app' },
       }),
       res,

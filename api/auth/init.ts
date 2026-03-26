@@ -13,20 +13,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getAuthUrl } from '../_lib/schwab.js';
 import { rejectIfRateLimited } from '../_lib/api-helpers.js';
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/auth/init');
     const done = metrics.request('/api/auth/init');
     try {
-      const rateLimited = await rejectIfRateLimited(
-        req,
-        res,
-        'auth-init',
-        5,
-      );
+      const rateLimited = await rejectIfRateLimited(req, res, 'auth-init', 5);
       if (rateLimited) {
         done({ status: 429 });
         return;

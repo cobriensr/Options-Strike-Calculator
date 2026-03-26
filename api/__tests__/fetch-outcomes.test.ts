@@ -82,6 +82,7 @@ describe('fetch-outcomes handler', () => {
     vi.resetAllMocks();
     process.env = { ...originalEnv };
     vi.setSystemTime(CLOSE_WINDOW_TIME);
+    process.env.CRON_SECRET = 'test-secret';
   });
 
   afterEach(() => {
@@ -134,7 +135,11 @@ describe('fetch-outcomes handler', () => {
 
   it('skips when outside post-close window and force is not set', async () => {
     vi.setSystemTime(OUTSIDE_WINDOW_TIME);
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -147,7 +152,11 @@ describe('fetch-outcomes handler', () => {
 
   it('skips on weekends even during the right time', async () => {
     vi.setSystemTime(WEEKEND_TIME);
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -160,7 +169,11 @@ describe('fetch-outcomes handler', () => {
     mockedSchwabFetch.mockResolvedValueOnce(makeQuotesResponse());
     mockSaveOutcome.mockResolvedValueOnce(undefined);
 
-    const req = mockRequest({ method: 'GET', query: { force: 'true' } });
+    const req = mockRequest({
+      method: 'GET',
+      query: { force: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -175,7 +188,11 @@ describe('fetch-outcomes handler', () => {
     mockedSchwabFetch.mockResolvedValueOnce(makeQuotesResponse(20, 16));
     mockSaveOutcome.mockResolvedValueOnce(undefined);
 
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -208,7 +225,11 @@ describe('fetch-outcomes handler', () => {
   it('returns 502 when intraday schwabFetch fails', async () => {
     mockedSchwabFetch.mockResolvedValueOnce({ error: 'Schwab API down' });
 
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -232,7 +253,11 @@ describe('fetch-outcomes handler', () => {
     ];
     mockedSchwabFetch.mockResolvedValueOnce(makeIntradayResponse(staleCandles));
 
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -246,7 +271,11 @@ describe('fetch-outcomes handler', () => {
     mockedSchwabFetch.mockResolvedValueOnce({ error: 'VIX unavailable' });
     mockSaveOutcome.mockResolvedValueOnce(undefined);
 
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -271,12 +300,16 @@ describe('fetch-outcomes handler', () => {
     mockedSchwabFetch.mockResolvedValueOnce(makeQuotesResponse());
     mockSaveOutcome.mockRejectedValueOnce(new Error('DB connection lost'));
 
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'DB connection lost' });
+    expect(res._json).toEqual({ error: 'Internal error' });
   });
 
   // ── Backfill mode ─────────────────────────────────────────
@@ -379,7 +412,7 @@ describe('fetch-outcomes handler', () => {
       const req = mockRequest({
         method: 'GET',
         query: { backfill: 'true' },
-        headers: {},
+        headers: { authorization: 'Bearer test-secret' },
       });
       const res = mockResponse();
       await handler(req, res);
@@ -411,7 +444,7 @@ describe('fetch-outcomes handler', () => {
       const req = mockRequest({
         method: 'GET',
         query: { backfill: 'true' },
-        headers: {},
+        headers: { authorization: 'Bearer test-secret' },
       });
       const res = mockResponse();
       await handler(req, res);
@@ -438,7 +471,7 @@ describe('fetch-outcomes handler', () => {
       const req = mockRequest({
         method: 'GET',
         query: { backfill: 'true' },
-        headers: {},
+        headers: { authorization: 'Bearer test-secret' },
       });
       const res = mockResponse();
       await handler(req, res);

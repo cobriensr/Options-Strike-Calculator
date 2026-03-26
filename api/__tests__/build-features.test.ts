@@ -31,6 +31,7 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
     vi.setSystemTime(POST_CLOSE_TIME);
+    process.env.CRON_SECRET = 'test-secret';
   });
 
   afterEach(() => {
@@ -62,23 +63,23 @@ describe('build-features handler', () => {
     expect(res._json).toEqual({ error: 'Unauthorized' });
   });
 
-  it('allows request when no CRON_SECRET is set', async () => {
+  it('returns 401 when CRON_SECRET is not set', async () => {
     delete process.env.CRON_SECRET;
-    // Backfill with no dates returns successfully
-    const req = mockRequest({
-      method: 'GET',
-      query: { backfill: 'true' },
-    });
+    const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
     await handler(req, res);
-    expect(res._status).toBe(200);
+    expect(res._status).toBe(401);
   });
 
   // ── Time window ───────────────────────────────────────────
 
   it('skips when outside post-close window (not backfill)', async () => {
     vi.setSystemTime(OUTSIDE_WINDOW_TIME);
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -90,7 +91,11 @@ describe('build-features handler', () => {
 
   it('skips on weekends (not backfill)', async () => {
     vi.setSystemTime(WEEKEND_TIME);
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -110,6 +115,7 @@ describe('build-features handler', () => {
     const req = mockRequest({
       method: 'GET',
       query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
     await handler(req, res);
@@ -132,7 +138,11 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([{ date: '2026-03-24' }]);
     // Remaining calls default to []
 
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -152,7 +162,11 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([{ cnt: '5' }]);
     // Remaining calls default to []
 
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -187,6 +201,7 @@ describe('build-features handler', () => {
     const req = mockRequest({
       method: 'GET',
       query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
     await handler(req, res);
@@ -217,6 +232,7 @@ describe('build-features handler', () => {
     const req = mockRequest({
       method: 'GET',
       query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
     await handler(req, res);
@@ -240,12 +256,16 @@ describe('build-features handler', () => {
     // SELECT COUNT(*) throws a top-level error
     mockSql.mockRejectedValueOnce(new Error('Connection refused'));
 
-    const req = mockRequest({ method: 'GET', query: {} });
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Connection refused' });
+    expect(res._json).toEqual({ error: 'Internal error' });
   });
 
   // ── Invalid date filtering ────────────────────────────────
@@ -262,6 +282,7 @@ describe('build-features handler', () => {
     const req = mockRequest({
       method: 'GET',
       query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
     await handler(req, res);
@@ -506,7 +527,11 @@ describe('build-features handler', () => {
     // Call 13: extractLabelsForDate — analyses (no review found)
     mockSql.mockResolvedValueOnce([]);
 
-    const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -578,7 +603,11 @@ describe('build-features handler', () => {
     // Call 15: upsertLabels INSERT
     mockSql.mockResolvedValueOnce([]);
 
-    const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -633,7 +662,11 @@ describe('build-features handler', () => {
     // Call 16: upsertLabels
     mockSql.mockResolvedValueOnce([]);
 
-    const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -655,7 +688,11 @@ describe('build-features handler', () => {
     // Call 13: analyses — invalid JSON in full_response
     mockSql.mockResolvedValueOnce([{ id: 55, full_response: '{invalid json' }]);
 
-    const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -671,7 +708,11 @@ describe('build-features handler', () => {
     ]);
     // Remaining calls default to []
 
-    const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -715,7 +756,11 @@ describe('build-features handler', () => {
     // Call 16: upsertLabels
     mockSql.mockResolvedValueOnce([]);
 
-    const req = mockRequest({ method: 'GET', query: { backfill: 'true' } });
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 

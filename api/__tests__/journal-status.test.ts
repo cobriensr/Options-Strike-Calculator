@@ -115,7 +115,7 @@ describe('GET /api/journal/status', () => {
     expect(res._status).toBe(500);
     const json = res._json as Record<string, unknown>;
     expect(json.connected).toBe(false);
-    expect(json.error).toBe('Connection refused');
+    expect(json.error).toBe('Database connection failed');
   });
 
   it('returns generic error for non-Error throws', async () => {
@@ -129,6 +129,8 @@ describe('GET /api/journal/status', () => {
     await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toBe('Unknown error');
+    expect((res._json as { error: string }).error).toBe(
+      'Database connection failed',
+    );
   });
 });

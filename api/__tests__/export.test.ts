@@ -5,6 +5,7 @@ import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfNotOwner: vi.fn(),
+  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
 const mockSql = vi.fn();
@@ -175,7 +176,7 @@ describe('GET /api/ml/export', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'connection refused' });
+    expect(res._json).toEqual({ error: 'Internal error' });
   });
 
   it('returns generic error message for non-Error throws', async () => {
@@ -183,7 +184,7 @@ describe('GET /api/ml/export', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Export failed' });
+    expect(res._json).toEqual({ error: 'Internal error' });
   });
 
   it('passes minFeatureCompleteness and minLabelCompleteness params', async () => {

@@ -65,9 +65,7 @@ describe('schwab', () => {
       mockRedisSet.mockResolvedValue('OK');
       const result = await getAuthUrl('https://example.com/callback');
       expect(result).not.toBeNull();
-      expect(result!.url).toContain(
-        'api.schwabapi.com/v1/oauth/authorize',
-      );
+      expect(result!.url).toContain('api.schwabapi.com/v1/oauth/authorize');
       expect(result!.url).toContain('client_id=my-client-id');
       expect(result!.url).toContain('redirect_uri=');
       expect(result!.url).toContain('response_type=code');

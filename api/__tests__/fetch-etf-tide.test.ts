@@ -44,6 +44,7 @@ describe('fetch-etf-tide handler', () => {
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
+    process.env.CRON_SECRET = 'test-secret';
   });
 
   afterEach(() => {
@@ -105,21 +106,13 @@ describe('fetch-etf-tide handler', () => {
     vi.unstubAllGlobals();
   });
 
-  it('passes auth when CRON_SECRET is not set', async () => {
+  it('returns 401 when CRON_SECRET is not set', async () => {
     delete process.env.CRON_SECRET;
     process.env.UW_API_KEY = 'uwkey';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [] }),
-      }),
-    );
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
     await handler(req, res);
-    expect(res._status).not.toBe(401);
-    vi.unstubAllGlobals();
+    expect(res._status).toBe(401);
   });
 
   // ── Market hours guard ────────────────────────────────────
@@ -127,7 +120,10 @@ describe('fetch-etf-tide handler', () => {
   it('skips when outside market hours (early morning)', async () => {
     vi.setSystemTime(OFF_HOURS_TIME);
     process.env.UW_API_KEY = 'uwkey';
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -140,7 +136,10 @@ describe('fetch-etf-tide handler', () => {
   it('skips on weekends', async () => {
     vi.setSystemTime(WEEKEND_TIME);
     process.env.UW_API_KEY = 'uwkey';
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -151,7 +150,10 @@ describe('fetch-etf-tide handler', () => {
 
   it('returns 500 when UW_API_KEY is not set', async () => {
     delete process.env.UW_API_KEY;
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(500);
@@ -171,7 +173,10 @@ describe('fetch-etf-tide handler', () => {
       }),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -198,7 +203,10 @@ describe('fetch-etf-tide handler', () => {
       }),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -224,7 +232,10 @@ describe('fetch-etf-tide handler', () => {
       }),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -256,7 +267,10 @@ describe('fetch-etf-tide handler', () => {
       }),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -278,7 +292,10 @@ describe('fetch-etf-tide handler', () => {
       vi.fn().mockRejectedValue(new Error('Network error')),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 

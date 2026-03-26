@@ -32,7 +32,9 @@ describe('GET /api/events', () => {
     const res = mockResponse();
     await handler(mockRequest(), res);
     expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toContain('FRED_API_KEY');
+    expect((res._json as { error: string }).error).toBe(
+      'Service temporarily unavailable',
+    );
   });
 
   it('returns cached events from Redis', async () => {

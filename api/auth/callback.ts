@@ -36,9 +36,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const state = req.query.state;
       if (!state || typeof state !== 'string') {
         done({ status: 400 });
-        return res
-          .status(400)
-          .json({ error: 'Missing state parameter' });
+        return res.status(400).json({ error: 'Missing state parameter' });
       }
 
       const validState = await redis.get(`oauth:state:${state}`);

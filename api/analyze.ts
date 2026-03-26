@@ -999,11 +999,9 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     logger.error({ err }, 'analyze unhandled error');
     // Map Anthropic SDK errors to client-friendly messages using typed exceptions
     if (err instanceof Anthropic.RateLimitError) {
-      return res
-        .status(502)
-        .json({
-          error: 'Anthropic rate limit exceeded. Wait a moment and retry.',
-        });
+      return res.status(502).json({
+        error: 'Anthropic rate limit exceeded. Wait a moment and retry.',
+      });
     }
     if (err instanceof Anthropic.AuthenticationError) {
       return res
@@ -1011,11 +1009,9 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         .json({ error: 'Anthropic API authentication error. Check API key.' });
     }
     if (err instanceof Anthropic.APIError) {
-      return res
-        .status(502)
-        .json({
-          error: `Analysis service error (${err.status}). Please retry.`,
-        });
+      return res.status(502).json({
+        error: `Analysis service error (${err.status}). Please retry.`,
+      });
     }
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Analysis failed',

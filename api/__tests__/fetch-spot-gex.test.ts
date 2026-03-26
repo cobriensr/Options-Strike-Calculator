@@ -62,6 +62,7 @@ describe('fetch-spot-gex handler', () => {
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
+    process.env.CRON_SECRET = 'test-secret';
   });
 
   afterEach(() => {
@@ -117,14 +118,13 @@ describe('fetch-spot-gex handler', () => {
     expect(res._status).not.toBe(401);
   });
 
-  it('passes auth when CRON_SECRET is not set', async () => {
+  it('returns 401 when CRON_SECRET is not set', async () => {
     delete process.env.CRON_SECRET;
     process.env.UW_API_KEY = 'uwkey';
-    stubFetch();
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
     await handler(req, res);
-    expect(res._status).not.toBe(401);
+    expect(res._status).toBe(401);
   });
 
   // ── Market hours guard ────────────────────────────────────
@@ -132,7 +132,10 @@ describe('fetch-spot-gex handler', () => {
   it('skips when outside market hours (early morning)', async () => {
     vi.setSystemTime(OFF_HOURS_TIME);
     process.env.UW_API_KEY = 'uwkey';
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -145,7 +148,10 @@ describe('fetch-spot-gex handler', () => {
   it('skips on weekends', async () => {
     vi.setSystemTime(WEEKEND_TIME);
     process.env.UW_API_KEY = 'uwkey';
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
@@ -156,7 +162,10 @@ describe('fetch-spot-gex handler', () => {
 
   it('returns 500 when UW_API_KEY is not set', async () => {
     delete process.env.UW_API_KEY;
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(500);
@@ -169,7 +178,10 @@ describe('fetch-spot-gex handler', () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([makeSpotRow()]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -192,7 +204,10 @@ describe('fetch-spot-gex handler', () => {
       makeSpotRow({ start_time: '2026-03-24T14:05:00.000Z', price: '5760.00' }),
     ]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -209,7 +224,10 @@ describe('fetch-spot-gex handler', () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -227,7 +245,10 @@ describe('fetch-spot-gex handler', () => {
     delete (row as Record<string, unknown>).start_time;
     stubFetch([row]);
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
@@ -249,12 +270,15 @@ describe('fetch-spot-gex handler', () => {
       }),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: expect.stringContaining('500') });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
   it('returns 500 when API returns 429', async () => {
@@ -268,12 +292,15 @@ describe('fetch-spot-gex handler', () => {
       }),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: expect.stringContaining('429') });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
   it('returns 500 when fetch throws', async () => {
@@ -283,12 +310,15 @@ describe('fetch-spot-gex handler', () => {
       vi.fn().mockRejectedValue(new Error('Network error')),
     );
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Network error' });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
   it('returns 500 when DB insert throws', async () => {
@@ -296,11 +326,14 @@ describe('fetch-spot-gex handler', () => {
     stubFetch([makeSpotRow()]);
     mockSql.mockRejectedValue(new Error('DB connection lost'));
 
-    const req = mockRequest({ method: 'GET', headers: {} });
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'DB connection lost' });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 });

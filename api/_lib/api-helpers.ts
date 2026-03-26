@@ -120,7 +120,7 @@ export async function isRateLimited(
   try {
     const redisKey = `ratelimit:${key}`;
     const count = await redis.incr(redisKey);
-    await redis.expire(redisKey, 60);
+    if (count === 1) await redis.expire(redisKey, 60);
     return count > maxPerMinute;
   } catch {
     return false; // fail open
