@@ -11,7 +11,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
 import { metrics } from './sentry.js';
-import { getMarketCloseHourET } from '../../src/data/eventCalendar.js';
+import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
   getETTime,
   getETDayOfWeek,

@@ -101,11 +101,15 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 // --- Validation mock (safeParse must return { success: true, data } with the body) ---
-vi.mock('../_lib/validation.js', () => ({
-  analyzeBodySchema: {
-    safeParse: vi.fn((input: unknown) => ({ success: true, data: input })),
-  },
-}));
+vi.mock('../_lib/validation.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/validation.js')>();
+  return {
+    ...actual,
+    analyzeBodySchema: {
+      safeParse: vi.fn((input: unknown) => ({ success: true, data: input })),
+    },
+  };
+});
 
 // --- Anthropic SDK mock ---
 // Cron handler uses `anthropic.messages.stream().finalMessage()`
@@ -116,7 +120,39 @@ const mockStream = vi.fn().mockReturnValue({ finalMessage: mockFinalMessage });
 
 vi.mock('@anthropic-ai/sdk', () => {
   class MockAnthropic {
-    messages = { create: mockCreate, stream: mockStream };
+    // Use getter — module-level `new Anthropic()` runs at import time,
+    // before `mockCreate`/`mockStream` are initialized. Lazy access avoids the TDZ error.
+    get messages() {
+      return { create: mockCreate, stream: mockStream };
+    }
+  }
+  class BadRequestError extends Error {
+    status = 400;
+    constructor(message = 'Bad request') {
+      super(message);
+      this.name = 'BadRequestError';
+    }
+  }
+  class AuthenticationError extends Error {
+    status = 401;
+    constructor(message = 'Auth error') {
+      super(message);
+      this.name = 'AuthenticationError';
+    }
+  }
+  class PermissionDeniedError extends Error {
+    status = 403;
+    constructor(message = 'Forbidden') {
+      super(message);
+      this.name = 'PermissionDeniedError';
+    }
+  }
+  class RateLimitError extends Error {
+    status = 429;
+    constructor(message = 'Rate limited') {
+      super(message);
+      this.name = 'RateLimitError';
+    }
   }
   class APIError extends Error {
     status: number;
@@ -126,7 +162,14 @@ vi.mock('@anthropic-ai/sdk', () => {
       this.name = 'APIError';
     }
   }
-  return { default: MockAnthropic, APIError };
+  return {
+    default: MockAnthropic,
+    BadRequestError,
+    AuthenticationError,
+    PermissionDeniedError,
+    RateLimitError,
+    APIError,
+  };
 });
 
 // ============================================================
@@ -390,19 +433,17 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
       }),
     ]);
 
-    // Verify the system prompt passed to Anthropic contains the lessons block
+    // Verify lessons are injected as a separate (uncached) system block
     const streamParams = mockStream.mock.calls[0]![0];
-    const systemText = streamParams.system[0].text;
-    expect(systemText).toContain('<lessons_learned>');
-    expect(systemText).toContain(LESSON_TEXT);
-    expect(systemText).toContain('</lessons_learned>');
-
-    // Verify lessons block is positioned between structure_selection_rules and data_handling
-    const lessonsIdx = systemText.indexOf('<lessons_learned>');
-    const structureEnd = systemText.indexOf('</structure_selection_rules>');
-    const dataHandling = systemText.indexOf('<data_handling>');
-    expect(lessonsIdx).toBeGreaterThan(structureEnd);
-    expect(lessonsIdx).toBeLessThan(dataHandling);
+    expect(streamParams.system).toHaveLength(2);
+    // Block 0: stable prompt (cached), block 1: lessons (uncached)
+    expect(streamParams.system[0].text).toContain(
+      '</structure_selection_rules>',
+    );
+    expect(streamParams.system[0].text).toContain('<data_handling>');
+    expect(streamParams.system[1].text).toContain('<lessons_learned>');
+    expect(streamParams.system[1].text).toContain(LESSON_TEXT);
+    expect(streamParams.system[1].text).toContain('</lessons_learned>');
   });
 
   // ── Contract verification: cron output shape matches analyze input shape ──

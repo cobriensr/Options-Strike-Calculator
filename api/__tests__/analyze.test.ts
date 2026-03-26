@@ -43,9 +43,6 @@ const mockFinalMessage = vi.fn();
 const mockStream = vi.fn().mockReturnValue({ finalMessage: mockFinalMessage });
 
 vi.mock('@anthropic-ai/sdk', () => {
-  class MockAnthropic {
-    messages = { stream: mockStream };
-  }
   class APIError extends Error {
     status: number;
     constructor(status: number, message: string) {
@@ -54,10 +51,67 @@ vi.mock('@anthropic-ai/sdk', () => {
       this.name = 'APIError';
     }
   }
-  return { default: MockAnthropic, APIError };
+  class BadRequestError extends APIError {
+    constructor(message = 'Bad request') {
+      super(400, message);
+      this.name = 'BadRequestError';
+    }
+  }
+  class AuthenticationError extends APIError {
+    constructor(message = 'Auth error') {
+      super(401, message);
+      this.name = 'AuthenticationError';
+    }
+  }
+  class PermissionDeniedError extends APIError {
+    constructor(message = 'Forbidden') {
+      super(403, message);
+      this.name = 'PermissionDeniedError';
+    }
+  }
+  class RateLimitError extends APIError {
+    constructor(message = 'Rate limited') {
+      super(429, message);
+      this.name = 'RateLimitError';
+    }
+  }
+
+  // Expose to tests via globalThis — vi.mock is hoisted above all declarations,
+  // so we cannot use module-scope variables. globalThis is always available.
+  (globalThis as Record<string, unknown>).__MockErrors = {
+    APIError,
+    RateLimitError,
+    AuthenticationError,
+  };
+
+  class MockAnthropic {
+    get messages() {
+      return { stream: mockStream };
+    }
+    static readonly BadRequestError = BadRequestError;
+    static readonly AuthenticationError = AuthenticationError;
+    static readonly PermissionDeniedError = PermissionDeniedError;
+    static readonly RateLimitError = RateLimitError;
+    static readonly APIError = APIError;
+  }
+
+  return {
+    default: MockAnthropic,
+    BadRequestError,
+    AuthenticationError,
+    PermissionDeniedError,
+    RateLimitError,
+    APIError,
+  };
 });
 
 import handler from '../analyze.js';
+
+const MockErrors = (globalThis as Record<string, unknown>).__MockErrors as {
+  APIError: new (status: number, message: string) => Error;
+  RateLimitError: new (message?: string) => Error;
+  AuthenticationError: new (message?: string) => Error;
+};
 import {
   rejectIfNotOwner,
   rejectIfRateLimited,
@@ -130,6 +184,7 @@ function makeSDKResponse(analysis: Record<string, unknown>) {
   return {
     content: [{ type: 'text', text: JSON.stringify(analysis) }],
     usage: { input_tokens: 100, output_tokens: 200 },
+    stop_reason: 'end_turn',
   };
 }
 
@@ -263,10 +318,9 @@ describe('POST /api/analyze', () => {
 
   it('returns 502 when Anthropic API returns 429', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    const err = Object.assign(new Error('Rate limited'), { status: 429 });
-    mockStream.mockImplementation(() => {
-      throw err;
-    });
+    // Must throw on both Opus and Sonnet attempts to reach the outer catch
+    const err = new MockErrors.RateLimitError('Rate limited');
+    mockFinalMessage.mockRejectedValue(err);
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -294,11 +348,11 @@ describe('POST /api/analyze', () => {
     expect(json.raw).toBe('Not valid JSON response');
   });
 
-  it('strips markdown code fences from Claude response', async () => {
+  it('parses structured output JSON directly', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    const wrapped = '```json\n' + JSON.stringify(SAMPLE_ANALYSIS) + '\n```';
+    // Structured outputs return clean JSON (no markdown fences)
     mockFinalMessage.mockResolvedValue({
-      content: [{ type: 'text', text: wrapped }],
+      content: [{ type: 'text', text: JSON.stringify(SAMPLE_ANALYSIS) }],
       usage: { input_tokens: 100, output_tokens: 200 },
     });
 
@@ -482,10 +536,10 @@ describe('POST /api/analyze', () => {
 
   it('returns correct client message for Anthropic 401', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    const err = Object.assign(new Error('Invalid API key'), { status: 401 });
-    mockStream.mockImplementation(() => {
-      throw err;
-    });
+    // AuthenticationError is non-retryable — re-thrown immediately from Opus, no Sonnet fallback
+    mockFinalMessage.mockRejectedValue(
+      new MockErrors.AuthenticationError('Invalid API key'),
+    );
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -499,12 +553,9 @@ describe('POST /api/analyze', () => {
 
   it('returns correct client message for Anthropic 500', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    const err = Object.assign(new Error('Internal server error'), {
-      status: 500,
-    });
-    mockStream.mockImplementation(() => {
-      throw err;
-    });
+    // APIError 500 triggers Sonnet fallback — must fail on both to reach outer catch
+    const err = new MockErrors.APIError(500, 'Internal server error');
+    mockFinalMessage.mockRejectedValue(err);
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -584,9 +635,8 @@ describe('POST /api/analyze', () => {
 
     // SDK retries are internal (maxRetries: 3). When mockFinalMessage rejects,
     // it means Opus is exhausted — code falls back to Sonnet immediately.
-    const serverErr = Object.assign(new Error('Internal server error'), {
-      status: 500,
-    });
+    // Must be an APIError (not BadRequest/Auth/Permission) to trigger fallback.
+    const serverErr = new MockErrors.APIError(500, 'Internal server error');
     mockFinalMessage
       .mockRejectedValueOnce(serverErr)
       .mockResolvedValueOnce(makeSDKResponse(SAMPLE_ANALYSIS));
@@ -607,7 +657,7 @@ describe('POST /api/analyze', () => {
   it('returns 500 when both Opus and Sonnet fail', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
-    const serverErr = Object.assign(new Error('overloaded'), { status: 529 });
+    const serverErr = new MockErrors.APIError(529, 'overloaded');
     mockFinalMessage
       .mockRejectedValueOnce(serverErr)
       .mockRejectedValueOnce(serverErr);
@@ -639,7 +689,7 @@ describe('POST /api/analyze', () => {
     expect(json.raw).toBe('');
   });
 
-  it('injects lessons_learned block into system prompt when lessons exist', async () => {
+  it('injects lessons_learned block as separate system block', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
@@ -664,18 +714,17 @@ describe('POST /api/analyze', () => {
 
     expect(res._status).toBe(200);
     const params = mockStream.mock.calls[0]![0];
-    const systemText = params.system[0].text;
-    expect(systemText).toContain('<lessons_learned>');
-    expect(systemText).toContain('VIX above 25 means widen wings');
-    // Lessons block should sit between </structure_selection_rules> and <data_handling>
-    const lessonsIdx = systemText.indexOf('<lessons_learned>');
-    const structureEnd = systemText.indexOf('</structure_selection_rules>');
-    const dataHandling = systemText.indexOf('<data_handling>');
-    expect(lessonsIdx).toBeGreaterThan(structureEnd);
-    expect(lessonsIdx).toBeLessThan(dataHandling);
+    // Lessons are in a separate system block (uncached) after the stable block (cached)
+    expect(params.system).toHaveLength(2);
+    expect(params.system[0].text).toContain('</structure_selection_rules>');
+    expect(params.system[0].text).toContain('<data_handling>');
+    expect(params.system[0].cache_control).toBeDefined();
+    expect(params.system[1].text).toContain('<lessons_learned>');
+    expect(params.system[1].text).toContain('VIX above 25 means widen wings');
+    expect(params.system[1].cache_control).toBeUndefined();
   });
 
-  it('omits lessons_learned block when no lessons exist', async () => {
+  it('omits lessons block when no lessons exist', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
@@ -688,11 +737,10 @@ describe('POST /api/analyze', () => {
 
     expect(res._status).toBe(200);
     const params = mockStream.mock.calls[0]![0];
-    const systemText = params.system[0].text;
-    expect(systemText).not.toContain('<lessons_learned>');
-    // Structure rules and data handling should still be present
-    expect(systemText).toContain('</structure_selection_rules>');
-    expect(systemText).toContain('<data_handling>');
+    // Only one system block (the cached stable prompt) when no lessons
+    expect(params.system).toHaveLength(1);
+    expect(params.system[0].text).toContain('</structure_selection_rules>');
+    expect(params.system[0].text).toContain('<data_handling>');
   });
 
   it('continues analysis when flow data fetch throws', async () => {
@@ -1005,15 +1053,17 @@ describe('POST /api/analyze', () => {
     expect(contextBlock).toContain('VIX data delayed by 15 minutes');
   });
 
-  // ── JSON repair for truncated responses ───────────────────
+  // ── Truncated JSON returns null (structured outputs prevent this in practice) ──
 
-  it('repairs truncated JSON with unbalanced braces', async () => {
+  it('returns null analysis for truncated JSON', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    // Truncated JSON — missing closing brace
+    // Truncated JSON — structured outputs prevents this, but if max_tokens
+    // is hit the response may be incomplete
     const truncated = '{"structure":"IRON CONDOR","confidence":"HIGH"';
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: truncated }],
       usage: { input_tokens: 100, output_tokens: 50 },
+      stop_reason: 'max_tokens',
     });
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
@@ -1021,26 +1071,9 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: { structure: string } };
-    expect(json.analysis.structure).toBe('IRON CONDOR');
-  });
-
-  it('repairs truncated JSON with unbalanced quotes and brackets', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    // Truncated mid-string with open array
-    const truncated = '{"observations":["NCP at +50M","NPP at -40M';
-    mockFinalMessage.mockResolvedValue({
-      content: [{ type: 'text', text: truncated }],
-      usage: { input_tokens: 100, output_tokens: 50 },
-    });
-
-    const req = mockRequest({ method: 'POST', body: makeBody() });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    const json = res._json as { analysis: { observations: string[] } };
-    expect(json.analysis.observations).toContain('NCP at +50M');
+    const json = res._json as { analysis: null; raw: string };
+    expect(json.analysis).toBeNull();
+    expect(json.raw).toBe(truncated);
   });
 
   // ── Snapshot ID lookup ────────────────────────────────────
@@ -1077,7 +1110,7 @@ describe('POST /api/analyze', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
     // First stream() call throws (overloaded), second returns normally
-    const overloaded = Object.assign(new Error('overloaded'), { status: 529 });
+    const overloaded = new MockErrors.APIError(529, 'overloaded');
     mockStream
       .mockImplementationOnce(() => {
         throw overloaded;

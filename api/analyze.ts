@@ -16,6 +16,7 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
+import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import {
   rejectIfNotOwner,
   rejectIfRateLimited,
@@ -40,12 +41,30 @@ import {
   formatAllExpiryStrikesForClaude,
   formatGreekFlowForClaude,
 } from './_lib/db-strike-helpers.js';
-import { analyzeBodySchema } from './_lib/validation.js';
+import {
+  analyzeBodySchema,
+  analysisResponseSchema,
+  type AnalysisResponse,
+} from './_lib/validation.js';
 import logger from './_lib/logger.js';
 import { getActiveLessons, formatLessonsBlock } from './_lib/lessons.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
+
+// Module-level singleton — reads ANTHROPIC_API_KEY from env on first API call.
+// Reused across requests for connection pooling.
+const anthropic = new Anthropic({
+  timeout: 720_000, // 12 minutes — Opus with adaptive thinking can take 5+ min
+  maxRetries: 3, // SDK retries with exponential backoff (0.5s → 1s → 2s)
+});
+
+type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+
+// Pre-compute structured output format — schema compiled once, cached 24h server-side
+const analysisOutputFormat = zodOutputFormat(analysisResponseSchema);
+
+type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
 // ============================================================
 // SYSTEM PROMPT
@@ -582,8 +601,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 429 });
     return;
   }
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  if (!process.env.ANTHROPIC_API_KEY) {
     done({ status: 500, error: 'missing_api_key' });
     return res.status(500).json({ error: 'Server configuration error' });
   }
@@ -597,7 +615,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const { images, context } = parsed.data;
   // Build the user message with images + context
-  const content: Array<Record<string, unknown>> = [];
+  const content: Array<
+    | { type: 'text'; text: string }
+    | {
+        type: 'image';
+        source: {
+          type: 'base64';
+          media_type: ImageMediaType;
+          data: string;
+        };
+      }
+  > = [];
   // Add each image with its label
   for (let idx = 0; idx < images.length; idx++) {
     const img = images[idx]!;
@@ -610,7 +638,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         type: 'image',
         source: {
           type: 'base64',
-          media_type: img.mediaType,
+          media_type: img.mediaType as ImageMediaType,
           data: img.data,
         },
       },
@@ -803,39 +831,36 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     // Non-fatal — analysis works without lessons
   }
 
-  // Build the system prompt text (shared between Opus and Sonnet)
-  const systemText = lessonsBlock
-    ? SYSTEM_PROMPT_PART1 +
-      '\n \n' +
-      lessonsBlock +
-      '\n \n' +
-      SYSTEM_PROMPT_PART2
-    : SYSTEM_PROMPT_PART1 + '\n \n' + SYSTEM_PROMPT_PART2;
+  // Stable system prompt (cached 1h) — lessons appended outside cache boundary
+  const stableSystemText = SYSTEM_PROMPT_PART1 + '\n \n' + SYSTEM_PROMPT_PART2;
 
   const analyzeStart = Date.now();
   try {
-    const anthropic = new Anthropic({
-      apiKey,
-      timeout: 720_000, // 12 minutes — Opus with adaptive thinking can take 5+ min
-      maxRetries: 3, // SDK retries with exponential backoff (0.5s → 1s → 2s)
-    });
     // Stream the response — Anthropic sends headers immediately with streaming,
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
     // The SDK handles transient retries (429, 5xx, connection errors) internally.
     // Our wrapper only handles the Opus → Sonnet model fallback.
-    const streamRequest = (model: string, maxTokens: number, effort: string) =>
+    const streamRequest = (
+      model: string,
+      maxTokens: number,
+      effort: EffortLevel,
+    ) =>
       anthropic.messages
         .stream({
           model,
           max_tokens: maxTokens,
           thinking: { type: 'adaptive' },
-          output_config: { effort },
+          output_config: { effort, format: analysisOutputFormat },
           system: [
             {
               type: 'text' as const,
-              text: systemText,
+              text: stableSystemText,
               cache_control: { type: 'ephemeral', ttl: '1h' },
             },
+            // Lessons change more frequently — kept outside cache boundary
+            ...(lessonsBlock
+              ? [{ type: 'text' as const, text: lessonsBlock }]
+              : []),
           ],
           messages: [{ role: 'user' as const, content }],
         } as unknown as Parameters<typeof anthropic.messages.stream>[0])
@@ -845,11 +870,17 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     try {
       data = await streamRequest('claude-opus-4-6', 128000, 'high');
     } catch (opusErr) {
-      // SDK already retried 3× with backoff. If we're here, Opus is genuinely down.
-      // Fall back to Sonnet with higher token budget and reduced effort.
+      // Only fall back on availability issues — request errors won't succeed on any model
+      if (
+        opusErr instanceof Anthropic.BadRequestError ||
+        opusErr instanceof Anthropic.AuthenticationError ||
+        opusErr instanceof Anthropic.PermissionDeniedError
+      ) {
+        throw opusErr;
+      }
       logger.info(
         { err: opusErr },
-        'Opus exhausted SDK retries, falling back to Sonnet 4.6',
+        'Opus unavailable, falling back to Sonnet 4.6',
       );
       usedModel = 'claude-sonnet-4-6';
       data = await streamRequest('claude-sonnet-4-6', 64000, 'high');
@@ -868,6 +899,27 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         },
         'analyze usage',
       );
+      // Alert on cache misses — helps catch silent invalidators
+      if (
+        u.cache_read_input_tokens === 0 &&
+        (u.cache_creation_input_tokens ?? 0) > 0
+      ) {
+        logger.warn(
+          { model: usedModel },
+          'Cache miss on system prompt — prefix may have changed',
+        );
+      }
+    }
+    // Check stop reason before parsing
+    if (data.stop_reason === 'refusal') {
+      logger.warn({ model: usedModel }, 'Claude refused analysis request');
+      done({ status: 422 });
+      return res
+        .status(422)
+        .json({ error: 'Analysis request was refused by the model.' });
+    }
+    if (data.stop_reason === 'max_tokens') {
+      logger.warn({ model: usedModel }, 'Response truncated at max_tokens');
     }
     // Filter to text blocks only — thinking blocks are excluded
     const text =
@@ -875,38 +927,16 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
         ?.filter((c) => c.type === 'text')
         .map((c) => ('text' in c ? c.text : ''))
         .join('') ?? '';
-    // Parse the JSON response
-    let analysis: Record<string, unknown> | null = null;
+    // Structured outputs guarantees valid JSON matching the schema —
+    // no repair code needed. Simple JSON.parse suffices.
+    let analysis: AnalysisResponse | null = null;
     try {
-      const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
-      analysis = JSON.parse(cleaned);
+      analysis = JSON.parse(text);
     } catch {
-      // JSON parse failed — attempt repair on truncated responses
-      try {
-        const cleaned = text.replaceAll(/```json\s*|```\s*/g, '').trim();
-        let repaired = cleaned;
-        // If truncated mid-string, close the string
-        const quoteCount = (repaired.match(/(?<!\\)"/g) || []).length;
-        if (quoteCount % 2 !== 0) repaired += '"';
-        // Close open brackets/braces by counting unmatched openers
-        const stack: string[] = [];
-        for (const ch of repaired) {
-          if (ch === '{' || ch === '[') stack.push(ch);
-          else if (ch === '}' || ch === ']') stack.pop();
-        }
-        // Close in reverse order
-        while (stack.length > 0) {
-          const opener = stack.pop();
-          repaired += opener === '{' ? '}' : ']';
-        }
-        analysis = JSON.parse(repaired);
-        logger.info(
-          { closedBrackets: stack.length },
-          'Repaired truncated JSON response',
-        );
-      } catch {
-        // Repair also failed — will return raw text below
-      }
+      logger.error(
+        { raw: text.slice(0, 500), stopReason: data.stop_reason },
+        'Structured output JSON parse failed',
+      );
     }
     // Save to Postgres before responding (Vercel kills the function after res.json).
     // Retry the save up to 2 extra times — after a long Anthropic retry the first
@@ -967,20 +997,25 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     logger.error({ err }, 'analyze unhandled error');
-    // Map Anthropic SDK errors to client-friendly messages
-    if (
-      err instanceof Error &&
-      'status' in err &&
-      typeof (err as Record<string, unknown>).status === 'number'
-    ) {
-      const status = (err as Record<string, unknown>).status as number;
-      const clientMsg =
-        status === 429
-          ? 'Anthropic rate limit exceeded. Wait a moment and retry.'
-          : status === 401
-            ? 'Anthropic API authentication error. Check API key.'
-            : `Analysis service error (${status}). Please retry.`;
-      return res.status(502).json({ error: clientMsg });
+    // Map Anthropic SDK errors to client-friendly messages using typed exceptions
+    if (err instanceof Anthropic.RateLimitError) {
+      return res
+        .status(502)
+        .json({
+          error: 'Anthropic rate limit exceeded. Wait a moment and retry.',
+        });
+    }
+    if (err instanceof Anthropic.AuthenticationError) {
+      return res
+        .status(502)
+        .json({ error: 'Anthropic API authentication error. Check API key.' });
+    }
+    if (err instanceof Anthropic.APIError) {
+      return res
+        .status(502)
+        .json({
+          error: `Analysis service error (${err.status}). Please retry.`,
+        });
     }
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Analysis failed',

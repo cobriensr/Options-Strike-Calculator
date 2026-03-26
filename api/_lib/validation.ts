@@ -115,3 +115,113 @@ export const snapshotBodySchema = z.object({
 });
 
 export type SnapshotBody = z.infer<typeof snapshotBodySchema>;
+
+// ============================================================
+// Analysis response schema (structured output for Claude)
+// ============================================================
+
+const chartConfidenceEntry = z.object({
+  signal: z.string(),
+  confidence: z.enum(['HIGH', 'MODERATE', 'LOW']),
+  note: z.string(),
+});
+
+const entryStep = z.object({
+  timing: z.string().nullable(),
+  condition: z.string().nullable(),
+  sizePercent: z.number(),
+  delta: z.number(),
+  structure: z.string(),
+  note: z.string(),
+});
+
+export const analysisResponseSchema = z.object({
+  mode: z.enum(['entry', 'midday', 'review']),
+  structure: z.enum([
+    'IRON CONDOR',
+    'PUT CREDIT SPREAD',
+    'CALL CREDIT SPREAD',
+    'SIT OUT',
+  ]),
+  confidence: z.enum(['HIGH', 'MODERATE', 'LOW']),
+  suggestedDelta: z.number().nullable(),
+  reasoning: z.string(),
+  chartConfidence: z.object({
+    marketTide: chartConfidenceEntry,
+    spxNetFlow: chartConfidenceEntry,
+    spyNetFlow: chartConfidenceEntry,
+    qqqNetFlow: chartConfidenceEntry,
+    periscope: chartConfidenceEntry,
+    netCharm: chartConfidenceEntry,
+    aggregateGex: chartConfidenceEntry,
+    periscopeCharm: chartConfidenceEntry,
+  }),
+  observations: z.array(z.string()),
+  strikeGuidance: z
+    .object({
+      putStrikeNote: z.string().nullable(),
+      callStrikeNote: z.string().nullable(),
+      straddleCone: z
+        .object({
+          upper: z.number().nullable(),
+          lower: z.number().nullable(),
+          priceRelation: z.string(),
+        })
+        .nullable(),
+      adjustments: z.array(z.string()),
+    })
+    .nullable(),
+  managementRules: z
+    .object({
+      profitTarget: z.string(),
+      stopConditions: z.array(z.string()),
+      timeRules: z.string(),
+      flowReversalSignal: z.string().nullable(),
+    })
+    .nullable(),
+  entryPlan: z
+    .object({
+      entry1: entryStep.nullable(),
+      entry2: entryStep.nullable(),
+      entry3: entryStep.nullable(),
+      maxTotalSize: z.string(),
+      noEntryConditions: z.array(z.string()),
+    })
+    .nullable(),
+  risks: z.array(z.string()),
+  hedge: z
+    .object({
+      recommendation: z.enum([
+        'NO HEDGE',
+        'PROTECTIVE LONG',
+        'DEBIT SPREAD HEDGE',
+        'REDUCED SIZE',
+        'SKIP',
+      ]),
+      description: z.string().nullable(),
+      rationale: z.string(),
+      estimatedCost: z.string().nullable(),
+    })
+    .nullable(),
+  periscopeNotes: z.string().nullable(),
+  structureRationale: z.string(),
+  review: z
+    .object({
+      wasCorrect: z.boolean(),
+      whatWorked: z.string(),
+      whatMissed: z.string(),
+      optimalTrade: z.string(),
+      lessonsLearned: z.array(z.string()),
+    })
+    .nullable(),
+  imageIssues: z.array(
+    z.object({
+      imageIndex: z.number(),
+      label: z.string(),
+      issue: z.string(),
+      suggestion: z.string(),
+    }),
+  ),
+});
+
+export type AnalysisResponse = z.infer<typeof analysisResponseSchema>;
