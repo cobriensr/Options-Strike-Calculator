@@ -1697,3 +1697,66 @@ function fmtGex(value: number): string {
   if (abs === 0) return '0';
   return `${sign}${abs.toFixed(0)}`;
 }
+
+// ============================================================
+// VIX OHLC FROM SNAPSHOTS
+// ============================================================
+
+/**
+ * Parse an entry_time string like "9:35 AM" or "3:00 PM" to minutes
+ * since midnight for chronological sorting.
+ */
+function parseEntryTimeMinutes(t: string): number {
+  const m = t.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+  if (!m) return NaN;
+  let h = parseInt(m[1]!, 10);
+  const min = parseInt(m[2]!, 10);
+  const isPm = m[3]!.toUpperCase() === 'PM';
+  if (isPm && h !== 12) h += 12;
+  else if (!isPm && h === 12) h = 0;
+  return h * 60 + min;
+}
+
+/**
+ * Derive VIX OHLC for a given date from recorded market_snapshots.
+ * open  = VIX at the earliest snapshot
+ * close = VIX at the latest snapshot
+ * high  = MAX(vix) across all snapshots
+ * low   = MIN(vix) across all snapshots
+ * Returns null if no snapshots exist for the date.
+ */
+export async function getVixOhlcFromSnapshots(date: string): Promise<{
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  count: number;
+} | null> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT entry_time, vix::text AS vix
+    FROM market_snapshots
+    WHERE date = ${date} AND vix IS NOT NULL
+  `;
+
+  if (rows.length === 0) return null;
+
+  const sorted = rows
+    .map((r) => ({
+      t: parseEntryTimeMinutes((r as { entry_time: string }).entry_time),
+      vix: Number((r as { vix: string }).vix),
+    }))
+    .filter((r) => !isNaN(r.t) && !isNaN(r.vix))
+    .sort((a, b) => a.t - b.t);
+
+  if (sorted.length === 0) return null;
+
+  const viixes = sorted.map((r) => r.vix);
+  return {
+    open: sorted[0]!.vix,
+    close: sorted[sorted.length - 1]!.vix,
+    high: Math.max(...viixes),
+    low: Math.min(...viixes),
+    count: sorted.length,
+  };
+}

@@ -26,6 +26,7 @@ import {
   formatGreekExposureForClaude,
   getSpotExposures,
   formatSpotExposuresForClaude,
+  getVixOhlcFromSnapshots,
 } from '../_lib/db.js';
 import type { GreekExposureRow, SpotExposureRow } from '../_lib/db.js';
 import { neon } from '@neondatabase/serverless';
@@ -1419,6 +1420,87 @@ describe('db.ts', () => {
 
       expect(result).not.toContain('Intraday Trend');
       expect(result).not.toContain('Recent History');
+    });
+  });
+});
+
+describe('getVixOhlcFromSnapshots', () => {
+  beforeEach(() => {
+    _resetDb();
+    process.env.DATABASE_URL = 'postgresql://test';
+    vi.mocked(neon).mockReturnValue(mockSql as never);
+  });
+
+  afterEach(() => {
+    delete process.env.DATABASE_URL;
+    vi.clearAllMocks();
+  });
+
+  it('returns null when no rows exist for the date', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toBeNull();
+  });
+
+  it('returns OHLC computed from multiple snapshot rows', async () => {
+    // Rows in non-chronological text order to verify sort correctness
+    // 10:00 AM, 9:35 AM, 2:30 PM → sorted: 9:35 AM, 10:00 AM, 2:30 PM
+    mockSql.mockResolvedValueOnce([
+      { entry_time: '10:00 AM', vix: '18.50' },
+      { entry_time: '9:35 AM', vix: '17.80' },
+      { entry_time: '2:30 PM', vix: '19.20' },
+    ]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toEqual({
+      open: 17.80, // earliest: 9:35 AM
+      high: 19.20, // max
+      low: 17.80, // min
+      close: 19.20, // latest: 2:30 PM
+      count: 3,
+    });
+  });
+
+  it('handles a single snapshot row', async () => {
+    mockSql.mockResolvedValueOnce([
+      { entry_time: '10:00 AM', vix: '18.50' },
+    ]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toEqual({
+      open: 18.50,
+      high: 18.50,
+      low: 18.50,
+      close: 18.50,
+      count: 1,
+    });
+  });
+
+  it('handles 12:00 PM (noon) correctly — not midnight', async () => {
+    mockSql.mockResolvedValueOnce([
+      { entry_time: '11:30 AM', vix: '17.00' },
+      { entry_time: '12:00 PM', vix: '18.00' },
+    ]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toEqual({
+      open: 17.00,
+      high: 18.00,
+      low: 17.00,
+      close: 18.00,
+      count: 2,
+    });
+  });
+
+  it('handles 12:00 AM (midnight) edge case', async () => {
+    mockSql.mockResolvedValueOnce([
+      { entry_time: '12:00 AM', vix: '15.00' },
+      { entry_time: '9:30 AM', vix: '16.00' },
+    ]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toEqual({
+      open: 15.00,
+      high: 16.00,
+      low: 15.00,
+      close: 16.00,
+      count: 2,
     });
   });
 });
