@@ -313,6 +313,23 @@ describe('DateTimeSection', () => {
       });
       expect(screen.getByRole('alert')).toHaveTextContent('Time out of range');
     });
+
+    it('hour and minute selects reference time error via aria-describedby', () => {
+      renderSection({ errors: { time: 'Before market open' } });
+      const hourSelect = screen.getByLabelText('Hour');
+      const minuteSelect = screen.getByLabelText('Minute');
+      expect(hourSelect).toHaveAttribute('aria-describedby', 'err-time');
+      expect(minuteSelect).toHaveAttribute('aria-describedby', 'err-time');
+      expect(screen.getByRole('alert')).toHaveTextContent('Before market open');
+    });
+
+    it('hour and minute selects have no aria-describedby when no time error', () => {
+      renderSection({ errors: {} });
+      const hourSelect = screen.getByLabelText('Hour');
+      const minuteSelect = screen.getByLabelText('Minute');
+      expect(hourSelect).not.toHaveAttribute('aria-describedby');
+      expect(minuteSelect).not.toHaveAttribute('aria-describedby');
+    });
   });
 
   describe('EventDayWarning', () => {

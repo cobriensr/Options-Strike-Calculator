@@ -65,6 +65,22 @@ describe('SpotPriceSection', () => {
     expect(screen.queryByText('Invalid price')).not.toBeInTheDocument();
   });
 
+  it('SPY input references its error via aria-describedby when invalid', () => {
+    render(
+      <SpotPriceSection {...defaults({ errors: { spot: 'Invalid price' } })} />,
+    );
+    const input = screen.getByLabelText(/SPY Price/);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute('aria-describedby', 'spot-err');
+    expect(screen.getByRole('alert')).toHaveTextContent('Invalid price');
+  });
+
+  it('SPY input has no aria-describedby when no error', () => {
+    render(<SpotPriceSection {...defaults()} />);
+    const input = screen.getByLabelText(/SPY Price/);
+    expect(input).not.toHaveAttribute('aria-describedby');
+  });
+
   it('shows derived ratio when spxDirectActive=true and dSpot is valid', () => {
     render(
       <SpotPriceSection

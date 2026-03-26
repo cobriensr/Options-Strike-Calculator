@@ -778,6 +778,22 @@ describe('AdvancedSection', () => {
     ).toBeInTheDocument();
   });
 
+  it('VIX data error is announced via role="alert"', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showIC: true,
+          vixDataLoaded: true,
+          selectedDate: '2026-03-15',
+          vixOHLC: null,
+        })}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'No VIX data found for this date',
+    );
+  });
+
   it('does not show error when vixDataLoaded is false', () => {
     render(
       <AdvancedSection

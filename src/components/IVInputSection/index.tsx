@@ -108,6 +108,7 @@ export default function IVInputSection({
               value={vixInput}
               onChange={(e) => onVixChange(e.target.value)}
               aria-invalid={!!errors['vix']}
+              aria-describedby={errors['vix'] ? 'err-vix' : undefined}
               className={inputCls}
             />
           </div>
@@ -134,7 +135,11 @@ export default function IVInputSection({
               value={multiplier}
               onChange={(e) => onMultiplierChange(e.target.value)}
               aria-invalid={!!errors['multiplier']}
-              aria-describedby="adj-tooltip-content"
+              aria-describedby={
+                errors['multiplier']
+                  ? 'adj-tooltip-content err-mult'
+                  : 'adj-tooltip-content'
+              }
               className={inputCls}
             />
             <IVTooltip open={tooltipOpen} />
@@ -167,6 +172,7 @@ export default function IVInputSection({
                 value={directIVInput}
                 onChange={(e) => onDirectIVChange(e.target.value)}
                 aria-invalid={!!errors['iv']}
+                aria-describedby={errors['iv'] ? 'err-iv' : undefined}
                 className={inputCls}
               />
             </div>
@@ -192,9 +198,11 @@ export default function IVInputSection({
           </div>
         </div>
       )}
-      {errors['vix'] && <ErrorMsg>{errors['vix']}</ErrorMsg>}
-      {errors['multiplier'] && <ErrorMsg>{errors['multiplier']}</ErrorMsg>}
-      {errors['iv'] && <ErrorMsg>{errors['iv']}</ErrorMsg>}
+      {errors['vix'] && <ErrorMsg id="err-vix">{errors['vix']}</ErrorMsg>}
+      {errors['multiplier'] && (
+        <ErrorMsg id="err-mult">{errors['multiplier']}</ErrorMsg>
+      )}
+      {errors['iv'] && <ErrorMsg id="err-iv">{errors['iv']}</ErrorMsg>}
 
       {/* VIX Regime Card — shown in both VIX and Direct IV modes */}
       {dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && results && (

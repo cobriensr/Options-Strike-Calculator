@@ -182,6 +182,54 @@ describe('IVInputSection', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('VIX input references its error via aria-describedby when invalid', () => {
+    renderSection({ errors: { vix: 'VIX is required' } });
+    const input = screen.getByLabelText('VIX Value');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute('aria-describedby', 'err-vix');
+    expect(screen.getByRole('alert')).toHaveTextContent('VIX is required');
+  });
+
+  it('VIX input has no aria-describedby when no error', () => {
+    renderSection({ errors: {} });
+    const input = screen.getByLabelText('VIX Value');
+    expect(input).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('multiplier input combines tooltip and error in aria-describedby when invalid', () => {
+    renderSection({ errors: { multiplier: 'Invalid multiplier' } });
+    const input = screen.getByLabelText('0DTE Adj.');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute(
+      'aria-describedby',
+      'adj-tooltip-content err-mult',
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('Invalid multiplier');
+  });
+
+  it('multiplier input references only tooltip when no error', () => {
+    renderSection({ errors: {} });
+    const input = screen.getByLabelText('0DTE Adj.');
+    expect(input).toHaveAttribute('aria-describedby', 'adj-tooltip-content');
+  });
+
+  it('Direct IV input references its error via aria-describedby when invalid', () => {
+    renderSection({
+      ivMode: 'direct',
+      errors: { iv: 'IV out of range' },
+    });
+    const input = screen.getByLabelText(/Direct IV/);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute('aria-describedby', 'err-iv');
+    expect(screen.getByRole('alert')).toHaveTextContent('IV out of range');
+  });
+
+  it('Direct IV input has no aria-describedby when no error', () => {
+    renderSection({ ivMode: 'direct', errors: {} });
+    const input = screen.getByLabelText(/Direct IV/);
+    expect(input).not.toHaveAttribute('aria-describedby');
+  });
+
   // ============================================================
   // SUB-COMPONENTS
   // ============================================================
