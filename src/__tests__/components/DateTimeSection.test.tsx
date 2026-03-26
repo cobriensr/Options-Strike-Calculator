@@ -320,6 +320,8 @@ describe('DateTimeSection', () => {
       const minuteSelect = screen.getByLabelText('Minute');
       expect(hourSelect).toHaveAttribute('aria-describedby', 'err-time');
       expect(minuteSelect).toHaveAttribute('aria-describedby', 'err-time');
+      expect(hourSelect).toHaveAttribute('aria-invalid', 'true');
+      expect(minuteSelect).toHaveAttribute('aria-invalid', 'true');
       expect(screen.getByRole('alert')).toHaveTextContent('Before market open');
     });
 
@@ -329,6 +331,8 @@ describe('DateTimeSection', () => {
       const minuteSelect = screen.getByLabelText('Minute');
       expect(hourSelect).not.toHaveAttribute('aria-describedby');
       expect(minuteSelect).not.toHaveAttribute('aria-describedby');
+      expect(hourSelect).toHaveAttribute('aria-invalid', 'false');
+      expect(minuteSelect).toHaveAttribute('aria-invalid', 'false');
     });
   });
 

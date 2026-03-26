@@ -110,6 +110,7 @@ export default function DateTimeSection({
               id="dt-hour"
               value={timeHour}
               onChange={(e) => onHourChange(e.target.value)}
+              aria-invalid={!!errors['time']}
               aria-describedby={errors['time'] ? 'err-time' : undefined}
               className={selectCls}
               style={{ backgroundImage: chevronUrl }}
@@ -129,6 +130,7 @@ export default function DateTimeSection({
               id="dt-min"
               value={timeMinute}
               onChange={(e) => onMinuteChange(e.target.value)}
+              aria-invalid={!!errors['time']}
               aria-describedby={errors['time'] ? 'err-time' : undefined}
               className={selectCls}
               style={{ backgroundImage: chevronUrl }}
