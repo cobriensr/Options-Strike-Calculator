@@ -62,6 +62,9 @@ export default function ChartAnalysis({
   } = useImageUpload();
 
   // ── Analysis ──────────────────────────────────────────────
+  const hasCSVPositions =
+    positionUpload.status === 'success' && (positionUpload.spreadCount ?? 0) > 0;
+
   const {
     analysis,
     rawResponse,
@@ -77,6 +80,7 @@ export default function ChartAnalysis({
     context,
     results,
     mode,
+    hasCSVPositions,
     onAnalysisSaved,
     onModeCompleted: (completedMode) => {
       if (completedMode === 'entry') setEntryExistsToday(true);
