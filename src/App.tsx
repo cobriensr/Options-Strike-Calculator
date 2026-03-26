@@ -238,7 +238,7 @@ export default function StrikeCalculator() {
 
   const chevronUrl = useMemo(
     () => buildChevronUrl(th.chevronColor),
-    [th.chevronColor],
+    [darkMode],
   );
 
   const analysisContext = useMemo(
