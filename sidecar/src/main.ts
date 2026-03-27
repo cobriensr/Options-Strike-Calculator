@@ -1,4 +1,4 @@
-import { getMdAccessToken } from './tradovate-auth.js';
+import { getAccessToken } from './tradovate-auth.js';
 import { TradovateWsClient, type TradovateQuote } from './tradovate-ws.js';
 import { BarAggregator, type Tick } from './bar-aggregator.js';
 import { resolveContractSymbol } from './contract-roller.js';
@@ -32,7 +32,7 @@ async function connectWithRetry(): Promise<void> {
 
   while (!isShuttingDown) {
     try {
-      const token = await getMdAccessToken();
+      const token = await getAccessToken();
       const symbol = resolveContractSymbol();
       const wsUrl = process.env.TRADOVATE_MD_URL;
       if (!wsUrl) throw new Error('TRADOVATE_MD_URL not configured');

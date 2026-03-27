@@ -35,10 +35,14 @@ export function parseFrame(raw: string): TradovateFrame {
 
     case 'a': {
       try {
-        const outerArray = JSON.parse(raw.slice(1)) as string[];
-        const messages: TradovateMessage[] = outerArray.map(
-          (jsonStr) => JSON.parse(jsonStr) as TradovateMessage,
-        );
+        const outerArray = JSON.parse(raw.slice(1)) as unknown[];
+        const messages: TradovateMessage[] = outerArray.map((item) => {
+          // Tradovate sends either JSON strings (double-encoded) or objects directly
+          if (typeof item === 'string') {
+            return JSON.parse(item) as TradovateMessage;
+          }
+          return item as TradovateMessage;
+        });
         return { type: 'data', messages };
       } catch {
         return { type: 'unknown', raw };
