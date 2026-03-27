@@ -44,8 +44,8 @@ export class TradovateWsClient {
       switch (frame.type) {
         case 'open':
           logger.info('WebSocket open, sending authorization');
-          // Tradovate expects: authorize\n{id}\n\n{json}
-          this.send(buildMessage('authorize', this.nextId(), { token: accessToken }));
+          // Tradovate authorize expects the raw token as body, not JSON
+          this.send(`authorize\n${this.nextId()}\n\n${accessToken}`);
           this.startHeartbeat();
           break;
         case 'heartbeat':
