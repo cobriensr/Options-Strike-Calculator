@@ -1,4 +1,9 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "sidecar/**": false
+    }
+  },
   "crons": [
     {
       "path": "/api/cron/curate-lessons",
