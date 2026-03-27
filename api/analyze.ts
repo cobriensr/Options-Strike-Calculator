@@ -47,6 +47,8 @@ import {
 } from './_lib/validation.js';
 import logger from './_lib/logger.js';
 import { getActiveLessons, formatLessonsBlock } from './_lib/lessons.js';
+import type { IvTermRow } from './iv-term-structure.js';
+import { formatIvTermStructureForClaude } from './iv-term-structure.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -694,6 +696,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let strikeExposureContext: string | null = null;
   let allExpiryStrikeContext: string | null = null;
   let greekFlowContext: string | null = null;
+  let ivTermStructureContext: string | null = null;
   try {
     const [
       tideRows,
@@ -761,6 +764,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (flowErr) {
     logger.error({ err: flowErr }, 'Failed to fetch flow data for analysis');
   }
+
+  // On-demand IV term structure fetch (not from DB — direct UW API call)
+  try {
+    const uwKey = process.env.UW_API_KEY;
+    if (uwKey) {
+      const ivDate = analysisDate ?? new Date().toLocaleDateString('en-CA', {
+        timeZone: 'America/New_York',
+      });
+      const ivRes = await fetch(
+        `https://api.unusualwhales.com/api/stock/SPX/interpolated-iv?date=${ivDate}`,
+        {
+          headers: { Authorization: `Bearer ${uwKey}` },
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (ivRes.ok) {
+        const ivBody: { data: IvTermRow[] } = await ivRes.json();
+        ivTermStructureContext = formatIvTermStructureForClaude(
+          ivBody.data ?? [],
+          context.sigma as string | undefined,
+        );
+      } else {
+        logger.warn(
+          { status: ivRes.status },
+          'IV term structure API returned non-OK',
+        );
+      }
+    }
+  } catch (ivErr) {
+    logger.error({ err: ivErr }, 'Failed to fetch IV term structure');
+  }
+
   const marketTideOtmSection = marketTideOtmContext
     ? `\n${marketTideOtmContext}\n`
     : '';
@@ -812,6 +847,7 @@ ${greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures d
 ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}
 ${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
 ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
+${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n⚠️ STRIKE OVERRIDE: Any strike prices or position descriptions in this section are from the prior recommendation — they describe what the trader was ADVISED to enter, not necessarily what was filled at those exact strikes. If "Current Open Positions" is provided above, those Schwab-verified strikes are ground truth and OVERRIDE any strike estimates here. Use ONLY the actual positions for all cushion, risk, and management calculations.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
