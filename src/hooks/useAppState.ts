@@ -14,7 +14,24 @@ import { useState } from 'react';
 import type { IVMode, AmPm, Timezone } from '../types';
 import { DEFAULTS, IV_MODES } from '../constants';
 import { useDebounced } from './useDebounced';
-import { getCTTime } from '../utils/timezone';
+import { getCTTime, getETTime } from '../utils/timezone';
+
+/**
+ * Returns a CT time that is valid for the calculator.
+ * If the current time is outside market hours (9:30 AM – 4:00 PM ET),
+ * falls back to 10:00 AM CT so the calculator produces results immediately.
+ */
+function getInitialCTTime(): { hour: number; minute: number } {
+  const now = new Date();
+  const et = getETTime(now);
+  const etMinutes = et.hour * 60 + et.minute;
+  // Market hours: 9:30 AM ET (570) to 4:00 PM ET (960)
+  if (etMinutes >= 570 && etMinutes < 960) {
+    return getCTTime(now);
+  }
+  // Outside market hours: default to 10:00 AM CT (11:00 AM ET)
+  return { hour: 10, minute: 0 };
+}
 
 export function useAppState() {
   // Theme — persist preference in localStorage
@@ -57,16 +74,16 @@ export function useAppState() {
   // as the date input, which causes Firefox Android to close the native
   // date picker while it is open.
   const [timeHour, setTimeHour] = useState(() => {
-    const { hour } = getCTTime(new Date());
+    const { hour } = getInitialCTTime();
     const h = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
     return String(h);
   });
   const [timeMinute, setTimeMinute] = useState(() => {
-    const { minute } = getCTTime(new Date());
+    const { minute } = getInitialCTTime();
     return String(Math.floor(minute / 5) * 5).padStart(2, '0');
   });
   const [timeAmPm, setTimeAmPm] = useState<AmPm>(() =>
-    getCTTime(new Date()).hour >= 12 ? 'PM' : 'AM',
+    getInitialCTTime().hour >= 12 ? 'PM' : 'AM',
   );
   const [timezone, setTimezone] = useState<Timezone>('CT');
 

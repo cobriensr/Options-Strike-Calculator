@@ -234,7 +234,7 @@ export default function AdvancedSection({
 
       {/* Model Parameters — derived values driving calculations */}
       {results && (
-        <div className="border-edge mt-auto border-t pt-3.5">
+        <div className="border-edge mt-3.5 border-t pt-3.5">
           <div className="text-tertiary mb-2 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
             Model Parameters
           </div>
