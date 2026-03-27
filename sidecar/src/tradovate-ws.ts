@@ -20,6 +20,8 @@ export class TradovateWsClient {
   private ws: WebSocket | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private requestId = 0;
+  private authRequestId = 0;
+  private subscribeRequestId = 0;
   private readonly wsUrl: string;
   private readonly callbacks: WsCallbacks;
   private subscribedSymbol: string | null = null;
@@ -45,7 +47,8 @@ export class TradovateWsClient {
         case 'open':
           logger.info('WebSocket open, sending authorization');
           // Tradovate authorize expects the raw token as body, not JSON
-          this.send(`authorize\n${this.nextId()}\n\n${accessToken}`);
+          this.authRequestId = this.nextId();
+          this.send(`authorize\n${this.authRequestId}\n\n${accessToken}`);
           this.startHeartbeat();
           break;
         case 'heartbeat':
@@ -78,13 +81,24 @@ export class TradovateWsClient {
 
   private handleMessages(messages: TradovateMessage[], symbol: string): void {
     for (const msg of messages) {
+      // Response to a previous request (auth or subscribe)
       if (msg.s !== undefined) {
-        if (msg.s === 200) {
+        if (msg.s === 200 && msg.i === this.authRequestId) {
+          // Auth succeeded — subscribe once
           logger.info('Authorized, subscribing to quotes');
-          this.send(buildMessage('md/subscribeQuote', this.nextId(), { symbol }));
+          this.subscribeRequestId = this.nextId();
+          this.send(buildMessage('md/subscribeQuote', this.subscribeRequestId, { symbol }));
           this.callbacks.onConnected();
-        } else {
-          logger.error({ status: msg.s, data: msg.d }, 'Auth/subscribe failed');
+        } else if (msg.s === 200 && msg.i === this.subscribeRequestId) {
+          // Subscribe response — check for errors
+          const d = msg.d as Record<string, unknown> | undefined;
+          if (d?.errorText) {
+            logger.error(`Subscribe failed: ${d.errorText} (${d.errorCode})`);
+          } else {
+            logger.info({ symbol }, 'Quote subscription active');
+          }
+        } else if (msg.s !== 200) {
+          logger.error({ status: msg.s, requestId: msg.i, data: msg.d }, 'Request failed');
         }
         continue;
       }
