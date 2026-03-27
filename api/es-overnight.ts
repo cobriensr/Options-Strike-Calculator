@@ -96,7 +96,9 @@ export function formatEsOvernightForClaude(
 
   // Fill probability
   lines.push('');
-  lines.push(`  Gap Fill Probability: ${row.fill_probability} (score: ${fillScore})`);
+  lines.push(
+    `  Gap Fill Probability: ${row.fill_probability} (score: ${fillScore})`,
+  );
 
   // 0DTE implications (only with cone data)
   if (coneUpper != null && coneLower != null) {

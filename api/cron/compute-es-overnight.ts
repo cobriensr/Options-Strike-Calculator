@@ -94,10 +94,7 @@ function classifyVolume(
   return { volRatio: 0, volClass: cls };
 }
 
-function classifyVwapSignal(
-  gapUp: boolean,
-  gapVsVwapPts: number,
-): string {
+function classifyVwapSignal(gapUp: boolean, gapVsVwapPts: number): string {
   if (gapUp && gapVsVwapPts > 0) return 'SUPPORTED';
   if (gapUp && gapVsVwapPts <= 0) return 'OVERSHOOT_FADE';
   if (!gapUp && gapVsVwapPts < 0) return 'SUPPORTED';
@@ -138,10 +135,7 @@ function computeFillScore(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'GET only' });
   }
@@ -229,9 +223,7 @@ export default async function handler(
 
     const globexRange = globexHigh - globexLow;
     const cashOpenPctRank =
-      globexRange > 0
-        ? ((cashOpen - globexLow) / globexRange) * 100
-        : 50;
+      globexRange > 0 ? ((cashOpen - globexLow) / globexRange) * 100 : 50;
     const positionClass = classifyPosition(cashOpenPctRank);
 
     const histVol = await sql`
@@ -256,13 +248,12 @@ export default async function handler(
     const gapVsVwapPts = cashOpen - vwap;
     const vwapSignal = classifyVwapSignal(gapPts >= 0, gapVsVwapPts);
 
-    const { score: fillScore, probability: fillProbability } =
-      computeFillScore(
-        Math.abs(gapPts),
-        volRatio,
-        cashOpenPctRank,
-        vwapSignal,
-      );
+    const { score: fillScore, probability: fillProbability } = computeFillScore(
+      Math.abs(gapPts),
+      volRatio,
+      cashOpenPctRank,
+      vwapSignal,
+    );
 
     const rangePct = prevCashClose ? rangePts / prevCashClose : 0;
 

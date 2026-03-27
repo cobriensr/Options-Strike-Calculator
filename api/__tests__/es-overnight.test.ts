@@ -34,7 +34,9 @@ const baseSummary: EsOvernightSummaryRow = {
 
 describe('formatEsOvernightForClaude', () => {
   it('returns null for null input', () => {
-    expect(formatEsOvernightForClaude(null as unknown as EsOvernightSummaryRow)).toBeNull();
+    expect(
+      formatEsOvernightForClaude(null as unknown as EsOvernightSummaryRow),
+    ).toBeNull();
   });
 
   it('includes range line with high and low', () => {
