@@ -14,25 +14,33 @@ describe('parseFrame', () => {
 
   it('parses close frame', () => {
     const result = parseFrame('c[1000,"Normal closure"]');
-    expect(result).toEqual({ type: 'close', code: 1000, reason: 'Normal closure' });
+    expect(result).toEqual({
+      type: 'close',
+      code: 1000,
+      reason: 'Normal closure',
+    });
   });
 
   it('parses data frame with market data quote', () => {
-    const payload = JSON.stringify([JSON.stringify({
-      e: 'md',
-      d: {
-        quotes: [{
-          timestamp: '2026-03-26T02:15:00Z',
-          contractId: 123456,
-          entries: {
-            Trade: { price: 5825.5, size: 2 },
-            TotalTradeVolume: { size: 41180 },
-            HighPrice: { price: 5830.25 },
-            LowPrice: { price: 5810.5 },
-          },
-        }],
-      },
-    })]);
+    const payload = JSON.stringify([
+      JSON.stringify({
+        e: 'md',
+        d: {
+          quotes: [
+            {
+              timestamp: '2026-03-26T02:15:00Z',
+              contractId: 123456,
+              entries: {
+                Trade: { price: 5825.5, size: 2 },
+                TotalTradeVolume: { size: 41180 },
+                HighPrice: { price: 5830.25 },
+                LowPrice: { price: 5810.5 },
+              },
+            },
+          ],
+        },
+      }),
+    ]);
     const result = parseFrame('a' + payload);
     expect(result.type).toBe('data');
     if (result.type === 'data') {
@@ -52,10 +60,12 @@ describe('parseFrame', () => {
   });
 
   it('parses shutdown event', () => {
-    const payload = JSON.stringify([JSON.stringify({
-      e: 'shutdown',
-      d: { reasonCode: 'ConnectionQuotaReached' },
-    })]);
+    const payload = JSON.stringify([
+      JSON.stringify({
+        e: 'shutdown',
+        d: { reasonCode: 'ConnectionQuotaReached' },
+      }),
+    ]);
     const result = parseFrame('a' + payload);
     if (result.type === 'data') {
       expect(result.messages[0].e).toBe('shutdown');

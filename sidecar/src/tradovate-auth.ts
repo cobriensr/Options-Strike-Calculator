@@ -27,7 +27,8 @@ function getBaseUrl(): string {
 }
 
 function parseTokenResponse(body: AccessTokenResponse): TokenState {
-  if (body.errorText) throw new Error(`Tradovate auth error: ${body.errorText}`);
+  if (body.errorText)
+    throw new Error(`Tradovate auth error: ${body.errorText}`);
   if (!body.accessToken || !body.expirationTime)
     throw new Error('Tradovate auth: missing accessToken or expirationTime');
   return {
@@ -61,7 +62,9 @@ async function acquireToken(): Promise<TokenState> {
     `sec=SET(${(credentials.sec ?? '').length}ch)`,
     `deviceId=${credentials.deviceId ? 'SET' : 'MISSING'}`,
   ].join(', ');
-  logger.info(`Sending auth request to ${baseUrl}/auth/accesstokenrequest [${fieldStatus}]`);
+  logger.info(
+    `Sending auth request to ${baseUrl}/auth/accesstokenrequest [${fieldStatus}]`,
+  );
 
   const res = await fetch(`${baseUrl}/auth/accesstokenrequest`, {
     method: 'POST',
@@ -72,7 +75,9 @@ async function acquireToken(): Promise<TokenState> {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    logger.error(`Tradovate auth HTTP ${res.status} ${res.statusText}: ${text.slice(0, 500)}`);
+    logger.error(
+      `Tradovate auth HTTP ${res.status} ${res.statusText}: ${text.slice(0, 500)}`,
+    );
     throw new Error(`Tradovate auth HTTP ${res.status}: ${text.slice(0, 200)}`);
   }
 
@@ -84,7 +89,10 @@ async function acquireToken(): Promise<TokenState> {
 
   const state = parseTokenResponse(body);
   logger.info(
-    { userId: state.userId, expiresAt: new Date(state.expiresAt).toISOString() },
+    {
+      userId: state.userId,
+      expiresAt: new Date(state.expiresAt).toISOString(),
+    },
     'Tradovate token acquired',
   );
   return state;
@@ -103,7 +111,10 @@ async function renewToken(currentToken: string): Promise<TokenState> {
   });
   const body: AccessTokenResponse = await res.json();
   const state = parseTokenResponse(body);
-  logger.info({ expiresAt: new Date(state.expiresAt).toISOString() }, 'Tradovate token renewed');
+  logger.info(
+    { expiresAt: new Date(state.expiresAt).toISOString() },
+    'Tradovate token renewed',
+  );
   return state;
 }
 

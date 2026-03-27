@@ -49,12 +49,18 @@ async function connectWithRetry(): Promise<void> {
           },
         );
         if (contractRes.ok) {
-          const contract = (await contractRes.json()) as { id: number; name: string };
+          const contract = (await contractRes.json()) as {
+            id: number;
+            name: string;
+          };
           contractId = contract.id;
           logger.info({ symbol, contractId }, 'Contract resolved');
         }
       } catch (err) {
-        logger.warn({ err, symbol }, 'Could not resolve contract ID, using symbol string');
+        logger.warn(
+          { err, symbol },
+          'Could not resolve contract ID, using symbol string',
+        );
       }
 
       aggregator = new BarAggregator(async (bar) => {

@@ -22,7 +22,8 @@ export function getPool(): pg.Pool {
 export async function verifyConnection(): Promise<void> {
   const p = getPool();
   const result = await p.query('SELECT 1 AS ok');
-  if (result.rows[0]?.ok !== 1) throw new Error('Database connection verification failed');
+  if (result.rows[0]?.ok !== 1)
+    throw new Error('Database connection verification failed');
   logger.info('Database connection verified');
 }
 
@@ -38,7 +39,16 @@ export async function upsertBar(bar: Bar): Promise<void> {
        close      = EXCLUDED.close,
        volume     = GREATEST(es_bars.volume, EXCLUDED.volume),
        tick_count = GREATEST(es_bars.tick_count, EXCLUDED.tick_count)`,
-    [bar.symbol, bar.ts, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.tickCount],
+    [
+      bar.symbol,
+      bar.ts,
+      bar.open,
+      bar.high,
+      bar.low,
+      bar.close,
+      bar.volume,
+      bar.tickCount,
+    ],
   );
 }
 

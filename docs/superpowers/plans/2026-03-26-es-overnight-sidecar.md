@@ -358,10 +358,26 @@ describe('BarAggregator', () => {
 
   it('updates OHLC within the same minute', () => {
     const base = new Date('2026-03-26T02:15:00Z');
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 1000, timestamp: new Date(base.getTime() + 10_000) });
-    aggregator.onTick({ price: 5830.0, cumulativeVolume: 1005, timestamp: new Date(base.getTime() + 20_000) });
-    aggregator.onTick({ price: 5820.0, cumulativeVolume: 1010, timestamp: new Date(base.getTime() + 30_000) });
-    aggregator.onTick({ price: 5827.5, cumulativeVolume: 1015, timestamp: new Date(base.getTime() + 40_000) });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 1000,
+      timestamp: new Date(base.getTime() + 10_000),
+    });
+    aggregator.onTick({
+      price: 5830.0,
+      cumulativeVolume: 1005,
+      timestamp: new Date(base.getTime() + 20_000),
+    });
+    aggregator.onTick({
+      price: 5820.0,
+      cumulativeVolume: 1010,
+      timestamp: new Date(base.getTime() + 30_000),
+    });
+    aggregator.onTick({
+      price: 5827.5,
+      cumulativeVolume: 1015,
+      timestamp: new Date(base.getTime() + 40_000),
+    });
 
     const current = aggregator.getCurrentBar();
     expect(current!.open).toBe(5825.0);
@@ -372,10 +388,22 @@ describe('BarAggregator', () => {
   });
 
   it('flushes when minute boundary is crossed', () => {
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 1000, timestamp: new Date('2026-03-26T02:15:10Z') });
-    aggregator.onTick({ price: 5826.0, cumulativeVolume: 1005, timestamp: new Date('2026-03-26T02:15:30Z') });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 1000,
+      timestamp: new Date('2026-03-26T02:15:10Z'),
+    });
+    aggregator.onTick({
+      price: 5826.0,
+      cumulativeVolume: 1005,
+      timestamp: new Date('2026-03-26T02:15:30Z'),
+    });
     // New minute
-    aggregator.onTick({ price: 5828.0, cumulativeVolume: 1010, timestamp: new Date('2026-03-26T02:16:05Z') });
+    aggregator.onTick({
+      price: 5828.0,
+      cumulativeVolume: 1010,
+      timestamp: new Date('2026-03-26T02:16:05Z'),
+    });
 
     expect(flushed).toHaveLength(1);
     expect(flushed[0].open).toBe(5825.0);
@@ -384,18 +412,42 @@ describe('BarAggregator', () => {
   });
 
   it('computes volume as delta of cumulative values', () => {
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 1000, timestamp: new Date('2026-03-26T02:15:10Z') });
-    aggregator.onTick({ price: 5826.0, cumulativeVolume: 1050, timestamp: new Date('2026-03-26T02:15:30Z') });
-    aggregator.onTick({ price: 5828.0, cumulativeVolume: 1070, timestamp: new Date('2026-03-26T02:16:05Z') });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 1000,
+      timestamp: new Date('2026-03-26T02:15:10Z'),
+    });
+    aggregator.onTick({
+      price: 5826.0,
+      cumulativeVolume: 1050,
+      timestamp: new Date('2026-03-26T02:15:30Z'),
+    });
+    aggregator.onTick({
+      price: 5828.0,
+      cumulativeVolume: 1070,
+      timestamp: new Date('2026-03-26T02:16:05Z'),
+    });
 
     expect(flushed[0].volume).toBe(50); // 1050 - 1000
   });
 
   it('handles session reset (cumulative drops to lower value)', () => {
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 500000, timestamp: new Date('2026-03-26T02:15:10Z') });
-    aggregator.onTick({ price: 5826.0, cumulativeVolume: 500050, timestamp: new Date('2026-03-26T02:15:30Z') });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 500000,
+      timestamp: new Date('2026-03-26T02:15:10Z'),
+    });
+    aggregator.onTick({
+      price: 5826.0,
+      cumulativeVolume: 500050,
+      timestamp: new Date('2026-03-26T02:15:30Z'),
+    });
     // New minute — cumulative reset (maintenance break)
-    aggregator.onTick({ price: 5828.0, cumulativeVolume: 100, timestamp: new Date('2026-03-26T02:16:05Z') });
+    aggregator.onTick({
+      price: 5828.0,
+      cumulativeVolume: 100,
+      timestamp: new Date('2026-03-26T02:16:05Z'),
+    });
 
     expect(flushed[0].volume).toBe(50); // 500050 - 500000
     // New bar starts fresh with the reset cumulative
@@ -404,7 +456,11 @@ describe('BarAggregator', () => {
   });
 
   it('flush() writes partial bar and resets', () => {
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 1000, timestamp: new Date('2026-03-26T02:15:10Z') });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 1000,
+      timestamp: new Date('2026-03-26T02:15:10Z'),
+    });
     aggregator.flush();
 
     expect(flushed).toHaveLength(1);
@@ -483,13 +539,12 @@ export class BarAggregator {
     if (!this.currentBar) {
       // Detect session reset: cumulative dropped below previous
       const isReset =
-        this.lastCumVolume > 0 &&
-        tick.cumulativeVolume < this.lastCumVolume;
+        this.lastCumVolume > 0 && tick.cumulativeVolume < this.lastCumVolume;
 
       this.currentMinute = minuteTs;
       this.barStartCumVolume = isReset
         ? 0
-        : (this.lastCumVolume || tick.cumulativeVolume);
+        : this.lastCumVolume || tick.cumulativeVolume;
       this.currentBar = {
         symbol: this.symbol,
         ts: minuteFloor(tick.timestamp),
@@ -570,25 +625,33 @@ describe('parseFrame', () => {
 
   it('parses close frame', () => {
     const result = parseFrame('c[1000,"Normal closure"]');
-    expect(result).toEqual({ type: 'close', code: 1000, reason: 'Normal closure' });
+    expect(result).toEqual({
+      type: 'close',
+      code: 1000,
+      reason: 'Normal closure',
+    });
   });
 
   it('parses data frame with market data quote', () => {
-    const payload = JSON.stringify([JSON.stringify({
-      e: 'md',
-      d: {
-        quotes: [{
-          timestamp: '2026-03-26T02:15:00Z',
-          contractId: 123456,
-          entries: {
-            Trade: { price: 5825.5, size: 2 },
-            TotalTradeVolume: { size: 41180 },
-            HighPrice: { price: 5830.25 },
-            LowPrice: { price: 5810.5 },
-          },
-        }],
-      },
-    })]);
+    const payload = JSON.stringify([
+      JSON.stringify({
+        e: 'md',
+        d: {
+          quotes: [
+            {
+              timestamp: '2026-03-26T02:15:00Z',
+              contractId: 123456,
+              entries: {
+                Trade: { price: 5825.5, size: 2 },
+                TotalTradeVolume: { size: 41180 },
+                HighPrice: { price: 5830.25 },
+                LowPrice: { price: 5810.5 },
+              },
+            },
+          ],
+        },
+      }),
+    ]);
     const result = parseFrame('a' + payload);
     expect(result.type).toBe('data');
     if (result.type === 'data') {
@@ -608,10 +671,12 @@ describe('parseFrame', () => {
   });
 
   it('parses shutdown event', () => {
-    const payload = JSON.stringify([JSON.stringify({
-      e: 'shutdown',
-      d: { reasonCode: 'ConnectionQuotaReached' },
-    })]);
+    const payload = JSON.stringify([
+      JSON.stringify({
+        e: 'shutdown',
+        d: { reasonCode: 'ConnectionQuotaReached' },
+      }),
+    ]);
     const result = parseFrame('a' + payload);
     if (result.type === 'data') {
       expect(result.messages[0].e).toBe('shutdown');
@@ -817,9 +882,9 @@ export function resolveContractSymbol(now: Date = new Date()): string {
   const year = now.getFullYear();
 
   for (const month of QUARTER_MONTHS) {
-    const expiryYear = month < (now.getMonth() + 1) ? year + 1 : year;
-    const adjustedMonth = month < (now.getMonth() + 1) ? month : month;
-    const adjustedYear = month < (now.getMonth() + 1) ? year + 1 : year;
+    const expiryYear = month < now.getMonth() + 1 ? year + 1 : year;
+    const adjustedMonth = month < now.getMonth() + 1 ? month : month;
+    const adjustedYear = month < now.getMonth() + 1 ? year + 1 : year;
 
     const expiry = thirdFriday(adjustedYear, adjustedMonth);
     const rollDate = new Date(expiry);
@@ -928,7 +993,10 @@ async function acquireToken(): Promise<TokenState> {
   const body: AccessTokenResponse = await res.json();
   const state = parseTokenResponse(body);
   logger.info(
-    { userId: state.userId, expiresAt: new Date(state.expiresAt).toISOString() },
+    {
+      userId: state.userId,
+      expiresAt: new Date(state.expiresAt).toISOString(),
+    },
     'Tradovate token acquired',
   );
   return state;
@@ -1061,7 +1129,16 @@ export async function upsertBar(bar: Bar): Promise<void> {
        close      = EXCLUDED.close,
        volume     = GREATEST(es_bars.volume, EXCLUDED.volume),
        tick_count = GREATEST(es_bars.tick_count, EXCLUDED.tick_count)`,
-    [bar.symbol, bar.ts, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.tickCount],
+    [
+      bar.symbol,
+      bar.ts,
+      bar.open,
+      bar.high,
+      bar.low,
+      bar.close,
+      bar.volume,
+      bar.tickCount,
+    ],
   );
 }
 
@@ -1103,7 +1180,11 @@ Create `sidecar/src/tradovate-ws.ts`:
 
 ```typescript
 import WebSocket from 'ws';
-import { parseFrame, buildMessage, type TradovateMessage } from './tradovate-parser.js';
+import {
+  parseFrame,
+  buildMessage,
+  type TradovateMessage,
+} from './tradovate-parser.js';
 import logger from './logger.js';
 
 const HEARTBEAT_INTERVAL_MS = 2_500;
@@ -1135,7 +1216,10 @@ export class TradovateWsClient {
 
   connect(accessToken: string, symbol: string): void {
     this.subscribedSymbol = symbol;
-    logger.info({ url: this.wsUrl, symbol }, 'Connecting to Tradovate WebSocket');
+    logger.info(
+      { url: this.wsUrl, symbol },
+      'Connecting to Tradovate WebSocket',
+    );
 
     this.ws = new WebSocket(this.wsUrl);
 
@@ -1146,7 +1230,9 @@ export class TradovateWsClient {
       switch (frame.type) {
         case 'open':
           logger.info('WebSocket open, sending authorization');
-          this.send(buildMessage('authorize', this.nextId(), { token: accessToken }));
+          this.send(
+            buildMessage('authorize', this.nextId(), { token: accessToken }),
+          );
           this.startHeartbeat();
           break;
 
@@ -1159,7 +1245,10 @@ export class TradovateWsClient {
           break;
 
         case 'close':
-          logger.warn({ code: frame.code, reason: frame.reason }, 'WebSocket close frame received');
+          logger.warn(
+            { code: frame.code, reason: frame.reason },
+            'WebSocket close frame received',
+          );
           this.cleanup();
           this.callbacks.onDisconnected(frame.reason);
           break;
@@ -1187,7 +1276,9 @@ export class TradovateWsClient {
       if (msg.s !== undefined) {
         if (msg.s === 200) {
           logger.info('Authorized, subscribing to quotes');
-          this.send(buildMessage('md/subscribeQuote', this.nextId(), { symbol }));
+          this.send(
+            buildMessage('md/subscribeQuote', this.nextId(), { symbol }),
+          );
           this.callbacks.onConnected();
         } else {
           logger.error({ status: msg.s, data: msg.d }, 'Auth/subscribe failed');
@@ -1197,7 +1288,8 @@ export class TradovateWsClient {
 
       // Shutdown event
       if (msg.e === 'shutdown') {
-        const reasonCode = (msg.d as Record<string, string>)?.reasonCode ?? 'unknown';
+        const reasonCode =
+          (msg.d as Record<string, string>)?.reasonCode ?? 'unknown';
         logger.warn({ reasonCode }, 'Tradovate shutdown event');
         this.cleanup();
         this.callbacks.onDisconnected(`shutdown: ${reasonCode}`);
@@ -1244,7 +1336,9 @@ export class TradovateWsClient {
   disconnect(): void {
     if (this.subscribedSymbol && this.ws?.readyState === WebSocket.OPEN) {
       this.send(
-        buildMessage('md/unsubscribeQuote', this.nextId(), { symbol: this.subscribedSymbol }),
+        buildMessage('md/unsubscribeQuote', this.nextId(), {
+          symbol: this.subscribedSymbol,
+        }),
       );
     }
     this.cleanup();
@@ -1303,7 +1397,9 @@ interface HealthDeps {
  */
 function isQuoteExpected(): boolean {
   const now = new Date();
-  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const et = new Date(
+    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
+  );
   const day = et.getDay();
   if (day === 0 || day === 6) return false; // weekend
   const hour = et.getHours();
@@ -1427,7 +1523,14 @@ async function connectWithRetry(): Promise<void> {
         try {
           await upsertBar(bar);
           logger.debug(
-            { ts: bar.ts.toISOString(), o: bar.open, h: bar.high, l: bar.low, c: bar.close, v: bar.volume },
+            {
+              ts: bar.ts.toISOString(),
+              o: bar.open,
+              h: bar.high,
+              l: bar.low,
+              c: bar.close,
+              v: bar.volume,
+            },
             'Bar flushed',
           );
         } catch (err) {
@@ -1475,7 +1578,13 @@ async function main(): Promise<void> {
   logger.info('ES relay sidecar starting');
 
   // Validate required env vars
-  const required = ['DATABASE_URL', 'TRADOVATE_BASE_URL', 'TRADOVATE_MD_URL', 'TRADOVATE_USERNAME', 'TRADOVATE_PASSWORD'];
+  const required = [
+    'DATABASE_URL',
+    'TRADOVATE_BASE_URL',
+    'TRADOVATE_MD_URL',
+    'TRADOVATE_USERNAME',
+    'TRADOVATE_PASSWORD',
+  ];
   for (const key of required) {
     if (!process.env[key]) {
       logger.error({ key }, 'Missing required environment variable');
@@ -1607,7 +1716,9 @@ const baseSummary: EsOvernightSummaryRow = {
 
 describe('formatEsOvernightForClaude', () => {
   it('returns null for null input', () => {
-    expect(formatEsOvernightForClaude(null as unknown as EsOvernightSummaryRow)).toBeNull();
+    expect(
+      formatEsOvernightForClaude(null as unknown as EsOvernightSummaryRow),
+    ).toBeNull();
   });
 
   it('includes range line with high and low', () => {
@@ -1756,16 +1867,16 @@ export function formatEsOvernightForClaude(
 
   const vwapDir = vwapPts >= 0 ? 'above' : 'below';
   const vwapLabel =
-    row.vwap_signal === 'SUPPORTED'
-      ? 'gap has support'
-      : 'fade likely';
+    row.vwap_signal === 'SUPPORTED' ? 'gap has support' : 'fade likely';
   lines.push(
     `    Open vs VWAP: ${vwapPts >= 0 ? '+' : ''}${vwapPts.toFixed(1)} pts ${vwapDir} overnight VWAP (${vwapLabel})`,
   );
 
   // Fill probability
   lines.push('');
-  lines.push(`  Gap Fill Probability: ${row.fill_probability} (score: ${fillScore})`);
+  lines.push(
+    `  Gap Fill Probability: ${row.fill_probability} (score: ${fillScore})`,
+  );
 
   // 0DTE implications
   if (coneUpper != null && coneLower != null) {
@@ -1927,10 +2038,7 @@ function classifyVolume(
   return { volRatio: 0, volClass: cls };
 }
 
-function classifyVwapSignal(
-  gapUp: boolean,
-  gapVsVwapPts: number,
-): string {
+function classifyVwapSignal(gapUp: boolean, gapVsVwapPts: number): string {
   if (gapUp && gapVsVwapPts > 0) return 'SUPPORTED';
   if (gapUp && gapVsVwapPts <= 0) return 'OVERSHOOT_FADE';
   if (!gapUp && gapVsVwapPts < 0) return 'SUPPORTED';
@@ -1975,10 +2083,7 @@ function computeFillScore(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'GET only' });
   }
@@ -2020,7 +2125,9 @@ export default async function handler(
 
     if (!bars[0]?.globex_open) {
       logger.info({ tradeDate }, 'No overnight ES bars found');
-      return res.status(200).json({ skipped: true, reason: 'No overnight bars' });
+      return res
+        .status(200)
+        .json({ skipped: true, reason: 'No overnight bars' });
     }
 
     const overnight = bars[0];
@@ -2088,13 +2195,12 @@ export default async function handler(
     const gapVsVwapPts = cashOpen - vwap;
     const vwapSignal = classifyVwapSignal(gapPts >= 0, gapVsVwapPts);
 
-    const { score: fillScore, probability: fillProbability } =
-      computeFillScore(
-        Math.abs(gapPts),
-        volRatio,
-        cashOpenPctRank,
-        vwapSignal,
-      );
+    const { score: fillScore, probability: fillProbability } = computeFillScore(
+      Math.abs(gapPts),
+      volRatio,
+      cashOpenPctRank,
+      vwapSignal,
+    );
 
     const rangePct = prevCashClose ? rangePts / prevCashClose : 0;
 
@@ -2222,9 +2328,11 @@ After the IV term structure fetch block (around line 810), add:
 ```typescript
 // On-demand ES overnight summary from DB
 try {
-  const esDate = analysisDate ?? new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
+  const esDate =
+    analysisDate ??
+    new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
   const esRows = await sql`
     SELECT * FROM es_overnight_summaries
     WHERE trade_date = ${esDate}

@@ -1,5 +1,9 @@
 import WebSocket from 'ws';
-import { parseFrame, buildMessage, type TradovateMessage } from './tradovate-parser.js';
+import {
+  parseFrame,
+  buildMessage,
+  type TradovateMessage,
+} from './tradovate-parser.js';
 import logger from './logger.js';
 
 const HEARTBEAT_INTERVAL_MS = 2_500;
@@ -32,10 +36,17 @@ export class TradovateWsClient {
     this.callbacks = callbacks;
   }
 
-  connect(accessToken: string, symbol: string, contractId?: number | null): void {
+  connect(
+    accessToken: string,
+    symbol: string,
+    contractId?: number | null,
+  ): void {
     this.subscribedSymbol = symbol;
     this.contractId = contractId ?? null;
-    logger.info({ url: this.wsUrl, symbol, contractId }, 'Connecting to Tradovate WebSocket');
+    logger.info(
+      { url: this.wsUrl, symbol, contractId },
+      'Connecting to Tradovate WebSocket',
+    );
     this.ws = new WebSocket(this.wsUrl);
 
     this.ws.on('message', (data: WebSocket.RawData) => {
@@ -56,11 +67,15 @@ export class TradovateWsClient {
         case 'heartbeat':
           break;
         case 'data':
-          logger.info(`WS data: ${JSON.stringify(frame.messages).slice(0, 300)}`);
+          logger.info(
+            `WS data: ${JSON.stringify(frame.messages).slice(0, 300)}`,
+          );
           this.handleMessages(frame.messages, symbol);
           break;
         case 'close':
-          logger.warn(`WS close frame: code=${frame.code} reason=${frame.reason}`);
+          logger.warn(
+            `WS close frame: code=${frame.code} reason=${frame.reason}`,
+          );
           this.cleanup();
           this.callbacks.onDisconnected(frame.reason);
           break;
@@ -91,9 +106,18 @@ export class TradovateWsClient {
           const subscribePayload = this.contractId
             ? { symbol: this.contractId }
             : { symbol };
-          logger.info({ subscribePayload }, 'Authorized, subscribing to quotes');
+          logger.info(
+            { subscribePayload },
+            'Authorized, subscribing to quotes',
+          );
           this.subscribeRequestId = this.nextId();
-          this.send(buildMessage('md/subscribeQuote', this.subscribeRequestId, subscribePayload));
+          this.send(
+            buildMessage(
+              'md/subscribeQuote',
+              this.subscribeRequestId,
+              subscribePayload,
+            ),
+          );
           this.callbacks.onConnected();
         } else if (msg.s === 200 && msg.i === this.subscribeRequestId) {
           // Subscribe response — check for errors
@@ -104,12 +128,16 @@ export class TradovateWsClient {
             logger.info({ symbol }, 'Quote subscription active');
           }
         } else if (msg.s !== 200) {
-          logger.error({ status: msg.s, requestId: msg.i, data: msg.d }, 'Request failed');
+          logger.error(
+            { status: msg.s, requestId: msg.i, data: msg.d },
+            'Request failed',
+          );
         }
         continue;
       }
       if (msg.e === 'shutdown') {
-        const reasonCode = (msg.d as Record<string, string>)?.reasonCode ?? 'unknown';
+        const reasonCode =
+          (msg.d as Record<string, string>)?.reasonCode ?? 'unknown';
         logger.warn({ reasonCode }, 'Tradovate shutdown event');
         this.cleanup();
         this.callbacks.onDisconnected(`shutdown: ${reasonCode}`);
@@ -154,7 +182,9 @@ export class TradovateWsClient {
   disconnect(): void {
     if (this.subscribedSymbol && this.ws?.readyState === WebSocket.OPEN) {
       this.send(
-        buildMessage('md/unsubscribeQuote', this.nextId(), { symbol: this.subscribedSymbol }),
+        buildMessage('md/unsubscribeQuote', this.nextId(), {
+          symbol: this.subscribedSymbol,
+        }),
       );
     }
     this.cleanup();

@@ -9,7 +9,9 @@ interface HealthDeps {
 
 function isQuoteExpected(): boolean {
   const now = new Date();
-  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const et = new Date(
+    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
+  );
   const day = et.getDay();
   if (day === 0 || day === 6) return false;
   const hour = et.getHours();

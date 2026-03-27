@@ -11,8 +11,10 @@ import WebSocket from 'ws';
 import { config } from 'dotenv';
 config({ path: 'sidecar/.env' });
 
-const BASE = process.env.TRADOVATE_BASE_URL || 'https://live.tradovateapi.com/v1';
-const MD_URL = process.env.TRADOVATE_MD_URL || 'wss://md.tradovateapi.com/v1/websocket';
+const BASE =
+  process.env.TRADOVATE_BASE_URL || 'https://live.tradovateapi.com/v1';
+const MD_URL =
+  process.env.TRADOVATE_MD_URL || 'wss://md.tradovateapi.com/v1/websocket';
 
 async function getToken() {
   const res = await fetch(`${BASE}/auth/accesstokenrequest`, {
@@ -34,15 +36,22 @@ async function getToken() {
 async function main() {
   console.log('Getting token...');
   const auth = await getToken();
-  if (auth.errorText) { console.error('Auth failed:', auth.errorText); process.exit(1); }
+  if (auth.errorText) {
+    console.error('Auth failed:', auth.errorText);
+    process.exit(1);
+  }
   console.log(`Token acquired (userId: ${auth.userId})`);
-  console.log(`accessToken ACL: ${JSON.parse(Buffer.from(auth.accessToken.split('.')[1], 'base64').toString()).acl}`);
+  console.log(
+    `accessToken ACL: ${JSON.parse(Buffer.from(auth.accessToken.split('.')[1], 'base64').toString()).acl}`,
+  );
 
   const ws = new WebSocket(MD_URL);
   let reqId = 0;
 
   // Client heartbeat
-  const hb = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('[]'); }, 2500);
+  const hb = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) ws.send('[]');
+  }, 2500);
 
   ws.on('open', () => console.log('WS connected'));
 
@@ -56,7 +65,9 @@ async function main() {
       reqId++;
       const tokenToUse = auth.accessToken;
       const msg = `authorize\n${reqId}\n\n${tokenToUse}`;
-      console.log(`> authorize with accessToken (id=${reqId}, token=${tokenToUse.slice(0, 20)}...)`);
+      console.log(
+        `> authorize with accessToken (id=${reqId}, token=${tokenToUse.slice(0, 20)}...)`,
+      );
       ws.send(msg);
     }
 
@@ -71,11 +82,20 @@ async function main() {
             console.log('\n=== AUTH SUCCESS ===\n');
 
             // Try ES and MES to see which one the account allows
-            const testSymbols = ['ES', 'ESM6', 'ESM2026', 'MES2026', 'MESM6', 'MES'];
+            const testSymbols = [
+              'ES',
+              'ESM6',
+              'ESM2026',
+              'MES2026',
+              'MESM6',
+              'MES',
+            ];
             for (const sym of testSymbols) {
               reqId++;
               const msg = `md/subscribeQuote\n${reqId}\n\n{"symbol":"${sym}"}`;
-              console.log(`> subscribe (id=${reqId}): md/subscribeQuote {"symbol":"${sym}"}`);
+              console.log(
+                `> subscribe (id=${reqId}): md/subscribeQuote {"symbol":"${sym}"}`,
+              );
               ws.send(msg);
             }
           }
@@ -98,7 +118,11 @@ async function main() {
   ws.on('error', (err) => console.error('WS error:', err.message));
 
   // Auto-close after 15 seconds
-  setTimeout(() => { clearInterval(hb); ws.close(); process.exit(0); }, 15000);
+  setTimeout(() => {
+    clearInterval(hb);
+    ws.close();
+    process.exit(0);
+  }, 15000);
 }
 
 main();

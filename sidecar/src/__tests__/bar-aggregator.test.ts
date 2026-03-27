@@ -29,10 +29,26 @@ describe('BarAggregator', () => {
 
   it('updates OHLC within the same minute', () => {
     const base = new Date('2026-03-26T02:15:00Z');
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 1000, timestamp: new Date(base.getTime() + 10_000) });
-    aggregator.onTick({ price: 5830.0, cumulativeVolume: 1005, timestamp: new Date(base.getTime() + 20_000) });
-    aggregator.onTick({ price: 5820.0, cumulativeVolume: 1010, timestamp: new Date(base.getTime() + 30_000) });
-    aggregator.onTick({ price: 5827.5, cumulativeVolume: 1015, timestamp: new Date(base.getTime() + 40_000) });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 1000,
+      timestamp: new Date(base.getTime() + 10_000),
+    });
+    aggregator.onTick({
+      price: 5830.0,
+      cumulativeVolume: 1005,
+      timestamp: new Date(base.getTime() + 20_000),
+    });
+    aggregator.onTick({
+      price: 5820.0,
+      cumulativeVolume: 1010,
+      timestamp: new Date(base.getTime() + 30_000),
+    });
+    aggregator.onTick({
+      price: 5827.5,
+      cumulativeVolume: 1015,
+      timestamp: new Date(base.getTime() + 40_000),
+    });
 
     const current = aggregator.getCurrentBar();
     expect(current!.open).toBe(5825.0);
@@ -43,10 +59,22 @@ describe('BarAggregator', () => {
   });
 
   it('flushes when minute boundary is crossed', () => {
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 1000, timestamp: new Date('2026-03-26T02:15:10Z') });
-    aggregator.onTick({ price: 5826.0, cumulativeVolume: 1005, timestamp: new Date('2026-03-26T02:15:30Z') });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 1000,
+      timestamp: new Date('2026-03-26T02:15:10Z'),
+    });
+    aggregator.onTick({
+      price: 5826.0,
+      cumulativeVolume: 1005,
+      timestamp: new Date('2026-03-26T02:15:30Z'),
+    });
     // New minute
-    aggregator.onTick({ price: 5828.0, cumulativeVolume: 1010, timestamp: new Date('2026-03-26T02:16:05Z') });
+    aggregator.onTick({
+      price: 5828.0,
+      cumulativeVolume: 1010,
+      timestamp: new Date('2026-03-26T02:16:05Z'),
+    });
 
     expect(flushed).toHaveLength(1);
     expect(flushed[0].open).toBe(5825.0);
@@ -55,18 +83,42 @@ describe('BarAggregator', () => {
   });
 
   it('computes volume as delta of cumulative values', () => {
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 1000, timestamp: new Date('2026-03-26T02:15:10Z') });
-    aggregator.onTick({ price: 5826.0, cumulativeVolume: 1050, timestamp: new Date('2026-03-26T02:15:30Z') });
-    aggregator.onTick({ price: 5828.0, cumulativeVolume: 1070, timestamp: new Date('2026-03-26T02:16:05Z') });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 1000,
+      timestamp: new Date('2026-03-26T02:15:10Z'),
+    });
+    aggregator.onTick({
+      price: 5826.0,
+      cumulativeVolume: 1050,
+      timestamp: new Date('2026-03-26T02:15:30Z'),
+    });
+    aggregator.onTick({
+      price: 5828.0,
+      cumulativeVolume: 1070,
+      timestamp: new Date('2026-03-26T02:16:05Z'),
+    });
 
     expect(flushed[0].volume).toBe(50); // 1050 - 1000
   });
 
   it('handles session reset (cumulative drops to lower value)', () => {
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 500000, timestamp: new Date('2026-03-26T02:15:10Z') });
-    aggregator.onTick({ price: 5826.0, cumulativeVolume: 500050, timestamp: new Date('2026-03-26T02:15:30Z') });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 500000,
+      timestamp: new Date('2026-03-26T02:15:10Z'),
+    });
+    aggregator.onTick({
+      price: 5826.0,
+      cumulativeVolume: 500050,
+      timestamp: new Date('2026-03-26T02:15:30Z'),
+    });
     // New minute — cumulative reset (maintenance break)
-    aggregator.onTick({ price: 5828.0, cumulativeVolume: 100, timestamp: new Date('2026-03-26T02:16:05Z') });
+    aggregator.onTick({
+      price: 5828.0,
+      cumulativeVolume: 100,
+      timestamp: new Date('2026-03-26T02:16:05Z'),
+    });
 
     expect(flushed[0].volume).toBe(50); // 500050 - 500000
     const current = aggregator.getCurrentBar();
@@ -74,7 +126,11 @@ describe('BarAggregator', () => {
   });
 
   it('flush() writes partial bar and resets', () => {
-    aggregator.onTick({ price: 5825.0, cumulativeVolume: 1000, timestamp: new Date('2026-03-26T02:15:10Z') });
+    aggregator.onTick({
+      price: 5825.0,
+      cumulativeVolume: 1000,
+      timestamp: new Date('2026-03-26T02:15:10Z'),
+    });
     aggregator.flush();
 
     expect(flushed).toHaveLength(1);

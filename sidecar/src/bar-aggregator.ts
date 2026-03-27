@@ -47,13 +47,12 @@ export class BarAggregator {
 
     if (!this.currentBar) {
       const isReset =
-        this.lastCumVolume > 0 &&
-        tick.cumulativeVolume < this.lastCumVolume;
+        this.lastCumVolume > 0 && tick.cumulativeVolume < this.lastCumVolume;
 
       this.currentMinute = minuteTs;
       this.barStartCumVolume = isReset
         ? 0
-        : (this.lastCumVolume || tick.cumulativeVolume);
+        : this.lastCumVolume || tick.cumulativeVolume;
       this.currentBar = {
         symbol: this.symbol,
         ts: minuteFloor(tick.timestamp),
