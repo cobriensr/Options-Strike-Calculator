@@ -703,7 +703,7 @@ describe('db.ts', () => {
       expect(result).toContain('SPX < 5600');
       expect(result).toContain('NCP diverges from NPP');
       expect(result).toContain('3 spreads');
-      expect(result).toContain('Entry 1: PCS 5Δ at 40%');
+      expect(result).toContain('Entry 1 (recommended): PCS 5Δ at 40% — Initial');
       expect(result).toContain('Entry 2 condition: Pullback to support');
       expect(result).toContain('Entry 3 condition: Breakout confirmation');
       // Only top 3 observations

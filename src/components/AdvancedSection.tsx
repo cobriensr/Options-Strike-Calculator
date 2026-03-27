@@ -36,6 +36,11 @@ export default function AdvancedSection({
   vixDataLoaded,
   selectedDate,
 }: Props) {
+  const todayDate = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+  const isToday = selectedDate === todayDate;
+
   return (
     <SectionBox
       label="Advanced"
@@ -175,7 +180,7 @@ export default function AdvancedSection({
           </div>
 
           {/* VIX OHLC display / error */}
-          {vixDataLoaded && selectedDate && !vixOHLC && (
+          {vixDataLoaded && selectedDate && !vixOHLC && !isToday && (
             <div className="border-edge mt-3.5 border-t pt-3.5">
               <ErrorMsg>No VIX data found for this date</ErrorMsg>
             </div>
