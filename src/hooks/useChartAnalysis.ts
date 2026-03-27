@@ -167,6 +167,28 @@ export function useChartAnalysis(opts: {
             onAnalysisSaved?.();
             // Notify parent so it can lock completed modes
             onModeCompleted?.(mode);
+
+            // Play a notification chime so the user knows analysis is ready
+            try {
+              const ctx = new AudioContext();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              osc.type = 'sine';
+              // Two-tone chime: E5 → G5
+              osc.frequency.setValueAtTime(659.25, ctx.currentTime);
+              osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.15);
+              gain.gain.setValueAtTime(0.3, ctx.currentTime);
+              gain.gain.exponentialRampToValueAtTime(
+                0.01,
+                ctx.currentTime + 0.4,
+              );
+              osc.start(ctx.currentTime);
+              osc.stop(ctx.currentTime + 0.4);
+            } catch {
+              // Audio not available — silent fallback
+            }
           }
           if (data.raw) setRawResponse(data.raw);
           if (!data.analysis && data.raw)
