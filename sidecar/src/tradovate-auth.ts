@@ -48,19 +48,16 @@ async function acquireToken(): Promise<TokenState> {
     sec: process.env.TRADOVATE_SECRET,
   };
 
-  // Log which fields are set (not values) for debugging
-  logger.info(
-    {
-      url: `${baseUrl}/auth/accesstokenrequest`,
-      hasName: !!credentials.name,
-      hasPassword: !!credentials.password,
-      hasAppId: !!credentials.appId,
-      hasCid: !!credentials.cid,
-      hasSec: !!credentials.sec,
-      hasDeviceId: !!credentials.deviceId,
-    },
-    'Sending auth request',
-  );
+  // Log which fields are set (not values) — inline in message for Railway visibility
+  const fieldStatus = [
+    `name=${credentials.name ? 'SET' : 'MISSING'}`,
+    `password=${credentials.password ? 'SET' : 'MISSING'}`,
+    `appId=${credentials.appId || 'MISSING'}`,
+    `cid=${credentials.cid ? 'SET' : 'MISSING'}`,
+    `sec=${credentials.sec ? 'SET' : 'MISSING'}`,
+    `deviceId=${credentials.deviceId ? 'SET' : 'MISSING'}`,
+  ].join(', ');
+  logger.info(`Sending auth request to ${baseUrl}/auth/accesstokenrequest [${fieldStatus}]`);
 
   const res = await fetch(`${baseUrl}/auth/accesstokenrequest`, {
     method: 'POST',
@@ -71,17 +68,14 @@ async function acquireToken(): Promise<TokenState> {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    logger.error(
-      { status: res.status, statusText: res.statusText, body: text.slice(0, 500) },
-      'Tradovate auth HTTP error',
-    );
+    logger.error(`Tradovate auth HTTP ${res.status} ${res.statusText}: ${text.slice(0, 500)}`);
     throw new Error(`Tradovate auth HTTP ${res.status}: ${text.slice(0, 200)}`);
   }
 
   const body: AccessTokenResponse = await res.json();
 
   if (body.errorText) {
-    logger.error({ errorText: body.errorText }, 'Tradovate auth rejected');
+    logger.error(`Tradovate auth rejected: ${body.errorText}`);
   }
 
   const state = parseTokenResponse(body);
