@@ -145,6 +145,7 @@ function createVix(
     vixDataLoaded: false,
     vixDataSource: '',
     vixOHLC: null,
+    setVixOHLC: vi.fn(),
     vixOHLCField: 'smart',
     setVixOHLCField: vi.fn(),
     selectedDate: '',

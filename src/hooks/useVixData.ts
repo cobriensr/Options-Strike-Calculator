@@ -18,6 +18,7 @@ export interface UseVixDataReturn {
   vixDataLoaded: boolean;
   vixDataSource: string;
   vixOHLC: VIXDayData | null;
+  setVixOHLC: (v: VIXDayData | null) => void;
   vixOHLCField: OHLCField;
   setVixOHLCField: (field: OHLCField) => void;
   selectedDate: string;
@@ -170,6 +171,7 @@ export function useVixData(
     vixDataLoaded,
     vixDataSource,
     vixOHLC,
+    setVixOHLC,
     vixOHLCField,
     setVixOHLCField,
     selectedDate,

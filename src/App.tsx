@@ -115,6 +115,19 @@ export default function StrikeCalculator() {
     getEarlyCloseHourET(vix.selectedDate),
   );
 
+  // Derive VIX OHLC from history candles when static data and API have no entry
+  useEffect(() => {
+    if (vix.vixOHLC) return; // already have OHLC from static data or API
+    const candles = historyData.history?.vix.candles;
+    if (!candles || candles.length === 0) return;
+    vix.setVixOHLC({
+      open: candles[0]!.open,
+      close: candles[candles.length - 1]!.close,
+      high: Math.max(...candles.map((c) => c.high)),
+      low: Math.min(...candles.map((c) => c.low)),
+    });
+  }, [vix.vixOHLC, historyData.history?.vix.candles, vix.setVixOHLC]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Track user edits so auto-fill overwrites defaults but not manual input
   const spotEdited = useRef(false);
   const spxEdited = useRef(false);
