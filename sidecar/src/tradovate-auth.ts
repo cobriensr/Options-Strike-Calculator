@@ -2,6 +2,7 @@ import logger from './logger.js';
 
 interface AccessTokenResponse {
   accessToken?: string;
+  mdAccessToken?: string;
   expirationTime?: string;
   userId?: number;
   name?: string;
@@ -10,6 +11,7 @@ interface AccessTokenResponse {
 
 interface TokenState {
   accessToken: string;
+  mdAccessToken: string;
   expiresAt: number;
   userId: number;
 }
@@ -30,6 +32,7 @@ function parseTokenResponse(body: AccessTokenResponse): TokenState {
     throw new Error('Tradovate auth: missing accessToken or expirationTime');
   return {
     accessToken: body.accessToken,
+    mdAccessToken: body.mdAccessToken ?? body.accessToken,
     expiresAt: new Date(body.expirationTime).getTime(),
     userId: body.userId ?? 0,
   };
@@ -103,9 +106,9 @@ async function renewToken(currentToken: string): Promise<TokenState> {
   return state;
 }
 
-export async function getAccessToken(): Promise<string> {
+async function ensureToken(): Promise<TokenState> {
   if (tokenState && tokenState.expiresAt > Date.now() + RENEW_BUFFER_MS) {
-    return tokenState.accessToken;
+    return tokenState;
   }
   if (tokenState) {
     if (!renewInFlight) {
@@ -119,10 +122,21 @@ export async function getAccessToken(): Promise<string> {
         });
     }
     tokenState = await renewInFlight;
-    return tokenState.accessToken;
+    return tokenState;
   }
   tokenState = await acquireToken();
-  return tokenState.accessToken;
+  return tokenState;
+}
+
+export async function getAccessToken(): Promise<string> {
+  const state = await ensureToken();
+  return state.accessToken;
+}
+
+/** Get the market data access token (for WebSocket authorization). */
+export async function getMdAccessToken(): Promise<string> {
+  const state = await ensureToken();
+  return state.mdAccessToken;
 }
 
 export function clearTokenState(): void {
