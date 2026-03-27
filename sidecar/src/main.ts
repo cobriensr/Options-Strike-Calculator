@@ -80,8 +80,11 @@ async function connectWithRetry(): Promise<void> {
         aggregator?.flush();
       }, 60_000);
 
-      // Get mdAccessToken for market data WS (separate from REST accessToken)
-      const mdToken = await getMdAccessToken();
+      // Try both tokens — log which one we're using
+      // accessToken has Prices:Read ACL; mdAccessToken is md-specific
+      // Try accessToken first since authorize format is now fixed
+      const mdToken = token; // use same accessToken for both REST and WS
+      logger.info('Using accessToken for WS auth (has Prices:Read ACL)');
 
       // Wait for the WebSocket session to end (disconnect/error)
       await new Promise<void>((resolve) => {
