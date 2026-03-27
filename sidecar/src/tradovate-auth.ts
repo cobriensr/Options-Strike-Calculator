@@ -52,12 +52,13 @@ async function acquireToken(): Promise<TokenState> {
   };
 
   // Log which fields are set (not values) — inline in message for Railway visibility
+  const pw = credentials.password ?? '';
   const fieldStatus = [
-    `name=${credentials.name ? 'SET' : 'MISSING'}`,
-    `password=${credentials.password ? 'SET' : 'MISSING'}`,
+    `name=${credentials.name ? `SET(${credentials.name.length}ch)` : 'MISSING'}`,
+    `password=SET(${pw.length}ch, first="${pw[0] ?? '?'}", last="${pw[pw.length - 1] ?? '?'}")`,
     `appId=${credentials.appId || 'MISSING'}`,
-    `cid=${credentials.cid ? 'SET' : 'MISSING'}`,
-    `sec=${credentials.sec ? 'SET' : 'MISSING'}`,
+    `cid=${credentials.cid ? `SET(${credentials.cid})` : 'MISSING'}`,
+    `sec=SET(${(credentials.sec ?? '').length}ch)`,
     `deviceId=${credentials.deviceId ? 'SET' : 'MISSING'}`,
   ].join(', ');
   logger.info(`Sending auth request to ${baseUrl}/auth/accesstokenrequest [${fieldStatus}]`);
