@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseFrame, type TradovateFrame } from '../tradovate-parser.js';
+import { parseFrame } from '../tradovate-parser.js';
 
 describe('parseFrame', () => {
   it('parses open frame', () => {
