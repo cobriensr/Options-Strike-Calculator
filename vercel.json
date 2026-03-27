@@ -51,6 +51,10 @@
     {
       "path": "/api/cron/fetch-economic-calendar",
       "schedule": "25 13,14 * * 1-5"
+    },
+    {
+      "path": "/api/cron/compute-es-overnight",
+      "schedule": "35 13,14 * * 1-5"
     }
   ],
   "functions": {
