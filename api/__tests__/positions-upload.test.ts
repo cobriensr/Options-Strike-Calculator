@@ -24,11 +24,12 @@ vi.mock('../_lib/logger.js', () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
-import handler, {
-  parsePaperMoneyCSV,
+import handler from '../positions.js';
+import {
+  parseFullCSV,
   parseTosExpiration,
-  parseTosMarkValue,
-} from '../positions.js';
+  parseDollarValue,
+} from '../_lib/csv-parser.js';
 import { rejectIfNotOwner, rejectIfRateLimited } from '../_lib/api-helpers.js';
 import { savePositions } from '../_lib/db.js';
 
@@ -148,84 +149,94 @@ describe('parseTosExpiration', () => {
   });
 });
 
-describe('parseTosMarkValue', () => {
+describe('parseDollarValue', () => {
   it('parses "$450.00" → 450', () => {
-    expect(parseTosMarkValue('$450.00')).toBe(450);
+    expect(parseDollarValue('$450.00')).toBe(450);
   });
 
   it('parses "($1,050.00)" → -1050', () => {
-    expect(parseTosMarkValue('($1,050.00)')).toBe(-1050);
+    expect(parseDollarValue('($1,050.00)')).toBe(-1050);
   });
 
   it('parses "($650.00)" → -650', () => {
-    expect(parseTosMarkValue('($650.00)')).toBe(-650);
+    expect(parseDollarValue('($650.00)')).toBe(-650);
   });
 
   it('parses "$550.00" → 550', () => {
-    expect(parseTosMarkValue('$550.00')).toBe(550);
+    expect(parseDollarValue('$550.00')).toBe(550);
   });
 });
 
-describe('parsePaperMoneyCSV — Options section (open positions)', () => {
-  it('extracts all 8 SPX legs and marks as not closed', () => {
-    const { legs, closed } = parsePaperMoneyCSV(SAMPLE_CSV);
-    expect(legs).toHaveLength(8);
-    expect(closed).toBe(false);
+describe('parseFullCSV — Options section (open positions)', () => {
+  it('extracts all 8 SPX legs with Options section present', () => {
+    const parsed = parseFullCSV(SAMPLE_CSV);
+    expect(parsed.openLegs).toHaveLength(8);
+    expect(parsed.hasOptionsSection).toBe(true);
   });
 
   it('correctly parses short legs (negative quantity)', () => {
-    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
-    const shorts = legs.filter((l) => l.quantity < 0);
+    const { openLegs } = parseFullCSV(SAMPLE_CSV);
+    const shorts = openLegs.filter((l: { quantity: number }) => l.quantity < 0);
     expect(shorts).toHaveLength(4);
-    expect(shorts.map((l) => l.strike).sort((a, b) => a - b)).toEqual([
-      6680, 6685, 6690, 6695,
-    ]);
+    expect(
+      shorts
+        .map((l: { strike: number }) => l.strike)
+        .sort((a: number, b: number) => a - b),
+    ).toEqual([6680, 6685, 6690, 6695]);
     for (const leg of shorts) {
       expect(leg.quantity).toBe(-20);
     }
   });
 
   it('correctly parses long legs (positive quantity)', () => {
-    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
-    const longs = legs.filter((l) => l.quantity > 0);
+    const { openLegs } = parseFullCSV(SAMPLE_CSV);
+    const longs = openLegs.filter((l: { quantity: number }) => l.quantity > 0);
     expect(longs).toHaveLength(4);
-    expect(longs.map((l) => l.strike).sort((a, b) => a - b)).toEqual([
-      6660, 6665, 6670, 6675,
-    ]);
+    expect(
+      longs
+        .map((l: { strike: number }) => l.strike)
+        .sort((a: number, b: number) => a - b),
+    ).toEqual([6660, 6665, 6670, 6675]);
   });
 
   it('sets putCall to PUT for all legs', () => {
-    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
-    for (const leg of legs) {
+    const { openLegs } = parseFullCSV(SAMPLE_CSV);
+    for (const leg of openLegs) {
       expect(leg.putCall).toBe('PUT');
     }
   });
 
   it('parses expiration dates correctly', () => {
-    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
-    for (const leg of legs) {
+    const { openLegs } = parseFullCSV(SAMPLE_CSV);
+    for (const leg of openLegs) {
       expect(leg.expiration).toBe('2026-03-17');
     }
   });
 
   it('parses averagePrice (Trade Price) correctly', () => {
-    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
-    const leg6695 = legs.find((l) => l.strike === 6695);
+    const { openLegs } = parseFullCSV(SAMPLE_CSV);
+    const leg6695 = openLegs.find((l: { strike: number }) => l.strike === 6695);
     expect(leg6695?.averagePrice).toBe(2.3);
   });
 
   it('parses marketValue (Mark Value) correctly including negatives', () => {
-    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
-    const long6660 = legs.find((l) => l.strike === 6660 && l.quantity > 0);
+    const { openLegs } = parseFullCSV(SAMPLE_CSV);
+    const long6660 = openLegs.find(
+      (l: { strike: number; quantity: number }) =>
+        l.strike === 6660 && l.quantity > 0,
+    );
     expect(long6660?.marketValue).toBe(450);
 
-    const short6695 = legs.find((l) => l.strike === 6695 && l.quantity < 0);
+    const short6695 = openLegs.find(
+      (l: { strike: number; quantity: number }) =>
+        l.strike === 6695 && l.quantity < 0,
+    );
     expect(short6695?.marketValue).toBe(-1050);
   });
 
   it('sets symbol from Option Code column', () => {
-    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
-    const leg = legs.find((l) => l.strike === 6660);
+    const { openLegs } = parseFullCSV(SAMPLE_CSV);
+    const leg = openLegs.find((l: { strike: number }) => l.strike === 6660);
     expect(leg?.symbol).toBe('SPXW260317P6660');
   });
 
@@ -236,80 +247,95 @@ AAPL,AAPL260317C150,17 MAR 26,150,CALL,+10,2.00,2.50,$2500.00
 SPX,SPXW260317P6680,17 MAR 26,6680,PUT,-20,1.575,.325,($650.00)
 ,OVERALL TOTALS,,,,,,,$1850.00
 `;
-    const { legs } = parsePaperMoneyCSV(csvWithNonSPX);
-    expect(legs).toHaveLength(1);
-    expect(legs[0]?.strike).toBe(6680);
+    const { openLegs } = parseFullCSV(csvWithNonSPX);
+    expect(openLegs).toHaveLength(1);
+    expect(openLegs[0]?.strike).toBe(6680);
   });
 
   it('returns empty legs if no Options or Trade History section found', () => {
     const noOptions = 'Cash Balance\nDATE,TIME,AMOUNT\n3/17/26,00:00:00,1000';
-    const { legs } = parsePaperMoneyCSV(noOptions);
-    expect(legs).toEqual([]);
+    const { openLegs } = parseFullCSV(noOptions);
+    expect(openLegs).toEqual([]);
   });
 
   it('stops parsing at OVERALL TOTALS row', () => {
-    const { legs } = parsePaperMoneyCSV(SAMPLE_CSV);
-    expect(legs).toHaveLength(8);
+    const { openLegs } = parseFullCSV(SAMPLE_CSV);
+    expect(openLegs).toHaveLength(8);
   });
 });
 
-describe('parsePaperMoneyCSV — Account Trade History (closed positions)', () => {
-  it('extracts TO OPEN legs from trade history and marks as closed', () => {
-    const { legs, closed } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
-    expect(closed).toBe(true);
-    expect(legs).toHaveLength(2);
+describe('parseFullCSV — Account Trade History (closed positions)', () => {
+  it('identifies closed spreads from trade history', () => {
+    const parsed = parseFullCSV(CLOSED_POSITIONS_CSV);
+    expect(parsed.hasOptionsSection).toBe(false);
+    expect(parsed.closedSpreads).toHaveLength(1);
+    // All legs closed — no remaining open legs
+    expect(parsed.openLegs).toHaveLength(0);
   });
 
-  it('parses short and long legs with correct quantities', () => {
-    const { legs } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
-    const short = legs.find((l) => l.quantity < 0);
-    const long = legs.find((l) => l.quantity > 0);
+  it('parses TO OPEN trades with correct strikes and quantities', () => {
+    const { allTrades } = parseFullCSV(CLOSED_POSITIONS_CSV);
+    const opens = allTrades.filter(
+      (t: { posEffect: string }) => t.posEffect === 'TO OPEN',
+    );
+    expect(opens).toHaveLength(2);
+    const short = opens.find((t: { quantity: number }) => t.quantity < 0);
+    const long = opens.find((t: { quantity: number }) => t.quantity > 0);
     expect(short?.strike).toBe(6535);
     expect(short?.quantity).toBe(-20);
     expect(long?.strike).toBe(6515);
     expect(long?.quantity).toBe(20);
   });
 
-  it('sets averagePrice from the TO OPEN trade price', () => {
-    const { legs } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
-    const short = legs.find((l) => l.strike === 6535);
-    const long = legs.find((l) => l.strike === 6515);
-    expect(short?.averagePrice).toBe(2.65);
-    expect(long?.averagePrice).toBe(1.6);
+  it('sets price from the TO OPEN trade price', () => {
+    const { allTrades } = parseFullCSV(CLOSED_POSITIONS_CSV);
+    const opens = allTrades.filter(
+      (t: { posEffect: string }) => t.posEffect === 'TO OPEN',
+    );
+    const short = opens.find((t: { strike: number }) => t.strike === 6535);
+    const long = opens.find((t: { strike: number }) => t.strike === 6515);
+    expect(short?.price).toBe(2.65);
+    expect(long?.price).toBe(1.6);
   });
 
-  it('fills marketValue from TO CLOSE prices for P&L calculation', () => {
-    const { legs } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
-    // Short 6535 closed at 0.15 → marketValue = 0.15 * -20 * 100 = -300
-    const short = legs.find((l) => l.strike === 6535);
-    expect(short?.marketValue).toBe(-300);
-    // Long 6515 closed at 0.10 → marketValue = 0.10 * 20 * 100 = 200
-    const long = legs.find((l) => l.strike === 6515);
-    expect(long?.marketValue).toBe(200);
+  it('captures TO CLOSE trades for P&L calculation', () => {
+    const { allTrades } = parseFullCSV(CLOSED_POSITIONS_CSV);
+    const closes = allTrades.filter(
+      (t: { posEffect: string }) => t.posEffect === 'TO CLOSE',
+    );
+    expect(closes).toHaveLength(2);
+    const closedShort = closes.find(
+      (t: { strike: number }) => t.strike === 6535,
+    );
+    const closedLong = closes.find(
+      (t: { strike: number }) => t.strike === 6515,
+    );
+    expect(closedShort?.price).toBe(0.15);
+    expect(closedLong?.price).toBe(0.1);
   });
 
   it('parses expiration correctly from trade history', () => {
-    const { legs } = parsePaperMoneyCSV(CLOSED_POSITIONS_CSV);
-    for (const leg of legs) {
-      expect(leg.expiration).toBe('2026-03-25');
+    const { allTrades } = parseFullCSV(CLOSED_POSITIONS_CSV);
+    for (const trade of allTrades) {
+      expect(trade.expiration).toBe('2026-03-25');
     }
   });
 
-  it('extracts all 4 spreads (8 legs) from multi-spread closed CSV', () => {
-    const { legs, closed } = parsePaperMoneyCSV(CLOSED_MULTI_SPREAD_CSV);
-    expect(closed).toBe(true);
-    expect(legs).toHaveLength(8);
+  it('extracts all 4 closed spreads from multi-spread CSV', () => {
+    const parsed = parseFullCSV(CLOSED_MULTI_SPREAD_CSV);
+    expect(parsed.hasOptionsSection).toBe(false);
+    expect(parsed.closedSpreads).toHaveLength(4);
+    // All closed — no remaining open legs
+    expect(parsed.openLegs).toHaveLength(0);
 
-    const shorts = legs.filter((l) => l.quantity < 0);
-    const longs = legs.filter((l) => l.quantity > 0);
-    expect(shorts).toHaveLength(4);
-    expect(longs).toHaveLength(4);
-    expect(shorts.map((l) => l.strike).sort((a, b) => a - b)).toEqual([
-      6535, 6540, 6545, 6550,
-    ]);
-    expect(longs.map((l) => l.strike).sort((a, b) => a - b)).toEqual([
-      6515, 6520, 6525, 6530,
-    ]);
+    const shortStrikes = parsed.closedSpreads
+      .map((s: { shortStrike: number }) => s.shortStrike)
+      .sort((a: number, b: number) => a - b);
+    const longStrikes = parsed.closedSpreads
+      .map((s: { longStrike: number }) => s.longStrike)
+      .sort((a: number, b: number) => a - b);
+    expect(shortStrikes).toEqual([6535, 6540, 6545, 6550]);
+    expect(longStrikes).toEqual([6515, 6520, 6525, 6530]);
   });
 });
 

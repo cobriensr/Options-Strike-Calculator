@@ -10,15 +10,14 @@
  *
  * POST /api/positions
  *   Accepts a thinkorswim paperMoney CSV account statement export.
- *   Parses the "Options" section to extract current positions,
- *   then groups, summarises, and saves identically to the GET flow.
+ *   Parses all sections (Options, Trade History, P&L, Account Summary)
+ *   to build a complete picture of open positions + closed trades today.
  *
  *   Body: raw CSV text (Content-Type: text/plain or application/json with { csv: "..." })
  *
  * Both return:
  *   { positions: { summary, legs, spreads, stats }, saved: boolean }
  */
-
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
@@ -29,16 +28,22 @@ import {
 } from './_lib/api-helpers.js';
 import { savePositions, getDb, type PositionLeg } from './_lib/db.js';
 import logger from './_lib/logger.js';
+import {
+  parseFullCSV,
+  buildFullSummary,
+  parseTosExpiration,
+} from './_lib/csv-parser.js';
+
+// Re-export for any external consumers
+export { parseTosExpiration };
 
 // ============================================================
 // TYPES for Schwab Trader API responses
 // ============================================================
-
 interface SchwabAccountNumber {
   accountNumber: string;
   hashValue: string;
 }
-
 interface SchwabPosition {
   shortQuantity: number;
   longQuantity: number;
@@ -58,7 +63,6 @@ interface SchwabPosition {
     type?: string;
   };
 }
-
 interface SchwabAccount {
   securitiesAccount: {
     accountNumber: string;
@@ -74,7 +78,6 @@ interface SchwabAccount {
 // ============================================================
 // HELPERS
 // ============================================================
-
 /** Get today's date in ET as YYYY-MM-DD */
 function getTodayET(): string {
   return new Date().toLocaleDateString('en-CA', {
@@ -94,7 +97,6 @@ function getNowCT(): string {
 
 /** Check if an expiration date string matches today */
 function isExpiringToday(expirationDate: string, today: string): boolean {
-  // Schwab returns dates like "2026-03-16T00:00:00.000+00:00" or just "2026-03-16"
   return expirationDate.startsWith(today);
 }
 
@@ -130,7 +132,6 @@ function groupIntoSpreads(legs: PositionLeg[]): Spread[] {
     const usedLongs = new Set<number>();
 
     for (const short of shorts) {
-      // Find the closest long leg not yet paired
       let bestIdx = -1;
       let bestDist = Infinity;
       for (let i = 0; i < longs.length; i++) {
@@ -138,7 +139,6 @@ function groupIntoSpreads(legs: PositionLeg[]): Spread[] {
         const leg = longs[i]!;
         const dist = Math.abs(leg.strike - short.strike);
         if (dist < bestDist && dist <= 50) {
-          // max 50-pt wide spread
           bestDist = dist;
           bestIdx = i;
         }
@@ -155,7 +155,6 @@ function groupIntoSpreads(legs: PositionLeg[]): Spread[] {
         const width = Math.abs(long.strike - short.strike);
         const type =
           short.putCall === 'CALL' ? 'CALL CREDIT SPREAD' : 'PUT CREDIT SPREAD';
-
         paired.push({
           type: type as 'CALL CREDIT SPREAD' | 'PUT CREDIT SPREAD',
           shortLeg: short,
@@ -172,7 +171,6 @@ function groupIntoSpreads(legs: PositionLeg[]): Spread[] {
           width,
         });
       } else {
-        // Unpaired short — treat as single
         paired.push({
           type: 'SINGLE',
           shortLeg: short,
@@ -190,28 +188,26 @@ function groupIntoSpreads(legs: PositionLeg[]): Spread[] {
   }
 
   spreads.push(...pairLegs(calls), ...pairLegs(puts));
-
   return spreads;
 }
 
 /**
- * Generate a human-readable summary string for prompt injection.
+ * Generate a human-readable summary string for the Schwab GET path.
+ * The CSV POST path uses buildFullSummary from csv-parser.ts instead.
  */
 function buildSummary(
   spreads: Spread[],
   legs: PositionLeg[],
   spxPrice?: number,
-  closed?: boolean,
 ): string {
   if (spreads.length === 0) return 'No open SPX 0DTE positions.';
 
   const callSpreads = spreads.filter((s) => s.type === 'CALL CREDIT SPREAD');
   const putSpreads = spreads.filter((s) => s.type === 'PUT CREDIT SPREAD');
-
-  const label = closed ? 'Closed' : 'Open';
   const lines: string[] = [];
+
   lines.push(
-    `=== ${label} SPX 0DTE Positions (${spreads.length} spread${spreads.length > 1 ? 's' : ''}) ===`,
+    `=== Open SPX 0DTE Positions (${spreads.length} spread${spreads.length > 1 ? 's' : ''}) ===`,
   );
   if (spxPrice) lines.push(`SPX at fetch time: ${spxPrice}`);
   lines.push('');
@@ -252,7 +248,6 @@ function buildSummary(
     lines.push('');
   }
 
-  // Aggregate stats
   const totalDelta = legs.reduce(
     (sum, l) => sum + (l.delta ?? 0) * l.quantity,
     0,
@@ -262,20 +257,19 @@ function buildSummary(
     0,
   );
   const totalPnl = spreads.reduce((sum, s) => sum + s.pnl, 0);
-
   lines.push(
     'AGGREGATE:',
     `  Net delta: ${totalDelta.toFixed(3)} | Net theta: ${totalTheta.toFixed(2)}`,
     `  Total unrealized P&L: $${totalPnl.toFixed(2)}`,
   );
 
-  // Key strikes for the analysis
   const shortCalls = callSpreads
     .map((s) => s.shortLeg.strike)
     .sort((a, b) => a - b);
   const shortPuts = putSpreads
     .map((s) => s.shortLeg.strike)
     .sort((a, b) => b - a);
+
   if (shortCalls.length > 0) {
     const nearest = shortCalls[0]!;
     lines.push(
@@ -295,271 +289,13 @@ function buildSummary(
 }
 
 // ============================================================
-// CSV PARSING (thinkorswim paperMoney account statement)
-// ============================================================
-
-const MONTH_MAP: Record<string, string> = {
-  JAN: '01',
-  FEB: '02',
-  MAR: '03',
-  APR: '04',
-  MAY: '05',
-  JUN: '06',
-  JUL: '07',
-  AUG: '08',
-  SEP: '09',
-  OCT: '10',
-  NOV: '11',
-  DEC: '12',
-};
-
-/** Parse "17 MAR 26" → "2026-03-17" */
-export function parseTosExpiration(raw: string): string {
-  const parts = raw.trim().split(/\s+/);
-  if (parts.length !== 3) return raw;
-  const [day, month, year] = parts;
-  const mm = MONTH_MAP[month!.toUpperCase()];
-  if (!mm) return raw;
-  const yyyy = year!.length === 2 ? `20${year}` : year!;
-  return `${yyyy}-${mm}-${day!.padStart(2, '0')}`;
-}
-
-/** Parse "$450.00" → 450, "($1,050.00)" → -1050 */
-export function parseTosMarkValue(raw: string): number {
-  const cleaned = raw.replaceAll(/[$,]/g, '');
-  // Parentheses indicate negative: ($1050.00) → -1050
-  const match = /^\((.+)\)$/.exec(cleaned);
-  if (match) return -Number.parseFloat(match[1]!);
-  return Number.parseFloat(cleaned);
-}
-
-/**
- * Parse the "Options" section of a thinkorswim paperMoney CSV export.
- * Returns PositionLeg[] for SPX options only.
- *
- * Expected columns:
- *   Symbol, Option Code, Exp, Strike, Type, Qty, Trade Price, Mark, Mark Value
- *
- * Falls back to parsing the "Account Trade History" section when no Options
- * section is present (e.g. when all positions have been closed for the day).
- */
-export function parsePaperMoneyCSV(csv: string): {
-  legs: PositionLeg[];
-  closed: boolean;
-} {
-  const lines = csv.split(/\r?\n/);
-
-  // Try the Options section first (open positions)
-  const headerIdx = lines.findIndex((line) =>
-    line.startsWith(
-      'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark,Mark Value',
-    ),
-  );
-
-  if (headerIdx >= 0) {
-    return { legs: parseOptionsSection(lines, headerIdx), closed: false };
-  }
-
-  // Fallback: parse Account Trade History (closed positions)
-  return { legs: parseTradeHistory(lines), closed: true };
-}
-
-/** Parse the structured "Options" section (open positions). */
-function parseOptionsSection(
-  lines: string[],
-  headerIdx: number,
-): PositionLeg[] {
-  const legs: PositionLeg[] = [];
-
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const line = lines[i]!.trim();
-    if (!line || line.startsWith(',OVERALL TOTALS')) break;
-
-    // CSV fields may be quoted (mark value can have commas like "$1,050.00")
-    const fields = parseCSVLine(line);
-    if (fields.length < 9) continue;
-
-    const [
-      symbol,
-      optionCode,
-      exp,
-      strikeStr,
-      type,
-      qtyStr,
-      tradePrice,
-      ,
-      markValue,
-    ] = fields;
-
-    // Only SPX options
-    if (symbol !== 'SPX') continue;
-
-    const putCall = type!.toUpperCase() as 'PUT' | 'CALL';
-    if (putCall !== 'PUT' && putCall !== 'CALL') continue;
-
-    const strike = Number.parseFloat(strikeStr!);
-    const quantity = Number.parseInt(qtyStr!.replace('+', ''), 10);
-    const avgPrice = Number.parseFloat(tradePrice!);
-    const marketValue = parseTosMarkValue(markValue!);
-    const expiration = parseTosExpiration(exp!);
-
-    if (Number.isNaN(strike) || Number.isNaN(quantity)) continue;
-
-    legs.push({
-      putCall,
-      symbol: optionCode || `SPX_${strike}${putCall[0]}`,
-      strike,
-      expiration,
-      quantity,
-      averagePrice: avgPrice,
-      marketValue,
-      delta: undefined,
-      theta: undefined,
-      gamma: undefined,
-    });
-  }
-
-  return legs;
-}
-
-/**
- * Parse the "Account Trade History" section to reconstruct positions from
- * completed trades. Used when all positions have been closed and there is
- * no "Options" section in the export.
- *
- * TO OPEN legs become the position legs (with their open trade prices).
- * TO CLOSE leg prices are used for marketValue so P&L calculates correctly.
- *
- * Account Trade History columns:
- *   (empty), Exec Time, Spread, Side, Qty, Pos Effect, Symbol, Exp, Strike, Type, Price, Net Price, Order Type
- *
- * Continuation rows for multi-leg spreads start with ,,, (first 3 fields empty).
- */
-function parseTradeHistory(lines: string[]): PositionLeg[] {
-  // Find "Account Trade History" section
-  const sectionIdx = lines.findIndex(
-    (line) => line.trim() === 'Account Trade History',
-  );
-  if (sectionIdx < 0) return [];
-
-  // Find column header row (contains "Exec Time" and "Strike")
-  let headerIdx = -1;
-  for (
-    let i = sectionIdx + 1;
-    i < Math.min(sectionIdx + 5, lines.length);
-    i++
-  ) {
-    if (lines[i]!.includes('Exec Time') && lines[i]!.includes('Strike')) {
-      headerIdx = i;
-      break;
-    }
-  }
-  if (headerIdx < 0) return [];
-
-  const openLegs: PositionLeg[] = [];
-  // Map strike_putCall → close price for filling marketValue
-  const closePrices = new Map<string, number>();
-
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (!line.trim()) continue;
-    // Stop at the next section (line that doesn't start with comma)
-    if (!line.startsWith(',')) break;
-
-    const fields = parseCSVLine(line);
-    // fields[0] is always empty (leading comma)
-    // Primary row: [empty, execTime, spread, side, qty, posEffect, symbol, exp, strike, type, price, netPrice, orderType]
-    // Continuation: [empty, empty, empty, side, qty, posEffect, symbol, exp, strike, type, price, netPrice/CREDIT/DEBIT, empty]
-
-    const qtyStr = fields[4]?.trim();
-    const posEffect = fields[5]?.trim();
-    const symbol = fields[6]?.trim();
-    const exp = fields[7]?.trim();
-    const strikeStr = fields[8]?.trim();
-    const type = fields[9]?.trim();
-    const priceStr = fields[10]?.trim();
-
-    if (!symbol || symbol !== 'SPX') continue;
-    if (!type || !strikeStr || !priceStr) continue;
-
-    const putCall = type.toUpperCase() as 'PUT' | 'CALL';
-    if (putCall !== 'PUT' && putCall !== 'CALL') continue;
-
-    const strike = Number.parseFloat(strikeStr);
-    const legPrice = Number.parseFloat(priceStr);
-    if (Number.isNaN(strike) || Number.isNaN(legPrice)) continue;
-
-    const quantity = Number.parseInt(qtyStr?.replace('+', '') ?? '0', 10);
-    if (quantity === 0 || Number.isNaN(quantity)) continue;
-
-    const expiration = parseTosExpiration(exp!);
-    const key = `${strike}_${putCall}`;
-
-    if (posEffect === 'TO OPEN') {
-      openLegs.push({
-        putCall,
-        symbol: `SPX_${strike}${putCall[0]}`,
-        strike,
-        expiration,
-        quantity,
-        averagePrice: legPrice,
-        marketValue: 0, // Filled from close trades below
-        delta: undefined,
-        theta: undefined,
-        gamma: undefined,
-      });
-    } else if (posEffect === 'TO CLOSE') {
-      closePrices.set(key, legPrice);
-    }
-  }
-
-  // Fill marketValue from close prices so P&L calculates correctly:
-  // marketValue = closePrice × quantity × 100 (same sign convention as Options section)
-  for (const leg of openLegs) {
-    const closePrice = closePrices.get(`${leg.strike}_${leg.putCall}`);
-    if (closePrice !== undefined) {
-      leg.marketValue = closePrice * leg.quantity * 100;
-    }
-  }
-
-  return openLegs;
-}
-
-/** Parse a single CSV line, handling quoted fields with commas */
-function parseCSVLine(line: string): string[] {
-  const fields: string[] = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]!;
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
-      fields.push(current.trim());
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-  fields.push(current.trim());
-  return fields;
-}
-
-// ============================================================
 // SHARED RESPONSE BUILDER
 // ============================================================
-
-function buildPositionResponse(
-  spxLegs: PositionLeg[],
-  spxPrice?: number,
-  closed?: boolean,
-) {
+function buildPositionResponse(spxLegs: PositionLeg[], spxPrice?: number) {
   const spreads = groupIntoSpreads(spxLegs);
   const callSpreads = spreads.filter((s) => s.type === 'CALL CREDIT SPREAD');
   const putSpreads = spreads.filter((s) => s.type === 'PUT CREDIT SPREAD');
-  const summary = buildSummary(spreads, spxLegs, spxPrice, closed);
-
+  const summary = buildSummary(spreads, spxLegs, spxPrice);
   const totalPnl = spreads.reduce((sum, s) => sum + s.pnl, 0);
   const totalCredit = spreads.reduce(
     (sum, s) => sum + s.credit * 100 * Math.abs(s.shortLeg.quantity),
@@ -596,36 +332,29 @@ function buildPositionResponse(
 // ============================================================
 // HANDLER
 // ============================================================
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/positions');
-
   if (req.method !== 'GET' && req.method !== 'POST') {
     done({ status: 405 });
     return res.status(405).json({ error: 'GET or POST only' });
   }
-
   const botCheck = await checkBot(req);
   if (botCheck.isBot) {
     done({ status: 403 });
     return res.status(403).json({ error: 'Access denied' });
   }
-
   const ownerCheck = rejectIfNotOwner(req, res);
   if (ownerCheck) {
     done({ status: 401 });
     return ownerCheck;
   }
-
   const rateLimited = await rejectIfRateLimited(req, res, 'positions', 20);
   if (rateLimited) {
     done({ status: 429 });
     return;
   }
-
   const today = (req.query.date as string) || getTodayET();
   const fetchTime = getNowCT();
-
   if (req.method === 'POST') {
     return handleCSVUpload(req, res, today, fetchTime);
   }
@@ -635,7 +364,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 // ============================================================
 // POST — CSV upload from thinkorswim paperMoney
 // ============================================================
-
 async function handleCSVUpload(
   req: VercelRequest,
   res: VercelResponse,
@@ -643,7 +371,6 @@ async function handleCSVUpload(
   fetchTime: string,
 ) {
   try {
-    // Accept CSV as plain text body or JSON { csv: "..." }
     let csv: string;
     if (typeof req.body === 'string') {
       csv = req.body;
@@ -654,18 +381,21 @@ async function handleCSVUpload(
         error: 'Request body must be CSV text or JSON { csv: "..." }',
       });
     }
-
     if (!csv.trim()) {
       return res.status(400).json({ error: 'Empty CSV body' });
     }
-
-    const MAX_CSV_BYTES = 1_024_000; // ~1MB
+    const MAX_CSV_BYTES = 1_024_000;
     if (csv.length > MAX_CSV_BYTES) {
       return res.status(413).json({ error: 'CSV too large. Maximum 1MB.' });
     }
 
-    const { legs: spxLegs, closed } = parsePaperMoneyCSV(csv);
-    if (spxLegs.length === 0) {
+    // Parse all sections of the CSV holistically
+    const parsed = parseFullCSV(csv);
+
+    // Open legs from Options section (or derived from Trade History fallback)
+    const spxLegs = parsed.openLegs;
+
+    if (spxLegs.length === 0 && parsed.allTrades.length === 0) {
       return res.status(400).json({
         error:
           'No SPX options found in CSV. Ensure the file contains an "Options" or "Account Trade History" section with SPX trades.',
@@ -676,7 +406,11 @@ async function handleCSVUpload(
       ? Number.parseFloat(req.query.spx as string)
       : undefined;
 
-    const r = buildPositionResponse(spxLegs, spxPrice, closed);
+    // Build spread stats from open legs
+    const r = buildPositionResponse(spxLegs, spxPrice);
+
+    // Override summary with the full version (includes open + closed + account)
+    const fullSummary = buildFullSummary(parsed, spxPrice);
 
     // Find matching snapshot
     const db = getDb();
@@ -694,7 +428,7 @@ async function handleCSVUpload(
         fetchTime,
         accountHash: 'paperMoney',
         spxPrice,
-        summary: r.summary,
+        summary: fullSummary,
         legs: spxLegs,
         totalSpreads: r.spreads.length,
         callSpreads: r.callSpreadsCount,
@@ -716,9 +450,10 @@ async function handleCSVUpload(
 
     return res.status(200).json({
       positions: {
-        summary: r.summary,
+        summary: fullSummary,
         legs: spxLegs,
         spreads: r.spreads,
+        closedToday: parsed.closedSpreads,
         stats: {
           totalSpreads: r.spreads.length,
           callSpreads: r.callSpreadsCount,
@@ -729,6 +464,9 @@ async function handleCSVUpload(
           totalCredit: r.totalCredit,
           currentValue: r.totalValue,
           unrealizedPnl: r.totalPnl,
+          dayPnl: parsed.dayPnl,
+          ytdPnl: parsed.ytdPnl,
+          netLiquidatingValue: parsed.netLiquidatingValue,
         },
       },
       saved,
@@ -747,7 +485,6 @@ async function handleCSVUpload(
 // ============================================================
 // GET — live Schwab Trader API fetch
 // ============================================================
-
 async function handleSchwabFetch(
   req: VercelRequest,
   res: VercelResponse,
@@ -755,31 +492,25 @@ async function handleSchwabFetch(
   fetchTime: string,
 ) {
   try {
-    // 1. Get account numbers
     const acctResult = await schwabTraderFetch<SchwabAccountNumber[]>(
       '/accounts/accountNumbers',
     );
     if ('error' in acctResult) {
       return res.status(acctResult.status).json({ error: acctResult.error });
     }
-
     if (!acctResult.data || acctResult.data.length === 0) {
       return res.status(404).json({ error: 'No linked accounts found' });
     }
-
     const accountHash = acctResult.data[0]!.hashValue;
 
-    // 2. Get positions for the first account
     const posResult = await schwabTraderFetch<SchwabAccount>(
       `/accounts/${accountHash}?fields=positions`,
     );
     if ('error' in posResult) {
       return res.status(posResult.status).json({ error: posResult.error });
     }
-
     const positions = posResult.data?.securitiesAccount?.positions ?? [];
 
-    // 3. Filter for SPX 0DTE options expiring today
     const spxLegs: PositionLeg[] = [];
     for (const pos of positions) {
       const inst = pos.instrument;
@@ -793,7 +524,6 @@ async function handleSchwabFetch(
       ) {
         const qty = (pos.longQuantity || 0) - (pos.shortQuantity || 0);
         if (qty === 0) continue;
-
         spxLegs.push({
           putCall: inst.putCall,
           symbol: inst.symbol,
@@ -809,14 +539,11 @@ async function handleSchwabFetch(
       }
     }
 
-    // 4. Group into spreads and build summary
     const spxPrice = req.query.spx
       ? Number.parseFloat(req.query.spx as string)
       : undefined;
-
     const r = buildPositionResponse(spxLegs, spxPrice);
 
-    // 5. Find matching snapshot
     const db = getDb();
     const snapRows = await db`
       SELECT id FROM market_snapshots WHERE date = ${today} ORDER BY created_at DESC LIMIT 1
@@ -824,7 +551,6 @@ async function handleSchwabFetch(
     const snapshotId =
       snapRows.length > 0 ? ((snapRows[0]?.id as number) ?? null) : null;
 
-    // 6. Save to DB
     let saved = false;
     try {
       await savePositions({
