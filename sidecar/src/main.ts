@@ -1,4 +1,4 @@
-import { getAccessToken, clearTokenState } from './tradovate-auth.js';
+import { getAccessToken } from './tradovate-auth.js';
 import { TradovateWsClient, type TradovateQuote } from './tradovate-ws.js';
 import { BarAggregator, type Tick } from './bar-aggregator.js';
 import { resolveContractSymbol } from './contract-roller.js';
@@ -135,7 +135,6 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// eslint-disable-next-line @typescript-eslint/use-unknown-in-catch-callback-variable
 main().catch((err) => {
   logger.error({ err }, 'Fatal error in main');
   process.exit(1);
