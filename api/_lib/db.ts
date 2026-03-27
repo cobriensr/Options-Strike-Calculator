@@ -604,6 +604,73 @@ const MIGRATIONS: Migration[] = [
       `;
     },
   },
+  {
+    id: 12,
+    description:
+      'Create es_bars table for ES futures 1-minute OHLCV bars from sidecar',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS es_bars (
+          id          BIGSERIAL PRIMARY KEY,
+          symbol      TEXT NOT NULL DEFAULT 'ES',
+          ts          TIMESTAMPTZ NOT NULL,
+          open        NUMERIC(10,2) NOT NULL,
+          high        NUMERIC(10,2) NOT NULL,
+          low         NUMERIC(10,2) NOT NULL,
+          close       NUMERIC(10,2) NOT NULL,
+          volume      INTEGER NOT NULL DEFAULT 0,
+          tick_count  INTEGER NOT NULL DEFAULT 0,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_es_bars_sym_ts
+        ON es_bars (symbol, ts)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_es_bars_ts
+        ON es_bars (ts DESC)
+      `;
+    },
+  },
+  {
+    id: 13,
+    description:
+      'Create es_overnight_summaries table for pre-computed overnight ES metrics',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS es_overnight_summaries (
+          id                  SERIAL PRIMARY KEY,
+          trade_date          DATE NOT NULL UNIQUE,
+          globex_open         NUMERIC(10,2),
+          globex_high         NUMERIC(10,2),
+          globex_low          NUMERIC(10,2),
+          globex_close        NUMERIC(10,2),
+          vwap                NUMERIC(10,2),
+          total_volume        INTEGER,
+          bar_count           INTEGER,
+          range_pts           NUMERIC(10,2),
+          range_pct           NUMERIC(6,4),
+          cash_open           NUMERIC(10,2),
+          prev_cash_close     NUMERIC(10,2),
+          gap_pts             NUMERIC(10,2),
+          gap_pct             NUMERIC(6,4),
+          gap_direction       TEXT,
+          gap_size_class      TEXT,
+          cash_open_pct_rank  NUMERIC(6,2),
+          position_class      TEXT,
+          vol_20d_avg         INTEGER,
+          vol_ratio           NUMERIC(6,2),
+          vol_class           TEXT,
+          gap_vs_vwap_pts     NUMERIC(10,2),
+          vwap_signal         TEXT,
+          fill_score          INTEGER,
+          fill_probability    TEXT,
+          created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+    },
+  },
 ];
 
 /**

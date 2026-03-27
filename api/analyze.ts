@@ -57,6 +57,8 @@ import logger from './_lib/logger.js';
 import { getActiveLessons, formatLessonsBlock } from './_lib/lessons.js';
 import type { IvTermRow } from './iv-term-structure.js';
 import { formatIvTermStructureForClaude } from './iv-term-structure.js';
+import type { EsOvernightSummaryRow } from './es-overnight.js';
+import { formatEsOvernightForClaude } from './es-overnight.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -705,6 +707,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let allExpiryStrikeContext: string | null = null;
   let greekFlowContext: string | null = null;
   let ivTermStructureContext: string | null = null;
+  let esOvernightContext: string | null = null;
   let spxCandlesContext: string | null = null;
   let darkPoolContext: string | null = null;
 
@@ -809,6 +812,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err: ivErr }, 'Failed to fetch IV term structure');
   }
 
+  // On-demand ES overnight summary from DB
+  try {
+    const esDate =
+      analysisDate ??
+      new Date().toLocaleDateString('en-CA', {
+        timeZone: 'America/New_York',
+      });
+    const esDb = getDb();
+    const esRows = await esDb`
+      SELECT * FROM es_overnight_summaries
+      WHERE trade_date = ${esDate}
+      LIMIT 1
+    `;
+    if (esRows.length > 0) {
+      esOvernightContext = formatEsOvernightForClaude(
+        esRows[0] as unknown as EsOvernightSummaryRow,
+        context.straddleConeUpper as number | undefined,
+        context.straddleConeLower as number | undefined,
+      );
+    }
+  } catch (esErr) {
+    logger.error({ err: esErr }, 'Failed to fetch ES overnight summary');
+  }
+
   if (!context.isBacktest) {
     try {
       const { candles, previousClose } = await fetchSPXCandles();
@@ -902,6 +929,7 @@ ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time ser
 ${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
 ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
+${esOvernightContext ? `\n## ES Futures Overnight Context\nThe following ES futures overnight session data provides institutional positioning context for gap analysis. Use this to assess gap fill probability and overnight volume conviction.\n\n${esOvernightContext}\n` : ''}
 ${darkPoolContext ? `\n## SPY Dark Pool Institutional Blocks (from API)\nLarge ($5M+) dark pool block trades in SPY, translated to approximate SPX levels. Dark pool prints reveal where institutions are buying or selling in size off-exchange — these create structural support/resistance levels that options flow, gamma, and charm cannot see. When a dark pool buyer-initiated cluster aligns with a positive gamma wall, that level has the highest-confidence structural support. When a dark pool seller cluster aligns with negative gamma, that level is a confirmed ceiling.\n\n${darkPoolContext}\n` : ''}
 ${spxCandlesContext ? `\n## SPX Intraday Price Action (from Schwab — 5-min candles)\nReal OHLCV price data for today's session. Use this to assess price structure: is SPX making higher lows (uptrend intact despite flow concerns), compressing into a range (IC-favorable), or printing wide-range bars (elevated volatility)? The session range relative to the straddle cone shows how much of the expected move has been consumed. VWAP acts as an institutional reference price — sustained trading below VWAP on a bearish flow day confirms the thesis, while price reclaiming VWAP on a bearish day is a warning.\n\n${spxCandlesContext}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
