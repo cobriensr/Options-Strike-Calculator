@@ -16,8 +16,6 @@
  *   (TO OPEN legs with matching TO CLOSE legs = realized P&L)
  * - Trade History TO OPEN legs WITHOUT matching TO CLOSE = still open
  *   (used as fallback if Options section is missing)
- *
- * This replaces the old parsePaperMoneyCSV which only read one section.
  */
 
 import type { PositionLeg } from './db.js';
@@ -28,12 +26,12 @@ export interface ParsedTrade {
   putCall: 'PUT' | 'CALL';
   strike: number;
   expiration: string;
-  quantity: number; // negative = short, positive = long
-  price: number; // per-contract fill price
-  netPrice: number; // spread net price (credit/debit)
+  quantity: number;
+  price: number;
+  netPrice: number;
   posEffect: 'TO OPEN' | 'TO CLOSE';
-  execTime: string; // raw exec time string
-  spreadType: string; // VERTICAL, SINGLE, etc.
+  execTime: string;
+  spreadType: string;
 }
 
 export interface ClosedSpread {
@@ -42,47 +40,29 @@ export interface ClosedSpread {
   longStrike: number;
   width: number;
   contracts: number;
-  openCredit: number; // per-spread credit received
-  closeDebit: number; // per-spread debit paid to close
-  realizedPnl: number; // total P&L for this spread
+  openCredit: number;
+  closeDebit: number;
+  realizedPnl: number;
   openTime: string;
   closeTime: string;
 }
 
 export interface ParsedCSV {
-  /** Current open position legs (from Options section) */
   openLegs: PositionLeg[];
-  /** Trades that were opened AND closed today (from Trade History) */
   closedSpreads: ClosedSpread[];
-  /** All trades executed today (from Trade History) */
   allTrades: ParsedTrade[];
-  /** Day P&L from Profits and Losses section */
   dayPnl: number | null;
-  /** YTD P&L from Profits and Losses section */
   ytdPnl: number | null;
-  /** Net Liquidating Value from Account Summary */
   netLiquidatingValue: number | null;
-  /** Starting cash balance */
   startingBalance: number | null;
-  /** Whether the Options section was found */
   hasOptionsSection: boolean;
 }
 
-// ── Month map for date parsing ──────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────
 
 const MONTH_MAP: Record<string, string> = {
-  JAN: '01',
-  FEB: '02',
-  MAR: '03',
-  APR: '04',
-  MAY: '05',
-  JUN: '06',
-  JUL: '07',
-  AUG: '08',
-  SEP: '09',
-  OCT: '10',
-  NOV: '11',
-  DEC: '12',
+  JAN: '01', FEB: '02', MAR: '03', APR: '04', MAY: '05', JUN: '06',
+  JUL: '07', AUG: '08', SEP: '09', OCT: '10', NOV: '11', DEC: '12',
 };
 
 /** Parse "27 MAR 26" → "2026-03-27" */
@@ -96,7 +76,7 @@ export function parseTosExpiration(raw: string): string {
   return `${yyyy}-${mm}-${day!.padStart(2, '0')}`;
 }
 
-/** Parse "$450.00" → 450, "($1,050.00)" → -1050, handle commas */
+/** Parse "$450.00" → 450, "($1,050.00)" → -1050 */
 export function parseDollarValue(raw: string): number {
   const cleaned = raw.replaceAll(/[$,\s]/g, '');
   const match = /^\((.+)\)$/.exec(cleaned);
@@ -105,7 +85,7 @@ export function parseDollarValue(raw: string): number {
 }
 
 /** Parse a CSV line handling quoted fields with commas */
-function parseCSVLine(line: string): string[] {
+export function parseCSVLine(line: string): string[] {
   const fields: string[] = [];
   let current = '';
   let inQuotes = false;
@@ -126,10 +106,6 @@ function parseCSVLine(line: string): string[] {
 
 // ── Section finders ─────────────────────────────────────────
 
-function findSectionStart(lines: string[], sectionName: string): number {
-  return lines.findIndex((line) => line.trim() === sectionName);
-}
-
 function findHeaderRow(
   lines: string[],
   afterIdx: number,
@@ -141,8 +117,7 @@ function findHeaderRow(
     i < Math.min(afterIdx + maxLookAhead + 1, lines.length);
     i++
   ) {
-    const line = lines[i]!;
-    if (requiredFields.every((f) => line.includes(f))) {
+    if (requiredFields.every((f) => lines[i]!.includes(f))) {
       return i;
     }
   }
@@ -152,7 +127,6 @@ function findHeaderRow(
 // ── Parse Options section (open positions) ──────────────────
 
 function parseOptionsSection(lines: string[]): PositionLeg[] {
-  // Find the Options header — flexible match
   const headerIdx = lines.findIndex((line) =>
     line.startsWith('Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price'),
   );
@@ -187,7 +161,6 @@ function parseOptionsSection(lines: string[]): PositionLeg[] {
 
     if (Number.isNaN(strike) || Number.isNaN(quantity)) continue;
 
-    // Mark Value is the last column when present (may have a Mark column before it)
     let marketValue = 0;
     if (hasMarkValue && fields.length >= 9) {
       marketValue = parseDollarValue(fields[8]!);
@@ -210,10 +183,12 @@ function parseOptionsSection(lines: string[]): PositionLeg[] {
   return legs;
 }
 
-// ── Parse Trade History (all trades today) ───────────────────
+// ── Parse Trade History ─────────────────────────────────────
 
 function parseTradeHistory(lines: string[]): ParsedTrade[] {
-  const sectionIdx = findSectionStart(lines, 'Account Trade History');
+  const sectionIdx = lines.findIndex(
+    (line) => line.trim() === 'Account Trade History',
+  );
   if (sectionIdx < 0) return [];
 
   const headerIdx = findHeaderRow(lines, sectionIdx, ['Exec Time', 'Strike']);
@@ -226,12 +201,10 @@ function parseTradeHistory(lines: string[]): ParsedTrade[] {
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const line = lines[i]!;
     if (!line.trim()) continue;
-    // Stop at the next section (line that doesn't start with comma)
     if (!line.startsWith(',')) break;
 
     const fields = parseCSVLine(line);
 
-    // Primary row has execTime in fields[1], continuation rows have empty fields[1]
     const execTime = fields[1]?.trim();
     const spreadType = fields[2]?.trim();
     const qtyStr = fields[4]?.trim();
@@ -243,7 +216,6 @@ function parseTradeHistory(lines: string[]): ParsedTrade[] {
     const priceStr = fields[10]?.trim();
     const netPriceStr = fields[11]?.trim();
 
-    // Track spread context from primary rows
     if (execTime) {
       currentExecTime = execTime;
       if (spreadType) currentSpreadType = spreadType;
@@ -267,7 +239,6 @@ function parseTradeHistory(lines: string[]): ParsedTrade[] {
         ? posEffect
         : 'TO OPEN';
 
-    // Net price: parse if it's a number (primary rows), ignore CREDIT/DEBIT text
     let netPrice = 0;
     if (netPriceStr) {
       const parsed = Number.parseFloat(netPriceStr);
@@ -290,38 +261,35 @@ function parseTradeHistory(lines: string[]): ParsedTrade[] {
   return trades;
 }
 
-// ── Identify closed spreads from Trade History ──────────────
+// ── Identify closed spreads ─────────────────────────────────
 
 function identifyClosedSpreads(trades: ParsedTrade[]): ClosedSpread[] {
-  // Group trades by strike+type+posEffect
   const opens = trades.filter((t) => t.posEffect === 'TO OPEN');
   const closes = trades.filter((t) => t.posEffect === 'TO CLOSE');
 
   if (closes.length === 0) return [];
 
-  // Match close legs with open legs by strike and type
   const closedSpreads: ClosedSpread[] = [];
-  const usedCloseIndices = new Set<number>();
 
-  // Group opens into spreads (pair short+long of same type from same exec time)
+  // Group open trades into spreads (pair short+long of same type near same exec time)
   const openSpreads: Array<{
     shortLeg: ParsedTrade;
     longLeg: ParsedTrade;
     netCredit: number;
   }> = [];
 
-  // Sort opens by exec time to group spread legs together
   const sortedOpens = [...opens].sort((a, b) =>
     a.execTime.localeCompare(b.execTime),
   );
+  const usedOpenIndices = new Set<number>();
 
   for (let i = 0; i < sortedOpens.length; i++) {
+    if (usedOpenIndices.has(i)) continue;
     const a = sortedOpens[i]!;
-    if (a.quantity >= 0) continue; // short legs only
+    if (a.quantity >= 0) continue;
 
-    // Find the matching long leg (same type, same exec time, closest strike)
     for (let j = 0; j < sortedOpens.length; j++) {
-      if (i === j) continue;
+      if (i === j || usedOpenIndices.has(j)) continue;
       const b = sortedOpens[j]!;
       if (
         b.quantity <= 0 ||
@@ -332,6 +300,8 @@ function identifyClosedSpreads(trades: ParsedTrade[]): ClosedSpread[] {
 
       const width = Math.abs(b.strike - a.strike);
       if (width > 0 && width <= 50) {
+        usedOpenIndices.add(i);
+        usedOpenIndices.add(j);
         openSpreads.push({
           shortLeg: a,
           longLeg: b,
@@ -342,27 +312,24 @@ function identifyClosedSpreads(trades: ParsedTrade[]): ClosedSpread[] {
     }
   }
 
-  // Now match each open spread with its close
+  // Match each open spread with its close
+  const usedCloseIndices = new Set<number>();
+
   for (const spread of openSpreads) {
-    // Find close legs matching this spread's strikes
     const closeShortIdx = closes.findIndex(
       (c, idx) =>
         !usedCloseIndices.has(idx) &&
         c.strike === spread.shortLeg.strike &&
-        c.putCall === spread.shortLeg.putCall &&
-        c.posEffect === 'TO CLOSE',
+        c.putCall === spread.shortLeg.putCall,
     );
-
     if (closeShortIdx < 0) continue;
 
     const closeLongIdx = closes.findIndex(
       (c, idx) =>
         !usedCloseIndices.has(idx) &&
         c.strike === spread.longLeg.strike &&
-        c.putCall === spread.longLeg.putCall &&
-        c.posEffect === 'TO CLOSE',
+        c.putCall === spread.longLeg.putCall,
     );
-
     if (closeLongIdx < 0) continue;
 
     usedCloseIndices.add(closeShortIdx);
@@ -376,13 +343,11 @@ function identifyClosedSpreads(trades: ParsedTrade[]): ClosedSpread[] {
     const closeDebit = Math.abs(closeShort.price) - Math.abs(closeLong.price);
     const realizedPnl = (openCredit - closeDebit) * 100 * contracts;
 
-    const type: 'CALL CREDIT SPREAD' | 'PUT CREDIT SPREAD' =
-      spread.shortLeg.putCall === 'CALL'
-        ? 'CALL CREDIT SPREAD'
-        : 'PUT CREDIT SPREAD';
-
     closedSpreads.push({
-      type,
+      type:
+        spread.shortLeg.putCall === 'CALL'
+          ? 'CALL CREDIT SPREAD'
+          : 'PUT CREDIT SPREAD',
       shortStrike: spread.shortLeg.strike,
       longStrike: spread.longLeg.strike,
       width: Math.abs(spread.longLeg.strike - spread.shortLeg.strike),
@@ -404,11 +369,9 @@ function parsePnLSection(lines: string[]): {
   dayPnl: number | null;
   ytdPnl: number | null;
 } {
-  // Find the SPX P&L line in "Profits and Losses" section
   for (const line of lines) {
     if (line.startsWith('SPX,')) {
       const fields = parseCSVLine(line);
-      // Fields: Symbol, Description, P/L Open, P/L %, P/L Day, P/L YTD, ...
       const dayPnl = fields[4] ? parseDollarValue(fields[4]) : null;
       const ytdPnl = fields[5] ? parseDollarValue(fields[5]) : null;
       return {
@@ -427,9 +390,7 @@ function parseAccountSummary(lines: string[]): {
     if (line.startsWith('Net Liquidating Value,')) {
       const fields = parseCSVLine(line);
       const val = fields[1] ? parseDollarValue(fields[1]) : null;
-      return {
-        netLiquidatingValue: val && !Number.isNaN(val) ? val : null,
-      };
+      return { netLiquidatingValue: val && !Number.isNaN(val) ? val : null };
     }
   }
   return { netLiquidatingValue: null };
@@ -451,37 +412,24 @@ function parseStartingBalance(lines: string[]): number | null {
 
 // ── Main parser ─────────────────────────────────────────────
 
-/**
- * Parse the entire paperMoney CSV export holistically.
- *
- * Returns:
- * - openLegs: current open positions (from Options section)
- * - closedSpreads: spreads opened and closed today (from Trade History)
- * - allTrades: every trade executed today
- * - dayPnl / ytdPnl: from P&L section
- * - netLiquidatingValue: from Account Summary
- * - hasOptionsSection: whether the Options section was found
- */
 export function parseFullCSV(csv: string): ParsedCSV {
   const lines = csv.split(/\r?\n/);
 
-  // 1. Parse Options section (open positions)
+  // 1. Options section (open positions — authoritative)
   const openLegs = parseOptionsSection(lines);
   const hasOptionsSection = openLegs.length > 0;
 
-  // 2. Parse Trade History (all trades today)
+  // 2. Trade History (all trades today)
   const allTrades = parseTradeHistory(lines);
 
-  // 3. Identify closed spreads from Trade History
+  // 3. Closed spreads from Trade History
   const closedSpreads = identifyClosedSpreads(allTrades);
 
-  // 4. If no Options section, derive open positions from Trade History
-  //    (TO OPEN legs without matching TO CLOSE = still open)
+  // 4. Fallback: if no Options section, derive open positions from Trade History
   if (!hasOptionsSection && allTrades.length > 0) {
     const openTrades = allTrades.filter((t) => t.posEffect === 'TO OPEN');
     const closeTrades = allTrades.filter((t) => t.posEffect === 'TO CLOSE');
 
-    // Build a usage count map for close trades
     const closeUsage = new Map<string, number>();
     for (const c of closeTrades) {
       const key = `${c.strike}_${c.putCall}`;
@@ -495,7 +443,6 @@ export function parseFullCSV(csv: string): ParsedCSV {
       const remainingQty = openQty - closedQty;
 
       if (remainingQty > 0) {
-        // Partially or fully open
         const sign = t.quantity > 0 ? 1 : -1;
         openLegs.push({
           putCall: t.putCall,
@@ -509,24 +456,18 @@ export function parseFullCSV(csv: string): ParsedCSV {
           theta: undefined,
           gamma: undefined,
         });
-        // Consume the close usage
         if (closedQty > 0) {
           closeUsage.set(key, Math.max(0, closedQty - openQty));
         }
       } else {
-        // Fully closed — consume from close usage
         closeUsage.set(key, closedQty - openQty);
       }
     }
   }
 
-  // 5. Parse P&L section
+  // 5–7. Account data
   const { dayPnl, ytdPnl } = parsePnLSection(lines);
-
-  // 6. Parse Account Summary
   const { netLiquidatingValue } = parseAccountSummary(lines);
-
-  // 7. Parse starting balance
   const startingBalance = parseStartingBalance(lines);
 
   return {
@@ -541,27 +482,32 @@ export function parseFullCSV(csv: string): ParsedCSV {
   };
 }
 
+// ── Summary builder ─────────────────────────────────────────
+
 /**
- * Build a human-readable summary that includes BOTH open positions
- * and today's closed trades for complete context.
+ * Build a human-readable summary including open positions,
+ * closed trades, and account context.
  */
-export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
+export function buildFullSummary(
+  parsed: ParsedCSV,
+  spxPrice?: number,
+): string {
   const lines: string[] = [];
 
   // ── Open positions ──────────────────────────────────────
   if (parsed.openLegs.length > 0) {
-    // Group into spreads for display
     const calls = parsed.openLegs.filter((l) => l.putCall === 'CALL');
     const puts = parsed.openLegs.filter((l) => l.putCall === 'PUT');
 
-    const openSpreads = pairForDisplay(calls, puts, spxPrice);
+    const spreadLines = pairForDisplay(calls, puts, spxPrice);
+    const spreadCount = spreadLines.filter((l) => l.startsWith('  Short')).length;
+
     lines.push(
-      `=== OPEN SPX 0DTE Positions (${openSpreads.length} spread${openSpreads.length !== 1 ? 's' : ''}) ===`,
+      `=== OPEN SPX 0DTE Positions (${spreadCount} spread${spreadCount !== 1 ? 's' : ''}) ===`,
     );
     if (spxPrice) lines.push(`SPX at fetch time: ${spxPrice}`);
     lines.push('');
-
-    for (const s of openSpreads) {
+    for (const s of spreadLines) {
       lines.push(s);
     }
     lines.push('');
@@ -606,21 +552,36 @@ export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
     lines.push('');
   }
 
-  // ── Account context ─────────────────────────────────────
-  if (
-    parsed.dayPnl != null ||
-    parsed.ytdPnl != null ||
-    parsed.netLiquidatingValue != null
-  ) {
-    lines.push('=== Account ===');
-    if (parsed.dayPnl != null)
-      lines.push(`  Day P&L (SPX): $${parsed.dayPnl.toLocaleString()}`);
-    if (parsed.ytdPnl != null)
-      lines.push(`  YTD P&L: $${parsed.ytdPnl.toLocaleString()}`);
-    if (parsed.netLiquidatingValue != null)
-      lines.push(
-        `  Net Liquidating Value: $${parsed.netLiquidatingValue.toLocaleString()}`,
-      );
+  // ── Max risk calculation (correct for IC) ────────────────
+  if (parsed.openLegs.length > 0) {
+    const calls = parsed.openLegs.filter((l) => l.putCall === 'CALL');
+    const puts = parsed.openLegs.filter((l) => l.putCall === 'PUT');
+    const callRisk = computeSideMaxRisk(calls);
+    const putRisk = computeSideMaxRisk(puts);
+
+    if (callRisk > 0 || putRisk > 0) {
+      lines.push('=== Max Risk ===');
+      if (callRisk > 0 && putRisk > 0) {
+        // Iron condor: only ONE side can be max loss at a time
+        lines.push(
+          `  Call side max risk: $${callRisk.toLocaleString()} | Put side max risk: $${putRisk.toLocaleString()}`,
+        );
+        lines.push(
+          `  Worst-case max risk: $${Math.max(callRisk, putRisk).toLocaleString()} (only one side of an IC can be max loss — calls and puts cannot both be ITM simultaneously)`,
+        );
+      } else {
+        const totalRisk = callRisk + putRisk;
+        const side = callRisk > 0 ? 'Call' : 'Put';
+        lines.push(`  ${side} side max risk: $${totalRisk.toLocaleString()}`);
+      }
+      lines.push('');
+    }
+  }
+
+  // ── Day P&L context (no account balances) ───────────────
+  if (parsed.dayPnl != null) {
+    lines.push(`=== Today's P&L ===`);
+    lines.push(`  Day P&L (SPX): $${parsed.dayPnl.toLocaleString()}`);
   }
 
   return lines.join('\n');
@@ -693,4 +654,43 @@ function pairForDisplay(
   formatGroup(puts, 'PUT CREDIT SPREADS');
 
   return lines;
+}
+
+// ── Helper: compute max risk for one side of positions ───────
+
+function computeSideMaxRisk(legs: PositionLeg[]): number {
+  const shorts = legs
+    .filter((l) => l.quantity < 0)
+    .sort((a, b) => a.strike - b.strike);
+  const longs = legs
+    .filter((l) => l.quantity > 0)
+    .sort((a, b) => a.strike - b.strike);
+
+  let totalRisk = 0;
+  const usedLongs = new Set<number>();
+
+  for (const short of shorts) {
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < longs.length; i++) {
+      if (usedLongs.has(i)) continue;
+      const dist = Math.abs(longs[i]!.strike - short.strike);
+      if (dist < bestDist && dist <= 50) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      usedLongs.add(bestIdx);
+      const long = longs[bestIdx]!;
+      const width = Math.abs(long.strike - short.strike);
+      const credit =
+        Math.abs(short.averagePrice) - Math.abs(long.averagePrice);
+      const maxLoss = (width - credit) * 100 * Math.abs(short.quantity);
+      totalRisk += Math.max(0, maxLoss);
+    }
+  }
+
+  return Math.round(totalRisk);
 }
