@@ -1,69 +1,77 @@
 /**
- * Schwab SPX Intraday Candles
+ * SPX Intraday Candles (Unusual Whales)
  *
- * Fetches 5-minute OHLCV candles for $SPX from the Schwab Market Data API.
+ * Fetches 5-minute OHLCV candles for SPX from the UW API.
  * Used on-demand at analysis time (not a cron) to give Claude price
  * structure context: higher lows, range compression, wide-range bars,
  * session high/low relative to the straddle cone.
  *
- * Uses the same OAuth token as positions (getAccessToken from schwab.ts).
+ * Uses the same UW_API_KEY as all other UW integrations — no separate
+ * OAuth dependency. Replaces the Schwab candles integration.
  */
-import { getAccessToken } from './schwab.js';
 import logger from './logger.js';
 
-const MARKET_DATA_BASE = 'https://api.schwabapi.com/marketdata/v1';
+const UW_BASE = 'https://api.unusualwhales.com/api';
 
 // ── Types ───────────────────────────────────────────────────
 
+/** UW candle format from /stock/SPX/ohlc/5m */
+interface UWCandle {
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: number;
+  total_volume: number;
+  start_time: string; // ISO timestamp: "2026-03-27T13:30:00Z"
+  end_time: string;
+  market_time: 'pr' | 'r' | 'po'; // premarket, regular, postmarket
+}
+
+interface UWOHLCResponse {
+  data: UWCandle[];
+}
+
+/** Normalized candle used by the formatter */
 export interface SPXCandle {
   open: number;
   high: number;
   low: number;
   close: number;
   volume: number;
-  datetime: number; // epoch ms
-}
-
-interface PriceHistoryResponse {
-  symbol: string;
-  empty: boolean;
-  previousClose?: number;
-  candles: SPXCandle[];
+  datetime: number; // epoch ms (start_time)
 }
 
 // ── Fetch ───────────────────────────────────────────────────
 
 /**
- * Fetch today's 5-minute SPX candles from Schwab Market Data API.
+ * Fetch today's 5-minute SPX candles from UW API.
  * Returns candles ordered by time ascending, or empty array on failure.
  *
- * Uses the same OAuth token as positions — no separate auth needed.
+ * Only returns regular-session candles (market_time === 'r').
  */
-export async function fetchSPXCandles(): Promise<{
+export async function fetchSPXCandles(
+  apiKey: string,
+  date?: string,
+): Promise<{
   candles: SPXCandle[];
   previousClose: number | null;
 }> {
-  const authResult = await getAccessToken();
-  if ('error' in authResult) {
-    logger.warn(
-      { err: authResult.error },
-      'Schwab auth failed for candles fetch — skipping',
-    );
-    return { candles: [], previousClose: null };
-  }
-
   try {
-    const params = new URLSearchParams({
-      symbol: '$SPX',
-      periodType: 'day',
-      period: '1',
-      frequencyType: 'minute',
-      frequency: '5',
-      needPreviousClose: 'true',
-    });
+    const params = new URLSearchParams();
+    if (date) params.set('date', date);
+    // Limit to today's candles only — regular session is ~78 bars
+    params.set('limit', '500');
 
-    const res = await fetch(`${MARKET_DATA_BASE}/pricehistory?${params}`, {
-      headers: { Authorization: `Bearer ${authResult.token}` },
+    const qs = params.toString();
+    const suffix = qs ? '?' + qs : '';
+    const url = `${UW_BASE}/stock/SPX/ohlc/5m${suffix}`;
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
       signal: AbortSignal.timeout(10_000),
     });
 
@@ -71,25 +79,51 @@ export async function fetchSPXCandles(): Promise<{
       const body = await res.text().catch(() => '');
       logger.warn(
         { status: res.status, body: body.slice(0, 200) },
-        'Schwab candles API returned non-OK',
+        'UW candles API returned non-OK',
       );
       return { candles: [], previousClose: null };
     }
 
-    const data: PriceHistoryResponse = await res.json();
-    if (data.empty || !data.candles?.length) {
-      return { candles: [], previousClose: data.previousClose ?? null };
+    const data: UWOHLCResponse = await res.json();
+
+    if (!data.data?.length) {
+      return { candles: [], previousClose: null };
     }
 
-    // Sort by time ascending (should already be, but ensure)
-    const sorted = data.candles.sort((a, b) => a.datetime - b.datetime);
+    // Filter to regular session only and normalize
+    const regularCandles = data.data
+      .filter((c) => c.market_time === 'r')
+      .map(
+        (c): SPXCandle => ({
+          open: Number.parseFloat(c.open),
+          high: Number.parseFloat(c.high),
+          low: Number.parseFloat(c.low),
+          close: Number.parseFloat(c.close),
+          volume: c.volume,
+          datetime: new Date(c.start_time).getTime(),
+        }),
+      )
+      .filter(
+        (c) =>
+          !Number.isNaN(c.open) &&
+          !Number.isNaN(c.high) &&
+          !Number.isNaN(c.low) &&
+          !Number.isNaN(c.close),
+      )
+      .sort((a, b) => a.datetime - b.datetime);
 
-    return {
-      candles: sorted,
-      previousClose: data.previousClose ?? null,
-    };
+    // Derive previous close from the first premarket candle's open
+    // or from the candle just before the first regular session candle
+    let previousClose: number | null = null;
+    const prCandles = data.data.filter((c) => c.market_time === 'pr');
+    if (prCandles.length > 0) {
+      const firstPr = Number.parseFloat(prCandles[0]!.open);
+      if (!Number.isNaN(firstPr)) previousClose = firstPr;
+    }
+
+    return { candles: regularCandles, previousClose };
   } catch (err) {
-    logger.error({ err }, 'Failed to fetch SPX candles from Schwab');
+    logger.error({ err }, 'Failed to fetch SPX candles from UW');
     return { candles: [], previousClose: null };
   }
 }
@@ -100,13 +134,14 @@ export async function fetchSPXCandles(): Promise<{
  * Format SPX candles as structured text for Claude's context.
  * Provides:
  *   - Session OHLC summary
+ *   - Gap analysis (vs previous close)
  *   - Key structural features (higher lows, range compression, wide bars)
+ *   - Approx VWAP
  *   - Last 12 candles as a compact table
  *   - Range consumed relative to straddle cone (if provided)
  *
  * @param candles - 5-min OHLCV candles (time ascending)
  * @param previousClose - Previous session close
- * @param entryTimeStr - Optional entry time to filter candles (e.g. "9:35 AM CT")
  * @param coneUpper - Optional straddle cone upper boundary
  * @param coneLower - Optional straddle cone lower boundary
  * @returns Formatted text block, or null if no data
@@ -114,7 +149,6 @@ export async function fetchSPXCandles(): Promise<{
 export function formatSPXCandlesForClaude(
   candles: SPXCandle[],
   previousClose: number | null,
-  _entryTimeStr?: string,
   coneUpper?: number,
   coneLower?: number,
 ): string | null {
@@ -146,7 +180,7 @@ export function formatSPXCandlesForClaude(
     });
 
   lines.push(
-    `SPX Intraday Price Data (from Schwab, 5-min candles):`,
+    `SPX Intraday Price Data (5-min candles):`,
     `  Session: ${fmtTime(firstTime)} – ${fmtTime(latestTime)} ET`,
     `  Open: ${sessionOpen.toFixed(2)} | High: ${sessionHigh.toFixed(2)} | Low: ${sessionLow.toFixed(2)} | Last: ${sessionClose.toFixed(2)}`,
     `  Session Range: ${sessionRange.toFixed(1)} pts`,
@@ -174,7 +208,6 @@ export function formatSPXCandlesForClaude(
   }
 
   // ── Structural analysis ─────────────────────────────────
-
   lines.push('');
 
   // Higher lows / lower highs detection (last 6 candles)
@@ -186,6 +219,7 @@ export function formatSPXCandlesForClaude(
       if (recent[i]!.low > recent[i - 1]!.low) higherLows++;
       if (recent[i]!.high < recent[i - 1]!.high) lowerHighs++;
     }
+
     if (higherLows >= 4) {
       lines.push(
         '  Pattern: HIGHER LOWS (4+ of last 6 candles) — uptrend intact, selling pressure not translating to lower prices',
@@ -196,7 +230,7 @@ export function formatSPXCandlesForClaude(
       );
     }
 
-    // Range compression (last 6 candles average range vs first 6)
+    // Range compression (last 6 vs first 6 candles)
     if (candles.length >= 12) {
       const early = candles.slice(0, 6);
       const late = candles.slice(-6);
@@ -230,7 +264,7 @@ export function formatSPXCandlesForClaude(
     }
   }
 
-  // Price relative to session VWAP approximation (volume-weighted)
+  // Price relative to session VWAP approximation
   const totalVolume = candles.reduce((s, c) => s + c.volume, 0);
   if (totalVolume > 0) {
     const vwap =
@@ -245,7 +279,6 @@ export function formatSPXCandlesForClaude(
   }
 
   // ── Recent candle table (last 12) ─────────────────────────
-
   const recentCandles = candles.slice(-12);
   lines.push(
     '',

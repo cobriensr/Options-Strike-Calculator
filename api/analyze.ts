@@ -48,7 +48,7 @@ import {
 import {
   fetchSPXCandles,
   formatSPXCandlesForClaude,
-} from './_lib/schwab-candles.js';
+} from './_lib/spx-candles.js';
 import {
   fetchDarkPoolBlocks,
   formatDarkPoolForClaude,
@@ -840,7 +840,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!context.isBacktest) {
     try {
-      const { candles, previousClose } = await fetchSPXCandles();
+      const uwKey = process.env.UW_API_KEY;
+      const { candles, previousClose } = uwKey
+        ? await fetchSPXCandles(uwKey, analysisDate)
+        : { candles: [], previousClose: null };
       if (candles.length > 0) {
         // Extract cone boundaries from context if available
         // (These come from the calculator's straddle cone computation)
@@ -850,7 +853,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         spxCandlesContext = formatSPXCandlesForClaude(
           candles,
           previousClose,
-          context.entryTime as string | undefined,
           coneUpper,
           coneLower,
         );
