@@ -1184,4 +1184,62 @@ describe('POST /api/analyze', () => {
     const contextBlock = params.messages[0].content.at(-1).text;
     expect(contextBlock).toContain('NO (entry before 10:00 AM ET');
   });
+
+  // ── Model refusal handling ──────────────────────────────
+
+  it('returns 422 when Claude refuses the request', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue({
+      content: [{ type: 'text', text: 'I cannot assist with that.' }],
+      usage: { input_tokens: 100, output_tokens: 10 },
+      stop_reason: 'refusal',
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(422);
+    expect(res._json).toEqual({
+      error: 'Analysis request was refused by the model.',
+    });
+  });
+
+  // ── Markdown code fence stripping ──────────────────────
+
+  it('strips markdown code fences from Claude response', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    const fenced = '```json\n' + JSON.stringify(SAMPLE_ANALYSIS) + '\n```';
+    mockFinalMessage.mockResolvedValue({
+      content: [{ type: 'text', text: fenced }],
+      usage: { input_tokens: 100, output_tokens: 200 },
+      stop_reason: 'end_turn',
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
+
+  it('strips code fences without language tag', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    const fenced = '```\n' + JSON.stringify(SAMPLE_ANALYSIS) + '\n```';
+    mockFinalMessage.mockResolvedValue({
+      content: [{ type: 'text', text: fenced }],
+      usage: { input_tokens: 100, output_tokens: 200 },
+      stop_reason: 'end_turn',
+    });
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
 });

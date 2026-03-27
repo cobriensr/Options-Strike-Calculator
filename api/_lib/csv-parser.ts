@@ -61,8 +61,18 @@ export interface ParsedCSV {
 // ── Helpers ─────────────────────────────────────────────────
 
 const MONTH_MAP: Record<string, string> = {
-  JAN: '01', FEB: '02', MAR: '03', APR: '04', MAY: '05', JUN: '06',
-  JUL: '07', AUG: '08', SEP: '09', OCT: '10', NOV: '11', DEC: '12',
+  JAN: '01',
+  FEB: '02',
+  MAR: '03',
+  APR: '04',
+  MAY: '05',
+  JUN: '06',
+  JUL: '07',
+  AUG: '08',
+  SEP: '09',
+  OCT: '10',
+  NOV: '11',
+  DEC: '12',
 };
 
 /** Parse "27 MAR 26" → "2026-03-27" */
@@ -488,10 +498,7 @@ export function parseFullCSV(csv: string): ParsedCSV {
  * Build a human-readable summary including open positions,
  * closed trades, and account context.
  */
-export function buildFullSummary(
-  parsed: ParsedCSV,
-  spxPrice?: number,
-): string {
+export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
   const lines: string[] = [];
 
   // ── Open positions ──────────────────────────────────────
@@ -500,7 +507,9 @@ export function buildFullSummary(
     const puts = parsed.openLegs.filter((l) => l.putCall === 'PUT');
 
     const spreadLines = pairForDisplay(calls, puts, spxPrice);
-    const spreadCount = spreadLines.filter((l) => l.startsWith('  Short')).length;
+    const spreadCount = spreadLines.filter((l) =>
+      l.startsWith('  Short'),
+    ).length;
 
     lines.push(
       `=== OPEN SPX 0DTE Positions (${spreadCount} spread${spreadCount !== 1 ? 's' : ''}) ===`,
@@ -685,8 +694,7 @@ function computeSideMaxRisk(legs: PositionLeg[]): number {
       usedLongs.add(bestIdx);
       const long = longs[bestIdx]!;
       const width = Math.abs(long.strike - short.strike);
-      const credit =
-        Math.abs(short.averagePrice) - Math.abs(long.averagePrice);
+      const credit = Math.abs(short.averagePrice) - Math.abs(long.averagePrice);
       const maxLoss = (width - credit) * 100 * Math.abs(short.quantity);
       totalRisk += Math.max(0, maxLoss);
     }

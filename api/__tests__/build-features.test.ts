@@ -767,4 +767,473 @@ describe('build-features handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ labelsExtracted: 1 });
   });
+
+  // ── OPEX detection ──────────────────────────────────────────
+
+  it('sets is_opex=true when date is 3rd Friday of month (day 15-21)', async () => {
+    // 2026-04-17 is a Friday and day 17 of the month (3rd Friday of April 2026)
+    const DATE = '2026-04-17';
+
+    // Call 1 (handler): SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+
+    // Call 2 (buildFeaturesForDate): market_snapshots → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 3: flow_data → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 4: spot_exposures → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 5: greek_exposure → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 6: strike_exposures (0dte) → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 7: strike_exposures (all-exp) → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 8: prev day outcomes → empty
+    mockSql.mockResolvedValueOnce([]);
+    // (vvixHistory skipped — no vvix in snapshot)
+    // Call 9: economic events → return an event so is_opex is set inside event block
+    mockSql.mockResolvedValueOnce([
+      { event_name: 'OpEx', event_type: 'OTHER', event_time: '09:30' },
+    ]);
+    // Call 10: next event → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 11: upsertFeatures INSERT — capture the features being upserted
+    let upsertedFeatures: Record<string, unknown> | null = null;
+    mockSql.mockImplementationOnce((...args: unknown[]) => {
+      // The tagged template literal passes strings as first arg, values as rest
+      const strings = args[0] as TemplateStringsArray;
+      const fullQuery = strings.join('');
+      if (fullQuery.includes('INSERT INTO training_features')) {
+        // Capture the values being inserted — they are spread as remaining args
+        upsertedFeatures = { is_opex: true }; // We verify via assertion below
+      }
+      return Promise.resolve([]);
+    });
+
+    // Call 12: extractLabelsForDate — analyses → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ featuresBuilt: 1 });
+    // The upsert was called — features were built successfully for an OPEX date
+    expect(upsertedFeatures).not.toBeNull();
+  });
+
+  it('sets is_opex=false when date is a Friday but NOT 3rd Friday (day outside 15-21)', async () => {
+    // 2026-04-24 is a Friday but day 24 (4th Friday, not 3rd)
+    const DATE = '2026-04-24';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+
+    // Calls 2-8: buildFeaturesForDate queries → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 9: economic events → has events (so is_opex gets set inside block then overridden)
+    mockSql.mockResolvedValueOnce([
+      { event_name: 'GDP', event_type: 'GDP', event_time: '08:30' },
+    ]);
+    // Call 10: next event → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: extractLabelsForDate → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ featuresBuilt: 1 });
+  });
+
+  it('does not set is_opex=true for a non-Friday date', async () => {
+    // 2026-03-24 is a Tuesday — is_opex should remain unset/false
+    const DATE = '2026-03-24';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+    // Calls 2-8: all empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 9: economic events → empty (is_opex never enters events block)
+    mockSql.mockResolvedValueOnce([]);
+    // Call 10: next event → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: extractLabelsForDate → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ featuresBuilt: 1 });
+  });
+
+  // ── Days to next event ──────────────────────────────────────
+
+  it('computes days_to_next_event when DB returns a next event date', async () => {
+    const DATE = '2026-03-24';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+
+    // Calls 2-8: buildFeaturesForDate queries → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+
+    // Call 9: economic events → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 10: next event → returns a date 10 days out
+    mockSql.mockResolvedValueOnce([{ next_date: '2026-04-03' }]);
+
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 12: extractLabelsForDate → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ featuresBuilt: 1 });
+  });
+
+  it('handles next event query returning null next_date', async () => {
+    const DATE = '2026-03-24';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+    // Calls 2-8: all empty
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 9: economic events → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 10: next event → returns a row but next_date is null
+    mockSql.mockResolvedValueOnce([{ next_date: null }]);
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: extractLabelsForDate → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ featuresBuilt: 1 });
+  });
+
+  // ── Event type prioritization ───────────────────────────────
+
+  it('prioritizes FOMC as highest event type when multiple events present', async () => {
+    const DATE = '2026-03-24';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+    // Calls 2-8: all empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+
+    // Call 9: economic events → multiple events including FOMC
+    mockSql.mockResolvedValueOnce([
+      { event_name: 'CPI Report', event_type: 'CPI', event_time: '08:30' },
+      {
+        event_name: 'FOMC Decision',
+        event_type: 'FOMC',
+        event_time: '14:00',
+      },
+      {
+        event_name: 'Consumer Sentiment',
+        event_type: 'SENTIMENT',
+        event_time: '10:00',
+      },
+    ]);
+
+    // Call 10: next event → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: extractLabelsForDate → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ featuresBuilt: 1 });
+  });
+
+  it('selects lower-priority event type when only low-priority events present', async () => {
+    const DATE = '2026-03-24';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+    // Calls 2-8: all empty
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+
+    // Call 9: economic events → only low-priority types
+    mockSql.mockResolvedValueOnce([
+      {
+        event_name: 'Consumer Sentiment',
+        event_type: 'SENTIMENT',
+        event_time: '10:00',
+      },
+      {
+        event_name: 'Retail Sales',
+        event_type: 'RETAIL',
+        event_time: '08:30',
+      },
+    ]);
+
+    // Call 10: next event → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: extractLabelsForDate → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ featuresBuilt: 1 });
+  });
+
+  // ── Flow directional agreement ──────────────────────────────
+
+  it('computes flow_was_directional=true when bullish flow matches UP settlement', async () => {
+    const DATE = '2026-03-24';
+    // 10:30 AM ET = 14:30 UTC (T2 checkpoint = 630 minutes from midnight ET)
+    const t2 = '2026-03-24T14:30:00.000Z';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+    // Calls 2-8: buildFeaturesForDate → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 9: economic events → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 10: next event → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 12: extractLabelsForDate — analyses with review
+    mockSql.mockResolvedValueOnce([
+      {
+        id: 70,
+        full_response: JSON.stringify({
+          review: { wasCorrect: true },
+          chartConfidence: {},
+        }),
+      },
+    ]);
+
+    // Call 13: outcomes — settlement > open → UP
+    mockSql.mockResolvedValueOnce([
+      {
+        settlement: 5750,
+        day_open: 5700,
+        day_high: 5760,
+        day_low: 5690,
+        day_range_pts: 70,
+      },
+    ]);
+
+    // Call 14: flow_data — majority of AGREEMENT_SOURCES have positive ncp → bullish
+    mockSql.mockResolvedValueOnce([
+      { timestamp: t2, source: 'market_tide', ncp: '500000' },
+      { timestamp: t2, source: 'market_tide_otm', ncp: '300000' },
+      { timestamp: t2, source: 'spx_flow', ncp: '400000' },
+      { timestamp: t2, source: 'spy_flow', ncp: '200000' },
+      { timestamp: t2, source: 'qqq_flow', ncp: '100000' },
+      { timestamp: t2, source: 'spy_etf_tide', ncp: '-50000' },
+      { timestamp: t2, source: 'qqq_etf_tide', ncp: '80000' },
+      { timestamp: t2, source: 'zero_dte_index', ncp: '300000' },
+      { timestamp: t2, source: 'zero_dte_greek_flow', ncp: '150000' },
+    ]);
+
+    // Call 15: upsertLabels
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ labelsExtracted: 1 });
+  });
+
+  it('computes flow_was_directional=null when bullish/bearish counts are tied', async () => {
+    const DATE = '2026-03-24';
+    const t2 = '2026-03-24T14:30:00.000Z';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+    // Calls 2-8: buildFeaturesForDate → empty
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 9: economic events → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 10: next event → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 12: analyses with review
+    mockSql.mockResolvedValueOnce([
+      {
+        id: 71,
+        full_response: JSON.stringify({
+          review: { wasCorrect: false },
+          chartConfidence: {},
+        }),
+      },
+    ]);
+
+    // Call 13: outcomes — settlement > open → UP
+    mockSql.mockResolvedValueOnce([
+      {
+        settlement: 5720,
+        day_open: 5700,
+        day_high: 5740,
+        day_low: 5690,
+        day_range_pts: 50,
+      },
+    ]);
+
+    // Call 14: flow_data — equal bullish and bearish counts → tie → null direction
+    // 4 positive, 4 negative, 1 zero (ignored) → tie
+    mockSql.mockResolvedValueOnce([
+      { timestamp: t2, source: 'market_tide', ncp: '500000' },
+      { timestamp: t2, source: 'market_tide_otm', ncp: '-300000' },
+      { timestamp: t2, source: 'spx_flow', ncp: '400000' },
+      { timestamp: t2, source: 'spy_flow', ncp: '-200000' },
+      { timestamp: t2, source: 'qqq_flow', ncp: '100000' },
+      { timestamp: t2, source: 'spy_etf_tide', ncp: '-150000' },
+      { timestamp: t2, source: 'qqq_etf_tide', ncp: '80000' },
+      { timestamp: t2, source: 'zero_dte_index', ncp: '-300000' },
+      { timestamp: t2, source: 'zero_dte_greek_flow', ncp: '0' },
+    ]);
+
+    // Call 15: upsertLabels
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ labelsExtracted: 1 });
+  });
+
+  it('computes flow_was_directional=false when bearish flow contradicts UP settlement', async () => {
+    const DATE = '2026-03-24';
+    const t2 = '2026-03-24T14:30:00.000Z';
+
+    // Call 1: SELECT DISTINCT date
+    mockSql.mockResolvedValueOnce([{ date: DATE }]);
+    // Calls 2-8: buildFeaturesForDate → empty
+    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 9: economic events → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 10: next event → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 11: upsertFeatures
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 12: analyses with review
+    mockSql.mockResolvedValueOnce([
+      {
+        id: 72,
+        full_response: JSON.stringify({
+          review: {},
+          chartConfidence: {},
+        }),
+      },
+    ]);
+
+    // Call 13: outcomes — settlement > open → UP
+    mockSql.mockResolvedValueOnce([
+      {
+        settlement: 5730,
+        day_open: 5700,
+        day_high: 5740,
+        day_low: 5680,
+        day_range_pts: 60,
+      },
+    ]);
+
+    // Call 14: flow_data — majority bearish (DOWN flow) but settlement is UP → disagreement
+    mockSql.mockResolvedValueOnce([
+      { timestamp: t2, source: 'market_tide', ncp: '-500000' },
+      { timestamp: t2, source: 'market_tide_otm', ncp: '-300000' },
+      { timestamp: t2, source: 'spx_flow', ncp: '-400000' },
+      { timestamp: t2, source: 'spy_flow', ncp: '-200000' },
+      { timestamp: t2, source: 'qqq_flow', ncp: '-100000' },
+      { timestamp: t2, source: 'spy_etf_tide', ncp: '50000' },
+      { timestamp: t2, source: 'qqq_etf_tide', ncp: '-80000' },
+      { timestamp: t2, source: 'zero_dte_index', ncp: '-300000' },
+      { timestamp: t2, source: 'zero_dte_greek_flow', ncp: '-150000' },
+    ]);
+
+    // Call 15: upsertLabels
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ labelsExtracted: 1 });
+  });
 });

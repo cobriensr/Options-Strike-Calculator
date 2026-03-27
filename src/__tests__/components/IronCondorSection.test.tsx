@@ -1,8 +1,14 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IronCondorSection from '../../components/IronCondorSection';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
+
+const exportMock = vi.hoisted(() => ({
+  exportPnLComparison: vi.fn(),
+}));
+
+vi.mock('../../utils/exportXlsx', () => exportMock);
 
 // ============================================================
 // HELPERS
@@ -430,5 +436,79 @@ describe('IronCondorSection', () => {
     expect(
       screen.getByRole('table', { name: 'Iron condor legs by delta' }),
     ).toBeInTheDocument();
+  });
+
+  // ============================================================
+  // Export button — dynamic import failure (.catch handler)
+  // ============================================================
+
+  describe('export button error handling', () => {
+    let originalLocation: Location;
+
+    beforeEach(() => {
+      originalLocation = globalThis.location;
+      // Replace location with a mock that has a spied reload
+      Object.defineProperty(globalThis, 'location', {
+        value: { ...originalLocation, reload: vi.fn() },
+        writable: true,
+        configurable: true,
+      });
+      // Make the export function throw so the .catch() handler fires
+      exportMock.exportPnLComparison.mockImplementation(() => {
+        throw new Error('chunk failed');
+      });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(globalThis, 'location', {
+        value: originalLocation,
+        writable: true,
+        configurable: true,
+      });
+      exportMock.exportPnLComparison.mockReset();
+      vi.restoreAllMocks();
+    });
+
+    it('shows reload confirmation when export import fails', async () => {
+      vi.spyOn(globalThis, 'confirm').mockReturnValue(false);
+
+      const user = userEvent.setup();
+      renderSection();
+
+      const exportBtn = screen.getByRole('button', {
+        name: 'Export P&L comparison to Excel',
+      });
+      await user.click(exportBtn);
+
+      await waitFor(() => {
+        expect(globalThis.confirm).toHaveBeenCalledWith(
+          'A new version is available. Reload to use the export feature?',
+        );
+      });
+
+      // confirm returned false — reload should NOT be called
+      expect(globalThis.location.reload).not.toHaveBeenCalled();
+    });
+
+    it('reloads when user confirms after export import failure', async () => {
+      vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+
+      const user = userEvent.setup();
+      renderSection();
+
+      const exportBtn = screen.getByRole('button', {
+        name: 'Export P&L comparison to Excel',
+      });
+      await user.click(exportBtn);
+
+      await waitFor(() => {
+        expect(globalThis.confirm).toHaveBeenCalledWith(
+          'A new version is available. Reload to use the export feature?',
+        );
+      });
+
+      // confirm returned true — reload SHOULD be called
+      expect(globalThis.location.reload).toHaveBeenCalled();
+    });
   });
 });

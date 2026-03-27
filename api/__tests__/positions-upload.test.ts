@@ -463,3 +463,240 @@ describe('POST /api/positions (CSV upload)', () => {
     expect(data.positions.summary).toContain('SPX at fetch time: 5850');
   });
 });
+
+import { buildFullSummary } from '../_lib/csv-parser.js';
+
+describe('pairForDisplay — unpaired short leg (via buildFullSummary)', () => {
+  it('displays short as unpaired when long is more than 50 points away', () => {
+    const parsed: ReturnType<typeof parseFullCSV> = {
+      openLegs: [
+        {
+          putCall: 'PUT',
+          symbol: 'SPX_5800P',
+          strike: 5800,
+          expiration: '2026-03-27',
+          quantity: -5,
+          averagePrice: 1.5,
+          marketValue: -750,
+          delta: undefined,
+          theta: undefined,
+          gamma: undefined,
+        },
+        {
+          putCall: 'PUT',
+          symbol: 'SPX_5700P',
+          strike: 5700,
+          expiration: '2026-03-27',
+          quantity: 5,
+          averagePrice: 0.3,
+          marketValue: 150,
+          delta: undefined,
+          theta: undefined,
+          gamma: undefined,
+        },
+      ],
+      closedSpreads: [],
+      allTrades: [],
+      dayPnl: null,
+      ytdPnl: null,
+      netLiquidatingValue: null,
+      startingBalance: null,
+      hasOptionsSection: true,
+    };
+
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('(unpaired)');
+    expect(summary).toContain('Short 5800P (unpaired)');
+  });
+
+  it('pairs short with long when within 50 points', () => {
+    const parsed: ReturnType<typeof parseFullCSV> = {
+      openLegs: [
+        {
+          putCall: 'PUT',
+          symbol: 'SPX_5800P',
+          strike: 5800,
+          expiration: '2026-03-27',
+          quantity: -5,
+          averagePrice: 1.5,
+          marketValue: -750,
+          delta: undefined,
+          theta: undefined,
+          gamma: undefined,
+        },
+        {
+          putCall: 'PUT',
+          symbol: 'SPX_5780P',
+          strike: 5780,
+          expiration: '2026-03-27',
+          quantity: 5,
+          averagePrice: 0.6,
+          marketValue: 300,
+          delta: undefined,
+          theta: undefined,
+          gamma: undefined,
+        },
+      ],
+      closedSpreads: [],
+      allTrades: [],
+      dayPnl: null,
+      ytdPnl: null,
+      netLiquidatingValue: null,
+      startingBalance: null,
+      hasOptionsSection: true,
+    };
+
+    const summary = buildFullSummary(parsed);
+    expect(summary).not.toContain('(unpaired)');
+    expect(summary).toContain('Short 5800P / Long 5780P');
+  });
+
+  it('displays call short as unpaired when long is more than 50 points away', () => {
+    const parsed: ReturnType<typeof parseFullCSV> = {
+      openLegs: [
+        {
+          putCall: 'CALL',
+          symbol: 'SPX_5900C',
+          strike: 5900,
+          expiration: '2026-03-27',
+          quantity: -5,
+          averagePrice: 1.5,
+          marketValue: -750,
+          delta: undefined,
+          theta: undefined,
+          gamma: undefined,
+        },
+        {
+          putCall: 'CALL',
+          symbol: 'SPX_5960C',
+          strike: 5960,
+          expiration: '2026-03-27',
+          quantity: 5,
+          averagePrice: 0.3,
+          marketValue: 150,
+          delta: undefined,
+          theta: undefined,
+          gamma: undefined,
+        },
+      ],
+      closedSpreads: [],
+      allTrades: [],
+      dayPnl: null,
+      ytdPnl: null,
+      netLiquidatingValue: null,
+      startingBalance: null,
+      hasOptionsSection: true,
+    };
+
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('Short 5900C (unpaired)');
+  });
+});
+
+describe('buildFullSummary — P&L null rendering', () => {
+  const baseParsed: ReturnType<typeof parseFullCSV> = {
+    openLegs: [],
+    closedSpreads: [],
+    allTrades: [],
+    dayPnl: null,
+    ytdPnl: null,
+    netLiquidatingValue: null,
+    startingBalance: null,
+    hasOptionsSection: false,
+  };
+
+  it('omits P&L section entirely when dayPnl is null', () => {
+    const parsed = { ...baseParsed, dayPnl: null, ytdPnl: 500 };
+    const summary = buildFullSummary(parsed);
+    expect(summary).not.toContain("Today's P&L");
+    expect(summary).not.toContain('Day P&L');
+  });
+
+  it('renders Day P&L when dayPnl is non-null', () => {
+    const parsed = { ...baseParsed, dayPnl: 250, ytdPnl: null };
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain("Today's P&L");
+    expect(summary).toContain('Day P&L (SPX): $250');
+  });
+
+  it('renders Day P&L when both dayPnl and ytdPnl are non-null', () => {
+    const parsed = { ...baseParsed, dayPnl: 300, ytdPnl: 1200 };
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain("Today's P&L");
+    expect(summary).toContain('Day P&L (SPX): $300');
+  });
+
+  it('renders negative Day P&L correctly', () => {
+    const parsed = { ...baseParsed, dayPnl: -150, ytdPnl: null };
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('Day P&L (SPX): $-150');
+  });
+
+  it('renders NO OPEN POSITIONS when openLegs is empty', () => {
+    const summary = buildFullSummary(baseParsed);
+    expect(summary).toContain('NO OPEN SPX 0DTE POSITIONS');
+  });
+
+  it('does not include netLiquidatingValue in summary output', () => {
+    const parsed = {
+      ...baseParsed,
+      netLiquidatingValue: 200000,
+      dayPnl: null,
+    };
+    const summary = buildFullSummary(parsed);
+    // netLiquidatingValue is parsed but not rendered in the summary
+    expect(summary).not.toContain('200000');
+    expect(summary).not.toContain('Net Liquidating');
+  });
+});
+
+describe('parseFullCSV — Trade History fallback with fully closed positions', () => {
+  it('returns empty openLegs when TO OPEN and TO CLOSE quantities match', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,3/27/26 14:20:49,VERTICAL,BUY,+10,TO CLOSE,SPX,27 MAR 26,5800,PUT,.15,.05,LMT
+,,,SELL,-10,TO CLOSE,SPX,27 MAR 26,5780,PUT,.10,DEBIT,
+,3/27/26 09:23:22,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,5800,PUT,2.00,0.80,LMT
+,,,BUY,+10,TO OPEN,SPX,27 MAR 26,5780,PUT,1.20,CREDIT,
+
+Profits and Losses
+Symbol,Description,P/L Open
+`;
+
+    const parsed = parseFullCSV(csv);
+    expect(parsed.hasOptionsSection).toBe(false);
+    expect(parsed.allTrades).toHaveLength(4);
+    expect(parsed.openLegs).toHaveLength(0);
+  });
+
+  it('returns remaining open legs when TO CLOSE quantity is less than TO OPEN', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,3/27/26 14:20:49,VERTICAL,BUY,+5,TO CLOSE,SPX,27 MAR 26,5800,PUT,.15,.05,LMT
+,,,SELL,-5,TO CLOSE,SPX,27 MAR 26,5780,PUT,.10,DEBIT,
+,3/27/26 09:23:22,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,5800,PUT,2.00,0.80,LMT
+,,,BUY,+10,TO OPEN,SPX,27 MAR 26,5780,PUT,1.20,CREDIT,
+
+Profits and Losses
+Symbol,Description,P/L Open
+`;
+
+    const parsed = parseFullCSV(csv);
+    expect(parsed.hasOptionsSection).toBe(false);
+    // 5 of each leg still open
+    expect(parsed.openLegs).toHaveLength(2);
+    const shortLeg = parsed.openLegs.find((l) => l.quantity < 0);
+    const longLeg = parsed.openLegs.find((l) => l.quantity > 0);
+    expect(shortLeg?.strike).toBe(5800);
+    expect(shortLeg?.quantity).toBe(-5);
+    expect(longLeg?.strike).toBe(5780);
+    expect(longLeg?.quantity).toBe(5);
+  });
+
+  it('returns no open legs from multi-spread CSV when all are closed', () => {
+    const parsed = parseFullCSV(CLOSED_MULTI_SPREAD_CSV);
+    expect(parsed.hasOptionsSection).toBe(false);
+    expect(parsed.openLegs).toHaveLength(0);
+    expect(parsed.closedSpreads).toHaveLength(4);
+  });
+});

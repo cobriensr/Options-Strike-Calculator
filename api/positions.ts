@@ -154,9 +154,7 @@ function groupIntoSpreads(legs: PositionLeg[]): Spread[] {
         const pnl = credit * 100 * Math.abs(short.quantity) - currentValue;
         const width = Math.abs(long.strike - short.strike);
         const type =
-          short.putCall === 'CALL'
-            ? 'CALL CREDIT SPREAD'
-            : 'PUT CREDIT SPREAD';
+          short.putCall === 'CALL' ? 'CALL CREDIT SPREAD' : 'PUT CREDIT SPREAD';
         paired.push({
           type: type as 'CALL CREDIT SPREAD' | 'PUT CREDIT SPREAD',
           shortLeg: short,
@@ -293,10 +291,7 @@ function buildSummary(
 // ============================================================
 // SHARED RESPONSE BUILDER
 // ============================================================
-function buildPositionResponse(
-  spxLegs: PositionLeg[],
-  spxPrice?: number,
-) {
+function buildPositionResponse(spxLegs: PositionLeg[], spxPrice?: number) {
   const spreads = groupIntoSpreads(spxLegs);
   const callSpreads = spreads.filter((s) => s.type === 'CALL CREDIT SPREAD');
   const putSpreads = spreads.filter((s) => s.type === 'PUT CREDIT SPREAD');

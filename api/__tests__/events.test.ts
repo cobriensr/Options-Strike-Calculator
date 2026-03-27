@@ -10,8 +10,13 @@ vi.mock('../_lib/schwab.js', () => ({
   },
 }));
 
+vi.mock('../_lib/api-helpers.js', () => ({
+  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
 import handler from '../events.js';
 import { redis } from '../_lib/schwab.js';
+import { checkBot } from '../_lib/api-helpers.js';
 
 describe('GET /api/events', () => {
   const originalEnv = process.env;
@@ -333,5 +338,82 @@ describe('GET /api/events', () => {
     expect(res._status).toBe(200);
 
     vi.unstubAllGlobals();
+  });
+
+  it('handles Finnhub fetch throwing an exception', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.FRED_API_KEY = 'fred-key';
+    process.env.FINNHUB_API_KEY = 'finnhub-key';
+
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('finnhub.io')) {
+        return Promise.reject(new Error('Network timeout'));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ release_dates: [] }),
+      });
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const res = mockResponse();
+    await handler(mockRequest({ query: { days: '5' } }), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { events: { source: string }[] };
+    const earnings = json.events.filter((e) => e.source === 'finnhub');
+    expect(earnings.length).toBe(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('includes early close events in date range', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ release_dates: [] }),
+      }),
+    );
+
+    // Mock Date to 2026-06-20 so a 90-day window covers 2026-07-03
+    // (Independence Day Eve early close)
+    const fakeNow = new Date('2026-06-20T12:00:00Z');
+    vi.useFakeTimers({ now: fakeNow });
+
+    const res = mockResponse();
+    await handler(mockRequest({ query: { days: '90' } }), res);
+
+    vi.useRealTimers();
+
+    expect(res._status).toBe(200);
+    const json = res._json as {
+      events: { event: string; description: string; date: string }[];
+    };
+    const earlyCloseEvents = json.events.filter(
+      (e) => e.event === 'EARLY CLOSE',
+    );
+    expect(earlyCloseEvents.length).toBeGreaterThan(0);
+
+    const julyThird = earlyCloseEvents.find((e) => e.date === '2026-07-03');
+    expect(julyThird).toBeDefined();
+    expect(julyThird!.description).toContain('closes at');
+    expect(julyThird!.description).toContain('1:00 PM');
+    expect(julyThird!.description).toContain('ET');
+
+    vi.unstubAllGlobals();
+  });
+
+  it('returns 403 when checkBot reports a bot', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+
+    const res = mockResponse();
+    await handler(mockRequest({ query: { days: '5' } }), res);
+
+    expect(res._status).toBe(403);
+    expect((res._json as { error: string }).error).toBe('Access denied');
   });
 });

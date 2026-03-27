@@ -77,4 +77,22 @@ describe('formatEsOvernightForClaude', () => {
     const result = formatEsOvernightForClaude(baseSummary)!;
     expect(result).not.toContain('straddle cone');
   });
+
+  it('includes bearish flow message when gap_direction is DOWN', () => {
+    const summary = { ...baseSummary, gap_direction: 'DOWN' };
+    const result = formatEsOvernightForClaude(summary, 6600, 6460)!;
+    expect(result).toContain('Gap direction (DOWN) aligns with bearish flow');
+  });
+
+  it('includes gap fill warning when fill_probability is HIGH', () => {
+    const summary = { ...baseSummary, fill_probability: 'HIGH' };
+    const result = formatEsOvernightForClaude(summary, 6600, 6460)!;
+    expect(result).toContain('Watch for gap fill in first 30 min');
+  });
+
+  it('includes gap extension message when fill_probability is LOW', () => {
+    const summary = { ...baseSummary, fill_probability: 'LOW' };
+    const result = formatEsOvernightForClaude(summary, 6600, 6460)!;
+    expect(result).toContain('Gap extension likely');
+  });
 });

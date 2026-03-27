@@ -547,6 +547,115 @@ describe('AnalysisHistory', () => {
     });
   });
 
+  describe('time picker change resets mode', () => {
+    it('resets selectedMode when a different time is picked', async () => {
+      // Two times, each with entry + midday so mode tabs appear
+      const analyses = [
+        makeEntry(1, 'entry', '9:30 AM'),
+        makeEntry(2, 'midday', '9:30 AM', {
+          structure: 'PUT CREDIT SPREAD',
+          analysis: makeAnalysis({
+            mode: 'midday',
+            structure: 'PUT CREDIT SPREAD',
+          }),
+        }),
+        makeEntry(3, 'entry', '11:00 AM'),
+        makeEntry(4, 'midday', '11:00 AM', {
+          structure: 'CALL CREDIT SPREAD',
+          analysis: makeAnalysis({
+            mode: 'midday',
+            structure: 'CALL CREDIT SPREAD',
+          }),
+        }),
+      ];
+      vi.stubGlobal('fetch', mockFetch(DATES, analyses));
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+
+      // Wait for time picker and auto-selection of 9:30 AM
+      await waitFor(() => {
+        expect(screen.getByLabelText('Entry Time')).toHaveValue('9:30 AM');
+      });
+
+      // Auto-selected mode should be 'entry' (preferred order)
+      // Mode tabs should be visible (entry + midday at 9:30 AM)
+      await waitFor(() => {
+        expect(screen.getByRole('group')).toBeInTheDocument();
+      });
+
+      // Click Mid-Day tab to switch mode
+      const fieldset = screen.getByRole('group');
+      await user.click(within(fieldset).getByText('Mid-Day'));
+
+      // Verify we're showing the midday analysis
+      await waitFor(() => {
+        expect(
+          screen.getAllByText('PUT CREDIT SPREAD').length,
+        ).toBeGreaterThanOrEqual(1);
+      });
+
+      // Now change the time picker to 11:00 AM — this should reset selectedMode
+      await user.selectOptions(screen.getByLabelText('Entry Time'), '11:00 AM');
+
+      // After time change, mode resets and auto-selects entry (preferred)
+      // The entry analysis at 11:00 AM has structure IRON CONDOR (default)
+      await waitFor(() => {
+        expect(
+          screen.getAllByText('IRON CONDOR').length,
+        ).toBeGreaterThanOrEqual(1);
+      });
+    });
+  });
+
+  describe('formatDateLabel error fallback', () => {
+    it('falls back to raw string when toLocaleDateString throws', async () => {
+      // Force the try block to throw by making toLocaleDateString throw
+      const origToLocaleDateString = Date.prototype.toLocaleDateString;
+      vi.spyOn(Date.prototype, 'toLocaleDateString').mockImplementation(
+        function (this: Date, ...args) {
+          // Only throw for the invalid date, let valid dates pass through
+          if (Number.isNaN(this.getTime())) {
+            throw new RangeError('Invalid time value');
+          }
+          return origToLocaleDateString.apply(this, args);
+        },
+      );
+
+      const malformedDates = [makeDateEntry('not-a-real-date', { entries: 1 })];
+      vi.stubGlobal('fetch', mockFetch(malformedDates));
+      render(<AnalysisHistory />);
+
+      await waitFor(() => {
+        const select = screen.getByLabelText('Date');
+        const options = within(select).getAllByRole('option');
+        // placeholder + 1 date
+        expect(options).toHaveLength(2);
+        // The catch handler returns the raw string
+        expect(options[1]).toHaveTextContent('not-a-real-date');
+      });
+    });
+
+    it('renders valid dates normally when formatDateLabel succeeds', async () => {
+      const validDates = [makeDateEntry('2025-03-15', { entries: 2 })];
+      vi.stubGlobal('fetch', mockFetch(validDates));
+      render(<AnalysisHistory />);
+
+      await waitFor(() => {
+        const select = screen.getByLabelText('Date');
+        const options = within(select).getAllByRole('option');
+        expect(options).toHaveLength(2); // placeholder + 1 date
+        // Valid date should be formatted nicely
+        expect(options[1]).toHaveTextContent('Sat, Mar 15, 2025');
+      });
+    });
+  });
+
   describe('non-ok response handling', () => {
     it('handles non-ok date fetch gracefully', async () => {
       vi.stubGlobal(
