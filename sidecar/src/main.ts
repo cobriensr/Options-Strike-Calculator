@@ -1,4 +1,4 @@
-import { getAccessToken } from './tradovate-auth.js';
+import { getAccessToken, getMdAccessToken } from './tradovate-auth.js';
 import { TradovateWsClient, type TradovateQuote } from './tradovate-ws.js';
 import { BarAggregator, type Tick } from './bar-aggregator.js';
 import { resolveContractSymbol } from './contract-roller.js';
@@ -37,6 +37,26 @@ async function connectWithRetry(): Promise<void> {
       const wsUrl = process.env.TRADOVATE_MD_URL;
       if (!wsUrl) throw new Error('TRADOVATE_MD_URL not configured');
 
+      // Resolve contract ID via REST — the WS may need the ID, not the symbol
+      const baseUrl = process.env.TRADOVATE_BASE_URL;
+      let contractId: number | null = null;
+      try {
+        const contractRes = await fetch(
+          `${baseUrl}/contract/find?name=${symbol}`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(10_000),
+          },
+        );
+        if (contractRes.ok) {
+          const contract = (await contractRes.json()) as { id: number; name: string };
+          contractId = contract.id;
+          logger.info({ symbol, contractId }, 'Contract resolved');
+        }
+      } catch (err) {
+        logger.warn({ err, symbol }, 'Could not resolve contract ID, using symbol string');
+      }
+
       aggregator = new BarAggregator(async (bar) => {
         try {
           await upsertBar(bar);
@@ -60,6 +80,9 @@ async function connectWithRetry(): Promise<void> {
         aggregator?.flush();
       }, 60_000);
 
+      // Get mdAccessToken for market data WS (separate from REST accessToken)
+      const mdToken = await getMdAccessToken();
+
       // Wait for the WebSocket session to end (disconnect/error)
       await new Promise<void>((resolve) => {
         wsClient = new TradovateWsClient(wsUrl, {
@@ -75,7 +98,7 @@ async function connectWithRetry(): Promise<void> {
             resolve();
           },
         });
-        wsClient.connect(token, symbol);
+        wsClient.connect(mdToken, symbol, contractId);
       });
 
       // Connection ended — fall through to backoff below

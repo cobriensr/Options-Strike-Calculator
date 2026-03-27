@@ -25,15 +25,17 @@ export class TradovateWsClient {
   private readonly wsUrl: string;
   private readonly callbacks: WsCallbacks;
   private subscribedSymbol: string | null = null;
+  private contractId: number | null = null;
 
   constructor(wsUrl: string, callbacks: WsCallbacks) {
     this.wsUrl = wsUrl;
     this.callbacks = callbacks;
   }
 
-  connect(accessToken: string, symbol: string): void {
+  connect(accessToken: string, symbol: string, contractId?: number | null): void {
     this.subscribedSymbol = symbol;
-    logger.info({ url: this.wsUrl, symbol }, 'Connecting to Tradovate WebSocket');
+    this.contractId = contractId ?? null;
+    logger.info({ url: this.wsUrl, symbol, contractId }, 'Connecting to Tradovate WebSocket');
     this.ws = new WebSocket(this.wsUrl);
 
     this.ws.on('message', (data: WebSocket.RawData) => {
@@ -85,9 +87,13 @@ export class TradovateWsClient {
       if (msg.s !== undefined) {
         if (msg.s === 200 && msg.i === this.authRequestId) {
           // Auth succeeded — subscribe once
-          logger.info('Authorized, subscribing to quotes');
+          // Subscribe using contractId if available, otherwise symbol string
+          const subscribePayload = this.contractId
+            ? { symbol: this.contractId }
+            : { symbol };
+          logger.info({ subscribePayload }, 'Authorized, subscribing to quotes');
           this.subscribeRequestId = this.nextId();
-          this.send(buildMessage('md/subscribeQuote', this.subscribeRequestId, { symbol }));
+          this.send(buildMessage('md/subscribeQuote', this.subscribeRequestId, subscribePayload));
           this.callbacks.onConnected();
         } else if (msg.s === 200 && msg.i === this.subscribeRequestId) {
           // Subscribe response — check for errors
