@@ -38,24 +38,29 @@ export class TradovateWsClient {
       const raw = data.toString();
       const frame = parseFrame(raw);
 
+      // Log every frame for debugging (truncate large payloads)
+      logger.debug(`WS frame: ${raw.slice(0, 200)}`);
+
       switch (frame.type) {
         case 'open':
           logger.info('WebSocket open, sending authorization');
+          // Tradovate expects: authorize\n{id}\n\n{json}
           this.send(buildMessage('authorize', this.nextId(), { token: accessToken }));
           this.startHeartbeat();
           break;
         case 'heartbeat':
           break;
         case 'data':
+          logger.info(`WS data: ${JSON.stringify(frame.messages).slice(0, 300)}`);
           this.handleMessages(frame.messages, symbol);
           break;
         case 'close':
-          logger.warn({ code: frame.code, reason: frame.reason }, 'WebSocket close frame');
+          logger.warn(`WS close frame: code=${frame.code} reason=${frame.reason}`);
           this.cleanup();
           this.callbacks.onDisconnected(frame.reason);
           break;
         case 'unknown':
-          logger.debug({ raw: frame.raw?.slice(0, 100) }, 'Unknown frame');
+          logger.warn(`WS unknown frame: ${raw.slice(0, 200)}`);
           break;
       }
     });
