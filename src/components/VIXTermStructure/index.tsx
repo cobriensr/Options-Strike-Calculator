@@ -251,7 +251,6 @@ export default function VIXTermStructure({
           >
             {vix1dResult && (
               <RatioCard
-               
                 title="VIX1D / VIX"
                 subtitle="Today vs. 30-day"
                 ratio={vix1dResult.ratio}
@@ -262,7 +261,6 @@ export default function VIXTermStructure({
             )}
             {vix9dResult && (
               <RatioCard
-               
                 title="VIX9D / VIX"
                 subtitle="9-day vs. 30-day"
                 ratio={vix9dResult.ratio}

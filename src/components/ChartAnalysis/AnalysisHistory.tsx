@@ -462,7 +462,6 @@ export default function AnalysisHistory({ refreshKey }: Props) {
           </div>
 
           <AnalysisResultsView
-           
             analysis={selectedAnalysis.analysis}
             mode={selectedAnalysis.mode}
             onReplaceImage={noopReplace}

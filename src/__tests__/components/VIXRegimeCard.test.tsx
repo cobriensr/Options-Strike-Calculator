@@ -22,9 +22,7 @@ describe('VIXRegimeCard: rendering', () => {
   });
 
   it('returns null for invalid VIX (negative)', () => {
-    const { container } = render(
-      <VIXRegimeCard vix={-5} spot={6800} />,
-    );
+    const { container } = render(<VIXRegimeCard vix={-5} spot={6800} />);
     expect(container.innerHTML).toBe('');
   });
 });
@@ -164,9 +162,7 @@ describe('VIXRegimeCard: advice text', () => {
 // ============================================================
 describe('VIXRegimeCard: spot price calculations', () => {
   it('shows larger point values for higher spot prices', () => {
-    const { unmount } = render(
-      <VIXRegimeCard vix={20} spot={3000} />,
-    );
+    const { unmount } = render(<VIXRegimeCard vix={20} spot={3000} />);
     const container1 = document.body.innerHTML;
     unmount();
 
@@ -244,15 +240,11 @@ describe('VIXRegimeCard: theme support', () => {
   it('renders each zone in both themes without crashing', () => {
     const vixLevels = [10, 19, 27, 50]; // go, caution, stop, danger
     for (const v of vixLevels) {
-      const { unmount: u1 } = render(
-        <VIXRegimeCard vix={v} spot={6800} />,
-      );
+      const { unmount: u1 } = render(<VIXRegimeCard vix={v} spot={6800} />);
       expect(screen.getByText(/regime/i)).toBeInTheDocument();
       u1();
 
-      const { unmount: u2 } = render(
-        <VIXRegimeCard vix={v} spot={6800} />,
-      );
+      const { unmount: u2 } = render(<VIXRegimeCard vix={v} spot={6800} />);
       expect(screen.getByText(/regime/i)).toBeInTheDocument();
       u2();
     }

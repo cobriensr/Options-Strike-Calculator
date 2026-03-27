@@ -7,7 +7,6 @@ import type { HistorySnapshot } from '../../hooks/useHistoryData';
 import type { ComputedSignals } from '../../hooks/useComputedSignals';
 import type { HistoryCandle } from '../../types/api';
 
-
 const defaultSignals: ComputedSignals = {
   vix1d: undefined,
   vix9d: undefined,

@@ -74,128 +74,122 @@ export default function MarketRegimeSection({
       </p>
       {showRegime && (
         <div className="mt-4">
-          <VIXRangeAnalysis
-           
-            vix={vixNum}
-            spot={results?.spot ?? null}
-          />
-          {results && dVix && !errors['vix'] && vixNum != null && vixNum > 0 && (
-            <>
-              <div className="mt-5">
-                <VolatilityCluster
-                  key={
-                    historySnapshot
-                      ? `hist-vc-${historySnapshot.candle.datetime}`
-                      : 'live-vc'
-                  }
-                 
+          <VIXRangeAnalysis vix={vixNum} spot={results?.spot ?? null} />
+          {results &&
+            dVix &&
+            !errors['vix'] &&
+            vixNum != null &&
+            vixNum > 0 && (
+              <>
+                <div className="mt-5">
+                  <VolatilityCluster
+                    key={
+                      historySnapshot
+                        ? `hist-vc-${historySnapshot.candle.datetime}`
+                        : 'live-vc'
+                    }
+                    vix={vixNum ?? 0}
+                    spot={results.spot}
+                    onMultiplierChange={onClusterMultChange}
+                    initialYesterday={
+                      historySnapshot?.yesterday ??
+                      market.data.yesterday?.yesterday ??
+                      undefined
+                    }
+                    clusterPutMult={signals.clusterPutMult}
+                    clusterCallMult={signals.clusterCallMult}
+                  />
+                </div>
+                <DeltaRegimeGuide
                   vix={vixNum ?? 0}
                   spot={results.spot}
-                  onMultiplierChange={onClusterMultChange}
-                  initialYesterday={
-                    historySnapshot?.yesterday ??
-                    market.data.yesterday?.yesterday ??
-                    undefined
-                  }
-                  clusterPutMult={signals.clusterPutMult}
-                  clusterCallMult={signals.clusterCallMult}
-                />
-              </div>
-              <DeltaRegimeGuide
-               
-                vix={vixNum ?? 0}
-                spot={results.spot}
-                T={results.T}
-                skew={skewPct / 100}
-                allDeltas={results.allDeltas}
-                selectedDate={selectedDate}
-                clusterMult={clusterMult}
-              />
-              <div className="mt-5">
-                <OpeningRangeCheck
-                  key={
-                    historySnapshot
-                      ? `hist-or-${historySnapshot.candle.datetime}`
-                      : 'live-or'
-                  }
-                 
-                  vix={vixNum ?? 0}
-                  spot={results.spot}
+                  T={results.T}
+                  skew={skewPct / 100}
+                  allDeltas={results.allDeltas}
                   selectedDate={selectedDate}
-                  initialRange={
-                    historySnapshot?.openingRange ??
-                    market.data.intraday?.openingRange ??
-                    undefined
-                  }
+                  clusterMult={clusterMult}
                 />
-              </div>
-              <div className="mt-5">
-                <PreTradeSignals
-                 
-                  quotes={historySnapshot ? null : market.data.quotes}
-                  yesterday={
-                    historySnapshot?.yesterday
-                      ? {
-                          yesterday: historySnapshot.yesterday,
-                          twoDaysAgo: null,
-                          asOf: '',
+                <div className="mt-5">
+                  <OpeningRangeCheck
+                    key={
+                      historySnapshot
+                        ? `hist-or-${historySnapshot.candle.datetime}`
+                        : 'live-or'
+                    }
+                    vix={vixNum ?? 0}
+                    spot={results.spot}
+                    selectedDate={selectedDate}
+                    initialRange={
+                      historySnapshot?.openingRange ??
+                      market.data.intraday?.openingRange ??
+                      undefined
+                    }
+                  />
+                </div>
+                <div className="mt-5">
+                  <PreTradeSignals
+                    quotes={historySnapshot ? null : market.data.quotes}
+                    yesterday={
+                      historySnapshot?.yesterday
+                        ? {
+                            yesterday: historySnapshot.yesterday,
+                            twoDaysAgo: null,
+                            asOf: '',
+                          }
+                        : market.data.yesterday
+                    }
+                    movers={historySnapshot ? null : market.data.movers}
+                    vixPrevClose={historySnapshot?.vixPrevClose ?? undefined}
+                    spxOpen={historySnapshot?.runningOHLC.open ?? undefined}
+                    spxPrevClose={historySnapshot?.previousClose ?? undefined}
+                  />
+                </div>
+                {/* RV/IV Ratio */}
+                {signals.rvIvRatio != null &&
+                  signals.rvIvLabel != null &&
+                  signals.rvAnnualized != null && (
+                    <div className="mt-5">
+                      <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.12em] uppercase">
+                        Realized vs Implied Volatility
+                      </div>
+                      <RvIvCard
+                        ratio={signals.rvIvRatio}
+                        label={signals.rvIvLabel}
+                        rvAnnualized={signals.rvAnnualized}
+                        iv={
+                          signals.vix1d
+                            ? signals.vix1d / 100
+                            : ((vixNum ?? 0) * 1.15) / 100
                         }
-                      : market.data.yesterday
-                  }
-                  movers={historySnapshot ? null : market.data.movers}
-                  vixPrevClose={historySnapshot?.vixPrevClose ?? undefined}
-                  spxOpen={historySnapshot?.runningOHLC.open ?? undefined}
-                  spxPrevClose={historySnapshot?.previousClose ?? undefined}
-                />
-              </div>
-              {/* RV/IV Ratio */}
-              {signals.rvIvRatio != null &&
-                signals.rvIvLabel != null &&
-                signals.rvAnnualized != null && (
+                      />
+                    </div>
+                  )}
+
+                {/* Pin Risk / OI Analysis (live chain only) */}
+                {chain && chain.puts.length > 0 && (
                   <div className="mt-5">
                     <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.12em] uppercase">
-                      Realized vs Implied Volatility
+                      Settlement Pin Risk
                     </div>
-                    <RvIvCard
-                     
-                      ratio={signals.rvIvRatio}
-                      label={signals.rvIvLabel}
-                      rvAnnualized={signals.rvAnnualized}
-                      iv={
-                        signals.vix1d
-                          ? signals.vix1d / 100
-                          : ((vixNum ?? 0) * 1.15) / 100
-                      }
-                    />
+                    <PinRiskAnalysis chain={chain} spot={results.spot} />
                   </div>
                 )}
 
-              {/* Pin Risk / OI Analysis (live chain only) */}
-              {chain && chain.puts.length > 0 && (
-                <div className="mt-5">
-                  <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.12em] uppercase">
-                    Settlement Pin Risk
-                  </div>
-                  <PinRiskAnalysis chain={chain} spot={results.spot} />
-                </div>
-              )}
-
-              {historySnapshot &&
-                historyCandles &&
-                historyCandles.length > 0 &&
-                results.allDeltas && (
-                  <div className="mt-5">
-                    <SettlementCheck
-                     
-                      snapshot={historySnapshot}
-                      allCandles={historyCandles}
-                      allDeltas={results.allDeltas}
-                      entryTimeLabel={entryTimeLabel}
-                    />
-                  </div>
-                )}
-            </>
-          )}
+                {historySnapshot &&
+                  historyCandles &&
+                  historyCandles.length > 0 &&
+                  results.allDeltas && (
+                    <div className="mt-5">
+                      <SettlementCheck
+                        snapshot={historySnapshot}
+                        allCandles={historyCandles}
+                        allDeltas={results.allDeltas}
+                        entryTimeLabel={entryTimeLabel}
+                      />
+                    </div>
+                  )}
+              </>
+            )}
         </div>
       )}
     </SectionBox>

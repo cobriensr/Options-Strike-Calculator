@@ -28,16 +28,12 @@ describe('EventDayWarning: rendering', () => {
   });
 
   it('renders nothing for empty date', () => {
-    const { container } = render(
-      <EventDayWarning selectedDate="" />,
-    );
+    const { container } = render(<EventDayWarning selectedDate="" />);
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing when liveEvents is undefined', () => {
-    const { container } = render(
-      <EventDayWarning selectedDate="2026-01-28" />,
-    );
+    const { container } = render(<EventDayWarning selectedDate="2026-01-28" />);
     expect(container.innerHTML).toBe('');
   });
 
@@ -52,10 +48,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-01-28"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-01-28" liveEvents={liveEvents} />,
     );
     expect(screen.getByText(/high-impact event day/i)).toBeInTheDocument();
     expect(screen.getAllByText(/FOMC/).length).toBeGreaterThan(0);
@@ -70,10 +63,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-03-11"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-03-11" liveEvents={liveEvents} />,
     );
     expect(screen.getAllByText(/CPI/).length).toBeGreaterThan(0);
     expect(screen.getByText(/consumer price index/i)).toBeInTheDocument();
@@ -89,10 +79,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-03-06"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-03-06" liveEvents={liveEvents} />,
     );
     expect(screen.getAllByText(/NFP/).length).toBeGreaterThan(0);
     expect(screen.getByText(/nonfarm payrolls/i)).toBeInTheDocument();
@@ -109,10 +96,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-01-28"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-01-28" liveEvents={liveEvents} />,
     );
     expect(screen.getByText(/wider ranges/i)).toBeInTheDocument();
   });
@@ -133,10 +117,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-12-09"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-12-09" liveEvents={liveEvents} />,
     );
     expect(screen.getAllByText(/CPI/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/FOMC/).length).toBeGreaterThan(0);
@@ -152,10 +133,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-04-29"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-04-29" liveEvents={liveEvents} />,
     );
     expect(screen.getByText(/economic event day/i)).toBeInTheDocument();
     expect(screen.getAllByText(/GDP/).length).toBeGreaterThan(0);
@@ -175,10 +153,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-01-19"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-01-19" liveEvents={liveEvents} />,
     );
     expect(screen.getByText(/market closed/i)).toBeInTheDocument();
     expect(screen.getByText(/no 0dte trading possible/i)).toBeInTheDocument();
@@ -201,10 +176,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-11-27"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-11-27" liveEvents={liveEvents} />,
     );
     expect(
       screen.getByText(/early close day with macro events/i),
@@ -223,10 +195,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-11-27"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-11-27" liveEvents={liveEvents} />,
     );
     expect(
       screen.getByText(/market closes at 1:00 PM ET/i),
@@ -249,10 +218,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-07-15"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-07-15" liveEvents={liveEvents} />,
     );
     expect(screen.getByText(/mega-cap earnings \+ macro/i)).toBeInTheDocument();
   });
@@ -268,10 +234,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-07-15"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-07-15" liveEvents={liveEvents} />,
     );
     expect(
       screen.getByText(/mega-cap earnings can cause/i),
@@ -289,10 +252,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-01-19"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-01-19" liveEvents={liveEvents} />,
     );
     expect(screen.getByText('Market Closed')).toBeInTheDocument();
   });
@@ -309,10 +269,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-11-27"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-11-27" liveEvents={liveEvents} />,
     );
     expect(screen.getByText('Early Close Day')).toBeInTheDocument();
   });
@@ -328,10 +285,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-07-15"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-07-15" liveEvents={liveEvents} />,
     );
     expect(screen.getByText('📈')).toBeInTheDocument();
   });
@@ -346,10 +300,7 @@ describe('EventDayWarning: rendering', () => {
       }),
     ];
     render(
-      <EventDayWarning
-        selectedDate="2026-04-29"
-        liveEvents={liveEvents}
-      />,
+      <EventDayWarning selectedDate="2026-04-29" liveEvents={liveEvents} />,
     );
     expect(screen.getByText(/economic event day/i)).toBeInTheDocument();
   });

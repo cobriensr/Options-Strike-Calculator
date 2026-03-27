@@ -166,16 +166,10 @@ export default function DateTimeSection({
             </div>
           </fieldset>
         </div>
-        {errors['time'] && (
-          <ErrorMsg id="err-time">{errors['time']}</ErrorMsg>
-        )}
+        {errors['time'] && <ErrorMsg id="err-time">{errors['time']}</ErrorMsg>}
       </div>
 
-      <EventDayWarning
-       
-        selectedDate={selectedDate}
-        liveEvents={liveEvents}
-      />
+      <EventDayWarning selectedDate={selectedDate} liveEvents={liveEvents} />
     </SectionBox>
   );
 }

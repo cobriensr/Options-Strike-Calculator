@@ -280,11 +280,7 @@ describe('VIXTermStructure: auto-fill from live data', () => {
 
   it('auto-fills both VIX1D and VIX9D', () => {
     render(
-      <VIXTermStructure
-        vix={20}
-        initialVix1d={18.99}
-        initialVix9d={24.44}
-      />,
+      <VIXTermStructure vix={20} initialVix1d={18.99} initialVix9d={24.44} />,
     );
     const vix1dInput = screen.getByLabelText(/vix1d/i) as HTMLInputElement;
     const vix9dInput = screen.getByLabelText(/vix9d/i) as HTMLInputElement;
@@ -354,13 +350,7 @@ describe('VIXTermStructure: VVIX card', () => {
 
   it('includes VVIX in combined signal (worst-of logic)', () => {
     // VIX1D calm (15/20=0.75) but VVIX extreme (130) → combined should be HIGH ALERT
-    render(
-      <VIXTermStructure
-        vix={20}
-        initialVix1d={15}
-        initialVvix={130}
-      />,
-    );
+    render(<VIXTermStructure vix={20} initialVix1d={15} initialVvix={130} />);
     expect(screen.getByText('HIGH ALERT')).toBeInTheDocument();
   });
 });

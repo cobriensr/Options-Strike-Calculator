@@ -9,7 +9,6 @@ import type {
   MoverSlice,
 } from '../../types/api';
 
-
 // ============================================================
 // HELPERS
 // ============================================================
@@ -245,11 +244,7 @@ describe('PreTradeSignals', () => {
         asOf: '2026-03-12T10:00:00Z',
       };
       render(
-        <PreTradeSignals
-          quotes={quotes}
-          yesterday={null}
-          movers={null}
-        />,
+        <PreTradeSignals quotes={quotes} yesterday={null} movers={null} />,
       );
       expect(screen.queryByText('Overnight Gap')).not.toBeInTheDocument();
     });
@@ -307,13 +302,7 @@ describe('PreTradeSignals', () => {
     });
 
     it('does not render when movers is null', () => {
-      render(
-        <PreTradeSignals
-          quotes={null}
-          yesterday={null}
-          movers={null}
-        />,
-      );
+      render(<PreTradeSignals quotes={null} yesterday={null} movers={null} />);
       expect(screen.queryByText('Move Breadth')).not.toBeInTheDocument();
     });
 
@@ -333,11 +322,7 @@ describe('PreTradeSignals', () => {
         asOf: '2026-03-12T10:00:00Z',
       };
       render(
-        <PreTradeSignals
-          quotes={null}
-          yesterday={null}
-          movers={emptyMovers}
-        />,
+        <PreTradeSignals quotes={null} yesterday={null} movers={emptyMovers} />,
       );
       expect(screen.queryByText('Move Breadth')).not.toBeInTheDocument();
     });

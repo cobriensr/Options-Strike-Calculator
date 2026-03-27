@@ -1,0 +1,326 @@
+/**
+ * SPY Dark Pool Block Trade Analysis
+ *
+ * Fetches large SPY dark pool prints from Unusual Whales API,
+ * clusters them by price level, identifies buyer/seller-initiated trades,
+ * and translates SPY prices to approximate SPX levels.
+ *
+ * SPX is an index and doesn't trade on dark pools — SPY is the ETF proxy.
+ * Large SPY blocks ($5M+) indicate institutional support/resistance levels
+ * that aren't visible in options flow, gamma, or charm data.
+ *
+ * Called on-demand at analysis time — not a cron job.
+ * Uses the existing UW_API_KEY.
+ */
+import logger from './logger.js';
+
+const UW_BASE = 'https://api.unusualwhales.com/api';
+
+// ── Types ───────────────────────────────────────────────────
+
+export interface DarkPoolTrade {
+  canceled: boolean;
+  executed_at: string;
+  ext_hour_sold_codes: string | null;
+  market_center: string;
+  nbbo_ask: string;
+  nbbo_ask_quantity: number;
+  nbbo_bid: string;
+  nbbo_bid_quantity: number;
+  premium: string;
+  price: string;
+  sale_cond_codes: string | null;
+  size: number;
+  ticker: string;
+  tracking_id: number;
+  trade_code: string | null;
+  trade_settlement: string;
+  volume: number;
+}
+
+interface DarkPoolCluster {
+  spyPriceLow: number;
+  spyPriceHigh: number;
+  spxApprox: number;
+  totalPremium: number;
+  tradeCount: number;
+  totalShares: number;
+  buyerInitiated: number;
+  sellerInitiated: number;
+  neutral: number;
+  latestTime: string;
+}
+
+// ── Fetch ───────────────────────────────────────────────────
+
+/**
+ * Fetch large SPY dark pool trades for a given date.
+ * Filters to $5M+ premium to capture only institutional blocks.
+ * Returns raw trades or empty array on failure.
+ */
+export async function fetchDarkPoolBlocks(
+  apiKey: string,
+  date?: string,
+  minPremium: number = 5_000_000,
+): Promise<DarkPoolTrade[]> {
+  try {
+    const params = new URLSearchParams({
+      min_premium: minPremium.toString(),
+      limit: '500',
+    });
+    if (date) params.set('date', date);
+
+    const res = await fetch(`${UW_BASE}/darkpool/SPY?${params}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      logger.warn(
+        { status: res.status, body: text.slice(0, 200) },
+        'Dark pool API returned non-OK',
+      );
+      return [];
+    }
+
+    const body = await res.json();
+    const trades: DarkPoolTrade[] = body.data ?? [];
+
+    // Filter out canceled trades and extended-hours-only trades
+    return trades.filter(
+      (t) => !t.canceled && t.trade_settlement === 'regular_settlement',
+    );
+  } catch (err) {
+    logger.error({ err }, 'Failed to fetch dark pool data');
+    return [];
+  }
+}
+
+// ── Clustering ──────────────────────────────────────────────
+
+/**
+ * Cluster dark pool trades by SPY price level (±$0.50 bands).
+ * Identifies buyer vs seller initiated by comparing trade price to NBBO.
+ * Translates SPY prices to approximate SPX levels.
+ *
+ * @param trades - Raw dark pool trades
+ * @param spyToSpxRatio - SPX/SPY ratio for translation (default ~10)
+ * @returns Clusters sorted by total premium descending
+ */
+export function clusterDarkPoolTrades(
+  trades: DarkPoolTrade[],
+  spyToSpxRatio?: number,
+): DarkPoolCluster[] {
+  if (trades.length === 0) return [];
+
+  // Auto-detect SPY/SPX ratio if not provided
+  const ratio = spyToSpxRatio ?? 10;
+
+  // Group into $0.50 price bands
+  const bands = new Map<number, DarkPoolTrade[]>();
+  for (const trade of trades) {
+    const price = parseFloat(trade.price);
+    if (isNaN(price)) continue;
+    // Round to nearest $0.50
+    const band = Math.round(price * 2) / 2;
+    const existing = bands.get(band) ?? [];
+    existing.push(trade);
+    bands.set(band, existing);
+  }
+
+  // Build clusters
+  const clusters: DarkPoolCluster[] = [];
+  for (const [band, bandTrades] of bands) {
+    let totalPremium = 0;
+    let totalShares = 0;
+    let buyerInitiated = 0;
+    let sellerInitiated = 0;
+    let neutral = 0;
+    let latestTime = '';
+    let priceLow = Infinity;
+    let priceHigh = -Infinity;
+
+    for (const t of bandTrades) {
+      const price = parseFloat(t.price);
+      const ask = parseFloat(t.nbbo_ask);
+      const bid = parseFloat(t.nbbo_bid);
+      const premium = parseFloat(t.premium);
+
+      if (!isNaN(premium)) totalPremium += premium;
+      totalShares += t.size;
+
+      if (price < priceLow) priceLow = price;
+      if (price > priceHigh) priceHigh = price;
+
+      if (t.executed_at > latestTime) latestTime = t.executed_at;
+
+      // Classify trade direction by comparing to NBBO
+      if (!isNaN(ask) && !isNaN(bid)) {
+        const mid = (ask + bid) / 2;
+        if (price >= ask - 0.005) {
+          buyerInitiated++;
+        } else if (price <= bid + 0.005) {
+          sellerInitiated++;
+        } else if (price >= mid) {
+          buyerInitiated++;
+        } else {
+          sellerInitiated++;
+        }
+      } else {
+        neutral++;
+      }
+    }
+
+    clusters.push({
+      spyPriceLow: priceLow,
+      spyPriceHigh: priceHigh,
+      spxApprox: Math.round(band * ratio),
+      totalPremium,
+      tradeCount: bandTrades.length,
+      totalShares,
+      buyerInitiated,
+      sellerInitiated,
+      neutral,
+      latestTime,
+    });
+  }
+
+  // Sort by total premium descending (most significant clusters first)
+  return clusters.sort((a, b) => b.totalPremium - a.totalPremium);
+}
+
+// ── Format for Claude ───────────────────────────────────────
+
+/**
+ * Format dark pool block trade data for Claude's context.
+ * Shows institutional support/resistance levels from large SPY dark pool prints,
+ * translated to approximate SPX levels.
+ *
+ * @param trades - Raw dark pool trades
+ * @param currentSpx - Current SPX price for relative positioning
+ * @param spyToSpxRatio - SPX/SPY ratio (default ~10)
+ * @returns Formatted text block, or null if no significant blocks
+ */
+export function formatDarkPoolForClaude(
+  trades: DarkPoolTrade[],
+  currentSpx?: number,
+  spyToSpxRatio?: number,
+): string | null {
+  if (trades.length === 0) return null;
+
+  const ratio = spyToSpxRatio ?? 10;
+  const clusters = clusterDarkPoolTrades(trades, ratio);
+
+  if (clusters.length === 0) return null;
+
+  const lines: string[] = [];
+
+  // Summary
+  const totalPremium = clusters.reduce((s, c) => s + c.totalPremium, 0);
+  const totalTrades = clusters.reduce((s, c) => s + c.tradeCount, 0);
+  const totalBuyer = clusters.reduce((s, c) => s + c.buyerInitiated, 0);
+  const totalSeller = clusters.reduce((s, c) => s + c.sellerInitiated, 0);
+
+  lines.push(
+    `SPY Dark Pool Block Trades (from API, $5M+ blocks):`,
+    `  Total: ${totalTrades} blocks, $${fmtDp(totalPremium)} aggregate premium`,
+    `  Direction: ${totalBuyer} buyer-initiated, ${totalSeller} seller-initiated`,
+    '',
+  );
+
+  // Net direction
+  if (totalBuyer > totalSeller * 1.5) {
+    lines.push(
+      '  NET BIAS: Buyer-dominated — institutions accumulating at these levels. Supports put-side structural floors.',
+    );
+  } else if (totalSeller > totalBuyer * 1.5) {
+    lines.push(
+      '  NET BIAS: Seller-dominated — institutions distributing at these levels. Supports call-side structural ceilings.',
+    );
+  } else {
+    lines.push(
+      '  NET BIAS: Mixed — no clear directional bias from dark pool activity.',
+    );
+  }
+  lines.push('');
+
+  // Top clusters (max 8)
+  lines.push('  Key Institutional Levels (by premium):');
+  const topClusters = clusters.slice(0, 8);
+
+  for (const c of topClusters) {
+    const time = new Date(c.latestTime).toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    const direction =
+      c.buyerInitiated > c.sellerInitiated
+        ? 'BUYER'
+        : c.sellerInitiated > c.buyerInitiated
+          ? 'SELLER'
+          : 'MIXED';
+
+    let relativePosition = '';
+    if (currentSpx != null) {
+      const dist = c.spxApprox - currentSpx;
+      if (Math.abs(dist) < 3) {
+        relativePosition = ' ← AT PRICE';
+      } else if (dist > 0) {
+        relativePosition = ` (${Math.round(dist)} pts above)`;
+      } else {
+        relativePosition = ` (${Math.round(Math.abs(dist))} pts below)`;
+      }
+    }
+
+    lines.push(
+      `    SPX ~${c.spxApprox}${relativePosition}: $${fmtDp(c.totalPremium)} | ${c.tradeCount} block${c.tradeCount > 1 ? 's' : ''} | ${c.totalShares.toLocaleString()} shares | ${direction} | ${time} ET`,
+    );
+
+    // Note if this aligns with gamma walls or cone boundaries
+    if (currentSpx != null) {
+      const dist = Math.abs(c.spxApprox - currentSpx);
+      if (dist <= 5 && c.buyerInitiated > c.sellerInitiated) {
+        lines.push(
+          `      ↳ Institutional buying AT current price — strong floor signal`,
+        );
+      }
+    }
+  }
+
+  // Structural summary
+  const buyerClusters = topClusters.filter(
+    (c) => c.buyerInitiated > c.sellerInitiated,
+  );
+  const sellerClusters = topClusters.filter(
+    (c) => c.sellerInitiated > c.buyerInitiated,
+  );
+
+  if (buyerClusters.length > 0 || sellerClusters.length > 0) {
+    lines.push('');
+    if (buyerClusters.length > 0) {
+      const levels = buyerClusters.map((c) => `${c.spxApprox}`).join(', ');
+      lines.push(`  Dark Pool Support Levels: SPX ~${levels}`);
+    }
+    if (sellerClusters.length > 0) {
+      const levels = sellerClusters.map((c) => `${c.spxApprox}`).join(', ');
+      lines.push(`  Dark Pool Resistance Levels: SPX ~${levels}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format a premium value for display.
+ */
+function fmtDp(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(abs / 1_000).toFixed(0)}K`;
+  return abs.toFixed(0);
+}

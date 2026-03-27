@@ -15,10 +15,7 @@ interface Props {
  * Powered entirely by the /api/events endpoint.
  * Renders nothing when no events are scheduled.
  */
-export default function EventDayWarning({
-  selectedDate,
-  liveEvents,
-}: Props) {
+export default function EventDayWarning({ selectedDate, liveEvents }: Props) {
   if (!selectedDate) return null;
 
   const events = liveEvents?.filter((e) => e.date === selectedDate) ?? [];

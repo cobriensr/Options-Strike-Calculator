@@ -181,11 +181,7 @@ describe('OpeningRangeCheck: DOW adjustment', () => {
   it('applies DOW multiplier from selectedDate', () => {
     // Monday (quieter) vs Thursday (wider) at same VIX should change the expected range
     const { unmount } = render(
-      <OpeningRangeCheck
-        vix={20}
-        spot={6800}
-        selectedDate="2026-03-09"
-      />,
+      <OpeningRangeCheck vix={20} spot={6800} selectedDate="2026-03-09" />,
     );
     enterRange('6820', '6780');
     const monText =
@@ -194,11 +190,7 @@ describe('OpeningRangeCheck: DOW adjustment', () => {
     unmount();
 
     render(
-      <OpeningRangeCheck
-        vix={20}
-        spot={6800}
-        selectedDate="2026-03-12"
-      />,
+      <OpeningRangeCheck vix={20} spot={6800} selectedDate="2026-03-12" />,
     );
     enterRange('6820', '6780');
     const thuText =

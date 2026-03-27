@@ -2,7 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DateTimeSection from '../../components/DateTimeSection';
-import { inputCls as INPUT_CLS, selectCls as SELECT_CLS } from '../../utils/ui-utils';
+import {
+  inputCls as INPUT_CLS,
+  selectCls as SELECT_CLS,
+} from '../../utils/ui-utils';
 
 const CHEVRON_URL = 'url(test)';
 

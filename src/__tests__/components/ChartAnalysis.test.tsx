@@ -13,7 +13,6 @@ import type { AnalysisContext } from '../../components/ChartAnalysis';
 import { theme } from '../../themes';
 import type { CalculationResults } from '../../types';
 
-
 // ============================================================
 // HELPERS
 // ============================================================
@@ -318,10 +317,7 @@ describe('ChartAnalysis', () => {
         );
       vi.stubGlobal('fetch', mockFetch);
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await user.click(screen.getByRole('button', { name: /analyze/i }));
@@ -351,10 +347,7 @@ describe('ChartAnalysis', () => {
         }),
       );
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -1025,10 +1018,7 @@ describe('ChartAnalysis', () => {
         }),
       );
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -1084,10 +1074,7 @@ describe('ChartAnalysis', () => {
         ),
       );
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
       await addImageViaInput(container);
 
@@ -1117,10 +1104,7 @@ describe('ChartAnalysis', () => {
         ),
       );
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
       await addImageViaInput(container);
 
@@ -1151,10 +1135,7 @@ describe('ChartAnalysis', () => {
         ),
       );
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
       await addImageViaInput(container);
 
@@ -1184,10 +1165,7 @@ describe('ChartAnalysis', () => {
         ),
       );
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
       await addImageViaInput(container);
 
@@ -1396,10 +1374,7 @@ describe('ChartAnalysis', () => {
         );
 
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
@@ -1473,10 +1448,7 @@ describe('ChartAnalysis', () => {
       );
 
       const { container } = render(
-        <ChartAnalysis
-          results={makeResults()}
-          context={makeContext()}
-        />,
+        <ChartAnalysis results={makeResults()} context={makeContext()} />,
       );
 
       await addImageViaInput(container);
@@ -1590,9 +1562,11 @@ describe('ChartAnalysis', () => {
 
   describe('mode-check effect', () => {
     it('fetches analyses only on date change, not on mode tab click', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ analyses: [] }), { status: 200 }),
-      );
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ analyses: [] }), { status: 200 }),
+        );
       vi.stubGlobal('fetch', mockFetch);
 
       const { rerender } = render(
@@ -1623,10 +1597,9 @@ describe('ChartAnalysis', () => {
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue(
-          new Response(
-            JSON.stringify({ analyses: [{ mode: 'entry' }] }),
-            { status: 200 },
-          ),
+          new Response(JSON.stringify({ analyses: [{ mode: 'entry' }] }), {
+            status: 200,
+          }),
         ),
       );
 
@@ -1640,7 +1613,9 @@ describe('ChartAnalysis', () => {
       // After the effect runs, the Pre-Trade (entry) button should be
       // disabled (checkmark shown) and Mid-Day should be active
       await waitFor(() => {
-        expect(screen.getByText('Mid-Day')).toHaveStyle({ color: theme.caution });
+        expect(screen.getByText('Mid-Day')).toHaveStyle({
+          color: theme.caution,
+        });
       });
     });
   });

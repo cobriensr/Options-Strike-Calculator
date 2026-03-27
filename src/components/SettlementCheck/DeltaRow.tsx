@@ -9,11 +9,7 @@ interface Props {
   remainingLow: number;
 }
 
-export default function DeltaRow({
-  r,
-  remainingHigh,
-  remainingLow,
-}: Props) {
+export default function DeltaRow({ r, remainingHigh, remainingLow }: Props) {
   const [showTooltip, setShowTooltip] = useState(false);
 
   const width = r.callStrike - r.putStrike;
@@ -115,7 +111,10 @@ export default function DeltaRow({
               </span>
             </span>
           ) : (
-            <span className="font-sans text-[11px]" style={{ color: theme.red }}>
+            <span
+              className="font-sans text-[11px]"
+              style={{ color: theme.red }}
+            >
               {r.callBreached && r.putBreached
                 ? `Both sides breached \u2014 settled at ${r.settlement.toFixed(0)}`
                 : r.callBreached
@@ -254,7 +253,9 @@ export default function DeltaRow({
               {r.putCushion > 0 ? '\u2212' : '+'}
               {Math.abs(r.putCushion).toFixed(0)}
             </span>
-            <span style={{ color: r.callBreached ? rowColor : theme.textMuted }}>
+            <span
+              style={{ color: r.callBreached ? rowColor : theme.textMuted }}
+            >
               {r.callCushion >= 0 ? '+' : '\u2212'}
               {Math.abs(r.callCushion).toFixed(0)}
             </span>

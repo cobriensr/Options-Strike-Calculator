@@ -204,11 +204,7 @@ export default function IVInputSection({
 
       {/* VIX Regime Card — shown in both VIX and Direct IV modes */}
       {dVix && !errors['vix'] && Number.parseFloat(dVix) > 0 && results && (
-        <VIXRegimeCard
-         
-          vix={Number.parseFloat(dVix)}
-          spot={results.spot}
-        />
+        <VIXRegimeCard vix={Number.parseFloat(dVix)} spot={results.spot} />
       )}
 
       {/* Term Structure — shown in both modes */}
@@ -223,7 +219,6 @@ export default function IVInputSection({
                 ? `hist-${historySnapshot.candle.datetime}`
                 : 'live'
             }
-           
             vix={Number.parseFloat(dVix)}
             onUseVix1dAsSigma={onUseVix1dAsSigma}
             isVix1dActive={ivMode === IV_MODES.DIRECT}

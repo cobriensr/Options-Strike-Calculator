@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import SpotPriceSection from '../../components/SpotPriceSection';
 
-
 function defaults(overrides: Record<string, unknown> = {}) {
   return {
     spotPrice: '550',

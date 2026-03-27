@@ -8,14 +8,13 @@ interface Props {
   iv: number; // annualized IV used (decimal)
 }
 
-export default function RvIvCard({
-  ratio,
-  label,
-  rvAnnualized,
-  iv,
-}: Props) {
+export default function RvIvCard({ ratio, label, rvAnnualized, iv }: Props) {
   const color =
-    label === 'IV Rich' ? theme.green : label === 'IV Cheap' ? theme.red : theme.accent;
+    label === 'IV Rich'
+      ? theme.green
+      : label === 'IV Cheap'
+        ? theme.red
+        : theme.accent;
 
   const advice =
     label === 'IV Rich'

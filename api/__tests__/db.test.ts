@@ -703,7 +703,9 @@ describe('db.ts', () => {
       expect(result).toContain('SPX < 5600');
       expect(result).toContain('NCP diverges from NPP');
       expect(result).toContain('3 spreads');
-      expect(result).toContain('Entry 1 (recommended): PCS 5Δ at 40% — Initial');
+      expect(result).toContain(
+        'Entry 1 (recommended): PCS 5Δ at 40% — Initial',
+      );
       expect(result).toContain('Entry 2 condition: Pullback to support');
       expect(result).toContain('Entry 3 condition: Breakout confirmation');
       // Only top 3 observations
@@ -1452,24 +1454,22 @@ describe('getVixOhlcFromSnapshots', () => {
     ]);
     const result = await getVixOhlcFromSnapshots('2026-03-10');
     expect(result).toEqual({
-      open: 17.80, // earliest: 9:35 AM
-      high: 19.20, // max
-      low: 17.80, // min
-      close: 19.20, // latest: 2:30 PM
+      open: 17.8, // earliest: 9:35 AM
+      high: 19.2, // max
+      low: 17.8, // min
+      close: 19.2, // latest: 2:30 PM
       count: 3,
     });
   });
 
   it('handles a single snapshot row', async () => {
-    mockSql.mockResolvedValueOnce([
-      { entry_time: '10:00 AM', vix: '18.50' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ entry_time: '10:00 AM', vix: '18.50' }]);
     const result = await getVixOhlcFromSnapshots('2026-03-10');
     expect(result).toEqual({
-      open: 18.50,
-      high: 18.50,
-      low: 18.50,
-      close: 18.50,
+      open: 18.5,
+      high: 18.5,
+      low: 18.5,
+      close: 18.5,
       count: 1,
     });
   });
@@ -1481,10 +1481,10 @@ describe('getVixOhlcFromSnapshots', () => {
     ]);
     const result = await getVixOhlcFromSnapshots('2026-03-10');
     expect(result).toEqual({
-      open: 17.00,
-      high: 18.00,
-      low: 17.00,
-      close: 18.00,
+      open: 17.0,
+      high: 18.0,
+      low: 17.0,
+      close: 18.0,
       count: 2,
     });
   });
@@ -1496,10 +1496,10 @@ describe('getVixOhlcFromSnapshots', () => {
     ]);
     const result = await getVixOhlcFromSnapshots('2026-03-10');
     expect(result).toEqual({
-      open: 15.00,
-      high: 16.00,
-      low: 15.00,
-      close: 16.00,
+      open: 15.0,
+      high: 16.0,
+      low: 15.0,
+      close: 16.0,
       count: 2,
     });
   });

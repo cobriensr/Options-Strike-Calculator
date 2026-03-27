@@ -8,11 +8,7 @@ interface Props {
   direction: 'crash' | 'rally';
 }
 
-export default function ScenarioTable({
-  scenarios,
-  spot,
-  direction,
-}: Props) {
+export default function ScenarioTable({ scenarios, spot, direction }: Props) {
   return (
     <section
       className="border-edge overflow-x-auto rounded-[10px] border"
@@ -68,7 +64,9 @@ export default function ScenarioTable({
                 </td>
                 <td
                   className={`${mkTd()} text-right`}
-                  style={{ color: hedgePayout > 0 ? theme.green : theme.textMuted }}
+                  style={{
+                    color: hedgePayout > 0 ? theme.green : theme.textMuted,
+                  }}
                 >
                   {hedgePayout > 0 ? '+$' + fmtDollar(hedgePayout) : '$0'}
                 </td>

@@ -48,14 +48,12 @@ export default function ResultsSection({
           />
 
           <DeltaStrikesTable
-           
             allDeltas={results.allDeltas}
             spot={results.spot}
           />
 
           {showIC && (
             <IronCondorSection
-             
               results={results}
               wingWidth={wingWidth}
               contracts={contracts}

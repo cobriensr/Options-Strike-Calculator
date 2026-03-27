@@ -222,10 +222,7 @@ export default function StrikeCalculator() {
     [darkMode, setDarkMode],
   );
 
-  const handleToggleIC = useCallback(
-    () => setShowIC((v) => !v),
-    [setShowIC],
-  );
+  const handleToggleIC = useCallback(() => setShowIC((v) => !v), [setShowIC]);
 
   const handleUseVix1dAsSigma = useCallback(
     (sigma: number) => {
@@ -237,7 +234,9 @@ export default function StrikeCalculator() {
 
   const chevronUrl = useMemo(
     () => buildChevronUrl(theme.chevronColor),
-    [darkMode],
+    // darkMode triggers recomputation because the CSS variable resolves differently
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [darkMode, theme.chevronColor],
   );
 
   const analysisContext = useMemo(
@@ -365,7 +364,9 @@ export default function StrikeCalculator() {
                 <StatusBadge
                   label={market.data.quotes?.marketOpen ? 'LIVE' : 'CLOSED'}
                   color={
-                    market.data.quotes?.marketOpen ? theme.green : theme.textMuted
+                    market.data.quotes?.marketOpen
+                      ? theme.green
+                      : theme.textMuted
                   }
                   dot
                 />
@@ -409,13 +410,13 @@ export default function StrikeCalculator() {
           </div>
         </header>
 
-<div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
+        <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
           {/* Subtitle — below sticky header */}
           <p className="text-secondary mb-8 text-[15px] leading-normal">
             Black-Scholes approximation for delta-based strike placement
           </p>
 
-<main>
+          <main>
             <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
               <DateTimeSection
                 chevronUrl={chevronUrl}
@@ -434,7 +435,7 @@ export default function StrikeCalculator() {
                 errors={errors}
               />
 
-<SpotPriceSection
+              <SpotPriceSection
                 spotPrice={spotPrice}
                 onSpotChange={handleSpotChange}
                 spxDirect={spxDirect}
@@ -449,7 +450,7 @@ export default function StrikeCalculator() {
               />
             </div>
 
-<div className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
+            <div className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
               <AdvancedSection
                 skewPct={skewPct}
                 onSkewChange={setSkewPct}
@@ -467,7 +468,7 @@ export default function StrikeCalculator() {
                 selectedDate={vix.selectedDate}
               />
 
-<IVInputSection
+              <IVInputSection
                 ivMode={ivMode}
                 onIvModeChange={setIvMode}
                 vixInput={vixInput}
@@ -487,11 +488,11 @@ export default function StrikeCalculator() {
               />
             </div>
 
-<ErrorBoundary label="Risk Calculator">
+            <ErrorBoundary label="Risk Calculator">
               <RiskCalculator />
             </ErrorBoundary>
 
-<ErrorBoundary label="Market Regime">
+            <ErrorBoundary label="Market Regime">
               <MarketRegimeSection
                 dVix={dVix}
                 results={results}
@@ -524,11 +525,11 @@ export default function StrikeCalculator() {
               </ErrorBoundary>
             )}
 
-<ErrorBoundary label="Analysis History">
+            <ErrorBoundary label="Analysis History">
               <AnalysisHistory refreshKey={historyRefreshKey} />
             </ErrorBoundary>
 
-<ErrorBoundary label="Results">
+            <ErrorBoundary label="Results">
               <ResultsSection
                 results={results}
                 effectiveRatio={effectiveRatio}

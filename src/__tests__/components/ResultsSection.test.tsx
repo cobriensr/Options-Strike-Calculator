@@ -3,7 +3,6 @@ import { render, screen } from '@testing-library/react';
 import ResultsSection from '../../components/ResultsSection';
 import type { CalculationResults, DeltaRow } from '../../types';
 
-
 function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
   return {
     delta,

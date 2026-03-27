@@ -4,7 +4,6 @@ import userEvent from '@testing-library/user-event';
 import HedgeSection from '../../components/HedgeSection';
 import type { CalculationResults, IronCondorLegs } from '../../types';
 
-
 // ============================================================
 // HELPERS
 // ============================================================

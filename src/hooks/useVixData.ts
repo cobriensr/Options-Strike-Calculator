@@ -104,7 +104,12 @@ export function useVixData(
       })
       .then((data) => {
         if (!data || data.count === 0) return;
-        setVixOHLC({ open: data.open, high: data.high, low: data.low, close: data.close });
+        setVixOHLC({
+          open: data.open,
+          high: data.high,
+          low: data.low,
+          close: data.close,
+        });
       })
       .catch(() => {
         // Silently ignore AbortError on cleanup, network errors, and 401 for guests

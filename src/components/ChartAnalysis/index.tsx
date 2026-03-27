@@ -61,7 +61,8 @@ export default function ChartAnalysis({
 
   // ── Analysis ──────────────────────────────────────────────
   const hasCSVPositions =
-    positionUpload.status === 'success' && (positionUpload.spreadCount ?? 0) > 0;
+    positionUpload.status === 'success' &&
+    (positionUpload.spreadCount ?? 0) > 0;
 
   const {
     analysis,
@@ -411,7 +412,10 @@ export default function ChartAnalysis({
                 type="button"
                 onClick={() => setConfirming(false)}
                 className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
-                style={{ backgroundColor: theme.surfaceAlt, color: theme.textMuted }}
+                style={{
+                  backgroundColor: theme.surfaceAlt,
+                  color: theme.textMuted,
+                }}
               >
                 Go Back
               </button>
@@ -505,7 +509,6 @@ export default function ChartAnalysis({
         {/* Results */}
         {analysis && (
           <AnalysisResultsView
-           
             analysis={analysis}
             mode={mode}
             onReplaceImage={replaceImage}

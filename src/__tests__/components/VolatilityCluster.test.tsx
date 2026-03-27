@@ -149,9 +149,7 @@ describe('VolatilityCluster: VIX sensitivity', () => {
   it('same range is "hot" at low VIX but "calm" at high VIX', () => {
     // 100 pts / 6800 = 1.47%
     // At VIX 12: p90 is 1.32% → this is >p90 → Hot
-    const { unmount } = render(
-      <VolatilityCluster vix={12} spot={6800} />,
-    );
+    const { unmount } = render(<VolatilityCluster vix={12} spot={6800} />);
     enterYesterday('6800', '6850', '6750');
     expect(screen.getByText('HIGH CLUSTERING')).toBeInTheDocument();
     unmount();
@@ -222,11 +220,7 @@ describe('VolatilityCluster: onMultiplierChange callback', () => {
   it('calls onMultiplierChange when range is entered', () => {
     const onMult = vi.fn();
     render(
-      <VolatilityCluster
-        vix={20}
-        spot={6800}
-        onMultiplierChange={onMult}
-      />,
+      <VolatilityCluster vix={20} spot={6800} onMultiplierChange={onMult} />,
     );
     enterYesterday('6800', '6850', '6750');
     expect(onMult).toHaveBeenCalled();
@@ -237,11 +231,7 @@ describe('VolatilityCluster: onMultiplierChange callback', () => {
   it('calls with multiplier from seeded defaults on initial render', () => {
     const onMult = vi.fn();
     render(
-      <VolatilityCluster
-        vix={20}
-        spot={6800}
-        onMultiplierChange={onMult}
-      />,
+      <VolatilityCluster vix={20} spot={6800} onMultiplierChange={onMult} />,
     );
     // Defaults (5720/5750/5690) produce a cluster result
     expect(onMult).toHaveBeenCalled();

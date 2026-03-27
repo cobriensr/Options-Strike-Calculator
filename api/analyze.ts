@@ -45,6 +45,14 @@ import {
   analysisResponseSchema,
   type AnalysisResponse,
 } from './_lib/validation.js';
+import {
+  fetchSPXCandles,
+  formatSPXCandlesForClaude,
+} from './_lib/schwab-candles.js';
+import {
+  fetchDarkPoolBlocks,
+  formatDarkPoolForClaude,
+} from './_lib/darkpool.js';
 import logger from './_lib/logger.js';
 import { getActiveLessons, formatLessonsBlock } from './_lib/lessons.js';
 import type { IvTermRow } from './iv-term-structure.js';
@@ -697,6 +705,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let allExpiryStrikeContext: string | null = null;
   let greekFlowContext: string | null = null;
   let ivTermStructureContext: string | null = null;
+  let spxCandlesContext: string | null = null;
+  let darkPoolContext: string | null = null;
+
   try {
     const [
       tideRows,
@@ -769,9 +780,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const uwKey = process.env.UW_API_KEY;
     if (uwKey) {
-      const ivDate = analysisDate ?? new Date().toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
+      const ivDate =
+        analysisDate ??
+        new Date().toLocaleDateString('en-CA', {
+          timeZone: 'America/New_York',
+        });
       const ivRes = await fetch(
         `https://api.unusualwhales.com/api/stock/SPX/interpolated-iv?date=${ivDate}`,
         {
@@ -794,6 +807,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   } catch (ivErr) {
     logger.error({ err: ivErr }, 'Failed to fetch IV term structure');
+  }
+
+  if (!context.isBacktest) {
+    try {
+      const { candles, previousClose } = await fetchSPXCandles();
+      if (candles.length > 0) {
+        // Extract cone boundaries from context if available
+        // (These come from the calculator's straddle cone computation)
+        const coneUpper = context.straddleConeUpper as number | undefined;
+        const coneLower = context.straddleConeLower as number | undefined;
+
+        spxCandlesContext = formatSPXCandlesForClaude(
+          candles,
+          previousClose,
+          context.entryTime as string | undefined,
+          coneUpper,
+          coneLower,
+        );
+      }
+    } catch (candleErr) {
+      logger.error({ err: candleErr }, 'Failed to fetch SPX candles');
+    }
+  }
+
+  try {
+    const uwKey = process.env.UW_API_KEY;
+    if (uwKey) {
+      const trades = await fetchDarkPoolBlocks(uwKey, analysisDate);
+      if (trades.length > 0) {
+        const currentSpx = context.spx as number | undefined;
+        // Auto-detect SPY/SPX ratio from current prices if available
+        const currentSpy = context.spy as number | undefined;
+        const ratio =
+          currentSpx && currentSpy && currentSpy > 0
+            ? currentSpx / currentSpy
+            : 10;
+        darkPoolContext = formatDarkPoolForClaude(trades, currentSpx, ratio);
+      }
+    }
+  } catch (dpErr) {
+    logger.error({ err: dpErr }, 'Failed to fetch dark pool data');
   }
 
   const marketTideOtmSection = marketTideOtmContext
@@ -848,6 +902,8 @@ ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time ser
 ${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
 ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
+${darkPoolContext ? `\n## SPY Dark Pool Institutional Blocks (from API)\nLarge ($5M+) dark pool block trades in SPY, translated to approximate SPX levels. Dark pool prints reveal where institutions are buying or selling in size off-exchange — these create structural support/resistance levels that options flow, gamma, and charm cannot see. When a dark pool buyer-initiated cluster aligns with a positive gamma wall, that level has the highest-confidence structural support. When a dark pool seller cluster aligns with negative gamma, that level is a confirmed ceiling.\n\n${darkPoolContext}\n` : ''}
+${spxCandlesContext ? `\n## SPX Intraday Price Action (from Schwab — 5-min candles)\nReal OHLCV price data for today's session. Use this to assess price structure: is SPX making higher lows (uptrend intact despite flow concerns), compressing into a range (IC-favorable), or printing wide-range bars (elevated volatility)? The session range relative to the straddle cone shows how much of the expected move has been consumed. VWAP acts as an institutional reference price — sustained trading below VWAP on a bearish flow day confirms the thesis, while price reclaiming VWAP on a bearish day is a warning.\n\n${spxCandlesContext}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n⚠️ STRIKE OVERRIDE: Any strike prices or position descriptions in this section are from the prior recommendation — they describe what the trader was ADVISED to enter, not necessarily what was filled at those exact strikes. If "Current Open Positions" is provided above, those Schwab-verified strikes are ground truth and OVERRIDE any strike estimates here. Use ONLY the actual positions for all cushion, risk, and management calculations.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.

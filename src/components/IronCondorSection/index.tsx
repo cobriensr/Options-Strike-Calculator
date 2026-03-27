@@ -49,7 +49,6 @@ export default function IronCondorSection({
 
       {/* P&L Profile Table */}
       <PnLProfileTable
-       
         icRows={icRows}
         contracts={contracts}
         effectiveRatio={effectiveRatio}
@@ -67,7 +66,6 @@ export default function IronCondorSection({
       {/* Hedge Section — always visible */}
       {hedgeIc && (
         <HedgeSection
-         
           results={results}
           ic={hedgeIc}
           contracts={contracts}

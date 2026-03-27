@@ -3,7 +3,6 @@ import { render, screen } from '@testing-library/react';
 import DeltaStrikesTable from '../../components/DeltaStrikesTable';
 import type { DeltaRow, DeltaRowError } from '../../types';
 
-
 function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
   return {
     delta,
@@ -38,18 +37,14 @@ function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
 
 describe('DeltaStrikesTable', () => {
   it('renders the table with aria-label', () => {
-    render(
-      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
-    );
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />);
     expect(
       screen.getByRole('table', { name: 'Strike prices by delta' }),
     ).toBeInTheDocument();
   });
 
   it('renders column headers', () => {
-    render(
-      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
-    );
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />);
     expect(screen.getByText('Delta')).toBeInTheDocument();
     expect(screen.getByText(/Put \(SPX\)/)).toBeInTheDocument();
     expect(screen.getByText(/Call \(SPX\)/)).toBeInTheDocument();
@@ -57,9 +52,7 @@ describe('DeltaStrikesTable', () => {
   });
 
   it('renders a data row with strike values', () => {
-    render(
-      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
-    );
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />);
     expect(screen.getByText('5630')).toBeInTheDocument();
     expect(screen.getByText('5770')).toBeInTheDocument();
     expect(screen.getByText('563')).toBeInTheDocument();
@@ -67,24 +60,18 @@ describe('DeltaStrikesTable', () => {
   });
 
   it('renders delta label with delta symbol', () => {
-    render(
-      <DeltaStrikesTable allDeltas={[makeDeltaRow(10)]} spot={5700} />,
-    );
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow(10)]} spot={5700} />);
     expect(screen.getByText(/10\u0394/)).toBeInTheDocument();
   });
 
   it('renders premium values', () => {
-    render(
-      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
-    );
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />);
     expect(screen.getByText('1.85')).toBeInTheDocument();
     expect(screen.getByText('1.72')).toBeInTheDocument();
   });
 
   it('renders width with percentage', () => {
-    render(
-      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
-    );
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />);
     expect(screen.getByText('139')).toBeInTheDocument(); // callStrike - putStrike
   });
 
@@ -123,9 +110,7 @@ describe('DeltaStrikesTable', () => {
   // ── IV acceleration indicator ─────────────────────────────
 
   it('does not show IV acceleration indicator when ivAccelMult is 1.0', () => {
-    render(
-      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
-    );
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />);
     expect(screen.queryByText(/IV acceleration/)).not.toBeInTheDocument();
   });
 

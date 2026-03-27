@@ -3,7 +3,6 @@ import { render, screen } from '@testing-library/react';
 import PinRiskAnalysis from '../../components/PinRiskAnalysis';
 import type { ChainResponse, ChainStrike } from '../../types/api';
 
-
 function makeStrike(
   strike: number,
   oi: number,

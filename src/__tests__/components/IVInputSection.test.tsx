@@ -3,7 +3,6 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IVInputSection from '../../components/IVInputSection';
 
-
 const mockMarket = {
   data: {
     quotes: null,

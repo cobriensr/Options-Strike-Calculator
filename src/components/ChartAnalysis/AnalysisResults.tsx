@@ -222,7 +222,10 @@ export default function AnalysisResults({
 
       {/* Observations */}
       <Collapsible title="Key Observations" color={theme.textMuted}>
-        <BulletList defaultColor={theme.textMuted} items={analysis.observations} />
+        <BulletList
+          defaultColor={theme.textMuted}
+          items={analysis.observations}
+        />
       </Collapsible>
 
       {/* Strike Guidance */}
@@ -391,7 +394,10 @@ export default function AnalysisResults({
               )}
             {analysis.managementRules.timeRules && (
               <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: theme.caution }}>
+                <span
+                  className="font-semibold"
+                  style={{ color: theme.caution }}
+                >
                   Time rule:{' '}
                 </span>
                 <span className="text-secondary">
@@ -401,7 +407,10 @@ export default function AnalysisResults({
             )}
             {analysis.managementRules.flowReversalSignal && (
               <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: theme.caution }}>
+                <span
+                  className="font-semibold"
+                  style={{ color: theme.caution }}
+                >
                   Flow reversal:{' '}
                 </span>
                 <span className="text-secondary">

@@ -37,8 +37,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    const dateParam =
-      typeof req.query?.date === 'string' ? req.query.date : '';
+    const dateParam = typeof req.query?.date === 'string' ? req.query.date : '';
     if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
       done({ status: 400 });
       return res.status(400).json({

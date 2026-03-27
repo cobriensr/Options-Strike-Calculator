@@ -3,7 +3,6 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import EntryTimeSection from '../../components/EntryTimeSection';
 
-
 function renderSection(
   overrides: Partial<Parameters<typeof EntryTimeSection>[0]> = {},
 ) {

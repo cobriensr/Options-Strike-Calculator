@@ -75,11 +75,7 @@ export default function DateLookupSection({
           </p>
         </div>
       )}
-      <EventDayWarning
-       
-        selectedDate={selectedDate}
-        liveEvents={liveEvents}
-      />
+      <EventDayWarning selectedDate={selectedDate} liveEvents={liveEvents} />
       {selectedDate && !vixOHLC && (
         <ErrorMsg>No VIX data found for this date</ErrorMsg>
       )}

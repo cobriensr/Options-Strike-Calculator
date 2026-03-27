@@ -340,7 +340,6 @@ export default function VolatilityCluster({
           {/* Percentile reference bar */}
           {thresholds && (
             <PercentileBar
-             
               thresholds={thresholds}
               yestRangePct={yestRangePct}
               signalColor={signalColor}

@@ -4,7 +4,6 @@ import userEvent from '@testing-library/user-event';
 import IronCondorSection from '../../components/IronCondorSection';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
 
-
 // ============================================================
 // HELPERS
 // ============================================================

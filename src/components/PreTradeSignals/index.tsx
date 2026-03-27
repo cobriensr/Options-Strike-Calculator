@@ -45,7 +45,6 @@ export default function PreTradeSignals({
       <div className="grid grid-cols-1 gap-2.5">
         {rvIv && (
           <SignalCard
-           
             title="Realized vs. Implied Vol"
             subtitle="Yesterday actual \u00F7 VIX predicted"
             result={rvIv}
@@ -53,7 +52,6 @@ export default function PreTradeSignals({
         )}
         {gap && (
           <SignalCard
-           
             title="Overnight Gap"
             subtitle="SPX open vs. prior close"
             result={gap}
@@ -61,7 +59,6 @@ export default function PreTradeSignals({
         )}
         {breadth && (
           <SignalCard
-           
             title="Move Breadth"
             subtitle="SPX component concentration"
             result={breadth}

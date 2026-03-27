@@ -213,7 +213,6 @@ export default function OpeningRangeCheck({
 
           {/* Range consumption bar */}
           <RangeConsumptionBar
-           
             pctOfMedianUsed={analysis.pctOfMedianUsed}
             pctOfP90Used={analysis.pctOfP90Used}
             signalColor={signalColor}

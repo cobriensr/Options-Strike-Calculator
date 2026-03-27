@@ -4,7 +4,6 @@ import userEvent from '@testing-library/user-event';
 import DateLookupSection from '../../components/DateLookupSection';
 import type { VIXDayData, OHLCField } from '../../types';
 
-
 function renderSection(
   overrides: Partial<{
     selectedDate: string;

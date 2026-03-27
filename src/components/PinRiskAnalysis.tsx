@@ -124,13 +124,17 @@ export default function PinRiskAnalysis({ chain, spot }: Props) {
                   </td>
                   <td
                     className="px-3 py-1.5 text-right"
-                    style={{ color: s.putOI > s.callOI ? theme.red : undefined }}
+                    style={{
+                      color: s.putOI > s.callOI ? theme.red : undefined,
+                    }}
                   >
                     {formatOI(s.putOI)}
                   </td>
                   <td
                     className="px-3 py-1.5 text-right"
-                    style={{ color: s.callOI > s.putOI ? theme.green : undefined }}
+                    style={{
+                      color: s.callOI > s.putOI ? theme.green : undefined,
+                    }}
                   >
                     {formatOI(s.callOI)}
                   </td>

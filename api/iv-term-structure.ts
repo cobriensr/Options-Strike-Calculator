@@ -38,13 +38,10 @@ async function fetchInterpolatedIv(
   apiKey: string,
   date: string,
 ): Promise<IvTermRow[]> {
-  const res = await fetch(
-    `${UW_BASE}/stock/SPX/interpolated-iv?date=${date}`,
-    {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(30_000),
-    },
-  );
+  const res = await fetch(`${UW_BASE}/stock/SPX/interpolated-iv?date=${date}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(30_000),
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -120,10 +117,7 @@ export function formatIvTermStructureForClaude(
   return lines.join('\n');
 }
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/iv-term-structure');
     const done = metrics.request('/api/iv-term-structure');
@@ -160,10 +154,7 @@ export default async function handler(
       const rows = await fetchInterpolatedIv(apiKey, today);
 
       // Short edge cache — data changes intraday
-      res.setHeader(
-        'Cache-Control',
-        's-maxage=300, stale-while-revalidate=60',
-      );
+      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
 
       done({ status: 200 });
       return res.status(200).json({

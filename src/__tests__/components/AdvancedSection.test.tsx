@@ -4,7 +4,6 @@ import userEvent from '@testing-library/user-event';
 import AdvancedSection from '../../components/AdvancedSection';
 import type { VIXDayData, OHLCField } from '../../types';
 
-
 function defaultProps(
   overrides: Partial<Parameters<typeof AdvancedSection>[0]> = {},
 ) {
@@ -380,11 +379,11 @@ describe('AdvancedSection', () => {
     expect(screen.getByText('3.5x')).toBeInTheDocument();
   });
 
-  it('uses mt-auto class on Model Parameters container for bottom alignment', () => {
+  it('uses border-t separator on Model Parameters container', () => {
     render(<AdvancedSection {...defaultProps({ results: makeResults() })} />);
     const heading = screen.getByText('Model Parameters');
-    // The mt-auto class is on the parent div that wraps the heading
-    const container = heading.closest('div.mt-auto');
+    // The border-t class is on the parent div that wraps the heading
+    const container = heading.closest('div.border-t');
     expect(container).toBeInTheDocument();
   });
 

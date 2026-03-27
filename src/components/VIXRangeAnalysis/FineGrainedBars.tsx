@@ -38,7 +38,11 @@ export default function FineGrainedBars({ vix, spot }: Props) {
               const barWidth = (s.medHL / maxP90) * 100;
               const p90BarWidth = (s.p90HL / maxP90) * 100;
               const barColor =
-                s.vix < 18 ? theme.accent : s.vix < 25 ? theme.caution : theme.red;
+                s.vix < 18
+                  ? theme.accent
+                  : s.vix < 25
+                    ? theme.caution
+                    : theme.red;
               return (
                 <tr
                   key={s.vix}

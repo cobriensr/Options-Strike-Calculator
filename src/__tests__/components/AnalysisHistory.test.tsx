@@ -4,7 +4,6 @@ import userEvent from '@testing-library/user-event';
 import AnalysisHistory from '../../components/ChartAnalysis/AnalysisHistory';
 import type { AnalysisResult } from '../../components/ChartAnalysis/types';
 
-
 // ── Mock data ──────────────────────────────────────────────
 
 function makeDateEntry(

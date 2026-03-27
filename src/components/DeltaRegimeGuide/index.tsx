@@ -208,7 +208,9 @@ export default function DeltaRegimeGuide({
             className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
             style={{
               backgroundColor:
-                cMult > 1.15 ? tint(theme.red, '18') : tint(theme.caution, '18'),
+                cMult > 1.15
+                  ? tint(theme.red, '18')
+                  : tint(theme.caution, '18'),
               color: cMult > 1.15 ? theme.red : theme.caution,
             }}
           >
@@ -231,7 +233,6 @@ export default function DeltaRegimeGuide({
       {/* Recommendation Banner */}
       {settlementTarget && (
         <RecommendationBanner
-         
           bucket={bucket}
           zoneColor={zoneColor}
           recommendedDelta={recommendedDelta}

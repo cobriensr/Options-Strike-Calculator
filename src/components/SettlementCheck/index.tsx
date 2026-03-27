@@ -193,7 +193,6 @@ export default function SettlementCheck({
         {results.map((r) => (
           <DeltaRow
             key={r.delta}
-           
             r={r}
             remainingHigh={remainingHigh}
             remainingLow={remainingLow}

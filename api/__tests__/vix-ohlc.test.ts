@@ -13,9 +13,7 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) =>
-      cb({ setTransactionName: vi.fn() }),
-    ),
+    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
   },
   metrics: {
@@ -42,7 +40,10 @@ describe('GET /api/vix-ohlc', () => {
   it('returns 403 for bots', async () => {
     vi.mocked(checkBot).mockResolvedValue({ isBot: true });
     const res = mockResponse();
-    await handler(mockRequest({ method: 'GET', query: { date: '2026-03-10' } }), res);
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-03-10' } }),
+      res,
+    );
     expect(res._status).toBe(403);
   });
 
@@ -55,26 +56,32 @@ describe('GET /api/vix-ohlc', () => {
 
   it('returns 400 for invalid date format', async () => {
     const res = mockResponse();
-    await handler(mockRequest({ method: 'GET', query: { date: 'not-a-date' } }), res);
+    await handler(
+      mockRequest({ method: 'GET', query: { date: 'not-a-date' } }),
+      res,
+    );
     expect(res._status).toBe(400);
   });
 
   it('returns OHLC data when snapshots exist', async () => {
     vi.mocked(getVixOhlcFromSnapshots).mockResolvedValue({
-      open: 17.80,
-      high: 19.20,
-      low: 17.80,
-      close: 19.20,
+      open: 17.8,
+      high: 19.2,
+      low: 17.8,
+      close: 19.2,
       count: 3,
     });
     const res = mockResponse();
-    await handler(mockRequest({ method: 'GET', query: { date: '2026-03-10' } }), res);
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-03-10' } }),
+      res,
+    );
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
-      open: 17.80,
-      high: 19.20,
-      low: 17.80,
-      close: 19.20,
+      open: 17.8,
+      high: 19.2,
+      low: 17.8,
+      close: 19.2,
       count: 3,
     });
   });
@@ -82,7 +89,10 @@ describe('GET /api/vix-ohlc', () => {
   it('returns null fields and count 0 when no snapshots exist', async () => {
     vi.mocked(getVixOhlcFromSnapshots).mockResolvedValue(null);
     const res = mockResponse();
-    await handler(mockRequest({ method: 'GET', query: { date: '2026-03-10' } }), res);
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-03-10' } }),
+      res,
+    );
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
       open: null,
@@ -96,7 +106,10 @@ describe('GET /api/vix-ohlc', () => {
   it('returns 500 on DB error', async () => {
     vi.mocked(getVixOhlcFromSnapshots).mockRejectedValue(new Error('DB down'));
     const res = mockResponse();
-    await handler(mockRequest({ method: 'GET', query: { date: '2026-03-10' } }), res);
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-03-10' } }),
+      res,
+    );
     expect(res._status).toBe(500);
   });
 });

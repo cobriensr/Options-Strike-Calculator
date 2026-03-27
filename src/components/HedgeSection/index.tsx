@@ -276,7 +276,6 @@ export default function HedgeSection({
             Crash Scenarios (SPX drops)
           </div>
           <ScenarioTable
-           
             scenarios={crashScenarios}
             spot={results.spot}
             direction="crash"
@@ -287,7 +286,6 @@ export default function HedgeSection({
             Rally Scenarios (SPX rises)
           </div>
           <ScenarioTable
-           
             scenarios={rallyScenarios}
             spot={results.spot}
             direction="rally"

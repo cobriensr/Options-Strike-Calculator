@@ -376,9 +376,7 @@ describe('VIXRangeAnalysis: fine-grained table content', () => {
 // ============================================================
 describe('VIXRangeAnalysis: VIX prop reactivity', () => {
   it('updates active bucket highlight when VIX changes', () => {
-    const { rerender } = render(
-      <VIXRangeAnalysis vix={15} spot={6800} />,
-    );
+    const { rerender } = render(<VIXRangeAnalysis vix={15} spot={6800} />);
 
     let currentBadge = screen.getByText('current');
     let row = currentBadge.closest('tr');
@@ -391,9 +389,7 @@ describe('VIXRangeAnalysis: VIX prop reactivity', () => {
   });
 
   it('removes highlighting when VIX becomes null', () => {
-    const { rerender } = render(
-      <VIXRangeAnalysis vix={15} spot={6800} />,
-    );
+    const { rerender } = render(<VIXRangeAnalysis vix={15} spot={6800} />);
     expect(screen.getByText('current')).toBeInTheDocument();
 
     rerender(<VIXRangeAnalysis vix={null} spot={6800} />);
@@ -428,9 +424,7 @@ describe('VIXRangeAnalysis: theme support', () => {
   it('renders fine-grained table in both themes', async () => {
     const user = userEvent.setup();
 
-    const { unmount } = render(
-      <VIXRangeAnalysis vix={20} spot={6800} />,
-    );
+    const { unmount } = render(<VIXRangeAnalysis vix={20} spot={6800} />);
     await user.click(screen.getByText(/show.*point-by-point/i));
     expect(
       screen.getByRole('table', { name: /fine-grained/i }),
@@ -527,7 +521,9 @@ describe('VIXRangeAnalysis: accessibility', () => {
     render(<VIXRangeAnalysis vix={20} spot={6800} />);
     const group = screen.getByRole('radiogroup', { name: /survival mode/i });
     expect(group).toBeInTheDocument();
-    expect(within(group).getAllByRole('radio').length).toBeGreaterThanOrEqual(2);
+    expect(within(group).getAllByRole('radio').length).toBeGreaterThanOrEqual(
+      2,
+    );
   });
 });
 
