@@ -60,11 +60,12 @@ async function connectWithRetry(): Promise<void> {
         aggregator?.flush();
       }, 60_000);
 
-      return await new Promise<void>((resolve) => {
+      // Wait for the WebSocket session to end (disconnect/error)
+      await new Promise<void>((resolve) => {
         wsClient = new TradovateWsClient(wsUrl, {
           onQuote: handleQuote,
           onConnected: () => {
-            backoff = 1000;
+            backoff = 1000; // Reset backoff on successful connection
             logger.info({ symbol }, 'Sidecar ready — receiving quotes');
           },
           onDisconnected: (reason) => {
@@ -76,9 +77,12 @@ async function connectWithRetry(): Promise<void> {
         });
         wsClient.connect(token, symbol);
       });
+
+      // Connection ended — fall through to backoff below
     } catch (err) {
       logger.error({ err, backoff }, 'Connection attempt failed');
     }
+
     if (isShuttingDown) break;
     logger.info({ backoff }, 'Reconnecting after backoff');
     await new Promise((r) => setTimeout(r, backoff));
@@ -114,9 +118,8 @@ async function main(): Promise<void> {
       }
     },
   });
-  while (!isShuttingDown) {
-    await connectWithRetry();
-  }
+  // connectWithRetry loops internally with backoff
+  await connectWithRetry();
 }
 
 async function shutdown(signal: string): Promise<void> {
