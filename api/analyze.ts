@@ -75,6 +75,11 @@ type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
+/** Safely extract a numeric value from the untyped context object. */
+function numOrUndef(val: unknown): number | undefined {
+  return typeof val === 'number' && Number.isFinite(val) ? val : undefined;
+}
+
 // ============================================================
 // SYSTEM PROMPT
 // ============================================================
@@ -714,12 +719,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let maxPainContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
-  let straddleConeUpper: number | undefined = context.straddleConeUpper as
-    | number
-    | undefined;
-  let straddleConeLower: number | undefined = context.straddleConeLower as
-    | number
-    | undefined;
+  let straddleConeUpper = numOrUndef(context.straddleConeUpper);
+  let straddleConeLower = numOrUndef(context.straddleConeLower);
 
   try {
     const [
@@ -824,6 +825,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // On-demand pre-market data (ES overnight + straddle cone from manual input)
   let previousClose: number | null = null;
+  let preMarketRow: PreMarketData | null = null;
   try {
     const db = getDb();
     const pmRows = await db`
@@ -834,6 +836,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (pmRows.length > 0 && pmRows[0]?.pre_market_data) {
       const pm = pmRows[0].pre_market_data as PreMarketData;
+      preMarketRow = pm;
 
       // Extract cone boundaries for candles + overnight formatters
       if (pm.straddleConeUpper != null && !straddleConeUpper)
@@ -842,8 +845,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         straddleConeLower = pm.straddleConeLower;
 
       // Format overnight gap analysis if we have cash open + prev close
-      const cashOpen = context.spx as number | undefined;
-      const prevCloseVal = context.prevClose as number | undefined;
+      const cashOpen = numOrUndef(context.spx);
+      const prevCloseVal = numOrUndef(context.prevClose);
 
       if (cashOpen && prevCloseVal) {
         overnightGapContext = formatOvernightForClaude({
@@ -879,27 +882,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // If we got previousClose from candles and have pre-market but no gap context yet, retry
-  if (!overnightGapContext && previousClose) {
-    try {
-      const db = getDb();
-      const pmRows = await db`
-        SELECT pre_market_data FROM market_snapshots
-        WHERE date = ${analysisDate} AND pre_market_data IS NOT NULL
-        ORDER BY created_at DESC LIMIT 1
-      `;
-      if (pmRows.length > 0 && pmRows[0]?.pre_market_data) {
-        const pm = pmRows[0].pre_market_data as PreMarketData;
-        const cashOpen = context.spx as number | undefined;
-        if (cashOpen) {
-          overnightGapContext = formatOvernightForClaude({
-            preMarket: pm,
-            cashOpen,
-            prevClose: previousClose,
-          });
-        }
-      }
-    } catch {
-      // Already logged above
+  if (!overnightGapContext && previousClose && preMarketRow) {
+    const cashOpen = numOrUndef(context.spx);
+    if (cashOpen) {
+      overnightGapContext = formatOvernightForClaude({
+        preMarket: preMarketRow,
+        cashOpen,
+        prevClose: previousClose,
+      });
     }
   }
 
