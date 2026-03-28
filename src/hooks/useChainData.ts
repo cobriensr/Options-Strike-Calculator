@@ -20,7 +20,10 @@ async function fetchChain(): Promise<ChainResponse | null> {
   }
 }
 
-export function useChainData(enabled: boolean): UseChainDataReturn {
+export function useChainData(
+  enabled: boolean,
+  marketOpen: boolean,
+): UseChainDataReturn {
   const [chain, setChain] = useState<ChainResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,13 +44,18 @@ export function useChainData(enabled: boolean): UseChainDataReturn {
     });
   }, [enabled]);
 
-  // Fetch on mount and every 60s during market hours
+  // Fetch once on mount when enabled
   useEffect(() => {
     if (!enabled) return;
     refresh();
+  }, [enabled, refresh]);
+
+  // Poll every 60s only during market hours
+  useEffect(() => {
+    if (!enabled || !marketOpen) return;
     const interval = setInterval(refresh, POLL_INTERVALS.CHAIN);
     return () => clearInterval(interval);
-  }, [enabled, refresh]);
+  }, [enabled, marketOpen, refresh]);
 
   return { chain, loading, error, refresh };
 }

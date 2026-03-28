@@ -108,7 +108,10 @@ export default function StrikeCalculator() {
   } = useVixData(ivMode, timeHour, timeAmPm, timezone, setVixInput);
   const historyData = useHistoryData(vix.selectedDate);
   const vix1dStatic = useVix1dData();
-  const chainData = useChainData(market.hasData && !historyData.hasHistory);
+  const chainData = useChainData(
+    market.hasData && !historyData.hasHistory,
+    market.data.quotes?.marketOpen ?? false,
+  );
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,

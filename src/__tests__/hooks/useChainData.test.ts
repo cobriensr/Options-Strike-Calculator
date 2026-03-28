@@ -126,7 +126,7 @@ describe('useChainData', () => {
   it('does not fetch when disabled', async () => {
     const fetchMock = mockFetch(200, mockChain);
 
-    const { result } = renderHook(() => useChainData(false));
+    const { result } = renderHook(() => useChainData(false, false));
 
     // Give it a tick to ensure no fetch fires
     await act(async () => {
@@ -142,7 +142,7 @@ describe('useChainData', () => {
   it('fetches chain data on mount when enabled', async () => {
     mockFetch(200, mockChain);
 
-    const { result } = renderHook(() => useChainData(true));
+    const { result } = renderHook(() => useChainData(true, false));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -153,7 +153,7 @@ describe('useChainData', () => {
   it('returns null for 401 (public visitor)', async () => {
     mockFetch(401, { error: 'Not authenticated' });
 
-    const { result } = renderHook(() => useChainData(true));
+    const { result } = renderHook(() => useChainData(true, false));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -163,7 +163,7 @@ describe('useChainData', () => {
   it('returns null for non-ok response', async () => {
     mockFetch(500, { error: 'Internal error' });
 
-    const { result } = renderHook(() => useChainData(true));
+    const { result } = renderHook(() => useChainData(true, false));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -175,7 +175,7 @@ describe('useChainData', () => {
       Promise.reject(new Error('Network error')),
     ) as unknown as typeof fetch;
 
-    const { result } = renderHook(() => useChainData(true));
+    const { result } = renderHook(() => useChainData(true, false));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -193,7 +193,7 @@ describe('useChainData', () => {
     };
     mockFetch(200, errorResponse);
 
-    const { result } = renderHook(() => useChainData(true));
+    const { result } = renderHook(() => useChainData(true, false));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -203,10 +203,28 @@ describe('useChainData', () => {
     expect(result.current.chain).toBeNull();
   });
 
-  it('auto-refreshes every 60s', async () => {
+  it('does not auto-refresh when market is closed', async () => {
     const fetchMock = mockFetch(200, mockChain);
 
-    const { result } = renderHook(() => useChainData(true));
+    const { result } = renderHook(() => useChainData(true, false));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const initialCalls = fetchMock.mock.calls.length;
+    expect(initialCalls).toBe(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+
+    // No additional calls — market is closed
+    expect(fetchMock.mock.calls.length).toBe(initialCalls);
+  });
+
+  it('auto-refreshes every 60s when market is open', async () => {
+    const fetchMock = mockFetch(200, mockChain);
+
+    const { result } = renderHook(() => useChainData(true, true));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -225,7 +243,7 @@ describe('useChainData', () => {
   it('cleans up interval on unmount', async () => {
     const fetchMock = mockFetch(200, mockChain);
 
-    const { result, unmount } = renderHook(() => useChainData(true));
+    const { result, unmount } = renderHook(() => useChainData(true, true));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -242,7 +260,7 @@ describe('useChainData', () => {
   it('refresh() triggers a re-fetch', async () => {
     const fetchMock = mockFetch(200, mockChain);
 
-    const { result } = renderHook(() => useChainData(true));
+    const { result } = renderHook(() => useChainData(true, false));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -260,7 +278,7 @@ describe('useChainData', () => {
   it('refresh() is a no-op when disabled', async () => {
     const fetchMock = mockFetch(200, mockChain);
 
-    const { result } = renderHook(() => useChainData(false));
+    const { result } = renderHook(() => useChainData(false, false));
 
     act(() => {
       result.current.refresh();
