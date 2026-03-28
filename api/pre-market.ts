@@ -58,18 +58,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const parsed = preMarketBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({
-          error: parsed.error.issues[0]?.message ?? 'Invalid request body',
-        });
+      return res.status(400).json({
+        error: parsed.error.issues[0]?.message ?? 'Invalid request body',
+      });
     }
     const { date, ...data } = parsed.data;
 
     if (data.globexHigh >= data.globexLow === false) {
-      return res
-        .status(400)
-        .json({ error: 'globexHigh must be >= globexLow' });
+      return res.status(400).json({ error: 'globexHigh must be >= globexLow' });
     }
 
     const preMarketJson = JSON.stringify({

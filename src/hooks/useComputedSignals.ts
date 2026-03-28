@@ -205,9 +205,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
   const vix9d = historySnapshot
     ? (historySnapshot.vix9d ?? undefined)
     : liveVix9d;
-  const vvix = historySnapshot
-    ? (historySnapshot.vvix ?? undefined)
-    : liveVvix;
+  const vvix = historySnapshot ? (historySnapshot.vvix ?? undefined) : liveVvix;
 
   const sigmaSource = vix1d
     ? 'VIX1D'

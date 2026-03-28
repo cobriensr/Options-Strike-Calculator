@@ -153,8 +153,7 @@ export function useRegimeClassification(
     // After a big up day, the asymmetry is weaker (upside rallies cluster less).
     // When cluster mult ≈ 1 (no clustering), both sides are equal.
     const ydayOpen = historySnapshot?.yesterday?.open ?? liveYesterdayOpen;
-    const ydayClose =
-      historySnapshot?.yesterday?.close ?? liveYesterdayClose;
+    const ydayClose = historySnapshot?.yesterday?.close ?? liveYesterdayClose;
     if (cMult !== 1 && ydayOpen && ydayClose && ydayOpen > 0) {
       const ydayReturn = (ydayClose - ydayOpen) / ydayOpen;
       const excess = cMult - 1; // how much above/below 1.0 (e.g. 0.15 for 1.15x)
@@ -162,16 +161,13 @@ export function useRegimeClassification(
         // Clustering is active (mult > 1)
         if (ydayReturn < -SIGNALS.CLUSTER_DIRECTION_THRESHOLD) {
           // Down day: put side gets 70% of excess, call side 30%
-          result.clusterPutMult =
-            1 + excess * SIGNALS.CLUSTER_DOWN_PUT_WEIGHT;
+          result.clusterPutMult = 1 + excess * SIGNALS.CLUSTER_DOWN_PUT_WEIGHT;
           result.clusterCallMult =
             1 + excess * SIGNALS.CLUSTER_DOWN_CALL_WEIGHT;
         } else if (ydayReturn > SIGNALS.CLUSTER_DIRECTION_THRESHOLD) {
           // Up day: call side gets 60% of excess, put side 40% (weaker asymmetry)
-          result.clusterPutMult =
-            1 + excess * SIGNALS.CLUSTER_UP_PUT_WEIGHT;
-          result.clusterCallMult =
-            1 + excess * SIGNALS.CLUSTER_UP_CALL_WEIGHT;
+          result.clusterPutMult = 1 + excess * SIGNALS.CLUSTER_UP_PUT_WEIGHT;
+          result.clusterCallMult = 1 + excess * SIGNALS.CLUSTER_UP_CALL_WEIGHT;
         } else {
           // Flat day: symmetric
           result.clusterPutMult = cMult;

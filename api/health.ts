@@ -71,9 +71,7 @@ export default async function handler(
     };
   }
 
-  const allHealthy = Object.values(results).every(
-    (s) => s.status === 'ok',
-  );
+  const allHealthy = Object.values(results).every((s) => s.status === 'ok');
   const status = allHealthy ? 200 : 503;
 
   res.setHeader('Cache-Control', 'no-store');

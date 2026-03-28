@@ -25,14 +25,8 @@ import {
   formatAllExpiryStrikesForClaude,
   formatGreekFlowForClaude,
 } from './db-strike-helpers.js';
-import {
-  fetchSPXCandles,
-  formatSPXCandlesForClaude,
-} from './spx-candles.js';
-import {
-  fetchDarkPoolBlocks,
-  formatDarkPoolForClaude,
-} from './darkpool.js';
+import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
+import { fetchDarkPoolBlocks, formatDarkPoolForClaude } from './darkpool.js';
 import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
 import logger from './logger.js';
 import { getActiveLessons, formatLessonsBlock } from './lessons.js';
@@ -110,8 +104,7 @@ export async function buildAnalysisContext(
   // Auto-fetch previous recommendation from DB for continuity
   let previousRec: string | null = null;
   const analysisDate =
-    (context.selectedDate as string | undefined) ??
-    getETDateStr(new Date());
+    (context.selectedDate as string | undefined) ?? getETDateStr(new Date());
   if (!context.isBacktest && mode !== 'review') {
     try {
       const posData = await getLatestPositions(analysisDate);

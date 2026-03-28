@@ -237,8 +237,7 @@ export function useRangeAnalysis(
           ? rollingParkinsonRV(livePriorDays)
           : parkinsonRV(ydayHigh, ydayLow);
       // IV: prefer VIX1D, fall back to VIX × 1.15
-      const iv =
-        vix1d ? vix1d / 100 : (vix * DEFAULTS.IV_PREMIUM_FACTOR) / 100;
+      const iv = vix1d ? vix1d / 100 : (vix * DEFAULTS.IV_PREMIUM_FACTOR) / 100;
       if (iv > 0) {
         result.rvAnnualized = Math.round(rv * 10000) / 10000;
         result.rvIvRatio = Math.round((rv / iv) * 100) / 100;
