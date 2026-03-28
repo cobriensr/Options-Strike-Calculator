@@ -11,7 +11,7 @@
  *
  * Saves to /api/pre-market endpoint and stores in AnalysisContext.
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { SectionBox, ErrorMsg } from './ui';
 import { tinyLbl, inputCls } from '../utils/ui-utils';
 import type { PreMarketData } from '../types/api';
@@ -49,29 +49,32 @@ export default function PreMarketInput({
 
   // Load existing data for this date
   useEffect(() => {
+    const controller = new AbortController();
     async function load() {
       try {
-        const res = await fetch(`${apiBase}/api/pre-market?date=${date}`);
-        if (res.ok) {
-          const json = await res.json();
-          if (json.data) {
-            const d = json.data as PreMarketData;
-            if (d.globexHigh != null) setGlobexHigh(String(d.globexHigh));
-            if (d.globexLow != null) setGlobexLow(String(d.globexLow));
-            if (d.globexClose != null) setGlobexClose(String(d.globexClose));
-            if (d.globexVwap != null) setGlobexVwap(String(d.globexVwap));
-            if (d.straddleConeUpper != null)
-              setConeUpper(String(d.straddleConeUpper));
-            if (d.straddleConeLower != null)
-              setConeLower(String(d.straddleConeLower));
-            if (d.savedAt) setSaved(true);
-          }
+        const res = await fetch(`${apiBase}/api/pre-market?date=${date}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (json.data) {
+          const d = json.data as PreMarketData;
+          if (d.globexHigh != null) setGlobexHigh(String(d.globexHigh));
+          if (d.globexLow != null) setGlobexLow(String(d.globexLow));
+          if (d.globexClose != null) setGlobexClose(String(d.globexClose));
+          if (d.globexVwap != null) setGlobexVwap(String(d.globexVwap));
+          if (d.straddleConeUpper != null)
+            setConeUpper(String(d.straddleConeUpper));
+          if (d.straddleConeLower != null)
+            setConeLower(String(d.straddleConeLower));
+          if (d.savedAt) setSaved(true);
         }
       } catch {
-        // Non-fatal — first use won't have data
+        // Non-fatal — first use or aborted
       }
     }
     load();
+    return () => controller.abort();
   }, [date, apiBase]);
 
   const handleSave = useCallback(async () => {
@@ -99,10 +102,20 @@ export default function PreMarketInput({
       return;
     }
 
-    if (data.globexHigh < data.globexLow) {
-      setError('Globex High must be \u2265 Globex Low');
-      setSaving(false);
-      return;
+    const gh = data.globexHigh;
+    const gl = data.globexLow;
+    const gc = data.globexClose;
+    if (gh !== null && gl !== null && gc !== null) {
+      if (gh < gl) {
+        setError('Globex High must be \u2265 Globex Low');
+        setSaving(false);
+        return;
+      }
+      if (gc > gh || gc < gl) {
+        setError(
+          'Warning: Globex Close is outside the High/Low range \u2014 verify data',
+        );
+      }
     }
 
     try {
@@ -137,32 +150,32 @@ export default function PreMarketInput({
   ]);
 
   // Live gap preview: ES Globex Close vs previous SPX close
-  const gapPreview = (() => {
+  const gapPreview = useMemo(() => {
     const gc = parseFloat(globexClose);
     const pc = prevClose ?? spxPrice;
-    if (!gc || !pc) return null;
+    if (Number.isNaN(gc) || !pc) return null;
     const diff = gc - pc;
     return {
       diff,
-      direction: diff > 0 ? 'UP' : diff < 0 ? 'DOWN' : 'FLAT',
+      direction: diff > 0 ? 'UP' : diff < 0 ? 'DOWN' : ('FLAT' as const),
     };
-  })();
+  }, [globexClose, prevClose, spxPrice]);
 
   // Overnight range with optional cone context
-  const overnightRange = (() => {
+  const overnightRange = useMemo(() => {
     const h = parseFloat(globexHigh);
     const l = parseFloat(globexLow);
-    if (!h || !l || h <= l) return null;
+    if (Number.isNaN(h) || Number.isNaN(l) || h <= l) return null;
     const range = h - l;
     const cu = parseFloat(coneUpper);
     const cl = parseFloat(coneLower);
-    if (cu && cl && cu > cl) {
+    if (!Number.isNaN(cu) && !Number.isNaN(cl) && cu > cl) {
       const coneWidth = cu - cl;
       const pct = ((range / coneWidth) * 100).toFixed(0);
       return `${range.toFixed(1)} pts (${pct}% of cone)`;
     }
     return `${range.toFixed(1)} pts`;
-  })();
+  }, [globexHigh, globexLow, coneUpper, coneLower]);
 
   return (
     <SectionBox

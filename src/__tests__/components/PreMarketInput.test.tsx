@@ -81,6 +81,7 @@ describe('PreMarketInput', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/test/api/pre-market?date=2026-03-28',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
     });
   });
