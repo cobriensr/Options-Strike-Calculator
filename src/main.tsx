@@ -30,6 +30,11 @@ initBotId({
     { path: '/api/analyze', method: 'POST' },
     { path: '/api/positions', method: 'GET' },
     { path: '/api/positions', method: 'POST' },
+    { path: '/api/vix-ohlc', method: 'GET' },
+    { path: '/api/pre-market', method: 'GET' },
+    { path: '/api/pre-market', method: 'POST' },
+    { path: '/api/iv-term-structure', method: 'GET' },
+    { path: '/api/ml/export', method: 'GET' },
   ],
 });
 
