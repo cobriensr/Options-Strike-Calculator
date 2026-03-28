@@ -7,6 +7,8 @@
  * frontend silently falls back to manual input.
  */
 
+import { timingSafeEqual } from 'node:crypto';
+
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
@@ -77,7 +79,10 @@ export function isOwner(req: VercelRequest): boolean {
   if (!secret) return false;
 
   const cookies = parseCookies(req);
-  return cookies[OWNER_COOKIE] === secret;
+  const cookieVal = cookies[OWNER_COOKIE] ?? '';
+  const a = Buffer.from(cookieVal);
+  const b = Buffer.from(secret);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**
@@ -119,8 +124,11 @@ export async function isRateLimited(
 ): Promise<boolean> {
   try {
     const redisKey = `ratelimit:${key}`;
-    const count = await redis.incr(redisKey);
-    if (count === 1) await redis.expire(redisKey, 60);
+    const pipe = redis.pipeline();
+    pipe.incr(redisKey);
+    pipe.expire(redisKey, 60);
+    const results = await pipe.exec();
+    const count = results[0] as number;
     return count > maxPerMinute;
   } catch {
     return false; // fail open
