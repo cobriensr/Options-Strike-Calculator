@@ -25,6 +25,7 @@ import DateTimeSection from './components/DateTimeSection';
 import SpotPriceSection from './components/SpotPriceSection';
 import IVInputSection from './components/IVInputSection';
 import AdvancedSection from './components/AdvancedSection';
+import PreMarketInput from './components/PreMarketInput';
 import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
 import type { AnalysisContext } from './components/ChartAnalysis';
@@ -471,6 +472,12 @@ export default function StrikeCalculator() {
                 errors={errors}
               />
             </div>
+
+            <PreMarketInput
+              date={vix.selectedDate}
+              spxPrice={results?.spot}
+              prevClose={market.data.yesterday?.yesterday?.close}
+            />
 
             <div className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
               <AdvancedSection
