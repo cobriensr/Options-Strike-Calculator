@@ -67,7 +67,7 @@
     "api/cron/curate-lessons.ts": { "maxDuration": 780 },
     "api/cron/build-features.ts": { "maxDuration": 300 }
   },
-  "installCommand": "npm install",
+  "installCommand": "npm install --loglevel=error --no-audit --no-fund",
   "devCommand": "npm run dev",
   "outputDirectory": "dist",
   "rewrites": [
