@@ -53,6 +53,7 @@ describe('GET /api/quotes', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         SPY: makeSchwabQuote({ lastPrice: 550 }),
         $SPX: makeSchwabQuote({ lastPrice: 5500 }),
@@ -82,6 +83,7 @@ describe('GET /api/quotes', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         SPY: makeSchwabQuote(),
         // Other symbols missing
@@ -123,6 +125,7 @@ describe('GET /api/quotes', () => {
   it('forwards error from schwabFetch', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
       error: 'Token expired',
       status: 401,
     });

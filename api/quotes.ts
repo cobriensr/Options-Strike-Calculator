@@ -97,7 +97,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `/quotes?symbols=${encodeURIComponent(SYMBOLS)}&fields=quote`,
       );
 
-      if ('error' in result) {
+      if (!result.ok) {
         done({ status: result.status, error: 'schwab' });
         return res.status(result.status).json({ error: result.error });
       }

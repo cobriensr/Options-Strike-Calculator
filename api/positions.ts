@@ -495,7 +495,7 @@ async function handleSchwabFetch(
     const acctResult = await schwabTraderFetch<SchwabAccountNumber[]>(
       '/accounts/accountNumbers',
     );
-    if ('error' in acctResult) {
+    if (!acctResult.ok) {
       return res.status(acctResult.status).json({ error: acctResult.error });
     }
     if (!acctResult.data || acctResult.data.length === 0) {
@@ -506,7 +506,7 @@ async function handleSchwabFetch(
     const posResult = await schwabTraderFetch<SchwabAccount>(
       `/accounts/${accountHash}?fields=positions`,
     );
-    if ('error' in posResult) {
+    if (!posResult.ok) {
       return res.status(posResult.status).json({ error: posResult.error });
     }
     const positions = posResult.data?.securitiesAccount?.positions ?? [];

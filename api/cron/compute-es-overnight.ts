@@ -206,7 +206,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }>(
         `/pricehistory?symbol=$SPX&periodType=day&period=1&frequencyType=minute&frequency=5`,
       );
-      if ('data' in intradayResult && intradayResult.data.candles?.length) {
+      if (intradayResult.ok && intradayResult.data.candles?.length) {
         cashOpen = intradayResult.data.candles[0]!.open;
       }
     } catch (err) {

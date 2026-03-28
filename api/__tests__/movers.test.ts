@@ -57,6 +57,7 @@ describe('GET /api/movers', () => {
     // Up movers include mega-caps
     vi.mocked(schwabFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           screeners: [
             makeMover('AAPL', 3.5, 'up', 180),
@@ -66,6 +67,7 @@ describe('GET /api/movers', () => {
         },
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           screeners: [
             makeMover('NVDA', -2.0, 'down', 800),
@@ -101,8 +103,8 @@ describe('GET /api/movers', () => {
 
     // Both return errors
     vi.mocked(schwabFetch)
-      .mockResolvedValueOnce({ error: 'fail', status: 502 })
-      .mockResolvedValueOnce({ error: 'fail', status: 502 });
+      .mockResolvedValueOnce({ ok: false, error: 'fail', status: 502 })
+      .mockResolvedValueOnce({ ok: false, error: 'fail', status: 502 });
 
     const res = mockResponse();
     await handler(mockRequest(), res);
@@ -119,9 +121,11 @@ describe('GET /api/movers', () => {
 
     vi.mocked(schwabFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: { screeners: [makeMover('XYZ', 5.0, 'up')] },
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: { screeners: [makeMover('ABC', -1.0, 'down')] },
       });
 
@@ -138,9 +142,11 @@ describe('GET /api/movers', () => {
 
     vi.mocked(schwabFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: { screeners: [makeMover('XYZ', 1.0, 'up')] },
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: { screeners: [makeMover('ABC', -5.0, 'down')] },
       });
 
@@ -179,9 +185,11 @@ describe('GET /api/movers', () => {
 
     vi.mocked(schwabFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: { screeners: [makeMover('XYZ', 2.0, 'up')] },
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: { screeners: [makeMover('ABC', -2.0, 'down')] },
       });
 

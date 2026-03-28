@@ -207,7 +207,11 @@ describe('api-helpers', () => {
         error: { type: 'expired_refresh', message: 'Token expired' },
       });
       const result = await schwabFetch('/quotes');
-      expect(result).toEqual({ error: 'Token expired', status: 401 });
+      expect(result).toEqual({
+        ok: false,
+        error: 'Token expired',
+        status: 401,
+      });
     });
 
     it('returns error with status 500 for non-refresh errors', async () => {
@@ -215,7 +219,11 @@ describe('api-helpers', () => {
         error: { type: 'token_error', message: 'Something broke' },
       });
       const result = await schwabFetch('/quotes');
-      expect(result).toEqual({ error: 'Something broke', status: 500 });
+      expect(result).toEqual({
+        ok: false,
+        error: 'Something broke',
+        status: 500,
+      });
     });
 
     it('returns data on successful fetch', async () => {
@@ -229,7 +237,7 @@ describe('api-helpers', () => {
         }),
       );
       const result = await schwabFetch('/quotes');
-      expect(result).toEqual({ data: mockData });
+      expect(result).toEqual({ ok: true, data: mockData });
       vi.unstubAllGlobals();
     });
 
@@ -245,6 +253,7 @@ describe('api-helpers', () => {
       );
       const result = await schwabFetch('/quotes');
       expect(result).toEqual({
+        ok: false,
         error: 'Schwab API error (403): Forbidden',
         status: 502,
       });
@@ -263,6 +272,7 @@ describe('api-helpers', () => {
       );
       const result = await schwabFetch('/quotes');
       expect(result).toEqual({
+        ok: false,
         error: 'Schwab API error (401): Unauthorized',
         status: 401,
       });

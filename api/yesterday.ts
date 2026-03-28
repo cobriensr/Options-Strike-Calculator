@@ -126,7 +126,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `/pricehistory?${params.toString()}`,
       );
 
-      if ('error' in result) {
+      if (!result.ok) {
         done({ status: result.status, error: 'schwab' });
         return res.status(result.status).json({ error: result.error });
       }

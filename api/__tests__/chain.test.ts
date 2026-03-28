@@ -116,6 +116,7 @@ describe('GET /api/chain', () => {
   it('forwards error from schwabFetch', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
       error: 'Token expired',
       status: 401,
     });
@@ -130,6 +131,7 @@ describe('GET /api/chain', () => {
   it('returns empty chain when no contracts found', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         status: 'SUCCESS',
@@ -198,6 +200,7 @@ describe('GET /api/chain', () => {
     ];
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: makeSchwabChain(puts, calls),
     });
 
@@ -271,6 +274,7 @@ describe('GET /api/chain', () => {
     ];
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: makeSchwabChain(puts, calls),
     });
 
@@ -296,6 +300,7 @@ describe('GET /api/chain', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: makeSchwabChain(
         [makeContract('PUT', 5650, { delta: -0.1 })],
         [makeContract('CALL', 5750, { delta: 0.1 })],
@@ -324,6 +329,7 @@ describe('GET /api/chain', () => {
     const calls = [makeContract('CALL', 5800, { delta: 0.05 })];
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: makeSchwabChain(puts, calls),
     });
 
@@ -349,6 +355,7 @@ describe('GET /api/chain', () => {
     ];
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: makeSchwabChain(puts, calls),
     });
 
@@ -376,6 +383,7 @@ describe('GET /api/chain', () => {
     };
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         status: 'SUCCESS',
@@ -401,6 +409,7 @@ describe('GET /api/chain', () => {
   it('returns null underlying when chain has no underlying', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         status: 'SUCCESS',
@@ -426,6 +435,7 @@ describe('GET /api/chain', () => {
 
     const dateKey = '2026-03-14:0';
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         status: 'SUCCESS',
@@ -460,6 +470,7 @@ describe('GET /api/chain', () => {
   it('handles missing putExpDateMap/callExpDateMap (nullish coalescing)', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         status: 'SUCCESS',
@@ -485,6 +496,7 @@ describe('GET /api/chain', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: makeSchwabChain(
         [makeContract('PUT', 5650, { delta: -0.1 })],
         [makeContract('CALL', 5750, { delta: 0.1 })],
@@ -503,6 +515,7 @@ describe('GET /api/chain', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: makeSchwabChain(
         [makeContract('PUT', 5650, { delta: -0.1 })],
         [makeContract('CALL', 5750, { delta: 0.1 })],

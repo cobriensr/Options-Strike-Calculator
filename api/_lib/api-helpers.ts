@@ -10,6 +10,14 @@
 import { timingSafeEqual } from 'node:crypto';
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+
+/**
+ * Discriminated union for internal API call results.
+ * Use `result.ok` to narrow the type instead of `'error' in result`.
+ */
+export type ApiResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; status: number };
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
 import { MARKET_MINUTES, TIMEOUTS } from './constants.js';
@@ -103,6 +111,46 @@ export function rejectIfNotOwner(
   return false;
 }
 
+/**
+ * HTTP error class for use with requireOwner and other throwing guards.
+ */
+export class HttpError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
+
+/**
+ * Throwing guard — use in try/catch handlers.
+ * Throws HttpError(401) if the request isn't from the owner.
+ */
+export function requireOwner(req: VercelRequest): void {
+  if (!isOwner(req)) {
+    throw new HttpError(401, 'Not authenticated');
+  }
+}
+
+/**
+ * Standard error response format.
+ * All API endpoints should use this for error responses.
+ */
+export function sendError(
+  res: VercelResponse,
+  status: number,
+  message: string,
+  code?: string,
+): void {
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(status).json({
+    error: message,
+    ...(code && { code }),
+  });
+}
+
 // ============================================================
 // RATE LIMITING
 // ============================================================
@@ -183,13 +231,13 @@ export async function rejectIfRateLimited(
 async function schwabApiFetch<T>(
   base: string,
   path: string,
-): Promise<{ data: T } | { error: string; status: number }> {
+): Promise<ApiResult<T>> {
   const authResult = await getAccessToken();
 
   if ('error' in authResult) {
     metrics.tokenRefresh(false);
     const status = authResult.error.type === 'expired_refresh' ? 401 : 500;
-    return { error: authResult.error.message, status };
+    return { ok: false, error: authResult.error.message, status };
   }
 
   const endpoint = path.split('?')[0] ?? path;
@@ -208,6 +256,7 @@ async function schwabApiFetch<T>(
     done(false);
     const body = await res.text();
     return {
+      ok: false,
       error: `Schwab API error (${res.status}): ${body}`,
       status: res.status === 401 ? 401 : 502,
     };
@@ -215,20 +264,16 @@ async function schwabApiFetch<T>(
 
   done(true);
   const data: T = await res.json();
-  return { data };
+  return { ok: true, data };
 }
 
 /** Authenticated GET to the Schwab Market Data API. */
-export function schwabFetch<T>(
-  path: string,
-): Promise<{ data: T } | { error: string; status: number }> {
+export function schwabFetch<T>(path: string): Promise<ApiResult<T>> {
   return schwabApiFetch(SCHWAB_BASE, path);
 }
 
 /** Authenticated GET to the Schwab Trader API (accounts, orders, positions). */
-export function schwabTraderFetch<T>(
-  path: string,
-): Promise<{ data: T } | { error: string; status: number }> {
+export function schwabTraderFetch<T>(path: string): Promise<ApiResult<T>> {
   return schwabApiFetch(SCHWAB_TRADER_BASE, path);
 }
 
