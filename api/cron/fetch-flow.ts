@@ -13,6 +13,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
@@ -112,7 +113,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ]);
 
     if (allInFetch.status === 'rejected') {
-      logger.warn({ err: allInFetch.reason }, 'fetch-flow: all-in fetch failed');
+      logger.warn(
+        { err: allInFetch.reason },
+        'fetch-flow: all-in fetch failed',
+      );
     }
     if (otmFetch.status === 'rejected') {
       logger.warn({ err: otmFetch.reason }, 'fetch-flow: OTM fetch failed');
@@ -144,12 +148,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const allInResult =
       allInStore.status === 'fulfilled' ? allInStore.value : null;
-    const otmResult =
-      otmStore.status === 'fulfilled' ? otmStore.value : null;
+    const otmResult = otmStore.status === 'fulfilled' ? otmStore.value : null;
     const anyStored = allInResult !== null || otmResult !== null;
     const partial =
-      (allInFetch.status === 'rejected' || allInStore.status === 'rejected') ||
-      (otmFetch.status === 'rejected' || otmStore.status === 'rejected');
+      allInFetch.status === 'rejected' ||
+      allInStore.status === 'rejected' ||
+      otmFetch.status === 'rejected' ||
+      otmStore.status === 'rejected';
 
     logger.info(
       {
@@ -173,6 +178,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       market_tide_otm: otmResult,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-flow');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-flow error');
     return res.status(500).json({ error: 'Internal error' });
   }

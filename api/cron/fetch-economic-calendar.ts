@@ -15,6 +15,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   getETTime,
@@ -100,6 +101,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
+  const startTime = Date.now();
   const apiKey = process.env.UW_API_KEY;
   if (!apiKey) {
     logger.error('UW_API_KEY not configured');
@@ -139,11 +141,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     return res.status(200).json({
+      job: 'fetch-economic-calendar',
       date: todayStr,
       eventsStored: todayEvents.length,
       events: todayEvents.map((e) => e.event),
+      durationMs: Date.now() - startTime,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-economic-calendar');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-economic-calendar error');
     return res.status(500).json({ error: 'Internal error' });
   }

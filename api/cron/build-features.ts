@@ -13,6 +13,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   getETTime,
@@ -1163,7 +1164,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
+  const startTime = Date.now();
   const sql = getDb();
+  await sql`SET statement_timeout = '30000'`; // 30s per statement
+
+  // Diagnostic: log flow_data coverage for today before doing any work
+  const today = new Date().toISOString().slice(0, 10);
+  const coverage = await sql`
+    SELECT source, COUNT(*) as rows
+    FROM flow_data
+    WHERE date = ${today}
+    GROUP BY source
+    ORDER BY source
+  `;
+  logger.info({ date: today, sources: coverage }, 'flow_data coverage');
 
   try {
     // Determine which dates to process
@@ -1230,12 +1244,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     return res.status(200).json({
+      job: 'build-features',
       dates: dates.length,
       featuresBuilt,
       labelsExtracted,
       errors,
+      durationMs: Date.now() - startTime,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'build-features');
+    Sentry.captureException(err);
     logger.error({ err }, 'build-features error');
     return res.status(500).json({ error: 'Internal error' });
   }

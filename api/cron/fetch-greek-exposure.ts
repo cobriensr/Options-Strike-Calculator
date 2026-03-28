@@ -20,6 +20,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
@@ -245,6 +246,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ...expiryResult,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-greek-exposure');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-greek-exposure error');
     return res.status(500).json({ error: 'Internal error' });
   }

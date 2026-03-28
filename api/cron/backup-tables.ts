@@ -15,6 +15,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { put, list, del } from '@vercel/blob';
 import { getDb } from '../_lib/db.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
 export const config = { maxDuration: 300 };
@@ -84,10 +85,7 @@ async function pruneOldBackups(currentDate: string): Promise<string[]> {
   return toDelete;
 }
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'GET only' });
   }
@@ -115,10 +113,15 @@ export default async function handler(
       });
 
       results[table] = { rows: rowCount, bytes: jsonl.length };
-      logger.info({ table, rows: rowCount, bytes: jsonl.length }, 'Table backed up');
+      logger.info(
+        { table, rows: rowCount, bytes: jsonl.length },
+        'Table backed up',
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       errors.push(`${table}: ${msg}`);
+      Sentry.setTag('cron.job', 'backup-tables');
+      Sentry.captureException(err);
       logger.error({ table, err }, 'Table backup failed');
     }
   }
@@ -131,6 +134,8 @@ export default async function handler(
       logger.info({ count: pruned.length }, 'Pruned old backups');
     }
   } catch (err) {
+    Sentry.setTag('cron.job', 'backup-tables');
+    Sentry.captureException(err);
     logger.error({ err }, 'Backup pruning failed');
     errors.push(`pruning: ${err instanceof Error ? err.message : 'Unknown'}`);
   }
@@ -139,7 +144,12 @@ export default async function handler(
   const totalBytes = Object.values(results).reduce((s, r) => s + r.bytes, 0);
 
   logger.info(
-    { tables: Object.keys(results).length, totalRows, totalBytes, errors: errors.length },
+    {
+      tables: Object.keys(results).length,
+      totalRows,
+      totalBytes,
+      errors: errors.length,
+    },
     'Weekly backup complete',
   );
 
