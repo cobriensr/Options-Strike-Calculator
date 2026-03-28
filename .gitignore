@@ -32,6 +32,7 @@ __snapshots__/
 /test-results/
 /blob-report/
 /playwright/.cache/
+/playwright-report/
 
 # OS
 .DS_Store
@@ -48,3 +49,7 @@ __snapshots__/
 # ML
 ml/.venv/
 ml/*.csv
+
+# Superpowers
+.superpowers/
+docs/
