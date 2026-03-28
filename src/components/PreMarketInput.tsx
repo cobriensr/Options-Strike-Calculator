@@ -202,7 +202,7 @@ export default function PreMarketInput({
         <div className="text-tertiary mb-2 flex items-baseline gap-1.5 font-sans text-[11px] font-bold tracking-[0.08em] uppercase">
           ES Futures Overnight
           <span className="text-muted text-[10px] font-normal tracking-normal normal-case">
-            Globex 5 PM \u2013 8:30 AM CT
+            Globex 5 PM – 8:30 AM CT
           </span>
         </div>
         <div className="grid grid-cols-2 gap-2.5">
