@@ -21,7 +21,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours } from '../_lib/api-helpers.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 const ATM_RANGE = 200; // ±200 pts from ATM
@@ -183,7 +183,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const today = getTodayET();
 
   try {
-    const rows = await fetchStrikeExposure(apiKey, today);
+    const rows = await withRetry(() => fetchStrikeExposure(apiKey, today));
 
     if (rows.length === 0) {
       return res
@@ -192,7 +192,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const price = Number.parseFloat(rows[0]!.price);
-    const result = await storeStrikes(rows, today);
+    const result = await withRetry(() => storeStrikes(rows, today));
 
     logger.info(
       {

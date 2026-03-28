@@ -17,7 +17,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours } from '../_lib/api-helpers.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -150,9 +150,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const fetches = await Promise.all(
       TICKERS.map(async ({ ticker, source }) => {
         try {
-          const rows = await fetchEtfTide(apiKey, ticker);
+          const rows = await withRetry(() => fetchEtfTide(apiKey, ticker));
           const candles = sampleTo5Min(rows);
-          const result = await storeLatestCandle(candles, source, today);
+          const result = await withRetry(() =>
+            storeLatestCandle(candles, source, today),
+          );
           return { source, result, candleCount: candles.length };
         } catch (err) {
           logger.warn({ err, ticker, source }, 'Failed to fetch ETF Tide');

@@ -21,7 +21,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours } from '../_lib/api-helpers.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -175,8 +175,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     // Fetch aggregate and by-expiry in parallel; tolerate partial failures
     const [aggFetch, expiryFetch] = await Promise.allSettled([
-      fetchAggregate(apiKey),
-      fetchByExpiry(apiKey),
+      withRetry(() => fetchAggregate(apiKey)),
+      withRetry(() => fetchByExpiry(apiKey)),
     ]);
 
     if (aggFetch.status === 'rejected') {
@@ -199,7 +199,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let aggStored = false;
     if (aggRows !== null && aggRows.length > 0) {
       const latest = aggRows.at(-1)!;
-      aggStored = await storeAggregate(latest);
+      aggStored = await withRetry(() => storeAggregate(latest));
 
       const netGamma =
         Number.parseFloat(latest.call_gamma) +
@@ -216,7 +216,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const expiryResult =
       expiryRows !== null
-        ? await storeExpiryRows(expiryRows)
+        ? await withRetry(() => storeExpiryRows(expiryRows))
         : { stored: 0, skipped: 0 };
 
     const partial =

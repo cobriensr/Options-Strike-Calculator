@@ -14,7 +14,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours } from '../_lib/api-helpers.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -107,8 +107,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     // Fetch both all-in and OTM Market Tide in parallel; partial failures are tolerated
     const [allInFetch, otmFetch] = await Promise.allSettled([
-      fetchMarketTide(apiKey, false),
-      fetchMarketTide(apiKey, true),
+      withRetry(() => fetchMarketTide(apiKey, false)),
+      withRetry(() => fetchMarketTide(apiKey, true)),
     ]);
 
     if (allInFetch.status === 'rejected') {
@@ -125,10 +125,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const [allInStore, otmStore] = await Promise.allSettled([
       allInRows !== null
-        ? storeLatestCandle(allInRows, 'market_tide')
+        ? withRetry(() => storeLatestCandle(allInRows, 'market_tide'))
         : Promise.reject(new Error('fetch skipped')),
       otmRows !== null
-        ? storeLatestCandle(otmRows, 'market_tide_otm')
+        ? withRetry(() => storeLatestCandle(otmRows, 'market_tide_otm'))
         : Promise.reject(new Error('fetch skipped')),
     ]);
 

@@ -25,7 +25,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours } from '../_lib/api-helpers.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 const SOURCE = 'zero_dte_greek_flow';
@@ -147,8 +147,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const today = getTodayET();
 
   try {
-    const ticks = await fetchGreekFlow(apiKey, today);
-    const result = await storeLatest(ticks, today);
+    const ticks = await withRetry(() => fetchGreekFlow(apiKey, today));
+    const result = await withRetry(() => storeLatest(ticks, today));
 
     const latest = ticks.at(-1);
     logger.info(

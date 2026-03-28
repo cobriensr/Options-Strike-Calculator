@@ -21,7 +21,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours } from '../_lib/api-helpers.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -137,8 +137,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const rows = await fetchSpotExposures(apiKey);
-    const result = await storeLatest(rows);
+    const rows = await withRetry(() => fetchSpotExposures(apiKey));
+    const result = await withRetry(() => storeLatest(rows));
 
     logger.info({ ticks: rows.length, ...result }, 'fetch-spot-gex completed');
 

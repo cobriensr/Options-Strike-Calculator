@@ -395,7 +395,7 @@ export async function withRetry<T>(
       const isLast = attempt === retries;
       const msg = err instanceof Error ? err.message : '';
       const isTransient =
-        /timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up/i.test(
+        /timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|50[234]/i.test(
           msg,
         );
       if (isLast || !isTransient) throw err;
