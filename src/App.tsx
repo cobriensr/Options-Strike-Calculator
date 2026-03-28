@@ -473,11 +473,13 @@ export default function StrikeCalculator() {
               />
             </div>
 
-            <PreMarketInput
-              date={vix.selectedDate}
-              spxPrice={results?.spot}
-              prevClose={market.data.yesterday?.yesterday?.close}
-            />
+            {market.hasData && (
+              <PreMarketInput
+                date={vix.selectedDate}
+                spxPrice={results?.spot}
+                prevClose={market.data.yesterday?.yesterday?.close}
+              />
+            )}
 
             <div className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
               <AdvancedSection
