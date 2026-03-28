@@ -7,7 +7,7 @@ identifies patterns in structured trading data.
 Usage:
     python3 ml/eda.py
 
-Requires: pip install psycopg2-binary pandas scikit-learn scipy
+Requires: pip install psycopg2-binary pandas scikit-learn scipy statsmodels
 """
 
 import sys
@@ -16,9 +16,12 @@ try:
     import numpy as np
     import pandas as pd
     from scipy import stats
+    from scipy.stats import kruskal, fisher_exact
+    from statsmodels.stats.proportion import proportion_confint
+    from statsmodels.stats.multitest import multipletests
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn scipy")
+    print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn scipy statsmodels")
     sys.exit(1)
 
 from utils import (
@@ -71,6 +74,10 @@ def rule_validation(df: pd.DataFrame) -> None:
             print(f"  Positive GEX days (n={len(pos_gex)}):  {pos_gex.mean():.0f} pts avg range")
             print(f"  Negative GEX days (n={len(neg_gex)}):  {neg_gex.mean():.0f} pts avg range")
             diff = neg_gex.mean() - pos_gex.mean()
+            # Compute Cohen's d effect size
+            pooled_std = np.sqrt(((len(pos_gex)-1)*pos_gex.std()**2 + (len(neg_gex)-1)*neg_gex.std()**2) / (len(pos_gex)+len(neg_gex)-2))
+            cohens_d = (neg_gex.mean() - pos_gex.mean()) / pooled_std if pooled_std > 0 else 0
+            print(f"  Effect size: Cohen's d = {cohens_d:.2f} ({'large' if abs(cohens_d) >= 0.8 else 'medium' if abs(cohens_d) >= 0.5 else 'small'})")
             confirmed = neg_gex.mean() > pos_gex.mean()
             print(verdict(confirmed,
                           f"only {len(pos_gex)} positive GEX days in sample" if len(pos_gex) < 5
@@ -218,7 +225,8 @@ def structure_analysis(df: pd.DataFrame) -> None:
         rng = subset["day_range_pts"].dropna().astype(float)
         range_avg = rng.mean() if len(rng) > 0 else 0
         struct_data.append((struct, correct, total, range_avg))
-        print(f"  {struct:25s}  {correct}/{total} ({correct/total:.0%})   avg range {range_avg:.0f} pts")
+        lo, hi = proportion_confint(correct, total, method='wilson')
+        print(f"  {struct:25s}  {correct}/{total} ({correct/total:.0%})  CI [{lo:.0%}-{hi:.0%}]   avg range {range_avg:.0f} pts")
 
     if struct_data:
         best = max(struct_data, key=lambda x: x[1] / x[2])
@@ -298,12 +306,23 @@ def feature_importance(df: pd.DataFrame) -> None:
 
     correlations.sort(key=lambda x: abs(x[1]), reverse=True)
 
-    for col, r, p, n in correlations[:10]:
-        sig = " *" if p < 0.10 else ""
-        direction = "higher = MORE correct" if r > 0 else "higher = LESS correct"
-        print(f"  {col:35s}  r={r:+.3f}  p={p:.3f}  ({direction}){sig}")
+    # Apply Benjamini-Hochberg FDR correction
+    if len(correlations) > 1:
+        raw_pvals = [c[2] for c in correlations]
+        _, pvals_adj, _, _ = multipletests(raw_pvals, method='fdr_bh')
+        correlations = [
+            (col, r, p_raw, n, p_adj)
+            for (col, r, p_raw, n), p_adj in zip(correlations, pvals_adj)
+        ]
 
-    sig_features = [c for c, r, p, n in correlations if p < 0.10]
+    for item in correlations[:10]:
+        col, r, p_raw = item[0], item[1], item[2]
+        p_adj = item[4] if len(item) > 4 else p_raw
+        sig = " **" if p_adj < 0.05 else " *" if p_adj < 0.10 else ""
+        direction = "higher = MORE correct" if r > 0 else "higher = LESS correct"
+        print(f"  {col:35s}  r={r:+.3f}  p={p_raw:.3f}  q={p_adj:.3f}  ({direction}){sig}")
+
+    sig_features = [c[0] for c in correlations if (c[4] if len(c) > 4 else c[2]) < 0.10]
     if sig_features:
         takeaway(f"Pay attention to: {', '.join(sig_features[:5])}.\n"
                  "            These had statistically suggestive correlations with getting the structure right.")
@@ -325,17 +344,27 @@ def feature_importance(df: pd.DataFrame) -> None:
             if len(vals) >= 2:
                 groups.append(vals.values)
         if len(groups) >= 2:
-            f_stat, p = stats.f_oneway(*groups)
-            if not np.isnan(f_stat):
-                f_scores.append((col, f_stat, p))
+            h_stat, p = stats.kruskal(*groups)
+            if not np.isnan(h_stat):
+                f_scores.append((col, h_stat, p))
 
     f_scores.sort(key=lambda x: x[1], reverse=True)
 
-    for col, f_stat, p in f_scores[:10]:
-        sig = " **" if p < 0.05 else " *" if p < 0.10 else ""
-        print(f"  {col:35s}  F={f_stat:6.2f}  p={p:.3f}{sig}")
+    if len(f_scores) > 1:
+        raw_pvals = [s[2] for s in f_scores]
+        _, pvals_adj, _, _ = multipletests(raw_pvals, method='fdr_bh')
+        f_scores = [
+            (col, h, p_raw, p_adj)
+            for (col, h, p_raw), p_adj in zip(f_scores, pvals_adj)
+        ]
 
-    strong = [c for c, f, p in f_scores if p < 0.05]
+    for item in f_scores[:10]:
+        col, h_stat, p_raw = item[0], item[1], item[2]
+        p_adj = item[3] if len(item) > 3 else p_raw
+        sig = " **" if p_adj < 0.05 else " *" if p_adj < 0.10 else ""
+        print(f"  {col:35s}  H={h_stat:6.2f}  p={p_raw:.3f}  q={p_adj:.3f}{sig}")
+
+    strong = [c[0] for c in f_scores if (c[3] if len(c) > 3 else c[2]) < 0.05]
     if strong:
         takeaway(f"Strongest range predictors: {', '.join(strong[:4])}.\n"
                  "            These features meaningfully separate NORMAL/WIDE/EXTREME days.\n"
@@ -449,21 +478,28 @@ def flow_analysis(df: pd.DataFrame) -> None:
         total = len(has_both)
         pct = correct / total
 
-        if pct >= 0.55:
-            rating = "USEFUL"
+        lo, hi = proportion_confint(correct, total, method='wilson')
+        if lo > 0.50:  # CI entirely above chance
+            rating = "USEFUL *"
+        elif hi < 0.50:  # CI entirely below chance
+            rating = "ANTI-SIGNAL *"
+        elif pct >= 0.55:
+            rating = "USEFUL (ns)"
         elif pct >= 0.45:
             rating = "COIN FLIP"
         elif pct >= 0.30:
-            rating = "CONTRARIAN"
+            rating = "CONTRARIAN (ns)"
         else:
-            rating = "ANTI-SIGNAL"
+            rating = "ANTI-SIGNAL (ns)"
 
+        # Only mark as significant if CI doesn't contain 0.50
+        sig = " *" if hi < 0.50 or lo > 0.50 else ""
         source_results.append((label, correct, total, pct, rating))
-        print(f"  {label:20s}  {correct}/{total} ({pct:.0%})   {rating}")
+        print(f"  {label:20s}  {correct}/{total} ({pct:.0%})  CI [{lo:.0%}-{hi:.0%}]  {rating}{sig}")
 
     # Summarize
-    useful = [s for s in source_results if s[4] == "USEFUL"]
-    anti = [s for s in source_results if s[4] in ("CONTRARIAN", "ANTI-SIGNAL")]
+    useful = [s for s in source_results if s[4].startswith("USEFUL")]
+    anti = [s for s in source_results if s[4].startswith("CONTRARIAN") or s[4].startswith("ANTI-SIGNAL")]
 
     if useful or anti:
         trust = ", ".join(s[0] for s in useful) if useful else "none yet"

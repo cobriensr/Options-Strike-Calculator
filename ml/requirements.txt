@@ -11,6 +11,7 @@ matplotlib==3.10.8
 numpy==2.4.3
 packaging==26.0
 pandas==3.0.1
+patsy==1.0.2
 pillow==12.1.1
 pluggy==1.6.0
 psycopg2-binary==2.9.11
@@ -23,5 +24,6 @@ scikit-learn==1.8.0
 scipy==1.17.1
 seaborn==0.13.2
 six==1.17.0
+statsmodels==0.14.6
 threadpoolctl==3.6.0
 urllib3==2.6.3
