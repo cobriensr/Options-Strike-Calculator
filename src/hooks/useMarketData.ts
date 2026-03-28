@@ -17,6 +17,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { POLL_INTERVALS } from '../constants';
 import type {
   QuotesResponse,
   IntradayResponse,
@@ -102,7 +103,7 @@ async function fetchJson<T>(
 // ============================================================
 
 /** How often to refresh quotes during market hours (ms) */
-const REFRESH_INTERVAL_MS = 60_000;
+const REFRESH_INTERVAL_MS = POLL_INTERVALS.MARKET_DATA;
 
 export function useMarketData(): MarketDataState {
   const [data, setData] = useState<MarketData>({

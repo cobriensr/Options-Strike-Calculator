@@ -221,6 +221,18 @@ export const IV_MODES = {
   DIRECT: 'direct',
 } as const;
 
+/** Polling intervals for data fetching hooks (milliseconds) */
+export const POLL_INTERVALS = {
+  /** Live quote refresh (useAutoFill, useMarketData) */
+  QUOTES: 10_000,
+  /** Option chain refresh (useChainData) */
+  CHAIN: 60_000,
+  /** Market data refresh (useMarketData) */
+  MARKET_DATA: 60_000,
+  /** History data refresh (useHistoryData) */
+  HISTORY: 10_000,
+} as const;
+
 /** Progress messages shown during chart analysis */
 export const THINKING_MESSAGES = [
   'Reading chart data...',

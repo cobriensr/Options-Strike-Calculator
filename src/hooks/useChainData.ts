@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { POLL_INTERVALS } from '../constants';
 import type { ChainResponse } from '../types/api';
 
 export interface UseChainDataReturn {
@@ -44,7 +45,7 @@ export function useChainData(enabled: boolean): UseChainDataReturn {
   useEffect(() => {
     if (!enabled) return;
     refresh();
-    const interval = setInterval(refresh, 60_000);
+    const interval = setInterval(refresh, POLL_INTERVALS.CHAIN);
     return () => clearInterval(interval);
   }, [enabled, refresh]);
 

@@ -1,5 +1,13 @@
 import { IV_MODES } from './constants';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
 import { useAppState } from './hooks/useAppState';
@@ -19,15 +27,16 @@ import IVInputSection from './components/IVInputSection';
 import AdvancedSection from './components/AdvancedSection';
 import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
-import ChartAnalysis from './components/ChartAnalysis';
 import type { AnalysisContext } from './components/ChartAnalysis';
 import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
 import BacktestDiag from './components/BacktestDiag';
-import RiskCalculator from './components/RiskCalculator';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StatusBadge } from './components/ui';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
+
+const ChartAnalysis = lazy(() => import('./components/ChartAnalysis'));
+const RiskCalculator = lazy(() => import('./components/RiskCalculator'));
 
 // ============================================================
 // MAIN COMPONENT
@@ -502,7 +511,15 @@ export default function StrikeCalculator() {
             </div>
 
             <ErrorBoundary label="Risk Calculator">
-              <RiskCalculator />
+              <Suspense
+                fallback={
+                  <div className="text-muted animate-pulse p-4 text-center text-sm">
+                    Loading...
+                  </div>
+                }
+              >
+                <RiskCalculator />
+              </Suspense>
             </ErrorBoundary>
 
             <ErrorBoundary label="Market Regime">
@@ -530,11 +547,19 @@ export default function StrikeCalculator() {
             {/* Chart Analysis — owner-only (requires auth session or backtest with results) */}
             {(market.hasData || !!historySnapshot) && (
               <ErrorBoundary label="Chart Analysis">
-                <ChartAnalysis
-                  results={results}
-                  onAnalysisSaved={handleAnalysisSaved}
-                  context={analysisContext}
-                />
+                <Suspense
+                  fallback={
+                    <div className="text-muted animate-pulse p-4 text-center text-sm">
+                      Loading...
+                    </div>
+                  }
+                >
+                  <ChartAnalysis
+                    results={results}
+                    onAnalysisSaved={handleAnalysisSaved}
+                    context={analysisContext}
+                  />
+                </Suspense>
               </ErrorBoundary>
             )}
 
