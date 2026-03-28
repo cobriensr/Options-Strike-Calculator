@@ -155,7 +155,6 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/__tests__/setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}', 'api/**/*.{test,spec}.{ts,tsx}'],
-    exclude: ['src/__tests__/App.test.tsx'],
     coverage: {
       include: ['src/**/*.ts', 'src/**/*.tsx', 'api/**/*.ts'],
       exclude: [
