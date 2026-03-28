@@ -128,13 +128,21 @@ export function useChartAnalysis(opts: {
 
       const MAX_ATTEMPTS = 3;
       let lastError: unknown = null;
+      const deadline = Date.now() + 5 * 60 * 1000;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (Date.now() >= deadline) {
+          setError('Analysis timed out');
+          break;
+        }
+
         // Fresh controller per attempt so a timeout on attempt N
         // doesn't poison attempt N+1
         const controller = new AbortController();
         abortRef.current = controller;
-        const timeout = setTimeout(() => controller.abort(), 750_000); // 12 min 30s
+        const remainingMs = Math.max(1000, deadline - Date.now());
+        const attemptTimeout = Math.min(750_000, remainingMs);
+        const timeout = setTimeout(() => controller.abort(), attemptTimeout);
 
         try {
           const res = await fetch('/api/analyze', {
