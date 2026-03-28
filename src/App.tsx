@@ -20,6 +20,7 @@ import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
+import { getTopOIStrikes } from './utils/pin-risk';
 import { getEarlyCloseHourET } from './data/marketHours';
 import DateTimeSection from './components/DateTimeSection';
 import SpotPriceSection from './components/SpotPriceSection';
@@ -318,6 +319,52 @@ export default function StrikeCalculator() {
             time: e.time,
             severity: e.severity,
           })),
+        topOIStrikes:
+          chainData.chain?.puts && chainData.chain?.calls && results?.spot
+            ? getTopOIStrikes(
+                chainData.chain.puts,
+                chainData.chain.calls,
+                results.spot,
+                5,
+              )
+            : undefined,
+        skewMetrics: (() => {
+          const chain = chainData.chain;
+          if (!chain?.puts?.length || !chain?.calls?.length) return undefined;
+          // Find ~25-delta put and call, plus ATM
+          const put25 = chain.puts.reduce((best, p) =>
+            Math.abs(Math.abs(p.delta) - 0.25) <
+            Math.abs(Math.abs(best.delta) - 0.25)
+              ? p
+              : best,
+          );
+          const call25 = chain.calls.reduce((best, c) =>
+            Math.abs(c.delta - 0.25) < Math.abs(best.delta - 0.25) ? c : best,
+          );
+          const atm = chain.calls.reduce((best, c) =>
+            Math.abs(c.delta - 0.5) < Math.abs(best.delta - 0.5) ? c : best,
+          );
+          if (!put25.iv || !call25.iv || !atm.iv) return undefined;
+          const atmIV = atm.iv * 100;
+          const put25dIV = put25.iv * 100;
+          const call25dIV = call25.iv * 100;
+          const putSkew25d =
+            Math.round((put25dIV - atmIV) * 100) / 100;
+          const callSkew25d =
+            Math.round((call25dIV - atmIV) * 100) / 100;
+          const skewRatio =
+            callSkew25d !== 0
+              ? Math.round((Math.abs(putSkew25d) / Math.abs(callSkew25d)) * 100) / 100
+              : 0;
+          return {
+            put25dIV: Math.round(put25dIV * 100) / 100,
+            call25dIV: Math.round(call25dIV * 100) / 100,
+            atmIV: Math.round(atmIV * 100) / 100,
+            putSkew25d,
+            callSkew25d,
+            skewRatio,
+          };
+        })(),
       }) satisfies AnalysisContext,
     [
       vix.selectedDate,
@@ -332,6 +379,7 @@ export default function StrikeCalculator() {
       clusterMult,
       historySnapshot,
       market.data.events?.events,
+      chainData.chain,
     ],
   );
 

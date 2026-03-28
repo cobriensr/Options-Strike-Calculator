@@ -84,6 +84,114 @@ export async function getActiveLessons(): Promise<Lesson[]> {
 }
 
 // ============================================================
+// HISTORICAL WIN RATE
+// ============================================================
+
+export interface WinRateResult {
+  total: number;
+  wins: number;
+  winRate: number;
+  avgVix: number | null;
+  structures: string[];
+}
+
+/**
+ * Query historical win rate for lessons matching similar market conditions.
+ * Matches on VIX range (±5), GEX regime, structure, and day of week.
+ * Returns null if fewer than 5 matching sessions (insufficient sample).
+ */
+export async function getHistoricalWinRate(conditions: {
+  vix?: number;
+  gexRegime?: string;
+  structure?: string;
+  dayOfWeek?: string;
+}): Promise<WinRateResult | null> {
+  const sql = getDb();
+
+  // Build JSONB filter conditions dynamically
+  const filters: string[] = [
+    "status = 'active'",
+    "market_conditions->>'wasCorrect' IS NOT NULL",
+  ];
+
+  if (conditions.vix != null) {
+    const lo = Math.floor(conditions.vix - 5);
+    const hi = Math.ceil(conditions.vix + 5);
+    filters.push(
+      `(market_conditions->>'vix')::numeric BETWEEN ${lo} AND ${hi}`,
+    );
+  }
+  if (conditions.gexRegime) {
+    filters.push(
+      `market_conditions->>'gexRegime' = '${conditions.gexRegime}'`,
+    );
+  }
+  if (conditions.structure) {
+    filters.push(
+      `market_conditions->>'structure' = '${conditions.structure}'`,
+    );
+  }
+  if (conditions.dayOfWeek) {
+    filters.push(
+      `market_conditions->>'dayOfWeek' = '${conditions.dayOfWeek}'`,
+    );
+  }
+
+  const whereClause = filters.join(' AND ');
+
+  const rows = (await sql.unsafe(`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE (market_conditions->>'wasCorrect')::boolean = true)::int AS wins,
+      AVG((market_conditions->>'vix')::numeric)::numeric AS avg_vix,
+      ARRAY_AGG(DISTINCT market_conditions->>'structure') AS structures
+    FROM lessons
+    WHERE ${whereClause}
+  `)) as unknown as Array<Record<string, unknown>>;
+
+  const row = rows[0];
+  if (!row || (row.total as number) < 5) return null;
+
+  const total = row.total as number;
+  const wins = row.wins as number;
+
+  return {
+    total,
+    wins,
+    winRate: Math.round((wins / total) * 100),
+    avgVix: row.avg_vix != null ? Math.round(Number(row.avg_vix) * 10) / 10 : null,
+    structures: (row.structures as string[]) ?? [],
+  };
+}
+
+/**
+ * Format win rate data for Claude context injection.
+ */
+export function formatWinRateForClaude(
+  result: WinRateResult,
+  conditions: { vix?: number; gexRegime?: string; structure?: string; dayOfWeek?: string },
+): string {
+  const condParts: string[] = [];
+  if (conditions.vix != null) condParts.push(`VIX ${Math.floor(conditions.vix - 5)}-${Math.ceil(conditions.vix + 5)}`);
+  if (conditions.gexRegime) condParts.push(`GEX: ${conditions.gexRegime}`);
+  if (conditions.structure) condParts.push(conditions.structure);
+  if (conditions.dayOfWeek) condParts.push(conditions.dayOfWeek);
+
+  let signal = '';
+  if (result.winRate >= 75) signal = 'Supports upgrading confidence by one level.';
+  else if (result.winRate >= 50) signal = 'No confidence adjustment — historical rate is neutral.';
+  else signal = 'Supports downgrading confidence by one level.';
+
+  return [
+    `Historical Base Rate (${condParts.join(', ')}):`,
+    `  Matching sessions: ${result.total}`,
+    `  Win rate: ${result.winRate}% (${result.wins}/${result.total})`,
+    `  Avg VIX: ${result.avgVix ?? 'N/A'}`,
+    `  Signal: ${signal}`,
+  ].join('\n');
+}
+
+// ============================================================
 // FORMAT
 // ============================================================
 
