@@ -19,17 +19,22 @@ from pathlib import Path
 try:
     import numpy as np
     import pandas as pd
-    import psycopg2
     from sklearn.cluster import KMeans, AgglomerativeClustering
     from sklearn.decomposition import PCA
     from sklearn.impute import SimpleImputer
-    from sklearn.metrics import silhouette_score
+    from sklearn.metrics import (
+        calinski_harabasz_score,
+        davies_bouldin_score,
+        silhouette_score,
+    )
     from sklearn.mixture import GaussianMixture
     from sklearn.preprocessing import StandardScaler
 except ImportError:
     print("Missing dependencies. Run:")
     print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn matplotlib")
     sys.exit(1)
+
+from utils import load_data, validate_dataframe
 
 
 # ── Feature Groups ───────────────────────────────────────────
@@ -94,27 +99,8 @@ ALL_NUMERIC_FEATURES = (
 
 # ── Data Loading ─────────────────────────────────────────────
 
-def load_env() -> dict[str, str]:
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    env = {}
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            key, _, val = line.partition("=")
-            env[key.strip()] = val.strip().strip('"').strip("'")
-    return env
-
-
-def load_data() -> pd.DataFrame:
+def load_data_clustering() -> pd.DataFrame:
     """Load training features + outcomes + labels from Neon."""
-    env = load_env()
-    database_url = env.get("DATABASE_URL", "")
-    if not database_url:
-        print("Error: DATABASE_URL not found in .env")
-        sys.exit(1)
-
     query = """
         SELECT f.*, o.day_range_pts, o.settlement, o.day_open,
                l.recommended_structure, l.structure_correct,
@@ -124,14 +110,7 @@ def load_data() -> pd.DataFrame:
         LEFT JOIN day_labels l ON l.date = f.date
         ORDER BY f.date ASC
     """
-    conn = psycopg2.connect(database_url, sslmode="require")
-    try:
-        df = pd.read_sql_query(query, conn, parse_dates=["date"])
-    finally:
-        conn.close()
-
-    df = df.set_index("date").sort_index()
-    return df
+    return load_data(query)
 
 
 # ── Preprocessing ────────────────────────────────────────────
@@ -216,12 +195,16 @@ def run_clustering(X: np.ndarray, k_range: range) -> dict:
         km = KMeans(n_clusters=k, n_init=20, random_state=42)
         km_labels = km.fit_predict(X)
         km_sil = silhouette_score(X, km_labels) if k > 1 else 0
+        km_ch = calinski_harabasz_score(X, km_labels) if k > 1 else 0
+        km_db = davies_bouldin_score(X, km_labels) if k > 1 else 0
         row["kmeans_sil"] = km_sil
+        row["kmeans_ch"] = km_ch
+        row["kmeans_db"] = km_db
         row["kmeans_labels"] = km_labels
         row["kmeans_sizes"] = [int((km_labels == i).sum()) for i in range(k)]
 
         # Gaussian Mixture
-        gmm = GaussianMixture(n_components=k, n_init=5, random_state=42)
+        gmm = GaussianMixture(n_components=k, n_init=10, random_state=42)
         gmm_labels = gmm.fit_predict(X)
         gmm_sil = silhouette_score(X, gmm_labels) if k > 1 else 0
         row["gmm_sil"] = gmm_sil
@@ -247,15 +230,15 @@ def print_results(results: dict) -> int:
     print(f"  CLUSTERING RESULTS")
     print(f"{'='*70}\n")
 
-    print(f"  {'k':>3s}  {'K-Means':>10s}  {'GMM':>10s}  {'Hier.':>10s}  {'GMM BIC':>12s}  {'Sizes (KM)':>20s}")
-    print(f"  {'':->3s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->12s}  {'':->20s}")
+    print(f"  {'k':>3s}  {'K-Means':>10s}  {'GMM':>10s}  {'Hier.':>10s}  {'CH':>10s}  {'DB':>8s}  {'GMM BIC':>12s}  {'Sizes (KM)':>20s}")
+    print(f"  {'':->3s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->8s}  {'':->12s}  {'':->20s}")
 
     best_k = 2
     best_sil = -1
 
     for k, r in sorted(results.items()):
         sizes = str(r["kmeans_sizes"])
-        print(f"  {k:3d}  {r['kmeans_sil']:10.3f}  {r['gmm_sil']:10.3f}  {r['hier_sil']:10.3f}  {r['gmm_bic']:12.1f}  {sizes:>20s}")
+        print(f"  {k:3d}  {r['kmeans_sil']:10.3f}  {r['gmm_sil']:10.3f}  {r['hier_sil']:10.3f}  {r['kmeans_ch']:10.1f}  {r['kmeans_db']:8.3f}  {r['gmm_bic']:12.1f}  {sizes:>20s}")
 
         avg_sil = (r["kmeans_sil"] + r["gmm_sil"] + r["hier_sil"]) / 3
         if avg_sil > best_sil:
@@ -472,8 +455,15 @@ def main() -> None:
     args = parser.parse_args()
 
     print("Loading data ...")
-    df = load_data()
+    df = load_data_clustering()
     print(f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})")
+
+    validate_dataframe(
+        df,
+        min_rows=10,
+        required_columns=["vix", "day_of_week"],
+        range_checks={"vix": (9, 90), "day_of_week": (0, 6)},
+    )
 
     print("\nPreprocessing ...")
     X_pca, pca_labels, df_feat = preprocess(df)

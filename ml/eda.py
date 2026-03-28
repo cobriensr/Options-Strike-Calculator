@@ -11,76 +11,45 @@ Requires: pip install psycopg2-binary pandas scikit-learn scipy
 """
 
 import sys
-from pathlib import Path
 
 try:
     import numpy as np
     import pandas as pd
-    import psycopg2
     from scipy import stats
 except ImportError:
     print("Missing dependencies. Run:")
     print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn scipy")
     sys.exit(1)
 
+from utils import (
+    load_data,
+    validate_dataframe,
+    section,
+    subsection,
+    verdict,
+    takeaway,
+)
+
 
 # ── Data Loading ─────────────────────────────────────────────
 
-def load_env() -> dict[str, str]:
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    env = {}
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            key, _, val = line.partition("=")
-            env[key.strip()] = val.strip().strip('"').strip("'")
-    return env
-
-
-def load_data() -> pd.DataFrame:
-    env = load_env()
-    conn = psycopg2.connect(env["DATABASE_URL"], sslmode="require")
-    try:
-        df = pd.read_sql_query("""
-            SELECT f.*, o.settlement, o.day_open, o.day_high, o.day_low,
-                   o.day_range_pts, o.day_range_pct, o.close_vs_open,
-                   o.vix_close, o.vix1d_close,
-                   l.recommended_structure, l.structure_correct,
-                   l.confidence AS label_confidence,
-                   l.charm_diverged, l.naive_charm_signal,
-                   l.spx_flow_signal, l.market_tide_signal,
-                   l.spy_flow_signal, l.gex_signal,
-                   l.range_category, l.settlement_direction,
-                   l.flow_was_directional
-            FROM training_features f
-            LEFT JOIN outcomes o ON o.date = f.date
-            LEFT JOIN day_labels l ON l.date = f.date
-            ORDER BY f.date ASC
-        """, conn, parse_dates=["date"])
-    finally:
-        conn.close()
-    return df.set_index("date").sort_index()
-
-
-def section(title: str) -> None:
-    print(f"\n{'='*70}")
-    print(f"  {title}")
-    print(f"{'='*70}")
-
-
-def subsection(title: str) -> None:
-    print(f"\n  --- {title} ---\n")
-
-
-def verdict(confirmed: bool, caveat: str = "") -> str:
-    tag = "CONFIRMED" if confirmed else "NOT CONFIRMED"
-    return f"  >> {tag}{f' -- {caveat}' if caveat else ''}"
-
-
-def takeaway(text: str) -> None:
-    print(f"\n  TAKEAWAY: {text}")
+def load_data_eda() -> pd.DataFrame:
+    return load_data("""
+        SELECT f.*, o.settlement, o.day_open, o.day_high, o.day_low,
+               o.day_range_pts, o.day_range_pct, o.close_vs_open,
+               o.vix_close, o.vix1d_close,
+               l.recommended_structure, l.structure_correct,
+               l.confidence AS label_confidence,
+               l.charm_diverged, l.naive_charm_signal,
+               l.spx_flow_signal, l.market_tide_signal,
+               l.spy_flow_signal, l.gex_signal,
+               l.range_category, l.settlement_direction,
+               l.flow_was_directional
+        FROM training_features f
+        LEFT JOIN outcomes o ON o.date = f.date
+        LEFT JOIN day_labels l ON l.date = f.date
+        ORDER BY f.date ASC
+    """)
 
 
 # ── Analysis 1: Rule Validation ──────────────────────────────
@@ -527,42 +496,129 @@ def key_findings(df: pd.DataFrame) -> None:
     n_days = len(df)
     labeled = df[df["structure_correct"].notna()]
     n_labeled = len(labeled)
-    n_correct = labeled["structure_correct"].sum() if n_labeled > 0 else 0
+    n_correct = int(labeled["structure_correct"].sum()) if n_labeled > 0 else 0
+    overall_pct = f"{n_correct/n_labeled:.0%}" if n_labeled > 0 else "N/A"
 
-    print(f"""
-  Dataset: {n_days} trading days, {n_labeled} with labels, {n_correct}/{n_labeled} correct ({n_correct/n_labeled:.0%})
+    print(f"\n  Dataset: {n_days} trading days, {n_labeled} with labels, "
+          f"{n_correct}/{n_labeled} correct ({overall_pct})")
 
-  WHAT'S WORKING:
-  - Overall 90% accuracy across all structures
-  - PUT CREDIT SPREAD is perfect (100% accuracy)
-  - HIGH confidence calls are 94% accurate vs MODERATE at 83%
-  - Confidence IS useful for position sizing
+    # Per-structure accuracy
+    print("\n  STRUCTURE ACCURACY:")
+    structs = ["PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "IRON CONDOR"]
+    best_struct = ("", 0.0)
+    worst_struct = ("", 1.0)
+    for struct in structs:
+        subset = labeled[labeled["recommended_structure"] == struct]
+        has_correct = subset[subset["structure_correct"].notna()]
+        if len(has_correct) == 0:
+            continue
+        correct = int(has_correct["structure_correct"].sum())
+        total = len(has_correct)
+        pct = correct / total
+        print(f"  - {struct}: {correct}/{total} ({pct:.0%})")
+        if pct >= best_struct[1]:
+            best_struct = (struct, pct)
+        if pct <= worst_struct[1]:
+            worst_struct = (struct, pct)
 
-  WHAT TO WATCH:
-  - CALL CREDIT SPREAD has 2 failures -- both on deeply negative GEX days
-  - IRON CONDOR has 1 failure -- on a day with negative GEX and 87 pt range
-  - All-negative naive charm may not mean what you think (narrowest ranges)
+    if best_struct[0]:
+        print(f"\n  WHAT'S WORKING:")
+        print(f"  - {best_struct[0]} has the highest accuracy ({best_struct[1]:.0%})")
 
-  FLOW RELIABILITY (at T1 = 30 min after open):
-  - SPX Net Flow is ANTI-PREDICTIVE (24%) -- fade it or ignore it
-  - SPY/QQQ ETF Tide are the most reliable directional signals (56%)
-  - Market Tide and QQQ Net Flow are borderline useful (55%)
+    # Confidence calibration summary
+    if "label_confidence" in labeled.columns:
+        conf_accs = {}
+        for conf in ["HIGH", "MODERATE", "LOW"]:
+            subset = labeled[labeled["label_confidence"] == conf]
+            if len(subset) > 0:
+                c = subset["structure_correct"].sum()
+                conf_accs[conf] = c / len(subset)
+        if "HIGH" in conf_accs and "MODERATE" in conf_accs:
+            gap = conf_accs["HIGH"] - conf_accs["MODERATE"]
+            if gap > 0.05:
+                print(f"  - HIGH confidence is {conf_accs['HIGH']:.0%} accurate "
+                      f"vs MODERATE at {conf_accs['MODERATE']:.0%}")
+                print("  - Confidence IS useful for position sizing")
+            else:
+                print("  - Confidence levels show similar accuracy — not useful for sizing")
 
-  FOR PHASE 2 (Structure Classification):
-  - Majority class baseline: always predict CCS = 55%
-  - Top features to use: directionalized GEX, delta flow, SPX flow checkpoints
-  - Need {max(0, 60 - n_labeled)} more labeled days (target: 60-80)
-""")
+    # Failure patterns
+    failures = labeled[labeled["structure_correct"] == False]
+    if len(failures) > 0:
+        print(f"\n  WHAT TO WATCH:")
+        for struct in structs:
+            n_fail = len(failures[failures["recommended_structure"] == struct])
+            if n_fail > 0:
+                print(f"  - {struct} has {n_fail} failure(s)")
+
+        fail_gex = failures["gex_oi_t1"].dropna().astype(float)
+        if len(fail_gex) > 0 and (fail_gex < 0).all():
+            print("  - All failures occurred on negative GEX days")
+
+    # Flow reliability summary
+    if "settlement_direction" in df.columns:
+        has_flow = df[df["settlement_direction"].notna()]
+        sources = [
+            ("spx_ncp_t1", "SPX Net Flow"),
+            ("spy_etf_ncp_t1", "SPY ETF Tide"),
+            ("qqq_etf_ncp_t1", "QQQ ETF Tide"),
+            ("mt_ncp_t1", "Market Tide"),
+            ("qqq_ncp_t1", "QQQ Net Flow"),
+        ]
+        useful = []
+        anti = []
+        for col, label in sources:
+            if col not in has_flow.columns:
+                continue
+            subset = has_flow[[col, "settlement_direction"]].dropna()
+            if len(subset) < 5:
+                continue
+            ncp = subset[col].astype(float)
+            actual_up = subset["settlement_direction"] == "UP"
+            pct = ((ncp > 0) == actual_up).sum() / len(subset)
+            if pct >= 0.55:
+                useful.append(f"{label} ({pct:.0%})")
+            elif pct < 0.40:
+                anti.append(f"{label} ({pct:.0%})")
+
+        if useful or anti:
+            print(f"\n  FLOW RELIABILITY (at T1):")
+            if useful:
+                print(f"  - Trust: {', '.join(useful)}")
+            if anti:
+                print(f"  - Fade/Ignore: {', '.join(anti)}")
+
+    # Phase 2 readiness
+    majority = labeled["recommended_structure"].value_counts()
+    if len(majority) > 0:
+        majority_pct = majority.iloc[0] / n_labeled if n_labeled > 0 else 0
+        print(f"\n  FOR PHASE 2 (Structure Classification):")
+        print(f"  - Majority class baseline: always predict "
+              f"'{majority.index[0]}' = {majority_pct:.0%}")
+        target_days = 60
+        remaining = max(0, target_days - n_labeled)
+        if remaining > 0:
+            print(f"  - Need ~{remaining} more labeled days (target: {target_days})")
+        else:
+            print(f"  - Data threshold met ({n_labeled} >= {target_days} days)")
+    print()
 
 
 # ── Main ─────────────────────────────────────────────────────
 
 def main() -> None:
     print("Loading data ...")
-    df = load_data()
+    df = load_data_eda()
     print(f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})")
     print(f"  {df['structure_correct'].notna().sum()} days with labels")
     print(f"  {df['day_range_pts'].notna().sum()} days with outcomes")
+
+    validate_dataframe(
+        df,
+        min_rows=5,
+        required_columns=["day_range_pts"],
+        range_checks={"vix": (9, 90)},
+    )
 
     rule_validation(df)
     confidence_calibration(df)

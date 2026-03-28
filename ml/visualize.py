@@ -20,12 +20,13 @@ try:
     import matplotlib.patches as mpatches
     import numpy as np
     import pandas as pd
-    import psycopg2
     import seaborn as sns
 except ImportError:
     print("Missing dependencies. Run:")
     print("  ml/.venv/bin/pip install psycopg2-binary pandas matplotlib seaborn")
     sys.exit(1)
+
+from utils import load_data, validate_dataframe
 
 PLOT_DIR = Path(__file__).resolve().parent / "plots"
 PLOT_DIR.mkdir(exist_ok=True)
@@ -81,38 +82,19 @@ RANGE_COLORS = {
 
 # ── Data Loading ─────────────────────────────────────────────
 
-def load_env() -> dict[str, str]:
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    env = {}
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            key, _, val = line.partition("=")
-            env[key.strip()] = val.strip().strip('"').strip("'")
-    return env
-
-
-def load_data() -> pd.DataFrame:
-    env = load_env()
-    conn = psycopg2.connect(env["DATABASE_URL"], sslmode="require")
-    try:
-        df = pd.read_sql_query("""
-            SELECT f.*, o.settlement, o.day_open, o.day_high, o.day_low,
-                   o.day_range_pts, o.day_range_pct, o.close_vs_open,
-                   o.vix_close, o.vix1d_close,
-                   l.recommended_structure, l.structure_correct,
-                   l.confidence AS label_confidence,
-                   l.range_category, l.settlement_direction
-            FROM training_features f
-            LEFT JOIN outcomes o ON o.date = f.date
-            LEFT JOIN day_labels l ON l.date = f.date
-            ORDER BY f.date ASC
-        """, conn, parse_dates=["date"])
-    finally:
-        conn.close()
-    return df.set_index("date").sort_index()
+def load_data_viz() -> pd.DataFrame:
+    return load_data("""
+        SELECT f.*, o.settlement, o.day_open, o.day_high, o.day_low,
+               o.day_range_pts, o.day_range_pct, o.close_vs_open,
+               o.vix_close, o.vix1d_close,
+               l.recommended_structure, l.structure_correct,
+               l.confidence AS label_confidence,
+               l.range_category, l.settlement_direction
+        FROM training_features f
+        LEFT JOIN outcomes o ON o.date = f.date
+        LEFT JOIN day_labels l ON l.date = f.date
+        ORDER BY f.date ASC
+    """)
 
 
 def save(fig: plt.Figure, name: str) -> None:
@@ -563,7 +545,13 @@ def plot_day_of_week(df: pd.DataFrame) -> None:
 
 def main() -> None:
     print("Loading data ...")
-    df = load_data()
+    df = load_data_viz()
+    validate_dataframe(
+        df,
+        min_rows=5,
+        required_columns=["day_range_pts"],
+        range_checks={"vix": (9, 90)},
+    )
     print(f"  {len(df)} days loaded\n")
 
     print("Generating plots ...")
