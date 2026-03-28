@@ -21,7 +21,8 @@
     "test:e2e:ui": "npx playwright test --ui",
     "lint": "tsc --noEmit && eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "review": "tsc --noEmit && eslint . && prettier --write . && vitest run --coverage"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
