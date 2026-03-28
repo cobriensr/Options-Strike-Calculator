@@ -21,6 +21,7 @@ export type ApiResult<T> =
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
 import { MARKET_MINUTES, TIMEOUTS } from './constants.js';
+import logger from './logger.js';
 import { metrics } from './sentry.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
@@ -255,26 +256,41 @@ async function schwabApiFetch<T>(
   const done = metrics.schwabCall(endpoint);
 
   const url = `${base}${path}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${authResult.token}`,
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(TIMEOUTS.SCHWAB_API),
-  });
+  const MAX_RETRIES = 2;
+  let res: Response | undefined;
 
-  if (!res.ok) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${authResult.token}`,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(TIMEOUTS.SCHWAB_API),
+    });
+
+    if (res.ok || res.status < 500) break;
+
+    if (attempt < MAX_RETRIES) {
+      logger.warn(
+        { status: res.status, attempt, endpoint },
+        'Schwab transient error, retrying',
+      );
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+
+  if (!res!.ok) {
     done(false);
-    const body = await res.text();
+    const body = await res!.text();
     return {
       ok: false,
-      error: `Schwab API error (${res.status}): ${body}`,
-      status: res.status === 401 ? 401 : res.status === 429 ? 429 : 502,
+      error: `Schwab API error (${res!.status}): ${body}`,
+      status: res!.status === 401 ? 401 : res!.status === 429 ? 429 : 502,
     };
   }
 
   done(true);
-  const data: T = await res.json();
+  const data: T = await res!.json();
   return { ok: true, data };
 }
 
