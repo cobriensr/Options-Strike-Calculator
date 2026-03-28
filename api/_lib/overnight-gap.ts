@@ -15,6 +15,26 @@
 
 import type { PreMarketData } from '../pre-market.js';
 
+const GAP_THRESHOLDS = {
+  NEGLIGIBLE: 5,
+  SMALL: 15,
+  MODERATE: 30,
+  LARGE: 50,
+} as const;
+
+const FILL_SCORE = {
+  SMALL_GAP: 30,
+  MEDIUM_GAP: 15,
+  LARGE_GAP_PENALTY: -20,
+  EXTREME_POSITION: 20,
+  NEAR_EXTREME: 5,
+  MID_RANGE_PENALTY: -10,
+  SUPPORTED: -15,
+  OVERSHOOT: 20,
+  HIGH_THRESHOLD: 40,
+  MODERATE_THRESHOLD: 15,
+} as const;
+
 interface GapAnalysisInput {
   /** ES overnight data from manual entry */
   preMarket: PreMarketData;
@@ -66,16 +86,17 @@ export function formatOvernightForClaude(
   if (coneUpper != null && coneLower != null) {
     const coneWidth = coneUpper - coneLower;
     if (coneWidth > 0) {
-      const consumedPct = ((globexRange / coneWidth) * 100).toFixed(0);
+      const consumedRatio = (globexRange / coneWidth) * 100;
+      const consumedPctStr = consumedRatio.toFixed(0);
       lines.push(
-        `  Overnight range consumed ${consumedPct}% of straddle cone (${coneWidth.toFixed(0)} pts)`,
+        `  Overnight range consumed ${consumedPctStr}% of straddle cone (${coneWidth.toFixed(0)} pts)`,
       );
 
-      if (parseFloat(consumedPct) > 60) {
+      if (consumedRatio > 60) {
         lines.push(
           '  ⚠ >60% of expected move happened overnight — cash session range likely compressed OR extends beyond cone',
         );
-      } else if (parseFloat(consumedPct) < 20) {
+      } else if (consumedRatio < 20) {
         lines.push(
           '  Quiet overnight — full straddle cone available for cash session',
         );
@@ -91,10 +112,10 @@ export function formatOvernightForClaude(
 
   // 1. Gap size classification
   let gapSize: string;
-  if (absGap < 5) gapSize = 'NEGLIGIBLE';
-  else if (absGap < 15) gapSize = 'SMALL';
-  else if (absGap < 30) gapSize = 'MODERATE';
-  else if (absGap < 50) gapSize = 'LARGE';
+  if (absGap < GAP_THRESHOLDS.NEGLIGIBLE) gapSize = 'NEGLIGIBLE';
+  else if (absGap < GAP_THRESHOLDS.SMALL) gapSize = 'SMALL';
+  else if (absGap < GAP_THRESHOLDS.MODERATE) gapSize = 'MODERATE';
+  else if (absGap < GAP_THRESHOLDS.LARGE) gapSize = 'LARGE';
   else gapSize = 'EXTREME';
 
   lines.push('');
@@ -104,9 +125,12 @@ export function formatOvernightForClaude(
   );
   lines.push(`  Gap Size: ${gapSize}`);
 
+  // Compute percentile rank once for use in position and fill score sections
+  const pctRank =
+    globexRange > 0 ? ((cashOpen - gl) / globexRange) * 100 : null;
+
   // 2. Gap position vs overnight range
-  if (globexRange > 0) {
-    const pctRank = ((cashOpen - gl) / globexRange) * 100;
+  if (pctRank !== null) {
     let positionDesc: string;
     if (pctRank > 90)
       positionDesc = 'AT GLOBEX HIGH — overnight longs may take profit at open';
@@ -154,31 +178,30 @@ export function formatOvernightForClaude(
   let fillScore = 0;
 
   // Size factor
-  if (absGap < 10) fillScore += 30;
-  else if (absGap < 20) fillScore += 15;
+  if (absGap < 10) fillScore += FILL_SCORE.SMALL_GAP;
+  else if (absGap < 20) fillScore += FILL_SCORE.MEDIUM_GAP;
   else if (absGap < 40) fillScore += 0;
-  else fillScore -= 20;
+  else fillScore += FILL_SCORE.LARGE_GAP_PENALTY;
 
   // Position factor
-  if (globexRange > 0) {
-    const pctRank = ((cashOpen - gl) / globexRange) * 100;
-    if (pctRank > 90 || pctRank < 10) fillScore += 20;
-    else if (pctRank > 70 || pctRank < 30) fillScore += 5;
-    else fillScore -= 10;
+  if (pctRank !== null) {
+    if (pctRank > 90 || pctRank < 10) fillScore += FILL_SCORE.EXTREME_POSITION;
+    else if (pctRank > 70 || pctRank < 30) fillScore += FILL_SCORE.NEAR_EXTREME;
+    else fillScore += FILL_SCORE.MID_RANGE_PENALTY;
   }
 
   // VWAP factor
   if (gv != null) {
     const vwapDist = cashOpen - gv;
-    if (gapPts > 0 && vwapDist > 0) fillScore -= 15; // supported
-    if (gapPts > 0 && vwapDist <= 0) fillScore += 20; // overshoot
-    if (gapPts < 0 && vwapDist < 0) fillScore -= 15; // supported
-    if (gapPts < 0 && vwapDist >= 0) fillScore += 20; // overshoot
+    if (gapPts > 0 && vwapDist > 0) fillScore += FILL_SCORE.SUPPORTED;
+    if (gapPts > 0 && vwapDist <= 0) fillScore += FILL_SCORE.OVERSHOOT;
+    if (gapPts < 0 && vwapDist < 0) fillScore += FILL_SCORE.SUPPORTED;
+    if (gapPts < 0 && vwapDist >= 0) fillScore += FILL_SCORE.OVERSHOOT;
   }
 
   let fillProb: string;
-  if (fillScore > 40) fillProb = 'HIGH';
-  else if (fillScore > 15) fillProb = 'MODERATE';
+  if (fillScore > FILL_SCORE.HIGH_THRESHOLD) fillProb = 'HIGH';
+  else if (fillScore > FILL_SCORE.MODERATE_THRESHOLD) fillProb = 'MODERATE';
   else fillProb = 'LOW';
 
   lines.push('');

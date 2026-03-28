@@ -14,16 +14,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { SectionBox, ErrorMsg } from './ui';
 import { tinyLbl, inputCls } from '../utils/ui-utils';
-
-interface PreMarketData {
-  globexHigh: number | null;
-  globexLow: number | null;
-  globexClose: number | null;
-  globexVwap: number | null;
-  straddleConeUpper: number | null;
-  straddleConeLower: number | null;
-  savedAt: string | null;
-}
+import type { PreMarketData } from '../types/api';
 
 interface PreMarketInputProps {
   /** ISO date string e.g. '2026-03-28' */

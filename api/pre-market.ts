@@ -19,16 +19,9 @@ import {
 } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
+import { preMarketBodySchema } from './_lib/validation.js';
 
-export interface PreMarketData {
-  globexHigh: number | null;
-  globexLow: number | null;
-  globexClose: number | null;
-  globexVwap: number | null;
-  straddleConeUpper: number | null;
-  straddleConeLower: number | null;
-  savedAt: string | null;
-}
+export type { PreMarketData } from '../src/types/api.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
@@ -63,18 +56,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // POST
   try {
-    const { date, ...data } = req.body as { date: string } & PreMarketData;
-    if (!date) {
-      return res.status(400).json({ error: 'date is required' });
-    }
-    if (
-      data.globexHigh == null ||
-      data.globexLow == null ||
-      data.globexClose == null
-    ) {
+    const parsed = preMarketBodySchema.safeParse(req.body);
+    if (!parsed.success) {
       return res
         .status(400)
-        .json({ error: 'globexHigh, globexLow, globexClose required' });
+        .json({
+          error: parsed.error.issues[0]?.message ?? 'Invalid request body',
+        });
+    }
+    const { date, ...data } = parsed.data;
+
+    if (data.globexHigh >= data.globexLow === false) {
+      return res
+        .status(400)
+        .json({ error: 'globexHigh must be >= globexLow' });
     }
 
     const preMarketJson = JSON.stringify({

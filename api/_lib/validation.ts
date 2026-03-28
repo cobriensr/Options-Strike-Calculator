@@ -34,6 +34,23 @@ export const analyzeBodySchema = z.object({
 export type AnalyzeBody = z.infer<typeof analyzeBodySchema>;
 
 // ============================================================
+// /api/pre-market
+// ============================================================
+
+export const preMarketBodySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  globexHigh: z.number(),
+  globexLow: z.number(),
+  globexClose: z.number(),
+  globexVwap: z.number().nullable().optional(),
+  straddleConeUpper: z.number().nullable().optional(),
+  straddleConeLower: z.number().nullable().optional(),
+  savedAt: z.string().nullable().optional(),
+});
+
+export type PreMarketBody = z.infer<typeof preMarketBodySchema>;
+
+// ============================================================
 // /api/snapshot
 // ============================================================
 

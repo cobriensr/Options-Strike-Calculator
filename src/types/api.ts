@@ -193,3 +193,17 @@ export interface ChainResponse {
   readonly asOf: string;
   readonly error?: string;
 }
+
+// ============================================================
+// PRE-MARKET DATA
+// ============================================================
+
+export interface PreMarketData {
+  globexHigh: number | null;
+  globexLow: number | null;
+  globexClose: number | null;
+  globexVwap: number | null;
+  straddleConeUpper: number | null;
+  straddleConeLower: number | null;
+  savedAt: string | null;
+}
