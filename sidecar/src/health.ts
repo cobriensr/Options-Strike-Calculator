@@ -8,13 +8,18 @@ interface HealthDeps {
 }
 
 function isQuoteExpected(): boolean {
-  const now = new Date();
-  const et = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    hour12: false,
+    weekday: 'short',
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(new Date()).map((p) => [p.type, p.value]),
   );
-  const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-  const hour = et.getHours();
+  const day = parts.weekday; // 'Sun', 'Mon', ...
+  if (day === 'Sun' || day === 'Sat') return false;
+  const hour = parseInt(parts.hour ?? '0', 10);
   if (hour === 17) return false; // 5-6 PM ET maintenance
   return true;
 }

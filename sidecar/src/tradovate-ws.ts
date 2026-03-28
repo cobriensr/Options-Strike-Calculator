@@ -7,6 +7,7 @@ import {
 import logger from './logger.js';
 
 const HEARTBEAT_INTERVAL_MS = 2_500;
+const DEAD_CONNECTION_MS = 15_000;
 
 export interface WsCallbacks {
   onQuote: (quote: TradovateQuote) => void;
@@ -30,6 +31,7 @@ export class TradovateWsClient {
   private readonly callbacks: WsCallbacks;
   private subscribedSymbol: string | null = null;
   private contractId: number | null = null;
+  private lastFrameAt = 0;
 
   constructor(wsUrl: string, callbacks: WsCallbacks) {
     this.wsUrl = wsUrl;
@@ -52,6 +54,7 @@ export class TradovateWsClient {
     this.ws.on('message', (data: WebSocket.RawData) => {
       const raw = data.toString();
       const frame = parseFrame(raw);
+      this.lastFrameAt = Date.now();
 
       // Log every frame for debugging (truncate large payloads)
       logger.debug(`WS frame: ${raw.slice(0, 200)}`);
@@ -155,9 +158,16 @@ export class TradovateWsClient {
   }
 
   private startHeartbeat(): void {
+    this.lastFrameAt = Date.now();
     this.heartbeatTimer = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send('[]');
+
+        // Detect dead connections — no frames received in DEAD_CONNECTION_MS
+        if (Date.now() - this.lastFrameAt > DEAD_CONNECTION_MS) {
+          logger.warn('No frames received, terminating dead connection');
+          this.ws.terminate();
+        }
       }
     }, HEARTBEAT_INTERVAL_MS);
   }

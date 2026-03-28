@@ -78,6 +78,8 @@ function parseCookies(req: VercelRequest): Record<string, string> {
   return cookies;
 }
 
+let ownerSecretWarned = false;
+
 /**
  * Verify that the request is from the site owner.
  * Returns true if the owner cookie matches OWNER_SECRET.
@@ -85,7 +87,13 @@ function parseCookies(req: VercelRequest): Record<string, string> {
  */
 export function isOwner(req: VercelRequest): boolean {
   const secret = process.env.OWNER_SECRET;
-  if (!secret) return false;
+  if (!secret) {
+    if (!ownerSecretWarned && process.env.VERCEL) {
+      ownerSecretWarned = true;
+      console.warn('[api-helpers] OWNER_SECRET is not set — all requests will get 401');
+    }
+    return false;
+  }
 
   const cookies = parseCookies(req);
   const cookieVal = cookies[OWNER_COOKIE] ?? '';
@@ -186,9 +194,12 @@ export async function isRateLimited(
 
 /**
  * Extract a rate-limit key from the request.
- * Uses X-Forwarded-For (set by Vercel) or falls back to a generic key.
+ * Uses X-Real-Ip (set by Vercel), then X-Forwarded-For, then 'unknown'.
  */
 export function getRateLimitKey(req: VercelRequest, endpoint: string): string {
+  const realIp = req.headers['x-real-ip'];
+  if (typeof realIp === 'string' && realIp) return `${endpoint}:${realIp}`;
+
   const forwarded = req.headers['x-forwarded-for'];
   const ip =
     typeof forwarded === 'string'
@@ -258,7 +269,7 @@ async function schwabApiFetch<T>(
     return {
       ok: false,
       error: `Schwab API error (${res.status}): ${body}`,
-      status: res.status === 401 ? 401 : 502,
+      status: res.status === 401 ? 401 : res.status === 429 ? 429 : 502,
     };
   }
 
