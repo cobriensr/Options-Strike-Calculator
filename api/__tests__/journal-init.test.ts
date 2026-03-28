@@ -50,7 +50,7 @@ describe('POST /api/journal/init', () => {
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
       success: true,
-      tables: ['market_snapshots', 'analyses', 'outcomes', 'positions'],
+      tables: ['market_snapshots', 'analyses', 'outcomes'],
       migrated: ['vix_term_shape', 'rv_iv_ratio'],
       message: 'All tables created and migrations applied',
     });

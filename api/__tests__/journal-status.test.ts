@@ -53,10 +53,13 @@ describe('GET /api/journal/status', () => {
     const mockSql = vi
       .fn()
       .mockResolvedValueOnce([{ now }]) // SELECT NOW()
-      .mockResolvedValueOnce([{ count: 10 }]) // snapshots
-      .mockResolvedValueOnce([{ count: 5 }]) // analyses
-      .mockResolvedValueOnce([{ count: 2 }]) // outcomes
-      .mockResolvedValueOnce([{ count: 0 }]); // positions
+      .mockResolvedValueOnce([
+        { name: 'analyses', count: 5 },
+        { name: 'market_snapshots', count: 10 },
+        { name: 'outcomes', count: 2 },
+        { name: 'positions', count: 0 },
+      ]) // pg_stat_user_tables
+      .mockResolvedValueOnce([{ latest: 18 }]); // MAX(id) from schema_migrations
     vi.mocked(getDb).mockReturnValue(mockSql as never);
 
     const res = mockResponse();
@@ -66,9 +69,10 @@ describe('GET /api/journal/status', () => {
     const json = res._json as Record<string, unknown>;
     expect(json.connected).toBe(true);
     expect(json.serverTime).toBe(now);
+    expect(json.latestMigration).toBe(18);
     expect(json.tables).toEqual({
-      market_snapshots: 10,
       analyses: 5,
+      market_snapshots: 10,
       outcomes: 2,
       positions: 0,
     });
@@ -85,11 +89,9 @@ describe('GET /api/journal/status', () => {
 
     const mockSql = vi
       .fn()
-      .mockResolvedValueOnce([{ now: '' }])
-      .mockResolvedValueOnce([{ count: 0 }])
-      .mockResolvedValueOnce([{ count: 0 }])
-      .mockResolvedValueOnce([{ count: 0 }])
-      .mockResolvedValueOnce([{ count: 0 }]);
+      .mockResolvedValueOnce([{ now: '' }]) // SELECT NOW()
+      .mockResolvedValueOnce([]) // pg_stat_user_tables (empty)
+      .mockResolvedValueOnce([{ latest: null }]); // schema_migrations
     vi.mocked(getDb).mockReturnValue(mockSql as never);
 
     const res = mockResponse();

@@ -36,19 +36,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Test connection
     const timeResult = await sql`SELECT NOW() as now`;
 
-    // Check if tables exist and get counts
-    const snapshots =
-      await sql`SELECT COUNT(*)::int as count FROM market_snapshots`;
-    const analyses = await sql`SELECT COUNT(*)::int as count FROM analyses`;
-    const outcomes = await sql`SELECT COUNT(*)::int as count FROM outcomes`;
+    // Get row counts for all tables via a single query against pg_stat_user_tables.
+    // This uses PostgreSQL's statistics (updated by autovacuum) — fast and avoids
+    // 16 separate COUNT(*) queries. Values are approximate but good for diagnostics.
+    const tableRows = await sql`
+      SELECT relname AS name, n_live_tup::int AS count
+      FROM pg_stat_user_tables
+      ORDER BY relname
+    `;
+    const tables: Record<string, number> = {};
+    for (const row of tableRows) {
+      tables[row.name as string] = row.count as number;
+    }
 
-    // Positions table may not exist yet — handle gracefully
-    let positionsCount = 0;
+    // Latest applied migration
+    let latestMigration: number | null = null;
     try {
-      const positions = await sql`SELECT COUNT(*)::int as count FROM positions`;
-      positionsCount = positions[0]?.count ?? 0;
+      const migRows =
+        await sql`SELECT MAX(id)::int as latest FROM schema_migrations`;
+      latestMigration = migRows[0]?.latest ?? null;
     } catch {
-      // Table doesn't exist yet — that's fine
+      // schema_migrations doesn't exist yet
     }
 
     // Check which env vars are set (names only, not values)
@@ -64,13 +72,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       connected: true,
       serverTime: timeResult[0]?.now,
+      latestMigration,
       envVarsFound: envVars,
-      tables: {
-        market_snapshots: snapshots[0]?.count,
-        analyses: analyses[0]?.count,
-        outcomes: outcomes[0]?.count,
-        positions: positionsCount,
-      },
+      tables,
     });
   } catch (err) {
     done({ status: 500, error: 'unhandled' });

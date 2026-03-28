@@ -3,7 +3,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock @neondatabase/serverless before importing db module
-const mockSql = vi.fn();
+const mockSql = vi.fn() as ReturnType<typeof vi.fn> & {
+  transaction: ReturnType<typeof vi.fn>;
+};
+mockSql.transaction = vi.fn().mockResolvedValue([]);
 vi.mock('@neondatabase/serverless', () => ({
   neon: vi.fn(() => mockSql),
 }));
@@ -102,6 +105,7 @@ describe('db.ts', () => {
     process.env = { ...originalEnv, DATABASE_URL: 'postgres://test' };
     vi.restoreAllMocks();
     mockSql.mockReset();
+    mockSql.transaction = vi.fn().mockResolvedValue([]);
     vi.mocked(neon).mockReturnValue(mockSql as never);
     _resetDb();
   });
@@ -135,8 +139,8 @@ describe('db.ts', () => {
 
       await initDb();
 
-      // 4 CREATE TABLEs + 8 CREATE INDEXes = 12 calls
-      expect(mockSql).toHaveBeenCalledTimes(12);
+      // 3 CREATE TABLEs + 6 CREATE INDEXes = 9 calls (positions moved to migration #1)
+      expect(mockSql).toHaveBeenCalledTimes(9);
     });
   });
 
@@ -478,8 +482,10 @@ describe('db.ts', () => {
         '#17: Add NOT NULL constraint to all created_at columns',
         '#18: Add JSONB type constraints on legs, full_response, and report',
       ]);
-      // previous 49 + migration #15 (1 index + 1 insert) + migration #16 (1 index + 1 insert) + migration #17 (12 alters + 1 insert) + migration #18 (3 alters + 1 insert) = 49 + 2 + 2 + 13 + 4 = 70
-      expect(mockSql).toHaveBeenCalledTimes(70);
+      // 49 (migrations #1-14 via legacy run()) + 24 (migrations #15-18 build queries via sql`` then pass to transaction)
+      expect(mockSql).toHaveBeenCalledTimes(73);
+      // Migrations #15-18 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(4);
     });
 
     it('propagates errors from migration SQL', async () => {

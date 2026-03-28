@@ -335,3 +335,36 @@ export function isMarketOpen(): boolean {
   // Market: 9:30 AM (570) to close (960 normal, 780 early)
   return totalMin >= MARKET_MINUTES.OPEN && totalMin <= closeMin;
 }
+
+// ============================================================
+// RETRY HELPER (for transient Neon / network failures)
+// ============================================================
+
+/**
+ * Retry an async operation with exponential backoff.
+ * Only retries on transient errors (timeouts, connection resets).
+ * Non-transient errors (bad SQL, constraint violations) throw immediately.
+ *
+ * Designed for cron jobs where a single missed invocation creates data gaps.
+ * Interactive endpoints should NOT use this — users want fast failure.
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries: number = 2,
+): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isLast = attempt === retries;
+      const msg = err instanceof Error ? err.message : '';
+      const isTransient =
+        /timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up/i.test(
+          msg,
+        );
+      if (isLast || !isTransient) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+  throw new Error('unreachable');
+}

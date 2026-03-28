@@ -6,6 +6,10 @@
   },
   "crons": [
     {
+      "path": "/api/cron/backup-tables",
+      "schedule": "0 5 * * 0"
+    },
+    {
       "path": "/api/cron/curate-lessons",
       "schedule": "0 3 * * 6"
     },
