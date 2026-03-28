@@ -14,6 +14,7 @@ export default [
       'ml/.venv',
       '.claude/skills',
       'sidecar',
+      'playwright-report',
     ],
   },
   js.configs.recommended,

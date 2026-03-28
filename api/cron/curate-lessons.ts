@@ -223,7 +223,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       let snapshotRow: Record<string, unknown> | null = null;
       if (review.snapshot_id != null) {
         const snapRows = await sql`
-          SELECT * FROM market_snapshots WHERE id = ${review.snapshot_id}
+          SELECT vix, vix1d, regime_zone, dow_label, vix_term_signal
+          FROM market_snapshots WHERE id = ${review.snapshot_id}
         `;
         snapshotRow =
           snapRows.length > 0 ? (snapRows[0] as Record<string, unknown>) : null;

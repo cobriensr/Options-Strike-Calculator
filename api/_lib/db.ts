@@ -689,6 +689,50 @@ const MIGRATIONS: Migration[] = [
       `;
     },
   },
+  {
+    id: 15,
+    description:
+      'Add composite index on analyses (date, created_at DESC) for getPreviousRecommendation',
+    run: async (sql) => {
+      await sql`CREATE INDEX IF NOT EXISTS idx_analyses_date_created ON analyses (date, created_at DESC)`;
+    },
+  },
+  {
+    id: 16,
+    description:
+      'Add composite index on flow_data (date, source, timestamp) for time-windowed queries',
+    run: async (sql) => {
+      await sql`CREATE INDEX IF NOT EXISTS idx_flow_data_date_source_ts ON flow_data (date, source, timestamp)`;
+    },
+  },
+  {
+    id: 17,
+    description: 'Add NOT NULL constraint to all created_at columns',
+    run: async (sql) => {
+
+      await sql`ALTER TABLE market_snapshots ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE analyses ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE outcomes ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE positions ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE lessons ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE lesson_reports ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE flow_data ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE greek_exposure ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE spot_exposures ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE strike_exposures ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE economic_events ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE es_overnight_summaries ALTER COLUMN created_at SET NOT NULL`;
+    },
+  },
+  {
+    id: 18,
+    description: 'Add JSONB type constraints on legs, full_response, and report',
+    run: async (sql) => {
+      await sql`ALTER TABLE positions ADD CONSTRAINT chk_legs_array CHECK (jsonb_typeof(legs) = 'array')`;
+      await sql`ALTER TABLE analyses ADD CONSTRAINT chk_full_response_obj CHECK (jsonb_typeof(full_response) = 'object')`;
+      await sql`ALTER TABLE lesson_reports ADD CONSTRAINT chk_report_obj CHECK (jsonb_typeof(report) = 'object')`;
+    },
+  },
 ];
 
 /**
