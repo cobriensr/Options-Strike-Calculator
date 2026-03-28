@@ -27,6 +27,7 @@ import {
   rejectIfNotOwner,
   checkBot,
 } from './_lib/api-helpers.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 // ============================================================
 // TYPES
@@ -88,8 +89,7 @@ function toDaySummary(candle: SchwabDailyCandle): DaySummary {
  * Get today's date in ET timezone as YYYY-MM-DD.
  */
 function todayET(): string {
-  const now = new Date();
-  return now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  return getETDateStr(new Date());
 }
 
 // ============================================================

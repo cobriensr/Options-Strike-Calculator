@@ -14,6 +14,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
+import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
 import {
   getETTime,
@@ -67,7 +68,7 @@ function categorizeEvent(eventName: string): string {
 async function fetchCalendar(apiKey: string): Promise<CalendarEvent[]> {
   const res = await fetch(`${UW_BASE}/market/economic-calendar`, {
     headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
   });
 
   if (!res.ok) {

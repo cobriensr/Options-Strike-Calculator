@@ -18,6 +18,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
+import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
@@ -76,7 +77,7 @@ async function fetchNetFlow(
 ): Promise<CumulatedTick[]> {
   const res = await fetch(`${UW_BASE}/stock/${ticker}/net-prem-ticks`, {
     headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
   });
 
   if (!res.ok) {

@@ -56,6 +56,7 @@ import {
 import { fetchMaxPain, formatMaxPainForClaude } from './_lib/max-pain.js';
 import logger from './_lib/logger.js';
 import { getActiveLessons, formatLessonsBlock } from './_lib/lessons.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 import type { IvTermRow } from './iv-term-structure.js';
 import { formatIvTermStructureForClaude } from './iv-term-structure.js';
 import type { PreMarketData } from './pre-market.js';
@@ -666,7 +667,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let previousRec: string | null = null;
   const analysisDate =
     (context.selectedDate as string | undefined) ??
-    new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    getETDateStr(new Date());
   if (!context.isBacktest && mode !== 'review') {
     try {
       const posData = await getLatestPositions(analysisDate);
@@ -794,11 +795,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const uwKey = process.env.UW_API_KEY;
     if (uwKey) {
-      const ivDate =
-        analysisDate ??
-        new Date().toLocaleDateString('en-CA', {
-          timeZone: 'America/New_York',
-        });
+      const ivDate = analysisDate ?? getETDateStr(new Date());
       const ivRes = await fetch(
         `https://api.unusualwhales.com/api/stock/SPX/interpolated-iv?date=${ivDate}`,
         {

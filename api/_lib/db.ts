@@ -17,6 +17,7 @@
  */
 
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
+import { getETDateStr } from '../../src/utils/timezone.js';
 
 let _db: NeonQueryFunction<false, false> | null = null;
 
@@ -936,9 +937,7 @@ export async function saveAnalysis(
 ) {
   const sql = getDb();
 
-  const date =
-    context.selectedDate ??
-    new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const date = context.selectedDate ?? getETDateStr(new Date());
   const entryTime = context.entryTime ?? 'unknown';
   const mode = analysis.mode ?? 'entry';
 

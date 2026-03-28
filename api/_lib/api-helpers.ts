@@ -12,6 +12,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
+import { MARKET_MINUTES, TIMEOUTS } from './constants.js';
 import { metrics } from './sentry.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
@@ -200,7 +201,7 @@ async function schwabApiFetch<T>(
       Authorization: `Bearer ${authResult.token}`,
       Accept: 'application/json',
     },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(TIMEOUTS.SCHWAB_API),
   });
 
   if (!res.ok) {
@@ -276,5 +277,5 @@ export function isMarketOpen(): boolean {
   const totalMin = hour * 60 + minute;
   const closeMin = closeHour * 60;
   // Market: 9:30 AM (570) to close (960 normal, 780 early)
-  return totalMin >= 570 && totalMin <= closeMin;
+  return totalMin >= MARKET_MINUTES.OPEN && totalMin <= closeMin;
 }

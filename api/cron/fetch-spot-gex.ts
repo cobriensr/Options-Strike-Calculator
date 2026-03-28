@@ -19,6 +19,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
+import { TIMEOUTS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
@@ -62,7 +63,7 @@ interface SpotExposureRow {
 async function fetchSpotExposures(apiKey: string): Promise<SpotExposureRow[]> {
   const res = await fetch(`${UW_BASE}/stock/SPX/spot-exposures`, {
     headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
   });
 
   if (!res.ok) {
