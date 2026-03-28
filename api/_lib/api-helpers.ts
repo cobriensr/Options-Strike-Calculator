@@ -289,6 +289,26 @@ export function schwabTraderFetch<T>(path: string): Promise<ApiResult<T>> {
 }
 
 // ============================================================
+// MARKET HOURS CHECKS
+// ============================================================
+
+/** Check if current time is within extended market hours (9:25 AM - 4:05 PM ET). */
+export function isMarketHours(): boolean {
+  const now = new Date();
+  const et = new Date(
+    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
+  );
+  const day = et.getDay();
+  if (day === 0 || day === 6) return false;
+
+  const hour = et.getHours();
+  const minute = et.getMinutes();
+  const timeMinutes = hour * 60 + minute;
+
+  return timeMinutes >= 565 && timeMinutes <= 965;
+}
+
+// ============================================================
 // CACHE + MARKET HOURS
 // ============================================================
 
