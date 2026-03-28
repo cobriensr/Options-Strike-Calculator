@@ -49,6 +49,8 @@ __snapshots__/
 # ML
 ml/.venv/
 ml/*.csv
+ml/__pycache__/
+ml/.pytest_cache/
 
 # Superpowers
 .superpowers/
