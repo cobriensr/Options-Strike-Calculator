@@ -671,6 +671,16 @@ const MIGRATIONS: Migration[] = [
       `;
     },
   },
+  {
+    id: 14,
+    description: 'Add pre_market_data JSONB column to market_snapshots',
+    run: async (sql) => {
+      await sql`
+        ALTER TABLE market_snapshots
+        ADD COLUMN IF NOT EXISTS pre_market_data jsonb
+      `;
+    },
+  },
 ];
 
 /**
