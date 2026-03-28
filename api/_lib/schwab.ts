@@ -19,6 +19,7 @@ import { randomBytes } from 'crypto';
 
 import { Redis } from '@upstash/redis';
 import logger from './logger.js';
+import { metrics } from './sentry.js';
 
 // ============================================================
 // REDIS CLIENT
@@ -104,6 +105,7 @@ async function getStoredTokens(): Promise<SchwabTokens | null> {
     return await redis.get<SchwabTokens>(KV_KEY);
   } catch (err) {
     logger.warn({ err }, 'Redis getStoredTokens failed');
+    metrics.increment('redis.error');
     return null;
   }
 }
@@ -118,6 +120,7 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
       return;
     } catch (err) {
       logger.error({ err, attempt }, 'storeTokens: Redis write failed');
+      metrics.increment('redis.error');
       if (attempt < 2)
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }
@@ -137,6 +140,17 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
 let refreshInFlight: Promise<SchwabTokens> | null = null;
 
 /**
+ * Last-resort in-memory token cache. Only helps within the same
+ * serverless invocation (module-scoped variables don't survive cold
+ * starts). During a Redis blip inside an active invocation it
+ * prevents cascading auth failure.
+ */
+let inMemoryTokenCache: {
+  accessToken: string;
+  expiresAt: number;
+} | null = null;
+
+/**
  * Redis distributed lock: when separate serverless invocations
  * (e.g. quotes + history) both need to refresh, only one calls
  * Schwab. The other waits for the lock to release, then reads
@@ -151,6 +165,7 @@ async function acquireLock(): Promise<boolean> {
     return result === 'OK';
   } catch (err) {
     logger.warn({ err }, 'Redis acquireLock failed, proceeding anyway');
+    metrics.increment('redis.error');
     return true; // If Redis fails, proceed anyway
   }
 }
@@ -160,6 +175,7 @@ async function releaseLock(): Promise<void> {
     await redis.del(LOCK_KEY);
   } catch (err) {
     logger.warn({ err }, 'Redis releaseLock failed');
+    metrics.increment('redis.error');
   }
 }
 
@@ -172,6 +188,7 @@ async function waitForLockRelease(maxWaitMs = 30_000): Promise<void> {
       if (!held) return;
     } catch (err) {
       logger.warn({ err }, 'Redis lock check failed, proceeding');
+      metrics.increment('redis.error');
       return;
     }
   }
@@ -241,6 +258,10 @@ async function refreshAccessTokenOnce(
         clientSecret,
       );
       await storeTokens(tokens);
+      inMemoryTokenCache = {
+        accessToken: tokens.accessToken,
+        expiresAt: tokens.expiresAt,
+      };
       return tokens;
     } finally {
       if (gotLock) await releaseLock();
@@ -277,6 +298,14 @@ export async function getAccessToken(): Promise<
   const stored = await getStoredTokens();
 
   if (!stored) {
+    // Redis read returned null — check in-memory cache as last resort
+    if (
+      inMemoryTokenCache &&
+      inMemoryTokenCache.expiresAt > Date.now() + BUFFER_MS
+    ) {
+      logger.warn('Using in-memory token fallback — Redis read failed');
+      return { token: inMemoryTokenCache.accessToken };
+    }
     return {
       error: {
         type: 'expired_refresh',
