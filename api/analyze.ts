@@ -228,6 +228,98 @@ Reading the Periscope Charm image:
 - Red/negative bars = MM charm exposure that WEAKENS their positioning with time (wall decays)
 - Compare bar locations and magnitudes against the naive Net Charm API data to identify strikes where the naive assumption breaks down
 </periscope_charm>
+<spx_candles>
+SPX Intraday Candles provide real 5-minute OHLCV price data for today's session. This is provided as structured API data — not a screenshot.
+Key values to extract:
+- Session OHLC: open, high, low, last price
+- Session range in points and as % of straddle cone consumed
+- Price relative to VWAP (above = institutional buyers in control, below = sellers)
+- Structural patterns: higher lows (uptrend), lower highs (downtrend), range compression (breakout imminent)
+- Wide-range bars (>2x average range) signal elevated volatility at that timestamp
+- Gap from previous close: direction and magnitude
+How to use for structure selection and management:
+- If session range has consumed >60% of the straddle cone, the remaining intraday move is likely compressed — favorable for premium selling if price is inside the cone.
+- If session range has consumed <30% of the cone AND flow is directional, the expected move has NOT yet materialized — be cautious about entering directional spreads too early.
+- Higher lows pattern with bullish flow = PCS thesis confirmed by price structure. Lower highs with bearish flow = CCS confirmed.
+- Price below VWAP on a bearish flow day = thesis confirmed. Price reclaiming VWAP on a bearish flow day = warning that bearish flow may not translate to price.
+- Wide-range bars in the direction of flow = momentum confirmation. Wide-range bars AGAINST flow = mechanical counter-move, likely to reverse (see Rule 14).
+- Use the last 12 candles in the table to assess the most recent price action rhythm — are candles getting smaller (consolidation) or larger (acceleration)?
+For management:
+- If price has been making higher lows for 4+ candles while you hold CCS, tighten your time-based exit — the price structure is fighting your thesis even if flow agrees.
+- If price is compressing (late candles <50% of early candle range), prepare for a breakout — set stops at the straddle cone boundary on both sides.
+- VWAP acts as a gravitational center. Price departing far from VWAP (10+ pts) tends to mean-revert. If your short strike is between price and VWAP, the mean-reversion threatens your position.
+</spx_candles>
+<dark_pool>
+SPY Dark Pool Institutional Blocks show large ($5M+) off-exchange block trades in SPY, translated to approximate SPX levels using the SPY/SPX ratio. This is provided as structured API data.
+Dark pool prints reveal where institutions are buying or selling in size OFF-EXCHANGE. These prints create structural support/resistance levels that options flow, gamma, and charm cannot see — they represent committed capital, not hedging or market-making activity.
+Key concepts:
+- BUYER-INITIATED blocks (traded at or above the ask): institutions are accumulating at this level. Creates structural SUPPORT. Price is likely to bounce here.
+- SELLER-INITIATED blocks (traded at or below the bid): institutions are distributing at this level. Creates structural RESISTANCE. Price is likely to stall or reverse here.
+- BLOCK SIZE matters: a $50M buyer-initiated block creates stronger support than a $5M block. The data shows total volume and premium at each level.
+- CLUSTER effect: multiple blocks at the same SPX level (even from different timestamps) reinforce that level as structural support/resistance.
+How to use for structure selection:
+- When a dark pool buyer cluster at an SPX level ALIGNS with a positive gamma wall from Periscope: that level has the HIGHEST-CONFIDENCE structural support. Place PCS short puts AT or just below this level — it has both gamma suppression AND institutional capital defending it.
+- When a dark pool seller cluster ALIGNS with negative gamma: that level is a confirmed ceiling. Place CCS short calls ABOVE this level — institutions are selling there AND gamma accelerates moves away from it.
+- When dark pool and gamma DISAGREE (buyer cluster at a negative gamma zone): the dark pool capital may slow but not stop a gamma-driven acceleration. Reduce confidence but note the level as a potential bounce zone.
+How to use for strike placement:
+- Reference the "Approximate SPX equivalent" levels in the data. These are translated from SPY prices using the current ratio.
+- Dark pool levels within ±20 pts of a short strike are relevant for management. A large buyer block 10 pts below your PCS short put is structural protection. A large seller block 10 pts above your CCS short call is structural resistance.
+- In the observations, note any dark pool levels that align with or contradict the Periscope gamma profile.
+How to use for management:
+- If SPX approaches a dark pool buyer level during a selloff and bounces, this confirms the level as support. Widen your PCS stop or hold with higher confidence.
+- If SPX breaks through a dark pool buyer level, the institutional support has FAILED — this is a stronger bearish signal than breaking through a gamma wall alone, because real capital was committed.
+- Dark pool levels are most relevant in the first 2-3 hours. By the final 90 minutes, 0DTE gamma mechanics dominate and dark pool levels become secondary.
+</dark_pool>
+<max_pain>
+SPX 0DTE Max Pain is the strike price where the total dollar value of option holder losses is maximized — i.e., where MMs collectively profit the most if SPX settles there. This is provided as structured API data.
+Key concepts:
+- Max pain is a GRAVITATIONAL target for settlement, not a prediction of intraday direction. It exerts the strongest pull in the final 2 hours of the session when 0DTE gamma concentrates near ATM.
+- The max pain level can shift during the day as new options are opened/closed. The data shows the 0DTE expiry max pain and the next few expirations for context.
+- Distance from current price to max pain indicates the "pull" direction: if SPX is 30 pts above max pain, there is mild gravitational pull to the downside for settlement.
+How to use for structure selection:
+- Max pain is NOT a primary structure selection signal — it does not override flow, gamma, or charm. It is a TIEBREAKER and SETTLEMENT TARGET.
+- If flow is ambiguous (NCP ≈ NPP) AND gamma is symmetric AND max pain is 20+ pts in one direction: use max pain to break the tie. If max pain is below price, lean CCS. If above, lean PCS. Reduce confidence to LOW when relying on max pain as the primary signal.
+- If max pain ALIGNS with a dominant gamma wall (Rule 6): the settlement probability at that level is highest. Note this alignment explicitly.
+How to use for management:
+- In the final 2 hours (after 2:00 PM ET), if SPX is within 15 pts of max pain and flow has flattened (NCP/NPP converging), expect price to drift toward max pain. Do not fight this drift with directional stops.
+- If SPX has moved 40+ pts away from max pain by midday with strong directional flow, max pain is OVERRIDDEN — the flow is too strong for the gravitational pull. Do not reference max pain for management on trend days.
+- On deeply negative GEX days, the cone-lower settlement pattern (Lesson 2) OVERRIDES max pain. The straddle cone boundary is the settlement target, not max pain.
+How to use for strike placement:
+- If max pain is at or near a positive gamma wall, short strikes at max pain ± the spread width are the highest-probability placement.
+- NEVER place a short strike AT max pain — if settlement gravitates there, the short strike is at maximum risk. Place short strikes BEYOND max pain by at least the spread width.
+</max_pain>
+<iv_term_structure>
+IV Term Structure shows interpolated implied volatility across multiple expirations from the SPX options chain. This is provided as structured API data.
+Key values:
+- 0DTE IV: the market's actual pricing of today's expected move. Compare this to the calculator's VIX1D-derived σ.
+- 30D IV: longer-dated implied volatility for term structure shape analysis.
+- Term structure shape: contango (0DTE < 30D, normal) vs inversion (0DTE > 30D, elevated intraday risk).
+How to use:
+- If 0DTE IV is significantly LOWER than the calculator's σ: the straddle cone may be too wide. The market is pricing a smaller move than VIX1D suggests. This is favorable for premium selling — the cone overstates risk.
+- If 0DTE IV is significantly HIGHER than the calculator's σ: the straddle cone may be too narrow. The market expects a larger move. Widen strikes or reduce size.
+- Steep contango (0DTE IV << 30D IV) confirms a normal vol regime — the market expects today to be calm relative to the multi-day outlook. Supports IC and standard premium selling.
+- Inversion (0DTE IV >> 30D IV) independently confirms the VIX1D extreme inversion signal. Both are saying the same thing: today's expected vol is elevated relative to the multi-day norm. This is the strongest premium selling signal when VIX1D is also below VIX.
+- If the term structure is flat (0DTE ≈ 30D): no additional signal. Use flow and gamma for structure selection.
+</iv_term_structure>
+<overnight_gap>
+ES Overnight Gap Analysis provides pre-market context from ES futures (Globex session: 5:00 PM – 8:30 AM CT). This is provided as structured API data from manual input.
+Key values:
+- Gap size and direction: how far the cash open is from the previous close (NEGLIGIBLE/SMALL/MODERATE/LARGE/EXTREME)
+- Gap position vs overnight range: percentile rank of the cash open within the globex high/low range
+- Overnight range as % of straddle cone: how much of the expected move happened before the cash session
+- Gap vs overnight VWAP: whether the gap has institutional support or is an overshoot
+- Gap fill probability score: composite of the above factors (HIGH/MODERATE/LOW)
+How to use for structure selection:
+- HIGH gap fill probability + gap UP = first 30 minutes likely to sell off toward previous close. Favor CCS for Entry 1 timing — but confirm with flow data before committing. The gap fill is a TIMING signal, not a structure signal.
+- HIGH gap fill probability + gap DOWN = first 30 minutes likely to rally. Wait for the opening range before entering PCS — the gap fill may create a false bullish signal.
+- LOW gap fill probability = the gap direction is likely to EXTEND. If gap UP with LOW fill probability, the session trend is bullish — favor PCS. If gap DOWN with LOW fill probability, favor CCS.
+- If overnight range already consumed >50% of the straddle cone: the cash session range is likely compressed. This favors tighter IC structures and earlier profit targets.
+How to use for management:
+- The gap fill probability is most relevant in the FIRST HOUR. After 10:00 AM ET, flow data and gamma mechanics take over.
+- If a gap fill is in progress (price moving back toward previous close) and flow CONFIRMS the reversal direction: hold positions with higher confidence. The gap fill + flow alignment is a strong confirmation signal.
+- If a gap fill is NOT occurring by 10:00 AM ET despite HIGH fill probability: the gap has institutional conviction. Reset expectations — treat the gap open as the new baseline, not the previous close.
+- Reference the overnight range consumption in strike placement: if 60%+ of the cone was consumed overnight, short strikes can be placed tighter (higher delta) because the remaining cash session range is compressed.
+</overnight_gap>
 </chart_types>
 <structure_selection_rules>
 These rules are derived from backtesting and override the default flow-based structure selection when applicable.
@@ -371,7 +463,7 @@ Time-Bounded Analysis:
 The trader specifies an entry time. Charts may show the full day (especially when backtesting). Only analyze what was visible at the entry time. Draw a mental vertical line at the entry time — everything to the RIGHT does not exist yet. Do not reference any price action, flow, or volume after the entry time.
 </data_handling>
 <api_data_priority>
-All flow data (Market Tide, SPX/SPY/QQQ Net Flow, ETF Tide, 0DTE Index Flow, Delta Flow), Greek exposure, Aggregate GEX, and per-strike profiles are provided as structured API data — use these exact values directly. No visual estimation is needed for these sources.
+All flow data (Market Tide, SPX/SPY/QQQ Net Flow, ETF Tide, 0DTE Index Flow, Delta Flow), Greek exposure, Aggregate GEX, per-strike profiles, IV Term Structure, SPX intraday candles, dark pool blocks, max pain, and ES overnight gap analysis are provided as structured API data — use these exact values directly. No visual estimation is needed for these sources.
 Only Periscope Gamma and Periscope Charm are provided as images requiring visual extraction.
 When API data includes a computed "Direction" and "Pattern" summary, treat these as pre-computed Phase 1 outputs — do not re-derive them unless the values look inconsistent.
 If an API data section is present in the context for a given source (e.g., "SPX Aggregate GEX Panel (from API)"), that source IS provided — do not mark the corresponding chartConfidence field as "NOT PROVIDED" just because no screenshot was uploaded. Extract the signal from the API data.
@@ -493,6 +585,35 @@ Periscope Charm (from IMAGE — requires visual extraction):
 - At the session's expected floor (highest naive charm peak from API): does Periscope Charm agree? If yes, highest-confidence floor. If not, reduce reliance on that wall for afternoon management.
 - Compare bar locations and magnitudes against the naive Net Charm API data — do they agree on the directional charm slope?
 - CRITICAL CHECK: Is naive charm (from API) all-negative? If so, check Periscope Charm for +50M or more at 3+ strikes — if present, the all-negative signal is INVALID (see Periscope Charm Override in the net_charm section). Do NOT apply the morning-only protocol until this check is complete.
+SPX Intraday Candles (from API data):
+- Session OHLC and range
+- Cone consumption percentage (how much of the expected move has been used)
+- Price relative to VWAP (above or below, by how many points)
+- Structural patterns: higher lows, lower highs, range compression, wide-range bars
+- Does price structure confirm or contradict the flow direction?
+- No visual extraction needed — use the exact API values.
+Dark Pool Blocks (from API data):
+- Key buyer-initiated levels (approximate SPX equivalent) and block sizes
+- Key seller-initiated levels and block sizes
+- Do any dark pool levels align with Periscope gamma walls? (highest confidence)
+- Do any dark pool levels contradict gamma zones? (note as risk)
+- No visual extraction needed — use the exact API values.
+Max Pain (from API data):
+- 0DTE max pain strike and distance from current SPX price
+- Direction of pull (max pain above or below current price)
+- Does max pain align with a dominant gamma wall? If so, note the convergence.
+- No visual extraction needed — use the exact API values.
+IV Term Structure (from API data):
+- 0DTE IV vs calculator σ: is the cone too wide, too narrow, or correctly calibrated?
+- Term structure shape: contango (normal) or inversion (elevated risk)
+- Does the term structure confirm or contradict VIX1D signals?
+- No visual extraction needed — use the exact API values.
+ES Overnight Gap Analysis (from API data):
+- Gap direction, size classification, and fill probability
+- Overnight range as % of straddle cone consumed
+- Gap position vs overnight range (percentile)
+- Gap vs overnight VWAP (institutional support or overshoot)
+- No visual extraction needed — use the exact API values.
 Record these values explicitly. If you cannot read a value from the Periscope images, state "unreadable" and explain why. Do not estimate a value and then treat it as certain — if you had to squint, qualify it with "approximately" or "appears to be."
 Phase 2: Analysis (use the extracted values)
 Only AFTER completing Phase 1 for all data sources should you begin forming your structure recommendation. Every claim in your analysis must trace back to a specific value. For example:
