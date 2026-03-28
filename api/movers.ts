@@ -91,8 +91,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }));
       }
 
-      const up = 'data' in upResult ? mapMovers(upResult.data) : [];
-      const down = 'data' in downResult ? mapMovers(downResult.data) : [];
+      const up = upResult.ok ? mapMovers(upResult.data) : [];
+      const down = downResult.ok ? mapMovers(downResult.data) : [];
 
       // Concentration analysis: what % of the top 10 movers are mega-caps?
       const megaCaps = new Set([

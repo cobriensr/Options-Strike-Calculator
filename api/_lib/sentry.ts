@@ -10,7 +10,7 @@ import * as Sentry from '@sentry/node';
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.VERCEL_ENV ?? 'development',
-  tracesSampleRate: 1.0,
+  tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.25 : 1.0,
   enabled: process.env.VERCEL_ENV === 'production',
 });
 

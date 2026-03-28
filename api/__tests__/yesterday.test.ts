@@ -55,6 +55,7 @@ describe('GET /api/yesterday', () => {
   it('forwards schwabFetch errors', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
       error: 'Token expired',
       status: 401,
     });
@@ -69,6 +70,7 @@ describe('GET /api/yesterday', () => {
   it('returns null when no candles', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: { symbol: '$SPX', empty: true, candles: [] },
     });
 
@@ -92,6 +94,7 @@ describe('GET /api/yesterday', () => {
     ];
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: { symbol: '$SPX', empty: false, candles },
     });
 
@@ -137,6 +140,7 @@ describe('GET /api/yesterday', () => {
     vi.mocked(isMarketOpen).mockReturnValue(false);
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         empty: false,

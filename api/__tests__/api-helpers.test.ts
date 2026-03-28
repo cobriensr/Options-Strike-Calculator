@@ -4,10 +4,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 // Mock schwab module before importing api-helpers
+const mockPipeline = {
+  incr: vi.fn().mockReturnThis(),
+  expire: vi.fn().mockReturnThis(),
+  exec: vi.fn().mockResolvedValue([0]),
+};
 vi.mock('../_lib/schwab.js', () => ({
   redis: {
     incr: vi.fn(),
     expire: vi.fn(),
+    pipeline: vi.fn(() => mockPipeline),
   },
   getAccessToken: vi.fn(),
 }));
@@ -24,7 +30,7 @@ import {
   setCacheHeaders,
   isMarketOpen,
 } from '../_lib/api-helpers.js';
-import { redis, getAccessToken } from '../_lib/schwab.js';
+import { getAccessToken } from '../_lib/schwab.js';
 
 describe('api-helpers', () => {
   const originalEnv = process.env;
@@ -144,32 +150,28 @@ describe('api-helpers', () => {
 
   describe('isRateLimited', () => {
     it('returns false when count is within limit', async () => {
-      vi.mocked(redis.incr).mockResolvedValue(3);
+      mockPipeline.exec.mockResolvedValue([3]);
       const result = await isRateLimited('key', 5);
       expect(result).toBe(false);
     });
 
     it('returns true when count exceeds limit', async () => {
-      vi.mocked(redis.incr).mockResolvedValue(6);
+      mockPipeline.exec.mockResolvedValue([6]);
       const result = await isRateLimited('key', 5);
       expect(result).toBe(true);
     });
 
-    it('sets TTL on first request (count === 1)', async () => {
-      vi.mocked(redis.incr).mockResolvedValue(1);
+    it('calls incr and expire on the pipeline', async () => {
+      mockPipeline.incr.mockClear();
+      mockPipeline.expire.mockClear();
+      mockPipeline.exec.mockResolvedValue([1]);
       await isRateLimited('key', 5);
-      expect(redis.expire).toHaveBeenCalledWith('ratelimit:key', 60);
-    });
-
-    it('does not set TTL on subsequent requests', async () => {
-      vi.mocked(redis.expire).mockClear();
-      vi.mocked(redis.incr).mockResolvedValue(2);
-      await isRateLimited('key', 5);
-      expect(redis.expire).not.toHaveBeenCalled();
+      expect(mockPipeline.incr).toHaveBeenCalledWith('ratelimit:key');
+      expect(mockPipeline.expire).toHaveBeenCalledWith('ratelimit:key', 60);
     });
 
     it('fails open when Redis throws', async () => {
-      vi.mocked(redis.incr).mockRejectedValue(new Error('redis down'));
+      mockPipeline.exec.mockRejectedValue(new Error('redis down'));
       const result = await isRateLimited('key', 5);
       expect(result).toBe(false);
     });
@@ -177,7 +179,7 @@ describe('api-helpers', () => {
 
   describe('rejectIfRateLimited', () => {
     it('sends 429 when rate limited', async () => {
-      vi.mocked(redis.incr).mockResolvedValue(100);
+      mockPipeline.exec.mockResolvedValue([100]);
       const req = mockRequest({ headers: {} });
       const res = mockResponse();
       const rejected = await rejectIfRateLimited(req, res, 'test', 5);
@@ -187,7 +189,7 @@ describe('api-helpers', () => {
     });
 
     it('returns false when not rate limited', async () => {
-      vi.mocked(redis.incr).mockResolvedValue(1);
+      mockPipeline.exec.mockResolvedValue([1]);
       const req = mockRequest({ headers: {} });
       const res = mockResponse();
       const rejected = await rejectIfRateLimited(req, res, 'test', 5);
@@ -205,7 +207,11 @@ describe('api-helpers', () => {
         error: { type: 'expired_refresh', message: 'Token expired' },
       });
       const result = await schwabFetch('/quotes');
-      expect(result).toEqual({ error: 'Token expired', status: 401 });
+      expect(result).toEqual({
+        ok: false,
+        error: 'Token expired',
+        status: 401,
+      });
     });
 
     it('returns error with status 500 for non-refresh errors', async () => {
@@ -213,7 +219,11 @@ describe('api-helpers', () => {
         error: { type: 'token_error', message: 'Something broke' },
       });
       const result = await schwabFetch('/quotes');
-      expect(result).toEqual({ error: 'Something broke', status: 500 });
+      expect(result).toEqual({
+        ok: false,
+        error: 'Something broke',
+        status: 500,
+      });
     });
 
     it('returns data on successful fetch', async () => {
@@ -227,7 +237,7 @@ describe('api-helpers', () => {
         }),
       );
       const result = await schwabFetch('/quotes');
-      expect(result).toEqual({ data: mockData });
+      expect(result).toEqual({ ok: true, data: mockData });
       vi.unstubAllGlobals();
     });
 
@@ -243,6 +253,7 @@ describe('api-helpers', () => {
       );
       const result = await schwabFetch('/quotes');
       expect(result).toEqual({
+        ok: false,
         error: 'Schwab API error (403): Forbidden',
         status: 502,
       });
@@ -261,6 +272,7 @@ describe('api-helpers', () => {
       );
       const result = await schwabFetch('/quotes');
       expect(result).toEqual({
+        ok: false,
         error: 'Schwab API error (401): Unauthorized',
         status: 401,
       });

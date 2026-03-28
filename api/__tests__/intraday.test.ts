@@ -63,6 +63,7 @@ describe('GET /api/intraday', () => {
   it('forwards schwabFetch errors', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
       error: 'API down',
       status: 502,
     });
@@ -90,6 +91,7 @@ describe('GET /api/intraday', () => {
     ];
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         empty: false,
@@ -138,6 +140,7 @@ describe('GET /api/intraday', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         empty: true,

@@ -33,11 +33,18 @@ import logger from './logger.js';
  * Uses the REST-based client (no persistent connections needed).
  * Exported so api-helpers.ts can use it for rate limiting.
  */
-export const redis = new Redis({
-  url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || '',
-  token:
-    process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '',
-});
+function createRedis(): Redis {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token =
+    process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) {
+    logger.warn('Redis not configured — operations will fail at runtime');
+    return new Redis({ url: url ?? '', token: token ?? '' });
+  }
+  return new Redis({ url, token });
+}
+
+export const redis = createRedis();
 
 // ============================================================
 // TYPES
@@ -95,7 +102,8 @@ function basicAuthHeader(clientId: string, clientSecret: string): string {
 async function getStoredTokens(): Promise<SchwabTokens | null> {
   try {
     return await redis.get<SchwabTokens>(KV_KEY);
-  } catch {
+  } catch (err) {
+    logger.warn({ err }, 'Redis getStoredTokens failed');
     return null;
   }
 }
@@ -135,7 +143,8 @@ async function acquireLock(): Promise<boolean> {
   try {
     const result = await redis.set(LOCK_KEY, '1', { nx: true, ex: LOCK_TTL });
     return result === 'OK';
-  } catch {
+  } catch (err) {
+    logger.warn({ err }, 'Redis acquireLock failed, proceeding anyway');
     return true; // If Redis fails, proceed anyway
   }
 }
@@ -143,8 +152,8 @@ async function acquireLock(): Promise<boolean> {
 async function releaseLock(): Promise<void> {
   try {
     await redis.del(LOCK_KEY);
-  } catch {
-    // Best effort
+  } catch (err) {
+    logger.warn({ err }, 'Redis releaseLock failed');
   }
 }
 
@@ -155,7 +164,8 @@ async function waitForLockRelease(maxWaitMs = 8000): Promise<void> {
     try {
       const held = await redis.get(LOCK_KEY);
       if (!held) return;
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, 'Redis lock check failed, proceeding');
       return;
     }
   }

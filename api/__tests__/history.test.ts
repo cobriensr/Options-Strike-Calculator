@@ -112,6 +112,7 @@ describe('GET /api/history', () => {
     vi.mocked(redis.get).mockResolvedValue(null);
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         candles: [],
@@ -147,6 +148,7 @@ describe('GET /api/history', () => {
     ];
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: {
         symbol: '$SPX',
         candles,
@@ -194,6 +196,7 @@ describe('GET /api/history', () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
       error: 'Schwab API error (500): Internal error',
       status: 502,
     });
@@ -218,6 +221,7 @@ describe('GET /api/history', () => {
     const candles = [makeCandle(targetDate, 9, 30, 5450, 5470, 5445, 5460)];
 
     vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
       data: { symbol: '$SPX', candles, previousClose: 5380 },
     });
 

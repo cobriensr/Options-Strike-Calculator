@@ -22,6 +22,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { checkBot } from './_lib/api-helpers.js';
 import { redis } from './_lib/schwab.js';
 import logger from './_lib/logger.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 // ============================================================
 // FRED RELEASE IDS → EVENT MAPPING
@@ -476,12 +477,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Date range: today → today + days
       const now = new Date();
-      const startDate = now.toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
-      const endDate = new Date(
-        now.getTime() + days * 24 * 60 * 60 * 1000,
-      ).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const startDate = getETDateStr(now);
+      const endDate = getETDateStr(
+        new Date(now.getTime() + days * 24 * 60 * 60 * 1000),
+      );
 
       // Try Redis cache first
       const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;

@@ -109,7 +109,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `&startDate=${start}&endDate=${end}&needExtendedHoursData=false`,
     );
 
-    if ('error' in intradayResult) {
+    if (!intradayResult.ok) {
       logger.error(
         { error: intradayResult.error },
         'fetch-outcomes: Schwab intraday fetch failed',
@@ -144,7 +144,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let vixClose: number | undefined;
     let vix1dClose: number | undefined;
 
-    if ('error' in quotesResult) {
+    if (!quotesResult.ok) {
       logger.warn(
         { error: quotesResult.error },
         'fetch-outcomes: VIX quotes failed, saving SPX data only',
@@ -220,7 +220,7 @@ async function handleBackfill(res: VercelResponse) {
       `/pricehistory?symbol=$SPX&periodType=month&period=2&frequencyType=daily&frequency=1`,
     );
 
-    if ('error' in spxResult) {
+    if (!spxResult.ok) {
       return res.status(502).json({ error: spxResult.error });
     }
 
@@ -230,7 +230,7 @@ async function handleBackfill(res: VercelResponse) {
     );
 
     const vixByDate = new Map<string, DailyCandle>();
-    if (!('error' in vixResult)) {
+    if (vixResult.ok) {
       for (const c of vixResult.data.candles) {
         const d = getETDateStr(new Date(c.datetime));
         vixByDate.set(d, c);

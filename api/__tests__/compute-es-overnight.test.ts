@@ -82,6 +82,7 @@ describe('compute-es-overnight handler', () => {
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
     mockedSchwabFetch.mockResolvedValue({
+      ok: true,
       data: { candles: [{ open: 5712.5, datetime: Date.now() }] },
     });
   });
@@ -178,6 +179,7 @@ describe('compute-es-overnight handler', () => {
 
   it('uses Schwab SPX open when available', async () => {
     mockedSchwabFetch.mockResolvedValue({
+      ok: true,
       data: { candles: [{ open: 5750.0, datetime: Date.now() }] },
     });
     setupSqlSequence([makeBarRow()], [makePrevOutcome('5700.00')]);
@@ -211,7 +213,7 @@ describe('compute-es-overnight handler', () => {
   });
 
   it('falls back to globex close when Schwab returns no candles', async () => {
-    mockedSchwabFetch.mockResolvedValue({ data: { candles: [] } });
+    mockedSchwabFetch.mockResolvedValue({ ok: true, data: { candles: [] } });
     setupSqlSequence(
       [makeBarRow({ globex_close: '5710.00' })],
       [makePrevOutcome('5700.00')],
@@ -240,6 +242,7 @@ describe('compute-es-overnight handler', () => {
 
   it('classifies gap DOWN when cash open < prev close', async () => {
     mockedSchwabFetch.mockResolvedValue({
+      ok: true,
       data: { candles: [{ open: 5680.0, datetime: Date.now() }] },
     });
     setupSqlSequence([makeBarRow()], [makePrevOutcome('5700.00')]);

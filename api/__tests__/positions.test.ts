@@ -66,6 +66,7 @@ describe('GET /api/positions', () => {
 
   it('returns error when account numbers fetch fails', async () => {
     vi.mocked(schwabTraderFetch).mockResolvedValueOnce({
+      ok: false,
       error: 'Unauthorized',
       status: 401,
     });
@@ -76,7 +77,7 @@ describe('GET /api/positions', () => {
   });
 
   it('returns 404 when no linked accounts', async () => {
-    vi.mocked(schwabTraderFetch).mockResolvedValueOnce({ data: [] });
+    vi.mocked(schwabTraderFetch).mockResolvedValueOnce({ ok: true, data: [] });
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(404);
@@ -86,9 +87,11 @@ describe('GET /api/positions', () => {
   it('returns error when positions fetch fails', async () => {
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: false,
         error: 'Server error',
         status: 502,
       });
@@ -100,9 +103,11 @@ describe('GET /api/positions', () => {
   it('returns empty positions when no SPX 0DTE options', async () => {
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',
@@ -142,9 +147,11 @@ describe('GET /api/positions', () => {
 
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',
@@ -262,9 +269,11 @@ describe('GET /api/positions', () => {
   it('uses query date param when provided', async () => {
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',
@@ -292,9 +301,11 @@ describe('GET /api/positions', () => {
 
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',
@@ -318,9 +329,11 @@ describe('GET /api/positions', () => {
 
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',
@@ -366,9 +379,11 @@ describe('GET /api/positions', () => {
 
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',
@@ -439,9 +454,11 @@ describe('GET /api/positions', () => {
 
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',
@@ -486,9 +503,11 @@ describe('GET /api/positions', () => {
 
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',
@@ -543,9 +562,11 @@ describe('GET /api/positions', () => {
   it('handles account with no positions array', async () => {
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
+        ok: true,
         data: [{ accountNumber: '123', hashValue: 'hash1' }],
       })
       .mockResolvedValueOnce({
+        ok: true,
         data: {
           securitiesAccount: {
             accountNumber: '123',

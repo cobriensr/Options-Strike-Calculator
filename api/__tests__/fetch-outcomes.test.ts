@@ -63,11 +63,12 @@ function makeCandles() {
 }
 
 function makeIntradayResponse(candles = makeCandles()) {
-  return { data: { candles, symbol: '$SPX', empty: false } };
+  return { ok: true as const, data: { candles, symbol: '$SPX', empty: false } };
 }
 
 function makeQuotesResponse(vix = 18, vix1d = 15) {
   return {
+    ok: true as const,
     data: {
       $VIX: { quote: { lastPrice: vix } },
       $VIX1D: { quote: { lastPrice: vix1d } },
@@ -223,7 +224,11 @@ describe('fetch-outcomes handler', () => {
   // ── Error scenarios ───────────────────────────────────────
 
   it('returns 502 when intraday schwabFetch fails', async () => {
-    mockedSchwabFetch.mockResolvedValueOnce({ error: 'Schwab API down' });
+    mockedSchwabFetch.mockResolvedValueOnce({
+      ok: false,
+      error: 'Schwab API down',
+      status: 502,
+    });
 
     const req = mockRequest({
       method: 'GET',
@@ -268,7 +273,11 @@ describe('fetch-outcomes handler', () => {
 
   it('still saves SPX data when VIX quotes fail (warns but does not error)', async () => {
     mockedSchwabFetch.mockResolvedValueOnce(makeIntradayResponse());
-    mockedSchwabFetch.mockResolvedValueOnce({ error: 'VIX unavailable' });
+    mockedSchwabFetch.mockResolvedValueOnce({
+      ok: false,
+      error: 'VIX unavailable',
+      status: 502,
+    });
     mockSaveOutcome.mockResolvedValueOnce(undefined);
 
     const req = mockRequest({
@@ -402,9 +411,11 @@ describe('fetch-outcomes handler', () => {
 
     it('fetches daily candles and saves each completed day', async () => {
       mockedSchwabFetch.mockResolvedValueOnce({
+        ok: true,
         data: { candles: makeDailyCandles(), symbol: '$SPX', empty: false },
       });
       mockedSchwabFetch.mockResolvedValueOnce({
+        ok: true,
         data: { candles: makeVixDailyCandles(), symbol: '$VIX', empty: false },
       });
       mockSaveOutcome.mockResolvedValue(undefined);
@@ -438,7 +449,9 @@ describe('fetch-outcomes handler', () => {
 
     it('returns 502 when SPX fetch fails in backfill', async () => {
       mockedSchwabFetch.mockResolvedValueOnce({
+        ok: false,
         error: 'SPX history unavailable',
+        status: 502,
       });
 
       const req = mockRequest({
@@ -455,9 +468,11 @@ describe('fetch-outcomes handler', () => {
 
     it('skips days where saveOutcome throws and counts them in skipped', async () => {
       mockedSchwabFetch.mockResolvedValueOnce({
+        ok: true,
         data: { candles: makeDailyCandles(), symbol: '$SPX', empty: false },
       });
       mockedSchwabFetch.mockResolvedValueOnce({
+        ok: true,
         data: { candles: makeVixDailyCandles(), symbol: '$VIX', empty: false },
       });
 

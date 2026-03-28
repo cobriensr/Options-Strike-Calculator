@@ -27,6 +27,7 @@ import {
   rejectIfNotOwner,
   checkBot,
 } from './_lib/api-helpers.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 // ============================================================
 // TYPES
@@ -88,8 +89,7 @@ function toDaySummary(candle: SchwabDailyCandle): DaySummary {
  * Get today's date in ET timezone as YYYY-MM-DD.
  */
 function todayET(): string {
-  const now = new Date();
-  return now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  return getETDateStr(new Date());
 }
 
 // ============================================================
@@ -126,7 +126,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `/pricehistory?${params.toString()}`,
       );
 
-      if ('error' in result) {
+      if (!result.ok) {
         done({ status: result.status, error: 'schwab' });
         return res.status(result.status).json({ error: result.error });
       }

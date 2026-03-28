@@ -8,25 +8,18 @@
  *   2. Snapshot database writer (useSnapshotSave)
  *   3. Analysis context (ChartAnalysis → /api/analyze)
  *
+ * Composes three sub-hooks:
+ *   - useRegimeClassification (regime zone, DOW, ranges, deltas, clusters)
+ *   - useTermStructure (VIX term structure shape & signal)
+ *   - useRangeAnalysis (opening range, RV/IV, price context, events)
+ *
  * Pure computation — no side effects, no API calls.
  */
 
 import { useMemo } from 'react';
-import {
-  calcBSDelta,
-  calcScaledSkew,
-  calcScaledCallSkew,
-  toETTime,
-} from '../utils/calculator';
-import { SIGNALS, DEFAULTS } from '../constants';
-import { parseDow } from '../utils/time';
-import { classifyOpeningRange } from '../utils/classifiers';
-import {
-  findBucket,
-  estimateRange,
-  getDowMultiplier,
-} from '../data/vixRangeStats';
-import { getEarlyCloseHourET } from '../data/marketHours';
+import { useRegimeClassification } from './useRegimeClassification';
+import { useTermStructure } from './useTermStructure';
+import { useRangeAnalysis } from './useRangeAnalysis';
 import type { EventItem } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
 
@@ -111,185 +104,26 @@ export interface ComputedSignals {
 // HELPERS
 // ============================================================
 
-const DOW_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-
-/**
- * Parkinson realized volatility estimator (single day, annualized).
- * Uses high-low range which is ~5× more efficient than close-to-close.
- * σ_parkinson = sqrt(1 / (4·ln2)) × |ln(H/L)| × sqrt(252)
- */
-function parkinsonRV(high: number, low: number): number {
-  if (high <= 0 || low <= 0 || high <= low) return 0;
-  const logHL = Math.log(high / low);
-  return Math.sqrt(1 / (4 * Math.LN2)) * logHL * Math.sqrt(252);
-}
-
-/**
- * N-day rolling Parkinson RV estimator (annualized).
- * Averages the variance (not σ) across days, then takes the square root.
- * This is the correct way to combine Parkinson estimates — averaging σ
- * directly would underweight high-vol days.
- */
-function rollingParkinsonRV(
-  days: ReadonlyArray<{ high: number; low: number }>,
-): number {
-  if (days.length === 0) return 0;
-  const factor = 1 / (4 * Math.LN2);
-  let sumVariance = 0;
-  let validDays = 0;
-  for (const d of days) {
-    if (d.high > 0 && d.low > 0 && d.high > d.low) {
-      const logHL = Math.log(d.high / d.low);
-      sumVariance += factor * logHL * logHL;
-      validDays++;
-    }
-  }
-  if (validDays === 0) return 0;
-  return Math.sqrt((sumVariance / validDays) * 252);
-}
-
-/**
- * Classifies the VIX term structure shape from the three-point curve.
- * Returns both the shape name and actionable trading advice.
- *
- * Shapes:
- *   contango:       VIX1D < VIX < VIX9D  → near-term calm, premium selling sweet spot
- *   fear-spike:     VIX1D > VIX > VIX9D  → near-term fear, event-driven, IC dangerous
- *   flat:           all within ±5%       → no edge from term structure
- *   backwardation:  VIX1D > VIX          → near-term stress but longer-term calm
- *   front-calm:     VIX1D < VIX, 9D < VIX → near-term relief, longer-term worry
- */
-function classifyTermShape(
+function buildDataNote(
   vix1d: number | undefined,
-  vix9d: number | undefined,
-  vix: number,
-): { shape: string; advice: string } | null {
-  // Need at least VIX1D to determine shape
-  if (!vix1d || vix <= 0) return null;
-
-  const r1d = vix1d / vix;
-  const r9d = vix9d ? vix9d / vix : null;
-  const lo = 1 - SIGNALS.TERM_SHAPE_THRESHOLD; // 0.97
-  const hi = 1 + SIGNALS.TERM_SHAPE_THRESHOLD; // 1.03
-
-  // Check for flat first: all ratios within ±TERM_FLAT_THRESHOLD
-  const isFlat1d = Math.abs(r1d - 1) < SIGNALS.TERM_FLAT_THRESHOLD;
-  const isFlat9d =
-    r9d == null || Math.abs(r9d - 1) < SIGNALS.TERM_FLAT_THRESHOLD;
-  if (isFlat1d && isFlat9d) {
-    return {
-      shape: 'flat',
-      advice:
-        'Term structure is flat — no directional edge from vol curve. Follow standard delta guide.',
-    };
-  }
-
-  // With both VIX1D and VIX9D
-  if (r9d != null) {
-    // Contango: VIX1D < VIX < VIX9D (or VIX1D < VIX and VIX9D > VIX)
-    if (r1d < lo && r9d > hi) {
-      return {
-        shape: 'contango',
-        advice:
-          'Full contango — near-term calm with longer-term uncertainty. Premium selling sweet spot. Full position size.',
-      };
-    }
-    // Fear spike: VIX1D > VIX > VIX9D (or VIX1D > VIX and VIX9D < VIX)
-    if (r1d > hi && r9d < lo) {
-      return {
-        shape: 'fear-spike',
-        advice:
-          'Near-term fear spike — likely event-driven. IC dangerous, but if the event passes, rapid mean-reversion creates opportunity. Wait for resolution or use single-side spreads only.',
-      };
-    }
-    // Backwardation: VIX1D > VIX, VIX9D ≈ VIX or > VIX
-    if (r1d > hi) {
-      return {
-        shape: 'backwardation',
-        advice:
-          'Short-term stress exceeding 30-day — elevated intraday risk. Reduce size or widen deltas. Watch for mean-reversion after event clears.',
-      };
-    }
-    // Inverted hump: VIX1D < VIX > VIX9D (both near-term and 9-day below 30-day)
-    // Often appears around FOMC — event vol is priced into 30-day but not near-term
-    if (r1d < lo && r9d < lo) {
-      return {
-        shape: 'hump',
-        advice:
-          'Inverted hump — VIX elevated above both VIX1D and VIX9D. Likely event-driven (FOMC/CPI priced into 30-day). Near-term is calm but 30-day IV is inflated. Premium selling is attractive if the event has passed or is priced in. If the event is upcoming, IV crush post-event creates opportunity but pre-event risk is asymmetric.',
-      };
-    }
-    // Front-calm: VIX1D < VIX, VIX9D ≈ VIX or > VIX (not both below)
-    if (r1d < lo) {
-      return {
-        shape: 'front-calm',
-        advice:
-          'Near-term calm but longer-term worry persists — transitional environment. Standard positioning with slight bullish tilt.',
-      };
-    }
-  }
-
-  // VIX1D only (no VIX9D)
-  if (r1d > hi) {
-    return {
-      shape: 'backwardation',
-      advice:
-        'VIX1D above VIX — today expected hotter than average. Widen deltas or reduce size.',
-    };
-  }
-  if (r1d < lo) {
-    return {
-      shape: 'contango',
-      advice:
-        'VIX1D below VIX — today expected calmer than average. Favorable for selling premium.',
-    };
-  }
-
-  return {
-    shape: 'flat',
-    advice:
-      'Term structure is roughly flat — no strong directional signal from vol curve.',
-  };
-}
-
-function classifyTermStructure(
-  vix1d: number | undefined,
-  vix9d: number | undefined,
-  vvix: number | undefined,
-  vix: number,
-): string | null {
-  const signals: string[] = [];
-
-  if (vix1d && vix > 0) {
-    const ratio = vix1d / vix;
-    if (ratio < SIGNALS.VIX1D_RATIO_CALM) signals.push('calm');
-    else if (ratio < SIGNALS.VIX1D_RATIO_NORMAL) signals.push('normal');
-    else if (ratio < SIGNALS.VIX1D_RATIO_ELEVATED) signals.push('elevated');
-    else signals.push('extreme');
-  }
-
-  if (vix9d && vix > 0) {
-    const ratio = vix9d / vix;
-    if (ratio > SIGNALS.VIX9D_RATIO_CALM) signals.push('calm');
-    else if (ratio > SIGNALS.VIX9D_RATIO_NORMAL) signals.push('normal');
-    else if (ratio > SIGNALS.VIX9D_RATIO_ELEVATED) signals.push('elevated');
-    else signals.push('extreme');
-  }
-
-  if (vvix) {
-    if (vvix < SIGNALS.VVIX_CALM) signals.push('calm');
-    else if (vvix < SIGNALS.VVIX_NORMAL) signals.push('normal');
-    else if (vvix < SIGNALS.VVIX_ELEVATED) signals.push('elevated');
-    else signals.push('extreme');
-  }
-
-  if (signals.length === 0) return null;
-
-  const order = ['calm', 'normal', 'elevated', 'extreme'];
-  return signals.reduce(
-    (worst, s) => (order.indexOf(s) > order.indexOf(worst) ? s : worst),
-    'calm',
-  );
+  vix: number | undefined,
+  openingRangeAvailable: boolean,
+  isBacktest: boolean,
+): string | undefined {
+  const notes: string[] = [];
+  if (!vix1d && vix)
+    notes.push(
+      'VIX1D unavailable — σ derived from VIX × 1.15. Actual per-strike IV may differ.',
+    );
+  if (!openingRangeAvailable)
+    notes.push(
+      'Entry is before 10:00 AM ET — 30-min opening range not yet complete.',
+    );
+  if (isBacktest)
+    notes.push(
+      'Backtesting: data is from historical candles, not live quotes.',
+    );
+  return notes.length > 0 ? notes.join(' | ') : undefined;
 }
 
 // ============================================================
@@ -364,350 +198,109 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     historySnapshot,
   } = inputs;
 
-  return useMemo(() => {
-    // ── ET time (computed once) ──────────────────────────────
-    const { etHour, etMinute } = toETTime(
-      timeHour,
-      timeMinute,
-      timeAmPm as 'AM' | 'PM',
-      timezone as 'ET' | 'CT',
-    );
+  // ── Resolve volatility (backtest vs live) ────────────────
+  const vix1d = historySnapshot
+    ? (historySnapshot.vix1d ?? undefined)
+    : liveVix1d;
+  const vix9d = historySnapshot
+    ? (historySnapshot.vix9d ?? undefined)
+    : liveVix9d;
+  const vvix = historySnapshot ? (historySnapshot.vvix ?? undefined) : liveVvix;
 
-    // ── Resolve volatility (backtest vs live) ────────────────
-    const vix1d = historySnapshot
-      ? (historySnapshot.vix1d ?? undefined)
-      : liveVix1d;
-    const vix9d = historySnapshot
-      ? (historySnapshot.vix9d ?? undefined)
-      : liveVix9d;
-    const vvix = historySnapshot
-      ? (historySnapshot.vvix ?? undefined)
-      : liveVvix;
+  const sigmaSource = vix1d
+    ? 'VIX1D'
+    : ivMode === ivModeVix
+      ? 'VIX × 1.15'
+      : 'manual';
 
-    const sigmaSource = vix1d
-      ? 'VIX1D'
-      : ivMode === ivModeVix
-        ? 'VIX × 1.15'
-        : 'manual';
-
-    // ── Initialize result ────────────────────────────────────
-    const result: ComputedSignals = {
-      vix1d,
-      vix9d,
-      vvix,
-      sigmaSource,
-      etHour,
-      etMinute,
-      regimeZone: null,
-      dowLabel: null,
-      dowMultHL: null,
-      dowMultOC: null,
-      icCeiling: null,
-      putSpreadCeiling: null,
-      callSpreadCeiling: null,
-      moderateDelta: null,
-      conservativeDelta: null,
-      medianOcPct: null,
-      medianHlPct: null,
-      p90OcPct: null,
-      p90HlPct: null,
-      p90OcPts: null,
-      p90HlPts: null,
-      openingRangeAvailable: false,
-      openingRangeHigh: null,
-      openingRangeLow: null,
-      openingRangePctConsumed: null,
-      openingRangeSignal: null,
-      vixTermSignal: null,
-      vixTermShape: null,
-      vixTermShapeAdvice: null,
-      clusterPutMult: null,
-      clusterCallMult: null,
-      rvIvRatio: null,
-      rvIvLabel: null,
-      rvAnnualized: null,
-      spxOpen: null,
-      spxHigh: null,
-      spxLow: null,
-      prevClose: null,
-      overnightGap: null,
-      isEarlyClose: false,
-      isEventDay: false,
-      eventNames: [],
-      dataNote: undefined,
-    };
-
-    // ── Events ───────────────────────────────────────────────
-    if (selectedDate) {
-      const eventsForDate =
-        liveEvents?.filter((e) => e.date === selectedDate) ?? [];
-      result.isEventDay = eventsForDate.length > 0;
-      result.eventNames = eventsForDate.map((e) => e.event);
-      result.isEarlyClose = getEarlyCloseHourET(selectedDate) != null;
-    }
-
-    // ── Price context ────────────────────────────────────────
-    if (historySnapshot) {
-      result.spxOpen = historySnapshot.runningOHLC?.open ?? null;
-      result.spxHigh = historySnapshot.runningOHLC?.high ?? null;
-      result.spxLow = historySnapshot.runningOHLC?.low ?? null;
-      result.prevClose = historySnapshot.previousClose ?? null;
-      if (result.spxOpen && result.prevClose && result.prevClose > 0) {
-        result.overnightGap =
-          ((result.spxOpen - result.prevClose) / result.prevClose) * 100;
-      }
-    }
-
-    if (!vix || !spot || !T) {
-      // Build data note even without full data
-      result.dataNote = buildDataNote(
-        vix1d,
-        vix,
-        result.openingRangeAvailable,
-        !!historySnapshot,
-      );
-      return result;
-    }
-
-    // ── Regime zone ──────────────────────────────────────────
-    const bucket = findBucket(vix);
-    if (bucket) result.regimeZone = bucket.zone;
-
-    // ── Day of week ──────────────────────────────────────────
-    const dow = parseDow(selectedDate);
-    if (dow != null) {
-      result.dowLabel = DOW_NAMES[dow] ?? null;
-      const dowMult = getDowMultiplier(vix, dow);
-      if (dowMult) {
-        result.dowMultHL = dowMult.multHL;
-        result.dowMultOC = dowMult.multOC;
-      }
-    }
-
-    // ── Range thresholds ─────────────────────────────────────
-    const range = estimateRange(vix);
-    const cMult = clusterMult > 0 ? clusterMult : 1;
-    const dowMult = dow == null ? null : getDowMultiplier(vix, dow);
-    const hlAdj = (dowMult?.multHL ?? 1) * cMult;
-    const ocAdj = (dowMult?.multOC ?? 1) * cMult;
-
-    result.medianOcPct = range.medOC * ocAdj;
-    result.medianHlPct = range.medHL * hlAdj;
-    result.p90OcPct = range.p90OC * ocAdj;
-    result.p90HlPct = range.p90HL * hlAdj;
-    result.p90OcPts = Math.round((result.p90OcPct / 100) * spot);
-    result.p90HlPts = Math.round((result.p90HlPct / 100) * spot);
-
-    // ── Directional cluster multipliers ───────────────────────
-    // After a big down day, put-side range expands more than call-side.
-    // After a big up day, the asymmetry is weaker (upside rallies cluster less).
-    // When cluster mult ≈ 1 (no clustering), both sides are equal.
-    const ydayOpen = historySnapshot?.yesterday?.open ?? liveYesterdayOpen;
-    const ydayClose = historySnapshot?.yesterday?.close ?? liveYesterdayClose;
-    if (cMult !== 1 && ydayOpen && ydayClose && ydayOpen > 0) {
-      const ydayReturn = (ydayClose - ydayOpen) / ydayOpen;
-      const excess = cMult - 1; // how much above/below 1.0 (e.g. 0.15 for 1.15x)
-      if (excess > 0) {
-        // Clustering is active (mult > 1)
-        if (ydayReturn < -SIGNALS.CLUSTER_DIRECTION_THRESHOLD) {
-          // Down day: put side gets 70% of excess, call side 30%
-          result.clusterPutMult = 1 + excess * SIGNALS.CLUSTER_DOWN_PUT_WEIGHT;
-          result.clusterCallMult =
-            1 + excess * SIGNALS.CLUSTER_DOWN_CALL_WEIGHT;
-        } else if (ydayReturn > SIGNALS.CLUSTER_DIRECTION_THRESHOLD) {
-          // Up day: call side gets 60% of excess, put side 40% (weaker asymmetry)
-          result.clusterPutMult = 1 + excess * SIGNALS.CLUSTER_UP_PUT_WEIGHT;
-          result.clusterCallMult = 1 + excess * SIGNALS.CLUSTER_UP_CALL_WEIGHT;
-        } else {
-          // Flat day: symmetric
-          result.clusterPutMult = cMult;
-          result.clusterCallMult = cMult;
-        }
-      } else {
-        // Tailwind (mult < 1): symmetric — calm days don't have directional bias
-        result.clusterPutMult = cMult;
-        result.clusterCallMult = cMult;
-      }
-    } else {
-      result.clusterPutMult = cMult;
-      result.clusterCallMult = cMult;
-    }
-
-    // ── Delta guide ceilings ─────────────────────────────────
-    // Uses VIX × 1.15 for consistency with historical calibration
-    const sigma = (vix * DEFAULTS.IV_PREMIUM_FACTOR) / 100;
-    const skew = skewPct / 100;
-    const sqrtT = Math.sqrt(T);
-
-    // 90th O→C: IC ceiling (settlement survival)
-    const p90OcDist = result.p90OcPct / 100;
-    if (p90OcDist > 0) {
-      const putStrike = spot * (1 - p90OcDist);
-      const callStrike = spot * (1 + p90OcDist);
-      const approxZ = p90OcDist / (sigma * sqrtT);
-      const cappedZ = Math.min(approxZ, 3);
-      const putDelta =
-        calcBSDelta(
-          spot,
-          putStrike,
-          sigma * (1 + calcScaledSkew(skew, cappedZ)),
-          T,
-          'put',
-        ) * 100;
-      const callDelta =
-        calcBSDelta(
-          spot,
-          callStrike,
-          sigma * (1 - calcScaledCallSkew(skew, cappedZ)),
-          T,
-          'call',
-        ) * 100;
-      result.icCeiling = Math.floor(Math.min(putDelta, callDelta));
-      result.putSpreadCeiling = Math.floor(putDelta);
-      result.callSpreadCeiling = Math.floor(callDelta);
-      result.conservativeDelta = Math.max(
-        1,
-        Math.floor(result.icCeiling * 0.6),
-      );
-    }
-
-    // 90th H-L: moderate (intraday) delta
-    const p90HlDist = result.p90HlPct / 100;
-    if (p90HlDist > 0) {
-      const putStrike = spot * (1 - p90HlDist);
-      const callStrike = spot * (1 + p90HlDist);
-      const approxZ = p90HlDist / (sigma * sqrtT);
-      const cappedZhl = Math.min(approxZ, 3);
-      const putDelta =
-        calcBSDelta(
-          spot,
-          putStrike,
-          sigma * (1 + calcScaledSkew(skew, cappedZhl)),
-          T,
-          'put',
-        ) * 100;
-      const callDelta =
-        calcBSDelta(
-          spot,
-          callStrike,
-          sigma * (1 - calcScaledCallSkew(skew, cappedZhl)),
-          T,
-          'call',
-        ) * 100;
-      result.moderateDelta = Math.floor(Math.min(putDelta, callDelta));
-    }
-
-    // ── Opening range ────────────────────────────────────────
-    const etMinutes = etHour * 60 + etMinute;
-    result.openingRangeAvailable = etMinutes >= 600; // 10:00 AM ET
-
-    const orData = historySnapshot?.openingRange ?? liveOpeningRange;
-    if (orData && orData.high > 0 && orData.low > 0) {
-      result.openingRangeHigh = orData.high;
-      result.openingRangeLow = orData.low;
-      const rangePts = orData.high - orData.low;
-      const rangePct = (rangePts / spot) * 100;
-      const medHL = result.medianHlPct ?? 1;
-      const consumed = medHL > 0 ? rangePct / medHL : 0;
-      result.openingRangePctConsumed = consumed;
-      const orClassification = classifyOpeningRange(consumed);
-      // Map traffic signal to legacy label expected by DB / API / tests
-      const signalToLabel: Record<string, string> = {
-        green: 'GREEN',
-        yellow: 'MODERATE',
-        red: 'RED',
-      };
-      result.openingRangeSignal =
-        signalToLabel[orClassification.signal] ?? 'RED';
-    }
-
-    // ── VIX term structure ───────────────────────────────────
-    result.vixTermSignal = classifyTermStructure(vix1d, vix9d, vvix, vix);
-    const termShape = classifyTermShape(vix1d, vix9d, vix);
-    if (termShape) {
-      result.vixTermShape = termShape.shape;
-      result.vixTermShapeAdvice = termShape.advice;
-    }
-
-    // ── RV/IV ratio ──────────────────────────────────────────
-    // 5-day rolling Parkinson RV (more stable than single-day estimate)
-    // Falls back to single-day when prior days data is unavailable
-    const ydayHigh = historySnapshot?.yesterday?.high ?? liveYesterdayHigh;
-    const ydayLow = historySnapshot?.yesterday?.low ?? liveYesterdayLow;
-    if (ydayHigh && ydayLow && ydayHigh > ydayLow) {
-      const rv =
-        livePriorDays && livePriorDays.length >= 2
-          ? rollingParkinsonRV(livePriorDays)
-          : parkinsonRV(ydayHigh, ydayLow);
-      // IV: prefer VIX1D, fall back to VIX × 1.15
-      const iv = vix1d ? vix1d / 100 : (vix * DEFAULTS.IV_PREMIUM_FACTOR) / 100;
-      if (iv > 0) {
-        result.rvAnnualized = Math.round(rv * 10000) / 10000;
-        result.rvIvRatio = Math.round((rv / iv) * 100) / 100;
-        if (result.rvIvRatio < SIGNALS.RVIV_RICH_BELOW) {
-          result.rvIvLabel = 'IV Rich';
-        } else if (result.rvIvRatio > SIGNALS.RVIV_CHEAP_ABOVE) {
-          result.rvIvLabel = 'IV Cheap';
-        } else {
-          result.rvIvLabel = 'Fair Value';
-        }
-      }
-    }
-
-    // ── Data note ────────────────────────────────────────────
-    result.dataNote = buildDataNote(
-      vix1d,
-      vix,
-      result.openingRangeAvailable,
-      !!historySnapshot,
-    );
-
-    return result;
-  }, [
+  // ── Sub-hooks ──────────────────────────────────────────────
+  const regime = useRegimeClassification({
     vix,
     spot,
     T,
     skewPct,
     clusterMult,
     selectedDate,
+    liveYesterdayOpen,
+    liveYesterdayClose,
+    historySnapshot,
+  });
+
+  const termStructure = useTermStructure({ vix, vix1d, vix9d, vvix });
+
+  const rangeAnalysis = useRangeAnalysis({
+    vix,
+    spot,
     timeHour,
     timeMinute,
     timeAmPm,
     timezone,
-    ivMode,
-    ivModeVix,
-    liveVix1d,
-    liveVix9d,
-    liveVvix,
+    selectedDate,
+    vix1d,
+    medianHlPct: regime.medianHlPct,
     liveOpeningRange,
     liveYesterdayHigh,
     liveYesterdayLow,
-    liveYesterdayOpen,
-    liveYesterdayClose,
     livePriorDays,
     liveEvents,
     historySnapshot,
-  ]);
-}
+  });
 
-function buildDataNote(
-  vix1d: number | undefined,
-  vix: number | undefined,
-  openingRangeAvailable: boolean,
-  isBacktest: boolean,
-): string | undefined {
-  const notes: string[] = [];
-  if (!vix1d && vix)
-    notes.push(
-      'VIX1D unavailable — σ derived from VIX × 1.15. Actual per-strike IV may differ.',
-    );
-  if (!openingRangeAvailable)
-    notes.push(
-      'Entry is before 10:00 AM ET — 30-min opening range not yet complete.',
-    );
-  if (isBacktest)
-    notes.push(
-      'Backtesting: data is from historical candles, not live quotes.',
-    );
-  return notes.length > 0 ? notes.join(' | ') : undefined;
+  // ── Merge into ComputedSignals ─────────────────────────────
+  return useMemo(
+    () => ({
+      // Resolved volatility
+      vix1d,
+      vix9d,
+      vvix,
+      sigmaSource,
+
+      // ET time
+      etHour: rangeAnalysis.etHour,
+      etMinute: rangeAnalysis.etMinute,
+
+      // Regime classification
+      ...regime,
+
+      // Term structure
+      ...termStructure,
+
+      // Range analysis (opening range, RV/IV, price context, events)
+      openingRangeAvailable: rangeAnalysis.openingRangeAvailable,
+      openingRangeHigh: rangeAnalysis.openingRangeHigh,
+      openingRangeLow: rangeAnalysis.openingRangeLow,
+      openingRangePctConsumed: rangeAnalysis.openingRangePctConsumed,
+      openingRangeSignal: rangeAnalysis.openingRangeSignal,
+      rvIvRatio: rangeAnalysis.rvIvRatio,
+      rvIvLabel: rangeAnalysis.rvIvLabel,
+      rvAnnualized: rangeAnalysis.rvAnnualized,
+      spxOpen: rangeAnalysis.spxOpen,
+      spxHigh: rangeAnalysis.spxHigh,
+      spxLow: rangeAnalysis.spxLow,
+      prevClose: rangeAnalysis.prevClose,
+      overnightGap: rangeAnalysis.overnightGap,
+      isEarlyClose: rangeAnalysis.isEarlyClose,
+      isEventDay: rangeAnalysis.isEventDay,
+      eventNames: rangeAnalysis.eventNames,
+
+      // Data note
+      dataNote: buildDataNote(
+        vix1d,
+        vix,
+        rangeAnalysis.openingRangeAvailable,
+        !!historySnapshot,
+      ),
+    }),
+    [
+      vix1d,
+      vix9d,
+      vvix,
+      sigmaSource,
+      vix,
+      historySnapshot,
+      regime,
+      termStructure,
+      rangeAnalysis,
+    ],
+  );
 }

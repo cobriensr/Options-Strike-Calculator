@@ -168,7 +168,7 @@ async function fetchSymbolHistory(
     `/pricehistory?${params.toString()}`,
   );
 
-  if ('error' in result) {
+  if (!result.ok) {
     logger.error({ symbol, error: result.error }, 'History fetch failed');
     return empty;
   }

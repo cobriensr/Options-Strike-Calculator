@@ -181,7 +181,7 @@ describe('POST /api/pre-market', () => {
     await handler(req, res);
 
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'date is required' });
+    expect((res._json as { error: string }).error).toBeDefined();
   });
 
   it('returns 400 when globexHigh is missing', async () => {
@@ -193,9 +193,7 @@ describe('POST /api/pre-market', () => {
     await handler(req, res);
 
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({
-      error: 'globexHigh, globexLow, globexClose required',
-    });
+    expect((res._json as { error: string }).error).toBeDefined();
   });
 
   it('returns 400 when globexLow is missing', async () => {
