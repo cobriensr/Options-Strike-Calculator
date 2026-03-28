@@ -109,14 +109,20 @@ async function getStoredTokens(): Promise<SchwabTokens | null> {
 }
 
 async function storeTokens(tokens: SchwabTokens): Promise<void> {
-  try {
-    // TTL = refresh token lifetime + 1 day buffer
-    const ttlMs = tokens.refreshExpiresAt - Date.now() + 86_400_000;
-    const ttlSec = Math.max(Math.floor(ttlMs / 1000), 3600);
-    await redis.set(KV_KEY, tokens, { ex: ttlSec });
-  } catch (err) {
-    logger.error({ err }, 'Failed to store tokens in Redis');
+  // TTL = refresh token lifetime + 1 day buffer
+  const ttlMs = tokens.refreshExpiresAt - Date.now() + 86_400_000;
+  const ttlSec = Math.max(Math.floor(ttlMs / 1000), 3600);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await redis.set(KV_KEY, tokens, { ex: ttlSec });
+      return;
+    } catch (err) {
+      logger.error({ err, attempt }, 'storeTokens: Redis write failed');
+      if (attempt < 2)
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
   }
+  logger.error('storeTokens: all attempts exhausted, tokens NOT persisted');
 }
 
 // ============================================================
