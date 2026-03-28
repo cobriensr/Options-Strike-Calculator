@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { calcThetaCurve } from '../utils/calculator';
 
 interface ThetaDecayChartProps {
@@ -110,6 +111,7 @@ export default function ThetaDecayChart({
   strikeDistance,
   hoursRemaining,
 }: ThetaDecayChartProps) {
+  const gradientId = useId();
   const curve = calcThetaCurve(spot, sigma, strikeDistance, 'put');
   if (curve.length === 0) return null;
 
@@ -171,7 +173,7 @@ export default function ThetaDecayChart({
         >
           <defs>
             <linearGradient
-              id="theta-fill"
+              id={gradientId}
               x1="0"
               y1="0"
               x2="0"
@@ -190,7 +192,7 @@ export default function ThetaDecayChart({
             </linearGradient>
           </defs>
 
-          <path d={areaD} fill="url(#theta-fill)" />
+          <path d={areaD} fill={'url(#' + gradientId + ')'} />
 
           <polyline
             points={linePoints}
@@ -218,7 +220,7 @@ export default function ThetaDecayChart({
                 fill="#f59e0b"
               />
               <text
-                x={nowX + 6}
+                x={nowX > VIEW_W - 60 ? nowX - 55 : nowX + 6}
                 y={nowY - 4}
                 fill="#f59e0b"
                 fontSize="8"
