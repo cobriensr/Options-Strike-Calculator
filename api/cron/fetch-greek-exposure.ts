@@ -189,13 +189,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const [aggRows, expiryRows] = await Promise.all([
+    // Fetch aggregate and by-expiry in parallel; tolerate partial failures
+    const [aggFetch, expiryFetch] = await Promise.allSettled([
       fetchAggregate(apiKey),
       fetchByExpiry(apiKey),
     ]);
 
+    if (aggFetch.status === 'rejected') {
+      logger.warn(
+        { err: aggFetch.reason },
+        'fetch-greek-exposure: aggregate fetch failed',
+      );
+    }
+    if (expiryFetch.status === 'rejected') {
+      logger.warn(
+        { err: expiryFetch.reason },
+        'fetch-greek-exposure: expiry fetch failed',
+      );
+    }
+
+    const aggRows = aggFetch.status === 'fulfilled' ? aggFetch.value : null;
+    const expiryRows =
+      expiryFetch.status === 'fulfilled' ? expiryFetch.value : null;
+
     let aggStored = false;
-    if (aggRows.length > 0) {
+    if (aggRows !== null && aggRows.length > 0) {
       const latest = aggRows.at(-1)!;
       aggStored = await storeAggregate(latest);
 
@@ -212,21 +230,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
     }
 
-    const expiryResult = await storeExpiryRows(expiryRows);
+    const expiryResult =
+      expiryRows !== null
+        ? await storeExpiryRows(expiryRows)
+        : { stored: 0, skipped: 0 };
+
+    const partial =
+      aggFetch.status === 'rejected' || expiryFetch.status === 'rejected';
+    const anyStored = aggStored || expiryResult.stored > 0;
 
     logger.info(
       {
         aggregate: aggStored,
-        expiries: expiryRows.length,
+        expiries: expiryRows?.length ?? 0,
         expiryStored: expiryResult.stored,
         expirySkipped: expiryResult.skipped,
+        partial,
       },
       'fetch-greek-exposure completed',
     );
 
+    if (!anyStored && partial) {
+      return res.status(500).json({ error: 'All sources failed' });
+    }
+
     return res.status(200).json({
       aggregateStored: aggStored,
-      expiries: expiryRows.length,
+      expiries: expiryRows?.length ?? 0,
+      partial,
       ...expiryResult,
     });
   } catch (err) {

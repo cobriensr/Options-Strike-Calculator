@@ -124,30 +124,70 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Fetch both all-in and OTM Market Tide in parallel
-    const [allInRows, otmRows] = await Promise.all([
+    // Fetch both all-in and OTM Market Tide in parallel; partial failures are tolerated
+    const [allInFetch, otmFetch] = await Promise.allSettled([
       fetchMarketTide(apiKey, false),
       fetchMarketTide(apiKey, true),
     ]);
 
-    // Store the latest candle from each
-    const [allInResult, otmResult] = await Promise.all([
-      storeLatestCandle(allInRows, 'market_tide'),
-      storeLatestCandle(otmRows, 'market_tide_otm'),
+    if (allInFetch.status === 'rejected') {
+      logger.warn({ err: allInFetch.reason }, 'fetch-flow: all-in fetch failed');
+    }
+    if (otmFetch.status === 'rejected') {
+      logger.warn({ err: otmFetch.reason }, 'fetch-flow: OTM fetch failed');
+    }
+
+    // Store whichever fetches succeeded
+    const allInRows =
+      allInFetch.status === 'fulfilled' ? allInFetch.value : null;
+    const otmRows = otmFetch.status === 'fulfilled' ? otmFetch.value : null;
+
+    const [allInStore, otmStore] = await Promise.allSettled([
+      allInRows !== null
+        ? storeLatestCandle(allInRows, 'market_tide')
+        : Promise.reject(new Error('fetch skipped')),
+      otmRows !== null
+        ? storeLatestCandle(otmRows, 'market_tide_otm')
+        : Promise.reject(new Error('fetch skipped')),
     ]);
+
+    if (allInStore.status === 'rejected') {
+      logger.warn(
+        { err: allInStore.reason },
+        'fetch-flow: all-in store failed',
+      );
+    }
+    if (otmStore.status === 'rejected') {
+      logger.warn({ err: otmStore.reason }, 'fetch-flow: OTM store failed');
+    }
+
+    const allInResult =
+      allInStore.status === 'fulfilled' ? allInStore.value : null;
+    const otmResult =
+      otmStore.status === 'fulfilled' ? otmStore.value : null;
+    const anyStored = allInResult !== null || otmResult !== null;
+    const partial =
+      (allInFetch.status === 'rejected' || allInStore.status === 'rejected') ||
+      (otmFetch.status === 'rejected' || otmStore.status === 'rejected');
 
     logger.info(
       {
         allIn: allInResult,
         otm: otmResult,
-        allInRows: allInRows.length,
-        otmRows: otmRows.length,
+        allInRows: allInRows?.length ?? 0,
+        otmRows: otmRows?.length ?? 0,
+        partial,
       },
       'fetch-flow completed',
     );
 
+    if (!anyStored) {
+      return res.status(500).json({ error: 'All sources failed' });
+    }
+
     return res.status(200).json({
-      stored: true,
+      stored: anyStored,
+      partial,
       market_tide: allInResult,
       market_tide_otm: otmResult,
     });
