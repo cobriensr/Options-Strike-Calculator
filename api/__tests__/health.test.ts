@@ -158,7 +158,11 @@ describe('GET /api/health', () => {
     await handler(req, res);
 
     const json = res._json as {
-      services: Record<string, { latencyMs?: number }>;
+      services: {
+        postgres: { latencyMs?: number };
+        redis: { latencyMs?: number };
+        schwab: { latencyMs?: number };
+      };
     };
     expect(json.services.postgres.latencyMs).toBeTypeOf('number');
     expect(json.services.redis.latencyMs).toBeTypeOf('number');
@@ -189,7 +193,11 @@ describe('GET /api/health', () => {
 
     expect(res._status).toBe(503);
     const json = res._json as {
-      services: Record<string, { error?: string }>;
+      services: {
+        postgres: { error?: string };
+        redis: { error?: string };
+        schwab: { error?: string };
+      };
     };
     expect(json.services.postgres.error).toBe('Unknown error');
     expect(json.services.redis.error).toBe('Unknown error');
