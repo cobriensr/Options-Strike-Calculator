@@ -33,6 +33,7 @@ import {
   SYSTEM_PROMPT_PART1,
   SYSTEM_PROMPT_PART2,
 } from './_lib/analyze-prompts.js';
+import { getCalibrationExample } from './_lib/analyze-calibration.js';
 import { buildAnalysisContext } from './_lib/analyze-context.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
@@ -91,7 +92,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   );
 
   // Stable system prompt (cached 1h) — lessons appended outside cache boundary
-  const stableSystemText = SYSTEM_PROMPT_PART1 + '\n \n' + SYSTEM_PROMPT_PART2;
+  // Calibration example is mode-specific (entry/midday/review) so each mode
+  // gets its own cache entry. Placed between rules and output format so the
+  // model reads rules → sees what correct output looks like → sees output schema.
+  const calibration = getCalibrationExample(mode);
+  const stableSystemText =
+    SYSTEM_PROMPT_PART1 + '\n' + calibration + '\n' + SYSTEM_PROMPT_PART2;
   const analyzeStart = Date.now();
   try {
     // Stream the response — Anthropic sends headers immediately with streaming,

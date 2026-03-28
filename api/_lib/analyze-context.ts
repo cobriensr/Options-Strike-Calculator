@@ -390,6 +390,27 @@ export async function buildAnalysisContext(
   const marketTideOtmSection = marketTideOtmContext
     ? `\n${marketTideOtmContext}\n`
     : '';
+
+  // Build data unavailability manifest so the model knows what failed to fetch
+  const unavailable: string[] = [];
+  if (!spxFlowContext) unavailable.push('SPX Net Flow');
+  if (!marketTideContext) unavailable.push('Market Tide');
+  if (!spotGexContext) unavailable.push('Aggregate GEX Panel');
+  if (!greekExposureContext) unavailable.push('Greek Exposure (OI-based)');
+  if (!strikeExposureContext) unavailable.push('Per-Strike Greek Profile');
+  if (!greekFlowContext) unavailable.push('0DTE Delta Flow');
+  if (!spxCandlesContext && !context.isBacktest)
+    unavailable.push('SPX Intraday Candles');
+  if (!darkPoolContext) unavailable.push('Dark Pool Blocks');
+  if (!maxPainContext) unavailable.push('Max Pain');
+  if (!ivTermStructureContext) unavailable.push('IV Term Structure');
+  if (!overnightGapContext) unavailable.push('Overnight Gap Analysis');
+  const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
+  const unavailableSection =
+    unavailable.length > 0
+      ? `\n## ⚠️ Data Sources Unavailable (fetch failed or not applicable)\n${unavailableList}\nAdjust confidence per the missing data protocol in the system prompt.\n`
+      : '';
+
   const contextText = `
 ## Analysis Mode: ${mode === 'review' ? 'END-OF-DAY REVIEW' : mode === 'midday' ? 'MID-DAY RE-ANALYSIS' : 'PRE-TRADE ENTRY'}
 ## Current Calculator Context
@@ -426,6 +447,7 @@ export async function buildAnalysisContext(
   })()}
 - Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
+${unavailableSection}
 ${marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${marketTideContext}\n${marketTideOtmSection}` : ''}
 ${spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. These are the primary flow signal (Rule 8, 50% weight). Trust these values over screenshot estimates.\n\n${spxFlowContext}\n` : ''}
 ${spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPY. Secondary confirmation signal (Rule 8, 15% weight).\n\n${spyFlowContext}\n` : ''}
