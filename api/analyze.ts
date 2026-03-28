@@ -146,6 +146,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         { err: opusErr },
         'Opus unavailable, falling back to Sonnet 4.6',
       );
+      metrics.increment('analyze.opus_fallback');
       usedModel = 'claude-sonnet-4-6';
       data = await streamRequest('claude-sonnet-4-6', 64000, 'high');
     }

@@ -11,7 +11,7 @@ export interface UseChainDataReturn {
 
 async function fetchChain(): Promise<ChainResponse | null> {
   try {
-    const res = await fetch('/api/chain');
+    const res = await fetch('/api/chain', { signal: AbortSignal.timeout(10_000) });
     if (res.status === 401) return null; // public visitor
     if (!res.ok) return null;
     return await res.json();

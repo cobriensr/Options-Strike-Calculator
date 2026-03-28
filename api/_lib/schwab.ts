@@ -137,7 +137,7 @@ let refreshInFlight: Promise<SchwabTokens> | null = null;
  * the fresh token from Redis.
  */
 const LOCK_KEY = 'schwab:refresh_lock';
-const LOCK_TTL = 10; // seconds
+const LOCK_TTL = 30; // seconds — must be >= SCHWAB_API timeout
 
 async function acquireLock(): Promise<boolean> {
   try {
@@ -157,7 +157,7 @@ async function releaseLock(): Promise<void> {
   }
 }
 
-async function waitForLockRelease(maxWaitMs = 8000): Promise<void> {
+async function waitForLockRelease(maxWaitMs = 30_000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     await new Promise((r) => setTimeout(r, 300));

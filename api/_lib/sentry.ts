@@ -103,6 +103,11 @@ function cacheResult(route: string, hit: boolean) {
   });
 }
 
+/** Increment a named counter by 1. */
+function increment(name: string) {
+  Sentry.metrics.count(name, 1);
+}
+
 export const metrics = {
   request,
   schwabCall,
@@ -111,6 +116,7 @@ export const metrics = {
   analyzeCall,
   dbSave,
   cacheResult,
+  increment,
 };
 
 export { Sentry }; // NOSONAR: can't use re-export, Sentry.init() must run first
