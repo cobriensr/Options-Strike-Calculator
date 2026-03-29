@@ -287,20 +287,28 @@ function StrikeMap({
         <g key={`hedge-${h.leg.strike}-${h.leg.type}`}>
           <circle
             cx={toX(h.leg.strike)}
-            cy={axisY - 4}
-            r="5"
+            cy={axisY - 6}
+            r="10"
             fill="var(--color-accent)"
-            opacity="0.6"
+            opacity="0.25"
+          />
+          <circle
+            cx={toX(h.leg.strike)}
+            cy={axisY - 6}
+            r="6"
+            fill="var(--color-accent)"
+            opacity="0.7"
           />
           <text
             x={toX(h.leg.strike)}
-            y={axisY - 12}
+            y={axisY - 20}
             textAnchor="middle"
             fill="var(--color-accent)"
             fontSize="11"
+            fontWeight="700"
             fontFamily="var(--font-mono)"
           >
-            H
+            H {fmtStrike(h.leg.strike)}
           </text>
         </g>
       ))}
@@ -310,20 +318,27 @@ function StrikeMap({
         <g key={`naked-${n.leg.strike}-${n.leg.type}`}>
           <circle
             cx={toX(n.leg.strike)}
-            cy={axisY - 4}
-            r="5"
+            cy={axisY - 6}
+            r="10"
+            fill="var(--color-danger)"
+            opacity="0.25"
+          />
+          <circle
+            cx={toX(n.leg.strike)}
+            cy={axisY - 6}
+            r="6"
             fill="var(--color-danger)"
           />
           <text
             x={toX(n.leg.strike)}
-            y={axisY - 12}
+            y={axisY - 20}
             textAnchor="middle"
             fill="var(--color-danger)"
             fontSize="11"
             fontWeight="700"
             fontFamily="var(--font-mono)"
           >
-            !
+            ! {fmtStrike(n.leg.strike)}
           </text>
         </g>
       ))}
@@ -610,11 +625,11 @@ function CreditTimeChart({
   const timeRange = maxMin - minMin || 60;
 
   const W = 560;
-  const H = 130;
-  const PAD_L = 8;
-  const PAD_R = 8;
-  const PAD_T = 12;
-  const PAD_B = 20;
+  const H = 240;
+  const PAD_L = 12;
+  const PAD_R = 12;
+  const PAD_T = 20;
+  const PAD_B = 28;
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
 
