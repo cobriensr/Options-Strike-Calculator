@@ -441,7 +441,7 @@ function RiskWaterfall({
   const gap = 8;
   const labelW = 180;
   const barAreaW = W - labelW - 80;
-  const totalH = segments.length * (barH + gap) + 10;
+  const totalH = segments.length * (barH + gap) + 4;
 
   const toW = (v: number) =>
     (Math.abs(v) / maxVal) * barAreaW;
@@ -575,8 +575,8 @@ function CreditTimeChart({
   const credits = entries.map((e) => e.credit);
   const minCredit = Math.min(...credits);
   const maxCredit = Math.max(...credits);
-  // Add 40% padding above and below the credit range
-  const creditPad = (maxCredit - minCredit) * 0.4 || 0.2;
+  // Tight padding — just enough to not clip bubble edges
+  const creditPad = (maxCredit - minCredit) * 0.12 || 0.05;
   const creditLo = Math.max(0, minCredit - creditPad);
   const creditHi = maxCredit + creditPad;
   const creditRange = creditHi - creditLo;
