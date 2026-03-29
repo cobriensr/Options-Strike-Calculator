@@ -39,8 +39,8 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 
 const ChartAnalysis = lazy(() => import('./components/ChartAnalysis'));
 const RiskCalculator = lazy(() => import('./components/RiskCalculator'));
-const PaperDashboard = lazy(
-  () => import('./components/performance/PaperDashboard'),
+const PositionMonitor = lazy(
+  () => import('./components/position-monitor/PositionMonitor'),
 );
 
 // ============================================================
@@ -643,7 +643,7 @@ export default function StrikeCalculator() {
                   </div>
                 }
               >
-                <PaperDashboard
+                <PositionMonitor
                   spotPrice={results?.spot ?? spxVal ?? 0}
                 />
               </Suspense>

@@ -12,7 +12,7 @@ import {
   parseStatement,
   parseTosDate,
   parseTrdDescription,
-} from '../components/performance/statement-parser';
+} from '../components/position-monitor/statement-parser';
 import type {
   AccountSummary,
   CashEntry,
@@ -24,7 +24,7 @@ import type {
   OrderEntry,
   PnLSummary,
   Spread,
-} from '../components/performance/types';
+} from '../components/position-monitor/types';
 
 // ── Helpers ──────────────────────────────────────────────────
 

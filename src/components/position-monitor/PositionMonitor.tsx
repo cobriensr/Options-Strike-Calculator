@@ -10,7 +10,7 @@ import PositionVisuals from './PositionVisuals';
 import TradeLog from './TradeLog';
 import type { DailyStatement } from './types';
 
-interface PaperDashboardProps {
+interface PositionMonitorProps {
   spotPrice: number;
 }
 
@@ -29,9 +29,9 @@ function timeToT(hour: number, minute: number): number | null {
 
 // ── Component ───────────────────────────────────────────
 
-export default function PaperDashboard({
+export default function PositionMonitor({
   spotPrice,
-}: PaperDashboardProps) {
+}: PositionMonitorProps) {
   const [rawStatement, setRawStatement] =
     useState<DailyStatement | null>(null);
   const [collapsed, setCollapsed] = useState(true);
