@@ -716,12 +716,12 @@ async function buildFeaturesForDate(
   // Realized volatility from log returns of settlement prices.
   // Query includes settlement so we can compute ln(S[i] / S[i-1]).
   // prevDayRows is ORDER BY date DESC, so index 0 is the most recent.
-  const settlements = await sql\`
+  const settlements = await sql`
     SELECT settlement FROM outcomes
     WHERE date <= ${dateStr} AND settlement IS NOT NULL
     ORDER BY date DESC
     LIMIT 11
-  \`;
+  `;
 
   const prices = settlements.map((r) => Number(r.settlement));
 
