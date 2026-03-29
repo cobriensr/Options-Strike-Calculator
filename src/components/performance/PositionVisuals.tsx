@@ -174,9 +174,9 @@ function StrikeMap({
   }
 
   // Stack bars vertically
-  const barH = 14;
-  const gap = 3;
-  const barsStartY = 30;
+  const barH = 22;
+  const gap = 5;
+  const barsStartY = 36;
   const axisY = barsStartY + bars.length * (barH + gap) + 10;
   const totalH = axisY + 20;
 
@@ -202,7 +202,7 @@ function StrikeMap({
         y={6}
         textAnchor="middle"
         fill="var(--color-accent)"
-        fontSize="9"
+        fontSize="14"
         fontWeight="700"
         fontFamily="var(--font-mono)"
       >
@@ -258,7 +258,7 @@ function StrikeMap({
               y={y + barH / 2 + 3.5}
               textAnchor="middle"
               fill="var(--color-primary)"
-              fontSize="8"
+              fontSize="12"
               fontWeight="600"
               fontFamily="var(--font-mono)"
             >
@@ -297,7 +297,7 @@ function StrikeMap({
             y={axisY - 12}
             textAnchor="middle"
             fill="var(--color-accent)"
-            fontSize="7"
+            fontSize="11"
             fontFamily="var(--font-mono)"
           >
             H
@@ -319,7 +319,7 @@ function StrikeMap({
             y={axisY - 12}
             textAnchor="middle"
             fill="var(--color-danger)"
-            fontSize="7"
+            fontSize="11"
             fontWeight="700"
             fontFamily="var(--font-mono)"
           >
@@ -342,7 +342,7 @@ function StrikeMap({
         x={PAD_L}
         y={axisY + 14}
         fill="var(--color-muted)"
-        fontSize="8"
+        fontSize="12"
         fontFamily="var(--font-mono)"
       >
         {fmtStrike(Math.round(lo))}
@@ -352,7 +352,7 @@ function StrikeMap({
         y={axisY + 14}
         textAnchor="end"
         fill="var(--color-muted)"
-        fontSize="8"
+        fontSize="12"
         fontFamily="var(--font-mono)"
       >
         {fmtStrike(Math.round(hi))}
@@ -422,9 +422,9 @@ function RiskWaterfall({
 
   const maxVal = portfolioRisk.totalMaxLoss || 1;
   const W = 560;
-  const barH = 20;
-  const gap = 6;
-  const labelW = 140;
+  const barH = 26;
+  const gap = 8;
+  const labelW = 160;
   const barAreaW = W - labelW - 60;
   const totalH = segments.length * (barH + gap) + barH + gap + 10;
 
@@ -450,7 +450,7 @@ function RiskWaterfall({
               y={y + barH / 2 + 4}
               textAnchor="end"
               fill="var(--color-secondary)"
-              fontSize="9"
+              fontSize="12"
               fontFamily="var(--font-mono)"
             >
               {seg.label}
@@ -485,7 +485,7 @@ function RiskWaterfall({
                   ? 'var(--color-accent)'
                   : 'var(--color-secondary)'
               }
-              fontSize="9"
+              fontSize="12"
               fontWeight="600"
               fontFamily="var(--font-mono)"
             >
@@ -516,7 +516,7 @@ function RiskWaterfall({
               y={y + barH / 2 + 4}
               textAnchor="end"
               fill="var(--color-primary)"
-              fontSize="9"
+              fontSize="12"
               fontWeight="700"
               fontFamily="var(--font-mono)"
             >
@@ -535,7 +535,7 @@ function RiskWaterfall({
               x={labelW + w + 6}
               y={y + barH / 2 + 4}
               fill="var(--color-danger)"
-              fontSize="10"
+              fontSize="13"
               fontWeight="700"
               fontFamily="var(--font-mono)"
             >
@@ -647,7 +647,7 @@ function CreditTimeChart({
 
       {/* Bubbles — size by contracts */}
       {entries.map((e, i) => {
-        const r = 4 + (e.contracts / 20) * 8;
+        const r = 6 + (e.contracts / 20) * 12;
         return (
           <g key={`${e.time}-${i}`}>
             <circle
@@ -665,7 +665,7 @@ function CreditTimeChart({
               y={toY(e.credit) + 3}
               textAnchor="middle"
               fill="var(--color-primary)"
-              fontSize="7"
+              fontSize="11"
               fontWeight="600"
               fontFamily="var(--font-mono)"
             >
@@ -680,7 +680,7 @@ function CreditTimeChart({
         x={PAD_L}
         y={H - 3}
         fill="var(--color-muted)"
-        fontSize="8"
+        fontSize="12"
         fontFamily="var(--font-mono)"
       >
         {fmtTime(entries[0]?.time ?? '')}
@@ -690,7 +690,7 @@ function CreditTimeChart({
         y={H - 3}
         textAnchor="end"
         fill="var(--color-muted)"
-        fontSize="8"
+        fontSize="12"
         fontFamily="var(--font-mono)"
       >
         {fmtTime(entries.at(-1)?.time ?? '')}
@@ -700,7 +700,7 @@ function CreditTimeChart({
         x={PAD_L}
         y={PAD_T - 3}
         fill="var(--color-muted)"
-        fontSize="7"
+        fontSize="11"
         fontFamily="var(--font-mono)"
       >
         Credit $
@@ -763,11 +763,11 @@ function ProfitGauges({
   }
 
   // Arc gauge constants
-  const size = 72;
+  const size = 96;
   const cx = size / 2;
-  const cy = size / 2 + 4;
-  const r = 28;
-  const strokeW = 6;
+  const cy = size / 2 + 6;
+  const r = 36;
+  const strokeW = 8;
   // Arc from -180 to 0 (bottom half = half circle)
   const startAngle = Math.PI;
   const endAngle = 0;
@@ -834,7 +834,7 @@ function ProfitGauges({
                 y={cy - 4}
                 textAnchor="middle"
                 fill={pctColor}
-                fontSize="13"
+                fontSize="17"
                 fontWeight="700"
                 fontFamily="var(--font-mono)"
               >
@@ -844,11 +844,11 @@ function ProfitGauges({
               </text>
             </svg>
             <div
-              className="text-secondary mt-0.5 text-center font-mono text-[9px] font-semibold leading-tight"
+              className="text-secondary mt-1 text-center font-mono text-xs font-semibold leading-tight"
             >
               {g.label}
             </div>
-            <div className="text-muted font-mono text-[8px]">
+            <div className="text-muted font-mono text-[10px]">
               {fmtK(g.credit)}
             </div>
           </div>
