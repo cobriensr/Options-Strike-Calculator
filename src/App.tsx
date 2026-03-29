@@ -40,7 +40,7 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 const ChartAnalysis = lazy(() => import('./components/ChartAnalysis'));
 const RiskCalculator = lazy(() => import('./components/RiskCalculator'));
 const PositionMonitor = lazy(
-  () => import('./components/position-monitor/PositionMonitor'),
+  () => import('./components/PositionMonitor'),
 );
 
 // ============================================================
