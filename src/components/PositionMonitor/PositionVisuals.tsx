@@ -121,7 +121,7 @@ function StrikeMap({
   const hi = maxStrike + pad;
   const range = hi - lo;
 
-  const W = 560;
+  const W = 800;
   const PAD_L = 4;
   const PAD_R = 4;
   const plotW = W - PAD_L - PAD_R;
@@ -436,11 +436,11 @@ function RiskWaterfall({
   }
 
   const maxVal = portfolioRisk.totalMaxLoss || 1;
-  const W = 560;
+  const W = 800;
   const barH = 26;
   const gap = 8;
-  const labelW = 160;
-  const barAreaW = W - labelW - 60;
+  const labelW = 180;
+  const barAreaW = W - labelW - 80;
   const totalH = segments.length * (barH + gap) + barH + gap + 10;
 
   const toW = (v: number) =>
@@ -535,7 +535,7 @@ function RiskWaterfall({
               fontWeight="700"
               fontFamily="var(--font-mono)"
             >
-              NET MAX LOSS
+              MAX LOSS (greater side)
             </text>
             <rect
               x={labelW}
@@ -624,19 +624,19 @@ function CreditTimeChart({
   const credits = entries.map((e) => e.credit);
   const minCredit = Math.min(...credits);
   const maxCredit = Math.max(...credits);
-  // Add 20% padding above and below the credit range
-  const creditPad = (maxCredit - minCredit) * 0.2 || 0.1;
+  // Add 40% padding above and below the credit range
+  const creditPad = (maxCredit - minCredit) * 0.4 || 0.2;
   const creditLo = Math.max(0, minCredit - creditPad);
   const creditHi = maxCredit + creditPad;
   const creditRange = creditHi - creditLo;
   const timeRange = maxMin - minMin || 60;
 
-  const W = 560;
-  const H = 260;
-  const PAD_L = 50;
-  const PAD_R = 12;
-  const PAD_T = 16;
-  const PAD_B = 28;
+  const W = 800;
+  const H = 360;
+  const PAD_L = 55;
+  const PAD_R = 16;
+  const PAD_T = 20;
+  const PAD_B = 32;
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
 
@@ -824,7 +824,7 @@ function ProfitGauges({
   };
 
   return (
-    <div className="flex flex-wrap items-start justify-center gap-3">
+    <div className="grid grid-cols-5 gap-3">
       {gauges.map((g) => {
         const pct = g.pct != null ? Math.max(0, Math.min(100, g.pct)) : null;
         const filled =
