@@ -28,7 +28,9 @@ import type {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function makeLeg(overrides: Partial<OpenLeg> & Pick<OpenLeg, 'strike' | 'type' | 'qty'>): OpenLeg {
+function makeLeg(
+  overrides: Partial<OpenLeg> & Pick<OpenLeg, 'strike' | 'type' | 'qty'>,
+): OpenLeg {
   return {
     symbol: 'SPX',
     optionCode: `SPXW260327${overrides.type === 'PUT' ? 'P' : 'C'}${overrides.strike}`,
@@ -76,7 +78,12 @@ function makeIC(overrides: Partial<IronCondor>): IronCondor {
   });
   const callSpread = makeSpread({
     spreadType: 'CALL_CREDIT_SPREAD',
-    shortLeg: makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
+    shortLeg: makeLeg({
+      strike: 6600,
+      type: 'CALL',
+      qty: -10,
+      tradePrice: 2.0,
+    }),
     longLeg: makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
     wingWidth: 20,
     creditReceived: 1000,
@@ -283,10 +290,18 @@ describe('parseTosDate', () => {
 
   it('parses all months', () => {
     const months: Array<[string, string]> = [
-      ['JAN', '01'], ['FEB', '02'], ['MAR', '03'],
-      ['APR', '04'], ['MAY', '05'], ['JUN', '06'],
-      ['JUL', '07'], ['AUG', '08'], ['SEP', '09'],
-      ['OCT', '10'], ['NOV', '11'], ['DEC', '12'],
+      ['JAN', '01'],
+      ['FEB', '02'],
+      ['MAR', '03'],
+      ['APR', '04'],
+      ['MAY', '05'],
+      ['JUN', '06'],
+      ['JUL', '07'],
+      ['AUG', '08'],
+      ['SEP', '09'],
+      ['OCT', '10'],
+      ['NOV', '11'],
+      ['DEC', '12'],
     ];
     for (const [abbr, mm] of months) {
       expect(parseTosDate(`15 ${abbr} 26`)).toBe(`2026-${mm}-15`);
@@ -517,8 +532,20 @@ describe('groupIntoSpreads', () => {
 
   it('does not pair legs from different expirations', () => {
     const legs: OpenLeg[] = [
-      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5, exp: '2026-03-27' }),
-      makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0, exp: '2026-03-28' }),
+      makeLeg({
+        strike: 6400,
+        type: 'PUT',
+        qty: -10,
+        tradePrice: 3.5,
+        exp: '2026-03-27',
+      }),
+      makeLeg({
+        strike: 6380,
+        type: 'PUT',
+        qty: 10,
+        tradePrice: 2.0,
+        exp: '2026-03-28',
+      }),
     ];
 
     const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
@@ -607,7 +634,13 @@ describe('computePortfolioRisk', () => {
     });
 
     const risk = computePortfolioRisk(
-      [pcs], [], [], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+      [pcs],
+      [],
+      [],
+      [],
+      DEFAULT_ACCOUNT,
+      EMPTY_PNL,
+      6500,
     );
 
     expect(risk.putSideRisk).toBe(18500);
@@ -619,7 +652,13 @@ describe('computePortfolioRisk', () => {
     const ic = makeIC({ maxLoss: 17500 });
 
     const risk = computePortfolioRisk(
-      [], [ic], [], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+      [],
+      [ic],
+      [],
+      [],
+      DEFAULT_ACCOUNT,
+      EMPTY_PNL,
+      6500,
     );
 
     expect(risk.callSideRisk).toBe(17500);
@@ -639,7 +678,13 @@ describe('computePortfolioRisk', () => {
     });
 
     const risk = computePortfolioRisk(
-      [pcs], [], [putHedge], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+      [pcs],
+      [],
+      [putHedge],
+      [],
+      DEFAULT_ACCOUNT,
+      EMPTY_PNL,
+      6500,
     );
 
     expect(risk.putSideRisk).toBe(18500);
@@ -661,7 +706,13 @@ describe('computePortfolioRisk', () => {
     });
 
     const risk = computePortfolioRisk(
-      [pcs, ccs], [], [], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+      [pcs, ccs],
+      [],
+      [],
+      [],
+      DEFAULT_ACCOUNT,
+      EMPTY_PNL,
+      6500,
     );
 
     expect(risk.putSideRisk).toBe(18500);
@@ -676,7 +727,13 @@ describe('computePortfolioRisk', () => {
     });
 
     const risk = computePortfolioRisk(
-      [pcs], [], [], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+      [pcs],
+      [],
+      [],
+      [],
+      DEFAULT_ACCOUNT,
+      EMPTY_PNL,
+      6500,
     );
 
     expect(risk.canAbsorbMaxLoss).toBe(true);
@@ -689,7 +746,10 @@ describe('computePortfolioRisk', () => {
     });
 
     const risk = computePortfolioRisk(
-      [pcs], [], [], [],
+      [pcs],
+      [],
+      [],
+      [],
       { ...DEFAULT_ACCOUNT, optionBuyingPower: 50000 },
       EMPTY_PNL,
       6500,
@@ -700,11 +760,21 @@ describe('computePortfolioRisk', () => {
 
   it('counts naked positions', () => {
     const naked: NakedPosition[] = [
-      { leg: makeLeg({ strike: 6400, type: 'PUT', qty: -10 }), contracts: 10, type: 'PUT' },
+      {
+        leg: makeLeg({ strike: 6400, type: 'PUT', qty: -10 }),
+        contracts: 10,
+        type: 'PUT',
+      },
     ];
 
     const risk = computePortfolioRisk(
-      [], [], [], naked, DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+      [],
+      [],
+      [],
+      naked,
+      DEFAULT_ACCOUNT,
+      EMPTY_PNL,
+      6500,
     );
 
     expect(risk.nakedCount).toBe(1);
@@ -722,8 +792,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 09:35:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
-          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 2.0,
+            creditDebit: null,
+          },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
         ],
         netPrice: 1.0,
         orderType: 'LMT',
@@ -732,8 +822,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 14:00:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 0.1, creditDebit: null },
-          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 0.05, creditDebit: 'DEBIT' },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 0.1,
+            creditDebit: null,
+          },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 0.05,
+            creditDebit: 'DEBIT',
+          },
         ],
         netPrice: 0.05,
         orderType: 'LMT',
@@ -760,8 +870,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 09:35:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
-          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 2.0,
+            creditDebit: null,
+          },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
         ],
         netPrice: 1.0,
         orderType: 'LMT',
@@ -770,8 +900,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 15:00:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 0, creditDebit: null },
-          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 0, creditDebit: 'DEBIT' },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 0,
+            creditDebit: null,
+          },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 0,
+            creditDebit: 'DEBIT',
+          },
         ],
         netPrice: 0,
         orderType: 'LMT',
@@ -789,8 +939,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 09:35:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
-          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 2.0,
+            creditDebit: null,
+          },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
         ],
         netPrice: 1.0,
         orderType: 'LMT',
@@ -799,8 +969,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 14:00:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 0.3, creditDebit: null },
-          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 0.1, creditDebit: 'DEBIT' },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 0.3,
+            creditDebit: null,
+          },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 0.1,
+            creditDebit: 'DEBIT',
+          },
         ],
         netPrice: 0.2,
         orderType: 'LMT',
@@ -821,8 +1011,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 09:35:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
-          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 2.0,
+            creditDebit: null,
+          },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
         ],
         netPrice: 1.0,
         orderType: 'LMT',
@@ -831,8 +1041,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 14:00:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 5.0, creditDebit: null },
-          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'DEBIT' },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 5.0,
+            creditDebit: null,
+          },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'DEBIT',
+          },
         ],
         netPrice: 4.0,
         orderType: 'LMT',
@@ -852,8 +1082,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 09:35:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
-          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 2.0,
+            creditDebit: null,
+          },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
         ],
         netPrice: 1.0,
         orderType: 'LMT',
@@ -862,8 +1112,28 @@ describe('matchClosedSpreads', () => {
         execTime: '3/27/26 14:00:00',
         spread: 'VERTICAL',
         legs: [
-          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 1.01, creditDebit: null },
-          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 0.02, creditDebit: 'DEBIT' },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 1.01,
+            creditDebit: null,
+          },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6620,
+            type: 'CALL',
+            price: 0.02,
+            creditDebit: 'DEBIT',
+          },
         ],
         netPrice: 0.99,
         orderType: 'LMT',
@@ -888,22 +1158,66 @@ describe('computeExecutionQuality', () => {
   it('counts rejected and filled orders', () => {
     const orders: OrderEntry[] = [
       {
-        notes: '', timePlaced: '3/27/26 09:30:00', spread: 'VERTICAL',
+        notes: '',
+        timePlaced: '3/27/26 09:30:00',
+        spread: 'VERTICAL',
         legs: [
-          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6400, type: 'PUT' },
-          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6380, type: 'PUT' },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6400,
+            type: 'PUT',
+          },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6380,
+            type: 'PUT',
+          },
         ],
-        price: 1.5, orderType: 'LMT', tif: 'DAY', status: 'FILLED',
-        statusDetail: '', isReplacement: false,
+        price: 1.5,
+        orderType: 'LMT',
+        tif: 'DAY',
+        status: 'FILLED',
+        statusDetail: '',
+        isReplacement: false,
       },
       {
-        notes: '', timePlaced: '3/27/26 09:28:00', spread: 'VERTICAL',
+        notes: '',
+        timePlaced: '3/27/26 09:28:00',
+        spread: 'VERTICAL',
         legs: [
-          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6350, type: 'PUT' },
-          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6330, type: 'PUT' },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6350,
+            type: 'PUT',
+          },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6330,
+            type: 'PUT',
+          },
         ],
-        price: 1.0, orderType: 'LMT', tif: 'DAY', status: 'REJECTED',
-        statusDetail: 'Buying power too low', isReplacement: false,
+        price: 1.0,
+        orderType: 'LMT',
+        tif: 'DAY',
+        status: 'REJECTED',
+        statusDetail: 'Buying power too low',
+        isReplacement: false,
       },
     ];
 
@@ -919,18 +1233,42 @@ describe('computeExecutionQuality', () => {
   it('computes trade timing', () => {
     const trades: ExecutedTrade[] = [
       {
-        execTime: '3/27/26 09:30:00', spread: 'VERTICAL',
+        execTime: '3/27/26 09:30:00',
+        spread: 'VERTICAL',
         legs: [
-          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6400, type: 'PUT', price: 3.5, creditDebit: null },
+          {
+            side: 'SELL',
+            qty: 10,
+            posEffect: 'TO OPEN',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6400,
+            type: 'PUT',
+            price: 3.5,
+            creditDebit: null,
+          },
         ],
-        netPrice: 1.5, orderType: 'LMT',
+        netPrice: 1.5,
+        orderType: 'LMT',
       },
       {
-        execTime: '3/27/26 14:00:00', spread: 'VERTICAL',
+        execTime: '3/27/26 14:00:00',
+        spread: 'VERTICAL',
         legs: [
-          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 0.1, creditDebit: null },
+          {
+            side: 'BUY',
+            qty: 10,
+            posEffect: 'TO CLOSE',
+            symbol: 'SPX',
+            exp: '2026-03-27',
+            strike: 6600,
+            type: 'CALL',
+            price: 0.1,
+            creditDebit: null,
+          },
         ],
-        netPrice: 0.05, orderType: 'LMT',
+        netPrice: 0.05,
+        orderType: 'LMT',
       },
     ];
 
@@ -951,14 +1289,24 @@ describe('generateWarnings', () => {
     const sections = new Map([
       ['Cash Balance', { headerIndex: 0, dataStart: 1, dataEnd: 5 }],
       ['Account Order History', { headerIndex: 6, dataStart: 7, dataEnd: 10 }],
-      ['Account Trade History', { headerIndex: 11, dataStart: 12, dataEnd: 15 }],
+      [
+        'Account Trade History',
+        { headerIndex: 11, dataStart: 12, dataEnd: 15 },
+      ],
       ['Options', { headerIndex: 16, dataStart: 17, dataEnd: 20 }],
       ['Profits and Losses', { headerIndex: 21, dataStart: 22, dataEnd: 25 }],
       ['Account Summary', { headerIndex: 26, dataStart: 27, dataEnd: 30 }],
     ]);
 
     const warnings = generateWarnings(
-      [], [], true, EMPTY_PNL, [], sections, [], [],
+      [],
+      [],
+      true,
+      EMPTY_PNL,
+      [],
+      sections,
+      [],
+      [],
     );
 
     expect(warnings.some((w) => w.code === 'PAPER_TRADING')).toBe(true);
@@ -968,7 +1316,10 @@ describe('generateWarnings', () => {
     const sections = new Map([
       ['Cash Balance', { headerIndex: 0, dataStart: 1, dataEnd: 5 }],
       ['Account Order History', { headerIndex: 6, dataStart: 7, dataEnd: 10 }],
-      ['Account Trade History', { headerIndex: 11, dataStart: 12, dataEnd: 15 }],
+      [
+        'Account Trade History',
+        { headerIndex: 11, dataStart: 12, dataEnd: 15 },
+      ],
       ['Options', { headerIndex: 16, dataStart: 17, dataEnd: 20 }],
       ['Profits and Losses', { headerIndex: 21, dataStart: 22, dataEnd: 25 }],
       ['Account Summary', { headerIndex: 26, dataStart: 27, dataEnd: 30 }],
@@ -978,7 +1329,14 @@ describe('generateWarnings', () => {
     ];
 
     const warnings = generateWarnings(
-      [], openLegs, false, EMPTY_PNL, [], sections, [], [],
+      [],
+      openLegs,
+      false,
+      EMPTY_PNL,
+      [],
+      sections,
+      [],
+      [],
     );
 
     expect(warnings.some((w) => w.code === 'MISSING_MARK')).toBe(true);
@@ -995,14 +1353,24 @@ describe('generateWarnings', () => {
     const sections = new Map([
       ['Cash Balance', { headerIndex: 0, dataStart: 1, dataEnd: 5 }],
       ['Account Order History', { headerIndex: 6, dataStart: 7, dataEnd: 10 }],
-      ['Account Trade History', { headerIndex: 11, dataStart: 12, dataEnd: 15 }],
+      [
+        'Account Trade History',
+        { headerIndex: 11, dataStart: 12, dataEnd: 15 },
+      ],
       ['Options', { headerIndex: 16, dataStart: 17, dataEnd: 20 }],
       ['Profits and Losses', { headerIndex: 21, dataStart: 22, dataEnd: 25 }],
       ['Account Summary', { headerIndex: 26, dataStart: 27, dataEnd: 30 }],
     ]);
 
     const warnings = generateWarnings(
-      [], [], true, EMPTY_PNL, naked, sections, [], [],
+      [],
+      [],
+      true,
+      EMPTY_PNL,
+      naked,
+      sections,
+      [],
+      [],
     );
 
     expect(warnings.some((w) => w.code === 'UNMATCHED_SHORT')).toBe(true);
@@ -1014,7 +1382,14 @@ describe('generateWarnings', () => {
     ]);
 
     const warnings = generateWarnings(
-      [], [], true, EMPTY_PNL, [], sections, [], [],
+      [],
+      [],
+      true,
+      EMPTY_PNL,
+      [],
+      sections,
+      [],
+      [],
     );
 
     expect(warnings.filter((w) => w.code === 'MISSING_SECTION').length).toBe(5);
@@ -1041,9 +1416,7 @@ describe('parseStatement (integration)', () => {
 
     // Orders: 3 filled + 1 rejected
     expect(result.orders).toHaveLength(4);
-    const rejectedOrders = result.orders.filter(
-      (o) => o.status === 'REJECTED',
-    );
+    const rejectedOrders = result.orders.filter((o) => o.status === 'REJECTED');
     expect(rejectedOrders).toHaveLength(1);
 
     // Trades: 3 executed trades

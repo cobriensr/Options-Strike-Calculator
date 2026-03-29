@@ -111,7 +111,7 @@ ${JSON.stringify({
     },
   },
   observations: [
-    'VIX1D at 14.66 is 42% below VIX 25.28 — extreme intraday term structure inversion. Per validated March 24 lesson and Rule 4 Override, this overrides stop zone restrictions for premium selling. VIX1D implies ~29 pt expected move vs the ~58 pt straddle cone, meaning the cone is roughly 2x wider than today\'s likely realized range.',
+    "VIX1D at 14.66 is 42% below VIX 25.28 — extreme intraday term structure inversion. Per validated March 24 lesson and Rule 4 Override, this overrides stop zone restrictions for premium selling. VIX1D implies ~29 pt expected move vs the ~58 pt straddle cone, meaning the cone is roughly 2x wider than today's likely realized range.",
     'All three primary flow signals are unanimously bullish with widening divergence: SPX NCP +$102.5M (rising), Market Tide NCP +$123M (rising), SPY NCP +$6.3M (rising from negative). Per Lesson 64, triple unanimity from the first hour that strengthens warrants HIGH confidence and hold-to-expiration candidacy.',
     'The +3000 positive gamma wall at 6650-6660 is the dominant structural feature — approximately 3x larger than surrounding gamma. In a bullish flow environment, this acts as an afternoon magnet pulling price upward.',
     'RV/IV at 0.70 confirms an IV-rich environment — the market is pricing more movement than is occurring, which means theta decay heavily favors premium sellers. Combined with VIX1D extreme inversion, this is an ideal premium-selling setup.',
@@ -397,7 +397,7 @@ ${JSON.stringify({
     estimatedCost: 'N/A',
   },
   periscopeNotes:
-    'The Periscope gamma profile is dominated by the massive +3500-4000 positive gamma wall at 6605 (purple bar) — this is the session\'s structural anchor and sits just 9 pts above current price (~6596). ABOVE PRICE: Negative gamma cluster at 6615-6640 creates acceleration potential for upside moves toward the positive gamma at 6650-6660. BELOW PRICE: Small negative gamma at 6580-6590, orange bar at 6565. Positive gamma pockets at 6550 and 6520 provide support. All PCS short puts (6535-6550) are in zero-gamma territory — completely unthreatened.',
+    "The Periscope gamma profile is dominated by the massive +3500-4000 positive gamma wall at 6605 (purple bar) — this is the session's structural anchor and sits just 9 pts above current price (~6596). ABOVE PRICE: Negative gamma cluster at 6615-6640 creates acceleration potential for upside moves toward the positive gamma at 6650-6660. BELOW PRICE: Small negative gamma at 6580-6590, orange bar at 6565. Positive gamma pockets at 6550 and 6520 provide support. All PCS short puts (6535-6550) are in zero-gamma territory — completely unthreatened.",
   structureRationale:
     'PUT CREDIT SPREAD remains the correct structure, consistent with the entry analysis. The primary signal (SPX Net Flow, 50% weight) has actually STRENGTHENED since entry: NPP plunged from -$15.5M to -$114.5M. Market Tide is still bullish but the convergence is a monitoring concern, not yet a reversal. SPY confirms. QQQ contradicts (10% weight). VIX1D extreme inversion remains the strongest macro signal for premium selling.',
   review: null,
@@ -508,8 +508,8 @@ ${JSON.stringify({
   },
   observations: [
     'VIX1D EXTREME INVERSION VALIDATED: VIX1D at 19.4 was 23.5% below VIX 25.35. The actual session range was ~25 pts (6585-6610), consuming only 28% of the 91-pt straddle cone. RV/IV at 0.53 confirmed IV-rich conditions. This is now the 4th validated session.',
-    'SPX NET FLOW WAS THE DOMINANT SIGNAL: The +$293M NCP/NPP spread at 2:55 PM was the session\'s strongest directional indicator. This flow never reversed or converged all day, making this a textbook hold-to-settlement PCS day.',
-    'PERISCOPE CHARM OVERRIDE CORRECTLY APPLIED: Naive charm was ALL-NEGATIVE, predicting a trending day. Periscope Charm showed +100M at 6605 and +70-80M at 6545 — real MM charm anchors that held as the session\'s ceiling and floor. The day was range-bound, not trending. Validated for the 2nd time.',
+    "SPX NET FLOW WAS THE DOMINANT SIGNAL: The +$293M NCP/NPP spread at 2:55 PM was the session's strongest directional indicator. This flow never reversed or converged all day, making this a textbook hold-to-settlement PCS day.",
+    "PERISCOPE CHARM OVERRIDE CORRECTLY APPLIED: Naive charm was ALL-NEGATIVE, predicting a trending day. Periscope Charm showed +100M at 6605 and +70-80M at 6545 — real MM charm anchors that held as the session's ceiling and floor. The day was range-bound, not trending. Validated for the 2nd time.",
     '6590 ORANGE GAMMA BAR = SETTLEMENT MAGNET: The recently-flipped +10,000 positive gamma at 6590 was the dominant late-day feature. After SPX dipped to 6585, the 6590 wall pulled price back to 6595 settlement.',
     '6550/6515 STOP CLOSURE WAS PROCESS-CORRECT: The mechanical stop was triggered and the closure recommendation was correct risk management. The estimated cost was ~$100-200 on a position that would have expired worthless 25 minutes later. Per Lesson 21: never optimize stops based on individual recovery outcomes.',
   ],
@@ -570,7 +570,7 @@ ${JSON.stringify({
     optimalTrade:
       'The actual PCS positions at 6535-6550 short puts were the optimal tradeable trade. An IC adding short calls at 6650+ would have been marginally better in hindsight (capturing an additional credit with 71 pts of upside cushion), but required accepting call-side risk that the strongly bullish flow did not support. Given real-time information, PCS-only was the highest risk-adjusted return structure. The 10-12Δ delta was appropriate.',
     lessonsLearned: [
-      'VIX1D EXTREME INVERSION IS THE MOST RELIABLE REGIME SIGNAL FOR 0DTE PREMIUM SELLING: This is now the 4th validated session. When VIX1D is 20%+ below VIX, the market\'s own 1-day vol pricing tells you today will be calm. Target PCS at 10-12Δ with hold-to-settlement confidence.',
+      "VIX1D EXTREME INVERSION IS THE MOST RELIABLE REGIME SIGNAL FOR 0DTE PREMIUM SELLING: This is now the 4th validated session. When VIX1D is 20%+ below VIX, the market's own 1-day vol pricing tells you today will be calm. Target PCS at 10-12Δ with hold-to-settlement confidence.",
       'PERISCOPE CHARM OVERRIDE IS ESSENTIAL ON VIX 25+ DAYS: Naive charm showed ALL-NEGATIVE but Periscope showed +100M at 6605 and +70-80M at 6545. ALWAYS check Periscope Charm before applying the all-negative morning-only protocol. Validated on March 24 and March 25.',
       'ORANGE GAMMA BARS NEAR ATM IN THE FINAL 90 MINUTES PREDICT SETTLEMENT: The 6590 orange bar (~+10,000) pulled SPX from 6585 to 6595. Track orange bars after 2:30 PM ET as settlement zone indicators.',
       'SPX NCP/NPP SPREAD > $200M = HOLD-TO-SETTLEMENT PCS DAY: The $293M spread widened monotonically. On these days, override 50% profit targets and hold to settlement or 90%+.',

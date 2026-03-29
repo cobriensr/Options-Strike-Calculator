@@ -112,9 +112,9 @@ test.describe('Event Day Warning', () => {
     const dateTimeSection = page.locator('section').filter({
       has: page.getByText('Date & Time', { exact: true }),
     });
-    await expect(
-      dateTimeSection.getByText('Economic Event Day'),
-    ).toBeVisible({ timeout: 10000 });
+    await expect(dateTimeSection.getByText('Economic Event Day')).toBeVisible({
+      timeout: 10000,
+    });
     await expect(
       dateTimeSection.getByText('GDP', { exact: true }),
     ).toBeVisible();
@@ -193,8 +193,6 @@ test.describe('Event Day Warning', () => {
     await expect(
       dateTimeSection.getByText('Economic Event Day'),
     ).not.toBeVisible();
-    await expect(
-      dateTimeSection.getByText('Market Closed'),
-    ).not.toBeVisible();
+    await expect(dateTimeSection.getByText('Market Closed')).not.toBeVisible();
   });
 });

@@ -48,12 +48,9 @@ export default function PortfolioRiskSummary({
   hedges,
 }: PortfolioRiskSummaryProps) {
   const nlv = accountSummary.netLiquidatingValue;
-  const portfolioHeat =
-    nlv > 0 ? (Math.abs(risk.totalMaxLoss) / nlv) * 100 : 0;
-  const bpTotal =
-    risk.buyingPowerUsed + risk.buyingPowerAvailable;
-  const bpUtilPct =
-    bpTotal > 0 ? (risk.buyingPowerUsed / bpTotal) * 100 : 0;
+  const portfolioHeat = nlv > 0 ? (Math.abs(risk.totalMaxLoss) / nlv) * 100 : 0;
+  const bpTotal = risk.buyingPowerUsed + risk.buyingPowerAvailable;
+  const bpUtilPct = bpTotal > 0 ? (risk.buyingPowerUsed / bpTotal) * 100 : 0;
 
   // Find risk boundaries from spreads + ICs
   const shortPuts = [
@@ -69,10 +66,8 @@ export default function PortfolioRiskSummary({
     ...ironCondors.map((ic) => ic.callSpread.shortLeg.strike),
   ];
 
-  const lowestPut =
-    shortPuts.length > 0 ? Math.min(...shortPuts) : null;
-  const highestCall =
-    shortCalls.length > 0 ? Math.max(...shortCalls) : null;
+  const lowestPut = shortPuts.length > 0 ? Math.min(...shortPuts) : null;
+  const highestCall = shortCalls.length > 0 ? Math.max(...shortCalls) : null;
 
   const putDist =
     lowestPut !== null && risk.spotPrice > 0
@@ -90,14 +85,14 @@ export default function PortfolioRiskSummary({
     1,
   );
 
-  const putBarPct =
-    (Math.abs(risk.putSideRisk) / maxSideRisk) * 100;
-  const callBarPct =
-    (Math.abs(risk.callSideRisk) / maxSideRisk) * 100;
+  const putBarPct = (Math.abs(risk.putSideRisk) / maxSideRisk) * 100;
+  const callBarPct = (Math.abs(risk.callSideRisk) / maxSideRisk) * 100;
 
   const hedgeSuffix =
     hedges.length > 0
-      ? ' (' + String(hedges.length) + (hedges.length === 1 ? ' hedge)' : ' hedges)')
+      ? ' (' +
+        String(hedges.length) +
+        (hedges.length === 1 ? ' hedge)' : ' hedges)')
       : '';
   const sideBreakdownSub = 'Net risk by side' + hedgeSuffix;
 
@@ -108,12 +103,9 @@ export default function PortfolioRiskSummary({
       aria-label="Portfolio risk summary"
     >
       {/* 1 — Total Max Loss */}
-      <Card
-        label="Total Max Loss"
-        sub={`${formatPct(portfolioHeat)} of NLV`}
-      >
+      <Card label="Total Max Loss" sub={`${formatPct(portfolioHeat)} of NLV`}>
         <span
-          className={`text-xl font-bold font-mono ${heatColor(risk.totalMaxLoss, nlv)}`}
+          className={`font-mono text-xl font-bold ${heatColor(risk.totalMaxLoss, nlv)}`}
         >
           {formatCurrency(risk.totalMaxLoss)}
         </span>
@@ -121,7 +113,7 @@ export default function PortfolioRiskSummary({
 
       {/* 2 — Total Credit */}
       <Card label="Total Credit" sub={`${risk.totalContracts} contracts`}>
-        <span className="text-success text-xl font-bold font-mono">
+        <span className="text-success font-mono text-xl font-bold">
           {formatCurrency(risk.totalCredit)}
         </span>
       </Card>
@@ -129,18 +121,15 @@ export default function PortfolioRiskSummary({
       {/* 3 — Portfolio Heat */}
       <Card label="Portfolio Heat" sub="Max loss / NLV">
         <span
-          className={`text-xl font-bold font-mono ${heatColor(risk.totalMaxLoss, nlv)}`}
+          className={`font-mono text-xl font-bold ${heatColor(risk.totalMaxLoss, nlv)}`}
         >
           {formatPct(portfolioHeat)}
         </span>
       </Card>
 
       {/* 4 — Buying Power */}
-      <Card
-        label="Buying Power"
-        sub={`${formatPct(bpUtilPct)} utilized`}
-      >
-        <span className="text-primary text-xl font-bold font-mono">
+      <Card label="Buying Power" sub={`${formatPct(bpUtilPct)} utilized`}>
+        <span className="text-primary font-mono text-xl font-bold">
           {formatCurrency(risk.buyingPowerAvailable)}
         </span>
         {/* Utilization bar */}
@@ -169,9 +158,7 @@ export default function PortfolioRiskSummary({
               </span>
             </span>
           ) : (
-            <span className="text-muted font-mono text-base">
-              {'\u2014'}
-            </span>
+            <span className="text-muted font-mono text-base">{'\u2014'}</span>
           )}
           <span className="text-muted text-xs">/</span>
           {highestCall !== null ? (
@@ -182,9 +169,7 @@ export default function PortfolioRiskSummary({
               </span>
             </span>
           ) : (
-            <span className="text-muted font-mono text-base">
-              {'\u2014'}
-            </span>
+            <span className="text-muted font-mono text-base">{'\u2014'}</span>
           )}
         </div>
       </Card>
@@ -207,15 +192,10 @@ export default function PortfolioRiskSummary({
       </Card>
 
       {/* 7 — Side Breakdown */}
-      <Card
-        label="Side Breakdown"
-        sub={sideBreakdownSub}
-      >
+      <Card label="Side Breakdown" sub={sideBreakdownSub}>
         <div className="flex w-full flex-col gap-1.5">
           <div className="flex items-center gap-2">
-            <span className="w-8 text-[10px] font-bold text-red-400">
-              PUT
-            </span>
+            <span className="w-8 text-[10px] font-bold text-red-400">PUT</span>
             <div className="bg-edge relative h-3 flex-1 overflow-hidden rounded">
               <div
                 className="absolute inset-y-0 left-0 rounded bg-red-400/60"
@@ -244,10 +224,7 @@ export default function PortfolioRiskSummary({
       </Card>
 
       {/* 8 — Can Absorb */}
-      <Card
-        label="Can Absorb"
-        sub="BP covers max loss?"
-      >
+      <Card label="Can Absorb" sub="BP covers max loss?">
         <div className="flex items-center gap-2">
           <span
             className={`text-xl ${risk.canAbsorbMaxLoss ? 'text-success' : 'text-danger'}`}
@@ -283,9 +260,7 @@ function Card({
         {label}
       </div>
       <div className="mt-1">{children}</div>
-      {sub && (
-        <div className="text-muted mt-1 font-sans text-xs">{sub}</div>
-      )}
+      {sub && <div className="text-muted mt-1 font-sans text-xs">{sub}</div>}
     </div>
   );
 }

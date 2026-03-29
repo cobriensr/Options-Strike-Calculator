@@ -14,9 +14,7 @@ interface PaperDashboardProps {
 }
 
 export default function PaperDashboard({ spotPrice }: PaperDashboardProps) {
-  const [statement, setStatement] = useState<DailyStatement | null>(
-    null,
-  );
+  const [statement, setStatement] = useState<DailyStatement | null>(null);
   const [collapsed, setCollapsed] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -66,7 +64,9 @@ export default function PaperDashboard({ spotPrice }: PaperDashboardProps) {
     <SectionBox
       label="Paper Dashboard"
       badge={
-        statement ? `${statement.date} \u2022 ${String(spreadCount)} spreads` : null
+        statement
+          ? `${statement.date} \u2022 ${String(spreadCount)} spreads`
+          : null
       }
       headerRight={
         <div className="flex items-center gap-2">
@@ -119,8 +119,7 @@ export default function PaperDashboard({ spotPrice }: PaperDashboardProps) {
       {/* Empty state */}
       {!statement && !error && (
         <div className="text-muted py-6 text-center font-sans text-sm">
-          Upload a thinkorswim paperMoney account statement CSV to
-          begin.
+          Upload a thinkorswim paperMoney account statement CSV to begin.
         </div>
       )}
 
@@ -164,9 +163,7 @@ export default function PaperDashboard({ spotPrice }: PaperDashboardProps) {
           />
 
           {/* Execution Quality */}
-          <ExecutionQuality
-            execution={statement.executionQuality}
-          />
+          <ExecutionQuality execution={statement.executionQuality} />
         </div>
       )}
     </SectionBox>

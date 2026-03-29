@@ -198,7 +198,9 @@ interface Migration {
    * When provided, migrateDb() wraps these + the tracking INSERT in a
    * single sql.transaction() — all-or-nothing. Prefer this for new migrations.
    */
-  statements?: (sql: ReturnType<typeof getDb>) => ReturnType<ReturnType<typeof getDb>>[];
+  statements?: (
+    sql: ReturnType<typeof getDb>,
+  ) => ReturnType<ReturnType<typeof getDb>>[];
 }
 
 const MIGRATIONS: Migration[] = [
@@ -721,7 +723,8 @@ const MIGRATIONS: Migration[] = [
   },
   {
     id: 18,
-    description: 'Add JSONB type constraints on legs, full_response, and report',
+    description:
+      'Add JSONB type constraints on legs, full_response, and report',
     run: async (sql) => {
       await sql`ALTER TABLE positions DROP CONSTRAINT IF EXISTS chk_legs_array`;
       await sql`ALTER TABLE positions ADD CONSTRAINT chk_legs_array CHECK (jsonb_typeof(legs) = 'array')`;

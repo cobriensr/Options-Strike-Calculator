@@ -66,22 +66,41 @@ export default function PinRiskAnalysis({ chain, spot }: Props) {
         <table className="w-full border-collapse text-left font-mono text-[11px]">
           <thead>
             <tr className="border-edge border-b">
-              <th scope="col" className="text-tertiary px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              <th
+                scope="col"
+                className="text-tertiary px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
+              >
                 Strike
               </th>
-              <th scope="col" className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              <th
+                scope="col"
+                className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
+              >
                 Put OI
               </th>
-              <th scope="col" className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              <th
+                scope="col"
+                className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
+              >
                 Call OI
               </th>
-              <th scope="col" className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              <th
+                scope="col"
+                className="text-tertiary px-3 py-2 text-right font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
+              >
                 Total
               </th>
-              <th scope="col" className="text-tertiary px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              <th
+                scope="col"
+                className="text-tertiary px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
+              >
                 Dist
               </th>
-              <th scope="col" aria-label="Visual indicator" className="text-tertiary w-[30%] px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              <th
+                scope="col"
+                aria-label="Visual indicator"
+                className="text-tertiary w-[30%] px-3 py-2 font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
+              >
                 {/* bar column */}
               </th>
             </tr>

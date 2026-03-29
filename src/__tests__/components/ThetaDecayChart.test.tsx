@@ -44,9 +44,7 @@ describe('ThetaDecayChart', () => {
 
   it('renders section header', () => {
     render(<ThetaDecayChart {...defaultProps()} />);
-    expect(
-      screen.getByText(/theta decay/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/theta decay/i)).toBeInTheDocument();
   });
 
   it('renders SVG element', () => {

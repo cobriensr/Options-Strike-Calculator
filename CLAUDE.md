@@ -82,6 +82,7 @@ Chain data (per-strike OI, IV, skew) lives in **frontend state only** via `useCh
 #### DB Migrations
 
 When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/__tests__/db.test.ts`:
+
 - Add `{ id: N }` to the applied-migrations mock
 - Add the migration to the expected-output list
 - Update the SQL call count (each migration = 1 CREATE/ALTER + 1 INSERT INTO schema_migrations)

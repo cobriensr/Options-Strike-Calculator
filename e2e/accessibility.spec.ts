@@ -112,7 +112,11 @@ test.describe('Keyboard Navigation & Accessibility', () => {
     await expect(page.getByLabel('VIX Value')).toBeVisible();
     await expect(page.getByLabel('Hour')).toBeAttached();
     await expect(page.getByLabel('Minute')).toBeAttached();
-    await expect(page.locator('section[aria-label="Advanced"]').getByLabel('Number of contracts')).toBeVisible();
+    await expect(
+      page
+        .locator('section[aria-label="Advanced"]')
+        .getByLabel('Number of contracts'),
+    ).toBeVisible();
   });
 
   test('error states have aria-invalid', async ({ page }) => {

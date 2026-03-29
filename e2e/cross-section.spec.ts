@@ -201,7 +201,10 @@ test.describe('Cross-Section Input Cascades', () => {
     const initialText = await icSection.textContent();
 
     // Change contracts from 20 to 10
-    await page.locator('section[aria-label="Advanced"]').getByLabel('Number of contracts').fill('10');
+    await page
+      .locator('section[aria-label="Advanced"]')
+      .getByLabel('Number of contracts')
+      .fill('10');
 
     // Wait for update with polling
     await expect(async () => {

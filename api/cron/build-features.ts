@@ -732,8 +732,7 @@ async function buildFeaturesForDate(
       logReturns5.push(Math.log(prices[i]! / prices[i + 1]!));
     }
     if (logReturns5.length >= 5) {
-      const mean5 =
-        logReturns5.reduce((a, b) => a + b, 0) / logReturns5.length;
+      const mean5 = logReturns5.reduce((a, b) => a + b, 0) / logReturns5.length;
       const variance5 =
         logReturns5.reduce((a, b) => a + (b - mean5) ** 2, 0) /
         (logReturns5.length - 1);
@@ -753,8 +752,7 @@ async function buildFeaturesForDate(
       const variance10 =
         logReturns10.reduce((a, b) => a + (b - mean10) ** 2, 0) /
         (logReturns10.length - 1);
-      features.realized_vol_10d =
-        Math.sqrt(variance10) * Math.sqrt(252) * 100;
+      features.realized_vol_10d = Math.sqrt(variance10) * Math.sqrt(252) * 100;
     }
   }
 

@@ -31,12 +31,9 @@ function interpolatePremium(
     const a = curve[i]!;
     const b = curve[i + 1]!;
     if (h <= a.hoursRemaining && h >= b.hoursRemaining) {
-      const t =
-        (a.hoursRemaining - h) / (a.hoursRemaining - b.hoursRemaining);
+      const t = (a.hoursRemaining - h) / (a.hoursRemaining - b.hoursRemaining);
       return (
-        Math.round(
-          (a.premiumPct + (b.premiumPct - a.premiumPct) * t) * 10,
-        ) / 10
+        Math.round((a.premiumPct + (b.premiumPct - a.premiumPct) * t) * 10) / 10
       );
     }
   }
@@ -51,8 +48,7 @@ function calcEntryWindow(
   }>,
 ): string {
   if (curve.length === 0) return '\u2014';
-  const mean =
-    curve.reduce((sum, p) => sum + p.thetaPerHour, 0) / curve.length;
+  const mean = curve.reduce((sum, p) => sum + p.thetaPerHour, 0) / curve.length;
   if (mean <= 0) return '\u2014';
 
   let bestStart = -1;
@@ -116,9 +112,7 @@ export default function ThetaDecayChart({
   if (curve.length === 0) return null;
 
   const linePoints = curve
-    .map(
-      (p) => xScale(p.hoursRemaining) + ',' + yScale(p.premiumPct),
-    )
+    .map((p) => xScale(p.hoursRemaining) + ',' + yScale(p.premiumPct))
     .join(' ');
 
   const first = curve[0]!;
@@ -126,10 +120,7 @@ export default function ThetaDecayChart({
   const areaD =
     'M' +
     curve
-      .map(
-        (p) =>
-          xScale(p.hoursRemaining) + ',' + yScale(p.premiumPct),
-      )
+      .map((p) => xScale(p.hoursRemaining) + ',' + yScale(p.premiumPct))
       .join(' L') +
     ' L' +
     xScale(last.hoursRemaining) +
@@ -144,8 +135,7 @@ export default function ThetaDecayChart({
   const showNow = hoursRemaining >= 0.5 && hoursRemaining <= 6.5;
   const premNow = interpolatePremium(curve, hoursRemaining);
   const nowX = showNow ? xScale(hoursRemaining) : 0;
-  const nowY =
-    showNow && premNow !== null ? yScale(premNow) : 0;
+  const nowY = showNow && premNow !== null ? yScale(premNow) : 0;
 
   let peakTheta = 0;
   let peakHours = 0;
@@ -172,13 +162,7 @@ export default function ThetaDecayChart({
           aria-label="Theta decay curve showing premium remaining over time"
         >
           <defs>
-            <linearGradient
-              id={gradientId}
-              x1="0"
-              y1="0"
-              x2="0"
-              y2="1"
-            >
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
               <stop
                 offset="0%"
                 stopColor="var(--color-accent)"
@@ -213,12 +197,7 @@ export default function ThetaDecayChart({
                 strokeDasharray="2,2"
                 opacity="0.4"
               />
-              <circle
-                cx={nowX}
-                cy={nowY}
-                r={3.5}
-                fill="#f59e0b"
-              />
+              <circle cx={nowX} cy={nowY} r={3.5} fill="#f59e0b" />
               <text
                 x={nowX > VIEW_W - 60 ? nowX - 55 : nowX + 6}
                 y={nowY - 4}

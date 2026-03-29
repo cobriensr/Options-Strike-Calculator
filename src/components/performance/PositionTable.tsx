@@ -1,11 +1,6 @@
 import { useState } from 'react';
 import { ScrollHint } from '../ui';
-import type {
-  HedgePosition,
-  IronCondor,
-  NakedPosition,
-  Spread,
-} from './types';
+import type { HedgePosition, IronCondor, NakedPosition, Spread } from './types';
 
 interface PositionTableProps {
   spreads: readonly Spread[];
@@ -125,23 +120,45 @@ export default function PositionTable({
   return (
     <ScrollHint>
       <table
-        className="w-full text-sm font-mono"
+        className="w-full font-mono text-sm"
         role="table"
         aria-label="Open positions"
       >
         <thead>
           <tr>
-            <th scope="col" className={TH_CLASS}>Type</th>
-            <th scope="col" className={TH_CLASS}>Strikes</th>
-            <th scope="col" className={TH_RIGHT}>Qty</th>
-            <th scope="col" className={TH_RIGHT}>Credit</th>
-            <th scope="col" className={TH_RIGHT}>Open P&L</th>
-            <th scope="col" className={TH_RIGHT}>% Max</th>
-            <th scope="col" className={TH_RIGHT}>Max Loss</th>
-            <th scope="col" className={TH_RIGHT}>Risk:Reward</th>
-            <th scope="col" className={TH_RIGHT}>Breakeven</th>
-            <th scope="col" className={TH_RIGHT}>Cushion</th>
-            <th scope="col" className={TH_RIGHT}>Entry</th>
+            <th scope="col" className={TH_CLASS}>
+              Type
+            </th>
+            <th scope="col" className={TH_CLASS}>
+              Strikes
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              Qty
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              Credit
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              Open P&L
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              % Max
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              Max Loss
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              Risk:Reward
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              Breakeven
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              Cushion
+            </th>
+            <th scope="col" className={TH_RIGHT}>
+              Entry
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -165,15 +182,17 @@ export default function PositionTable({
           ))}
           {/* Hedges */}
           {hedges.length > 0 && (
-            <HedgeRows hedges={hedges} startIndex={
-              ironCondors.length + sorted.length
-            } />
+            <HedgeRows
+              hedges={hedges}
+              startIndex={ironCondors.length + sorted.length}
+            />
           )}
           {/* Naked positions */}
           {nakedPositions.length > 0 && (
-            <NakedRows naked={nakedPositions} startIndex={
-              ironCondors.length + sorted.length + hedges.length
-            } />
+            <NakedRows
+              naked={nakedPositions}
+              startIndex={ironCondors.length + sorted.length + hedges.length}
+            />
           )}
         </tbody>
       </table>
@@ -216,11 +235,14 @@ function IronCondorRow({
   const minCushion =
     putCushion !== null && callCushion !== null
       ? Math.min(Math.abs(putCushion), Math.abs(callCushion))
-      : putCushion ?? callCushion;
+      : (putCushion ?? callCushion);
 
   return (
     <>
-      <tr className={`${bg} cursor-pointer`} onClick={() => setExpanded(!expanded)}>
+      <tr
+        className={`${bg} cursor-pointer`}
+        onClick={() => setExpanded(!expanded)}
+      >
         <td className={TD_LEFT}>
           <span className="text-accent inline-flex items-center gap-1 font-bold">
             <span
@@ -249,9 +271,7 @@ function IronCondorRow({
         <td className={`${TD_CLASS} text-danger`}>
           {formatCurrency(ic.maxLoss)}
         </td>
-        <td className={TD_CLASS}>
-          {ic.riskRewardRatio.toFixed(1)}:1
-        </td>
+        <td className={TD_CLASS}>{ic.riskRewardRatio.toFixed(1)}:1</td>
         <td className={TD_CLASS}>
           <span className="text-[11px]">
             {ic.breakevenLow.toFixed(2)} / {ic.breakevenHigh.toFixed(2)}
@@ -293,38 +313,28 @@ function WingRow({
       <td className={`${TD_LEFT} pl-8 text-xs`}>
         <span className="text-muted">{label}</span>
       </td>
-      <td className={`${TD_LEFT} text-xs`}>
-        {spreadStrikeLabel(spread)}
-      </td>
+      <td className={`${TD_LEFT} text-xs`}>{spreadStrikeLabel(spread)}</td>
       <td className={`${TD_CLASS} text-xs`}>{spread.contracts}</td>
-      <td className={`${TD_CLASS} text-xs text-success`}>
+      <td className={`${TD_CLASS} text-success text-xs`}>
         {formatCurrency(spread.creditReceived)}
       </td>
-      <td
-        className={`${TD_CLASS} text-xs ${pnlColor(spread.openPnl)}`}
-      >
-        {spread.openPnl !== null
-          ? formatCurrency(spread.openPnl)
-          : '\u2014'}
+      <td className={`${TD_CLASS} text-xs ${pnlColor(spread.openPnl)}`}>
+        {spread.openPnl !== null ? formatCurrency(spread.openPnl) : '\u2014'}
       </td>
       <td className={`${TD_CLASS} text-xs`}>
         <PctMaxBar pct={spread.pctOfMaxProfit} />
       </td>
-      <td className={`${TD_CLASS} text-xs text-danger`}>
+      <td className={`${TD_CLASS} text-danger text-xs`}>
         {formatCurrency(spread.maxLoss)}
       </td>
       <td className={`${TD_CLASS} text-xs`}>
         {spread.riskRewardRatio.toFixed(1)}:1
       </td>
-      <td className={`${TD_CLASS} text-xs`}>
-        {spread.breakeven.toFixed(2)}
-      </td>
+      <td className={`${TD_CLASS} text-xs`}>{spread.breakeven.toFixed(2)}</td>
       <td className={`${TD_CLASS} text-xs`}>
         {formatPct(cushionPct(spread, spotPrice))}
       </td>
-      <td className={`${TD_CLASS} text-xs`}>
-        {formatTime(spread.entryTime)}
-      </td>
+      <td className={`${TD_CLASS} text-xs`}>{formatTime(spread.entryTime)}</td>
     </tr>
   );
 }
@@ -362,9 +372,7 @@ function SpreadRow({
         {formatCurrency(spread.creditReceived)}
       </td>
       <td className={`${TD_CLASS} ${pnlColor(spread.openPnl)}`}>
-        {spread.openPnl !== null
-          ? formatCurrency(spread.openPnl)
-          : '\u2014'}
+        {spread.openPnl !== null ? formatCurrency(spread.openPnl) : '\u2014'}
       </td>
       <td className={TD_CLASS}>
         <PctMaxBar pct={spread.pctOfMaxProfit} />
@@ -372,13 +380,9 @@ function SpreadRow({
       <td className={`${TD_CLASS} text-danger`}>
         {formatCurrency(spread.maxLoss)}
       </td>
-      <td className={TD_CLASS}>
-        {spread.riskRewardRatio.toFixed(1)}:1
-      </td>
+      <td className={TD_CLASS}>{spread.riskRewardRatio.toFixed(1)}:1</td>
       <td className={TD_CLASS}>{spread.breakeven.toFixed(2)}</td>
-      <td className={TD_CLASS}>
-        {formatPct(cushionPct(spread, spotPrice))}
-      </td>
+      <td className={TD_CLASS}>{formatPct(cushionPct(spread, spotPrice))}</td>
       <td className={TD_CLASS}>{formatTime(spread.entryTime)}</td>
     </tr>
   );
@@ -411,17 +415,12 @@ function HedgeRows({
               {h.leg.strike} {h.protectionSide}
             </td>
             <td className={TD_CLASS}>
-              {h.direction === 'LONG' ? '+' : '-'}{h.contracts}
+              {h.direction === 'LONG' ? '+' : '-'}
+              {h.contracts}
             </td>
-            <td className={TD_CLASS}>
-              {formatCurrency(h.entryCost)}
-            </td>
-            <td
-              className={`${TD_CLASS} ${pnlColor(h.openPnl)}`}
-            >
-              {h.openPnl !== null
-                ? formatCurrency(h.openPnl)
-                : '\u2014'}
+            <td className={TD_CLASS}>{formatCurrency(h.entryCost)}</td>
+            <td className={`${TD_CLASS} ${pnlColor(h.openPnl)}`}>
+              {h.openPnl !== null ? formatCurrency(h.openPnl) : '\u2014'}
             </td>
             <td className={TD_CLASS}>{'\u2014'}</td>
             <td className={TD_CLASS}>{'\u2014'}</td>
@@ -458,7 +457,7 @@ function NakedRows({
         return (
           <tr
             key={`naked-${String(i)}`}
-            className={`${bg} border-danger border-l-4 bg-danger/10`}
+            className={`${bg} border-danger bg-danger/10 border-l-4`}
           >
             <td className={TD_LEFT}>
               <span className="text-danger font-bold">NAKED</span>
@@ -491,11 +490,7 @@ function PctMaxBar({ pct }: { pct: number | null }) {
 
   const clamped = Math.min(Math.max(pct, 0), 100);
   const barColor =
-    pct >= 80
-      ? 'bg-success'
-      : pct >= 50
-        ? 'bg-accent'
-        : 'bg-caution';
+    pct >= 80 ? 'bg-success' : pct >= 50 ? 'bg-accent' : 'bg-caution';
 
   return (
     <div className="flex items-center gap-1.5">

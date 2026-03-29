@@ -21,9 +21,15 @@ export default function ScenarioTable({ scenarios, spot, direction }: Props) {
       >
         <thead>
           <tr className="bg-table-header">
-            <th scope="col" className={mkTh('right')}>Move</th>
-            <th scope="col" className={mkTh('right')}>SPX</th>
-            <th scope="col" className={mkTh('right')}>IC P&L</th>
+            <th scope="col" className={mkTh('right')}>
+              Move
+            </th>
+            <th scope="col" className={mkTh('right')}>
+              SPX
+            </th>
+            <th scope="col" className={mkTh('right')}>
+              IC P&L
+            </th>
             <th
               scope="col"
               className={mkTh(
@@ -33,8 +39,12 @@ export default function ScenarioTable({ scenarios, spot, direction }: Props) {
             >
               {direction === 'crash' ? 'Put' : 'Call'} Hedge
             </th>
-            <th scope="col" className={mkTh('right')}>Hedge Cost</th>
-            <th scope="col" className={mkTh('right')}>Net P&L</th>
+            <th scope="col" className={mkTh('right')}>
+              Hedge Cost
+            </th>
+            <th scope="col" className={mkTh('right')}>
+              Net P&L
+            </th>
           </tr>
         </thead>
         <tbody>

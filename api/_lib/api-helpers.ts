@@ -91,7 +91,9 @@ export function isOwner(req: VercelRequest): boolean {
   if (!secret) {
     if (!ownerSecretWarned && process.env.VERCEL) {
       ownerSecretWarned = true;
-      console.warn('[api-helpers] OWNER_SECRET is not set — all requests will get 401');
+      console.warn(
+        '[api-helpers] OWNER_SECRET is not set — all requests will get 401',
+      );
     }
     return false;
   }

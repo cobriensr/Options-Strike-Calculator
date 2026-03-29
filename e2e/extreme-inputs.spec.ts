@@ -147,7 +147,9 @@ test.describe('Extreme Inputs', () => {
       '19',
     );
 
-    const contractsInput = page.locator('section[aria-label="Advanced"]').getByLabel('Number of contracts');
+    const contractsInput = page
+      .locator('section[aria-label="Advanced"]')
+      .getByLabel('Number of contracts');
     await contractsInput.fill('999');
 
     // Iron condor section should still render
@@ -167,7 +169,9 @@ test.describe('Extreme Inputs', () => {
     // Capture default (20 contracts) text
     const initialText = await results.textContent();
 
-    const contractsInput = page.locator('section[aria-label="Advanced"]').getByLabel('Number of contracts');
+    const contractsInput = page
+      .locator('section[aria-label="Advanced"]')
+      .getByLabel('Number of contracts');
     await contractsInput.fill('1');
     await page.waitForTimeout(300);
 

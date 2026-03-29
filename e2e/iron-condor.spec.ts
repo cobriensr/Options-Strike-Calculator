@@ -62,7 +62,9 @@ test.describe('Iron Condor Section', () => {
     const initialText = await results.textContent();
 
     // Change contracts from 20 to 1
-    const contractsInput = page.locator('section[aria-label="Advanced"]').getByLabel('Number of contracts');
+    const contractsInput = page
+      .locator('section[aria-label="Advanced"]')
+      .getByLabel('Number of contracts');
     await contractsInput.fill('1');
 
     // P&L values should change (total dollar amounts will be 1/20th)

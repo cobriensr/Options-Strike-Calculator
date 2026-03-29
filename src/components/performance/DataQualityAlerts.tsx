@@ -5,22 +5,13 @@ interface DataQualityAlertsProps {
   warnings: readonly DataQualityWarning[];
 }
 
-const SEVERITY_STYLES: Record<
-  DataQualityWarning['severity'],
-  string
-> = {
-  error:
-    'bg-danger/10 border-danger text-danger',
-  warn:
-    'bg-caution/10 border-caution text-caution',
-  info:
-    'bg-accent-bg border-accent text-accent',
+const SEVERITY_STYLES: Record<DataQualityWarning['severity'], string> = {
+  error: 'bg-danger/10 border-danger text-danger',
+  warn: 'bg-caution/10 border-caution text-caution',
+  info: 'bg-accent-bg border-accent text-accent',
 };
 
-const SEVERITY_ICONS: Record<
-  DataQualityWarning['severity'],
-  string
-> = {
+const SEVERITY_ICONS: Record<DataQualityWarning['severity'], string> = {
   error: '\u26D4',
   warn: '\u26A0',
   info: '\u2139',
@@ -29,15 +20,11 @@ const SEVERITY_ICONS: Record<
 export default function DataQualityAlerts({
   warnings,
 }: DataQualityAlertsProps) {
-  const [dismissed, setDismissed] = useState<
-    Set<string>
-  >(new Set());
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
   if (warnings.length === 0) return null;
 
-  const visible = warnings.filter(
-    (w) => !dismissed.has(w.code),
-  );
+  const visible = warnings.filter((w) => !dismissed.has(w.code));
 
   if (visible.length === 0) return null;
 
@@ -62,16 +49,11 @@ export default function DataQualityAlerts({
           className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${SEVERITY_STYLES[w.severity]}`}
           role="alert"
         >
-          <span
-            className="mt-0.5 shrink-0 text-sm"
-            aria-hidden="true"
-          >
+          <span className="mt-0.5 shrink-0 text-sm" aria-hidden="true">
             {SEVERITY_ICONS[w.severity]}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-sm font-medium">
-              {w.message}
-            </div>
+            <div className="font-sans text-sm font-medium">{w.message}</div>
             {w.detail && (
               <div className="mt-0.5 font-sans text-xs opacity-80">
                 {w.detail}

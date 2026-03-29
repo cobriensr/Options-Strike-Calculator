@@ -753,8 +753,7 @@ function buildSpread(
   );
 
   // Current value from marks
-  const hasMarks =
-    shortLeg.mark !== null || longLeg.mark !== null;
+  const hasMarks = shortLeg.mark !== null || longLeg.mark !== null;
   const currentValue = hasMarks
     ? round2(
         (shortLeg.mark ?? 0) * shortLeg.qty * MULTIPLIER +
@@ -779,9 +778,7 @@ function buildSpread(
     ? round2(spotPrice - shortLeg.strike)
     : round2(shortLeg.strike - spotPrice);
   const distanceToShortStrikePct =
-    spotPrice > 0
-      ? round2((distanceToShortStrike / spotPrice) * 100)
-      : null;
+    spotPrice > 0 ? round2((distanceToShortStrike / spotPrice) * 100) : null;
 
   // Entry commissions from cash entries
   const entryCommissions = computeEntryCommissions(
@@ -827,9 +824,7 @@ function computeEntryCommissions(
 ): number {
   // Try to find the matching trade to get a ref number
   for (const trade of trades) {
-    const openLegs = trade.legs.filter(
-      (l) => l.posEffect === 'TO OPEN',
-    );
+    const openLegs = trade.legs.filter((l) => l.posEffect === 'TO OPEN');
     const hasShort = openLegs.some(
       (l) =>
         l.side === 'SELL' &&
@@ -955,12 +950,18 @@ export function groupIntoSpreads(
           usedCCS.add(c);
 
           const putSpread = buildSpread(
-            pcs.shortLeg, pcs.longLeg, trades,
-            spotPrice, cashEntries,
+            pcs.shortLeg,
+            pcs.longLeg,
+            trades,
+            spotPrice,
+            cashEntries,
           );
           const callSpread = buildSpread(
-            ccs.shortLeg, ccs.longLeg, trades,
-            spotPrice, cashEntries,
+            ccs.shortLeg,
+            ccs.longLeg,
+            trades,
+            spotPrice,
+            cashEntries,
           );
 
           const contracts = Math.abs(pcs.shortLeg.qty);
@@ -1016,18 +1017,28 @@ export function groupIntoSpreads(
     for (let p = 0; p < putSpreads.length; p++) {
       if (usedPCS.has(p)) continue;
       const pair = putSpreads[p]!;
-      allSpreads.push(buildSpread(
-        pair.shortLeg, pair.longLeg, trades,
-        spotPrice, cashEntries,
-      ));
+      allSpreads.push(
+        buildSpread(
+          pair.shortLeg,
+          pair.longLeg,
+          trades,
+          spotPrice,
+          cashEntries,
+        ),
+      );
     }
     for (let c = 0; c < callSpreads.length; c++) {
       if (usedCCS.has(c)) continue;
       const pair = callSpreads[c]!;
-      allSpreads.push(buildSpread(
-        pair.shortLeg, pair.longLeg, trades,
-        spotPrice, cashEntries,
-      ));
+      allSpreads.push(
+        buildSpread(
+          pair.shortLeg,
+          pair.longLeg,
+          trades,
+          spotPrice,
+          cashEntries,
+        ),
+      );
     }
 
     // ─ Step 3: Hedges & Naked ────────────────────────────
@@ -1039,8 +1050,7 @@ export function groupIntoSpreads(
         // Long position = hedge
         const entryCost =
           Math.abs(leg.tradePrice) * MULTIPLIER * Math.abs(leg.qty);
-        const hedgeCurrentValue =
-          leg.markValue !== null ? leg.markValue : null;
+        const hedgeCurrentValue = leg.markValue !== null ? leg.markValue : null;
         const hedgeOpenPnl =
           hedgeCurrentValue !== null
             ? round2(hedgeCurrentValue - entryCost)
@@ -1235,8 +1245,7 @@ export function matchClosedSpreads(trades: ExecutedTrade[]): ClosedSpread[] {
         const maxLoss =
           wingWidth * MULTIPLIER * contracts -
           openCredit * MULTIPLIER * contracts;
-        const returnOnRisk =
-          maxLoss > 0 ? round2(realizedPnl / maxLoss) : 0;
+        const returnOnRisk = maxLoss > 0 ? round2(realizedPnl / maxLoss) : 0;
 
         // creditCapturedPct
         const openCreditDollars = openCredit * MULTIPLIER * contracts;
@@ -1252,10 +1261,7 @@ export function matchClosedSpreads(trades: ExecutedTrade[]): ClosedSpread[] {
         );
 
         // outcome
-        const outcome = classifyOutcome(
-          realizedPnl,
-          openCreditDollars,
-        );
+        const outcome = classifyOutcome(realizedPnl, openCreditDollars);
 
         closedSpreads.push({
           spreadType: isPCS ? 'PUT_CREDIT_SPREAD' : 'CALL_CREDIT_SPREAD',
@@ -1392,8 +1398,7 @@ export function computePortfolioRisk(
     }
   }
   for (const ic of ironCondors) {
-    const putCredit =
-      ic.putSpread.creditReceived / (ic.contracts * MULTIPLIER);
+    const putCredit = ic.putSpread.creditReceived / (ic.contracts * MULTIPLIER);
     const callCredit =
       ic.callSpread.creditReceived / (ic.contracts * MULTIPLIER);
     if (ic.putSpread.shortLeg.strike < lowestShortPutStrike) {
@@ -1414,17 +1419,14 @@ export function computePortfolioRisk(
       : null;
   const breakevenHigh =
     callSpreadCount > 0
-      ? round2(
-          highestShortCallStrike + totalCallCreditPerContract,
-        )
+      ? round2(highestShortCallStrike + totalCallCreditPerContract)
       : null;
 
   // Buying power fields
   const nlv = accountSummary.netLiquidatingValue;
   const buyingPowerAvailable = accountSummary.optionBuyingPower;
   const buyingPowerUsed = nlv - buyingPowerAvailable;
-  const buyingPowerUtilization =
-    nlv > 0 ? round2(buyingPowerUsed / nlv) : 0;
+  const buyingPowerUtilization = nlv > 0 ? round2(buyingPowerUsed / nlv) : 0;
   const canAbsorbMaxLoss = buyingPowerAvailable > totalMaxLoss;
 
   // Concentration: largest single spread maxLoss / totalMaxLoss
@@ -1561,8 +1563,7 @@ export function computeExecutionQuality(
       const diffMs = lastMs - firstMs;
       tradingSessionMinutes = Math.round(diffMs / 60_000);
       const hours = diffMs / 3_600_000;
-      tradesPerHour =
-        hours > 0 ? round2(trades.length / hours) : null;
+      tradesPerHour = hours > 0 ? round2(trades.length / hours) : null;
     }
   }
 
@@ -1777,10 +1778,7 @@ function round2(n: number): number {
  * Compute hold time in minutes between two time strings.
  * Returns null if either time cannot be parsed.
  */
-function computeHoldTime(
-  openTime: string,
-  closeTime: string,
-): number | null {
+function computeHoldTime(openTime: string, closeTime: string): number | null {
   const openMs = new Date(openTime).getTime();
   const closeMs = new Date(closeTime).getTime();
   if (Number.isNaN(openMs) || Number.isNaN(closeMs)) return null;
@@ -1864,12 +1862,7 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
 
   // ── Group positions ────────────────────────────────────
 
-  const grouped = groupIntoSpreads(
-    openLegs,
-    trades,
-    spotPrice,
-    cashEntries,
-  );
+  const grouped = groupIntoSpreads(openLegs, trades, spotPrice, cashEntries);
 
   // ── Match closed spreads ───────────────────────────────
 

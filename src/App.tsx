@@ -351,13 +351,13 @@ export default function StrikeCalculator() {
           const atmIV = atm.iv * 100;
           const put25dIV = put25.iv * 100;
           const call25dIV = call25.iv * 100;
-          const putSkew25d =
-            Math.round((put25dIV - atmIV) * 100) / 100;
-          const callSkew25d =
-            Math.round((call25dIV - atmIV) * 100) / 100;
+          const putSkew25d = Math.round((put25dIV - atmIV) * 100) / 100;
+          const callSkew25d = Math.round((call25dIV - atmIV) * 100) / 100;
           const skewRatio =
             callSkew25d !== 0
-              ? Math.round((Math.abs(putSkew25d) / Math.abs(callSkew25d)) * 100) / 100
+              ? Math.round(
+                  (Math.abs(putSkew25d) / Math.abs(callSkew25d)) * 100,
+                ) / 100
               : 0;
           return {
             put25dIV: Math.round(put25dIV * 100) / 100,
@@ -639,9 +639,7 @@ export default function StrikeCalculator() {
                   </div>
                 }
               >
-                <PaperDashboard
-                  spotPrice={results?.spot ?? spxVal ?? 0}
-                />
+                <PaperDashboard spotPrice={results?.spot ?? spxVal ?? 0} />
               </Suspense>
             </ErrorBoundary>
 

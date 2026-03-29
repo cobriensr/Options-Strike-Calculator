@@ -211,14 +211,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     logger.info({ results }, 'fetch-net-flow completed');
 
-    return res
-      .status(200)
-      .json({
-        job: 'fetch-net-flow',
-        stored: true,
-        results,
-        durationMs: Date.now() - startTime,
-      });
+    return res.status(200).json({
+      job: 'fetch-net-flow',
+      stored: true,
+      results,
+      durationMs: Date.now() - startTime,
+    });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-net-flow');
     Sentry.captureException(err);

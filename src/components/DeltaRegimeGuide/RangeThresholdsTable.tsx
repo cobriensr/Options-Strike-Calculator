@@ -18,14 +18,24 @@ export default function RangeThresholdsTable({ computed }: Props) {
       >
         <thead>
           <tr className="bg-table-header">
-            <th scope="col" className={mkTh('left')}>To Clear</th>
-            <th scope="col" className={mkTh('right')}>Range %</th>
-            <th scope="col" className={mkTh('right')}>Points</th>
-            <th scope="col" className={mkTh('right', 'text-danger')}>Max Put {'\u0394'}</th>
+            <th scope="col" className={mkTh('left')}>
+              To Clear
+            </th>
+            <th scope="col" className={mkTh('right')}>
+              Range %
+            </th>
+            <th scope="col" className={mkTh('right')}>
+              Points
+            </th>
+            <th scope="col" className={mkTh('right', 'text-danger')}>
+              Max Put {'\u0394'}
+            </th>
             <th scope="col" className={mkTh('right', 'text-success')}>
               Max Call {'\u0394'}
             </th>
-            <th scope="col" className={mkTh('left')}>Survival</th>
+            <th scope="col" className={mkTh('left')}>
+              Survival
+            </th>
           </tr>
         </thead>
         <tbody>

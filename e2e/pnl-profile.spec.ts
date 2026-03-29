@@ -161,9 +161,7 @@ test.describe('P&L Profile Table', () => {
 
     // Verify the heading now shows 10-pt wings
     const results = page.locator('#results');
-    await expect(
-      results.getByText('Iron Condor (10-pt wings)'),
-    ).toBeVisible();
+    await expect(results.getByText('Iron Condor (10-pt wings)')).toBeVisible();
 
     // Verify table content changed
     const updatedContent = await pnlTable.textContent();

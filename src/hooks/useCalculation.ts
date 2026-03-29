@@ -47,8 +47,7 @@ export function useCalculation(
 
     const spyInput = Number.parseFloat(dSpot);
     if (dSpot && (Number.isNaN(spyInput) || spyInput <= 0))
-      errors['spot'] =
-        'Must be a positive number (e.g. 550)';
+      errors['spot'] = 'Must be a positive number (e.g. 550)';
     const spot = spyInput * effectiveRatio;
 
     const h = Number.parseInt(timeHour);
@@ -64,14 +63,12 @@ export function useCalculation(
       const totalMinutes = h24 * 60 + m;
 
       if (totalMinutes < 9 * 60 + 30) {
-        errors['time'] =
-          'Before market open; use 9:30 AM ET or later';
+        errors['time'] = 'Before market open; use 9:30 AM ET or later';
       } else if (totalMinutes >= closeMinutes) {
         const closeLabel = earlyCloseHourET
           ? `${earlyCloseHourET > 12 ? earlyCloseHourET - 12 : earlyCloseHourET}:00 PM ET`
           : '4:00 PM ET';
-        errors['time'] =
-          `After market close; use before ${closeLabel}`;
+        errors['time'] = `After market close; use before ${closeLabel}`;
       }
     }
 
@@ -82,8 +79,7 @@ export function useCalculation(
       if (dVix && Number.isNaN(v))
         errors['vix'] = 'VIX must be a number (e.g. 19)';
       else if (dMult && Number.isNaN(mult))
-        errors['multiplier'] =
-          'Adjustment must be a number (e.g. 1.15)';
+        errors['multiplier'] = 'Adjustment must be a number (e.g. 1.15)';
       else if (dVix) {
         const ivResult = resolveIV(IV_MODES.VIX, { vix: v, multiplier: mult });
         if (ivResult.error) errors['iv'] = ivResult.error;

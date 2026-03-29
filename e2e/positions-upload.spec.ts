@@ -115,9 +115,9 @@ test.describe('PaperMoney Position Upload', () => {
     await csvInput.evaluate((el) => el.classList.remove('hidden'));
     await csvInput.setInputFiles(csvPath);
 
-    await expect(page.getByText(/1 spread saved from paperMoney/)).toBeVisible(
-      { timeout: 5000 },
-    );
+    await expect(page.getByText(/1 spread saved from paperMoney/)).toBeVisible({
+      timeout: 5000,
+    });
   });
 
   test('uploading CSV shows error on API failure', async ({ browser }) => {

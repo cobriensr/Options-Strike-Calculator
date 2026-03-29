@@ -120,7 +120,10 @@ export default function BacktestDiag({
         }}
       >
         Backtest Diagnostic
-        <span aria-hidden="true" style={{ fontSize: 10, color: 'var(--color-muted)' }}>
+        <span
+          aria-hidden="true"
+          style={{ fontSize: 10, color: 'var(--color-muted)' }}
+        >
           {collapsed ? '▲' : '▼'}
         </span>
       </button>
@@ -156,7 +159,13 @@ export default function BacktestDiag({
             </tbody>
           </table>
           {history.error && (
-            <div style={{ marginTop: 6, color: 'var(--color-danger)', fontSize: 10 }}>
+            <div
+              style={{
+                marginTop: 6,
+                color: 'var(--color-danger)',
+                fontSize: 10,
+              }}
+            >
               Error: {history.error}
             </div>
           )}

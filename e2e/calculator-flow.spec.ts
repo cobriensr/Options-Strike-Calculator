@@ -23,9 +23,9 @@ test.describe('Calculator Flow', () => {
     // Wait for debounce and derived SPX display
     await expect(page.getByText('SPX for calculations')).toBeVisible();
     // Default ratio is 10, so SPX ≈ 6720
-    await expect(
-      page.getByLabel('Spot Price').getByText('6720'),
-    ).toBeVisible({ timeout: 5000 });
+    await expect(page.getByLabel('Spot Price').getByText('6720')).toBeVisible({
+      timeout: 5000,
+    });
   });
 
   test('entering SPX directly shows derived ratio', async ({ page }) => {

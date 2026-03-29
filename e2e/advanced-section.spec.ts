@@ -24,10 +24,14 @@ test.describe('Advanced Section', () => {
     await expect(toggleBtn).toHaveText('Show Iron Condor');
 
     // Wing width should be hidden when IC is hidden
-    await expect(page.locator('section[aria-label="Advanced"]').getByText('Wing Width')).not.toBeVisible();
+    await expect(
+      page.locator('section[aria-label="Advanced"]').getByText('Wing Width'),
+    ).not.toBeVisible();
 
     await toggleBtn.click();
-    await expect(page.locator('section[aria-label="Advanced"]').getByText('Wing Width')).toBeVisible();
+    await expect(
+      page.locator('section[aria-label="Advanced"]').getByText('Wing Width'),
+    ).toBeVisible();
   });
 
   test('wing width chip selection changes value', async ({ page }) => {

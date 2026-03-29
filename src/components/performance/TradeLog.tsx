@@ -1,10 +1,6 @@
 import { useState } from 'react';
 import { ScrollHint } from '../ui';
-import type {
-  CashEntry,
-  ClosedSpread,
-  ExecutedTrade,
-} from './types';
+import type { CashEntry, ClosedSpread, ExecutedTrade } from './types';
 
 interface TradeLogProps {
   trades: readonly ExecutedTrade[];
@@ -51,15 +47,10 @@ function strikeLabel(trade: ExecutedTrade): string {
   const strikes = trade.legs.map((l) => String(l.strike));
   const optType = firstLeg.type === 'CALL' ? 'C' : 'P';
   // Check if mixed types
-  const hasMixed = trade.legs.some(
-    (l) => l.type !== firstLeg.type,
-  );
+  const hasMixed = trade.legs.some((l) => l.type !== firstLeg.type);
   if (hasMixed) {
     return trade.legs
-      .map(
-        (l) =>
-          `${String(l.strike)}${l.type === 'CALL' ? 'C' : 'P'}`,
-      )
+      .map((l) => `${String(l.strike)}${l.type === 'CALL' ? 'C' : 'P'}`)
       .join('/');
   }
   return `${strikes.join('/')} ${optType}`;
@@ -85,9 +76,7 @@ function actionLabel(trade: ExecutedTrade): {
 /** Total contracts from legs */
 function totalQty(trade: ExecutedTrade): number {
   if (trade.legs.length === 0) return 0;
-  return Math.max(
-    ...trade.legs.map((l) => Math.abs(l.qty)),
-  );
+  return Math.max(...trade.legs.map((l) => Math.abs(l.qty)));
 }
 
 /** Find matching cash entry for a trade by time proximity */
@@ -97,12 +86,8 @@ function matchCashEntry(
 ): CashEntry | null {
   const tradeTime = fmtTime(trade.execTime);
   // TRD entries matching within the same minute
-  const trdEntries = cashEntries.filter(
-    (e) => e.type === 'TRD',
-  );
-  const match = trdEntries.find(
-    (e) => e.time.slice(0, 5) === tradeTime,
-  );
+  const trdEntries = cashEntries.filter((e) => e.type === 'TRD');
+  const match = trdEntries.find((e) => e.time.slice(0, 5) === tradeTime);
   return match ?? null;
 }
 
@@ -116,15 +101,11 @@ function matchClosedSpread(
 
   // Match by close time and strikes
   for (const cs of closedSpreads) {
-    const closeTimeMatch =
-      fmtTime(cs.closeTime) === fmtTime(trade.execTime);
+    const closeTimeMatch = fmtTime(cs.closeTime) === fmtTime(trade.execTime);
     if (!closeTimeMatch) continue;
 
     const strikes = trade.legs.map((l) => l.strike);
-    if (
-      strikes.includes(cs.shortStrike) ||
-      strikes.includes(cs.longStrike)
-    ) {
+    if (strikes.includes(cs.shortStrike) || strikes.includes(cs.longStrike)) {
       return cs;
     }
   }
@@ -156,9 +137,7 @@ export default function TradeLog({
   closedSpreads,
 }: TradeLogProps) {
   const [filter, setFilter] = useState<Filter>('all');
-  const [expandedIdx, setExpandedIdx] = useState<
-    Set<number>
-  >(new Set());
+  const [expandedIdx, setExpandedIdx] = useState<Set<number>>(new Set());
 
   const filtered = trades.filter((t) => {
     if (filter === 'all') return true;
@@ -256,19 +235,11 @@ export default function TradeLog({
           <tbody>
             {filtered.map((trade, i) => {
               const action = actionLabel(trade);
-              const cash = matchCashEntry(
-                trade,
-                cashEntries,
-              );
-              const closed = matchClosedSpread(
-                trade,
-                closedSpreads,
-              );
+              const cash = matchCashEntry(trade, cashEntries);
+              const closed = matchClosedSpread(trade, closedSpreads);
               const isExpanded = expandedIdx.has(i);
               const alt = i % 2 === 1;
-              const bg = alt
-                ? 'bg-table-alt'
-                : 'bg-surface';
+              const bg = alt ? 'bg-table-alt' : 'bg-surface';
 
               return (
                 <TradeRow
@@ -309,14 +280,12 @@ function TradeRow({
   bg: string;
   onToggle: () => void;
 }) {
-  const fees = cash
-    ? Math.abs(cash.commissions) + Math.abs(cash.miscFees)
-    : 0;
+  const fees = cash ? Math.abs(cash.commissions) + Math.abs(cash.miscFees) : 0;
 
   return (
     <>
       <tr
-        className={`${bg} cursor-pointer hover:bg-surface-alt/80`}
+        className={`${bg} hover:bg-surface-alt/80 cursor-pointer`}
         onClick={onToggle}
       >
         <td className={TD_LEFT}>
@@ -324,9 +293,7 @@ function TradeRow({
             <span
               className="inline-block text-[10px] transition-transform"
               style={{
-                transform: isExpanded
-                  ? 'rotate(90deg)'
-                  : 'rotate(0deg)',
+                transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
               }}
               aria-hidden="true"
             >
@@ -338,9 +305,7 @@ function TradeRow({
         <td className={TD_LEFT}>
           <span
             className={`text-xs font-bold ${
-              action.isOpen
-                ? 'text-accent'
-                : 'text-tertiary'
+              action.isOpen ? 'text-accent' : 'text-tertiary'
             }`}
           >
             {action.text}
@@ -364,14 +329,10 @@ function TradeRow({
           </span>
         </td>
         <td className={TD_CLASS}>{totalQty(trade)}</td>
-        <td
-          className={`${TD_CLASS} ${pnlColor(trade.netPrice)}`}
-        >
+        <td className={`${TD_CLASS} ${pnlColor(trade.netPrice)}`}>
           {fmtCurrency(trade.netPrice)}
         </td>
-        <td className={TD_CLASS}>
-          {fees > 0 ? fmtCurrency(fees) : '\u2014'}
-        </td>
+        <td className={TD_CLASS}>{fees > 0 ? fmtCurrency(fees) : '\u2014'}</td>
         <td className={TD_CLASS}>
           {cash ? fmtCurrency(cash.balance) : '\u2014'}
         </td>
@@ -380,24 +341,16 @@ function TradeRow({
       {/* Expanded leg detail */}
       {isExpanded &&
         trade.legs.map((leg, j) => (
-          <tr
-            key={`leg-${String(j)}`}
-            className="bg-surface-alt/50"
-          >
+          <tr key={`leg-${String(j)}`} className="bg-surface-alt/50">
             <td className={`${TD_LEFT} pl-8 text-xs`}>
-              <span className="text-muted">
-                Leg {j + 1}
-              </span>
+              <span className="text-muted">Leg {j + 1}</span>
             </td>
             <td className={`${TD_LEFT} text-xs`}>
               {leg.side} {leg.posEffect}
             </td>
-            <td className={`${TD_LEFT} text-xs text-muted`}>
-              {leg.symbol}
-            </td>
+            <td className={`${TD_LEFT} text-muted text-xs`}>{leg.symbol}</td>
             <td className={`${TD_LEFT} text-xs`}>
-              {leg.strike}{' '}
-              {leg.type === 'CALL' ? 'C' : 'P'}
+              {leg.strike} {leg.type === 'CALL' ? 'C' : 'P'}
             </td>
             <td className="px-3 py-1 text-right font-mono text-xs">
               {Math.abs(leg.qty)}
@@ -405,7 +358,7 @@ function TradeRow({
             <td className="px-3 py-1 text-right font-mono text-xs">
               {leg.price.toFixed(2)}
             </td>
-            <td className="px-3 py-1 text-right font-mono text-xs text-muted">
+            <td className="text-muted px-3 py-1 text-right font-mono text-xs">
               {leg.creditDebit ?? '\u2014'}
             </td>
             <td className="px-3 py-1" />

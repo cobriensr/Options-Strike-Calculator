@@ -21,7 +21,7 @@ Example: `phase2_xgboost_2026-05-15_v1.json`
   "data": {
     "training_days": 60,
     "feature_count": 47,
-    "class_distribution": {"CCS": 33, "PCS": 18, "IC": 8, "SIT_OUT": 1},
+    "class_distribution": { "CCS": 33, "PCS": 18, "IC": 8, "SIT_OUT": 1 },
     "feature_completeness_threshold": 0.8,
     "date_range": ["2026-02-10", "2026-05-14"]
   },
@@ -40,7 +40,7 @@ Example: `phase2_xgboost_2026-05-15_v1.json`
     "accuracy": 0.65,
     "log_loss": 0.89,
     "brier_score": 0.22,
-    "per_class_f1": {"CCS": 0.72, "PCS": 0.61, "IC": 0.40},
+    "per_class_f1": { "CCS": 0.72, "PCS": 0.61, "IC": 0.4 },
     "majority_class_baseline": 0.55,
     "walk_forward_folds": 30
   },

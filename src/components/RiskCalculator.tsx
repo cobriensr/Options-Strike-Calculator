@@ -660,11 +660,21 @@ export default function RiskCalculator() {
                 >
                   <thead>
                     <tr className="bg-table-header">
-                      <th scope="col" className={mkTh('center')}>Risk %</th>
-                      <th scope="col" className={mkTh('right')}>Budget</th>
-                      <th scope="col" className={mkTh('center')}>Max Contracts</th>
-                      <th scope="col" className={mkTh('right')}>Max Loss</th>
-                      <th scope="col" className={mkTh('center')}>Actual %</th>
+                      <th scope="col" className={mkTh('center')}>
+                        Risk %
+                      </th>
+                      <th scope="col" className={mkTh('right')}>
+                        Budget
+                      </th>
+                      <th scope="col" className={mkTh('center')}>
+                        Max Contracts
+                      </th>
+                      <th scope="col" className={mkTh('right')}>
+                        Max Loss
+                      </th>
+                      <th scope="col" className={mkTh('center')}>
+                        Actual %
+                      </th>
                     </tr>
                   </thead>
                   <tbody>

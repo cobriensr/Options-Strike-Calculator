@@ -122,19 +122,13 @@ export async function getHistoricalWinRate(conditions: {
     );
   }
   if (conditions.gexRegime) {
-    filters.push(
-      `market_conditions->>'gexRegime' = '${conditions.gexRegime}'`,
-    );
+    filters.push(`market_conditions->>'gexRegime' = '${conditions.gexRegime}'`);
   }
   if (conditions.structure) {
-    filters.push(
-      `market_conditions->>'structure' = '${conditions.structure}'`,
-    );
+    filters.push(`market_conditions->>'structure' = '${conditions.structure}'`);
   }
   if (conditions.dayOfWeek) {
-    filters.push(
-      `market_conditions->>'dayOfWeek' = '${conditions.dayOfWeek}'`,
-    );
+    filters.push(`market_conditions->>'dayOfWeek' = '${conditions.dayOfWeek}'`);
   }
 
   const whereClause = filters.join(' AND ');
@@ -159,7 +153,8 @@ export async function getHistoricalWinRate(conditions: {
     total,
     wins,
     winRate: Math.round((wins / total) * 100),
-    avgVix: row.avg_vix != null ? Math.round(Number(row.avg_vix) * 10) / 10 : null,
+    avgVix:
+      row.avg_vix != null ? Math.round(Number(row.avg_vix) * 10) / 10 : null,
     structures: (row.structures as string[]) ?? [],
   };
 }
@@ -169,17 +164,27 @@ export async function getHistoricalWinRate(conditions: {
  */
 export function formatWinRateForClaude(
   result: WinRateResult,
-  conditions: { vix?: number; gexRegime?: string; structure?: string; dayOfWeek?: string },
+  conditions: {
+    vix?: number;
+    gexRegime?: string;
+    structure?: string;
+    dayOfWeek?: string;
+  },
 ): string {
   const condParts: string[] = [];
-  if (conditions.vix != null) condParts.push(`VIX ${Math.floor(conditions.vix - 5)}-${Math.ceil(conditions.vix + 5)}`);
+  if (conditions.vix != null)
+    condParts.push(
+      `VIX ${Math.floor(conditions.vix - 5)}-${Math.ceil(conditions.vix + 5)}`,
+    );
   if (conditions.gexRegime) condParts.push(`GEX: ${conditions.gexRegime}`);
   if (conditions.structure) condParts.push(conditions.structure);
   if (conditions.dayOfWeek) condParts.push(conditions.dayOfWeek);
 
   let signal = '';
-  if (result.winRate >= 75) signal = 'Supports upgrading confidence by one level.';
-  else if (result.winRate >= 50) signal = 'No confidence adjustment — historical rate is neutral.';
+  if (result.winRate >= 75)
+    signal = 'Supports upgrading confidence by one level.';
+  else if (result.winRate >= 50)
+    signal = 'No confidence adjustment — historical rate is neutral.';
   else signal = 'Supports downgrading confidence by one level.';
 
   return [

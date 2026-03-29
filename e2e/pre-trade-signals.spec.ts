@@ -197,9 +197,7 @@ test.describe('Pre-Trade Signals', () => {
     await expect(page.getByText('Pre-Trade Signals')).toBeVisible({
       timeout: 10000,
     });
-    await expect(
-      page.getByText('PREMIUM RICH', { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByText('PREMIUM RICH', { exact: true })).toBeVisible();
   });
 
   test('overnight gap signal renders — FLAT OPEN', async ({ page }) => {
@@ -222,9 +220,7 @@ test.describe('Pre-Trade Signals', () => {
       timeout: 10000,
     });
     await expect(page.getByText('Overnight Gap')).toBeVisible();
-    await expect(
-      page.getByText('FLAT OPEN', { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByText('FLAT OPEN', { exact: true })).toBeVisible();
   });
 
   test('move breadth signal renders with movers data — CONCENTRATED', async ({
@@ -248,8 +244,6 @@ test.describe('Pre-Trade Signals', () => {
       timeout: 10000,
     });
     await expect(page.getByText('Move Breadth')).toBeVisible();
-    await expect(
-      page.getByText('CONCENTRATED', { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByText('CONCENTRATED', { exact: true })).toBeVisible();
   });
 });

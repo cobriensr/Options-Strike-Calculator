@@ -19,10 +19,7 @@ import { checkBot } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/ml/prediction');
 
   if (req.method !== 'GET') {
@@ -78,9 +75,7 @@ export default async function handler(
     const r = rows[0]!;
     const prediction = {
       date:
-        r.date instanceof Date
-          ? r.date.toISOString().split('T')[0]
-          : r.date,
+        r.date instanceof Date ? r.date.toISOString().split('T')[0] : r.date,
       probabilities: {
         ccs: Number(r.ccs_prob),
         pcs: Number(r.pcs_prob),

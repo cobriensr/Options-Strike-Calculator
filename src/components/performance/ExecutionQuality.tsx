@@ -34,9 +34,7 @@ function fmtTime(time: string | null): string {
 
 // ── Main Component ──────────────────────────────────────
 
-export default function ExecutionQuality({
-  execution,
-}: ExecutionQualityProps) {
+export default function ExecutionQuality({ execution }: ExecutionQualityProps) {
   const {
     fills,
     fillRate,
@@ -80,9 +78,7 @@ export default function ExecutionQuality({
         <Card label="Rejected">
           <span
             className={`font-mono text-xl font-bold ${
-              rejectedOrders > 0
-                ? 'text-danger'
-                : 'text-success'
+              rejectedOrders > 0 ? 'text-danger' : 'text-success'
             }`}
           >
             {rejectedOrders}
@@ -90,12 +86,11 @@ export default function ExecutionQuality({
           <div className="text-muted mt-0.5 font-sans text-xs">
             {fmtPct(rejectionRate)} rate
           </div>
-          {rejectionReasons.length > 0 &&
-            rejectionReasons[0] && (
-              <div className="text-danger mt-0.5 font-sans text-[10px]">
-                Top: {rejectionReasons[0].reason}
-              </div>
-            )}
+          {rejectionReasons.length > 0 && rejectionReasons[0] && (
+            <div className="text-danger mt-0.5 font-sans text-[10px]">
+              Top: {rejectionReasons[0].reason}
+            </div>
+          )}
         </Card>
 
         <Card label="Canceled">
@@ -120,7 +115,7 @@ export default function ExecutionQuality({
       {/* Rejection Reasons */}
       {rejectionReasons.length > 0 && (
         <div className="bg-surface-alt border-edge rounded-lg border p-4">
-          <div className="text-tertiary font-sans text-xs font-bold uppercase tracking-wider">
+          <div className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">
             Rejection Reasons
           </div>
           <ul className="mt-2 space-y-1">
@@ -134,9 +129,7 @@ export default function ExecutionQuality({
                   <span className="text-danger font-mono text-xs font-bold">
                     {r.count}x
                   </span>
-                  <span className="text-secondary">
-                    {r.reason}
-                  </span>
+                  <span className="text-secondary">{r.reason}</span>
                 </li>
               ))}
           </ul>
@@ -147,7 +140,7 @@ export default function ExecutionQuality({
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {/* Slippage */}
         <div className="bg-surface-alt border-edge rounded-lg border p-4">
-          <div className="text-tertiary font-sans text-xs font-bold uppercase tracking-wider">
+          <div className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">
             Slippage
           </div>
           {fills.length > 0 ? (
@@ -197,7 +190,7 @@ export default function ExecutionQuality({
 
         {/* Session Timing */}
         <div className="bg-surface-alt border-edge rounded-lg border p-4">
-          <div className="text-tertiary font-sans text-xs font-bold uppercase tracking-wider">
+          <div className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">
             Session Timing
           </div>
           <div className="mt-2 grid grid-cols-2 gap-3">
@@ -220,9 +213,7 @@ export default function ExecutionQuality({
             </Stat>
             <Stat label="Trades/Hour">
               <span className="text-primary font-mono font-bold">
-                {tradesPerHour !== null
-                  ? tradesPerHour.toFixed(1)
-                  : '\u2014'}
+                {tradesPerHour !== null ? tradesPerHour.toFixed(1) : '\u2014'}
               </span>
             </Stat>
           </div>
@@ -243,7 +234,7 @@ function Card({
 }) {
   return (
     <div className="bg-surface-alt border-edge rounded-lg border p-4">
-      <div className="text-tertiary font-sans text-xs font-bold uppercase tracking-wider">
+      <div className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">
         {label}
       </div>
       <div className="mt-1">{children}</div>
@@ -262,9 +253,7 @@ function Stat({
 }) {
   return (
     <div>
-      <div className="text-muted font-sans text-xs">
-        {label}
-      </div>
+      <div className="text-muted font-sans text-xs">{label}</div>
       <div className="mt-0.5 text-sm">{children}</div>
     </div>
   );

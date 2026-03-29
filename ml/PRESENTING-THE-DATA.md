@@ -111,8 +111,8 @@ The EDA report tests whether your 16 trading rules hold up against actual market
 - **r** = correlation strength. Positive means higher values of this feature coincide with more correct calls.
 - **p** = raw p-value (chance of seeing this correlation by luck).
 - **q** = FDR-adjusted p-value (corrected for testing many features at once). **This is the number that matters.**
-  - q < 0.05 (**): strong evidence
-  - q < 0.10 (*): suggestive evidence
+  - q < 0.05 (\*\*): strong evidence
+  - q < 0.10 (\*): suggestive evidence
   - q > 0.10: could be noise -- don't act on it
 - **H=** (in the range section) is the Kruskal-Wallis test statistic -- higher means the feature separates NARROW/NORMAL/WIDE/EXTREME days more cleanly.
 
@@ -196,13 +196,13 @@ Clustering answers: **"Are there natural types of trading days that my rules don
 
 **How to read it:**
 
-| Metric | What it measures | Good values |
-|--------|-----------------|-------------|
-| Silhouette (K-Means, GMM, Hier.) | How well-separated the clusters are | > 0.25 = meaningful, > 0.50 = strong |
-| CH (Calinski-Harabasz) | Between-cluster vs within-cluster variance | Higher is better (compare across k, not absolute) |
-| DB (Davies-Bouldin) | Average cluster similarity | Lower is better (< 1.0 is good) |
-| GMM BIC | Model complexity penalty | Lower is better (compare across k) |
-| Sizes | How many days in each cluster | Avoid clusters with < 5 days |
+| Metric                           | What it measures                           | Good values                                       |
+| -------------------------------- | ------------------------------------------ | ------------------------------------------------- |
+| Silhouette (K-Means, GMM, Hier.) | How well-separated the clusters are        | > 0.25 = meaningful, > 0.50 = strong              |
+| CH (Calinski-Harabasz)           | Between-cluster vs within-cluster variance | Higher is better (compare across k, not absolute) |
+| DB (Davies-Bouldin)              | Average cluster similarity                 | Lower is better (< 1.0 is good)                   |
+| GMM BIC                          | Model complexity penalty                   | Lower is better (compare across k)                |
+| Sizes                            | How many days in each cluster              | Avoid clusters with < 5 days                      |
 
 **The "best k" is selected by average silhouette across all 3 algorithms.** If the best silhouette is < 0.20, the clusters are weak -- treat them as hypotheses.
 
@@ -364,18 +364,23 @@ This is the most important diagnostic plot for knowing whether your data is trus
 When sharing these results with another trader, follow this structure:
 
 **1. The Headline (30 seconds)**
+
 > "We've analyzed 30+ days of 0DTE trading data. The system's structure calls are 90% accurate overall, but all 3 failures happened on days with negative GEX. SPX Net Flow is anti-predictive -- we should ignore or fade it."
 
 **2. What's Working (1 minute)**
+
 > Show `structure_confidence.png`. Point to PCS at 100%, CCS at 82%. Show the confidence calibration: HIGH confidence calls are more accurate than MODERATE.
 
 **3. What's Not Working (1 minute)**
+
 > Show `flow_reliability.png`. Point to SPY Net Flow at 25% with `*` -- statistically significant anti-signal. Show `gex_vs_range.png` right panel -- all red X failures cluster in negative GEX territory.
 
 **4. What We Don't Know Yet (1 minute)**
+
 > "IC has only 4 data points -- the confidence interval spans 30% to 95%. We can't draw conclusions yet. The charm pattern rule appears contradicted but may reflect naive vs. Periscope divergence."
 
 **5. Recommended Actions (1.5 minutes)**
+
 > "Three changes: (1) Stop using SPY Net Flow for directional reads. (2) Add a negative GEX checkpoint before CCS entries. (3) Size positions by confidence level -- full on HIGH, half on MODERATE."
 
 ### The Written Report
@@ -384,29 +389,35 @@ When documenting findings for future reference:
 
 ```markdown
 # ML Analysis Report — [Date]
+
 ## Dataset: [N] trading days ([start] to [end])
 
 ## Summary
+
 - Overall accuracy: X/Y (Z%)
 - Best structure: [name] at [accuracy] CI [lo%-hi%]
 - Most failures: [condition]
 - Most predictive feature: [name] (q = [value])
 
 ## Key Findings
+
 1. [Rule name] is [CONFIRMED/NOT CONFIRMED] (Cohen's d = X, [size])
 2. [Flow source] is [USEFUL/ANTI-SIGNAL] (p = X, CI [lo%-hi%])
 3. Clusters [are/are not] meaningful (permutation p = X)
 
 ## Actionable Changes
+
 - [ ] Change 1 (supported by: [evidence])
 - [ ] Change 2 (supported by: [evidence])
 - [ ] Change 3 (supported by: [evidence])
 
 ## Data Gaps
+
 - [Feature] needs N more days before conclusions
 - [Cluster/finding] is unstable (stability = X%)
 
 ## Next Milestone
+
 - Phase 2 ready at [N] labeled days (est. [date])
 ```
 
@@ -416,16 +427,16 @@ When documenting findings for future reference:
 
 ### Red Flags
 
-| Signal | What it means | What to do |
-|--------|--------------|------------|
-| n < 10 for any group | Sample too small for reliable statistics | Report the finding but don't act on it |
-| CI spans > 40 percentage points | Massive uncertainty | Wait for more data before changing behavior |
-| q > 0.10 (FDR-adjusted) | Could be chance after correcting for multiple tests | Treat as hypothesis, not finding |
-| Permutation p > 0.10 | Clusters no better than random | Don't use cluster labels as features |
-| Stability < 70% | Removing one day reshuffles clusters | Clusters are fragile; re-run at 50+ days |
-| Stationarity plot shows trend | Data regime is shifting | Findings may not generalize forward |
-| All failures in one condition | Pattern may be real or coincidence with 3 failures | Add as checkpoint, but don't hard-block trades |
-| LOW confidence at 100% (n=1) | One data point means nothing | Ignore completely |
+| Signal                          | What it means                                       | What to do                                     |
+| ------------------------------- | --------------------------------------------------- | ---------------------------------------------- |
+| n < 10 for any group            | Sample too small for reliable statistics            | Report the finding but don't act on it         |
+| CI spans > 40 percentage points | Massive uncertainty                                 | Wait for more data before changing behavior    |
+| q > 0.10 (FDR-adjusted)         | Could be chance after correcting for multiple tests | Treat as hypothesis, not finding               |
+| Permutation p > 0.10            | Clusters no better than random                      | Don't use cluster labels as features           |
+| Stability < 70%                 | Removing one day reshuffles clusters                | Clusters are fragile; re-run at 50+ days       |
+| Stationarity plot shows trend   | Data regime is shifting                             | Findings may not generalize forward            |
+| All failures in one condition   | Pattern may be real or coincidence with 3 failures  | Add as checkpoint, but don't hard-block trades |
+| LOW confidence at 100% (n=1)    | One data point means nothing                        | Ignore completely                              |
 
 ### The Small-n Mindset
 
@@ -491,11 +502,11 @@ As data accumulates (50, 100, 200 days), re-run and watch which findings strengt
 
 ## Milestones Ahead
 
-| Days Accumulated | What Unlocks | Action |
-|-----------------|-------------|--------|
-| **30 (now)** | Clustering + EDA (provisional) | Review this guide. Identify 2-3 actionable changes. |
-| **45** | Phase 2 early experiment | Run walk-forward XGBoost. Does it beat 55% majority baseline? |
-| **50** | Re-run clustering | Do clusters stabilize? Does permutation p hold? |
-| **60-80** | Phase 2 full training | Train structure classifier. Target 65-70% accuracy. |
-| **100** | Intraday Range Regression | Enough API-enriched days for range prediction. |
-| **200** | All models mature | Clusters are stable, CIs are narrow, Phase 2 calibrated. |
+| Days Accumulated | What Unlocks                   | Action                                                        |
+| ---------------- | ------------------------------ | ------------------------------------------------------------- |
+| **30 (now)**     | Clustering + EDA (provisional) | Review this guide. Identify 2-3 actionable changes.           |
+| **45**           | Phase 2 early experiment       | Run walk-forward XGBoost. Does it beat 55% majority baseline? |
+| **50**           | Re-run clustering              | Do clusters stabilize? Does permutation p hold?               |
+| **60-80**        | Phase 2 full training          | Train structure classifier. Target 65-70% accuracy.           |
+| **100**          | Intraday Range Regression      | Enough API-enriched days for range prediction.                |
+| **200**          | All models mature              | Clusters are stable, CIs are narrow, Phase 2 calibrated.      |
