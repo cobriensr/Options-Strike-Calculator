@@ -64,16 +64,17 @@ function EquityCurve({
   const range = maxBal - minBal || 1;
 
   const W = 600;
-  const H = 160;
+  const H = 180;
   const PAD_X = 4;
-  const PAD_Y = 12;
+  const PAD_TOP = 18;
+  const PAD_BOTTOM = 20;
   const plotW = W - PAD_X * 2;
-  const plotH = H - PAD_Y * 2;
+  const plotH = H - PAD_TOP - PAD_BOTTOM;
 
   const toX = (i: number) =>
     PAD_X + (i / (points.length - 1)) * plotW;
   const toY = (bal: number) =>
-    PAD_Y + plotH - ((bal - minBal) / range) * plotH;
+    PAD_TOP + plotH - ((bal - minBal) / range) * plotH;
 
   const pathD = points
     .map((p, i) =>
@@ -94,9 +95,17 @@ function EquityCurve({
     if (dd > maxDrawdown) maxDrawdown = dd;
   }
 
-  // First and last time labels
-  const firstTime = points[0]?.time ?? '';
-  const lastTime = points.at(-1)?.time ?? '';
+  // First and last time labels — skip BAL entries with 00:00:00
+  const tradePoints = points.filter(
+    (p) => p.time !== '00:00:00',
+  );
+  const fmtTime = (t: string) => t.slice(0, 5);
+  const firstTime = tradePoints[0]
+    ? fmtTime(tradePoints[0].time)
+    : '';
+  const lastTime = tradePoints.at(-1)
+    ? fmtTime(tradePoints.at(-1)!.time)
+    : '';
 
   return (
     <div className="mt-1">
@@ -143,9 +152,9 @@ function EquityCurve({
           fill="var(--color-success)"
         />
         <text
-          x={toX(highIdx)}
-          y={toY(maxBal) - 6}
-          textAnchor="middle"
+          x={toX(highIdx) + (highIdx === points.length - 1 ? -8 : highIdx === 0 ? 8 : 0)}
+          y={toY(maxBal) - 8}
+          textAnchor={highIdx === points.length - 1 ? 'end' : highIdx === 0 ? 'start' : 'middle'}
           fill="var(--color-success)"
           fontSize="9"
           fontFamily="var(--font-mono)"
@@ -161,9 +170,9 @@ function EquityCurve({
           fill="var(--color-danger)"
         />
         <text
-          x={toX(lowIdx)}
-          y={toY(minBal) + 14}
-          textAnchor="middle"
+          x={toX(lowIdx) + (lowIdx === 0 ? 8 : lowIdx === points.length - 1 ? -8 : 0)}
+          y={toY(minBal) - 8}
+          textAnchor={lowIdx === 0 ? 'start' : lowIdx === points.length - 1 ? 'end' : 'middle'}
           fill="var(--color-danger)"
           fontSize="9"
           fontFamily="var(--font-mono)"
