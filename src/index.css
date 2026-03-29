@@ -21,7 +21,7 @@
   --color-secondary: #4a4740;
   --color-tertiary: #5c5950;
   --color-muted: #6b665d;
-  --color-placeholder: #9b9689;
+  --color-placeholder: #7a756b;
   --color-accent: #1d4ed8;
   --color-success: #15803d;
   --color-danger: #b91c1c;
@@ -54,6 +54,10 @@
   --color-selection-text: #1e3a5f;
   --color-chevron: #5c5950;
 
+  /* Chart-specific colors */
+  --color-chart-purple: #7c3aed;
+  --color-chart-amber: #b45309;
+
   /* Fonts */
   --font-serif: 'Source Serif 4', 'Charter', Georgia, serif;
   --font-mono: 'DM Mono', monospace;
@@ -62,6 +66,25 @@
 
 :root {
   color-scheme: light;
+
+  /* Type scale (pixel-precise for data-dense UI) */
+  --text-2xs: 8px;
+  --text-xs: 10px;
+  --text-sm: 11px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 16px;
+
+  /* Tracking scale */
+  --tracking-tight: 0.06em;
+  --tracking-normal: 0.08em;
+  --tracking-wide: 0.12em;
+  --tracking-wider: 0.14em;
+
+  /* Shadow scale */
+  --shadow-subtle: 0 1px 4px rgba(0, 0, 0, 0.03);
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-tooltip: 0 4px 24px rgba(0, 0, 0, 0.25);
 }
 
 /* ============================================================
@@ -79,7 +102,7 @@
   --color-secondary: #b8b8c4;
   --color-tertiary: #9898a8;
   --color-muted: #9595a5;
-  --color-placeholder: #585868;
+  --color-placeholder: #7a7a8a;
   --color-accent: #7ba4ff;
   --color-success: #5ce896;
   --color-danger: #ff8585;
@@ -103,6 +126,8 @@
   --color-selection-bg: #2a3e66;
   --color-selection-text: #bfdbfe;
   --color-chevron: #9898a8;
+  --color-chart-purple: #b49bff;
+  --color-chart-amber: #f59e0b;
   color-scheme: dark;
 }
 

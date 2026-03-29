@@ -39,6 +39,8 @@ export const theme = {
   chipText: 'var(--color-chip-text)',
   chipActiveText: 'var(--color-chip-active-text)',
   chevronColor: 'var(--color-chevron)',
+  chartPurple: 'var(--color-chart-purple)',
+  chartAmber: 'var(--color-chart-amber)',
 } as const;
 
 export type Theme = typeof theme;
