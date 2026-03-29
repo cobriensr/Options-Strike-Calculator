@@ -70,6 +70,7 @@ export interface SimilarLesson {
   tags: string[];
   category: string | null;
   sourceDate: string;
+  distance: number;
 }
 
 /**
@@ -88,7 +89,8 @@ export async function findSimilarLessons(
   const vectorLiteral = `[${embedding.join(',')}]`;
 
   const rows = await sql`
-    SELECT id, text, tags, category, source_date
+    SELECT id, text, tags, category, source_date,
+           embedding <=> ${vectorLiteral}::vector AS distance
     FROM lessons
     WHERE status = 'active'
     ORDER BY embedding <=> ${vectorLiteral}::vector
@@ -101,5 +103,6 @@ export async function findSimilarLessons(
     tags: row.tags as string[],
     category: (row.category as string) ?? null,
     sourceDate: row.source_date as string,
+    distance: Number(row.distance),
   }));
 }

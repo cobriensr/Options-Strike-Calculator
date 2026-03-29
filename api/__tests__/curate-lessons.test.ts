@@ -358,6 +358,7 @@ describe('GET /api/cron/curate-lessons', () => {
         tags: ['vix'],
         category: 'sizing',
         sourceDate: '2026-03-10',
+        distance: 0.15,
       },
     ]);
 
@@ -750,6 +751,7 @@ describe('GET /api/cron/curate-lessons', () => {
         tags: ['vix'],
         category: 'sizing',
         sourceDate: '2026-03-10',
+        distance: 0.15,
       },
     ]);
 
