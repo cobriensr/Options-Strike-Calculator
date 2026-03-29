@@ -739,6 +739,42 @@ const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE lesson_reports ADD CONSTRAINT chk_report_obj CHECK (jsonb_typeof(report) = 'object')`,
     ],
   },
+  {
+    id: 19,
+    description: 'Create predictions table for ML model outputs',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS predictions (
+          date              DATE PRIMARY KEY,
+          ccs_prob          NUMERIC(5,4),
+          pcs_prob          NUMERIC(5,4),
+          ic_prob           NUMERIC(5,4),
+          sit_out_prob      NUMERIC(5,4),
+          predicted_class   TEXT,
+          model_version     TEXT NOT NULL,
+          feature_count     INTEGER,
+          top_features      JSONB,
+          created_at        TIMESTAMPTZ DEFAULT NOW()
+        )
+      `;
+    },
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS predictions (
+          date              DATE PRIMARY KEY,
+          ccs_prob          NUMERIC(5,4),
+          pcs_prob          NUMERIC(5,4),
+          ic_prob           NUMERIC(5,4),
+          sit_out_prob      NUMERIC(5,4),
+          predicted_class   TEXT,
+          model_version     TEXT NOT NULL,
+          feature_count     INTEGER,
+          top_features      JSONB,
+          created_at        TIMESTAMPTZ DEFAULT NOW()
+        )
+      `,
+    ],
+  },
 ];
 
 /**

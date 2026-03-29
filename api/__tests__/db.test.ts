@@ -445,6 +445,8 @@ describe('db.ts', () => {
         { id: 16 },
         { id: 17 },
         { id: 18 },
+        { id: 19 },
+        { id: 19 },
       ]);
 
       const applied = await migrateDb();
