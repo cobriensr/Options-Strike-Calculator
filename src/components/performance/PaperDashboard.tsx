@@ -16,35 +16,67 @@ interface PaperDashboardProps {
   sigma: number | null;
   /** Time to expiration in years from the calculator (null if not available) */
   T: number | null;
+  /** Raw time inputs from the calculator for local T computation */
+  timeHour: string;
+  timeMinute: string;
+  timeAmPm: 'AM' | 'PM';
+}
+
+/** Compute T from raw time inputs, ignoring calendar date.
+ *  Market: 8:30 CT – 15:00 CT. T = hoursRemaining / (365.25 * 24). */
+function computeLocalT(
+  hour: string,
+  minute: string,
+  amPm: 'AM' | 'PM',
+): number | null {
+  let h = Number.parseInt(hour, 10);
+  if (Number.isNaN(h)) return null;
+  if (amPm === 'PM' && h !== 12) h += 12;
+  if (amPm === 'AM' && h === 12) h = 0;
+  // Convert to CT minutes since midnight
+  const totalMin = h * 60 + Number.parseInt(minute, 10);
+  const closeMin = 15 * 60; // 3:00 PM CT
+  const hoursRemaining = (closeMin - totalMin) / 60;
+  if (hoursRemaining <= 0) return null;
+  return hoursRemaining / (365.25 * 24);
 }
 
 export default function PaperDashboard({
   spotPrice,
   sigma,
   T,
+  timeHour,
+  timeMinute,
+  timeAmPm,
 }: PaperDashboardProps) {
   const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
   const [useBSEstimates, setUseBSEstimates] = useState(false);
 
-  // Re-estimate P&L using Black-Scholes when toggled on
+  // Compute T locally from time inputs so it works even when the
+  // calculator returns null (e.g. past dates, weekends)
+  const effectiveT = T ?? computeLocalT(timeHour, timeMinute, timeAmPm);
+
+  // Re-estimate P&L using theta decay when toggled on
   const statement = useMemo(() => {
     if (!rawStatement) return null;
     if (
       useBSEstimates &&
-      sigma != null &&
-      sigma > 0 &&
-      T != null &&
-      T > 0 &&
-      spotPrice > 0
+      effectiveT != null &&
+      effectiveT > 0
     ) {
       try {
-        return applyBSEstimates(rawStatement, spotPrice, sigma, T);
+        return applyBSEstimates(
+          rawStatement,
+          spotPrice,
+          sigma ?? 0,
+          effectiveT,
+        );
       } catch {
         return rawStatement;
       }
     }
     return rawStatement;
-  }, [rawStatement, spotPrice, sigma, T, useBSEstimates]);
+  }, [rawStatement, spotPrice, sigma, effectiveT, useBSEstimates]);
   const [collapsed, setCollapsed] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -123,8 +155,8 @@ export default function PaperDashboard({
             {statement ? 'Re-upload' : 'Upload Statement'}
           </button>
 
-          {/* BS estimate toggle */}
-          {statement && sigma != null && T != null && (
+          {/* Theta decay estimate toggle */}
+          {statement && (
             <button
               type="button"
               onClick={() => setUseBSEstimates((p) => !p)}
