@@ -176,9 +176,9 @@ function StrikeMap({
   // Stack bars vertically
   const barH = 22;
   const gap = 5;
-  const barsStartY = 36;
-  const axisY = barsStartY + bars.length * (barH + gap) + 10;
-  const totalH = axisY + 20;
+  const barsStartY = 46;
+  const axisY = barsStartY + bars.length * (barH + gap) + 16;
+  const totalH = axisY + 24;
 
   return (
     <svg
@@ -187,19 +187,10 @@ function StrikeMap({
       role="img"
       aria-label="Strike position map"
     >
-      {/* Spot price vertical line */}
-      <line
-        x1={spotX}
-        y1={8}
-        x2={spotX}
-        y2={axisY}
-        stroke="var(--color-accent)"
-        strokeWidth="2"
-        strokeDasharray="4 3"
-      />
+      {/* Spot price label + vertical line */}
       <text
         x={spotX}
-        y={6}
+        y={18}
         textAnchor="middle"
         fill="var(--color-accent)"
         fontSize="14"
@@ -208,6 +199,15 @@ function StrikeMap({
       >
         SPX {fmtStrike(spotPrice)}
       </text>
+      <line
+        x1={spotX}
+        y1={24}
+        x2={spotX}
+        y2={axisY}
+        stroke="var(--color-accent)"
+        strokeWidth="2"
+        strokeDasharray="4 3"
+      />
 
       {/* Spread bars */}
       {bars.map((bar, i) => {
@@ -621,14 +621,21 @@ function CreditTimeChart({
 
   const minMin = Math.min(...entries.map((e) => e.minutes));
   const maxMin = Math.max(...entries.map((e) => e.minutes));
-  const maxCredit = Math.max(...entries.map((e) => e.credit));
+  const credits = entries.map((e) => e.credit);
+  const minCredit = Math.min(...credits);
+  const maxCredit = Math.max(...credits);
+  // Add 20% padding above and below the credit range
+  const creditPad = (maxCredit - minCredit) * 0.2 || 0.1;
+  const creditLo = Math.max(0, minCredit - creditPad);
+  const creditHi = maxCredit + creditPad;
+  const creditRange = creditHi - creditLo;
   const timeRange = maxMin - minMin || 60;
 
   const W = 560;
-  const H = 240;
-  const PAD_L = 12;
+  const H = 260;
+  const PAD_L = 50;
   const PAD_R = 12;
-  const PAD_T = 20;
+  const PAD_T = 16;
   const PAD_B = 28;
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
@@ -636,7 +643,9 @@ function CreditTimeChart({
   const toX = (min: number) =>
     PAD_L + ((min - minMin) / timeRange) * plotW;
   const toY = (credit: number) =>
-    PAD_T + plotH - (credit / maxCredit) * plotH;
+    PAD_T +
+    plotH -
+    ((credit - creditLo) / creditRange) * plotH;
 
   return (
     <svg
@@ -645,20 +654,35 @@ function CreditTimeChart({
       role="img"
       aria-label="Credit received vs entry time"
     >
-      {/* Grid lines */}
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line
-          key={f}
-          x1={PAD_L}
-          y1={PAD_T + plotH * (1 - f)}
-          x2={W - PAD_R}
-          y2={PAD_T + plotH * (1 - f)}
-          stroke="var(--color-edge)"
-          strokeDasharray="3 6"
-          strokeWidth="0.4"
-          opacity="0.5"
-        />
-      ))}
+      {/* Grid lines with Y-axis labels */}
+      {[0, 0.25, 0.5, 0.75, 1].map((f) => {
+        const val = creditLo + creditRange * f;
+        const y = PAD_T + plotH * (1 - f);
+        return (
+          <g key={f}>
+            <line
+              x1={PAD_L}
+              y1={y}
+              x2={W - PAD_R}
+              y2={y}
+              stroke="var(--color-edge)"
+              strokeDasharray="3 6"
+              strokeWidth="0.4"
+              opacity="0.4"
+            />
+            <text
+              x={PAD_L - 6}
+              y={y + 4}
+              textAnchor="end"
+              fill="var(--color-muted)"
+              fontSize="10"
+              fontFamily="var(--font-mono)"
+            >
+              {val.toFixed(2)}
+            </text>
+          </g>
+        );
+      })}
 
       {/* Bubbles — size by contracts */}
       {entries.map((e, i) => {
@@ -712,13 +736,15 @@ function CreditTimeChart({
       </text>
       {/* Y axis label */}
       <text
-        x={PAD_L}
-        y={PAD_T - 3}
+        x={4}
+        y={PAD_T + plotH / 2}
+        textAnchor="middle"
         fill="var(--color-muted)"
-        fontSize="11"
+        fontSize="10"
         fontFamily="var(--font-mono)"
+        transform={`rotate(-90, 4, ${PAD_T + plotH / 2})`}
       >
-        Credit $
+        Credit ($)
       </text>
     </svg>
   );
