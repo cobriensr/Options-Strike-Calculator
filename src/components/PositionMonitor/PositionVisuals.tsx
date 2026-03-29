@@ -441,7 +441,7 @@ function RiskWaterfall({
   const gap = 8;
   const labelW = 180;
   const barAreaW = W - labelW - 80;
-  const totalH = segments.length * (barH + gap) + barH + gap + 10;
+  const totalH = segments.length * (barH + gap) + 10;
 
   const toW = (v: number) =>
     (Math.abs(v) / maxVal) * barAreaW;
@@ -510,55 +510,6 @@ function RiskWaterfall({
           </g>
         );
       })}
-
-      {/* Net total */}
-      {(() => {
-        const y =
-          segments.length * (barH + gap) + 4;
-        const w = toW(portfolioRisk.totalMaxLoss);
-        return (
-          <g>
-            <line
-              x1={labelW}
-              y1={y - 2}
-              x2={labelW + barAreaW}
-              y2={y - 2}
-              stroke="var(--color-edge)"
-              strokeWidth="0.5"
-            />
-            <text
-              x={labelW - 6}
-              y={y + barH / 2 + 4}
-              textAnchor="end"
-              fill="var(--color-primary)"
-              fontSize="12"
-              fontWeight="700"
-              fontFamily="var(--font-mono)"
-            >
-              MAX LOSS (greater side)
-            </text>
-            <rect
-              x={labelW}
-              y={y}
-              width={Math.max(w, 2)}
-              height={barH}
-              rx={4}
-              fill="var(--color-danger)"
-              opacity="0.85"
-            />
-            <text
-              x={labelW + w + 6}
-              y={y + barH / 2 + 4}
-              fill="var(--color-danger)"
-              fontSize="13"
-              fontWeight="700"
-              fontFamily="var(--font-mono)"
-            >
-              {fmtK(portfolioRisk.totalMaxLoss)}
-            </text>
-          </g>
-        );
-      })()}
 
       <defs>
         <pattern
@@ -632,7 +583,7 @@ function CreditTimeChart({
   const timeRange = maxMin - minMin || 60;
 
   const W = 800;
-  const H = 360;
+  const H = 400;
   const PAD_L = 55;
   const PAD_R = 16;
   const PAD_T = 20;
@@ -967,7 +918,7 @@ export default function PositionVisuals(
           return (
             <div
               key={panel.id}
-              className={`bg-surface-alt border-edge overflow-hidden rounded-lg border transition-all ${
+              className={`bg-surface-alt border-edge rounded-lg border transition-all ${
                 isExpanded
                   ? 'md:col-span-2'
                   : ''

@@ -924,21 +924,9 @@ export function groupIntoSpreads(
     t.legs.some((l) => l.posEffect === 'TO OPEN'),
   );
 
-  // Group trades within 60 seconds as potential IC pairs
-  const tradeMinutes = (t: ExecutedTrade) => {
-    const match = t.execTime.match(/(\d{1,2}):(\d{2}):?(\d{2})?/);
-    if (!match) return 0;
-    return (
-      Number.parseInt(match[1]!, 10) * 3600 +
-      Number.parseInt(match[2]!, 10) * 60 +
-      Number.parseInt(match[3] ?? '0', 10)
-    );
-  };
-
   // Build a spread from each 2-leg TO OPEN trade
   type TradeSpread = {
     spread: Spread;
-    execSeconds: number;
     tradeIdx: number;
   };
 
@@ -991,7 +979,6 @@ export function groupIntoSpreads(
 
     const ts: TradeSpread = {
       spread,
-      execSeconds: tradeMinutes(trade),
       tradeIdx: ti,
     };
 
@@ -1002,8 +989,9 @@ export function groupIntoSpreads(
     }
   }
 
-  // ─ Step 2: Pair PCS + CCS into ICs by timestamp ───────
-  // Trades within 60 seconds with matching qty = IC
+  // ─ Step 2: Pair PCS + CCS into ICs by qty ────────────
+  // Match by contract count — no time constraint, since a
+  // trader may add the second wing hours after the first.
   const usedPCS = new Set<number>();
   const usedCCS = new Set<number>();
 
@@ -1015,11 +1003,10 @@ export function groupIntoSpreads(
       if (usedCCS.has(c)) continue;
       const ccs = tradeCCS[c]!;
 
-      const timeDiff = Math.abs(pcs.execSeconds - ccs.execSeconds);
       const qtyMatch =
         pcs.spread.contracts === ccs.spread.contracts;
 
-      if (timeDiff <= 60 && qtyMatch) {
+      if (qtyMatch) {
         usedPCS.add(p);
         usedCCS.add(c);
 

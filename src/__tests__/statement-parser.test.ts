@@ -1671,27 +1671,19 @@ describe('parseStatement (integration)', () => {
     // Open legs: only the PCS remains (CCS was closed)
     expect(result.openLegs).toHaveLength(2);
 
-    // Grouped positions: both TO OPEN trades produce spreads
-    // (PCS + CCS, 5 min apart so not paired as IC)
-    expect(result.spreads).toHaveLength(2);
+    // Grouped positions: PCS + CCS with matching qty → 1 IC
+    expect(result.spreads).toHaveLength(0);
+    expect(result.ironCondors).toHaveLength(1);
 
-    const pcs = result.spreads.find(
-      (s) => s.spreadType === 'PUT_CREDIT_SPREAD',
-    )!;
-    expect(pcs.shortLeg.strike).toBe(6400);
-    expect(pcs.longLeg.strike).toBe(6380);
-    expect(pcs.wingWidth).toBe(20);
-    expect(pcs.contracts).toBe(10);
+    const ic = result.ironCondors[0]!;
+    expect(ic.putSpread.shortLeg.strike).toBe(6400);
+    expect(ic.putSpread.longLeg.strike).toBe(6380);
+    expect(ic.putSpread.wingWidth).toBe(20);
+    expect(ic.contracts).toBe(10);
 
-    const ccs = result.spreads.find(
-      (s) => s.spreadType === 'CALL_CREDIT_SPREAD',
-    )!;
-    expect(ccs.shortLeg.strike).toBe(6600);
-    expect(ccs.longLeg.strike).toBe(6620);
-    expect(ccs.contracts).toBe(10);
-
-    // No ICs (trades are 5 min apart, exceeds 60s threshold)
-    expect(result.ironCondors).toHaveLength(0);
+    expect(ic.callSpread.shortLeg.strike).toBe(6600);
+    expect(ic.callSpread.longLeg.strike).toBe(6620);
+    expect(ic.callSpread.contracts).toBe(10);
 
     // Closed spreads: the CCS that was opened and closed
     expect(result.closedSpreads).toHaveLength(1);
@@ -1742,9 +1734,8 @@ describe('parseStatement (integration)', () => {
 
   it('parses credit received correctly for the PCS', () => {
     const result = parseStatement(TEST_CSV, 6500);
-    const pcs = result.spreads.find(
-      (s) => s.spreadType === 'PUT_CREDIT_SPREAD',
-    )!;
+    // PCS is now inside the IC (matched by qty, no time constraint)
+    const pcs = result.ironCondors[0]!.putSpread;
 
     // shortTradePrice = 3.50, longTradePrice = 2.00
     // creditPerContract = 3.50 - 2.00 = 1.50
@@ -1758,9 +1749,8 @@ describe('parseStatement (integration)', () => {
 
   it('computes distance to short strike', () => {
     const result = parseStatement(TEST_CSV, 6500);
-    const pcs = result.spreads.find(
-      (s) => s.spreadType === 'PUT_CREDIT_SPREAD',
-    )!;
+    // PCS is now inside the IC (matched by qty, no time constraint)
+    const pcs = result.ironCondors[0]!.putSpread;
 
     // isPCS so distance = spotPrice - shortStrike = 6500 - 6400 = 100
     expect(pcs.distanceToShortStrike).toBe(100);
