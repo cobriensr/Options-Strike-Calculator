@@ -36,10 +36,16 @@ export function validateMarketTime(
   const closeMinutes = MARKET.CLOSE_HOUR_ET * 60 + MARKET.CLOSE_MINUTE_ET;
 
   if (totalMinutes < openMinutes) {
-    return { valid: false, error: 'Before market open (9:30 AM ET)' };
+    return {
+      valid: false,
+      error: 'Before market open; use 9:30 AM ET or later',
+    };
   }
   if (totalMinutes >= closeMinutes) {
-    return { valid: false, error: 'At or after market close (4:00 PM ET)' };
+    return {
+      valid: false,
+      error: 'After market close; use before 4:00 PM ET',
+    };
   }
 
   const hoursRemaining = (closeMinutes - totalMinutes) / 60;
@@ -69,7 +75,10 @@ export function resolveIV(
       return { sigma: null, error: 'VIX must be a positive number' };
     }
     if (vix === 0) {
-      return { sigma: null, error: 'VIX cannot be zero' };
+      return {
+        sigma: null,
+        error: 'VIX cannot be zero; enter a value > 0',
+      };
     }
     if (
       multiplier == null ||

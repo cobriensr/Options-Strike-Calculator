@@ -31,6 +31,7 @@ export default function SignalCard({ title, subtitle, result }: Props) {
             style={{ color }}
           >
             {result.value}
+            <span className="sr-only"> ({result.label})</span>
           </span>
           <span
             className="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold tracking-[0.06em] uppercase"

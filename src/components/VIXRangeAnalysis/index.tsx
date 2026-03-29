@@ -49,13 +49,13 @@ export default function VIXRangeAnalysis({ vix, spot }: Props) {
         >
           <thead>
             <tr className="bg-table-header">
-              <th className={mkTh('left')}>VIX</th>
-              <th className={mkTh('right')}>Days</th>
-              <th className={mkTh('right')}>Med H-L</th>
-              <th className={mkTh('right')}>90th H-L</th>
-              <th className={mkTh('right')}>Med O{'\u2192'}C</th>
-              <th className={mkTh('right')}>&gt;1% H-L</th>
-              <th className={mkTh('right')}>&gt;2% H-L</th>
+              <th scope="col" className={mkTh('left')}>VIX</th>
+              <th scope="col" className={mkTh('right')}>Days</th>
+              <th scope="col" className={mkTh('right')}>Med H-L</th>
+              <th scope="col" className={mkTh('right')}>90th H-L</th>
+              <th scope="col" className={mkTh('right')}>Med O{'\u2192'}C</th>
+              <th scope="col" className={mkTh('right')}>&gt;1% H-L</th>
+              <th scope="col" className={mkTh('right')}>&gt;2% H-L</th>
             </tr>
           </thead>
           <tbody>
@@ -173,9 +173,9 @@ export default function VIXRangeAnalysis({ vix, spot }: Props) {
         >
           <thead>
             <tr className="bg-table-header">
-              <th className={mkTh('left')}>VIX Level</th>
+              <th scope="col" className={mkTh('left')}>VIX Level</th>
               {SURVIVAL_DATA.map((s) => (
-                <th key={s.wing} className={`${mkTh('center')} min-w-14`}>
+                <th scope="col" key={s.wing} className={`${mkTh('center')} min-w-14`}>
                   {s.label}
                 </th>
               ))}

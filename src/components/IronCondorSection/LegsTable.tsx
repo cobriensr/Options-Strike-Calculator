@@ -20,19 +20,19 @@ export default function LegsTable({ icRows }: Props) {
         >
           <thead>
             <tr className="bg-table-header">
-              <th className={mkTh('center')}>Delta</th>
-              <th className={mkTh('left', 'text-danger')}>
+              <th scope="col" className={mkTh('center')}>Delta</th>
+              <th scope="col" className={mkTh('left', 'text-danger')}>
                 {'\u25BE'} Long Put
               </th>
-              <th className={mkTh('left', 'text-danger')}>SPY</th>
-              <th className={mkTh('left', 'text-danger')}>Short Put</th>
-              <th className={mkTh('left', 'text-danger')}>SPY</th>
-              <th className={mkTh('left', 'text-success')}>
+              <th scope="col" className={mkTh('left', 'text-danger')}>SPY</th>
+              <th scope="col" className={mkTh('left', 'text-danger')}>Short Put</th>
+              <th scope="col" className={mkTh('left', 'text-danger')}>SPY</th>
+              <th scope="col" className={mkTh('left', 'text-success')}>
                 {'\u25B4'} Short Call
               </th>
-              <th className={mkTh('left', 'text-success')}>SPY</th>
-              <th className={mkTh('left', 'text-success')}>Long Call</th>
-              <th className={mkTh('left', 'text-success')}>SPY</th>
+              <th scope="col" className={mkTh('left', 'text-success')}>SPY</th>
+              <th scope="col" className={mkTh('left', 'text-success')}>Long Call</th>
+              <th scope="col" className={mkTh('left', 'text-success')}>SPY</th>
             </tr>
           </thead>
           <tbody>

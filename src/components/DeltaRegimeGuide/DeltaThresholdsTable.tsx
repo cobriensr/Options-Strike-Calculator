@@ -32,15 +32,15 @@ export default function DeltaThresholdsTable({
         >
           <thead>
             <tr className="bg-table-header">
-              <th className={mkTh('center')}>Delta</th>
-              <th className={mkTh('right')}>Put %</th>
-              <th className={mkTh('right')}>Call %</th>
-              <th className={mkTh('center')}>Med O{'\u2192'}C</th>
-              <th className={mkTh('center')}>Med H-L</th>
-              <th className={`${mkTh('center')} border-edge border-l-2`}>
+              <th scope="col" className={mkTh('center')}>Delta</th>
+              <th scope="col" className={mkTh('right')}>Put %</th>
+              <th scope="col" className={mkTh('right')}>Call %</th>
+              <th scope="col" className={mkTh('center')}>Med O{'\u2192'}C</th>
+              <th scope="col" className={mkTh('center')}>Med H-L</th>
+              <th scope="col" className={`${mkTh('center')} border-edge border-l-2`}>
                 90th O{'\u2192'}C
               </th>
-              <th className={mkTh('center')}>90th H-L</th>
+              <th scope="col" className={mkTh('center')}>90th H-L</th>
             </tr>
           </thead>
           <tbody>
