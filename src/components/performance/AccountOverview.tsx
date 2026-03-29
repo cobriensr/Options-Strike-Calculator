@@ -255,7 +255,10 @@ function EquityCurve({ points }: { points: readonly CurvePoint[] }) {
           fill="var(--color-danger)"
         />
         <text
-          x={toX(lowIdx) + (lowIdx === 0 ? 12 : lowIdx === points.length - 1 ? -12 : 0)}
+          x={
+            toX(lowIdx) +
+            (lowIdx === 0 ? 12 : lowIdx === points.length - 1 ? -12 : 0)
+          }
           y={
             lowIdx === 0 || lowIdx === points.length - 1
               ? toY(minBal) - 2
