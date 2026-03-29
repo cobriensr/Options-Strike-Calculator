@@ -1874,58 +1874,52 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
         ic.callSpread.currentValue === null,
     );
 
-  if (allSpreadsLackMarks && pnl.totals && pnl.totals.plOpen !== 0) {
-    const aggPnl = pnl.totals.plOpen;
-    // Total credit across all open positions
+  if (allSpreadsLackMarks && pnl.totals) {
+    // P/L Open from broker: negative = positions cost this much to
+    // close (i.e. you're still "in" by credit - abs(plOpen)).
+    // Distribute proportionally by credit weight across spreads.
+    const aggPlOpen = pnl.totals.plOpen;
     const totalCredit =
       grouped.spreads.reduce((s, sp) => s + sp.creditReceived, 0) +
       grouped.ironCondors.reduce((s, ic) => s + ic.totalCredit, 0);
 
     if (totalCredit > 0) {
-      // Distribute aggregate P&L proportionally by credit weight
+      const estimateSpreadPnl = (credit: number): {
+        openPnl: number;
+        pctOfMaxProfit: number | null;
+      } => {
+        const weight = credit / totalCredit;
+        // Cost to close this spread (proportional share of aggregate)
+        const costToClose = round2(Math.abs(aggPlOpen) * weight);
+        // Open P&L = credit minus cost to close
+        const openPnl = round2(credit - costToClose);
+        const pctOfMaxProfit =
+          credit > 0
+            ? round2((openPnl / credit) * 100)
+            : null;
+        return { openPnl, pctOfMaxProfit };
+      };
+
       for (let i = 0; i < grouped.spreads.length; i++) {
         const sp = grouped.spreads[i]!;
-        const weight = sp.creditReceived / totalCredit;
-        const estPnl = round2(aggPnl * weight);
-        const estPct =
-          sp.maxProfit > 0
-            ? round2((estPnl / sp.maxProfit) * 100)
-            : null;
-        // Replace the spread with estimated values
+        const est = estimateSpreadPnl(sp.creditReceived);
         (grouped.spreads as Spread[])[i] = {
           ...sp,
-          openPnl: estPnl,
-          pctOfMaxProfit: estPct,
+          ...est,
         };
       }
       for (let i = 0; i < grouped.ironCondors.length; i++) {
         const ic = grouped.ironCondors[i]!;
-        const weight = ic.totalCredit / totalCredit;
-        const estPnl = round2(aggPnl * weight);
-        const putWeight =
-          ic.putSpread.creditReceived / ic.totalCredit;
-        const callWeight =
-          ic.callSpread.creditReceived / ic.totalCredit;
-        const putPnl = round2(estPnl * putWeight);
-        const callPnl = round2(estPnl * callWeight);
+        const putEst = estimateSpreadPnl(
+          ic.putSpread.creditReceived,
+        );
+        const callEst = estimateSpreadPnl(
+          ic.callSpread.creditReceived,
+        );
         (grouped.ironCondors as IronCondor[])[i] = {
           ...ic,
-          putSpread: {
-            ...ic.putSpread,
-            openPnl: putPnl,
-            pctOfMaxProfit:
-              ic.putSpread.maxProfit > 0
-                ? round2((putPnl / ic.putSpread.maxProfit) * 100)
-                : null,
-          },
-          callSpread: {
-            ...ic.callSpread,
-            openPnl: callPnl,
-            pctOfMaxProfit:
-              ic.callSpread.maxProfit > 0
-                ? round2((callPnl / ic.callSpread.maxProfit) * 100)
-                : null,
-          },
+          putSpread: { ...ic.putSpread, ...putEst },
+          callSpread: { ...ic.callSpread, ...callEst },
         };
       }
     }
