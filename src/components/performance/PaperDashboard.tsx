@@ -24,15 +24,27 @@ export default function PaperDashboard({
   T,
 }: PaperDashboardProps) {
   const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
+  const [useBSEstimates, setUseBSEstimates] = useState(false);
 
-  // Re-estimate P&L using Black-Scholes when time/IV changes
+  // Re-estimate P&L using Black-Scholes when toggled on
   const statement = useMemo(() => {
     if (!rawStatement) return null;
-    if (sigma != null && T != null && T > 0) {
-      return applyBSEstimates(rawStatement, spotPrice, sigma, T);
+    if (
+      useBSEstimates &&
+      sigma != null &&
+      sigma > 0 &&
+      T != null &&
+      T > 0 &&
+      spotPrice > 0
+    ) {
+      try {
+        return applyBSEstimates(rawStatement, spotPrice, sigma, T);
+      } catch {
+        return rawStatement;
+      }
     }
     return rawStatement;
-  }, [rawStatement, spotPrice, sigma, T]);
+  }, [rawStatement, spotPrice, sigma, T, useBSEstimates]);
   const [collapsed, setCollapsed] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -110,6 +122,23 @@ export default function PaperDashboard({
           >
             {statement ? 'Re-upload' : 'Upload Statement'}
           </button>
+
+          {/* BS estimate toggle */}
+          {statement && sigma != null && T != null && (
+            <button
+              type="button"
+              onClick={() => setUseBSEstimates((p) => !p)}
+              className={
+                'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
+                (useBSEstimates
+                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                  : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
+              }
+              title="Use Black-Scholes to estimate P&L at the calculator's current time"
+            >
+              {useBSEstimates ? 'BS: On' : 'BS: Off'}
+            </button>
+          )}
 
           {/* Collapse toggle */}
           {statement && (
