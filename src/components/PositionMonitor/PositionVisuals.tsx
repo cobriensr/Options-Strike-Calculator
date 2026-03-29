@@ -382,12 +382,10 @@ function RiskWaterfall({
   spreads,
   ironCondors,
   hedges,
-  portfolioRisk,
 }: {
   spreads: readonly Spread[];
   ironCondors: readonly IronCondor[];
   hedges: readonly HedgePosition[];
-  portfolioRisk: PortfolioRisk;
 }) {
   // Build segments: each spread/IC contributes, hedges subtract
   type Segment = {
@@ -435,7 +433,9 @@ function RiskWaterfall({
     );
   }
 
-  const maxVal = portfolioRisk.totalMaxLoss || 1;
+  // Scale bars relative to the largest individual segment
+  const maxVal =
+    Math.max(...segments.map((s) => Math.abs(s.value))) || 1;
   const W = 800;
   const barH = 26;
   const gap = 8;
@@ -575,8 +575,8 @@ function CreditTimeChart({
   const credits = entries.map((e) => e.credit);
   const minCredit = Math.min(...credits);
   const maxCredit = Math.max(...credits);
-  // Tight padding — just enough to not clip bubble edges
-  const creditPad = (maxCredit - minCredit) * 0.12 || 0.05;
+  // Minimal padding — just enough to not clip bubble edges
+  const creditPad = (maxCredit - minCredit) * 0.05 || 0.02;
   const creditLo = Math.max(0, minCredit - creditPad);
   const creditHi = maxCredit + creditPad;
   const creditRange = creditHi - creditLo;
@@ -883,7 +883,6 @@ export default function PositionVisuals(
           spreads={props.spreads}
           ironCondors={props.ironCondors}
           hedges={props.hedges}
-          portfolioRisk={props.portfolioRisk}
         />
       ),
     },
