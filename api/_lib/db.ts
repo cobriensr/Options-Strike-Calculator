@@ -1,11 +1,12 @@
 /**
  * Postgres database helper using Neon serverless driver.
  *
- * Four tables:
+ * Base tables (created by initDb):
  *   market_snapshots — complete calculator state at each date+time (UNIQUE)
  *   analyses         — Claude chart analysis responses (linked to snapshots)
  *   outcomes         — end-of-day settlement data (for future backtesting)
- *   positions        — live Schwab SPX 0DTE positions (linked to snapshots)
+ *
+ * All other tables (positions, lessons, flow_data, etc.) are created by migrations.
  *
  * Setup:
  *   1. Add Neon Postgres from Vercel Marketplace (Storage tab → Connect Database → Neon)
@@ -167,37 +168,8 @@ export async function initDb() {
     )
   `;
 
-  // ── Positions (live Schwab 0DTE SPX positions) ─────────
-  await sql`
-    CREATE TABLE IF NOT EXISTS positions (
-      id              SERIAL PRIMARY KEY,
-      snapshot_id     INTEGER REFERENCES market_snapshots(id),
-      date            DATE NOT NULL,
-      fetch_time      TEXT NOT NULL,
-      account_hash    TEXT NOT NULL,
-      spx_price       DECIMAL(10,2),
-
-      -- Structured summary for Claude prompt context
-      summary         TEXT NOT NULL,
-
-      -- Raw position legs as JSONB array
-      legs            JSONB NOT NULL,
-
-      -- Aggregate stats
-      total_spreads   INTEGER DEFAULT 0,
-      call_spreads    INTEGER DEFAULT 0,
-      put_spreads     INTEGER DEFAULT 0,
-      net_delta       DECIMAL(8,4),
-      net_theta       DECIMAL(8,4),
-      net_gamma       DECIMAL(8,6),
-      total_credit    DECIMAL(10,2),
-      current_value   DECIMAL(10,2),
-      unrealized_pnl  DECIMAL(10,2),
-
-      created_at      TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(date, fetch_time)
-    )
-  `;
+  // ── Positions table is created by migration #1 ─────────
+  // Do not add new tables here — use migrations instead.
 
   // ── Indexes ───────────────────────────────────────────────
   await sql`CREATE INDEX IF NOT EXISTS idx_snapshots_date ON market_snapshots (date)`;
@@ -206,8 +178,6 @@ export async function initDb() {
   await sql`CREATE INDEX IF NOT EXISTS idx_analyses_confidence ON analyses (confidence)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_analyses_snapshot ON analyses (snapshot_id)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_outcomes_date ON outcomes (date)`;
-  await sql`CREATE INDEX IF NOT EXISTS idx_positions_date ON positions (date)`;
-  await sql`CREATE INDEX IF NOT EXISTS idx_positions_snapshot ON positions (snapshot_id)`;
 }
 
 // ============================================================
@@ -223,6 +193,12 @@ interface Migration {
   id: number;
   description: string;
   run: (sql: ReturnType<typeof getDb>) => Promise<void>;
+  /**
+   * Optional: return an array of query promises for atomic execution.
+   * When provided, migrateDb() wraps these + the tracking INSERT in a
+   * single sql.transaction() — all-or-nothing. Prefer this for new migrations.
+   */
+  statements?: (sql: ReturnType<typeof getDb>) => ReturnType<ReturnType<typeof getDb>>[];
 }
 
 const MIGRATIONS: Migration[] = [
@@ -689,6 +665,116 @@ const MIGRATIONS: Migration[] = [
       `;
     },
   },
+  {
+    id: 15,
+    description:
+      'Add composite index on analyses (date, created_at DESC) for getPreviousRecommendation',
+    run: async (sql) => {
+      await sql`CREATE INDEX IF NOT EXISTS idx_analyses_date_created ON analyses (date, created_at DESC)`;
+    },
+    statements: (sql) => [
+      sql`CREATE INDEX IF NOT EXISTS idx_analyses_date_created ON analyses (date, created_at DESC)`,
+    ],
+  },
+  {
+    id: 16,
+    description:
+      'Add composite index on flow_data (date, source, timestamp) for time-windowed queries',
+    run: async (sql) => {
+      await sql`CREATE INDEX IF NOT EXISTS idx_flow_data_date_source_ts ON flow_data (date, source, timestamp)`;
+    },
+    statements: (sql) => [
+      sql`CREATE INDEX IF NOT EXISTS idx_flow_data_date_source_ts ON flow_data (date, source, timestamp)`,
+    ],
+  },
+  {
+    id: 17,
+    description: 'Add NOT NULL constraint to all created_at columns',
+    run: async (sql) => {
+      await sql`ALTER TABLE market_snapshots ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE analyses ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE outcomes ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE positions ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE lessons ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE lesson_reports ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE flow_data ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE greek_exposure ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE spot_exposures ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE strike_exposures ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE economic_events ALTER COLUMN created_at SET NOT NULL`;
+      await sql`ALTER TABLE es_overnight_summaries ALTER COLUMN created_at SET NOT NULL`;
+    },
+    statements: (sql) => [
+      sql`ALTER TABLE market_snapshots ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE analyses ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE outcomes ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE positions ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE lessons ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE lesson_reports ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE flow_data ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE greek_exposure ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE spot_exposures ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE strike_exposures ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE economic_events ALTER COLUMN created_at SET NOT NULL`,
+      sql`ALTER TABLE es_overnight_summaries ALTER COLUMN created_at SET NOT NULL`,
+    ],
+  },
+  {
+    id: 18,
+    description: 'Add JSONB type constraints on legs, full_response, and report',
+    run: async (sql) => {
+      await sql`ALTER TABLE positions DROP CONSTRAINT IF EXISTS chk_legs_array`;
+      await sql`ALTER TABLE positions ADD CONSTRAINT chk_legs_array CHECK (jsonb_typeof(legs) = 'array')`;
+      await sql`ALTER TABLE analyses DROP CONSTRAINT IF EXISTS chk_full_response_obj`;
+      await sql`ALTER TABLE analyses ADD CONSTRAINT chk_full_response_obj CHECK (jsonb_typeof(full_response) = 'object')`;
+      await sql`ALTER TABLE lesson_reports DROP CONSTRAINT IF EXISTS chk_report_obj`;
+      await sql`ALTER TABLE lesson_reports ADD CONSTRAINT chk_report_obj CHECK (jsonb_typeof(report) = 'object')`;
+    },
+    statements: (sql) => [
+      sql`ALTER TABLE positions DROP CONSTRAINT IF EXISTS chk_legs_array`,
+      sql`ALTER TABLE positions ADD CONSTRAINT chk_legs_array CHECK (jsonb_typeof(legs) = 'array')`,
+      sql`ALTER TABLE analyses DROP CONSTRAINT IF EXISTS chk_full_response_obj`,
+      sql`ALTER TABLE analyses ADD CONSTRAINT chk_full_response_obj CHECK (jsonb_typeof(full_response) = 'object')`,
+      sql`ALTER TABLE lesson_reports DROP CONSTRAINT IF EXISTS chk_report_obj`,
+      sql`ALTER TABLE lesson_reports ADD CONSTRAINT chk_report_obj CHECK (jsonb_typeof(report) = 'object')`,
+    ],
+  },
+  {
+    id: 19,
+    description: 'Create predictions table for ML model outputs',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS predictions (
+          date              DATE PRIMARY KEY,
+          ccs_prob          NUMERIC(5,4),
+          pcs_prob          NUMERIC(5,4),
+          ic_prob           NUMERIC(5,4),
+          sit_out_prob      NUMERIC(5,4),
+          predicted_class   TEXT,
+          model_version     TEXT NOT NULL,
+          feature_count     INTEGER,
+          top_features      JSONB,
+          created_at        TIMESTAMPTZ DEFAULT NOW()
+        )
+      `;
+    },
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS predictions (
+          date              DATE PRIMARY KEY,
+          ccs_prob          NUMERIC(5,4),
+          pcs_prob          NUMERIC(5,4),
+          ic_prob           NUMERIC(5,4),
+          sit_out_prob      NUMERIC(5,4),
+          predicted_class   TEXT,
+          model_version     TEXT NOT NULL,
+          feature_count     INTEGER,
+          top_features      JSONB,
+          created_at        TIMESTAMPTZ DEFAULT NOW()
+        )
+      `,
+    ],
+  },
 ];
 
 /**
@@ -717,10 +803,19 @@ export async function migrateDb(): Promise<string[]> {
   for (const migration of MIGRATIONS) {
     if (appliedIds.has(migration.id)) continue;
 
-    await migration.run(sql);
-    await sql`
-      INSERT INTO schema_migrations (id, description) VALUES (${migration.id}, ${migration.description})
-    `;
+    if (migration.statements) {
+      // Atomic: migration statements + tracking INSERT all-or-nothing
+      await sql.transaction([
+        ...migration.statements(sql),
+        sql`INSERT INTO schema_migrations (id, description) VALUES (${migration.id}, ${migration.description})`,
+      ]);
+    } else {
+      // Legacy: sequential execution (not atomic)
+      await migration.run(sql);
+      await sql`
+        INSERT INTO schema_migrations (id, description) VALUES (${migration.id}, ${migration.description})
+      `;
+    }
     applied.push(`#${migration.id}: ${migration.description}`);
   }
 

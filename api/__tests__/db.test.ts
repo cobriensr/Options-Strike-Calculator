@@ -3,7 +3,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock @neondatabase/serverless before importing db module
-const mockSql = vi.fn();
+const mockSql = vi.fn() as ReturnType<typeof vi.fn> & {
+  transaction: ReturnType<typeof vi.fn>;
+};
+mockSql.transaction = vi.fn().mockResolvedValue([]);
 vi.mock('@neondatabase/serverless', () => ({
   neon: vi.fn(() => mockSql),
 }));
@@ -102,6 +105,7 @@ describe('db.ts', () => {
     process.env = { ...originalEnv, DATABASE_URL: 'postgres://test' };
     vi.restoreAllMocks();
     mockSql.mockReset();
+    mockSql.transaction = vi.fn().mockResolvedValue([]);
     vi.mocked(neon).mockReturnValue(mockSql as never);
     _resetDb();
   });
@@ -135,8 +139,8 @@ describe('db.ts', () => {
 
       await initDb();
 
-      // 4 CREATE TABLEs + 8 CREATE INDEXes = 12 calls
-      expect(mockSql).toHaveBeenCalledTimes(12);
+      // 3 CREATE TABLEs + 6 CREATE INDEXes = 9 calls (positions moved to migration #1)
+      expect(mockSql).toHaveBeenCalledTimes(9);
     });
   });
 
@@ -437,6 +441,12 @@ describe('db.ts', () => {
         { id: 12 },
         { id: 13 },
         { id: 14 },
+        { id: 15 },
+        { id: 16 },
+        { id: 17 },
+        { id: 18 },
+        { id: 19 },
+        { id: 19 },
       ]);
 
       const applied = await migrateDb();
@@ -469,9 +479,15 @@ describe('db.ts', () => {
         '#12: Create es_bars table for ES futures 1-minute OHLCV bars from sidecar',
         '#13: Create es_overnight_summaries table for pre-computed overnight ES metrics',
         '#14: Add pre_market_data JSONB column to market_snapshots',
+        '#15: Add composite index on analyses (date, created_at DESC) for getPreviousRecommendation',
+        '#16: Add composite index on flow_data (date, source, timestamp) for time-windowed queries',
+        '#17: Add NOT NULL constraint to all created_at columns',
+        '#18: Add JSONB type constraints on legs, full_response, and report',
       ]);
-      // 2 setup + 6 migration #2 + 1 insert + 3 migration #3 + 1 insert + 3 migration #4 + 1 insert + 3 migration #5 + 1 insert + 2 migration #6 + 1 insert + 2 migration #7 + 1 insert + 4 migration #8 + 1 insert + 1 migration #9 + 1 insert + 2 migration #10 + 1 insert + 3 migration #11 + 1 insert + 3 migration #12 + 1 insert + 1 migration #13 + 1 insert + 1 migration #14 + 1 insert = 49
-      expect(mockSql).toHaveBeenCalledTimes(49);
+      // 49 (migrations #1-14 via legacy run()) + 24 (migrations #15-18 build queries via sql`` then pass to transaction)
+      expect(mockSql).toHaveBeenCalledTimes(73);
+      // Migrations #15-18 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(4);
     });
 
     it('propagates errors from migration SQL', async () => {

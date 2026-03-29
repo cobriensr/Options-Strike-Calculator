@@ -457,6 +457,26 @@ export function formatSpotExposuresForClaude(
     `    Volume Net Charm: ${fmtGex(volCharm)}`,
   );
 
+  // Vanna snapshot
+  const oiVanna = latest.vannaOi / 1_000_000;
+  const volVanna = latest.vannaVol / 1_000_000;
+  const dirVanna = latest.vannaDir / 1_000_000;
+  lines.push(
+    '',
+    `    OI Net Vanna: ${fmtGex(oiVanna)}`,
+    `    Volume Net Vanna: ${fmtGex(volVanna)}`,
+    `    Directionalized Vanna: ${fmtGex(dirVanna)}`,
+  );
+  if (oiVanna > 0) {
+    lines.push(
+      `    Vanna Signal: POSITIVE — if VIX drops 1+ pt, expect mechanical SPX upward drift (Rule 17). CCS: tighten stops. PCS: structural support.`,
+    );
+  } else if (oiVanna < 0) {
+    lines.push(
+      `    Vanna Signal: NEGATIVE — if VIX rises, selloff acceleration beyond gamma. PCS: tighten exits.`,
+    );
+  }
+
   // Intraday trend
   if (rows.length >= 2) {
     const oiChange = (latest.gammaOi - first.gammaOi) / 1_000_000;

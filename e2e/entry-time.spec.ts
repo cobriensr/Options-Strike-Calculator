@@ -11,7 +11,7 @@ test.describe('Entry Time Section', () => {
   });
 
   test('entry time section renders with default values', async ({ page }) => {
-    await expect(page.getByText('Entry Time', { exact: true })).toBeVisible();
+    await expect(page.getByText('Date & Time', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Hour')).toBeVisible();
     await expect(page.getByLabel('Minute')).toBeVisible();
   });

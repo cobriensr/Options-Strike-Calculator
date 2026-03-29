@@ -13,7 +13,10 @@ export function getPool(): pg.Pool {
       connectionString,
       max: 5,
       idleTimeoutMillis: 30_000,
-      ssl: { rejectUnauthorized: false },
+      ssl: true,
+    });
+    pool.on('error', (err) => {
+      logger.error({ err }, 'Idle database client error');
     });
   }
   return pool;

@@ -46,6 +46,10 @@ vi.mock('@anthropic-ai/sdk', () => {
   return { default: MockAnthropic };
 });
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+}));
+
 // ============================================================
 // IMPORTS (after mocks)
 // ============================================================
@@ -186,7 +190,7 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 12 }]; // active count
+      if (callCount === 2) return [{ count: 12 }]; // active count
       return []; // reviews query returns empty
     });
 
@@ -207,7 +211,7 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 7 }]; // 7 active lessons
+      if (callCount === 2) return [{ count: 7 }]; // 7 active lessons
       return []; // no reviews
     });
 
@@ -233,10 +237,10 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 0 }]; // active count
-      if (callCount === 2) return [review]; // reviews query (no date filter)
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
-      if (callCount === 4) return [{ id: 42 }]; // nextval
+      if (callCount === 2) return [{ count: 0 }]; // active count
+      if (callCount === 3) return [review]; // reviews query (no date filter)
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
+      if (callCount === 5) return [{ id: 42 }]; // nextval
       return [];
     });
 
@@ -264,9 +268,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 5 }]; // active count
-      if (callCount === 2) return [review]; // reviews query
-      if (callCount === 3)
+      if (callCount === 2) return [{ count: 5 }]; // active count
+      if (callCount === 3) return [review]; // reviews query
+      if (callCount === 4)
         return [
           {
             id: 10,
@@ -276,7 +280,7 @@ describe('GET /api/cron/curate-lessons', () => {
             vix_term_signal: 'contango',
           },
         ]; // snapshot
-      if (callCount === 4) return [{ id: 42 }]; // nextval
+      if (callCount === 5) return [{ id: 42 }]; // nextval
       return [];
     });
 
@@ -330,11 +334,11 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 10 }]; // active count
-      if (callCount === 2) return [review]; // reviews query
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
-      if (callCount === 4) return [{ id: 43 }]; // nextval
-      if (callCount === 5) return [{ text: 'Old lesson about VIX' }]; // old lesson text
+      if (callCount === 2) return [{ count: 10 }]; // active count
+      if (callCount === 3) return [review]; // reviews query
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
+      if (callCount === 5) return [{ id: 43 }]; // nextval
+      if (callCount === 6) return [{ text: 'Old lesson about VIX' }]; // old lesson text
       return [];
     });
 
@@ -354,6 +358,7 @@ describe('GET /api/cron/curate-lessons', () => {
         tags: ['vix'],
         category: 'sizing',
         sourceDate: '2026-03-10',
+        distance: 0.15,
       },
     ]);
 
@@ -397,9 +402,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 5 }]; // active count
-      if (callCount === 2) return [review];
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 2) return [{ count: 5 }]; // active count
+      if (callCount === 3) return [review];
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
       return [];
     });
 
@@ -452,9 +457,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 3 }]; // active count
-      if (callCount === 2) return [review];
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 2) return [{ count: 3 }]; // active count
+      if (callCount === 3) return [review];
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
       return [];
     });
 
@@ -495,9 +500,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 0 }]; // active count
-      if (callCount === 2) return [review];
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 2) return [{ count: 0 }]; // active count
+      if (callCount === 3) return [review];
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
       return [];
     });
 
@@ -536,9 +541,9 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 0 }]; // active count
-      if (callCount === 2) return [review];
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
+      if (callCount === 2) return [{ count: 0 }]; // active count
+      if (callCount === 3) return [review];
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
       return [];
     });
 
@@ -599,13 +604,13 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 5 }]; // active count
-      if (callCount === 2) return [review1, review2]; // reviews query
-      if (callCount === 3) return [{ id: 10 }]; // snapshot for review1
-      if (callCount === 4) return [{ id: 42 }]; // nextval for review1
+      if (callCount === 2) return [{ count: 5 }]; // active count
+      if (callCount === 3) return [review1, review2]; // reviews query
+      if (callCount === 4) return [{ id: 10 }]; // snapshot for review1
+      if (callCount === 5) return [{ id: 42 }]; // nextval for review1
       // Call 5: tx INSERT statement (return value unused)
-      if (callCount === 6) return [{ id: 11 }]; // snapshot for review2
-      if (callCount === 7) return [{ id: 44 }]; // nextval for review2
+      if (callCount === 7) return [{ id: 11 }]; // snapshot for review2
+      if (callCount === 8) return [{ id: 44 }]; // nextval for review2
       // Call 8: tx INSERT statement (return value unused)
       return [];
     });
@@ -668,11 +673,11 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 5 }]; // active count
-      if (callCount === 2) return [review]; // reviews query
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
-      if (callCount === 4) return [{ id: 42 }]; // nextval for lesson 1
-      if (callCount === 5) return [{ id: 43 }]; // nextval for lesson 2
+      if (callCount === 2) return [{ count: 5 }]; // active count
+      if (callCount === 3) return [review]; // reviews query
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
+      if (callCount === 5) return [{ id: 42 }]; // nextval for lesson 1
+      if (callCount === 6) return [{ id: 43 }]; // nextval for lesson 2
       return [];
     });
 
@@ -722,11 +727,11 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 20 }]; // 20 active lessons before
-      if (callCount === 2) return [review]; // reviews query
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
-      if (callCount === 4) return [{ id: 50 }]; // nextval
-      if (callCount === 5) return [{ text: 'Old lesson' }]; // old lesson text
+      if (callCount === 2) return [{ count: 20 }]; // 20 active lessons before
+      if (callCount === 3) return [review]; // reviews query
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
+      if (callCount === 5) return [{ id: 50 }]; // nextval
+      if (callCount === 6) return [{ text: 'Old lesson' }]; // old lesson text
       return [];
     });
 
@@ -746,6 +751,7 @@ describe('GET /api/cron/curate-lessons', () => {
         tags: ['vix'],
         category: 'sizing',
         sourceDate: '2026-03-10',
+        distance: 0.15,
       },
     ]);
 
@@ -771,10 +777,10 @@ describe('GET /api/cron/curate-lessons', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 15 }]; // 15 active lessons
-      if (callCount === 2) return [review];
-      if (callCount === 3) return [{ id: 10 }]; // snapshot
-      if (callCount === 4) return [{ id: 42 }]; // nextval
+      if (callCount === 2) return [{ count: 15 }]; // 15 active lessons
+      if (callCount === 3) return [review];
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
+      if (callCount === 5) return [{ id: 42 }]; // nextval
       return [];
     });
 

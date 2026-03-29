@@ -19,17 +19,24 @@ from pathlib import Path
 try:
     import numpy as np
     import pandas as pd
-    import psycopg2
     from sklearn.cluster import KMeans, AgglomerativeClustering
     from sklearn.decomposition import PCA
     from sklearn.impute import SimpleImputer
-    from sklearn.metrics import silhouette_score
+    from sklearn.metrics import (
+        calinski_harabasz_score,
+        davies_bouldin_score,
+        silhouette_score,
+    )
     from sklearn.mixture import GaussianMixture
     from sklearn.preprocessing import StandardScaler
+    from scipy.stats import chi2_contingency
+    from statsmodels.stats.proportion import proportion_confint
 except ImportError:
     print("Missing dependencies. Run:")
     print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn matplotlib")
     sys.exit(1)
+
+from utils import load_data, validate_dataframe
 
 
 # ── Feature Groups ───────────────────────────────────────────
@@ -94,27 +101,8 @@ ALL_NUMERIC_FEATURES = (
 
 # ── Data Loading ─────────────────────────────────────────────
 
-def load_env() -> dict[str, str]:
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    env = {}
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            key, _, val = line.partition("=")
-            env[key.strip()] = val.strip().strip('"').strip("'")
-    return env
-
-
-def load_data() -> pd.DataFrame:
+def load_data_clustering() -> pd.DataFrame:
     """Load training features + outcomes + labels from Neon."""
-    env = load_env()
-    database_url = env.get("DATABASE_URL", "")
-    if not database_url:
-        print("Error: DATABASE_URL not found in .env")
-        sys.exit(1)
-
     query = """
         SELECT f.*, o.day_range_pts, o.settlement, o.day_open,
                l.recommended_structure, l.structure_correct,
@@ -124,14 +112,7 @@ def load_data() -> pd.DataFrame:
         LEFT JOIN day_labels l ON l.date = f.date
         ORDER BY f.date ASC
     """
-    conn = psycopg2.connect(database_url, sslmode="require")
-    try:
-        df = pd.read_sql_query(query, conn, parse_dates=["date"])
-    finally:
-        conn.close()
-
-    df = df.set_index("date").sort_index()
-    return df
+    return load_data(query)
 
 
 # ── Preprocessing ────────────────────────────────────────────
@@ -216,12 +197,16 @@ def run_clustering(X: np.ndarray, k_range: range) -> dict:
         km = KMeans(n_clusters=k, n_init=20, random_state=42)
         km_labels = km.fit_predict(X)
         km_sil = silhouette_score(X, km_labels) if k > 1 else 0
+        km_ch = calinski_harabasz_score(X, km_labels) if k > 1 else 0
+        km_db = davies_bouldin_score(X, km_labels) if k > 1 else 0
         row["kmeans_sil"] = km_sil
+        row["kmeans_ch"] = km_ch
+        row["kmeans_db"] = km_db
         row["kmeans_labels"] = km_labels
         row["kmeans_sizes"] = [int((km_labels == i).sum()) for i in range(k)]
 
         # Gaussian Mixture
-        gmm = GaussianMixture(n_components=k, n_init=5, random_state=42)
+        gmm = GaussianMixture(n_components=k, n_init=10, random_state=42)
         gmm_labels = gmm.fit_predict(X)
         gmm_sil = silhouette_score(X, gmm_labels) if k > 1 else 0
         row["gmm_sil"] = gmm_sil
@@ -247,15 +232,15 @@ def print_results(results: dict) -> int:
     print(f"  CLUSTERING RESULTS")
     print(f"{'='*70}\n")
 
-    print(f"  {'k':>3s}  {'K-Means':>10s}  {'GMM':>10s}  {'Hier.':>10s}  {'GMM BIC':>12s}  {'Sizes (KM)':>20s}")
-    print(f"  {'':->3s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->12s}  {'':->20s}")
+    print(f"  {'k':>3s}  {'K-Means':>10s}  {'GMM':>10s}  {'Hier.':>10s}  {'CH':>10s}  {'DB':>8s}  {'GMM BIC':>12s}  {'Sizes (KM)':>20s}")
+    print(f"  {'':->3s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->8s}  {'':->12s}  {'':->20s}")
 
     best_k = 2
     best_sil = -1
 
     for k, r in sorted(results.items()):
         sizes = str(r["kmeans_sizes"])
-        print(f"  {k:3d}  {r['kmeans_sil']:10.3f}  {r['gmm_sil']:10.3f}  {r['hier_sil']:10.3f}  {r['gmm_bic']:12.1f}  {sizes:>20s}")
+        print(f"  {k:3d}  {r['kmeans_sil']:10.3f}  {r['gmm_sil']:10.3f}  {r['hier_sil']:10.3f}  {r['kmeans_ch']:10.1f}  {r['kmeans_db']:8.3f}  {r['gmm_bic']:12.1f}  {sizes:>20s}")
 
         avg_sil = (r["kmeans_sil"] + r["gmm_sil"] + r["hier_sil"]) / 3
         if avg_sil > best_sil:
@@ -392,6 +377,110 @@ def stability_check(X: np.ndarray, k: int) -> float:
     return stable / total
 
 
+def permutation_test(X: np.ndarray, k: int, n_permutations: int = 100) -> float:
+    """Test if clustering is better than random data with same marginals."""
+    real_km = KMeans(n_clusters=k, n_init=20, random_state=42)
+    real_labels = real_km.fit_predict(X)
+    real_sil = silhouette_score(X, real_labels)
+
+    null_silhouettes = []
+    rng = np.random.default_rng(42)
+    for _ in range(n_permutations):
+        # Shuffle each column independently to break feature correlations
+        X_null = np.column_stack([rng.permutation(X[:, i]) for i in range(X.shape[1])])
+        null_km = KMeans(n_clusters=k, n_init=10, random_state=42)
+        null_labels = null_km.fit_predict(X_null)
+        null_sil = silhouette_score(X_null, null_labels)
+        null_silhouettes.append(null_sil)
+
+    null_arr = np.array(null_silhouettes)
+    p_value = np.mean(null_arr >= real_sil)
+    return p_value
+
+
+def outcome_association_test(
+    df: pd.DataFrame, labels: np.ndarray, k: int,  # noqa: ARG001
+) -> None:
+    """Test if cluster assignments are associated with trading outcomes."""
+    df_c = df.copy()
+    df_c["cluster"] = labels
+
+    print("\n  --- Outcome Association Tests (chi-squared) ---\n")
+
+    for outcome_col in ["range_category", "settlement_direction", "recommended_structure"]:
+        if outcome_col not in df_c.columns:
+            continue
+        has_both = df_c[[outcome_col, "cluster"]].dropna()
+        if len(has_both) < 10:
+            continue
+
+        # Build contingency table
+        ct = pd.crosstab(has_both["cluster"], has_both[outcome_col])
+        if ct.shape[0] < 2 or ct.shape[1] < 2:
+            continue
+
+        try:
+            chi2, p, _, expected = chi2_contingency(ct)
+            # Cramér's V effect size
+            n = ct.values.sum()
+            min_dim = min(ct.shape[0], ct.shape[1]) - 1
+            cramers_v = np.sqrt(chi2 / (n * min_dim)) if min_dim > 0 else 0
+            sig = " **" if p < 0.05 else " *" if p < 0.10 else ""
+            strength = "strong" if cramers_v >= 0.5 else "moderate" if cramers_v >= 0.3 else "weak"
+            print(f"  {outcome_col:25s}  chi2={chi2:6.2f}  p={p:.3f}  Cramer's V={cramers_v:.2f} ({strength}){sig}")
+
+            # Warning for small expected counts
+            pct_small = (expected < 5).sum() / expected.size
+            if pct_small > 0.2:
+                print(f"    Warning: {pct_small:.0%} of cells have expected count < 5 (Fisher's exact may be more appropriate)")
+        except Exception:
+            continue
+
+    # Structure correctness by cluster (if available)
+    if "structure_correct" in df_c.columns:
+        has_sc = df_c[["structure_correct", "cluster"]].dropna()
+        if len(has_sc) >= 10:
+            correct_by_cluster = has_sc.groupby("cluster")["structure_correct"].agg(["sum", "count"])
+            correct_by_cluster.columns = ["correct", "total"]
+            correct_by_cluster["pct"] = correct_by_cluster["correct"] / correct_by_cluster["total"]
+            print("\n  Structure correctness by cluster:")
+            for cluster_id, row in correct_by_cluster.iterrows():
+                lo, hi = proportion_confint(int(row["correct"]), int(row["total"]), method='wilson')
+                print(f"    Cluster {cluster_id}: {int(row['correct'])}/{int(row['total'])} ({row['pct']:.0%})  CI [{lo:.0%}-{hi:.0%}]")
+
+
+def _draw_confidence_ellipse(ax, x, y, color, alpha=0.15):
+    """Draw a 95% confidence ellipse for 2D data."""
+    if len(x) < 3:
+        return
+    from matplotlib.patches import Ellipse
+    import matplotlib.transforms as transforms
+
+    mean_x, mean_y = np.mean(x), np.mean(y)
+    cov = np.cov(x, y)
+
+    # Eigenvalues and eigenvectors
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    order = eigenvalues.argsort()[::-1]
+    eigenvalues = eigenvalues[order]
+    eigenvectors = eigenvectors[:, order]
+
+    # Angle of rotation
+    angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
+
+    # 95% confidence: chi-squared with 2 dof at 0.05 = 5.991
+    chi2_val = 5.991
+    width = 2 * np.sqrt(chi2_val * eigenvalues[0])
+    height = 2 * np.sqrt(chi2_val * eigenvalues[1])
+
+    ellipse = Ellipse(
+        xy=(mean_x, mean_y), width=width, height=height, angle=angle,
+        facecolor=color, edgecolor=color, alpha=alpha, linewidth=1.5,
+        linestyle="--",
+    )
+    ax.add_patch(ellipse)
+
+
 def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) -> None:
     """Save PCA scatter plot and cluster summary."""
     try:
@@ -416,6 +505,9 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
             c=colors[i % len(colors)], label=f"Cluster {i} (n={mask.sum()})",
             s=80, alpha=0.8, edgecolors="white", linewidth=0.5,
         )
+        # Draw 95% confidence ellipse
+        _draw_confidence_ellipse(ax, X_pca[mask, 0], X_pca[mask, 1], colors[i % len(colors)])
+
         # Annotate with dates
         dates = df.index[mask]
         for j, (x, y) in enumerate(zip(X_pca[mask, 0], X_pca[mask, 1])):
@@ -472,8 +564,15 @@ def main() -> None:
     args = parser.parse_args()
 
     print("Loading data ...")
-    df = load_data()
+    df = load_data_clustering()
     print(f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})")
+
+    validate_dataframe(
+        df,
+        min_rows=10,
+        required_columns=["vix", "day_of_week"],
+        range_checks={"vix": (9, 90), "day_of_week": (0, 6)},
+    )
 
     print("\nPreprocessing ...")
     X_pca, pca_labels, df_feat = preprocess(df)
@@ -504,6 +603,21 @@ def main() -> None:
     if stability < 0.7:
         print("  WARNING: Clusters are fragile. Consider waiting for more data.")
 
+    # Permutation test
+    print("\nPermutation test (is clustering better than chance?) ...")
+    p_value = permutation_test(X_pca, best_k)
+    print(f"  p-value: {p_value:.3f}")
+    if p_value < 0.05:
+        print("  Clusters are significantly better than random (p < 0.05)")
+    elif p_value < 0.10:
+        print("  Clusters are marginally better than random (p < 0.10)")
+    else:
+        print("  WARNING: Clusters are NOT significantly better than random.")
+        print("  The observed structure may be noise. Wait for more data.")
+
+    # Outcome association
+    outcome_association_test(df, best_labels, best_k)
+
     # Plots
     if args.plot:
         print("\nGenerating plots ...")
@@ -519,6 +633,7 @@ def main() -> None:
     print(f"  Silhouette: {results[best_k]['kmeans_sil']:.3f} (K-Means)")
     print(f"  Stability: {stability:.0%}")
     print(f"  GMM BIC: {results[best_k]['gmm_bic']:.1f}")
+    print(f"  Permutation p: {p_value:.3f}")
     print()
 
 

@@ -485,17 +485,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Try Redis cache first
       const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;
       try {
-        const cached = await redis.get<EventItem[]>(cacheKey);
-        if (cached) {
+        const raw = await redis.get<
+          { data: EventItem[]; cachedAt: number } | EventItem[]
+        >(cacheKey);
+        if (raw) {
           metrics.cacheResult('/api/events', true);
           res.setHeader(
             'Cache-Control',
             's-maxage=43200, stale-while-revalidate=3600',
           );
           res.setHeader('X-Cache', 'HIT');
+          // Support both new wrapper format and legacy plain array
+          const cachedEvents = Array.isArray(raw) ? raw : raw.data;
+          const cachedAt = Array.isArray(raw) ? null : raw.cachedAt;
+          if (cachedAt) {
+            res.setHeader(
+              'X-Cache-Age',
+              Math.round((Date.now() - cachedAt) / 1000),
+            );
+          }
           done({ status: 200 });
           return res.status(200).json({
-            events: cached,
+            events: cachedEvents,
             startDate,
             endDate,
             cached: true,
@@ -516,7 +527,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
       try {
-        await redis.set(cacheKey, events, { ex: CACHE_TTL_SEC });
+        await redis.set(
+          cacheKey,
+          { data: events, cachedAt: Date.now() },
+          { ex: CACHE_TTL_SEC },
+        );
       } catch (err) {
         logger.error({ err }, 'Failed to cache events in Redis');
       }

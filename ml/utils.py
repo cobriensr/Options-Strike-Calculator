@@ -1,0 +1,145 @@
+"""
+Shared utilities for ML scripts.
+
+Provides common data loading, DB connection, validation, and formatting helpers
+used across clustering.py, eda.py, and visualize.py.
+"""
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import psycopg2
+
+
+# ── Environment & DB ────────────────────────────────────────
+
+def load_env() -> dict[str, str]:
+    """Load environment variables from the project root .env file."""
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    env: dict[str, str] = {}
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, val = line.partition("=")
+            env[key.strip()] = val.strip().strip('"').strip("'")
+    return env
+
+
+def get_connection() -> psycopg2.extensions.connection:
+    """Get a Postgres connection with error handling."""
+    env = load_env()
+    database_url = env.get("DATABASE_URL", "")
+    if not database_url:
+        print("Error: DATABASE_URL not found in .env")
+        sys.exit(1)
+
+    try:
+        conn = psycopg2.connect(database_url, sslmode="require",
+                                connect_timeout=10)
+    except psycopg2.OperationalError as e:
+        print(f"Error: Could not connect to database: {e}")
+        print("  Check DATABASE_URL in .env and network connectivity.")
+        sys.exit(1)
+    return conn
+
+
+def load_data(query: str) -> pd.DataFrame:
+    """Execute a SQL query and return a DataFrame indexed by date."""
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query(query, conn, parse_dates=["date"])
+    except Exception as e:
+        print(f"Error: Query failed: {e}")
+        sys.exit(1)
+    finally:
+        conn.close()
+    return df.set_index("date").sort_index()
+
+
+# ── Data Validation ─────────────────────────────────────────
+
+def validate_dataframe(
+    df: pd.DataFrame,
+    *,
+    min_rows: int = 5,
+    required_columns: list[str] | None = None,
+    range_checks: dict[str, tuple[float, float]] | None = None,
+) -> None:
+    """
+    Validate a DataFrame before processing.
+
+    Raises SystemExit on fatal issues, prints warnings for non-fatal ones.
+
+    Args:
+        df: DataFrame to validate.
+        min_rows: Minimum expected row count.
+        required_columns: Columns that must exist.
+        range_checks: Dict of column -> (min, max) for sanity checks.
+    """
+    # Row count
+    if len(df) < min_rows:
+        print(f"Error: Only {len(df)} rows loaded (minimum {min_rows} required).")
+        print("  Check that the database has sufficient data.")
+        sys.exit(1)
+
+    # Required columns
+    if required_columns:
+        missing = [c for c in required_columns if c not in df.columns]
+        if missing:
+            print(f"Error: Missing required columns: {missing}")
+            print(f"  Available columns: {sorted(df.columns.tolist())[:20]}...")
+            sys.exit(1)
+
+    # Range checks (warnings, not fatal)
+    if range_checks:
+        for col, (lo, hi) in range_checks.items():
+            if col not in df.columns:
+                continue
+            vals = df[col].dropna().astype(float)
+            if len(vals) == 0:
+                continue
+            out_of_range = ((vals < lo) | (vals > hi)).sum()
+            if out_of_range > 0:
+                print(f"  Warning: {out_of_range} values in '{col}' "
+                      f"outside expected range [{lo}, {hi}]")
+
+    # Duplicate index check
+    dupes = df.index.duplicated().sum()
+    if dupes > 0:
+        print(f"  Warning: {dupes} duplicate dates in index")
+
+    # Null coverage summary
+    null_pct = df.isnull().mean()
+    high_null = null_pct[null_pct > 0.5]
+    if len(high_null) > 0:
+        print(f"  Warning: {len(high_null)} columns are >50% null: "
+              f"{high_null.index.tolist()[:10]}")
+
+
+# ── Formatting Helpers ──────────────────────────────────────
+
+def section(title: str) -> None:
+    """Print a section header."""
+    print(f"\n{'='*70}")
+    print(f"  {title}")
+    print(f"{'='*70}")
+
+
+def subsection(title: str) -> None:
+    """Print a subsection header."""
+    print(f"\n  --- {title} ---\n")
+
+
+def verdict(confirmed: bool, caveat: str = "") -> str:
+    """Format a rule validation verdict."""
+    tag = "CONFIRMED" if confirmed else "NOT CONFIRMED"
+    return f"  >> {tag}{f' -- {caveat}' if caveat else ''}"
+
+
+def takeaway(text: str) -> None:
+    """Print a takeaway line."""
+    print(f"\n  TAKEAWAY: {text}")

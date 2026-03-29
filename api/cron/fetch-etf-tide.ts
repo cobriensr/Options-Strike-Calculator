@@ -16,7 +16,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -24,23 +26,6 @@ const TICKERS: Array<{ ticker: string; source: string }> = [
   { ticker: 'SPY', source: 'spy_etf_tide' },
   { ticker: 'QQQ', source: 'qqq_etf_tide' },
 ];
-
-// ── Market hours check ──────────────────────────────────────
-
-function isMarketHours(): boolean {
-  const now = new Date();
-  const et = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
-  );
-  const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-
-  const hour = et.getHours();
-  const minute = et.getMinutes();
-  const timeMinutes = hour * 60 + minute;
-
-  return timeMinutes >= 565 && timeMinutes <= 965;
-}
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -149,6 +134,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ skipped: true, reason: 'Outside market hours' });
   }
 
+  const startTime = Date.now();
   const apiKey = process.env.UW_API_KEY;
   if (!apiKey) {
     logger.error('UW_API_KEY not configured');
@@ -166,9 +152,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const fetches = await Promise.all(
       TICKERS.map(async ({ ticker, source }) => {
         try {
-          const rows = await fetchEtfTide(apiKey, ticker);
+          const rows = await withRetry(() => fetchEtfTide(apiKey, ticker));
           const candles = sampleTo5Min(rows);
-          const result = await storeLatestCandle(candles, source, today);
+          const result = await withRetry(() =>
+            storeLatestCandle(candles, source, today),
+          );
           return { source, result, candleCount: candles.length };
         } catch (err) {
           logger.warn({ err, ticker, source }, 'Failed to fetch ETF Tide');
@@ -183,8 +171,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     logger.info({ results }, 'fetch-etf-tide completed');
 
-    return res.status(200).json({ stored: true, results });
+    return res.status(200).json({
+      job: 'fetch-etf-tide',
+      stored: true,
+      results,
+      durationMs: Date.now() - startTime,
+    });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-etf-tide');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-etf-tide error');
     return res.status(500).json({ error: 'Internal error' });
   }

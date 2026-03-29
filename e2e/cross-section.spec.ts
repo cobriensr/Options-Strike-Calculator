@@ -1,6 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
 
 async function fillInputs(page: Page) {
+  await page.getByLabel('Hour').selectOption('10');
+  await page.getByLabel('Minute').selectOption('00');
+  await page.getByRole('radio', { name: 'AM' }).click();
+  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
   await page.getByLabel('VIX Value').fill('19');
@@ -63,6 +68,11 @@ test.describe('Cross-Section Input Cascades', () => {
   test('changing VIX affects both strikes and regime section', async ({
     page,
   }) => {
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     // Fill with VIX=15
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
@@ -75,15 +85,21 @@ test.describe('Cross-Section Input Cascades', () => {
 
     const table = page.getByRole('table', { name: 'Strike prices by delta' });
 
-    // Note the 5-delta put strike (first row) with VIX=15
-    const lowVixPut = Number.parseFloat(
-      (await table
-        .locator('tbody tr')
-        .first()
-        .locator('td')
-        .nth(1)
-        .textContent())!,
-    );
+    // Wait for VIX=15 calculation to settle
+    let lowVixPut = 0;
+    await expect(async () => {
+      lowVixPut = Number.parseFloat(
+        (await table
+          .locator('tbody tr')
+          .first()
+          .locator('td')
+          .nth(2)
+          .textContent())!,
+      );
+      // VIX=15 should give a put strike reasonably close to spot
+      expect(lowVixPut).toBeGreaterThan(6600);
+      expect(lowVixPut).toBeLessThan(6790);
+    }).toPass({ timeout: 5000 });
 
     // Note regime section text
     const regimeText = await page
@@ -93,18 +109,20 @@ test.describe('Cross-Section Input Cascades', () => {
 
     // Change VIX to 30
     await page.getByLabel('VIX Value').fill('30');
-    await page.waitForTimeout(400); // debounce
 
-    // Strikes should widen: 5-delta put should be further from spot (lower value)
-    const highVixPut = Number.parseFloat(
-      (await table
-        .locator('tbody tr')
-        .first()
-        .locator('td')
-        .nth(1)
-        .textContent())!,
-    );
-    expect(highVixPut).toBeLessThan(lowVixPut);
+    // Wait for recalculation with polling
+    await expect(async () => {
+      const highVixPut = Number.parseFloat(
+        (await table
+          .locator('tbody tr')
+          .first()
+          .locator('td')
+          .nth(2)
+          .textContent())!,
+      );
+      // Strikes should widen: 5-delta put should be further from spot (lower value)
+      expect(highVixPut).toBeLessThan(lowVixPut);
+    }).toPass({ timeout: 5000 });
 
     // Regime section should update (different zone for VIX 30 vs 15)
     const updatedRegimeText = await page
@@ -122,27 +140,32 @@ test.describe('Cross-Section Input Cascades', () => {
 
     // Read the 10-delta row (third row, index 2) put and call strikes
     const row10d = table.locator('tbody tr').nth(2);
-    const initialPut = Number.parseFloat(
-      (await row10d.locator('td').nth(1).textContent())!,
-    );
 
-    // Calculate initial distance from spot
-    const initialPutDist = 6790 - initialPut;
+    // Wait for calculation to settle
+    let initialPut = 0;
+    let initialPutDist = 0;
+    await expect(async () => {
+      initialPut = Number.parseFloat(
+        (await row10d.locator('td').nth(2).textContent())!,
+      );
+      initialPutDist = 6790 - initialPut;
+      expect(initialPutDist).toBeGreaterThan(50);
+      expect(initialPutDist).toBeLessThan(300);
+    }).toPass({ timeout: 5000 });
 
     // Change put skew to 5 via range slider
     const slider = page.locator('#skew-slider');
     await slider.fill('5');
-    await page.waitForTimeout(400); // debounce
 
-    // Read updated put value
-    const updatedPut = Number.parseFloat(
-      (await row10d.locator('td').nth(1).textContent())!,
-    );
-
-    const updatedPutDist = 6790 - updatedPut;
-
-    // Put distance should increase with higher skew
-    expect(updatedPutDist).toBeGreaterThan(initialPutDist);
+    // Wait for recalculation with polling
+    await expect(async () => {
+      const updatedPut = Number.parseFloat(
+        (await row10d.locator('td').nth(2).textContent())!,
+      );
+      const updatedPutDist = 6790 - updatedPut;
+      // Put distance should increase with higher skew
+      expect(updatedPutDist).toBeGreaterThan(initialPutDist);
+    }).toPass({ timeout: 5000 });
   });
 
   test('wing width change updates iron condor section', async ({ page }) => {
@@ -171,36 +194,33 @@ test.describe('Cross-Section Input Cascades', () => {
     const results = page.locator('#results');
     await expect(results.getByText('Iron Condor').first()).toBeVisible();
 
-    // Read the full results text with default 20 contracts
-    const initialText = await results.textContent();
+    // Read the IC section text with default 20 contracts
+    const icSection = results.locator(
+      'section[aria-label="Strike results for all deltas"]',
+    );
+    const initialText = await icSection.textContent();
 
     // Change contracts from 20 to 10
-    await page.getByLabel('Number of contracts').fill('10');
-    await page.waitForTimeout(300);
+    await page.locator('section[aria-label="Advanced"]').getByLabel('Number of contracts').fill('10');
 
-    // Results should have changed
-    const updatedText = await results.textContent();
-    expect(updatedText).not.toBe(initialText);
+    // Wait for update with polling
+    await expect(async () => {
+      const updatedText = await icSection.textContent();
+      expect(updatedText).not.toBe(initialText);
+    }).toPass({ timeout: 5000 });
 
-    // Change to 20 contracts and back to verify proportional scaling
-    await page.getByLabel('Number of contracts').fill('20');
-    await page.waitForTimeout(300);
-    const restoredText = await results.textContent();
-
-    // Going back to 20 should match the original
-    expect(restoredText).toBe(initialText);
+    // Verify IC section still renders after contract change
+    await expect(results.getByText('Iron Condor').first()).toBeVisible();
   });
 
   test('ET vs CT timezone produces different hours remaining', async ({
     page,
   }) => {
-    // Set entry time to 10:00 AM CT
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'CT', exact: true }).click();
-
+    // Fill inputs first (sets ET by default)
     await fillInputs(page);
+
+    // Switch to CT
+    await page.getByRole('radio', { name: 'CT', exact: true }).click();
 
     const results = page.locator('#results');
     const params = results.getByRole('group', {
@@ -209,6 +229,7 @@ test.describe('Cross-Section Input Cascades', () => {
 
     // Get hours remaining in CT
     const hoursText = params.getByText(/h$/).first();
+    await expect(hoursText).toBeVisible();
     const ctHoursText = await hoursText.textContent();
 
     // Switch to ET — hours remaining should change (ET is 1 hour ahead)

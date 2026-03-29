@@ -21,10 +21,11 @@ export default function ScenarioTable({ scenarios, spot, direction }: Props) {
       >
         <thead>
           <tr className="bg-table-header">
-            <th className={mkTh('right')}>Move</th>
-            <th className={mkTh('right')}>SPX</th>
-            <th className={mkTh('right')}>IC P&L</th>
+            <th scope="col" className={mkTh('right')}>Move</th>
+            <th scope="col" className={mkTh('right')}>SPX</th>
+            <th scope="col" className={mkTh('right')}>IC P&L</th>
             <th
+              scope="col"
               className={mkTh(
                 'right',
                 direction === 'crash' ? 'text-danger' : 'text-success',
@@ -32,8 +33,8 @@ export default function ScenarioTable({ scenarios, spot, direction }: Props) {
             >
               {direction === 'crash' ? 'Put' : 'Call'} Hedge
             </th>
-            <th className={mkTh('right')}>Hedge Cost</th>
-            <th className={mkTh('right')}>Net P&L</th>
+            <th scope="col" className={mkTh('right')}>Hedge Cost</th>
+            <th scope="col" className={mkTh('right')}>Net P&L</th>
           </tr>
         </thead>
         <tbody>
@@ -59,6 +60,9 @@ export default function ScenarioTable({ scenarios, spot, direction }: Props) {
                   className={`${mkTd()} text-right font-semibold`}
                   style={{ color: s.icPnL >= 0 ? theme.green : theme.red }}
                 >
+                  <span className="sr-only">
+                    {s.icPnL >= 0 ? '(gain)' : '(loss)'}
+                  </span>
                   {s.icPnL >= 0 ? '+' : ''}
                   {fmtDollar(s.icPnL)}
                 </td>
@@ -68,6 +72,9 @@ export default function ScenarioTable({ scenarios, spot, direction }: Props) {
                     color: hedgePayout > 0 ? theme.green : theme.textMuted,
                   }}
                 >
+                  <span className="sr-only">
+                    {hedgePayout > 0 ? '(gain)' : '(no payout)'}
+                  </span>
                   {hedgePayout > 0 ? '+$' + fmtDollar(hedgePayout) : '$0'}
                 </td>
                 <td className={`${mkTd()} text-danger text-right text-[11px]`}>
@@ -77,6 +84,9 @@ export default function ScenarioTable({ scenarios, spot, direction }: Props) {
                   className={`${mkTd()} text-right text-[13px] font-bold`}
                   style={{ color: s.netPnL >= 0 ? theme.green : theme.red }}
                 >
+                  <span className="sr-only">
+                    {s.netPnL >= 0 ? '(gain)' : '(loss)'}
+                  </span>
                   {s.netPnL >= 0 ? '+' : ''}${fmtDollar(s.netPnL)}
                 </td>
               </tr>

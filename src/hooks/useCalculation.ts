@@ -47,13 +47,14 @@ export function useCalculation(
 
     const spyInput = Number.parseFloat(dSpot);
     if (dSpot && (Number.isNaN(spyInput) || spyInput <= 0))
-      errors['spot'] = 'Enter a positive number';
+      errors['spot'] =
+        'Must be a positive number (e.g. 550)';
     const spot = spyInput * effectiveRatio;
 
     const h = Number.parseInt(timeHour);
     const m = Number.parseInt(timeMinute);
     if (Number.isNaN(h) || Number.isNaN(m)) {
-      errors['time'] = 'Invalid time';
+      errors['time'] = 'Select a valid hour and minute';
     } else {
       let h24 = to24Hour(h, timeAmPm);
       if (timezone === 'CT') h24 += 1;
@@ -63,11 +64,14 @@ export function useCalculation(
       const totalMinutes = h24 * 60 + m;
 
       if (totalMinutes < 9 * 60 + 30) {
-        errors['time'] = 'Before market open (9:30 AM ET)';
+        errors['time'] =
+          'Before market open; use 9:30 AM ET or later';
       } else if (totalMinutes >= closeMinutes) {
-        errors['time'] = earlyCloseHourET
-          ? `At or after early close (${earlyCloseHourET > 12 ? earlyCloseHourET - 12 : earlyCloseHourET}:00 PM ET)`
-          : 'At or after market close (4:00 PM ET)';
+        const closeLabel = earlyCloseHourET
+          ? `${earlyCloseHourET > 12 ? earlyCloseHourET - 12 : earlyCloseHourET}:00 PM ET`
+          : '4:00 PM ET';
+        errors['time'] =
+          `After market close; use before ${closeLabel}`;
       }
     }
 
@@ -75,9 +79,11 @@ export function useCalculation(
     if (ivMode === IV_MODES.VIX) {
       const v = Number.parseFloat(dVix);
       const mult = Number.parseFloat(dMult);
-      if (dVix && Number.isNaN(v)) errors['vix'] = 'Enter a valid number';
+      if (dVix && Number.isNaN(v))
+        errors['vix'] = 'VIX must be a number (e.g. 19)';
       else if (dMult && Number.isNaN(mult))
-        errors['multiplier'] = 'Enter a valid number';
+        errors['multiplier'] =
+          'Adjustment must be a number (e.g. 1.15)';
       else if (dVix) {
         const ivResult = resolveIV(IV_MODES.VIX, { vix: v, multiplier: mult });
         if (ivResult.error) errors['iv'] = ivResult.error;
@@ -85,7 +91,8 @@ export function useCalculation(
       }
     } else {
       const iv = Number.parseFloat(dIV);
-      if (dIV && Number.isNaN(iv)) errors['iv'] = 'Enter a valid number';
+      if (dIV && Number.isNaN(iv))
+        errors['iv'] = 'IV must be a decimal (e.g. 0.22)';
       else if (dIV) {
         const ivResult = resolveIV(IV_MODES.DIRECT, { directIV: iv });
         if (ivResult.error) errors['iv'] = ivResult.error;

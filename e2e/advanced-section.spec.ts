@@ -11,7 +11,7 @@ test.describe('Advanced Section', () => {
   });
 
   test('put skew slider displays current value', async ({ page }) => {
-    await expect(page.getByText('Put Skew')).toBeVisible();
+    await expect(page.getByText('Put Skew', { exact: true })).toBeVisible();
     // Default skew is 3%
     await expect(page.getByText('+3% put')).toBeVisible();
   });
@@ -24,10 +24,10 @@ test.describe('Advanced Section', () => {
     await expect(toggleBtn).toHaveText('Show Iron Condor');
 
     // Wing width should be hidden when IC is hidden
-    await expect(page.getByText('Wing Width')).not.toBeVisible();
+    await expect(page.locator('section[aria-label="Advanced"]').getByText('Wing Width')).not.toBeVisible();
 
     await toggleBtn.click();
-    await expect(page.getByText('Wing Width')).toBeVisible();
+    await expect(page.locator('section[aria-label="Advanced"]').getByText('Wing Width')).toBeVisible();
   });
 
   test('wing width chip selection changes value', async ({ page }) => {
@@ -46,24 +46,31 @@ test.describe('Advanced Section', () => {
   });
 
   test('contracts counter increment and decrement', async ({ page }) => {
-    const input = page.getByLabel('Number of contracts');
+    const advanced = page.locator('section[aria-label="Advanced"]');
+    const input = advanced.getByLabel('Number of contracts');
     await expect(input).toHaveValue('20'); // default
 
-    await page.getByLabel('Increase contracts').click();
+    await advanced.getByLabel('Increase contracts').click();
     await expect(input).toHaveValue('21');
 
-    await page.getByLabel('Decrease contracts').click();
-    await page.getByLabel('Decrease contracts').click();
+    await advanced.getByLabel('Decrease contracts').click();
+    await advanced.getByLabel('Decrease contracts').click();
     await expect(input).toHaveValue('19');
   });
 
   test('contracts counter accepts manual input', async ({ page }) => {
-    const input = page.getByLabel('Number of contracts');
+    const advanced = page.locator('section[aria-label="Advanced"]');
+    const input = advanced.getByLabel('Number of contracts');
     await input.fill('50');
     await expect(input).toHaveValue('50');
   });
 
   test('changing wing width updates iron condor results', async ({ page }) => {
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     // Fill inputs to produce results
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');

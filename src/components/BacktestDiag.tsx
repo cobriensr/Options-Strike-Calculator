@@ -87,8 +87,8 @@ export default function BacktestDiag({
         bottom: 12,
         right: 12,
         zIndex: 9999,
-        backgroundColor: '#1a1a2e',
-        color: '#e0e0e0',
+        backgroundColor: 'var(--color-surface)',
+        color: 'var(--color-primary)',
         borderRadius: 10,
         padding: '12px 16px',
         fontSize: 11,
@@ -96,11 +96,12 @@ export default function BacktestDiag({
         lineHeight: 1.6,
         maxWidth: 320,
         boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
-        border: '1px solid #333',
+        border: '1px solid var(--color-edge)',
       }}
     >
       <button
         onClick={() => setCollapsed((c) => !c)}
+        aria-expanded={!collapsed}
         style={{
           fontWeight: 700,
           fontSize: 12,
@@ -119,7 +120,7 @@ export default function BacktestDiag({
         }}
       >
         Backtest Diagnostic
-        <span style={{ fontSize: 10, color: '#888' }}>
+        <span aria-hidden="true" style={{ fontSize: 10, color: 'var(--color-muted)' }}>
           {collapsed ? '▲' : '▼'}
         </span>
       </button>
@@ -132,7 +133,7 @@ export default function BacktestDiag({
                   <td
                     style={{
                       padding: '1px 8px 1px 0',
-                      color: '#888',
+                      color: 'var(--color-muted)',
                       whiteSpace: 'nowrap',
                     }}
                   >
@@ -143,8 +144,8 @@ export default function BacktestDiag({
                       padding: '1px 0',
                       color:
                         value === 'no data' || value.includes('n/a')
-                          ? '#f44'
-                          : '#e0e0e0',
+                          ? 'var(--color-danger)'
+                          : 'var(--color-primary)',
                       textAlign: 'right',
                     }}
                   >
@@ -155,7 +156,7 @@ export default function BacktestDiag({
             </tbody>
           </table>
           {history.error && (
-            <div style={{ marginTop: 6, color: '#f44', fontSize: 10 }}>
+            <div style={{ marginTop: 6, color: 'var(--color-danger)', fontSize: 10 }}>
               Error: {history.error}
             </div>
           )}

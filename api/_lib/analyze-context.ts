@@ -29,7 +29,12 @@ import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
 import { fetchDarkPoolBlocks, formatDarkPoolForClaude } from './darkpool.js';
 import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
 import logger from './logger.js';
-import { getActiveLessons, formatLessonsBlock } from './lessons.js';
+import {
+  getActiveLessons,
+  formatLessonsBlock,
+  getHistoricalWinRate,
+  formatWinRateForClaude,
+} from './lessons.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import type { IvTermRow } from '../iv-term-structure.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
@@ -213,6 +218,24 @@ export async function buildAnalysisContext(
       zeroDteIndexRows,
       '0DTE Index-Only Net Flow',
     );
+    // Append 0DTE P/C premium ratio from latest NCP/NPP
+    if (zeroDteIndexContext && zeroDteIndexRows.length > 0) {
+      const latest = zeroDteIndexRows.at(-1)!;
+      const absNcp = Math.abs(latest.ncp);
+      const absNpp = Math.abs(latest.npp);
+      if (absNcp > 0) {
+        const pcRatio = Math.round((absNpp / absNcp) * 100) / 100;
+        let signal = '';
+        if (pcRatio > 1.5)
+          signal =
+            'Extreme put-side hedging demand — potential intraday bottom. Increases PCS confidence.';
+        else if (pcRatio < 0.7)
+          signal =
+            'Extreme call-side speculation — potential intraday top. Increases CCS confidence.';
+        else signal = 'Balanced — no additional signal.';
+        zeroDteIndexContext += `\n  0DTE Put/Call Premium Ratio: ${pcRatio.toFixed(2)} (|NPP|/|NCP|) — ${signal}`;
+      }
+    }
     greekExposureContext = formatGreekExposureForClaude(
       greekRows,
       analysisDate,
@@ -367,6 +390,27 @@ export async function buildAnalysisContext(
   const marketTideOtmSection = marketTideOtmContext
     ? `\n${marketTideOtmContext}\n`
     : '';
+
+  // Build data unavailability manifest so the model knows what failed to fetch
+  const unavailable: string[] = [];
+  if (!spxFlowContext) unavailable.push('SPX Net Flow');
+  if (!marketTideContext) unavailable.push('Market Tide');
+  if (!spotGexContext) unavailable.push('Aggregate GEX Panel');
+  if (!greekExposureContext) unavailable.push('Greek Exposure (OI-based)');
+  if (!strikeExposureContext) unavailable.push('Per-Strike Greek Profile');
+  if (!greekFlowContext) unavailable.push('0DTE Delta Flow');
+  if (!spxCandlesContext && !context.isBacktest)
+    unavailable.push('SPX Intraday Candles');
+  if (!darkPoolContext) unavailable.push('Dark Pool Blocks');
+  if (!maxPainContext) unavailable.push('Max Pain');
+  if (!ivTermStructureContext) unavailable.push('IV Term Structure');
+  if (!overnightGapContext) unavailable.push('Overnight Gap Analysis');
+  const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
+  const unavailableSection =
+    unavailable.length > 0
+      ? `\n## ⚠️ Data Sources Unavailable (fetch failed or not applicable)\n${unavailableList}\nAdjust confidence per the missing data protocol in the system prompt.\n`
+      : '';
+
   const contextText = `
 ## Analysis Mode: ${mode === 'review' ? 'END-OF-DAY REVIEW' : mode === 'midday' ? 'MID-DAY RE-ANALYSIS' : 'PRE-TRADE ENTRY'}
 ## Current Calculator Context
@@ -403,6 +447,7 @@ export async function buildAnalysisContext(
   })()}
 - Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
+${unavailableSection}
 ${marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${marketTideContext}\n${marketTideOtmSection}` : ''}
 ${spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. These are the primary flow signal (Rule 8, 50% weight). Trust these values over screenshot estimates.\n\n${spxFlowContext}\n` : ''}
 ${spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPY. Secondary confirmation signal (Rule 8, 15% weight).\n\n${spyFlowContext}\n` : ''}
@@ -427,23 +472,87 @@ ${
     : ''
 }
 ${darkPoolContext ? `\n## SPY Dark Pool Institutional Blocks (from API)\nLarge ($5M+) dark pool block trades in SPY, translated to approximate SPX levels. Dark pool prints reveal where institutions are buying or selling in size off-exchange — these create structural support/resistance levels that options flow, gamma, and charm cannot see. When a dark pool buyer-initiated cluster aligns with a positive gamma wall, that level has the highest-confidence structural support. When a dark pool seller cluster aligns with negative gamma, that level is a confirmed ceiling.\n\n${darkPoolContext}\n` : ''}
+${(() => {
+    const topOI = context.topOIStrikes as
+      | Array<{
+          strike: number;
+          putOI: number;
+          callOI: number;
+          totalOI: number;
+          distFromSpot: number;
+          distPct: string;
+          side: 'put' | 'call' | 'both';
+        }>
+      | undefined;
+    if (!topOI || topOI.length === 0) return '';
+    const fmtOI = (n: number) => (n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n));
+    const lines = topOI.map(
+      (s) =>
+        `  ${s.strike} — Total: ${fmtOI(s.totalOI)} (Put: ${fmtOI(s.putOI)}, Call: ${fmtOI(s.callOI)}) | ${s.distFromSpot >= 0 ? '+' : ''}${s.distFromSpot.toFixed(0)} pts (${s.distPct}%) | ${s.side}`,
+    );
+    return `\n## 0DTE OI Concentration — Pin Risk (from chain data)\nTop 5 strikes by total open interest. High-OI strikes act as gravitational magnets in the final 60-90 minutes. NEVER place a short strike at the #1 or #2 OI level — place short strikes 15-25 pts BEYOND a high-OI level so the gravity pulls price AWAY from your strike.\n\n${lines.join('\n')}\n`;
+  })()}
+${(() => {
+    const skew = context.skewMetrics as
+      | {
+          put25dIV: number;
+          call25dIV: number;
+          atmIV: number;
+          putSkew25d: number;
+          callSkew25d: number;
+          skewRatio: number;
+        }
+      | undefined;
+    if (!skew) return '';
+    let signal = '';
+    if (skew.putSkew25d > 8)
+      signal = 'STEEP — institutions pricing significant downside risk. PCS premium is rich but tail risk elevated.';
+    else if (skew.putSkew25d > 4)
+      signal = 'NORMAL — standard risk premium.';
+    else signal = 'FLAT — unusually low hedging demand. Supports IC.';
+    let ratioSignal = '';
+    if (skew.skewRatio > 2.0)
+      ratioSignal = 'Strong put-over-call risk premium — market expects any large move to the downside.';
+    else if (skew.skewRatio < 1.2)
+      ratioSignal = 'Unusually symmetric — market sees equal up/down risk. Supports IRON CONDOR.';
+    else ratioSignal = 'Normal asymmetry.';
+    return `\n## IV Skew Metrics (from chain data)\n  ATM IV: ${skew.atmIV.toFixed(1)}%\n  25Δ Put IV: ${skew.put25dIV.toFixed(1)}% (skew: +${skew.putSkew25d.toFixed(1)} vol pts)\n  25Δ Call IV: ${skew.call25dIV.toFixed(1)}% (skew: +${skew.callSkew25d.toFixed(1)} vol pts)\n  Skew Ratio (|put|/|call|): ${skew.skewRatio.toFixed(1)}x\n  Put Skew Signal: ${signal}\n  Skew Ratio Signal: ${ratioSignal}\n`;
+  })()}
 ${maxPainContext ? `\n## SPX 0DTE Max Pain (from API)\nMax pain is the strike where total option holder losses are maximized — MMs profit most if SPX settles here. On neutral/low-gamma days, settlement gravitates toward max pain in the final 2 hours. On days with a dominant gamma wall (Rule 6) or deeply negative GEX (cone-lower settlement pattern), the gamma wall or cone boundary overrides max pain. Use max pain as a tiebreaker when gamma and flow signals are ambiguous — if max pain aligns with a gamma wall, that level has the highest settlement probability.\n\n${maxPainContext}\n` : ''}
 ${spxCandlesContext ? `\n## SPX Intraday Price Action (5-min candles)\nReal OHLCV price data for today's session. Use this to assess price structure: is SPX making higher lows (uptrend intact despite flow concerns), compressing into a range (IC-favorable), or printing wide-range bars (elevated volatility)? The session range relative to the straddle cone shows how much of the expected move has been consumed. VWAP acts as an institutional reference price — sustained trading below VWAP on a bearish flow day confirms the thesis, while price reclaiming VWAP on a bearish day is a warning.\n\n${spxCandlesContext}\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n⚠️ STRIKE OVERRIDE: Any strike prices or position descriptions in this section are from the prior recommendation — they describe what the trader was ADVISED to enter, not necessarily what was filled at those exact strikes. If "Current Open Positions" is provided above, those Schwab-verified strikes are ground truth and OVERRIDE any strike estimates here. Use ONLY the actual positions for all cushion, risk, and management calculations.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
 Provide your complete analysis as JSON. Mode is "${mode}".`;
-  content.push({ type: 'text', text: contextText });
 
-  // Fetch active lessons for system prompt injection
+  // Fetch active lessons and historical win rate in parallel
   let lessonsBlock = '';
+  let winRateContext = '';
+  const winRateConditions = {
+    vix: context.vix != null ? Number(context.vix) : undefined,
+    gexRegime: context.regimeZone != null ? String(context.regimeZone) : undefined,
+    dayOfWeek: context.dowLabel != null ? String(context.dowLabel) : undefined,
+  };
+
   try {
     const lessons = await getActiveLessons();
     lessonsBlock = formatLessonsBlock(lessons);
   } catch (lessonsErr) {
     logger.error({ err: lessonsErr }, 'Failed to fetch lessons for injection');
-    // Non-fatal — analysis works without lessons
   }
+
+  try {
+    const winRate = await getHistoricalWinRate(winRateConditions);
+    if (winRate) {
+      winRateContext = `\n## Historical Base Rate (from lessons database)\n${formatWinRateForClaude(winRate, winRateConditions)}\n`;
+    }
+  } catch (winRateErr) {
+    logger.error({ err: winRateErr }, 'Failed to fetch historical win rate');
+  }
+
+  // Append win rate to context (after main contextText, before sending)
+  const finalContextText = contextText + winRateContext;
+  content.push({ type: 'text', text: finalContextText });
 
   return { content, mode, lessonsBlock };
 }

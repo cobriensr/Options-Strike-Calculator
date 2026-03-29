@@ -13,29 +13,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
-
-// ── Market hours check ──────────────────────────────────────
-
-function isMarketHours(): boolean {
-  const now = new Date();
-  const et = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
-  );
-  const day = et.getDay();
-  // Skip weekends
-  if (day === 0 || day === 6) return false;
-
-  const hour = et.getHours();
-  const minute = et.getMinutes();
-  const timeMinutes = hour * 60 + minute;
-
-  // Market hours: 9:30 AM ET (570) to 4:00 PM ET (960)
-  // Start fetching 5 min early (9:25) to catch the open, stop at 4:05 for settlement
-  return timeMinutes >= 565 && timeMinutes <= 965;
-}
 
 // ── Fetch helper ────────────────────────────────────────────
 
@@ -124,34 +106,80 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Fetch both all-in and OTM Market Tide in parallel
-    const [allInRows, otmRows] = await Promise.all([
-      fetchMarketTide(apiKey, false),
-      fetchMarketTide(apiKey, true),
+    // Fetch both all-in and OTM Market Tide in parallel; partial failures are tolerated
+    const [allInFetch, otmFetch] = await Promise.allSettled([
+      withRetry(() => fetchMarketTide(apiKey, false)),
+      withRetry(() => fetchMarketTide(apiKey, true)),
     ]);
 
-    // Store the latest candle from each
-    const [allInResult, otmResult] = await Promise.all([
-      storeLatestCandle(allInRows, 'market_tide'),
-      storeLatestCandle(otmRows, 'market_tide_otm'),
+    if (allInFetch.status === 'rejected') {
+      logger.warn(
+        { err: allInFetch.reason },
+        'fetch-flow: all-in fetch failed',
+      );
+    }
+    if (otmFetch.status === 'rejected') {
+      logger.warn({ err: otmFetch.reason }, 'fetch-flow: OTM fetch failed');
+    }
+
+    // Store whichever fetches succeeded
+    const allInRows =
+      allInFetch.status === 'fulfilled' ? allInFetch.value : null;
+    const otmRows = otmFetch.status === 'fulfilled' ? otmFetch.value : null;
+
+    const [allInStore, otmStore] = await Promise.allSettled([
+      allInRows !== null
+        ? withRetry(() => storeLatestCandle(allInRows, 'market_tide'))
+        : Promise.reject(new Error('fetch skipped')),
+      otmRows !== null
+        ? withRetry(() => storeLatestCandle(otmRows, 'market_tide_otm'))
+        : Promise.reject(new Error('fetch skipped')),
     ]);
+
+    if (allInStore.status === 'rejected') {
+      logger.warn(
+        { err: allInStore.reason },
+        'fetch-flow: all-in store failed',
+      );
+    }
+    if (otmStore.status === 'rejected') {
+      logger.warn({ err: otmStore.reason }, 'fetch-flow: OTM store failed');
+    }
+
+    const allInResult =
+      allInStore.status === 'fulfilled' ? allInStore.value : null;
+    const otmResult = otmStore.status === 'fulfilled' ? otmStore.value : null;
+    const anyStored = allInResult !== null || otmResult !== null;
+    const partial =
+      allInFetch.status === 'rejected' ||
+      allInStore.status === 'rejected' ||
+      otmFetch.status === 'rejected' ||
+      otmStore.status === 'rejected';
 
     logger.info(
       {
         allIn: allInResult,
         otm: otmResult,
-        allInRows: allInRows.length,
-        otmRows: otmRows.length,
+        allInRows: allInRows?.length ?? 0,
+        otmRows: otmRows?.length ?? 0,
+        partial,
       },
       'fetch-flow completed',
     );
 
+    if (!anyStored) {
+      return res.status(500).json({ error: 'All sources failed' });
+    }
+
     return res.status(200).json({
-      stored: true,
+      stored: anyStored,
+      partial,
       market_tide: allInResult,
       market_tide_otm: otmResult,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-flow');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-flow error');
     return res.status(500).json({ error: 'Internal error' });
   }

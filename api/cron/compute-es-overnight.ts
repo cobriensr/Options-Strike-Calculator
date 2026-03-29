@@ -151,6 +151,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ skipped: true, reason: 'Before cash open (9:30 AM ET)' });
   }
 
+  const startTime = Date.now();
   const sql = getDb();
   const tradeDate = getTodayET();
 
@@ -319,14 +320,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     return res.status(200).json({
+      job: 'compute-es-overnight',
       stored: true,
       tradeDate,
       gap: `${gapPts >= 0 ? '+' : ''}${gapPts.toFixed(1)} ${gapDirection}`,
       fillProbability,
       fillScore,
       barCount: parseInt(overnight.bar_count as string),
+      durationMs: Date.now() - startTime,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'compute-es-overnight');
     Sentry.captureException(err);
     logger.error({ err }, 'compute-es-overnight failed');
     return res.status(500).json({ error: 'Internal error' });

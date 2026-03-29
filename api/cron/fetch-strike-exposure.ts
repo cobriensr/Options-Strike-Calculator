@@ -20,27 +20,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 const ATM_RANGE = 200; // ±200 pts from ATM
-
-// ── Market hours check ──────────────────────────────────────
-
-function isMarketHours(): boolean {
-  const now = new Date();
-  const et = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
-  );
-  const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-
-  const hour = et.getHours();
-  const minute = et.getMinutes();
-  const timeMinutes = hour * 60 + minute;
-
-  return timeMinutes >= 565 && timeMinutes <= 965;
-}
 
 function getTodayET(): string {
   return new Date().toLocaleDateString('en-CA', {
@@ -190,6 +175,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ skipped: true, reason: 'Outside market hours' });
   }
 
+  const startTime = Date.now();
   const apiKey = process.env.UW_API_KEY;
   if (!apiKey) {
     logger.error('UW_API_KEY not configured');
@@ -199,7 +185,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const today = getTodayET();
 
   try {
-    const rows = await fetchStrikeExposure(apiKey, today);
+    const rows = await withRetry(() => fetchStrikeExposure(apiKey, today));
 
     if (rows.length === 0) {
       return res
@@ -208,7 +194,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const price = Number.parseFloat(rows[0]!.price);
-    const result = await storeStrikes(rows, today);
+    const result = await withRetry(() => storeStrikes(rows, today));
 
     logger.info(
       {
@@ -223,12 +209,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     return res.status(200).json({
+      job: 'fetch-strike-exposure',
       success: true,
       price,
       totalStrikes: rows.length,
       ...result,
+      durationMs: Date.now() - startTime,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-strike-exposure');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-strike-exposure error');
     return res.status(500).json({ error: 'Internal error' });
   }

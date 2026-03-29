@@ -25,9 +25,9 @@ export function SectionBox({
     >
       <div className="mb-3.5 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+          <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
             {label}
-          </div>
+          </h2>
           {badge && (
             <span className="text-accent bg-accent-bg rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold">
               {badge}
@@ -57,6 +57,7 @@ export function Chip({
       onClick={onClick}
       role="radio"
       aria-checked={active}
+      aria-label={label}
       className={
         'cursor-pointer rounded-full border-[1.5px] px-3.5 py-1.5 font-mono text-[13px] font-medium transition-all duration-100 ' +
         (active

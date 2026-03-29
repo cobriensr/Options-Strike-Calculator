@@ -18,6 +18,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { schwabFetch } from '../_lib/api-helpers.js';
+import { Sentry } from '../_lib/sentry.js';
 import { saveOutcome } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
@@ -96,6 +97,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
+  const startTime = Date.now();
   const now = new Date();
   const dateStr = getETDateStr(now);
 
@@ -178,6 +180,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     return res.status(200).json({
+      job: 'fetch-outcomes',
       date: dateStr,
       settlement,
       dayOpen,
@@ -186,8 +189,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       rangePts: Math.round(dayHigh - dayLow),
       vixClose: vixClose ?? null,
       vix1dClose: vix1dClose ?? null,
+      durationMs: Date.now() - startTime,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-outcomes');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-outcomes error');
     return res.status(500).json({ error: 'Internal error' });
   }
@@ -275,6 +281,8 @@ async function handleBackfill(res: VercelResponse) {
 
     return res.status(200).json({ backfill: true, saved, skipped });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-outcomes');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-outcomes: backfill error');
     return res.status(500).json({ error: 'Internal error' });
   }

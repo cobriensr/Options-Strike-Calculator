@@ -87,7 +87,7 @@ vi.mock('../_lib/logger.js', () => ({
 // --- Sentry mock ---
 const noopDone = vi.fn();
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn() },
+  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
   metrics: {
     request: vi.fn(() => noopDone),
     schwabCall: vi.fn(() => vi.fn()),
@@ -335,9 +335,9 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 5 }];
-      if (callCount === 2) return [review];
-      if (callCount === 3)
+      if (callCount === 2) return [{ count: 5 }];
+      if (callCount === 3) return [review];
+      if (callCount === 4)
         return [
           {
             id: 10,
@@ -347,7 +347,7 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
             vix_term_signal: 'contango',
           },
         ];
-      if (callCount === 4) return [{ id: LESSON_ID }];
+      if (callCount === 5) return [{ id: LESSON_ID }];
       return [];
     });
 
@@ -454,9 +454,9 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) return [{ count: 5 }];
-      if (callCount === 2) return [review];
-      if (callCount === 3)
+      if (callCount === 2) return [{ count: 5 }];
+      if (callCount === 3) return [review];
+      if (callCount === 4)
         return [
           {
             id: 10,
@@ -466,7 +466,7 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
             vix_term_signal: 'contango',
           },
         ];
-      if (callCount === 4) return [{ id: LESSON_ID }];
+      if (callCount === 5) return [{ id: LESSON_ID }];
       return [];
     });
 

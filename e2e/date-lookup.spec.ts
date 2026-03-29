@@ -18,18 +18,18 @@ test.describe('Date Lookup Section', () => {
 
   test('date picker is visible after VIX data loads', async ({ page }) => {
     // VIX data loads from static JSON on mount; date picker appears after
-    await expect(page.getByLabel('Select date')).toBeVisible({
+    await expect(page.locator('#dt-date-picker')).toBeVisible({
       timeout: 8000,
     });
   });
 
   test('selecting a date shows VIX OHLC values', async ({ page }) => {
-    await expect(page.getByLabel('Select date')).toBeVisible({
+    await expect(page.locator('#dt-date-picker')).toBeVisible({
       timeout: 8000,
     });
 
     // Pick a known historical date (should be in vix-data.json)
-    await page.getByLabel('Select date').fill('2025-01-15');
+    await page.locator('#dt-date-picker').fill('2025-01-15');
 
     // OHLC fields should appear within the Date Lookup section
     const ohlcGroup = page.getByRole('group', { name: 'VIX OHLC values' });
@@ -39,12 +39,12 @@ test.describe('Date Lookup Section', () => {
   test('selecting a date populates VIX from historical data', async ({
     page,
   }) => {
-    await expect(page.getByLabel('Select date')).toBeVisible({
+    await expect(page.locator('#dt-date-picker')).toBeVisible({
       timeout: 8000,
     });
 
     // Pick a known historical date
-    await page.getByLabel('Select date').fill('2025-01-15');
+    await page.locator('#dt-date-picker').fill('2025-01-15');
 
     // VIX field should auto-populate from historical data
     const vixInput = page.getByLabel('VIX Value');
@@ -52,12 +52,12 @@ test.describe('Date Lookup Section', () => {
   });
 
   test('calculator works with historical date', async ({ page }) => {
-    await expect(page.getByLabel('Select date')).toBeVisible({
+    await expect(page.locator('#dt-date-picker')).toBeVisible({
       timeout: 8000,
     });
 
     // Set a date, then fill the rest
-    await page.getByLabel('Select date').fill('2025-01-15');
+    await page.locator('#dt-date-picker').fill('2025-01-15');
     await fillCalculatorInputs(page);
 
     // Results should render normally

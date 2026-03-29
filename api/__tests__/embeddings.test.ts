@@ -98,6 +98,7 @@ describe('embeddings.ts', () => {
           tags: ['charm', 'gex'],
           category: 'gamma',
           source_date: '2026-03-20',
+          distance: '0.123',
         },
         {
           id: 2,
@@ -105,6 +106,7 @@ describe('embeddings.ts', () => {
           tags: ['sizing'],
           category: 'sizing',
           source_date: '2026-03-18',
+          distance: '0.456',
         },
       ]);
 
@@ -118,6 +120,7 @@ describe('embeddings.ts', () => {
         tags: ['charm', 'gex'],
         category: 'gamma',
         sourceDate: '2026-03-20',
+        distance: 0.123,
       });
       expect(result[1]).toEqual({
         id: 2,
@@ -125,6 +128,7 @@ describe('embeddings.ts', () => {
         tags: ['sizing'],
         category: 'sizing',
         sourceDate: '2026-03-18',
+        distance: 0.456,
       });
       // Verify SQL was called once
       expect(mockSql).toHaveBeenCalledTimes(1);
@@ -147,6 +151,7 @@ describe('embeddings.ts', () => {
           tags: [],
           category: null,
           source_date: '2026-03-20',
+          distance: '0.1',
         },
         {
           id: 2,
@@ -154,6 +159,7 @@ describe('embeddings.ts', () => {
           tags: [],
           category: null,
           source_date: '2026-03-19',
+          distance: '0.2',
         },
         {
           id: 3,
@@ -161,6 +167,7 @@ describe('embeddings.ts', () => {
           tags: [],
           category: null,
           source_date: '2026-03-18',
+          distance: '0.3',
         },
       ]);
 

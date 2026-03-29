@@ -21,6 +21,7 @@ export type ApiResult<T> =
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
 import { MARKET_MINUTES, TIMEOUTS } from './constants.js';
+import logger from './logger.js';
 import { metrics } from './sentry.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
@@ -78,6 +79,8 @@ function parseCookies(req: VercelRequest): Record<string, string> {
   return cookies;
 }
 
+let ownerSecretWarned = false;
+
 /**
  * Verify that the request is from the site owner.
  * Returns true if the owner cookie matches OWNER_SECRET.
@@ -85,7 +88,13 @@ function parseCookies(req: VercelRequest): Record<string, string> {
  */
 export function isOwner(req: VercelRequest): boolean {
   const secret = process.env.OWNER_SECRET;
-  if (!secret) return false;
+  if (!secret) {
+    if (!ownerSecretWarned && process.env.VERCEL) {
+      ownerSecretWarned = true;
+      console.warn('[api-helpers] OWNER_SECRET is not set — all requests will get 401');
+    }
+    return false;
+  }
 
   const cookies = parseCookies(req);
   const cookieVal = cookies[OWNER_COOKIE] ?? '';
@@ -186,9 +195,12 @@ export async function isRateLimited(
 
 /**
  * Extract a rate-limit key from the request.
- * Uses X-Forwarded-For (set by Vercel) or falls back to a generic key.
+ * Uses X-Real-Ip (set by Vercel), then X-Forwarded-For, then 'unknown'.
  */
 export function getRateLimitKey(req: VercelRequest, endpoint: string): string {
+  const realIp = req.headers['x-real-ip'];
+  if (typeof realIp === 'string' && realIp) return `${endpoint}:${realIp}`;
+
   const forwarded = req.headers['x-forwarded-for'];
   const ip =
     typeof forwarded === 'string'
@@ -244,26 +256,41 @@ async function schwabApiFetch<T>(
   const done = metrics.schwabCall(endpoint);
 
   const url = `${base}${path}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${authResult.token}`,
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(TIMEOUTS.SCHWAB_API),
-  });
+  const MAX_RETRIES = 2;
+  let res: Response | undefined;
 
-  if (!res.ok) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${authResult.token}`,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(TIMEOUTS.SCHWAB_API),
+    });
+
+    if (res.ok || res.status < 500) break;
+
+    if (attempt < MAX_RETRIES) {
+      logger.warn(
+        { status: res.status, attempt, endpoint },
+        'Schwab transient error, retrying',
+      );
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+
+  if (!res!.ok) {
     done(false);
-    const body = await res.text();
+    const body = await res!.text();
     return {
       ok: false,
-      error: `Schwab API error (${res.status}): ${body}`,
-      status: res.status === 401 ? 401 : 502,
+      error: `Schwab API error (${res!.status}): ${body}`,
+      status: res!.status === 401 ? 401 : res!.status === 429 ? 429 : 502,
     };
   }
 
   done(true);
-  const data: T = await res.json();
+  const data: T = await res!.json();
   return { ok: true, data };
 }
 
@@ -275,6 +302,26 @@ export function schwabFetch<T>(path: string): Promise<ApiResult<T>> {
 /** Authenticated GET to the Schwab Trader API (accounts, orders, positions). */
 export function schwabTraderFetch<T>(path: string): Promise<ApiResult<T>> {
   return schwabApiFetch(SCHWAB_TRADER_BASE, path);
+}
+
+// ============================================================
+// MARKET HOURS CHECKS
+// ============================================================
+
+/** Check if current time is within extended market hours (9:25 AM - 4:05 PM ET). */
+export function isMarketHours(): boolean {
+  const now = new Date();
+  const et = new Date(
+    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
+  );
+  const day = et.getDay();
+  if (day === 0 || day === 6) return false;
+
+  const hour = et.getHours();
+  const minute = et.getMinutes();
+  const timeMinutes = hour * 60 + minute;
+
+  return timeMinutes >= 565 && timeMinutes <= 965;
 }
 
 // ============================================================
@@ -323,4 +370,37 @@ export function isMarketOpen(): boolean {
   const closeMin = closeHour * 60;
   // Market: 9:30 AM (570) to close (960 normal, 780 early)
   return totalMin >= MARKET_MINUTES.OPEN && totalMin <= closeMin;
+}
+
+// ============================================================
+// RETRY HELPER (for transient Neon / network failures)
+// ============================================================
+
+/**
+ * Retry an async operation with exponential backoff.
+ * Only retries on transient errors (timeouts, connection resets).
+ * Non-transient errors (bad SQL, constraint violations) throw immediately.
+ *
+ * Designed for cron jobs where a single missed invocation creates data gaps.
+ * Interactive endpoints should NOT use this — users want fast failure.
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries: number = 2,
+): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isLast = attempt === retries;
+      const msg = err instanceof Error ? err.message : '';
+      const isTransient =
+        /timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|50[234]/i.test(
+          msg,
+        );
+      if (isLast || !isTransient) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+  throw new Error('unreachable');
 }

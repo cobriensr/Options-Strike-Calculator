@@ -17,59 +17,54 @@ interface ServiceStatus {
   error?: string;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`Health check timed out after ${ms}ms`)),
+        ms,
+      ),
+    ),
+  ]);
+}
+
+async function checkService(
+  fn: () => Promise<void>,
+  timeoutMs = 5000,
+): Promise<ServiceStatus> {
+  const start = Date.now();
+  try {
+    await withTimeout(fn(), timeoutMs);
+    return { status: 'ok', latencyMs: Date.now() - start };
+  } catch (err) {
+    return {
+      status: 'error',
+      latencyMs: Date.now() - start,
+      error: err instanceof Error ? err.message : 'Unknown error',
+    };
+  }
+}
+
 export default async function handler(
   _req: VercelRequest,
   res: VercelResponse,
 ) {
-  const results: Record<string, ServiceStatus> = {};
+  const [postgres, redisStatus, schwab] = await Promise.all([
+    checkService(async () => {
+      const sql = getDb();
+      await sql`SELECT 1`;
+    }),
+    checkService(async () => {
+      await redis.ping();
+    }),
+    checkService(async () => {
+      const tokenResult = await getAccessToken();
+      if ('error' in tokenResult) throw new Error(tokenResult.error.message);
+    }),
+  ]);
 
-  // Check Postgres
-  const dbStart = Date.now();
-  try {
-    const sql = getDb();
-    await sql`SELECT 1`;
-    results.postgres = { status: 'ok', latencyMs: Date.now() - dbStart };
-  } catch (err) {
-    results.postgres = {
-      status: 'error',
-      latencyMs: Date.now() - dbStart,
-      error: err instanceof Error ? err.message : 'Unknown error',
-    };
-  }
-
-  // Check Redis
-  const redisStart = Date.now();
-  try {
-    await redis.ping();
-    results.redis = { status: 'ok', latencyMs: Date.now() - redisStart };
-  } catch (err) {
-    results.redis = {
-      status: 'error',
-      latencyMs: Date.now() - redisStart,
-      error: err instanceof Error ? err.message : 'Unknown error',
-    };
-  }
-
-  // Check Schwab token validity (non-blocking — just reports status)
-  const schwabStart = Date.now();
-  try {
-    const tokenResult = await getAccessToken();
-    if ('error' in tokenResult) {
-      results.schwab = {
-        status: 'error',
-        latencyMs: Date.now() - schwabStart,
-        error: tokenResult.error.message,
-      };
-    } else {
-      results.schwab = { status: 'ok', latencyMs: Date.now() - schwabStart };
-    }
-  } catch (err) {
-    results.schwab = {
-      status: 'error',
-      latencyMs: Date.now() - schwabStart,
-      error: err instanceof Error ? err.message : 'Unknown error',
-    };
-  }
+  const results = { postgres, redis: redisStatus, schwab };
 
   const allHealthy = Object.values(results).every((s) => s.status === 'ok');
   const status = allHealthy ? 200 : 503;

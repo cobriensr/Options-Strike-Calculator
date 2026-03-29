@@ -120,6 +120,7 @@ export function useMarketData(): MarketDataState {
   // or the sc-hint cookie exists from a prior auth session).
   const isOwnerRef = useRef(document.cookie.includes('sc-hint='));
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const consecutiveFailsRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
     const [
@@ -190,6 +191,13 @@ export function useMarketData(): MarketDataState {
 
     if (anySuccess) isOwnerRef.current = true;
 
+    if (anySuccess) {
+      consecutiveFailsRef.current = 0;
+    } else if (!anyAuthError) {
+      // Only count as a failure if it wasn't just a 401 (public visitor)
+      consecutiveFailsRef.current += 1;
+    }
+
     setLoading(false);
     if (anySuccess) {
       setLastUpdated(new Date().toISOString());
@@ -207,6 +215,8 @@ export function useMarketData(): MarketDataState {
 
   useEffect(() => {
     if (isOwnerRef.current && data.quotes?.marketOpen) {
+      const backoff = consecutiveFailsRef.current >= 3 ? 2 : 1;
+      const interval = REFRESH_INTERVAL_MS * backoff;
       intervalRef.current = setInterval(() => {
         const fetches: Promise<void>[] = [
           fetchJson<QuotesResponse>('/api/quotes').then((result) => {
@@ -230,7 +240,7 @@ export function useMarketData(): MarketDataState {
         Promise.all(fetches).then(() => {
           setLastUpdated(new Date().toISOString());
         });
-      }, REFRESH_INTERVAL_MS);
+      }, interval);
     }
 
     return () => {

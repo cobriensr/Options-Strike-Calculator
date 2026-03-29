@@ -164,6 +164,6 @@ describe('useCalculation', () => {
         13,
       ),
     );
-    expect(result.current.errors['time']).toContain('early close');
+    expect(result.current.errors['time']).toContain('close');
   });
 });

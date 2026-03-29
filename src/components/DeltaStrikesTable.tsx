@@ -27,26 +27,26 @@ export default function DeltaStrikesTable({ allDeltas, spot }: Props) {
           >
             <thead>
               <tr className="bg-table-header">
-                <th className={mkTh('center')}>Delta</th>
-                <th className={mkTh('left', 'text-danger')}>
+                <th scope="col" className={mkTh('center')}>Delta</th>
+                <th scope="col" className={mkTh('left', 'text-danger')}>
                   {'\u25BE'} Put (SPX)
                 </th>
-                <th className={mkTh('left', 'text-danger')}>{'\u2192'} Snap</th>
-                <th className={mkTh('left', 'text-danger')}>SPY</th>
-                <th className={mkTh('right', 'text-danger')}>Put $</th>
-                <th className={mkTh('right', 'text-danger')}>{'\u0394'}</th>
-                <th className={mkTh('right', 'text-danger')}>{'\u0393'}</th>
-                <th className={mkTh('left', 'text-success')}>
+                <th scope="col" className={mkTh('left', 'text-danger')}>{'\u2192'} Snap</th>
+                <th scope="col" className={mkTh('left', 'text-danger')}>SPY</th>
+                <th scope="col" className={mkTh('right', 'text-danger')}>Put $</th>
+                <th scope="col" className={mkTh('right', 'text-danger')}>{'\u0394'}</th>
+                <th scope="col" className={mkTh('right', 'text-danger')}>{'\u0393'}</th>
+                <th scope="col" className={mkTh('left', 'text-success')}>
                   {'\u25B4'} Call (SPX)
                 </th>
-                <th className={mkTh('left', 'text-success')}>
+                <th scope="col" className={mkTh('left', 'text-success')}>
                   {'\u2192'} Snap
                 </th>
-                <th className={mkTh('left', 'text-success')}>SPY</th>
-                <th className={mkTh('right', 'text-success')}>Call $</th>
-                <th className={mkTh('right', 'text-success')}>{'\u0394'}</th>
-                <th className={mkTh('right', 'text-success')}>{'\u0393'}</th>
-                <th className={mkTh('left')}>Width</th>
+                <th scope="col" className={mkTh('left', 'text-success')}>SPY</th>
+                <th scope="col" className={mkTh('right', 'text-success')}>Call $</th>
+                <th scope="col" className={mkTh('right', 'text-success')}>{'\u0394'}</th>
+                <th scope="col" className={mkTh('right', 'text-success')}>{'\u0393'}</th>
+                <th scope="col" className={mkTh('left')}>Width</th>
               </tr>
             </thead>
             <tbody>

@@ -7,80 +7,52 @@ identifies patterns in structured trading data.
 Usage:
     python3 ml/eda.py
 
-Requires: pip install psycopg2-binary pandas scikit-learn scipy
+Requires: pip install psycopg2-binary pandas scikit-learn scipy statsmodels
 """
 
 import sys
-from pathlib import Path
 
 try:
     import numpy as np
     import pandas as pd
-    import psycopg2
     from scipy import stats
+    from scipy.stats import kruskal, fisher_exact
+    from statsmodels.stats.proportion import proportion_confint
+    from statsmodels.stats.multitest import multipletests
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn scipy")
+    print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn scipy statsmodels")
     sys.exit(1)
+
+from utils import (
+    load_data,
+    validate_dataframe,
+    section,
+    subsection,
+    verdict,
+    takeaway,
+)
 
 
 # ── Data Loading ─────────────────────────────────────────────
 
-def load_env() -> dict[str, str]:
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    env = {}
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            key, _, val = line.partition("=")
-            env[key.strip()] = val.strip().strip('"').strip("'")
-    return env
-
-
-def load_data() -> pd.DataFrame:
-    env = load_env()
-    conn = psycopg2.connect(env["DATABASE_URL"], sslmode="require")
-    try:
-        df = pd.read_sql_query("""
-            SELECT f.*, o.settlement, o.day_open, o.day_high, o.day_low,
-                   o.day_range_pts, o.day_range_pct, o.close_vs_open,
-                   o.vix_close, o.vix1d_close,
-                   l.recommended_structure, l.structure_correct,
-                   l.confidence AS label_confidence,
-                   l.charm_diverged, l.naive_charm_signal,
-                   l.spx_flow_signal, l.market_tide_signal,
-                   l.spy_flow_signal, l.gex_signal,
-                   l.range_category, l.settlement_direction,
-                   l.flow_was_directional
-            FROM training_features f
-            LEFT JOIN outcomes o ON o.date = f.date
-            LEFT JOIN day_labels l ON l.date = f.date
-            ORDER BY f.date ASC
-        """, conn, parse_dates=["date"])
-    finally:
-        conn.close()
-    return df.set_index("date").sort_index()
-
-
-def section(title: str) -> None:
-    print(f"\n{'='*70}")
-    print(f"  {title}")
-    print(f"{'='*70}")
-
-
-def subsection(title: str) -> None:
-    print(f"\n  --- {title} ---\n")
-
-
-def verdict(confirmed: bool, caveat: str = "") -> str:
-    tag = "CONFIRMED" if confirmed else "NOT CONFIRMED"
-    return f"  >> {tag}{f' -- {caveat}' if caveat else ''}"
-
-
-def takeaway(text: str) -> None:
-    print(f"\n  TAKEAWAY: {text}")
+def load_data_eda() -> pd.DataFrame:
+    return load_data("""
+        SELECT f.*, o.settlement, o.day_open, o.day_high, o.day_low,
+               o.day_range_pts, o.day_range_pct, o.close_vs_open,
+               o.vix_close, o.vix1d_close,
+               l.recommended_structure, l.structure_correct,
+               l.confidence AS label_confidence,
+               l.charm_diverged, l.naive_charm_signal,
+               l.spx_flow_signal, l.market_tide_signal,
+               l.spy_flow_signal, l.gex_signal,
+               l.range_category, l.settlement_direction,
+               l.flow_was_directional
+        FROM training_features f
+        LEFT JOIN outcomes o ON o.date = f.date
+        LEFT JOIN day_labels l ON l.date = f.date
+        ORDER BY f.date ASC
+    """)
 
 
 # ── Analysis 1: Rule Validation ──────────────────────────────
@@ -102,6 +74,10 @@ def rule_validation(df: pd.DataFrame) -> None:
             print(f"  Positive GEX days (n={len(pos_gex)}):  {pos_gex.mean():.0f} pts avg range")
             print(f"  Negative GEX days (n={len(neg_gex)}):  {neg_gex.mean():.0f} pts avg range")
             diff = neg_gex.mean() - pos_gex.mean()
+            # Compute Cohen's d effect size
+            pooled_std = np.sqrt(((len(pos_gex)-1)*pos_gex.std()**2 + (len(neg_gex)-1)*neg_gex.std()**2) / (len(pos_gex)+len(neg_gex)-2))
+            cohens_d = (neg_gex.mean() - pos_gex.mean()) / pooled_std if pooled_std > 0 else 0
+            print(f"  Effect size: Cohen's d = {cohens_d:.2f} ({'large' if abs(cohens_d) >= 0.8 else 'medium' if abs(cohens_d) >= 0.5 else 'small'})")
             confirmed = neg_gex.mean() > pos_gex.mean()
             print(verdict(confirmed,
                           f"only {len(pos_gex)} positive GEX days in sample" if len(pos_gex) < 5
@@ -249,7 +225,8 @@ def structure_analysis(df: pd.DataFrame) -> None:
         rng = subset["day_range_pts"].dropna().astype(float)
         range_avg = rng.mean() if len(rng) > 0 else 0
         struct_data.append((struct, correct, total, range_avg))
-        print(f"  {struct:25s}  {correct}/{total} ({correct/total:.0%})   avg range {range_avg:.0f} pts")
+        lo, hi = proportion_confint(correct, total, method='wilson')
+        print(f"  {struct:25s}  {correct}/{total} ({correct/total:.0%})  CI [{lo:.0%}-{hi:.0%}]   avg range {range_avg:.0f} pts")
 
     if struct_data:
         best = max(struct_data, key=lambda x: x[1] / x[2])
@@ -329,12 +306,23 @@ def feature_importance(df: pd.DataFrame) -> None:
 
     correlations.sort(key=lambda x: abs(x[1]), reverse=True)
 
-    for col, r, p, n in correlations[:10]:
-        sig = " *" if p < 0.10 else ""
-        direction = "higher = MORE correct" if r > 0 else "higher = LESS correct"
-        print(f"  {col:35s}  r={r:+.3f}  p={p:.3f}  ({direction}){sig}")
+    # Apply Benjamini-Hochberg FDR correction
+    if len(correlations) > 1:
+        raw_pvals = [c[2] for c in correlations]
+        _, pvals_adj, _, _ = multipletests(raw_pvals, method='fdr_bh')
+        correlations = [
+            (col, r, p_raw, n, p_adj)
+            for (col, r, p_raw, n), p_adj in zip(correlations, pvals_adj)
+        ]
 
-    sig_features = [c for c, r, p, n in correlations if p < 0.10]
+    for item in correlations[:10]:
+        col, r, p_raw = item[0], item[1], item[2]
+        p_adj = item[4] if len(item) > 4 else p_raw
+        sig = " **" if p_adj < 0.05 else " *" if p_adj < 0.10 else ""
+        direction = "higher = MORE correct" if r > 0 else "higher = LESS correct"
+        print(f"  {col:35s}  r={r:+.3f}  p={p_raw:.3f}  q={p_adj:.3f}  ({direction}){sig}")
+
+    sig_features = [c[0] for c in correlations if (c[4] if len(c) > 4 else c[2]) < 0.10]
     if sig_features:
         takeaway(f"Pay attention to: {', '.join(sig_features[:5])}.\n"
                  "            These had statistically suggestive correlations with getting the structure right.")
@@ -356,17 +344,27 @@ def feature_importance(df: pd.DataFrame) -> None:
             if len(vals) >= 2:
                 groups.append(vals.values)
         if len(groups) >= 2:
-            f_stat, p = stats.f_oneway(*groups)
-            if not np.isnan(f_stat):
-                f_scores.append((col, f_stat, p))
+            h_stat, p = stats.kruskal(*groups)
+            if not np.isnan(h_stat):
+                f_scores.append((col, h_stat, p))
 
     f_scores.sort(key=lambda x: x[1], reverse=True)
 
-    for col, f_stat, p in f_scores[:10]:
-        sig = " **" if p < 0.05 else " *" if p < 0.10 else ""
-        print(f"  {col:35s}  F={f_stat:6.2f}  p={p:.3f}{sig}")
+    if len(f_scores) > 1:
+        raw_pvals = [s[2] for s in f_scores]
+        _, pvals_adj, _, _ = multipletests(raw_pvals, method='fdr_bh')
+        f_scores = [
+            (col, h, p_raw, p_adj)
+            for (col, h, p_raw), p_adj in zip(f_scores, pvals_adj)
+        ]
 
-    strong = [c for c, f, p in f_scores if p < 0.05]
+    for item in f_scores[:10]:
+        col, h_stat, p_raw = item[0], item[1], item[2]
+        p_adj = item[3] if len(item) > 3 else p_raw
+        sig = " **" if p_adj < 0.05 else " *" if p_adj < 0.10 else ""
+        print(f"  {col:35s}  H={h_stat:6.2f}  p={p_raw:.3f}  q={p_adj:.3f}{sig}")
+
+    strong = [c[0] for c in f_scores if (c[3] if len(c) > 3 else c[2]) < 0.05]
     if strong:
         takeaway(f"Strongest range predictors: {', '.join(strong[:4])}.\n"
                  "            These features meaningfully separate NORMAL/WIDE/EXTREME days.\n"
@@ -480,21 +478,28 @@ def flow_analysis(df: pd.DataFrame) -> None:
         total = len(has_both)
         pct = correct / total
 
-        if pct >= 0.55:
-            rating = "USEFUL"
+        lo, hi = proportion_confint(correct, total, method='wilson')
+        if lo > 0.50:  # CI entirely above chance
+            rating = "USEFUL *"
+        elif hi < 0.50:  # CI entirely below chance
+            rating = "ANTI-SIGNAL *"
+        elif pct >= 0.55:
+            rating = "USEFUL (ns)"
         elif pct >= 0.45:
             rating = "COIN FLIP"
         elif pct >= 0.30:
-            rating = "CONTRARIAN"
+            rating = "CONTRARIAN (ns)"
         else:
-            rating = "ANTI-SIGNAL"
+            rating = "ANTI-SIGNAL (ns)"
 
+        # Only mark as significant if CI doesn't contain 0.50
+        sig = " *" if hi < 0.50 or lo > 0.50 else ""
         source_results.append((label, correct, total, pct, rating))
-        print(f"  {label:20s}  {correct}/{total} ({pct:.0%})   {rating}")
+        print(f"  {label:20s}  {correct}/{total} ({pct:.0%})  CI [{lo:.0%}-{hi:.0%}]  {rating}{sig}")
 
     # Summarize
-    useful = [s for s in source_results if s[4] == "USEFUL"]
-    anti = [s for s in source_results if s[4] in ("CONTRARIAN", "ANTI-SIGNAL")]
+    useful = [s for s in source_results if s[4].startswith("USEFUL")]
+    anti = [s for s in source_results if s[4].startswith("CONTRARIAN") or s[4].startswith("ANTI-SIGNAL")]
 
     if useful or anti:
         trust = ", ".join(s[0] for s in useful) if useful else "none yet"
@@ -527,42 +532,129 @@ def key_findings(df: pd.DataFrame) -> None:
     n_days = len(df)
     labeled = df[df["structure_correct"].notna()]
     n_labeled = len(labeled)
-    n_correct = labeled["structure_correct"].sum() if n_labeled > 0 else 0
+    n_correct = int(labeled["structure_correct"].sum()) if n_labeled > 0 else 0
+    overall_pct = f"{n_correct/n_labeled:.0%}" if n_labeled > 0 else "N/A"
 
-    print(f"""
-  Dataset: {n_days} trading days, {n_labeled} with labels, {n_correct}/{n_labeled} correct ({n_correct/n_labeled:.0%})
+    print(f"\n  Dataset: {n_days} trading days, {n_labeled} with labels, "
+          f"{n_correct}/{n_labeled} correct ({overall_pct})")
 
-  WHAT'S WORKING:
-  - Overall 90% accuracy across all structures
-  - PUT CREDIT SPREAD is perfect (100% accuracy)
-  - HIGH confidence calls are 94% accurate vs MODERATE at 83%
-  - Confidence IS useful for position sizing
+    # Per-structure accuracy
+    print("\n  STRUCTURE ACCURACY:")
+    structs = ["PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "IRON CONDOR"]
+    best_struct = ("", 0.0)
+    worst_struct = ("", 1.0)
+    for struct in structs:
+        subset = labeled[labeled["recommended_structure"] == struct]
+        has_correct = subset[subset["structure_correct"].notna()]
+        if len(has_correct) == 0:
+            continue
+        correct = int(has_correct["structure_correct"].sum())
+        total = len(has_correct)
+        pct = correct / total
+        print(f"  - {struct}: {correct}/{total} ({pct:.0%})")
+        if pct >= best_struct[1]:
+            best_struct = (struct, pct)
+        if pct <= worst_struct[1]:
+            worst_struct = (struct, pct)
 
-  WHAT TO WATCH:
-  - CALL CREDIT SPREAD has 2 failures -- both on deeply negative GEX days
-  - IRON CONDOR has 1 failure -- on a day with negative GEX and 87 pt range
-  - All-negative naive charm may not mean what you think (narrowest ranges)
+    if best_struct[0]:
+        print(f"\n  WHAT'S WORKING:")
+        print(f"  - {best_struct[0]} has the highest accuracy ({best_struct[1]:.0%})")
 
-  FLOW RELIABILITY (at T1 = 30 min after open):
-  - SPX Net Flow is ANTI-PREDICTIVE (24%) -- fade it or ignore it
-  - SPY/QQQ ETF Tide are the most reliable directional signals (56%)
-  - Market Tide and QQQ Net Flow are borderline useful (55%)
+    # Confidence calibration summary
+    if "label_confidence" in labeled.columns:
+        conf_accs = {}
+        for conf in ["HIGH", "MODERATE", "LOW"]:
+            subset = labeled[labeled["label_confidence"] == conf]
+            if len(subset) > 0:
+                c = subset["structure_correct"].sum()
+                conf_accs[conf] = c / len(subset)
+        if "HIGH" in conf_accs and "MODERATE" in conf_accs:
+            gap = conf_accs["HIGH"] - conf_accs["MODERATE"]
+            if gap > 0.05:
+                print(f"  - HIGH confidence is {conf_accs['HIGH']:.0%} accurate "
+                      f"vs MODERATE at {conf_accs['MODERATE']:.0%}")
+                print("  - Confidence IS useful for position sizing")
+            else:
+                print("  - Confidence levels show similar accuracy — not useful for sizing")
 
-  FOR PHASE 2 (Structure Classification):
-  - Majority class baseline: always predict CCS = 55%
-  - Top features to use: directionalized GEX, delta flow, SPX flow checkpoints
-  - Need {max(0, 60 - n_labeled)} more labeled days (target: 60-80)
-""")
+    # Failure patterns
+    failures = labeled[labeled["structure_correct"] == False]
+    if len(failures) > 0:
+        print(f"\n  WHAT TO WATCH:")
+        for struct in structs:
+            n_fail = len(failures[failures["recommended_structure"] == struct])
+            if n_fail > 0:
+                print(f"  - {struct} has {n_fail} failure(s)")
+
+        fail_gex = failures["gex_oi_t1"].dropna().astype(float)
+        if len(fail_gex) > 0 and (fail_gex < 0).all():
+            print("  - All failures occurred on negative GEX days")
+
+    # Flow reliability summary
+    if "settlement_direction" in df.columns:
+        has_flow = df[df["settlement_direction"].notna()]
+        sources = [
+            ("spx_ncp_t1", "SPX Net Flow"),
+            ("spy_etf_ncp_t1", "SPY ETF Tide"),
+            ("qqq_etf_ncp_t1", "QQQ ETF Tide"),
+            ("mt_ncp_t1", "Market Tide"),
+            ("qqq_ncp_t1", "QQQ Net Flow"),
+        ]
+        useful = []
+        anti = []
+        for col, label in sources:
+            if col not in has_flow.columns:
+                continue
+            subset = has_flow[[col, "settlement_direction"]].dropna()
+            if len(subset) < 5:
+                continue
+            ncp = subset[col].astype(float)
+            actual_up = subset["settlement_direction"] == "UP"
+            pct = ((ncp > 0) == actual_up).sum() / len(subset)
+            if pct >= 0.55:
+                useful.append(f"{label} ({pct:.0%})")
+            elif pct < 0.40:
+                anti.append(f"{label} ({pct:.0%})")
+
+        if useful or anti:
+            print(f"\n  FLOW RELIABILITY (at T1):")
+            if useful:
+                print(f"  - Trust: {', '.join(useful)}")
+            if anti:
+                print(f"  - Fade/Ignore: {', '.join(anti)}")
+
+    # Phase 2 readiness
+    majority = labeled["recommended_structure"].value_counts()
+    if len(majority) > 0:
+        majority_pct = majority.iloc[0] / n_labeled if n_labeled > 0 else 0
+        print(f"\n  FOR PHASE 2 (Structure Classification):")
+        print(f"  - Majority class baseline: always predict "
+              f"'{majority.index[0]}' = {majority_pct:.0%}")
+        target_days = 60
+        remaining = max(0, target_days - n_labeled)
+        if remaining > 0:
+            print(f"  - Need ~{remaining} more labeled days (target: {target_days})")
+        else:
+            print(f"  - Data threshold met ({n_labeled} >= {target_days} days)")
+    print()
 
 
 # ── Main ─────────────────────────────────────────────────────
 
 def main() -> None:
     print("Loading data ...")
-    df = load_data()
+    df = load_data_eda()
     print(f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})")
     print(f"  {df['structure_correct'].notna().sum()} days with labels")
     print(f"  {df['day_range_pts'].notna().sum()} days with outcomes")
+
+    validate_dataframe(
+        df,
+        min_rows=5,
+        required_columns=["day_range_pts"],
+        range_checks={"vix": (9, 90)},
+    )
 
     rule_validation(df)
     confidence_calibration(df)

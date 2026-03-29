@@ -57,7 +57,7 @@ describe('IVInputSection', () => {
 
   it('renders Direct IV mode inputs when ivMode="direct"', () => {
     renderSection({ ivMode: 'direct' });
-    expect(screen.getByLabelText(/Direct IV/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/σ.*Direct IV/)).toBeInTheDocument();
     expect(screen.getByLabelText('VIX (regime only)')).toBeInTheDocument();
   });
 
@@ -82,7 +82,7 @@ describe('IVInputSection', () => {
   it('calls onDirectIVChange when direct IV input changes', async () => {
     const user = userEvent.setup();
     const { props } = renderSection({ ivMode: 'direct' });
-    await user.type(screen.getByLabelText(/Direct IV/), '0');
+    await user.type(screen.getByLabelText(/σ.*Direct IV/), '0');
     expect(props.onDirectIVChange).toHaveBeenCalledWith('0');
   });
 
@@ -214,7 +214,7 @@ describe('IVInputSection', () => {
       ivMode: 'direct',
       errors: { iv: 'IV out of range' },
     });
-    const input = screen.getByLabelText(/Direct IV/);
+    const input = screen.getByLabelText(/σ.*Direct IV/);
     expect(input).toHaveAttribute('aria-invalid', 'true');
     expect(input).toHaveAttribute('aria-describedby', 'err-iv');
     expect(screen.getByRole('alert')).toHaveTextContent('IV out of range');
@@ -222,7 +222,7 @@ describe('IVInputSection', () => {
 
   it('Direct IV input has no aria-describedby when no error', () => {
     renderSection({ ivMode: 'direct', errors: {} });
-    const input = screen.getByLabelText(/Direct IV/);
+    const input = screen.getByLabelText(/σ.*Direct IV/);
     expect(input).not.toHaveAttribute('aria-describedby');
   });
 

@@ -12,7 +12,7 @@ test.describe('Theme Persistence', () => {
     await page.reload();
 
     // App defaults to dark mode
-    await expect(page.locator('div.dark')).toBeAttached();
+    await expect(page.locator('html.dark')).toBeAttached();
     await expect(
       page.getByRole('button', { name: /switch to light mode/i }),
     ).toBeVisible();
@@ -21,7 +21,7 @@ test.describe('Theme Persistence', () => {
     await page.reload();
 
     // Verify dark mode persisted
-    await expect(page.locator('div.dark')).toBeAttached();
+    await expect(page.locator('html.dark')).toBeAttached();
     await expect(
       page.getByRole('button', { name: /switch to light mode/i }),
     ).toBeVisible();
@@ -40,13 +40,13 @@ test.describe('Theme Persistence', () => {
       name: /switch to light mode/i,
     });
     await toggleToLight.click();
-    await expect(page.locator('div.dark')).not.toBeAttached();
+    await expect(page.locator('html.dark')).not.toBeAttached();
 
     // Reload the page
     await page.reload();
 
     // Verify light mode persisted — no dark class
-    await expect(page.locator('div.dark')).not.toBeAttached();
+    await expect(page.locator('html.dark')).not.toBeAttached();
     await expect(
       page.getByRole('button', { name: /switch to dark mode/i }),
     ).toBeVisible();
@@ -56,14 +56,14 @@ test.describe('Theme Persistence', () => {
     await page.goto('/');
 
     // App defaults to dark mode
-    await expect(page.locator('div.dark')).toBeAttached();
+    await expect(page.locator('html.dark')).toBeAttached();
 
     // Toggle to light mode
     await page.getByRole('button', { name: /switch to light mode/i }).click();
-    await expect(page.locator('div.dark')).not.toBeAttached();
+    await expect(page.locator('html.dark')).not.toBeAttached();
 
     // Toggle back to dark mode
     await page.getByRole('button', { name: /switch to dark mode/i }).click();
-    await expect(page.locator('div.dark')).toBeAttached();
+    await expect(page.locator('html.dark')).toBeAttached();
   });
 });

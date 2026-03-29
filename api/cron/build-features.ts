@@ -13,6 +13,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   getETTime,
@@ -44,7 +45,7 @@ const CHECKPOINTS = [
   { label: 't4', minutes: 690 }, // 11:30 AM
 ] as const;
 
-const TOLERANCE_MINUTES = 3;
+const TOLERANCE_MINUTES = 5;
 
 // ── Flow sources ───────────────────────────────────────────
 
@@ -428,10 +429,31 @@ function toDateStr(val: unknown): string {
   return s;
 }
 
+// Columns that are legitimately null on most days (non-event days, no
+// significant gamma wall, etc.).  Excluding them prevents completeness
+// from being artificially penalised.
+const NULLABLE_FEATURE_KEYS = new Set([
+  'event_type',
+  'is_opex',
+  'gamma_wall_above_dist',
+  'gamma_wall_above_mag',
+  'gamma_wall_below_dist',
+  'gamma_wall_below_mag',
+  'neg_gamma_nearest_dist',
+  'neg_gamma_nearest_mag',
+  'gamma_asymmetry',
+  'charm_max_pos_dist',
+  'charm_max_neg_dist',
+]);
+
 /** Compute feature completeness as fraction of non-null values. */
 function computeCompleteness(features: FeatureRow): number {
   const keys = Object.keys(features).filter(
-    (k) => k !== 'date' && k !== 'feature_completeness' && k !== 'created_at',
+    (k) =>
+      k !== 'date' &&
+      k !== 'feature_completeness' &&
+      k !== 'created_at' &&
+      !NULLABLE_FEATURE_KEYS.has(k),
   );
   if (keys.length === 0) return 0;
   const nonNull = keys.filter((k) => features[k] != null).length;
@@ -691,42 +713,58 @@ async function buildFeaturesForDate(
     }
   }
 
-  // Realized volatility (from recent outcomes)
-  if (prevDayRows.length >= 5) {
-    const returns5 = prevDayRows.slice(0, 5).map((r) => {
-      const range = Number(r.day_range_pts ?? 0);
-      return range; // Use range as vol proxy
-    });
-    if (returns5.length >= 5) {
-      const mean5 = returns5.reduce((a, b) => a + b, 0) / returns5.length;
+  // Realized volatility from log returns of settlement prices.
+  // Query includes settlement so we can compute ln(S[i] / S[i-1]).
+  // prevDayRows is ORDER BY date DESC, so index 0 is the most recent.
+  const settlements = await sql`
+    SELECT settlement FROM outcomes
+    WHERE date <= ${dateStr} AND settlement IS NOT NULL
+    ORDER BY date DESC
+    LIMIT 11
+  `;
+
+  const prices = settlements.map((r) => Number(r.settlement));
+
+  if (prices.length >= 6) {
+    // Log returns: ln(P[i] / P[i+1]) — note: prices[0] is most recent
+    const logReturns5: number[] = [];
+    for (let i = 0; i < 5 && i + 1 < prices.length; i++) {
+      logReturns5.push(Math.log(prices[i]! / prices[i + 1]!));
+    }
+    if (logReturns5.length >= 5) {
+      const mean5 =
+        logReturns5.reduce((a, b) => a + b, 0) / logReturns5.length;
       const variance5 =
-        returns5.reduce((a, b) => a + (b - mean5) ** 2, 0) /
-        (returns5.length - 1);
-      features.realized_vol_5d = Math.sqrt(variance5);
+        logReturns5.reduce((a, b) => a + (b - mean5) ** 2, 0) /
+        (logReturns5.length - 1);
+      // Annualise: daily stdev * sqrt(252), express as percentage
+      features.realized_vol_5d = Math.sqrt(variance5) * Math.sqrt(252) * 100;
     }
   }
 
-  if (prevDayRows.length >= 10) {
-    const returns10 = prevDayRows
-      .slice(0, 10)
-      .map((r) => Number(r.day_range_pts ?? 0));
-    const mean10 = returns10.reduce((a, b) => a + b, 0) / returns10.length;
-    const variance10 =
-      returns10.reduce((a, b) => a + (b - mean10) ** 2, 0) /
-      (returns10.length - 1);
-    features.realized_vol_10d = Math.sqrt(variance10);
+  if (prices.length >= 11) {
+    const logReturns10: number[] = [];
+    for (let i = 0; i < 10 && i + 1 < prices.length; i++) {
+      logReturns10.push(Math.log(prices[i]! / prices[i + 1]!));
+    }
+    if (logReturns10.length >= 10) {
+      const mean10 =
+        logReturns10.reduce((a, b) => a + b, 0) / logReturns10.length;
+      const variance10 =
+        logReturns10.reduce((a, b) => a + (b - mean10) ** 2, 0) /
+        (logReturns10.length - 1);
+      features.realized_vol_10d =
+        Math.sqrt(variance10) * Math.sqrt(252) * 100;
+    }
   }
 
-  // RV/IV ratio
+  // RV/IV ratio: both realized_vol_5d and VIX are now annualised percentages
   if (
     features.realized_vol_5d != null &&
     features.vix != null &&
     features.vix > 0
   ) {
-    // VIX is annualized %, realized_vol_5d is in pts - normalize by dividing by SPX level
-    const spx = features.spx_open ?? 5500;
-    const rv_pct = (features.realized_vol_5d / spx) * Math.sqrt(252) * 100;
-    features.rv_iv_ratio = rv_pct / features.vix;
+    features.rv_iv_ratio = features.realized_vol_5d / features.vix;
   }
 
   // VIX term structure
@@ -754,6 +792,10 @@ async function buildFeaturesForDate(
   }
 
   // Economic event features (from economic_events table)
+  features.is_opex = false; // Default; overridden below if 3rd Friday
+  features.is_fomc = false;
+  features.event_count = 0;
+
   const eventRows = await sql`
     SELECT event_name, event_type, event_time
     FROM economic_events
@@ -777,10 +819,6 @@ async function buildFeaturesForDate(
     ];
     features.event_type = priority.find((p) => types.has(p)) ?? null;
     features.is_fomc = types.has('FOMC');
-    features.is_opex = false; // Will be derived from date (3rd Friday logic)
-  } else {
-    features.event_count = 0;
-    features.is_fomc = false;
   }
 
   // Check if today is OPEX (3rd Friday of month)
@@ -1163,7 +1201,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
+  const startTime = Date.now();
   const sql = getDb();
+  await sql`SET statement_timeout = '30000'`; // 30s per statement
+
+  // Diagnostic: log flow_data coverage for today before doing any work
+  const today = new Date().toISOString().slice(0, 10);
+  const coverage = await sql`
+    SELECT source, COUNT(*) as rows
+    FROM flow_data
+    WHERE date = ${today}
+    GROUP BY source
+    ORDER BY source
+  `;
+  logger.info({ date: today, sources: coverage }, 'flow_data coverage');
 
   try {
     // Determine which dates to process
@@ -1230,12 +1281,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     return res.status(200).json({
+      job: 'build-features',
       dates: dates.length,
       featuresBuilt,
       labelsExtracted,
       errors,
+      durationMs: Date.now() - startTime,
     });
   } catch (err) {
+    Sentry.setTag('cron.job', 'build-features');
+    Sentry.captureException(err);
     logger.error({ err }, 'build-features error');
     return res.status(500).json({ error: 'Internal error' });
   }

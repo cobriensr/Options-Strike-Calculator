@@ -25,11 +25,11 @@ export default function FineGrainedBars({ vix, spot }: Props) {
         >
           <thead>
             <tr className="bg-table-header">
-              <th className={`${mkTh('center')} w-12`}>VIX</th>
-              <th className={`${mkTh('right')} w-12.5`}>Days</th>
-              <th className={mkTh('left')}>Median H-L Range</th>
-              <th className={`${mkTh('right')} w-15`}>90th</th>
-              <th className={`${mkTh('right')} w-12.5`}>{'>'}2%</th>
+              <th scope="col" className={`${mkTh('center')} w-12`}>VIX</th>
+              <th scope="col" className={`${mkTh('right')} w-12.5`}>Days</th>
+              <th scope="col" className={mkTh('left')}>Median H-L Range</th>
+              <th scope="col" className={`${mkTh('right')} w-15`}>90th</th>
+              <th scope="col" className={`${mkTh('right')} w-12.5`}>{'>'}2%</th>
             </tr>
           </thead>
           <tbody>

@@ -32,6 +32,7 @@ __snapshots__/
 /test-results/
 /blob-report/
 /playwright/.cache/
+/playwright-report/
 
 # OS
 .DS_Store
@@ -48,3 +49,9 @@ __snapshots__/
 # ML
 ml/.venv/
 ml/*.csv
+ml/__pycache__/
+ml/.pytest_cache/
+
+# Superpowers
+.superpowers/
+docs/

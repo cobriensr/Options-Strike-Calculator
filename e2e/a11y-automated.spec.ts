@@ -34,6 +34,11 @@ test.describe('Automated Accessibility Scanning', () => {
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
 
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
     await page.getByLabel('VIX Value').fill('19');
@@ -52,7 +57,7 @@ test.describe('Automated Accessibility Scanning', () => {
     await page.goto('/');
 
     // App defaults to dark mode — verify it's active
-    await expect(page.locator('div.dark')).toBeAttached();
+    await expect(page.locator('html.dark')).toBeAttached();
 
     const violations = await scanA11y(page);
     expect(violations).toEqual([]);

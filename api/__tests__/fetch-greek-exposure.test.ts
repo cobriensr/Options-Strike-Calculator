@@ -277,7 +277,7 @@ describe('fetch-greek-exposure handler', () => {
 
   // ── Error handling ────────────────────────────────────────
 
-  it('returns 500 when aggregate API fails', async () => {
+  it('returns 500 when aggregate API fails and expiry is empty', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -297,10 +297,10 @@ describe('fetch-greek-exposure handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(res._json).toMatchObject({ error: 'All sources failed' });
   });
 
-  it('returns 500 when expiry API fails', async () => {
+  it('returns 200 partial when expiry API fails but aggregate succeeds', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -308,7 +308,10 @@ describe('fetch-greek-exposure handler', () => {
         if (url.includes('/greek-exposure/expiry')) {
           return { ok: false, status: 429, text: async () => 'Rate limited' };
         }
-        return { ok: true, json: async () => ({ data: [makeAggregateRow()] }) };
+        return {
+          ok: true,
+          json: async () => ({ data: [makeAggregateRow()] }),
+        };
       }),
     );
 
@@ -319,8 +322,12 @@ describe('fetch-greek-exposure handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    // Aggregate stored successfully, so partial success (200)
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      aggregateStored: true,
+      partial: true,
+    });
   });
 
   it('returns 500 when fetch throws', async () => {
@@ -338,6 +345,6 @@ describe('fetch-greek-exposure handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(res._json).toMatchObject({ error: 'All sources failed' });
   });
 });

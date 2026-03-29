@@ -32,15 +32,15 @@ export default function PnLProfileTable({
           >
             <thead>
               <tr className="bg-table-header">
-                <th className={mkTh('center')}>Delta</th>
-                <th className={mkTh('left')}>Side</th>
-                <th className={mkTh('right')}>Credit</th>
-                <th className={mkTh('right')}>Max Loss</th>
-                <th className={mkTh('right')}>Buying Pwr</th>
-                <th className={mkTh('right')}>RoR</th>
-                <th className={mkTh('right')}>PoP</th>
-                <th className={mkTh('right')}>SPX BE</th>
-                <th className={mkTh('right')}>SPY BE</th>
+                <th scope="col" className={mkTh('center')}>Delta</th>
+                <th scope="col" className={mkTh('left')}>Side</th>
+                <th scope="col" className={mkTh('right')}>Credit</th>
+                <th scope="col" className={mkTh('right')}>Max Loss</th>
+                <th scope="col" className={mkTh('right')}>Buying Pwr</th>
+                <th scope="col" className={mkTh('right')}>RoR</th>
+                <th scope="col" className={mkTh('right')}>PoP</th>
+                <th scope="col" className={mkTh('right')}>SPX BE</th>
+                <th scope="col" className={mkTh('right')}>SPY BE</th>
               </tr>
             </thead>
             <tbody>

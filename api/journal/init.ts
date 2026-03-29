@@ -42,7 +42,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 200 });
     return res.status(200).json({
       success: true,
-      tables: ['market_snapshots', 'analyses', 'outcomes', 'positions'],
+      tables: ['market_snapshots', 'analyses', 'outcomes'],
       migrated,
       message: 'All tables created and migrations applied',
     });

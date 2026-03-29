@@ -32,6 +32,24 @@ export interface AnalysisContext {
   isBacktest?: boolean;
   dataNote?: string; // describes any missing data
   events?: Array<{ event: string; time: string; severity: string }>;
+  // Chain-derived data (computed client-side, passed to analyze)
+  topOIStrikes?: Array<{
+    strike: number;
+    putOI: number;
+    callOI: number;
+    totalOI: number;
+    distFromSpot: number;
+    distPct: string;
+    side: 'put' | 'call' | 'both';
+  }>;
+  skewMetrics?: {
+    put25dIV: number; // IV at ~25-delta put
+    call25dIV: number; // IV at ~25-delta call
+    atmIV: number; // ATM IV
+    putSkew25d: number; // put25dIV - atmIV (vol pts)
+    callSkew25d: number; // call25dIV - atmIV (vol pts)
+    skewRatio: number; // |putSkew| / |callSkew|
+  };
 }
 
 export interface UploadedImage {

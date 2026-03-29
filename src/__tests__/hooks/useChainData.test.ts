@@ -200,7 +200,8 @@ describe('useChainData', () => {
     expect(result.current.error).toBe(
       'No 0DTE contracts found. Market may be closed.',
     );
-    expect(result.current.chain).toBeNull();
+    // The hook now keeps data in state even when it contains an error field
+    expect(result.current.chain).toEqual(errorResponse);
   });
 
   it('does not auto-refresh when market is closed', async () => {

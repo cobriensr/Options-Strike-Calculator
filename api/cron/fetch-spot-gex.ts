@@ -20,26 +20,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
-
-// ── Market hours check ──────────────────────────────────────
-
-function isMarketHours(): boolean {
-  const now = new Date();
-  const et = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
-  );
-  const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-
-  const hour = et.getHours();
-  const minute = et.getMinutes();
-  const timeMinutes = hour * 60 + minute;
-
-  return timeMinutes >= 565 && timeMinutes <= 965;
-}
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -146,6 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ skipped: true, reason: 'Outside market hours' });
   }
 
+  const startTime = Date.now();
   const apiKey = process.env.UW_API_KEY;
   if (!apiKey) {
     logger.error('UW_API_KEY not configured');
@@ -153,13 +139,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const rows = await fetchSpotExposures(apiKey);
-    const result = await storeLatest(rows);
+    const rows = await withRetry(() => fetchSpotExposures(apiKey));
+    const result = await withRetry(() => storeLatest(rows));
 
     logger.info({ ticks: rows.length, ...result }, 'fetch-spot-gex completed');
 
-    return res.status(200).json({ ticks: rows.length, ...result });
+    return res.status(200).json({
+      job: 'fetch-spot-gex',
+      ticks: rows.length,
+      ...result,
+      durationMs: Date.now() - startTime,
+    });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-spot-gex');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-spot-gex error');
     return res.status(500).json({ error: 'Internal error' });
   }

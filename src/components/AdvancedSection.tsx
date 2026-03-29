@@ -2,6 +2,7 @@ import { theme } from '../themes';
 import type { CalculationResults, VIXDayData, OHLCField } from '../types';
 import { getKurtosisFactor, WING_OPTIONS } from '../constants';
 import { SectionBox, Chip, ErrorMsg } from './ui';
+import ThetaDecayChart from './ThetaDecayChart';
 
 interface Props {
   skewPct: number;
@@ -337,6 +338,22 @@ export default function AdvancedSection({
                   </div>
                 )}
               </div>
+            );
+          })()}
+
+          {/* Theta Decay — premium curve + entry timing */}
+          {(() => {
+            const ref = results.allDeltas.find(
+              (r) => !('error' in r) && r.delta === 10,
+            );
+            if (!ref || 'error' in ref) return null;
+            return (
+              <ThetaDecayChart
+                spot={results.spot}
+                sigma={ref.putSigma}
+                strikeDistance={results.spot - ref.putSnapped}
+                hoursRemaining={results.hoursRemaining}
+              />
             );
           })()}
         </div>

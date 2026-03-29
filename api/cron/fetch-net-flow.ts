@@ -19,7 +19,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -28,24 +30,6 @@ const TICKERS: Array<{ ticker: string; source: string }> = [
   { ticker: 'SPY', source: 'spy_flow' },
   { ticker: 'QQQ', source: 'qqq_flow' },
 ];
-
-// ── Market hours check ──────────────────────────────────────
-
-function isMarketHours(): boolean {
-  const now = new Date();
-  const et = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
-  );
-  const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-
-  const hour = et.getHours();
-  const minute = et.getMinutes();
-  const timeMinutes = hour * 60 + minute;
-
-  // 9:25 AM ET (565) to 4:05 PM ET (965)
-  return timeMinutes >= 565 && timeMinutes <= 965;
-}
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -195,6 +179,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ skipped: true, reason: 'Outside market hours' });
   }
 
+  const startTime = Date.now();
   const apiKey = process.env.UW_API_KEY;
   if (!apiKey) {
     logger.error('UW_API_KEY not configured');
@@ -208,8 +193,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const fetches = await Promise.all(
       TICKERS.map(async ({ ticker, source }) => {
         try {
-          const candles = await fetchNetFlow(apiKey, ticker);
-          const result = await storeLatestCandle(candles, source);
+          const candles = await withRetry(() => fetchNetFlow(apiKey, ticker));
+          const result = await withRetry(() =>
+            storeLatestCandle(candles, source),
+          );
           return { source, result, candleCount: candles.length };
         } catch (err) {
           logger.warn({ err, ticker, source }, 'Failed to fetch net flow');
@@ -224,8 +211,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     logger.info({ results }, 'fetch-net-flow completed');
 
-    return res.status(200).json({ stored: true, results });
+    return res
+      .status(200)
+      .json({
+        job: 'fetch-net-flow',
+        stored: true,
+        results,
+        durationMs: Date.now() - startTime,
+      });
   } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-net-flow');
+    Sentry.captureException(err);
     logger.error({ err }, 'fetch-net-flow error');
     return res.status(500).json({ error: 'Internal error' });
   }

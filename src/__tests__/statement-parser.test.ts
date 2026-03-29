@@ -1,0 +1,1134 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  computeExecutionQuality,
+  computePortfolioRisk,
+  generateWarnings,
+  groupIntoSpreads,
+  matchClosedSpreads,
+  parseCSVLine,
+  parseCurrency,
+  parsePercentage,
+  parseStatement,
+  parseTosDate,
+  parseTrdDescription,
+} from '../components/performance/statement-parser';
+import type {
+  AccountSummary,
+  CashEntry,
+  ExecutedTrade,
+  HedgePosition,
+  IronCondor,
+  NakedPosition,
+  OpenLeg,
+  OrderEntry,
+  PnLSummary,
+  Spread,
+} from '../components/performance/types';
+
+// ── Helpers ──────────────────────────────────────────────────
+
+function makeLeg(overrides: Partial<OpenLeg> & Pick<OpenLeg, 'strike' | 'type' | 'qty'>): OpenLeg {
+  return {
+    symbol: 'SPX',
+    optionCode: `SPXW260327${overrides.type === 'PUT' ? 'P' : 'C'}${overrides.strike}`,
+    exp: '2026-03-27',
+    tradePrice: 0,
+    mark: null,
+    markValue: null,
+    ...overrides,
+  };
+}
+
+function makeSpread(overrides: Partial<Spread>): Spread {
+  return {
+    spreadType: 'PUT_CREDIT_SPREAD',
+    shortLeg: makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
+    longLeg: makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0 }),
+    contracts: 10,
+    wingWidth: 20,
+    creditReceived: 1500,
+    maxProfit: 1500,
+    maxLoss: 18500,
+    riskRewardRatio: 12.33,
+    breakeven: 6398.5,
+    entryTime: null,
+    entryNetPrice: null,
+    currentValue: null,
+    openPnl: null,
+    pctOfMaxProfit: null,
+    distanceToShortStrike: 100,
+    distanceToShortStrikePct: 1.54,
+    nearestShortStrike: 6400,
+    entryCommissions: 13,
+    ...overrides,
+  };
+}
+
+function makeIC(overrides: Partial<IronCondor>): IronCondor {
+  const putSpread = makeSpread({
+    spreadType: 'PUT_CREDIT_SPREAD',
+    shortLeg: makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
+    longLeg: makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0 }),
+    wingWidth: 20,
+    creditReceived: 1500,
+    maxLoss: 18500,
+  });
+  const callSpread = makeSpread({
+    spreadType: 'CALL_CREDIT_SPREAD',
+    shortLeg: makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
+    longLeg: makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
+    wingWidth: 20,
+    creditReceived: 1000,
+    maxLoss: 19000,
+  });
+  return {
+    spreadType: 'IRON_CONDOR',
+    putSpread,
+    callSpread,
+    contracts: 10,
+    totalCredit: 2500,
+    maxProfit: 2500,
+    maxLoss: 17500,
+    riskRewardRatio: 7,
+    breakevenLow: 6397.5,
+    breakevenHigh: 6602.5,
+    putWingWidth: 20,
+    callWingWidth: 20,
+    entryTime: null,
+    ...overrides,
+  };
+}
+
+function makeHedge(overrides: Partial<HedgePosition>): HedgePosition {
+  return {
+    leg: makeLeg({ strike: 6300, type: 'PUT', qty: 5, tradePrice: 0.5 }),
+    direction: 'LONG',
+    protectionSide: 'PUT',
+    strikeProtected: 6300,
+    contracts: 5,
+    entryCost: 250,
+    currentValue: null,
+    openPnl: null,
+    ...overrides,
+  };
+}
+
+const DEFAULT_ACCOUNT: AccountSummary = {
+  netLiquidatingValue: 102181.24,
+  stockBuyingPower: 82181.24,
+  optionBuyingPower: 82181.24,
+  equityCommissionsYtd: 68.76,
+};
+
+const EMPTY_PNL: PnLSummary = { entries: [], totals: null };
+
+// ── Minimal test CSV (from task description) ─────────────────
+
+const TEST_CSV = `Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+3/27/26,00:00:00,BAL,,Cash balance at the start of business day 27.03 CST,,,,"100,000.00"
+3/27/26,09:30:00,TRD,="1001",SOLD -10 VERTICAL SPX 100 (Weeklys) 27 MAR 26 6400/6380 PUT @1.50,-10.52,-13.00,"1,500.00","101,476.48"
+3/27/26,09:35:00,TRD,="1002",SOLD -10 VERTICAL SPX 100 (Weeklys) 27 MAR 26 6600/6620 CALL @1.00,-10.52,-13.00,"1,000.00","102,452.96"
+3/27/26,14:00:00,TRD,="1003",BOT +10 VERTICAL SPX 100 (Weeklys) 27 MAR 26 6600/6620 CALL @.05,-8.72,-13.00,-50.00,"102,381.24"
+
+Account Order History
+Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+,,3/27/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6400,PUT,1.50,LMT,DAY,FILLED
+,,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6380,PUT,CREDIT,,,
+,,3/27/26 09:35:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6600,CALL,1.00,LMT,DAY,FILLED
+,,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6620,CALL,CREDIT,,,
+,,3/27/26 14:00:00,VERTICAL,BUY,+10,TO CLOSE,SPX,27 MAR 26,6600,CALL,.05,LMT,DAY,FILLED
+,,,,SELL,-10,TO CLOSE,SPX,27 MAR 26,6620,CALL,DEBIT,,,
+,,3/27/26 09:28:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6350,PUT,1.00,LMT,DAY,"REJECTED: Your buying power will be below zero ($5,000.00) if this order is accepted."
+,,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6330,PUT,CREDIT,,,
+
+Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,3/27/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6400,PUT,3.50,1.50,LMT
+,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6380,PUT,2.00,CREDIT,
+,3/27/26 09:35:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6600,CALL,2.00,1.00,LMT
+,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6620,CALL,1.00,CREDIT,
+,3/27/26 14:00:00,VERTICAL,BUY,+10,TO CLOSE,SPX,27 MAR 26,6600,CALL,.10,.05,LMT
+,,,SELL,-10,TO CLOSE,SPX,27 MAR 26,6620,CALL,.05,DEBIT,
+
+Options
+Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price
+SPX,SPXW260327P6380,27 MAR 26,6380,PUT,+10,2.00
+SPX,SPXW260327P6400,27 MAR 26,6400,PUT,-10,3.50
+
+Profits and Losses
+Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value
+SPX,S & P 500 INDEX,($200.00),-1.00%,"$2,381.24","$2,381.24",$0.00,"$20,000.00","($200.00)"
+,OVERALL TOTALS,($200.00),-1.00%,"$2,381.24","$2,381.24",$0.00,"$20,000.00","($200.00)"
+
+Account Summary
+Net Liquidating Value,"$102,181.24"
+Stock Buying Power,"$82,181.24"
+Option Buying Power,"$82,181.24"
+Equity Commissions & Fees YTD,"$68.76"`;
+
+// ══════════════════════════════════════════════════════════════
+// 1. Value Parsers
+// ══════════════════════════════════════════════════════════════
+
+describe('parseCSVLine', () => {
+  it('splits normal fields by comma', () => {
+    expect(parseCSVLine('a,b,c')).toEqual(['a', 'b', 'c']);
+  });
+
+  it('handles quoted fields with commas', () => {
+    expect(parseCSVLine('"hello, world",bar,baz')).toEqual([
+      'hello, world',
+      'bar',
+      'baz',
+    ]);
+  });
+
+  it('handles empty fields', () => {
+    expect(parseCSVLine('a,,b')).toEqual(['a', '', 'b']);
+  });
+
+  it('handles ref number format ="..."', () => {
+    expect(parseCSVLine('a,="5320628961",b')).toEqual([
+      'a',
+      '=5320628961',
+      'b',
+    ]);
+  });
+
+  it('handles quoted values with dollar and commas', () => {
+    const result = parseCSVLine('"$100,000.00",bar');
+    expect(result).toEqual(['$100,000.00', 'bar']);
+  });
+
+  it('handles multiple quoted fields', () => {
+    const result = parseCSVLine('"a,b","c,d",e');
+    expect(result).toEqual(['a,b', 'c,d', 'e']);
+  });
+
+  it('trims whitespace from fields', () => {
+    expect(parseCSVLine(' a , b , c ')).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('parseCurrency', () => {
+  it('parses comma-formatted number', () => {
+    expect(parseCurrency('1,800.00')).toBe(1800);
+  });
+
+  it('parses parenthesized negative', () => {
+    expect(parseCurrency('($150.00)')).toBe(-150);
+  });
+
+  it('parses dollar with commas', () => {
+    expect(parseCurrency('$310,000.00')).toBe(310000);
+  });
+
+  it('parses negative number', () => {
+    expect(parseCurrency('-26.00')).toBe(-26);
+  });
+
+  it('returns 0 for empty string', () => {
+    expect(parseCurrency('')).toBe(0);
+  });
+
+  it('returns 0 for whitespace only', () => {
+    expect(parseCurrency('   ')).toBe(0);
+  });
+
+  it('returns 0 for ref number format', () => {
+    expect(parseCurrency('="5320628961"')).toBe(0);
+  });
+
+  it('parses parenthesized without dollar sign', () => {
+    expect(parseCurrency('(150.00)')).toBe(-150);
+  });
+
+  it('parses plain decimal', () => {
+    expect(parseCurrency('42.50')).toBe(42.5);
+  });
+});
+
+describe('parsePercentage', () => {
+  it('parses negative percentage', () => {
+    expect(parsePercentage('-0.74%')).toBeCloseTo(-0.0074, 6);
+  });
+
+  it('parses zero percentage', () => {
+    expect(parsePercentage('0.00%')).toBe(0);
+  });
+
+  it('parses positive percentage', () => {
+    expect(parsePercentage('5.00%')).toBeCloseTo(0.05, 6);
+  });
+
+  it('returns 0 for empty string', () => {
+    expect(parsePercentage('')).toBe(0);
+  });
+
+  it('parses parenthesized negative percentage', () => {
+    expect(parsePercentage('(1.50%)')).toBeCloseTo(-0.015, 6);
+  });
+});
+
+describe('parseTosDate', () => {
+  it('parses 27 MAR 26', () => {
+    expect(parseTosDate('27 MAR 26')).toBe('2026-03-27');
+  });
+
+  it('parses 20 JAN 26', () => {
+    expect(parseTosDate('20 JAN 26')).toBe('2026-01-20');
+  });
+
+  it('parses all months', () => {
+    const months: Array<[string, string]> = [
+      ['JAN', '01'], ['FEB', '02'], ['MAR', '03'],
+      ['APR', '04'], ['MAY', '05'], ['JUN', '06'],
+      ['JUL', '07'], ['AUG', '08'], ['SEP', '09'],
+      ['OCT', '10'], ['NOV', '11'], ['DEC', '12'],
+    ];
+    for (const [abbr, mm] of months) {
+      expect(parseTosDate(`15 ${abbr} 26`)).toBe(`2026-${mm}-15`);
+    }
+  });
+
+  it('pads single-digit day', () => {
+    expect(parseTosDate('5 FEB 26')).toBe('2026-02-05');
+  });
+
+  it('returns original string for invalid format', () => {
+    expect(parseTosDate('invalid')).toBe('invalid');
+  });
+
+  it('handles case-insensitive month', () => {
+    expect(parseTosDate('15 mar 26')).toBe('2026-03-15');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 2. TRD Description Parsing
+// ══════════════════════════════════════════════════════════════
+
+describe('parseTrdDescription', () => {
+  it('parses SOLD VERTICAL PUT', () => {
+    const result = parseTrdDescription(
+      'SOLD -20 VERTICAL SPX 100 (Weeklys) 27 MAR 26 6495/6515 CALL @.90',
+    );
+    expect(result).not.toBeNull();
+    expect(result!.direction).toBe('SOLD');
+    expect(result!.quantity).toBe(20);
+    expect(result!.spreadType).toBe('VERTICAL');
+    expect(result!.symbol).toBe('SPX');
+    expect(result!.multiplier).toBe(100);
+    expect(result!.strikes).toBe('6495/6515');
+    expect(result!.optionType).toBe('CALL');
+    expect(result!.fillPrice).toBeCloseTo(0.9, 6);
+    expect(result!.expiration).toBe('2026-03-27');
+    expect(result!.expiryLabel).toBe('Weeklys');
+  });
+
+  it('parses BOT VERTICAL', () => {
+    const result = parseTrdDescription(
+      'BOT +10 VERTICAL SPX 100 (Weeklys) 24 MAR 26 6600/6620 CALL @2.00',
+    );
+    expect(result).not.toBeNull();
+    expect(result!.direction).toBe('BOT');
+    expect(result!.quantity).toBe(10);
+    expect(result!.fillPrice).toBe(2.0);
+  });
+
+  it('handles tAndroid prefix', () => {
+    const result = parseTrdDescription(
+      'tAndroid SOLD -10 IRON CONDOR SPX 100 (Weeklys) 27 MAR 26 6400/6420 CALL @1.50',
+    );
+    expect(result).not.toBeNull();
+    expect(result!.direction).toBe('SOLD');
+    expect(result!.quantity).toBe(10);
+    expect(result!.spreadType).toBe('IRON');
+  });
+
+  it('parses NDX symbol', () => {
+    const result = parseTrdDescription(
+      'SOLD -1 VERTICAL NDX 100 (Weeklys) 27 MAR 26 22000/22020 CALL @5.00',
+    );
+    expect(result).not.toBeNull();
+    expect(result!.symbol).toBe('NDX');
+    expect(result!.quantity).toBe(1);
+  });
+
+  it('returns null for Automatic Expiration', () => {
+    expect(parseTrdDescription('Automatic Expiration -10.0')).toBeNull();
+  });
+
+  it('returns null for Cash liquidation', () => {
+    expect(parseTrdDescription('Cash liquidation')).toBeNull();
+  });
+
+  it('returns null for empty string', () => {
+    expect(parseTrdDescription('')).toBeNull();
+  });
+
+  it('parses SOLD with integer fill price', () => {
+    const result = parseTrdDescription(
+      'SOLD -5 VERTICAL SPX 100 (Weeklys) 27 MAR 26 6300/6280 PUT @3.00',
+    );
+    expect(result).not.toBeNull();
+    expect(result!.fillPrice).toBe(3.0);
+    expect(result!.optionType).toBe('PUT');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 3. Position Grouping
+// ══════════════════════════════════════════════════════════════
+
+describe('groupIntoSpreads', () => {
+  const emptyTrades: ExecutedTrade[] = [];
+  const emptyCash: CashEntry[] = [];
+  const spotPrice = 6500;
+
+  it('detects PCS (short put higher strike + long put lower strike)', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
+      makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0 }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    expect(result.spreads).toHaveLength(1);
+    expect(result.spreads[0]!.spreadType).toBe('PUT_CREDIT_SPREAD');
+    expect(result.spreads[0]!.shortLeg.strike).toBe(6400);
+    expect(result.spreads[0]!.longLeg.strike).toBe(6380);
+    expect(result.spreads[0]!.wingWidth).toBe(20);
+    expect(result.spreads[0]!.contracts).toBe(10);
+    expect(result.ironCondors).toHaveLength(0);
+    expect(result.hedges).toHaveLength(0);
+    expect(result.naked).toHaveLength(0);
+  });
+
+  it('detects CCS (short call lower strike + long call higher strike)', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    expect(result.spreads).toHaveLength(1);
+    expect(result.spreads[0]!.spreadType).toBe('CALL_CREDIT_SPREAD');
+    expect(result.spreads[0]!.shortLeg.strike).toBe(6600);
+    expect(result.spreads[0]!.longLeg.strike).toBe(6620);
+    expect(result.spreads[0]!.wingWidth).toBe(20);
+  });
+
+  it('detects IC from matching PCS + CCS pair with same qty', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
+      makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    expect(result.ironCondors).toHaveLength(1);
+    expect(result.spreads).toHaveLength(0);
+    expect(result.ironCondors[0]!.contracts).toBe(10);
+    expect(result.ironCondors[0]!.putWingWidth).toBe(20);
+    expect(result.ironCondors[0]!.callWingWidth).toBe(20);
+  });
+
+  it('classifies standalone long put as hedge', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6300, type: 'PUT', qty: 5, tradePrice: 0.5 }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    expect(result.hedges).toHaveLength(1);
+    expect(result.hedges[0]!.protectionSide).toBe('PUT');
+    expect(result.hedges[0]!.direction).toBe('LONG');
+    expect(result.hedges[0]!.contracts).toBe(5);
+    expect(result.spreads).toHaveLength(0);
+  });
+
+  it('classifies standalone long call as hedge', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6700, type: 'CALL', qty: 3, tradePrice: 1.0 }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    expect(result.hedges).toHaveLength(1);
+    expect(result.hedges[0]!.protectionSide).toBe('CALL');
+  });
+
+  it('flags standalone short without matching long as naked', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    expect(result.naked).toHaveLength(1);
+    expect(result.naked[0]!.type).toBe('PUT');
+    expect(result.naked[0]!.contracts).toBe(10);
+    expect(result.spreads).toHaveLength(0);
+  });
+
+  it('handles mixed book: IC + standalone PCS + long put hedge', () => {
+    const legs: OpenLeg[] = [
+      // IC legs
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
+      makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
+      // Extra PCS
+      makeLeg({ strike: 6350, type: 'PUT', qty: -5, tradePrice: 2.0 }),
+      makeLeg({ strike: 6330, type: 'PUT', qty: 5, tradePrice: 1.0 }),
+      // Hedge
+      makeLeg({ strike: 6250, type: 'PUT', qty: 3, tradePrice: 0.5 }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    expect(result.ironCondors).toHaveLength(1);
+    expect(result.spreads).toHaveLength(1);
+    expect(result.spreads[0]!.spreadType).toBe('PUT_CREDIT_SPREAD');
+    expect(result.hedges).toHaveLength(1);
+    expect(result.hedges[0]!.protectionSide).toBe('PUT');
+    expect(result.naked).toHaveLength(0);
+  });
+
+  it('does not pair legs with mismatched qty', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
+      makeLeg({ strike: 6380, type: 'PUT', qty: 5, tradePrice: 2.0 }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    // Cannot form a spread — 10 vs 5 qty mismatch
+    expect(result.spreads).toHaveLength(0);
+    expect(result.naked).toHaveLength(1);
+    expect(result.hedges).toHaveLength(1);
+  });
+
+  it('does not pair legs from different expirations', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5, exp: '2026-03-27' }),
+      makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0, exp: '2026-03-28' }),
+    ];
+
+    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+
+    // Different exp → separate groups → naked + hedge
+    expect(result.spreads).toHaveLength(0);
+    expect(result.naked).toHaveLength(1);
+    expect(result.hedges).toHaveLength(1);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 4. IC Max Loss Calculation
+// ══════════════════════════════════════════════════════════════
+
+describe('IC max loss calculation', () => {
+  it('calculates IC max loss with symmetric wings', () => {
+    // 20pt wings on both sides, total credit $2.50/contract, 10 contracts
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
+      makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
+    ];
+
+    const result = groupIntoSpreads(legs, [], 6500, []);
+    const ic = result.ironCondors[0]!;
+
+    // maxLoss = widerWing * 100 * contracts - totalCredit
+    // widerWing = max(20, 20) = 20
+    // totalCredit = (3.5-2.0+2.0-1.0) * 100 * 10 = 2.5 * 1000 = 2500
+    // maxLoss = 20 * 100 * 10 - 2500 = 20000 - 2500 = 17500
+    expect(ic.maxLoss).toBe(17500);
+    expect(ic.totalCredit).toBe(2500);
+  });
+
+  it('uses wider wing for asymmetric IC', () => {
+    // 15pt put wing, 25pt call wing
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6385, type: 'PUT', qty: 10, tradePrice: 1.0 }),
+      makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6625, type: 'CALL', qty: 10, tradePrice: 1.0 }),
+    ];
+
+    const result = groupIntoSpreads(legs, [], 6500, []);
+    const ic = result.ironCondors[0]!;
+
+    expect(ic.putWingWidth).toBe(15);
+    expect(ic.callWingWidth).toBe(25);
+    // maxLoss = max(15, 25) * 100 * 10 - totalCredit
+    // totalCredit = (2.0-1.0+2.0-1.0) * 100 * 10 = 2000
+    // maxLoss = 25 * 100 * 10 - 2000 = 25000 - 2000 = 23000
+    expect(ic.maxLoss).toBe(23000);
+  });
+
+  it('does NOT sum both wings for max loss', () => {
+    const legs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.0 }),
+      makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
+      makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
+    ];
+
+    const result = groupIntoSpreads(legs, [], 6500, []);
+    const ic = result.ironCondors[0]!;
+
+    // If both wings were summed: (20+20)*100*10 - credit = 40000 - 2000 = 38000
+    // Correct: max(20, 20)*100*10 - 2000 = 18000
+    expect(ic.maxLoss).toBeLessThan(38000);
+    expect(ic.maxLoss).toBe(18000);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 5. Portfolio Risk
+// ══════════════════════════════════════════════════════════════
+
+describe('computePortfolioRisk', () => {
+  it('computes risk for PCS only portfolio', () => {
+    const pcs = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      maxLoss: 18500,
+      creditReceived: 1500,
+      contracts: 10,
+    });
+
+    const risk = computePortfolioRisk(
+      [pcs], [], [], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+    );
+
+    expect(risk.putSideRisk).toBe(18500);
+    expect(risk.callSideRisk).toBe(0);
+    expect(risk.totalMaxLoss).toBe(18500);
+  });
+
+  it('counts IC max loss toward both sides', () => {
+    const ic = makeIC({ maxLoss: 17500 });
+
+    const risk = computePortfolioRisk(
+      [], [ic], [], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+    );
+
+    expect(risk.callSideRisk).toBe(17500);
+    expect(risk.putSideRisk).toBe(17500);
+    expect(risk.totalMaxLoss).toBe(17500);
+  });
+
+  it('deducts hedge value from appropriate side', () => {
+    const pcs = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      maxLoss: 18500,
+      creditReceived: 1500,
+    });
+    const putHedge = makeHedge({
+      protectionSide: 'PUT',
+      entryCost: 250,
+    });
+
+    const risk = computePortfolioRisk(
+      [pcs], [], [putHedge], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+    );
+
+    expect(risk.putSideRisk).toBe(18500);
+    expect(risk.putHedgeValue).toBe(250);
+    expect(risk.netPutRisk).toBe(18250);
+    expect(risk.totalMaxLoss).toBe(18250);
+  });
+
+  it('totalMaxLoss = max(netCallRisk, netPutRisk)', () => {
+    const pcs = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      maxLoss: 18500,
+      creditReceived: 1500,
+    });
+    const ccs = makeSpread({
+      spreadType: 'CALL_CREDIT_SPREAD',
+      maxLoss: 5000,
+      creditReceived: 500,
+    });
+
+    const risk = computePortfolioRisk(
+      [pcs, ccs], [], [], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+    );
+
+    expect(risk.putSideRisk).toBe(18500);
+    expect(risk.callSideRisk).toBe(5000);
+    expect(risk.totalMaxLoss).toBe(18500); // max(18500, 5000)
+  });
+
+  it('canAbsorbMaxLoss is true when buying power > max loss', () => {
+    const pcs = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      maxLoss: 10000,
+    });
+
+    const risk = computePortfolioRisk(
+      [pcs], [], [], [], DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+    );
+
+    expect(risk.canAbsorbMaxLoss).toBe(true);
+  });
+
+  it('canAbsorbMaxLoss is false when buying power < max loss', () => {
+    const pcs = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      maxLoss: 100000,
+    });
+
+    const risk = computePortfolioRisk(
+      [pcs], [], [], [],
+      { ...DEFAULT_ACCOUNT, optionBuyingPower: 50000 },
+      EMPTY_PNL,
+      6500,
+    );
+
+    expect(risk.canAbsorbMaxLoss).toBe(false);
+  });
+
+  it('counts naked positions', () => {
+    const naked: NakedPosition[] = [
+      { leg: makeLeg({ strike: 6400, type: 'PUT', qty: -10 }), contracts: 10, type: 'PUT' },
+    ];
+
+    const risk = computePortfolioRisk(
+      [], [], [], naked, DEFAULT_ACCOUNT, EMPTY_PNL, 6500,
+    );
+
+    expect(risk.nakedCount).toBe(1);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 6. Closed Spreads
+// ══════════════════════════════════════════════════════════════
+
+describe('matchClosedSpreads', () => {
+  it('matches TO OPEN + TO CLOSE trades and computes realized P&L', () => {
+    const trades: ExecutedTrade[] = [
+      {
+        execTime: '3/27/26 09:35:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
+          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+        ],
+        netPrice: 1.0,
+        orderType: 'LMT',
+      },
+      {
+        execTime: '3/27/26 14:00:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 0.1, creditDebit: null },
+          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 0.05, creditDebit: 'DEBIT' },
+        ],
+        netPrice: 0.05,
+        orderType: 'LMT',
+      },
+    ];
+
+    const closed = matchClosedSpreads(trades);
+
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.spreadType).toBe('CALL_CREDIT_SPREAD');
+    expect(closed[0]!.shortStrike).toBe(6600);
+    expect(closed[0]!.longStrike).toBe(6620);
+    expect(closed[0]!.optionType).toBe('CALL');
+    expect(closed[0]!.contracts).toBe(10);
+    expect(closed[0]!.openCredit).toBe(1.0);
+    expect(closed[0]!.closeDebit).toBe(0.05);
+    // realizedPnl = (1.0 - 0.05) * 100 * 10 = 950
+    expect(closed[0]!.realizedPnl).toBe(950);
+  });
+
+  it('classifies FULL_PROFIT when closed at $0', () => {
+    const trades: ExecutedTrade[] = [
+      {
+        execTime: '3/27/26 09:35:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
+          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+        ],
+        netPrice: 1.0,
+        orderType: 'LMT',
+      },
+      {
+        execTime: '3/27/26 15:00:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 0, creditDebit: null },
+          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 0, creditDebit: 'DEBIT' },
+        ],
+        netPrice: 0,
+        orderType: 'LMT',
+      },
+    ];
+
+    const closed = matchClosedSpreads(trades);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.outcome).toBe('FULL_PROFIT');
+  });
+
+  it('classifies PARTIAL_PROFIT', () => {
+    const trades: ExecutedTrade[] = [
+      {
+        execTime: '3/27/26 09:35:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
+          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+        ],
+        netPrice: 1.0,
+        orderType: 'LMT',
+      },
+      {
+        execTime: '3/27/26 14:00:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 0.3, creditDebit: null },
+          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 0.1, creditDebit: 'DEBIT' },
+        ],
+        netPrice: 0.2,
+        orderType: 'LMT',
+      },
+    ];
+
+    const closed = matchClosedSpreads(trades);
+    expect(closed).toHaveLength(1);
+    // realizedPnl = (1.0 - 0.2) * 100 * 10 = 800
+    // openCreditDollars = 1.0 * 100 * 10 = 1000
+    // 800 < 0.95 * 1000 = 950, so PARTIAL_PROFIT
+    expect(closed[0]!.outcome).toBe('PARTIAL_PROFIT');
+  });
+
+  it('classifies LOSS', () => {
+    const trades: ExecutedTrade[] = [
+      {
+        execTime: '3/27/26 09:35:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
+          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+        ],
+        netPrice: 1.0,
+        orderType: 'LMT',
+      },
+      {
+        execTime: '3/27/26 14:00:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 5.0, creditDebit: null },
+          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'DEBIT' },
+        ],
+        netPrice: 4.0,
+        orderType: 'LMT',
+      },
+    ];
+
+    const closed = matchClosedSpreads(trades);
+    expect(closed).toHaveLength(1);
+    // realizedPnl = (1.0 - 4.0) * 100 * 10 = -3000
+    expect(closed[0]!.realizedPnl).toBe(-3000);
+    expect(closed[0]!.outcome).toBe('LOSS');
+  });
+
+  it('classifies SCRATCH when P&L near zero', () => {
+    const trades: ExecutedTrade[] = [
+      {
+        execTime: '3/27/26 09:35:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 2.0, creditDebit: null },
+          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 1.0, creditDebit: 'CREDIT' },
+        ],
+        netPrice: 1.0,
+        orderType: 'LMT',
+      },
+      {
+        execTime: '3/27/26 14:00:00',
+        spread: 'VERTICAL',
+        legs: [
+          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 1.01, creditDebit: null },
+          { side: 'SELL', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6620, type: 'CALL', price: 0.02, creditDebit: 'DEBIT' },
+        ],
+        netPrice: 0.99,
+        orderType: 'LMT',
+      },
+    ];
+
+    const closed = matchClosedSpreads(trades);
+    expect(closed).toHaveLength(1);
+    // realizedPnl = (1.0 - 0.99) * 100 * 10 = 10
+    // openCreditDollars = 1000
+    // scratchThreshold = 0.05 * 1000 = 50
+    // |10| <= 50, so SCRATCH
+    expect(closed[0]!.outcome).toBe('SCRATCH');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 7. Execution Quality
+// ══════════════════════════════════════════════════════════════
+
+describe('computeExecutionQuality', () => {
+  it('counts rejected and filled orders', () => {
+    const orders: OrderEntry[] = [
+      {
+        notes: '', timePlaced: '3/27/26 09:30:00', spread: 'VERTICAL',
+        legs: [
+          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6400, type: 'PUT' },
+          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6380, type: 'PUT' },
+        ],
+        price: 1.5, orderType: 'LMT', tif: 'DAY', status: 'FILLED',
+        statusDetail: '', isReplacement: false,
+      },
+      {
+        notes: '', timePlaced: '3/27/26 09:28:00', spread: 'VERTICAL',
+        legs: [
+          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6350, type: 'PUT' },
+          { side: 'BUY', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6330, type: 'PUT' },
+        ],
+        price: 1.0, orderType: 'LMT', tif: 'DAY', status: 'REJECTED',
+        statusDetail: 'Buying power too low', isReplacement: false,
+      },
+    ];
+
+    const result = computeExecutionQuality(orders, []);
+
+    expect(result.rejectedOrders).toBe(1);
+    expect(result.fillRate).toBe(0.5);
+    expect(result.rejectionRate).toBe(0.5);
+    expect(result.rejectionReasons).toHaveLength(1);
+    expect(result.rejectionReasons[0]!.reason).toBe('Buying power too low');
+  });
+
+  it('computes trade timing', () => {
+    const trades: ExecutedTrade[] = [
+      {
+        execTime: '3/27/26 09:30:00', spread: 'VERTICAL',
+        legs: [
+          { side: 'SELL', qty: 10, posEffect: 'TO OPEN', symbol: 'SPX', exp: '2026-03-27', strike: 6400, type: 'PUT', price: 3.5, creditDebit: null },
+        ],
+        netPrice: 1.5, orderType: 'LMT',
+      },
+      {
+        execTime: '3/27/26 14:00:00', spread: 'VERTICAL',
+        legs: [
+          { side: 'BUY', qty: 10, posEffect: 'TO CLOSE', symbol: 'SPX', exp: '2026-03-27', strike: 6600, type: 'CALL', price: 0.1, creditDebit: null },
+        ],
+        netPrice: 0.05, orderType: 'LMT',
+      },
+    ];
+
+    const result = computeExecutionQuality([], trades);
+
+    expect(result.firstTradeTime).toBe('3/27/26 09:30:00');
+    expect(result.lastTradeTime).toBe('3/27/26 14:00:00');
+    expect(result.tradingSessionMinutes).toBe(270); // 4.5 hours
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 8. Warnings
+// ══════════════════════════════════════════════════════════════
+
+describe('generateWarnings', () => {
+  it('always emits PAPER_TRADING', () => {
+    const sections = new Map([
+      ['Cash Balance', { headerIndex: 0, dataStart: 1, dataEnd: 5 }],
+      ['Account Order History', { headerIndex: 6, dataStart: 7, dataEnd: 10 }],
+      ['Account Trade History', { headerIndex: 11, dataStart: 12, dataEnd: 15 }],
+      ['Options', { headerIndex: 16, dataStart: 17, dataEnd: 20 }],
+      ['Profits and Losses', { headerIndex: 21, dataStart: 22, dataEnd: 25 }],
+      ['Account Summary', { headerIndex: 26, dataStart: 27, dataEnd: 30 }],
+    ]);
+
+    const warnings = generateWarnings(
+      [], [], true, EMPTY_PNL, [], sections, [], [],
+    );
+
+    expect(warnings.some((w) => w.code === 'PAPER_TRADING')).toBe(true);
+  });
+
+  it('emits MISSING_MARK when hasMark false and legs present', () => {
+    const sections = new Map([
+      ['Cash Balance', { headerIndex: 0, dataStart: 1, dataEnd: 5 }],
+      ['Account Order History', { headerIndex: 6, dataStart: 7, dataEnd: 10 }],
+      ['Account Trade History', { headerIndex: 11, dataStart: 12, dataEnd: 15 }],
+      ['Options', { headerIndex: 16, dataStart: 17, dataEnd: 20 }],
+      ['Profits and Losses', { headerIndex: 21, dataStart: 22, dataEnd: 25 }],
+      ['Account Summary', { headerIndex: 26, dataStart: 27, dataEnd: 30 }],
+    ]);
+    const openLegs: OpenLeg[] = [
+      makeLeg({ strike: 6400, type: 'PUT', qty: -10 }),
+    ];
+
+    const warnings = generateWarnings(
+      [], openLegs, false, EMPTY_PNL, [], sections, [], [],
+    );
+
+    expect(warnings.some((w) => w.code === 'MISSING_MARK')).toBe(true);
+  });
+
+  it('emits UNMATCHED_SHORT for naked positions', () => {
+    const naked: NakedPosition[] = [
+      {
+        leg: makeLeg({ strike: 6400, type: 'PUT', qty: -10 }),
+        contracts: 10,
+        type: 'PUT',
+      },
+    ];
+    const sections = new Map([
+      ['Cash Balance', { headerIndex: 0, dataStart: 1, dataEnd: 5 }],
+      ['Account Order History', { headerIndex: 6, dataStart: 7, dataEnd: 10 }],
+      ['Account Trade History', { headerIndex: 11, dataStart: 12, dataEnd: 15 }],
+      ['Options', { headerIndex: 16, dataStart: 17, dataEnd: 20 }],
+      ['Profits and Losses', { headerIndex: 21, dataStart: 22, dataEnd: 25 }],
+      ['Account Summary', { headerIndex: 26, dataStart: 27, dataEnd: 30 }],
+    ]);
+
+    const warnings = generateWarnings(
+      [], [], true, EMPTY_PNL, naked, sections, [], [],
+    );
+
+    expect(warnings.some((w) => w.code === 'UNMATCHED_SHORT')).toBe(true);
+  });
+
+  it('emits MISSING_SECTION when sections are absent', () => {
+    const sections = new Map([
+      ['Cash Balance', { headerIndex: 0, dataStart: 1, dataEnd: 5 }],
+    ]);
+
+    const warnings = generateWarnings(
+      [], [], true, EMPTY_PNL, [], sections, [], [],
+    );
+
+    expect(warnings.filter((w) => w.code === 'MISSING_SECTION').length).toBe(5);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 9. Full Integration Test
+// ══════════════════════════════════════════════════════════════
+
+describe('parseStatement (integration)', () => {
+  it('parses the full test CSV correctly', () => {
+    const result = parseStatement(TEST_CSV, 6500);
+
+    // Date from first cash entry
+    expect(result.date).toBe('2026-03-27');
+
+    // Cash entries: BAL + 3 TRDs
+    expect(result.cashEntries).toHaveLength(4);
+    expect(result.cashEntries[0]!.type).toBe('BAL');
+    expect(result.cashEntries[0]!.balance).toBe(100000);
+    expect(result.cashEntries[1]!.type).toBe('TRD');
+    expect(result.cashEntries[1]!.amount).toBe(1500);
+
+    // Orders: 3 filled + 1 rejected
+    expect(result.orders).toHaveLength(4);
+    const rejectedOrders = result.orders.filter(
+      (o) => o.status === 'REJECTED',
+    );
+    expect(rejectedOrders).toHaveLength(1);
+
+    // Trades: 3 executed trades
+    expect(result.trades).toHaveLength(3);
+
+    // Open legs: only the PCS remains (CCS was closed)
+    expect(result.openLegs).toHaveLength(2);
+
+    // Grouped positions: 1 PCS (CCS was closed so not in open legs)
+    expect(result.spreads).toHaveLength(1);
+    expect(result.spreads[0]!.spreadType).toBe('PUT_CREDIT_SPREAD');
+    expect(result.spreads[0]!.shortLeg.strike).toBe(6400);
+    expect(result.spreads[0]!.longLeg.strike).toBe(6380);
+    expect(result.spreads[0]!.wingWidth).toBe(20);
+    expect(result.spreads[0]!.contracts).toBe(10);
+
+    // No ICs (the CCS was closed, leaving only PCS open)
+    expect(result.ironCondors).toHaveLength(0);
+
+    // Closed spreads: the CCS that was opened and closed
+    expect(result.closedSpreads).toHaveLength(1);
+    expect(result.closedSpreads[0]!.spreadType).toBe('CALL_CREDIT_SPREAD');
+    expect(result.closedSpreads[0]!.shortStrike).toBe(6600);
+    expect(result.closedSpreads[0]!.closeDebit).toBe(0.05);
+    // realizedPnl = (1.0 - 0.05) * 100 * 10 = 950
+    expect(result.closedSpreads[0]!.realizedPnl).toBe(950);
+    // 950 >= 0.95 * 1000 = 950, so FULL_PROFIT
+    expect(result.closedSpreads[0]!.outcome).toBe('FULL_PROFIT');
+
+    // Account summary
+    expect(result.accountSummary.netLiquidatingValue).toBe(102181.24);
+    expect(result.accountSummary.optionBuyingPower).toBe(82181.24);
+    expect(result.accountSummary.equityCommissionsYtd).toBe(68.76);
+
+    // P&L
+    expect(result.pnl.totals).not.toBeNull();
+    expect(result.pnl.totals!.plOpen).toBe(-200);
+    expect(result.pnl.totals!.plDay).toBe(2381.24);
+
+    // Portfolio risk
+    expect(result.portfolioRisk.putSideRisk).toBeGreaterThan(0);
+    expect(result.portfolioRisk.callSideRisk).toBe(0);
+    expect(result.portfolioRisk.canAbsorbMaxLoss).toBe(true);
+
+    // Execution quality
+    expect(result.executionQuality.rejectedOrders).toBe(1);
+    expect(result.executionQuality.fillRate).toBe(0.75); // 3 filled / 4 total
+
+    // Warnings: at minimum PAPER_TRADING
+    expect(result.warnings.some((w) => w.code === 'PAPER_TRADING')).toBe(true);
+    // Also MISSING_MARK (no Mark column in our test CSV)
+    expect(result.warnings.some((w) => w.code === 'MISSING_MARK')).toBe(true);
+  });
+
+  it('handles empty CSV gracefully', () => {
+    const result = parseStatement('', 6500);
+
+    expect(result.date).toBe('');
+    expect(result.cashEntries).toHaveLength(0);
+    expect(result.orders).toHaveLength(0);
+    expect(result.trades).toHaveLength(0);
+    expect(result.openLegs).toHaveLength(0);
+    expect(result.spreads).toHaveLength(0);
+    expect(result.ironCondors).toHaveLength(0);
+  });
+
+  it('parses credit received correctly for the PCS', () => {
+    const result = parseStatement(TEST_CSV, 6500);
+    const pcs = result.spreads[0]!;
+
+    // shortTradePrice = 3.50, longTradePrice = 2.00
+    // creditPerContract = 3.50 - 2.00 = 1.50
+    // creditReceived = 1.50 * 100 * 10 = 1500
+    expect(pcs.creditReceived).toBe(1500);
+    expect(pcs.maxProfit).toBe(1500);
+    // maxLoss = wingWidth * 100 * contracts - credit
+    // = 20 * 100 * 10 - 1500 = 18500
+    expect(pcs.maxLoss).toBe(18500);
+  });
+
+  it('computes distance to short strike', () => {
+    const result = parseStatement(TEST_CSV, 6500);
+    const pcs = result.spreads[0]!;
+
+    // isPCS so distance = spotPrice - shortStrike = 6500 - 6400 = 100
+    expect(pcs.distanceToShortStrike).toBe(100);
+  });
+});
