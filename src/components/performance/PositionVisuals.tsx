@@ -48,8 +48,48 @@ function StrikeMap({
   ironCondors,
   hedges,
   nakedPositions,
-  spotPrice,
+  spotPrice: rawSpotPrice,
 }: Omit<PositionVisualsProps, 'trades' | 'portfolioRisk'>) {
+  // Infer spot from position structure when calculator spot is stale
+  // (e.g. viewing a past day's CSV while calculator shows today's price)
+  const shortPuts: number[] = [];
+  const shortCalls: number[] = [];
+  for (const s of spreads) {
+    if (s.spreadType === 'PUT_CREDIT_SPREAD') {
+      shortPuts.push(s.shortLeg.strike);
+    } else {
+      shortCalls.push(s.shortLeg.strike);
+    }
+  }
+  for (const ic of ironCondors) {
+    shortPuts.push(ic.putSpread.shortLeg.strike);
+    shortCalls.push(ic.callSpread.shortLeg.strike);
+  }
+
+  let spotPrice = rawSpotPrice;
+  if (shortPuts.length > 0 || shortCalls.length > 0) {
+    const highPut =
+      shortPuts.length > 0
+        ? Math.max(...shortPuts)
+        : null;
+    const lowCall =
+      shortCalls.length > 0
+        ? Math.min(...shortCalls)
+        : null;
+    const inferred =
+      highPut != null && lowCall != null
+        ? (highPut + lowCall) / 2
+        : highPut != null
+          ? highPut + 30
+          : lowCall! - 30;
+    // Use inferred if calculator spot is >2% away
+    const deviation =
+      Math.abs(rawSpotPrice - inferred) / inferred;
+    if (deviation > 0.02) {
+      spotPrice = inferred;
+    }
+  }
+
   // Collect all strikes to determine range
   const allStrikes: number[] = [];
   for (const s of spreads) {
