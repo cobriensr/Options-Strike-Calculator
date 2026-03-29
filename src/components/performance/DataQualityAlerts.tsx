@@ -24,14 +24,22 @@ export default function DataQualityAlerts({
 
   if (warnings.length === 0) return null;
 
-  const visible = warnings.filter((w) => !dismissed.has(w.code));
+  // Deduplicate by message to avoid duplicate key warnings
+  // (e.g. multiple UNMATCHED_SHORT warnings)
+  const deduped = warnings.filter(
+    (w, i, arr) =>
+      arr.findIndex((x) => x.message === w.message) === i,
+  );
+  const visible = deduped.filter(
+    (w) => !dismissed.has(w.message),
+  );
 
   if (visible.length === 0) return null;
 
-  const dismiss = (code: string) => {
+  const dismiss = (msg: string) => {
     setDismissed((prev) => {
       const next = new Set(prev);
-      next.add(code);
+      next.add(msg);
       return next;
     });
   };
@@ -43,17 +51,22 @@ export default function DataQualityAlerts({
       aria-label="Data quality alerts"
       data-testid="data-quality-alerts"
     >
-      {visible.map((w) => (
+      {visible.map((w, i) => (
         <div
-          key={w.code}
+          key={`${w.code}-${String(i)}`}
           className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${SEVERITY_STYLES[w.severity]}`}
           role="alert"
         >
-          <span className="mt-0.5 shrink-0 text-sm" aria-hidden="true">
+          <span
+            className="mt-0.5 shrink-0 text-sm"
+            aria-hidden="true"
+          >
             {SEVERITY_ICONS[w.severity]}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-sm font-medium">{w.message}</div>
+            <div className="font-sans text-sm font-medium">
+              {w.message}
+            </div>
             {w.detail && (
               <div className="mt-0.5 font-sans text-xs opacity-80">
                 {w.detail}
@@ -62,7 +75,7 @@ export default function DataQualityAlerts({
           </div>
           <button
             type="button"
-            onClick={() => dismiss(w.code)}
+            onClick={() => dismiss(w.message)}
             className="shrink-0 cursor-pointer p-0.5 text-sm opacity-60 hover:opacity-100"
             aria-label={`Dismiss ${w.message}`}
           >

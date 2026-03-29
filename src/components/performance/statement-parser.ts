@@ -2024,8 +2024,12 @@ export function applyBSEstimates(
     SESSION_END_MIN - Math.min(minutesRemaining, SESSION_LENGTH_MIN);
 
   const decaySpread = (s: Spread): Spread => {
-    // If no entry price, can't estimate
-    if (s.entryNetPrice == null || s.entryNetPrice <= 0) return s;
+    // Use matched trade entry price, or fall back to the
+    // difference of leg trade prices from the Options section
+    const netPrice =
+      s.entryNetPrice ??
+      Math.abs(s.shortLeg.tradePrice - s.longLeg.tradePrice);
+    if (netPrice <= 0) return s;
 
     // Find when this spread was entered (minutes since midnight)
     const entryMin = s.entryTime
@@ -2056,7 +2060,7 @@ export function applyBSEstimates(
     // Sqrt-time decay: value decays with sqrt of time remaining
     const decayFactor = Math.sqrt(nowRemaining / entryRemaining);
     const estimatedSpreadPrice = round2(
-      s.entryNetPrice * decayFactor,
+      netPrice * decayFactor,
     );
     const contracts = s.contracts;
     const currentValue = round2(
