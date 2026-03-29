@@ -28,6 +28,42 @@ import type {
 
 // ── Helpers ──────────────────────────────────────────────────
 
+function makeTrade(overrides: {
+  execTime?: string;
+  spread?: string;
+  netPrice: number;
+  orderType?: string;
+  legs: Array<{
+    side: 'SELL' | 'BUY';
+    qty: number;
+    posEffect?: 'TO OPEN' | 'TO CLOSE';
+    symbol?: string;
+    exp?: string;
+    strike: number;
+    type: 'CALL' | 'PUT';
+    price: number;
+    creditDebit?: 'CREDIT' | 'DEBIT' | null;
+  }>;
+}): ExecutedTrade {
+  return {
+    execTime: overrides.execTime ?? '3/27/26 09:30:00',
+    spread: overrides.spread ?? 'VERTICAL',
+    netPrice: overrides.netPrice,
+    orderType: overrides.orderType ?? 'LMT',
+    legs: overrides.legs.map((l) => ({
+      side: l.side,
+      qty: l.qty,
+      posEffect: l.posEffect ?? 'TO OPEN',
+      symbol: l.symbol ?? 'SPX',
+      exp: l.exp ?? '2026-03-27',
+      strike: l.strike,
+      type: l.type,
+      price: l.price,
+      creditDebit: l.creditDebit ?? null,
+    })),
+  };
+}
+
 function makeLeg(
   overrides: Partial<OpenLeg> & Pick<OpenLeg, 'strike' | 'type' | 'qty'>,
 ): OpenLeg {
@@ -408,8 +444,24 @@ describe('groupIntoSpreads', () => {
       makeLeg({ strike: 6400, type: 'PUT', qty: -10, tradePrice: 3.5 }),
       makeLeg({ strike: 6380, type: 'PUT', qty: 10, tradePrice: 2.0 }),
     ];
+    const trades: ExecutedTrade[] = [
+      makeTrade({
+        netPrice: 1.5,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6400, type: 'PUT', price: 3.5 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6380,
+            type: 'PUT',
+            price: 2.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+    ];
 
-    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+    const result = groupIntoSpreads(legs, trades, spotPrice, emptyCash);
 
     expect(result.spreads).toHaveLength(1);
     expect(result.spreads[0]!.spreadType).toBe('PUT_CREDIT_SPREAD');
@@ -427,8 +479,24 @@ describe('groupIntoSpreads', () => {
       makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
       makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
     ];
+    const trades: ExecutedTrade[] = [
+      makeTrade({
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6600, type: 'CALL', price: 2.0 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+    ];
 
-    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+    const result = groupIntoSpreads(legs, trades, spotPrice, emptyCash);
 
     expect(result.spreads).toHaveLength(1);
     expect(result.spreads[0]!.spreadType).toBe('CALL_CREDIT_SPREAD');
@@ -444,8 +512,40 @@ describe('groupIntoSpreads', () => {
       makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
       makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
     ];
+    const trades: ExecutedTrade[] = [
+      makeTrade({
+        execTime: '3/27/26 09:30:00',
+        netPrice: 1.5,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6400, type: 'PUT', price: 3.5 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6380,
+            type: 'PUT',
+            price: 2.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+      makeTrade({
+        execTime: '3/27/26 09:30:30',
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6600, type: 'CALL', price: 2.0 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+    ];
 
-    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+    const result = groupIntoSpreads(legs, trades, spotPrice, emptyCash);
 
     expect(result.ironCondors).toHaveLength(1);
     expect(result.spreads).toHaveLength(0);
@@ -505,8 +605,58 @@ describe('groupIntoSpreads', () => {
       // Hedge
       makeLeg({ strike: 6250, type: 'PUT', qty: 3, tradePrice: 0.5 }),
     ];
+    const trades: ExecutedTrade[] = [
+      // IC put side
+      makeTrade({
+        execTime: '3/27/26 09:30:00',
+        netPrice: 1.5,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6400, type: 'PUT', price: 3.5 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6380,
+            type: 'PUT',
+            price: 2.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+      // IC call side (within 60s)
+      makeTrade({
+        execTime: '3/27/26 09:30:30',
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6600, type: 'CALL', price: 2.0 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+      // Standalone PCS
+      makeTrade({
+        execTime: '3/27/26 09:35:00',
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 5, strike: 6350, type: 'PUT', price: 2.0 },
+          {
+            side: 'BUY',
+            qty: 5,
+            strike: 6330,
+            type: 'PUT',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+    ];
 
-    const result = groupIntoSpreads(legs, emptyTrades, spotPrice, emptyCash);
+    const result = groupIntoSpreads(legs, trades, spotPrice, emptyCash);
 
     expect(result.ironCondors).toHaveLength(1);
     expect(result.spreads).toHaveLength(1);
@@ -570,8 +720,40 @@ describe('IC max loss calculation', () => {
       makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
       makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
     ];
+    const trades: ExecutedTrade[] = [
+      makeTrade({
+        execTime: '3/27/26 09:30:00',
+        netPrice: 1.5,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6400, type: 'PUT', price: 3.5 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6380,
+            type: 'PUT',
+            price: 2.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+      makeTrade({
+        execTime: '3/27/26 09:30:30',
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6600, type: 'CALL', price: 2.0 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+    ];
 
-    const result = groupIntoSpreads(legs, [], 6500, []);
+    const result = groupIntoSpreads(legs, trades, 6500, []);
     const ic = result.ironCondors[0]!;
 
     // maxLoss = widerWing * 100 * contracts - totalCredit
@@ -590,8 +772,40 @@ describe('IC max loss calculation', () => {
       makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
       makeLeg({ strike: 6625, type: 'CALL', qty: 10, tradePrice: 1.0 }),
     ];
+    const trades: ExecutedTrade[] = [
+      makeTrade({
+        execTime: '3/27/26 09:30:00',
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6400, type: 'PUT', price: 2.0 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6385,
+            type: 'PUT',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+      makeTrade({
+        execTime: '3/27/26 09:30:30',
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6600, type: 'CALL', price: 2.0 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6625,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+    ];
 
-    const result = groupIntoSpreads(legs, [], 6500, []);
+    const result = groupIntoSpreads(legs, trades, 6500, []);
     const ic = result.ironCondors[0]!;
 
     expect(ic.putWingWidth).toBe(15);
@@ -609,8 +823,40 @@ describe('IC max loss calculation', () => {
       makeLeg({ strike: 6600, type: 'CALL', qty: -10, tradePrice: 2.0 }),
       makeLeg({ strike: 6620, type: 'CALL', qty: 10, tradePrice: 1.0 }),
     ];
+    const trades: ExecutedTrade[] = [
+      makeTrade({
+        execTime: '3/27/26 09:30:00',
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6400, type: 'PUT', price: 3.0 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6380,
+            type: 'PUT',
+            price: 2.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+      makeTrade({
+        execTime: '3/27/26 09:30:30',
+        netPrice: 1.0,
+        legs: [
+          { side: 'SELL', qty: 10, strike: 6600, type: 'CALL', price: 2.0 },
+          {
+            side: 'BUY',
+            qty: 10,
+            strike: 6620,
+            type: 'CALL',
+            price: 1.0,
+            creditDebit: 'CREDIT',
+          },
+        ],
+      }),
+    ];
 
-    const result = groupIntoSpreads(legs, [], 6500, []);
+    const result = groupIntoSpreads(legs, trades, 6500, []);
     const ic = result.ironCondors[0]!;
 
     // If both wings were summed: (20+20)*100*10 - credit = 40000 - 2000 = 38000
@@ -1425,15 +1671,26 @@ describe('parseStatement (integration)', () => {
     // Open legs: only the PCS remains (CCS was closed)
     expect(result.openLegs).toHaveLength(2);
 
-    // Grouped positions: 1 PCS (CCS was closed so not in open legs)
-    expect(result.spreads).toHaveLength(1);
-    expect(result.spreads[0]!.spreadType).toBe('PUT_CREDIT_SPREAD');
-    expect(result.spreads[0]!.shortLeg.strike).toBe(6400);
-    expect(result.spreads[0]!.longLeg.strike).toBe(6380);
-    expect(result.spreads[0]!.wingWidth).toBe(20);
-    expect(result.spreads[0]!.contracts).toBe(10);
+    // Grouped positions: both TO OPEN trades produce spreads
+    // (PCS + CCS, 5 min apart so not paired as IC)
+    expect(result.spreads).toHaveLength(2);
 
-    // No ICs (the CCS was closed, leaving only PCS open)
+    const pcs = result.spreads.find(
+      (s) => s.spreadType === 'PUT_CREDIT_SPREAD',
+    )!;
+    expect(pcs.shortLeg.strike).toBe(6400);
+    expect(pcs.longLeg.strike).toBe(6380);
+    expect(pcs.wingWidth).toBe(20);
+    expect(pcs.contracts).toBe(10);
+
+    const ccs = result.spreads.find(
+      (s) => s.spreadType === 'CALL_CREDIT_SPREAD',
+    )!;
+    expect(ccs.shortLeg.strike).toBe(6600);
+    expect(ccs.longLeg.strike).toBe(6620);
+    expect(ccs.contracts).toBe(10);
+
+    // No ICs (trades are 5 min apart, exceeds 60s threshold)
     expect(result.ironCondors).toHaveLength(0);
 
     // Closed spreads: the CCS that was opened and closed
@@ -1456,9 +1713,9 @@ describe('parseStatement (integration)', () => {
     expect(result.pnl.totals!.plOpen).toBe(-200);
     expect(result.pnl.totals!.plDay).toBe(2381.24);
 
-    // Portfolio risk
+    // Portfolio risk (both PCS and CCS are recognized)
     expect(result.portfolioRisk.putSideRisk).toBeGreaterThan(0);
-    expect(result.portfolioRisk.callSideRisk).toBe(0);
+    expect(result.portfolioRisk.callSideRisk).toBeGreaterThan(0);
     expect(result.portfolioRisk.canAbsorbMaxLoss).toBe(true);
 
     // Execution quality
@@ -1485,7 +1742,9 @@ describe('parseStatement (integration)', () => {
 
   it('parses credit received correctly for the PCS', () => {
     const result = parseStatement(TEST_CSV, 6500);
-    const pcs = result.spreads[0]!;
+    const pcs = result.spreads.find(
+      (s) => s.spreadType === 'PUT_CREDIT_SPREAD',
+    )!;
 
     // shortTradePrice = 3.50, longTradePrice = 2.00
     // creditPerContract = 3.50 - 2.00 = 1.50
@@ -1499,7 +1758,9 @@ describe('parseStatement (integration)', () => {
 
   it('computes distance to short strike', () => {
     const result = parseStatement(TEST_CSV, 6500);
-    const pcs = result.spreads[0]!;
+    const pcs = result.spreads.find(
+      (s) => s.spreadType === 'PUT_CREDIT_SPREAD',
+    )!;
 
     // isPCS so distance = spotPrice - shortStrike = 6500 - 6400 = 100
     expect(pcs.distanceToShortStrike).toBe(100);

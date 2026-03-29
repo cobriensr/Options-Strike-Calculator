@@ -122,7 +122,7 @@ export default function PaperDashboard({
 
   return (
     <SectionBox
-      label="Paper Dashboard"
+      label="Position Monitor"
       badge={
         statement
           ? `${statement.date} \u2022 ${String(spreadCount)} spreads`

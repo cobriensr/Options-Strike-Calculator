@@ -54,7 +54,7 @@ const MONTH_MAP: Record<string, string> = {
 };
 
 /** Max strike distance (points) to consider two legs a spread */
-const MAX_WING_WIDTH = 50;
+
 
 /** SPX multiplier */
 const MULTIPLIER = 100;
@@ -910,169 +910,224 @@ export function groupIntoSpreads(
   spotPrice: number,
   cashEntries: CashEntry[],
 ): GroupResult {
-  // Separate by expiration + symbol for grouping
-  const byExpSymbol = new Map<string, OpenLeg[]>();
-  for (const leg of legs) {
-    const key = `${leg.symbol}:${leg.exp}`;
-    const arr = byExpSymbol.get(key) ?? [];
-    arr.push(leg);
-    byExpSymbol.set(key, arr);
-  }
-
   const allSpreads: Spread[] = [];
   const allICs: IronCondor[] = [];
   const allHedges: HedgePosition[] = [];
   const allNaked: NakedPosition[] = [];
 
-  for (const groupLegs of byExpSymbol.values()) {
-    const remaining = [...groupLegs];
-    const usedIndices = new Set<number>();
+  // ─ Primary strategy: build spreads from Trade History ──
+  // Trade History has exact leg pairings and quantities per
+  // trade, avoiding the aggregation mismatch in Options.
+  // Only use TO OPEN trades (not closes).
 
-    // ─ Step 1: Find vertical pairs for IC detection ──────
-    const putSpreads = findVerticalPairs(remaining, 'PUT', usedIndices);
-    const callSpreads = findVerticalPairs(remaining, 'CALL', usedIndices);
+  const openTrades = trades.filter((t) =>
+    t.legs.some((l) => l.posEffect === 'TO OPEN'),
+  );
 
-    // Try to pair PCS + CCS into ICs
-    const usedPCS = new Set<number>();
-    const usedCCS = new Set<number>();
+  // Group trades within 60 seconds as potential IC pairs
+  const tradeMinutes = (t: ExecutedTrade) => {
+    const match = t.execTime.match(/(\d{1,2}):(\d{2}):?(\d{2})?/);
+    if (!match) return 0;
+    return (
+      Number.parseInt(match[1]!, 10) * 3600 +
+      Number.parseInt(match[2]!, 10) * 60 +
+      Number.parseInt(match[3] ?? '0', 10)
+    );
+  };
 
-    for (let p = 0; p < putSpreads.length; p++) {
-      if (usedPCS.has(p)) continue;
-      const pcs = putSpreads[p]!;
+  // Build a spread from each 2-leg TO OPEN trade
+  type TradeSpread = {
+    spread: Spread;
+    execSeconds: number;
+    tradeIdx: number;
+  };
 
-      for (let c = 0; c < callSpreads.length; c++) {
-        if (usedCCS.has(c)) continue;
-        const ccs = callSpreads[c]!;
+  const tradePCS: TradeSpread[] = [];
+  const tradeCCS: TradeSpread[] = [];
 
-        // Match: same absolute qty
-        if (Math.abs(pcs.shortLeg.qty) === Math.abs(ccs.shortLeg.qty)) {
-          usedPCS.add(p);
-          usedCCS.add(c);
+  for (let ti = 0; ti < openTrades.length; ti++) {
+    const trade = openTrades[ti]!;
+    const openLegs = trade.legs.filter(
+      (l) => l.posEffect === 'TO OPEN',
+    );
+    if (openLegs.length !== 2) continue;
 
-          const putSpread = buildSpread(
-            pcs.shortLeg,
-            pcs.longLeg,
-            trades,
-            spotPrice,
-            cashEntries,
-          );
-          const callSpread = buildSpread(
-            ccs.shortLeg,
-            ccs.longLeg,
-            trades,
-            spotPrice,
-            cashEntries,
-          );
+    const sellLeg = openLegs.find((l) => l.side === 'SELL');
+    const buyLeg = openLegs.find((l) => l.side === 'BUY');
+    if (!sellLeg || !buyLeg) continue;
+    if (sellLeg.type !== buyLeg.type) continue;
 
-          const contracts = Math.abs(pcs.shortLeg.qty);
-          const totalCreditPerContract =
-            Math.abs(pcs.shortLeg.tradePrice) -
-            Math.abs(pcs.longLeg.tradePrice) +
-            Math.abs(ccs.shortLeg.tradePrice) -
-            Math.abs(ccs.longLeg.tradePrice);
-          const totalCredit = totalCreditPerContract * MULTIPLIER * contracts;
+    // Create synthetic OpenLeg objects from trade legs
+    const shortLeg: OpenLeg = {
+      symbol: sellLeg.symbol,
+      optionCode: '',
+      exp: sellLeg.exp,
+      strike: sellLeg.strike,
+      type: sellLeg.type,
+      qty: -Math.abs(sellLeg.qty),
+      tradePrice: sellLeg.price,
+      mark: null,
+      markValue: null,
+    };
+    const longLeg: OpenLeg = {
+      symbol: buyLeg.symbol,
+      optionCode: '',
+      exp: buyLeg.exp,
+      strike: buyLeg.strike,
+      type: buyLeg.type,
+      qty: Math.abs(buyLeg.qty),
+      tradePrice: buyLeg.price,
+      mark: null,
+      markValue: null,
+    };
 
-          const putWingWidth = Math.abs(
-            pcs.shortLeg.strike - pcs.longLeg.strike,
-          );
-          const callWingWidth = Math.abs(
-            ccs.shortLeg.strike - ccs.longLeg.strike,
-          );
-          const widerWing = Math.max(putWingWidth, callWingWidth);
-          const maxLoss = widerWing * MULTIPLIER * contracts - totalCredit;
+    const spread = buildSpread(
+      shortLeg,
+      longLeg,
+      trades,
+      spotPrice,
+      cashEntries,
+    );
 
-          const breakevenLow = pcs.shortLeg.strike - totalCreditPerContract;
-          const breakevenHigh = ccs.shortLeg.strike + totalCreditPerContract;
+    const ts: TradeSpread = {
+      spread,
+      execSeconds: tradeMinutes(trade),
+      tradeIdx: ti,
+    };
 
-          // Find IC entry time from trade history
-          let icEntryTime: string | null = null;
-          if (putSpread.entryTime) icEntryTime = putSpread.entryTime;
-          else if (callSpread.entryTime) icEntryTime = callSpread.entryTime;
-
-          allICs.push({
-            spreadType: 'IRON_CONDOR',
-            putSpread,
-            callSpread,
-            contracts,
-            totalCredit: round2(totalCredit),
-            maxProfit: round2(totalCredit),
-            maxLoss: round2(Math.max(0, maxLoss)),
-            riskRewardRatio:
-              totalCredit > 0
-                ? round2(Math.max(0, maxLoss) / totalCredit)
-                : Infinity,
-            breakevenLow: round2(breakevenLow),
-            breakevenHigh: round2(breakevenHigh),
-            putWingWidth,
-            callWingWidth,
-            entryTime: icEntryTime,
-          });
-
-          break;
-        }
-      }
+    if (sellLeg.type === 'PUT') {
+      tradePCS.push(ts);
+    } else {
+      tradeCCS.push(ts);
     }
+  }
 
-    // Remaining unpaired verticals
-    for (let p = 0; p < putSpreads.length; p++) {
-      if (usedPCS.has(p)) continue;
-      const pair = putSpreads[p]!;
-      allSpreads.push(
-        buildSpread(
-          pair.shortLeg,
-          pair.longLeg,
-          trades,
-          spotPrice,
-          cashEntries,
-        ),
-      );
-    }
-    for (let c = 0; c < callSpreads.length; c++) {
+  // ─ Step 2: Pair PCS + CCS into ICs by timestamp ───────
+  // Trades within 60 seconds with matching qty = IC
+  const usedPCS = new Set<number>();
+  const usedCCS = new Set<number>();
+
+  for (let p = 0; p < tradePCS.length; p++) {
+    if (usedPCS.has(p)) continue;
+    const pcs = tradePCS[p]!;
+
+    for (let c = 0; c < tradeCCS.length; c++) {
       if (usedCCS.has(c)) continue;
-      const pair = callSpreads[c]!;
-      allSpreads.push(
-        buildSpread(
-          pair.shortLeg,
-          pair.longLeg,
-          trades,
-          spotPrice,
-          cashEntries,
-        ),
-      );
-    }
+      const ccs = tradeCCS[c]!;
 
-    // ─ Step 3: Hedges & Naked ────────────────────────────
-    for (let i = 0; i < remaining.length; i++) {
-      if (usedIndices.has(i)) continue;
-      const leg = remaining[i]!;
+      const timeDiff = Math.abs(pcs.execSeconds - ccs.execSeconds);
+      const qtyMatch =
+        pcs.spread.contracts === ccs.spread.contracts;
 
-      if (leg.qty > 0) {
-        // Long position = hedge
-        const entryCost =
-          Math.abs(leg.tradePrice) * MULTIPLIER * Math.abs(leg.qty);
-        const hedgeCurrentValue = leg.markValue !== null ? leg.markValue : null;
-        const hedgeOpenPnl =
-          hedgeCurrentValue !== null
-            ? round2(hedgeCurrentValue - entryCost)
-            : null;
-        allHedges.push({
-          leg,
-          direction: 'LONG',
-          protectionSide: leg.type,
-          strikeProtected: leg.strike,
-          contracts: Math.abs(leg.qty),
-          entryCost,
-          currentValue: hedgeCurrentValue,
-          openPnl: hedgeOpenPnl,
+      if (timeDiff <= 60 && qtyMatch) {
+        usedPCS.add(p);
+        usedCCS.add(c);
+
+        const contracts = pcs.spread.contracts;
+        const totalCredit = round2(
+          pcs.spread.creditReceived + ccs.spread.creditReceived,
+        );
+        const totalCreditPerContract =
+          totalCredit / (MULTIPLIER * contracts);
+
+        const putWingWidth = pcs.spread.wingWidth;
+        const callWingWidth = ccs.spread.wingWidth;
+        const widerWing = Math.max(putWingWidth, callWingWidth);
+        const maxLoss = widerWing * MULTIPLIER * contracts - totalCredit;
+
+        allICs.push({
+          spreadType: 'IRON_CONDOR',
+          putSpread: pcs.spread,
+          callSpread: ccs.spread,
+          contracts,
+          totalCredit,
+          maxProfit: totalCredit,
+          maxLoss: round2(Math.max(0, maxLoss)),
+          riskRewardRatio:
+            totalCredit > 0
+              ? round2(Math.max(0, maxLoss) / totalCredit)
+              : Infinity,
+          breakevenLow: round2(
+            pcs.spread.shortLeg.strike - totalCreditPerContract,
+          ),
+          breakevenHigh: round2(
+            ccs.spread.shortLeg.strike + totalCreditPerContract,
+          ),
+          putWingWidth,
+          callWingWidth,
+          entryTime:
+            pcs.spread.entryTime ?? ccs.spread.entryTime,
         });
-      } else {
-        // Short without matching long = naked
-        allNaked.push({
-          leg,
-          contracts: Math.abs(leg.qty),
-          type: leg.type,
-        });
+
+        break;
       }
+    }
+  }
+
+  // Remaining unpaired verticals
+  for (let p = 0; p < tradePCS.length; p++) {
+    if (!usedPCS.has(p)) allSpreads.push(tradePCS[p]!.spread);
+  }
+  for (let c = 0; c < tradeCCS.length; c++) {
+    if (!usedCCS.has(c)) allSpreads.push(tradeCCS[c]!.spread);
+  }
+
+  // ─ Step 3: Check for true hedges in Options section ────
+  // Any Options leg NOT accounted for by the trades above.
+  // Track which strikes/types were covered by trade-based spreads.
+  const coveredLegs = new Map<string, number>();
+  const addCovered = (strike: number, type: string, qty: number) => {
+    const key = `${strike}:${type}`;
+    coveredLegs.set(key, (coveredLegs.get(key) ?? 0) + qty);
+  };
+
+  for (const s of allSpreads) {
+    addCovered(s.shortLeg.strike, s.shortLeg.type, Math.abs(s.shortLeg.qty));
+    addCovered(s.longLeg.strike, s.longLeg.type, Math.abs(s.longLeg.qty));
+  }
+  for (const ic of allICs) {
+    addCovered(ic.putSpread.shortLeg.strike, ic.putSpread.shortLeg.type, ic.contracts);
+    addCovered(ic.putSpread.longLeg.strike, ic.putSpread.longLeg.type, ic.contracts);
+    addCovered(ic.callSpread.shortLeg.strike, ic.callSpread.shortLeg.type, ic.contracts);
+    addCovered(ic.callSpread.longLeg.strike, ic.callSpread.longLeg.type, ic.contracts);
+  }
+
+  for (const leg of legs) {
+    const key = `${leg.strike}:${leg.type}`;
+    const covered = coveredLegs.get(key) ?? 0;
+    const uncovered = Math.abs(leg.qty) - covered;
+    if (uncovered <= 0) continue;
+
+    // Remove from covered map
+    coveredLegs.set(key, covered + uncovered);
+
+    if (leg.qty > 0) {
+      const entryCost =
+        Math.abs(leg.tradePrice) * MULTIPLIER * uncovered;
+      const hedgeCurrentValue =
+        leg.markValue !== null
+          ? round2((leg.markValue / Math.abs(leg.qty)) * uncovered)
+          : null;
+      const hedgeOpenPnl =
+        hedgeCurrentValue !== null
+          ? round2(hedgeCurrentValue - entryCost)
+          : null;
+      allHedges.push({
+        leg: { ...leg, qty: uncovered },
+        direction: 'LONG',
+        protectionSide: leg.type,
+        strikeProtected: leg.strike,
+        contracts: uncovered,
+        entryCost,
+        currentValue: hedgeCurrentValue,
+        openPnl: hedgeOpenPnl,
+      });
+    } else {
+      allNaked.push({
+        leg: { ...leg, qty: -uncovered },
+        contracts: uncovered,
+        type: leg.type,
+      });
     }
   }
 
@@ -1082,91 +1137,6 @@ export function groupIntoSpreads(
     hedges: allHedges,
     naked: allNaked,
   };
-}
-
-/**
- * Find vertical spread pairs (short + long) for a given
- * option type. Mutates usedIndices to mark consumed legs.
- * Returns pairs sorted by tightest wing width first.
- */
-function findVerticalPairs(
-  legs: OpenLeg[],
-  optionType: 'CALL' | 'PUT',
-  usedIndices: Set<number>,
-): Array<{ shortLeg: OpenLeg; longLeg: OpenLeg }> {
-  // Find all shorts and longs of this type
-  const shorts: Array<{ leg: OpenLeg; idx: number }> = [];
-  const longs: Array<{ leg: OpenLeg; idx: number }> = [];
-
-  for (let i = 0; i < legs.length; i++) {
-    if (usedIndices.has(i)) continue;
-    const leg = legs[i]!;
-    if (leg.type !== optionType) continue;
-
-    if (leg.qty < 0) shorts.push({ leg, idx: i });
-    else if (leg.qty > 0) longs.push({ leg, idx: i });
-  }
-
-  // Build all valid pairings, sorted by wing width ascending
-  const candidates: Array<{
-    si: number;
-    li: number;
-    width: number;
-  }> = [];
-
-  for (let s = 0; s < shorts.length; s++) {
-    for (let l = 0; l < longs.length; l++) {
-      const shortLeg = shorts[s]!.leg;
-      const longLeg = longs[l]!.leg;
-
-      // Matching absolute qty
-      if (Math.abs(shortLeg.qty) !== Math.abs(longLeg.qty)) continue;
-
-      const width = Math.abs(shortLeg.strike - longLeg.strike);
-      if (width <= 0 || width > MAX_WING_WIDTH) continue;
-
-      // Validate PCS vs CCS strike ordering
-      if (optionType === 'PUT') {
-        // PCS: short put has HIGHER strike
-        if (shortLeg.strike <= longLeg.strike) continue;
-      } else {
-        // CCS: short call has LOWER strike
-        if (shortLeg.strike >= longLeg.strike) continue;
-      }
-
-      candidates.push({ si: s, li: l, width });
-    }
-  }
-
-  // Tightest width first for greedy matching
-  candidates.sort((a, b) => a.width - b.width);
-
-  const usedShorts = new Set<number>();
-  const usedLongs = new Set<number>();
-  const pairs: Array<{
-    shortLeg: OpenLeg;
-    longLeg: OpenLeg;
-  }> = [];
-
-  for (const c of candidates) {
-    if (usedShorts.has(c.si) || usedLongs.has(c.li)) continue;
-
-    usedShorts.add(c.si);
-    usedLongs.add(c.li);
-
-    const shortEntry = shorts[c.si]!;
-    const longEntry = longs[c.li]!;
-
-    usedIndices.add(shortEntry.idx);
-    usedIndices.add(longEntry.idx);
-
-    pairs.push({
-      shortLeg: shortEntry.leg,
-      longLeg: longEntry.leg,
-    });
-  }
-
-  return pairs;
 }
 
 // ── Closed Spread Matching ─────────────────────────────────
