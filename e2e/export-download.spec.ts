@@ -2,6 +2,11 @@ import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 
 async function fillAndGetResults(page: Page) {
+  await page.getByLabel('Hour').selectOption('10');
+  await page.getByLabel('Minute').selectOption('00');
+  await page.getByRole('radio', { name: 'AM' }).click();
+  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
   await page.getByLabel('VIX Value').fill('19');

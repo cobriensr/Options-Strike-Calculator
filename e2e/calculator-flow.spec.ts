@@ -10,18 +10,22 @@ test.describe('Calculator Flow', () => {
   });
 
   test('renders header and core input sections', async ({ page }) => {
-    await expect(page.getByText('0DTE Options')).toBeVisible();
+    await expect(page.getByText('0DTE Options', { exact: true })).toBeVisible();
     await expect(page.getByLabel('SPY Price')).toBeVisible();
     await expect(page.getByLabel(/SPX Price/)).toBeVisible();
   });
 
   test('entering SPY price shows derived SPX value', async ({ page }) => {
+    // Clear SPX so derived value shows
+    await page.getByLabel(/SPX Price/).fill('');
     await page.getByLabel('SPY Price').fill('672');
 
     // Wait for debounce and derived SPX display
     await expect(page.getByText('SPX for calculations')).toBeVisible();
     // Default ratio is 10, so SPX ≈ 6720
-    await expect(page.getByText('6720')).toBeVisible();
+    await expect(
+      page.getByLabel('Spot Price').getByText('6720'),
+    ).toBeVisible({ timeout: 5000 });
   });
 
   test('entering SPX directly shows derived ratio', async ({ page }) => {
@@ -32,6 +36,12 @@ test.describe('Calculator Flow', () => {
   });
 
   test('full calculation flow produces strike results', async ({ page }) => {
+    // 0. Set entry time
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     // 1. Enter spot price
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
@@ -41,7 +51,7 @@ test.describe('Calculator Flow', () => {
 
     // 3. Entry time defaults are pre-set (10:00 AM CT)
     //    Just verify the time section is visible
-    await expect(page.getByText('Entry Time', { exact: true })).toBeVisible();
+    await expect(page.getByText('Date & Time', { exact: true })).toBeVisible();
 
     // 4. Wait for results to appear (the populated section, not the empty state)
     const resultsSection = page.locator('#results');
@@ -70,17 +80,22 @@ test.describe('Calculator Flow', () => {
     // Click the "Direct IV" chip
     await page.getByRole('radio', { name: 'Direct IV' }).click();
 
-    await expect(page.getByLabel(/Direct IV/)).toBeVisible();
+    await expect(page.locator('#direct-iv')).toBeVisible();
     await expect(page.getByLabel('VIX (regime only)')).toBeVisible();
   });
 
   test('direct IV mode calculation produces results', async ({ page }) => {
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
 
     // Switch to Direct IV mode
     await page.getByRole('radio', { name: 'Direct IV' }).click();
-    await page.getByLabel(/Direct IV/).fill('0.2185');
+    await page.locator('#direct-iv').fill('0.2185');
     await page.getByLabel('VIX (regime only)').fill('19');
 
     // Wait for results
@@ -92,7 +107,7 @@ test.describe('Calculator Flow', () => {
 
   test('dark mode toggle works', async ({ page }) => {
     // App defaults to dark mode
-    await expect(page.locator('div.dark').first()).toBeVisible();
+    await expect(page.locator('html.dark').first()).toBeVisible();
 
     // Toggle to light mode
     const toggle = page.getByRole('button', {
@@ -101,7 +116,7 @@ test.describe('Calculator Flow', () => {
     await toggle.click();
 
     // After clicking, the root div should NOT have the "dark" class
-    await expect(page.locator('div.dark')).not.toBeAttached();
+    await expect(page.locator('html.dark')).not.toBeAttached();
 
     // Button label should now say "Dark"
     await expect(
@@ -112,6 +127,11 @@ test.describe('Calculator Flow', () => {
   test('iron condor section renders when results are present', async ({
     page,
   }) => {
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
     await page.getByLabel('VIX Value').fill('19');
@@ -126,6 +146,11 @@ test.describe('Calculator Flow', () => {
   });
 
   test('VIX regime card appears with valid VIX input', async ({ page }) => {
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
     await page.getByLabel('VIX Value').fill('19');

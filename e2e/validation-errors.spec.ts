@@ -45,13 +45,13 @@ test.describe('Input Validation', () => {
   });
 
   test('no results table with empty inputs', async ({ page }) => {
+    // Clear any pre-filled values
+    await page.getByLabel('SPY Price').fill('');
+    await page.getByLabel('VIX Value').fill('');
+
     // The results section shows a placeholder prompt instead of the strike table
     const results = page.locator('#results');
-    await expect(
-      results.getByText(
-        'Fill in the inputs above to calculate strike placement',
-      ),
-    ).toBeVisible();
+    await expect(results.getByText(/Fill in the inputs above/)).toBeVisible();
 
     // The actual results section (with the styled border) should not be present
     await expect(
@@ -62,7 +62,15 @@ test.describe('Input Validation', () => {
   test('results appear only when all required fields are valid', async ({
     page,
   }) => {
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     const results = page.locator('#results');
+
+    // Ensure VIX is empty before testing
+    await page.getByLabel('VIX Value').fill('');
 
     // Only SPY — no strike results section yet (just placeholder)
     await page.getByLabel('SPY Price').fill('679');
@@ -78,6 +86,11 @@ test.describe('Input Validation', () => {
   });
 
   test('clearing SPY price removes results', async ({ page }) => {
+    await page.getByLabel('Hour').selectOption('10');
+    await page.getByLabel('Minute').selectOption('00');
+    await page.getByRole('radio', { name: 'AM' }).click();
+    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
     // First produce results
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel('VIX Value').fill('19');

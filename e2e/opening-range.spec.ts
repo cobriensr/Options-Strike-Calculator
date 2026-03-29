@@ -1,6 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
 
 async function fillCalculatorInputs(page: Page) {
+  await page.getByLabel('Hour').selectOption('10');
+  await page.getByLabel('Minute').selectOption('00');
+  await page.getByRole('radio', { name: 'AM' }).click();
+  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
   await page.getByLabel('VIX Value').fill('19');

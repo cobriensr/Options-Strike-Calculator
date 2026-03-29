@@ -10,11 +10,13 @@ async function fillAndWaitForIC(page: Page) {
   await page.getByLabel(/SPX Price/).fill('6790');
   await page.getByLabel('VIX Value').fill('19');
 
-  // Wait for results to render
+  // Wait for debounced values to settle and results to reflect filled inputs.
+  // The calculator debounces input changes (250 ms), so the first results may
+  // still show default values (SPY 572 / SPX 5720). Poll until SPX 6790 appears.
   const results = page.locator('#results');
-  await expect(results.getByText('All Delta Strikes')).toBeVisible({
-    timeout: 5000,
-  });
+  await expect(async () => {
+    await expect(results.getByText('6790', { exact: false })).toBeVisible();
+  }).toPass({ timeout: 10000 });
 
   // Wait for the P&L profile table to render
   const pnlTable = page.getByRole('table', {

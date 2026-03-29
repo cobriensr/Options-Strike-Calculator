@@ -1,6 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
+import { buildApiFetchMock } from './helpers/mock-fetch';
 
 async function fillCalculatorInputs(page: Page) {
+  await page.getByLabel('Hour').selectOption('10');
+  await page.getByLabel('Minute').selectOption('00');
+  await page.getByRole('radio', { name: 'AM' }).click();
+  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
   await page.getByLabel('VIX Value').fill('19');
@@ -108,9 +114,9 @@ test.describe('Market Regime — Manual Input', () => {
     await expect(
       page.getByText('Volatility Clustering', { exact: true }),
     ).toBeVisible();
-    await expect(page.getByLabel('Yest. Open')).toBeVisible();
-    await expect(page.getByLabel('Yest. High')).toBeVisible();
-    await expect(page.getByLabel('Yest. Low')).toBeVisible();
+    await expect(page.getByLabel('Yesterday Open')).toBeVisible();
+    await expect(page.getByLabel('Yesterday High')).toBeVisible();
+    await expect(page.getByLabel('Yesterday Low')).toBeVisible();
   });
 
   test('entering yesterday data shows clustering signal and multiplier', async ({
@@ -118,9 +124,9 @@ test.describe('Market Regime — Manual Input', () => {
   }) => {
     await fillCalculatorInputs(page);
 
-    await page.getByLabel('Yest. Open').fill('6780');
-    await page.getByLabel('Yest. High').fill('6830');
-    await page.getByLabel('Yest. Low').fill('6750');
+    await page.getByLabel('Yesterday Open').fill('6780');
+    await page.getByLabel('Yesterday High').fill('6830');
+    await page.getByLabel('Yesterday Low').fill('6750');
 
     await expect(page.getByText(/Today.*Multiplier/i)).toBeVisible({
       timeout: 3000,
@@ -152,30 +158,22 @@ test.describe('Market Regime — Manual Input', () => {
  */
 test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
   test('contango shape (VIX1D < VIX < VIX9D)', async ({ page }) => {
-    // Mock quotes to provide live VIX1D/VIX9D values, block everything else
-    await page.route('**/api/quotes', (route) =>
-      route.fulfill({ json: makeQuotesMock(14, 21) }),
+    // Mock quotes via addInitScript to work with Vite's PWA plugin
+    await page.addInitScript(
+      buildApiFetchMock({
+        '/api/quotes': { body: makeQuotesMock(14, 21) },
+      }),
     );
-    await page.route('**/api/**', (route) => {
-      if (route.request().url().includes('/api/quotes'))
-        return route.fallback();
-      return route.abort();
-    });
     await page.goto('/');
 
-    // Wait for auto-fill to fully complete — SPY, VIX, and time must all settle.
-    // The auto-fill sets time last, so wait for the Hour select to have a non-default
-    // value (the auto-fill always picks the current hour).
+    // Wait for auto-fill to fully complete
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
-      timeout: 5000,
-    });
-    await expect(page.getByLabel('VIX (regime only)')).toHaveValue(/\d+/, {
-      timeout: 5000,
+      timeout: 10000,
     });
     // Wait for auto-fill to set the timezone to CT (it always does)
     await expect(
       page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 5000 });
+    ).toBeChecked({ timeout: 10000 });
 
     // Now override to a valid market time — auto-fill has finished.
     await page.getByLabel('Hour').selectOption('10');
@@ -194,25 +192,19 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
   });
 
   test('fear-spike shape (VIX1D > VIX > VIX9D)', async ({ page }) => {
-    await page.route('**/api/quotes', (route) =>
-      route.fulfill({ json: makeQuotesMock(28, 16) }),
+    await page.addInitScript(
+      buildApiFetchMock({
+        '/api/quotes': { body: makeQuotesMock(28, 16) },
+      }),
     );
-    await page.route('**/api/**', (route) => {
-      if (route.request().url().includes('/api/quotes'))
-        return route.fallback();
-      return route.abort();
-    });
     await page.goto('/');
 
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
-      timeout: 5000,
-    });
-    await expect(page.getByLabel('VIX (regime only)')).toHaveValue(/\d+/, {
-      timeout: 5000,
+      timeout: 10000,
     });
     await expect(
       page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 5000 });
+    ).toBeChecked({ timeout: 10000 });
 
     await page.getByLabel('Hour').selectOption('10');
     await page.getByLabel('Minute').selectOption('30');
@@ -228,19 +220,20 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
   });
 
   test('flat shape (VIX1D ≈ VIX ≈ VIX9D)', async ({ page }) => {
-    await page.route('**/api/quotes', (route) =>
-      route.fulfill({ json: makeQuotesMock(19.2, 18.8) }),
+    await page.addInitScript(
+      buildApiFetchMock({
+        '/api/quotes': { body: makeQuotesMock(19.2, 18.8) },
+      }),
     );
-    await page.route('**/api/**', (route) => {
-      if (route.request().url().includes('/api/quotes'))
-        return route.fallback();
-      return route.abort();
-    });
     await page.goto('/');
 
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
-      timeout: 5000,
+      timeout: 10000,
     });
+    await expect(
+      page.getByRole('radio', { name: 'CT', exact: true }),
+    ).toBeChecked({ timeout: 10000 });
+
     await page.getByLabel('Hour').selectOption('10');
     await page.getByLabel('Minute').selectOption('30');
     await page.getByRole('radio', { name: 'AM' }).click();

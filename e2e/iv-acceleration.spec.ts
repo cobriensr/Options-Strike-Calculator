@@ -42,7 +42,7 @@ test.describe('IV Acceleration', () => {
       timeout: 10000,
     });
     // Should show the sigma multiplier value in the indicator
-    await expect(page.locator('.font-mono').getByText(/\u00D7/)).toBeVisible();
+    await expect(page.getByText(/\u03C3\s*\u00D7/)).toBeVisible();
   });
 
   test('shows late session warning for 3:30 PM entry', async ({ page }) => {

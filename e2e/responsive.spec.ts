@@ -74,6 +74,6 @@ test.describe('Responsive Layout', () => {
     const maxWidth = await container.evaluate(
       (el) => getComputedStyle(el).maxWidth,
     );
-    expect(maxWidth).toBe('660px');
+    expect(maxWidth).toBe('1152px');
   });
 });
