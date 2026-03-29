@@ -1864,6 +1864,73 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
 
   const grouped = groupIntoSpreads(openLegs, trades, spotPrice, cashEntries);
 
+  // ── Estimate P&L from aggregate when marks are missing ─
+
+  const allSpreadsLackMarks =
+    grouped.spreads.every((s) => s.currentValue === null) &&
+    grouped.ironCondors.every(
+      (ic) =>
+        ic.putSpread.currentValue === null &&
+        ic.callSpread.currentValue === null,
+    );
+
+  if (allSpreadsLackMarks && pnl.totals && pnl.totals.plOpen !== 0) {
+    const aggPnl = pnl.totals.plOpen;
+    // Total credit across all open positions
+    const totalCredit =
+      grouped.spreads.reduce((s, sp) => s + sp.creditReceived, 0) +
+      grouped.ironCondors.reduce((s, ic) => s + ic.totalCredit, 0);
+
+    if (totalCredit > 0) {
+      // Distribute aggregate P&L proportionally by credit weight
+      for (let i = 0; i < grouped.spreads.length; i++) {
+        const sp = grouped.spreads[i]!;
+        const weight = sp.creditReceived / totalCredit;
+        const estPnl = round2(aggPnl * weight);
+        const estPct =
+          sp.maxProfit > 0
+            ? round2((estPnl / sp.maxProfit) * 100)
+            : null;
+        // Replace the spread with estimated values
+        (grouped.spreads as Spread[])[i] = {
+          ...sp,
+          openPnl: estPnl,
+          pctOfMaxProfit: estPct,
+        };
+      }
+      for (let i = 0; i < grouped.ironCondors.length; i++) {
+        const ic = grouped.ironCondors[i]!;
+        const weight = ic.totalCredit / totalCredit;
+        const estPnl = round2(aggPnl * weight);
+        const putWeight =
+          ic.putSpread.creditReceived / ic.totalCredit;
+        const callWeight =
+          ic.callSpread.creditReceived / ic.totalCredit;
+        const putPnl = round2(estPnl * putWeight);
+        const callPnl = round2(estPnl * callWeight);
+        (grouped.ironCondors as IronCondor[])[i] = {
+          ...ic,
+          putSpread: {
+            ...ic.putSpread,
+            openPnl: putPnl,
+            pctOfMaxProfit:
+              ic.putSpread.maxProfit > 0
+                ? round2((putPnl / ic.putSpread.maxProfit) * 100)
+                : null,
+          },
+          callSpread: {
+            ...ic.callSpread,
+            openPnl: callPnl,
+            pctOfMaxProfit:
+              ic.callSpread.maxProfit > 0
+                ? round2((callPnl / ic.callSpread.maxProfit) * 100)
+                : null,
+          },
+        };
+      }
+    }
+  }
+
   // ── Match closed spreads ───────────────────────────────
 
   const closedSpreads = matchClosedSpreads(trades);
