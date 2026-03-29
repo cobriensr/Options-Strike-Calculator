@@ -52,9 +52,10 @@ export default function PaperDashboard({ spotPrice }: PaperDashboardProps) {
     [spotPrice],
   );
 
-  // Owner gating — only render for authenticated owner
+  // Owner gating — only render for authenticated owner (or local dev)
   // Placed after hooks to satisfy Rules of Hooks
-  const isOwner = document.cookie.includes('sc-hint=');
+  const isOwner =
+    import.meta.env.DEV || document.cookie.includes('sc-hint=');
   if (!isOwner) return null;
 
   const spreadCount = statement
