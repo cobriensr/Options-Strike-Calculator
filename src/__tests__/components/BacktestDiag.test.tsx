@@ -287,7 +287,7 @@ describe('BacktestDiag', () => {
       />,
     );
     const noDataCell = screen.getAllByText('no data')[0]!;
-    expect(noDataCell).toHaveStyle({ color: '#f44' });
+    expect(noDataCell).toHaveStyle({ color: 'var(--color-danger)' });
   });
 
   it('collapses and expands when header is clicked', () => {

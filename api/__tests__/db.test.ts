@@ -483,11 +483,12 @@ describe('db.ts', () => {
         '#16: Add composite index on flow_data (date, source, timestamp) for time-windowed queries',
         '#17: Add NOT NULL constraint to all created_at columns',
         '#18: Add JSONB type constraints on legs, full_response, and report',
+        '#19: Create predictions table for ML model outputs',
       ]);
-      // 49 (migrations #1-14 via legacy run()) + 24 (migrations #15-18 build queries via sql`` then pass to transaction)
-      expect(mockSql).toHaveBeenCalledTimes(73);
-      // Migrations #15-18 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(4);
+      // 49 (migrations #1-14 via legacy run()) + 24 (migrations #15-18) + 2 (migration #19) build queries via sql`` then pass to transaction
+      expect(mockSql).toHaveBeenCalledTimes(75);
+      // Migrations #15-19 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(5);
     });
 
     it('propagates errors from migration SQL', async () => {

@@ -564,8 +564,8 @@ describe('build-features handler', () => {
       errors: 0,
     });
 
-    // 13 original test calls + 2 preamble
-    expect(mockSql).toHaveBeenCalledTimes(15);
+    // 14 original test calls + 2 preamble
+    expect(mockSql).toHaveBeenCalledTimes(16);
   });
 
   it('extracts labels from review analyses with outcomes', async () => {
@@ -819,15 +819,17 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([]);
     // Call 8: prev day outcomes → empty
     mockSql.mockResolvedValueOnce([]);
+    // Call 9: settlements (realized vol) → empty
+    mockSql.mockResolvedValueOnce([]);
     // (vvixHistory skipped — no vvix in snapshot)
-    // Call 9: economic events → return an event so is_opex is set inside event block
+    // Call 10: economic events → return an event so is_opex is set inside event block
     mockSql.mockResolvedValueOnce([
       { event_name: 'OpEx', event_type: 'OTHER', event_time: '09:30' },
     ]);
-    // Call 10: next event → empty
+    // Call 11: next event → empty
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 11: upsertFeatures INSERT — capture the features being upserted
+    // Call 12: upsertFeatures INSERT — capture the features being upserted
     let upsertedFeatures: Record<string, unknown> | null = null;
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       // The tagged template literal passes strings as first arg, values as rest
@@ -840,7 +842,7 @@ describe('build-features handler', () => {
       return Promise.resolve([]);
     });
 
-    // Call 12: extractLabelsForDate — analyses → empty
+    // Call 13: extractLabelsForDate — analyses → empty
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -865,8 +867,8 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
 
-    // Calls 2-8: buildFeaturesForDate queries → empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: buildFeaturesForDate queries → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
     // Call 9: economic events → has events (so is_opex gets set inside block then overridden)
     mockSql.mockResolvedValueOnce([
       { event_name: 'GDP', event_type: 'GDP', event_time: '08:30' },
@@ -897,8 +899,8 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-8: all empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: all empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
     // Call 9: economic events → empty (is_opex never enters events block)
     mockSql.mockResolvedValueOnce([]);
     // Call 10: next event → empty
@@ -929,8 +931,8 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
 
-    // Calls 2-8: buildFeaturesForDate queries → empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: buildFeaturesForDate queries → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
 
     // Call 9: economic events → empty
     mockSql.mockResolvedValueOnce([]);
@@ -962,8 +964,8 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-8: all empty
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: all empty
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
     // Call 9: economic events → empty
     mockSql.mockResolvedValueOnce([]);
     // Call 10: next event → returns a row but next_date is null
@@ -993,8 +995,8 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-8: all empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: all empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
 
     // Call 9: economic events → multiple events including FOMC
     mockSql.mockResolvedValueOnce([
@@ -1036,8 +1038,8 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-8: all empty
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: all empty
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
 
     // Call 9: economic events → only low-priority types
     mockSql.mockResolvedValueOnce([
@@ -1082,8 +1084,8 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-8: buildFeaturesForDate → empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: buildFeaturesForDate → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
     // Call 9: economic events → empty
     mockSql.mockResolvedValueOnce([]);
     // Call 10: next event → empty
@@ -1148,8 +1150,8 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-8: buildFeaturesForDate → empty
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: buildFeaturesForDate → empty
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
     // Call 9: economic events → empty
     mockSql.mockResolvedValueOnce([]);
     // Call 10: next event → empty
@@ -1215,8 +1217,8 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-8: buildFeaturesForDate → empty
-    for (let i = 0; i < 7; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-9: buildFeaturesForDate → empty
+    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
     // Call 9: economic events → empty
     mockSql.mockResolvedValueOnce([]);
     // Call 10: next event → empty
