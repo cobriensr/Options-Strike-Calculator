@@ -255,11 +255,12 @@ function EquityCurve({ points }: { points: readonly CurvePoint[] }) {
           fill="var(--color-danger)"
         />
         <text
-          x={
-            toX(lowIdx) +
-            (lowIdx === 0 ? 10 : lowIdx === points.length - 1 ? -10 : 0)
+          x={toX(lowIdx) + (lowIdx === 0 ? 12 : lowIdx === points.length - 1 ? -12 : 0)}
+          y={
+            lowIdx === 0 || lowIdx === points.length - 1
+              ? toY(minBal) - 2
+              : toY(minBal) + 18
           }
-          y={toY(minBal) + 18}
           textAnchor={
             lowIdx === 0
               ? 'start'
