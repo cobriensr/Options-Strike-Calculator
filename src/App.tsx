@@ -645,11 +645,6 @@ export default function StrikeCalculator() {
               >
                 <PaperDashboard
                   spotPrice={results?.spot ?? spxVal ?? 0}
-                  sigma={results?.sigma ?? null}
-                  T={results?.T ?? null}
-                  timeHour={timeHour}
-                  timeMinute={timeMinute}
-                  timeAmPm={timeAmPm}
                 />
               </Suspense>
             </ErrorBoundary>

@@ -12,74 +12,60 @@ import type { DailyStatement } from './types';
 
 interface PaperDashboardProps {
   spotPrice: number;
-  /** Annualized IV from the calculator (null if not available) */
-  sigma: number | null;
-  /** Time to expiration in years from the calculator (null if not available) */
-  T: number | null;
-  /** Raw time inputs from the calculator for local T computation */
-  timeHour: string;
-  timeMinute: string;
-  timeAmPm: 'AM' | 'PM';
 }
 
-/** Compute T from raw time inputs, ignoring calendar date.
- *  Market: 8:30 CT – 15:00 CT. T = hoursRemaining / (365.25 * 24). */
-function computeLocalT(
-  hour: string,
-  minute: string,
-  amPm: 'AM' | 'PM',
-): number | null {
-  let h = Number.parseInt(hour, 10);
-  if (Number.isNaN(h)) return null;
-  if (amPm === 'PM' && h !== 12) h += 12;
-  if (amPm === 'AM' && h === 12) h = 0;
-  // Convert to CT minutes since midnight
-  const totalMin = h * 60 + Number.parseInt(minute, 10);
-  const closeMin = 15 * 60; // 3:00 PM CT
-  const hoursRemaining = (closeMin - totalMin) / 60;
+// ── Self-contained time → T conversion ──────────────────
+
+/** 0DTE session: 8:30 CT – 15:00 CT */
+const SESSION_CLOSE_MIN = 15 * 60; // 3:00 PM CT in minutes
+
+function timeToT(hour: number, minute: number): number | null {
+  const totalMin = hour * 60 + minute;
+  const hoursRemaining = (SESSION_CLOSE_MIN - totalMin) / 60;
   if (hoursRemaining <= 0) return null;
+  // T as fraction of year (matches calculator convention)
   return hoursRemaining / (365.25 * 24);
 }
 
+// ── Component ───────────────────────────────────────────
+
 export default function PaperDashboard({
   spotPrice,
-  sigma,
-  T,
-  timeHour,
-  timeMinute,
-  timeAmPm,
 }: PaperDashboardProps) {
-  const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
-  const [useBSEstimates, setUseBSEstimates] = useState(false);
+  const [rawStatement, setRawStatement] =
+    useState<DailyStatement | null>(null);
+  const [collapsed, setCollapsed] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  // Compute T locally from time inputs so it works even when the
-  // calculator returns null (e.g. past dates, weekends)
-  const effectiveT = T ?? computeLocalT(timeHour, timeMinute, timeAmPm);
+  // Self-contained time picker for theta decay simulation
+  // Default: 10:00 AM CT (a reasonable mid-morning time)
+  const [simHour, setSimHour] = useState(10);
+  const [simMinute, setSimMinute] = useState(0);
+  const [decayEnabled, setDecayEnabled] = useState(false);
 
-  // Re-estimate P&L using theta decay when toggled on
+  const simT = useMemo(
+    () => timeToT(simHour, simMinute),
+    [simHour, simMinute],
+  );
+
+  // Apply theta decay estimates when enabled
   const statement = useMemo(() => {
     if (!rawStatement) return null;
-    if (
-      useBSEstimates &&
-      effectiveT != null &&
-      effectiveT > 0
-    ) {
+    if (decayEnabled && simT != null && simT > 0) {
       try {
         return applyBSEstimates(
           rawStatement,
           spotPrice,
-          sigma ?? 0,
-          effectiveT,
+          0, // sigma unused by theta decay model
+          simT,
         );
       } catch {
         return rawStatement;
       }
     }
     return rawStatement;
-  }, [rawStatement, spotPrice, sigma, effectiveT, useBSEstimates]);
-  const [collapsed, setCollapsed] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  }, [rawStatement, spotPrice, simT, decayEnabled]);
 
   const handleUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -97,7 +83,9 @@ export default function PaperDashboard({
           setCollapsed(false);
         } catch (err) {
           const msg =
-            err instanceof Error ? err.message : 'Failed to parse file';
+            err instanceof Error
+              ? err.message
+              : 'Failed to parse file';
           setError(msg);
         }
       };
@@ -107,7 +95,6 @@ export default function PaperDashboard({
       };
 
       reader.readAsText(file);
-      // Reset input so re-uploading the same file triggers onChange
       e.target.value = '';
     },
     [spotPrice],
@@ -116,12 +103,22 @@ export default function PaperDashboard({
   // Owner gating — only render for authenticated owner (or local dev)
   // Placed after hooks to satisfy Rules of Hooks
   const isOwner =
-    import.meta.env.DEV || document.cookie.includes('sc-hint=');
+    import.meta.env.DEV ||
+    document.cookie.includes('sc-hint=');
   if (!isOwner) return null;
 
   const spreadCount = statement
-    ? statement.spreads.length + statement.ironCondors.length
+    ? statement.spreads.length +
+      statement.ironCondors.length
     : 0;
+
+  // Format sim time for display
+  const fmtSimTime = () => {
+    const h12 = simHour > 12 ? simHour - 12 : simHour;
+    const amPm = simHour >= 12 ? 'PM' : 'AM';
+    const min = String(simMinute).padStart(2, '0');
+    return `${h12}:${min} ${amPm} CT`;
+  };
 
   return (
     <SectionBox
@@ -155,21 +152,49 @@ export default function PaperDashboard({
             {statement ? 'Re-upload' : 'Upload Statement'}
           </button>
 
-          {/* Theta decay estimate toggle */}
+          {/* Theta decay toggle + time picker */}
           {statement && (
-            <button
-              type="button"
-              onClick={() => setUseBSEstimates((p) => !p)}
-              className={
-                'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
-                (useBSEstimates
-                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                  : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
-              }
-              title="Use Black-Scholes to estimate P&L at the calculator's current time"
-            >
-              {useBSEstimates ? 'BS: On' : 'BS: Off'}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  setDecayEnabled((p) => !p)
+                }
+                className={
+                  'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
+                  (decayEnabled
+                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                    : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
+                }
+                title="Estimate theta decay at a specific time of day"
+              >
+                {decayEnabled
+                  ? `Decay: ${fmtSimTime()}`
+                  : 'Decay: Off'}
+              </button>
+
+              {/* Time slider — only shown when decay is on */}
+              {decayEnabled && (
+                <input
+                  type="range"
+                  min={510}
+                  max={899}
+                  step={5}
+                  value={simHour * 60 + simMinute}
+                  onChange={(e) => {
+                    const val = Number.parseInt(
+                      e.target.value,
+                      10,
+                    );
+                    setSimHour(Math.floor(val / 60));
+                    setSimMinute(val % 60);
+                  }}
+                  className="accent-accent h-1.5 w-24 cursor-pointer"
+                  aria-label="Simulation time"
+                  title={fmtSimTime()}
+                />
+              )}
+            </>
           )}
 
           {/* Collapse toggle */}
@@ -199,7 +224,8 @@ export default function PaperDashboard({
       {/* Empty state */}
       {!statement && !error && (
         <div className="text-muted py-6 text-center font-sans text-sm">
-          Upload a thinkorswim paperMoney account statement CSV to begin.
+          Upload a thinkorswim paperMoney account statement
+          CSV to begin.
         </div>
       )}
 
@@ -254,7 +280,9 @@ export default function PaperDashboard({
           />
 
           {/* Execution Quality */}
-          <ExecutionQuality execution={statement.executionQuality} />
+          <ExecutionQuality
+            execution={statement.executionQuality}
+          />
         </div>
       )}
     </SectionBox>
