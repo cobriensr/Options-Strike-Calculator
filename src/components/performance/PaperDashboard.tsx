@@ -6,6 +6,7 @@ import DataQualityAlerts from './DataQualityAlerts';
 import ExecutionQuality from './ExecutionQuality';
 import PortfolioRiskSummary from './PortfolioRiskSummary';
 import PositionTable from './PositionTable';
+import PositionVisuals from './PositionVisuals';
 import TradeLog from './TradeLog';
 import type { DailyStatement } from './types';
 
@@ -136,6 +137,17 @@ export default function PaperDashboard({ spotPrice }: PaperDashboardProps) {
             spreads={statement.spreads}
             ironCondors={statement.ironCondors}
             hedges={statement.hedges}
+          />
+
+          {/* Position Visualizations (4-panel) */}
+          <PositionVisuals
+            spreads={statement.spreads}
+            ironCondors={statement.ironCondors}
+            hedges={statement.hedges}
+            nakedPositions={statement.nakedPositions}
+            trades={statement.trades}
+            portfolioRisk={statement.portfolioRisk}
+            spotPrice={spotPrice}
           />
 
           {/* Position Table */}
