@@ -39,6 +39,9 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 
 const ChartAnalysis = lazy(() => import('./components/ChartAnalysis'));
 const RiskCalculator = lazy(() => import('./components/RiskCalculator'));
+const PaperDashboard = lazy(
+  () => import('./components/performance/PaperDashboard'),
+);
 
 // ============================================================
 // MAIN COMPONENT
@@ -625,6 +628,21 @@ export default function StrikeCalculator() {
 
             <ErrorBoundary label="Analysis History">
               <AnalysisHistory refreshKey={historyRefreshKey} />
+            </ErrorBoundary>
+
+            {/* Paper Dashboard — owner-only, lazy-loaded */}
+            <ErrorBoundary label="Paper Dashboard">
+              <Suspense
+                fallback={
+                  <div className="text-muted animate-pulse p-4 text-center text-sm">
+                    Loading...
+                  </div>
+                }
+              >
+                <PaperDashboard
+                  spotPrice={results?.spot ?? spxVal ?? 0}
+                />
+              </Suspense>
             </ErrorBoundary>
 
             <ErrorBoundary label="Results">
