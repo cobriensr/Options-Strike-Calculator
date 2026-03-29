@@ -21,6 +21,9 @@ export interface AnalysisContext {
   dowLabel?: string;
   openingRangeSignal?: string;
   openingRangeAvailable?: boolean; // false if before 10:00 AM ET
+  openingRangeHigh?: number;
+  openingRangeLow?: number;
+  openingRangePctConsumed?: number; // % of median expected range consumed
   vixTermSignal?: string;
   vixTermShape?: string;
   clusterPutMult?: number;
@@ -28,6 +31,7 @@ export interface AnalysisContext {
   rvIvRatio?: string;
   rvAnnualized?: number;
   ivAccelMult?: number;
+  prevClose?: number;
   overnightGap?: string;
   isBacktest?: boolean;
   dataNote?: string; // describes any missing data

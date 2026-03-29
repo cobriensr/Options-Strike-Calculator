@@ -292,6 +292,9 @@ export default function StrikeCalculator() {
         dowLabel: signals.dowLabel ?? undefined,
         openingRangeSignal: signals.openingRangeSignal ?? undefined,
         openingRangeAvailable: signals.openingRangeAvailable,
+        openingRangeHigh: signals.openingRangeHigh ?? undefined,
+        openingRangeLow: signals.openingRangeLow ?? undefined,
+        openingRangePctConsumed: signals.openingRangePctConsumed ?? undefined,
         vixTermSignal: signals.vixTermSignal ?? undefined,
         vixTermShape: signals.vixTermShape ?? undefined,
         clusterPutMult: signals.clusterPutMult ?? undefined,
@@ -305,6 +308,7 @@ export default function StrikeCalculator() {
           const row = results?.allDeltas.find((r) => !('error' in r));
           return row && !('error' in row) ? row.ivAccelMult : undefined;
         })(),
+        prevClose: signals.prevClose ?? undefined,
         overnightGap:
           signals.overnightGap == null
             ? undefined

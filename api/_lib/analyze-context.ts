@@ -430,9 +430,14 @@ export async function buildAnalysisContext(
 - Call spread ceiling: ${context.callSpreadCeiling ?? 'N/A'}Δ
 - VIX regime zone: ${context.regimeZone ?? 'N/A'}
 - Clustering multiplier: ${context.clusterMult ?? 'N/A'}
+- Clustering put-side multiplier: ${numOrUndef(context.clusterPutMult)?.toFixed(3) ?? 'N/A'}
+- Clustering call-side multiplier: ${numOrUndef(context.clusterCallMult)?.toFixed(3) ?? 'N/A'}
 - Day of week: ${context.dowLabel ?? 'N/A'}
 - Opening range signal: ${context.openingRangeSignal ?? 'N/A'}
 - Opening range available: ${context.openingRangeAvailable ? 'YES (30-min data complete)' : 'NO (entry before 10:00 AM ET — range not yet established)'}
+- Opening range high: ${numOrUndef(context.openingRangeHigh)?.toFixed(2) ?? 'N/A'}
+- Opening range low: ${numOrUndef(context.openingRangeLow)?.toFixed(2) ?? 'N/A'}
+- Opening range % of median consumed: ${numOrUndef(context.openingRangePctConsumed) != null ? `${numOrUndef(context.openingRangePctConsumed)!.toFixed(0)}%` : 'N/A'}
 - VIX term structure signal: ${context.vixTermSignal ?? 'N/A'}
 - RV/IV ratio: ${context.rvIvRatio ?? 'N/A'}
 - Overnight gap: ${context.overnightGap ?? 'N/A'}
