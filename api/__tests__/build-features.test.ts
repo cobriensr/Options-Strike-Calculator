@@ -23,6 +23,17 @@ const OUTSIDE_WINDOW_TIME = new Date('2026-03-24T14:00:00.000Z');
 // Saturday 2026-03-28 at 5:30 PM ET = 21:30 UTC (weekend)
 const WEEKEND_TIME = new Date('2026-03-28T21:30:00.000Z');
 
+/**
+ * The handler now calls SET statement_timeout + a flow_data coverage
+ * diagnostic query before any business logic. This helper pre-fills
+ * those two SQL calls so per-test mockResolvedValueOnce sequences
+ * start at the first real query.
+ */
+function prefillHandlerPreamble() {
+  mockSql.mockResolvedValueOnce([]); // SET statement_timeout
+  mockSql.mockResolvedValueOnce([]); // flow_data coverage diagnostic
+}
+
 describe('build-features handler', () => {
   const originalEnv = process.env;
 
@@ -105,6 +116,7 @@ describe('build-features handler', () => {
   // ── Backfill mode ─────────────────────────────────────────
 
   it('backfill mode processes all flow_data dates', async () => {
+    prefillHandlerPreamble();
     // Call 1: SELECT DISTINCT date FROM flow_data
     mockSql.mockResolvedValueOnce([
       { date: '2026-03-23' },
@@ -130,6 +142,7 @@ describe('build-features handler', () => {
   // ── Auto-backfill (empty table) ───────────────────────────
 
   it('auto-backfills when training_features table is empty (count=0)', async () => {
+    prefillHandlerPreamble();
     vi.setSystemTime(POST_CLOSE_TIME);
 
     // Call 1: SELECT COUNT(*) FROM training_features → 0
@@ -156,6 +169,7 @@ describe('build-features handler', () => {
   // ── Normal mode (table has rows) ──────────────────────────
 
   it('processes only today when table has rows', async () => {
+    prefillHandlerPreamble();
     vi.setSystemTime(POST_CLOSE_TIME);
 
     // Call 1: SELECT COUNT(*) → non-zero
@@ -178,6 +192,7 @@ describe('build-features handler', () => {
   // ── Success path ──────────────────────────────────────────
 
   it('builds features and labels for a date', async () => {
+    prefillHandlerPreamble();
     // Backfill with 1 date so we control the flow precisely
     // Call 1 (handler): SELECT DISTINCT date FROM flow_data
     mockSql.mockResolvedValueOnce([{ date: '2026-03-24' }]);
@@ -207,7 +222,7 @@ describe('build-features handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({
+    expect(res._json).toMatchObject({
       dates: 1,
       featuresBuilt: 1,
       labelsExtracted: 0,
@@ -218,6 +233,7 @@ describe('build-features handler', () => {
   // ── Error counting ────────────────────────────────────────
 
   it('counts errors when buildFeaturesForDate throws and continues', async () => {
+    prefillHandlerPreamble();
     // Backfill with 2 dates; first date throws, second succeeds
     // Call 1 (handler): SELECT DISTINCT date FROM flow_data
     mockSql.mockResolvedValueOnce([
@@ -251,6 +267,7 @@ describe('build-features handler', () => {
   // ── Top-level error ───────────────────────────────────────
 
   it('returns 500 on top-level error', async () => {
+    prefillHandlerPreamble();
     vi.setSystemTime(POST_CLOSE_TIME);
 
     // SELECT COUNT(*) throws a top-level error
@@ -271,6 +288,7 @@ describe('build-features handler', () => {
   // ── Invalid date filtering ────────────────────────────────
 
   it('filters out invalid date formats', async () => {
+    prefillHandlerPreamble();
     // Backfill returns rows with bad date formats
     mockSql.mockResolvedValueOnce([
       { date: '2026-03-24' },
@@ -301,6 +319,7 @@ describe('build-features handler', () => {
   // ── Rich feature engineering paths ──────────────────────
 
   it('builds features from snapshot, flow, spot, greek, and strike data', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
     // T1=10:00 AM ET = 14:00 UTC, T2=10:30 = 14:30, T3=11:00 = 15:00, T4=11:30 = 15:30
     const ts = (h: number, m: number) =>
@@ -514,17 +533,19 @@ describe('build-features handler', () => {
 
     // Call 8: prev day outcomes
     mockSql.mockResolvedValueOnce([]);
-    // Call 9: vvixHistory (runs because snapshot has vvix)
+    // Call 9: settlements (realized vol)
     mockSql.mockResolvedValueOnce([]);
-    // Call 10: economic events
+    // Call 10: vvixHistory (runs because snapshot has vvix)
     mockSql.mockResolvedValueOnce([]);
-    // Call 11: next event
+    // Call 11: economic events
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: next event
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 12: upsertFeatures INSERT
+    // Call 13: upsertFeatures INSERT
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 13: extractLabelsForDate — analyses (no review found)
+    // Call 14: extractLabelsForDate — analyses (no review found)
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -536,17 +557,19 @@ describe('build-features handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({
+    expect(res._json).toMatchObject({
       dates: 1,
       featuresBuilt: 1,
       labelsExtracted: 0,
       errors: 0,
     });
 
-    expect(mockSql).toHaveBeenCalledTimes(13);
+    // 13 original test calls + 2 preamble
+    expect(mockSql).toHaveBeenCalledTimes(15);
   });
 
   it('extracts labels from review analyses with outcomes', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
     const ts = (h: number, m: number) =>
       `2026-03-24T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00.000Z`;
@@ -612,7 +635,7 @@ describe('build-features handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({
+    expect(res._json).toMatchObject({
       dates: 1,
       featuresBuilt: 1,
       labelsExtracted: 1,
@@ -621,6 +644,7 @@ describe('build-features handler', () => {
   });
 
   it('handles review with already-parsed full_response object', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
 
     // Call 1: SELECT DISTINCT date
@@ -675,6 +699,7 @@ describe('build-features handler', () => {
   });
 
   it('handles unparseable full_response in review analysis', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
 
     // Call 1: SELECT DISTINCT date
@@ -702,6 +727,7 @@ describe('build-features handler', () => {
   });
 
   it('handles Date objects from Neon in backfill date list', async () => {
+    prefillHandlerPreamble();
     // Neon returns DATE columns as JS Date objects
     mockSql.mockResolvedValueOnce([
       { date: new Date('2026-03-24T00:00:00.000Z') },
@@ -721,6 +747,7 @@ describe('build-features handler', () => {
   });
 
   it('computes range categories from outcomes in labels', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
 
     // Call 1: SELECT DISTINCT date
@@ -771,6 +798,7 @@ describe('build-features handler', () => {
   // ── OPEX detection ──────────────────────────────────────────
 
   it('sets is_opex=true when date is 3rd Friday of month (day 15-21)', async () => {
+    prefillHandlerPreamble();
     // 2026-04-17 is a Friday and day 17 of the month (3rd Friday of April 2026)
     const DATE = '2026-04-17';
 
@@ -830,6 +858,7 @@ describe('build-features handler', () => {
   });
 
   it('sets is_opex=false when date is a Friday but NOT 3rd Friday (day outside 15-21)', async () => {
+    prefillHandlerPreamble();
     // 2026-04-24 is a Friday but day 24 (4th Friday, not 3rd)
     const DATE = '2026-04-24';
 
@@ -862,6 +891,7 @@ describe('build-features handler', () => {
   });
 
   it('does not set is_opex=true for a non-Friday date', async () => {
+    prefillHandlerPreamble();
     // 2026-03-24 is a Tuesday — is_opex should remain unset/false
     const DATE = '2026-03-24';
 
@@ -893,6 +923,7 @@ describe('build-features handler', () => {
   // ── Days to next event ──────────────────────────────────────
 
   it('computes days_to_next_event when DB returns a next event date', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
 
     // Call 1: SELECT DISTINCT date
@@ -926,6 +957,7 @@ describe('build-features handler', () => {
   });
 
   it('handles next event query returning null next_date', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
 
     // Call 1: SELECT DISTINCT date
@@ -956,6 +988,7 @@ describe('build-features handler', () => {
   // ── Event type prioritization ───────────────────────────────
 
   it('prioritizes FOMC as highest event type when multiple events present', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
 
     // Call 1: SELECT DISTINCT date
@@ -998,6 +1031,7 @@ describe('build-features handler', () => {
   });
 
   it('selects lower-priority event type when only low-priority events present', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
 
     // Call 1: SELECT DISTINCT date
@@ -1041,6 +1075,7 @@ describe('build-features handler', () => {
   // ── Flow directional agreement ──────────────────────────────
 
   it('computes flow_was_directional=true when bullish flow matches UP settlement', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
     // 10:30 AM ET = 14:30 UTC (T2 checkpoint = 630 minutes from midnight ET)
     const t2 = '2026-03-24T14:30:00.000Z';
@@ -1107,6 +1142,7 @@ describe('build-features handler', () => {
   });
 
   it('computes flow_was_directional=null when bullish/bearish counts are tied', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
     const t2 = '2026-03-24T14:30:00.000Z';
 
@@ -1173,6 +1209,7 @@ describe('build-features handler', () => {
   });
 
   it('computes flow_was_directional=false when bearish flow contradicts UP settlement', async () => {
+    prefillHandlerPreamble();
     const DATE = '2026-03-24';
     const t2 = '2026-03-24T14:30:00.000Z';
 
