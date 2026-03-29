@@ -8,6 +8,7 @@
  * It runs entirely in the browser — no server dependencies.
  */
 
+import { blackScholesPrice } from '../../utils/black-scholes';
 import type {
   AccountSummary,
   CashEntry,
@@ -1970,5 +1971,88 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
     portfolioRisk,
     executionQuality,
     warnings,
+  };
+}
+
+// ── Black-Scholes P&L Estimation ────────────────────────
+
+/**
+ * Re-estimate open P&L using Black-Scholes pricing at the
+ * calculator's current time and IV settings.
+ *
+ * This lets the user upload an end-of-day CSV and dial the
+ * calculator time back to see estimated P&L at any intraday
+ * point — useful for backtesting theta decay throughout the day.
+ */
+export function applyBSEstimates(
+  statement: DailyStatement,
+  spot: number,
+  sigma: number,
+  T: number,
+): DailyStatement {
+  const MULTIPLIER = 100;
+
+  const priceSpread = (s: Spread): Spread => {
+    const shortMark = blackScholesPrice(
+      spot,
+      s.shortLeg.strike,
+      sigma,
+      T,
+      s.shortLeg.type.toLowerCase() as 'call' | 'put',
+    );
+    const longMark = blackScholesPrice(
+      spot,
+      s.longLeg.strike,
+      sigma,
+      T,
+      s.longLeg.type.toLowerCase() as 'call' | 'put',
+    );
+
+    // Spread value = what it costs to close (buy back short, sell long)
+    const spreadValue = round2(
+      (shortMark - longMark) * Math.abs(s.shortLeg.qty) * MULTIPLIER,
+    );
+    const openPnl = round2(s.creditReceived - spreadValue);
+    const pctOfMaxProfit =
+      s.maxProfit > 0
+        ? round2((openPnl / s.maxProfit) * 100)
+        : null;
+
+    return {
+      ...s,
+      currentValue: round2(spreadValue),
+      openPnl,
+      pctOfMaxProfit,
+    };
+  };
+
+  const spreads = statement.spreads.map(priceSpread);
+
+  const ironCondors = statement.ironCondors.map((ic) => {
+    const putSpread = priceSpread(ic.putSpread);
+    const callSpread = priceSpread(ic.callSpread);
+    return { ...ic, putSpread, callSpread };
+  });
+
+  const hedges = statement.hedges.map((h) => {
+    const mark = blackScholesPrice(
+      spot,
+      h.leg.strike,
+      sigma,
+      T,
+      h.leg.type.toLowerCase() as 'call' | 'put',
+    );
+    const currentValue = round2(
+      mark * Math.abs(h.leg.qty) * MULTIPLIER,
+    );
+    const openPnl = round2(currentValue - h.entryCost);
+    return { ...h, currentValue, openPnl };
+  });
+
+  return {
+    ...statement,
+    spreads,
+    ironCondors,
+    hedges,
   };
 }

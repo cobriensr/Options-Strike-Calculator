@@ -643,7 +643,11 @@ export default function StrikeCalculator() {
                   </div>
                 }
               >
-                <PaperDashboard spotPrice={results?.spot ?? spxVal ?? 0} />
+                <PaperDashboard
+                  spotPrice={results?.spot ?? spxVal ?? 0}
+                  sigma={results?.sigma ?? null}
+                  T={results?.T ?? null}
+                />
               </Suspense>
             </ErrorBoundary>
 

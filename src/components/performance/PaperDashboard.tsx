@@ -1,6 +1,6 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useMemo } from 'react';
 import { SectionBox } from '../ui';
-import { parseStatement } from './statement-parser';
+import { parseStatement, applyBSEstimates } from './statement-parser';
 import AccountOverview from './AccountOverview';
 import DataQualityAlerts from './DataQualityAlerts';
 import ExecutionQuality from './ExecutionQuality';
@@ -12,10 +12,27 @@ import type { DailyStatement } from './types';
 
 interface PaperDashboardProps {
   spotPrice: number;
+  /** Annualized IV from the calculator (null if not available) */
+  sigma: number | null;
+  /** Time to expiration in years from the calculator (null if not available) */
+  T: number | null;
 }
 
-export default function PaperDashboard({ spotPrice }: PaperDashboardProps) {
-  const [statement, setStatement] = useState<DailyStatement | null>(null);
+export default function PaperDashboard({
+  spotPrice,
+  sigma,
+  T,
+}: PaperDashboardProps) {
+  const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
+
+  // Re-estimate P&L using Black-Scholes when time/IV changes
+  const statement = useMemo(() => {
+    if (!rawStatement) return null;
+    if (sigma != null && T != null && T > 0) {
+      return applyBSEstimates(rawStatement, spotPrice, sigma, T);
+    }
+    return rawStatement;
+  }, [rawStatement, spotPrice, sigma, T]);
   const [collapsed, setCollapsed] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -32,7 +49,7 @@ export default function PaperDashboard({ spotPrice }: PaperDashboardProps) {
         try {
           const text = reader.result as string;
           const parsed = parseStatement(text, spotPrice);
-          setStatement(parsed);
+          setRawStatement(parsed);
           setCollapsed(false);
         } catch (err) {
           const msg =
