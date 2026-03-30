@@ -141,9 +141,10 @@ function StrikeMap({
   };
 
   const bars: SpreadBar[] = [];
-  for (const s of spreads) {
+  for (let si = 0; si < spreads.length; si++) {
+    const s = spreads[si]!;
     bars.push({
-      id: `s-${s.shortLeg.strike}-${s.longLeg.strike}`,
+      id: `s-${si}-${s.shortLeg.strike}-${s.longLeg.strike}`,
       shortStrike: s.shortLeg.strike,
       longStrike: s.longLeg.strike,
       type:
@@ -154,9 +155,10 @@ function StrikeMap({
       breakeven: s.breakeven,
     });
   }
-  for (const ic of ironCondors) {
+  for (let ici = 0; ici < ironCondors.length; ici++) {
+    const ic = ironCondors[ici]!;
     bars.push({
-      id: `ic-p-${ic.putSpread.shortLeg.strike}`,
+      id: `ic-p-${ici}-${ic.putSpread.shortLeg.strike}`,
       shortStrike: ic.putSpread.shortLeg.strike,
       longStrike: ic.putSpread.longLeg.strike,
       type: 'IC_PUT',
@@ -164,7 +166,7 @@ function StrikeMap({
       breakeven: ic.breakevenLow,
     });
     bars.push({
-      id: `ic-c-${ic.callSpread.shortLeg.strike}`,
+      id: `ic-c-${ici}-${ic.callSpread.shortLeg.strike}`,
       shortStrike: ic.callSpread.shortLeg.strike,
       longStrike: ic.callSpread.longLeg.strike,
       type: 'IC_CALL',
@@ -458,7 +460,7 @@ function RiskWaterfall({
         const w = Math.max(toW(seg.value), 2);
 
         return (
-          <g key={seg.label}>
+          <g key={`${seg.label}-${String(i)}`}>
             {/* Label */}
             <text
               x={labelW - 6}
@@ -776,7 +778,7 @@ function ProfitGauges({
 
   return (
     <div className="grid grid-cols-5 gap-3">
-      {gauges.map((g) => {
+      {gauges.map((g, i) => {
         const pct = g.pct != null ? Math.max(0, Math.min(100, g.pct)) : null;
         const filled =
           pct != null
@@ -793,7 +795,7 @@ function ProfitGauges({
 
         return (
           <div
-            key={g.label}
+            key={`${g.label}-${String(i)}`}
             className="flex flex-col items-center"
           >
             <svg
