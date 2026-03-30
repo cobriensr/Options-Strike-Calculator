@@ -2065,10 +2065,48 @@ export function applyBSEstimates(
     return { ...h, currentValue, openPnl };
   });
 
+  // Recompute portfolio risk with decay-adjusted positions
+  const portfolioRisk = computePortfolioRisk(
+    spreads,
+    ironCondors,
+    hedges,
+    statement.nakedPositions as NakedPosition[],
+    statement.accountSummary,
+    statement.pnl,
+    _calculatorSpot,
+  );
+
+  // Compute aggregate open P&L from decay-adjusted spreads
+  let totalOpenPnl = 0;
+  for (const s of spreads) {
+    if (s.openPnl != null) totalOpenPnl += s.openPnl;
+  }
+  for (const ic of ironCondors) {
+    if (ic.putSpread.openPnl != null) totalOpenPnl += ic.putSpread.openPnl;
+    if (ic.callSpread.openPnl != null) totalOpenPnl += ic.callSpread.openPnl;
+  }
+  for (const h of hedges) {
+    if (h.openPnl != null) totalOpenPnl += h.openPnl;
+  }
+
+  // Build updated P&L summary reflecting decay estimates
+  const decayPnl: PnLSummary = {
+    entries: statement.pnl.entries,
+    totals: statement.pnl.totals
+      ? {
+          ...statement.pnl.totals,
+          plOpen: round2(totalOpenPnl),
+          plDay: round2(totalOpenPnl),
+        }
+      : null,
+  };
+
   return {
     ...statement,
     spreads,
     ironCondors,
     hedges,
+    portfolioRisk,
+    pnl: decayPnl,
   };
 }
