@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useMemo } from 'react';
 import { SectionBox } from '../ui';
 import { parseStatement, applyBSEstimates } from './statement-parser';
 import AccountOverview from './AccountOverview';
@@ -44,18 +44,15 @@ export default function PositionMonitor({
   const [simMinute, setSimMinute] = useState(0);
   const [decayEnabled, setDecayEnabled] = useState(false);
 
-  // Compute statement with decay applied (no memoization to
-  // ensure slider changes always trigger re-render)
-  const simT = timeToT(simHour, simMinute);
-  let statement: DailyStatement | null = rawStatement;
-  if (rawStatement && decayEnabled && simT != null && simT > 0) {
-    statement = applyBSEstimates(
-      rawStatement,
-      spotPrice,
-      0,
-      simT,
-    );
-  }
+  // Apply theta decay — use simHour/simMinute directly as deps
+  // instead of a derived simT to guarantee React sees changes
+  const statement = useMemo(() => {
+    if (!rawStatement) return null;
+    if (!decayEnabled) return rawStatement;
+    const t = timeToT(simHour, simMinute);
+    if (t == null || t <= 0) return rawStatement;
+    return applyBSEstimates(rawStatement, spotPrice, 0, t);
+  }, [rawStatement, spotPrice, decayEnabled, simHour, simMinute]);
 
   const handleUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
