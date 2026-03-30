@@ -170,7 +170,7 @@ def preprocess(df: pd.DataFrame) -> tuple[np.ndarray, list[str], pd.DataFrame]:
     )
 
     # Top features per component
-    print(f"\n  Top features per principal component:")
+    print("\n  Top features per principal component:")
     for i in range(min(n_components, 5)):
         pc = loadings[f"PC{i+1}"].abs().nlargest(5)
         features_str = ", ".join(f"{name} ({loadings.loc[name, f'PC{i+1}']:+.2f})" for name in pc.index)
@@ -224,9 +224,9 @@ def run_clustering(X: np.ndarray, k_range: range) -> dict:
 
 def print_results(results: dict) -> int:
     """Print clustering results and return best k."""
-    print(f"\n{'='*70}")
-    print(f"  CLUSTERING RESULTS")
-    print(f"{'='*70}\n")
+    print(f"\n{'=' * 70}")
+    print("  CLUSTERING RESULTS")
+    print(f"{'=' * 70}\n")
 
     print(f"  {'k':>3s}  {'K-Means':>10s}  {'GMM':>10s}  {'Hier.':>10s}  {'CH':>10s}  {'DB':>8s}  {'GMM BIC':>12s}  {'Sizes (KM)':>20s}")
     print(f"  {'':->3s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->8s}  {'':->12s}  {'':->20s}")
@@ -395,7 +395,7 @@ def permutation_test(X: np.ndarray, k: int, n_permutations: int = 100) -> float:
 
 
 def outcome_association_test(
-    df: pd.DataFrame, labels: np.ndarray, k: int,  # noqa: ARG001
+    df: pd.DataFrame, labels: np.ndarray, _k: int,
 ) -> None:
     """Test if cluster assignments are associated with trading outcomes."""
     df_c = df.copy()
@@ -450,7 +450,6 @@ def _draw_confidence_ellipse(ax, x, y, color, alpha=0.15):
     if len(x) < 3:
         return
     from matplotlib.patches import Ellipse
-    import matplotlib.transforms as transforms
 
     mean_x, mean_y = np.mean(x), np.mean(y)
     cov = np.cov(x, y)
@@ -519,7 +518,7 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(plot_dir / "clusters_pca.png", dpi=150)
-    print(f"\n  Saved: ml/plots/clusters_pca.png")
+    print("\n  Saved: ml/plots/clusters_pca.png")
 
     # Cluster feature heatmap
     df_c = df.copy()
@@ -546,7 +545,7 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
         fig2.colorbar(im, ax=ax2, shrink=0.8)
         fig2.tight_layout()
         fig2.savefig(plot_dir / "clusters_heatmap.png", dpi=150)
-        print(f"  Saved: ml/plots/clusters_heatmap.png")
+        print("  Saved: ml/plots/clusters_heatmap.png")
 
     plt.close("all")
 
@@ -571,7 +570,7 @@ def main() -> None:
     )
 
     print("\nPreprocessing ...")
-    X_pca, pca_labels, df_feat = preprocess(df)
+    X_pca, _, df_feat = preprocess(df)
 
     n_samples = X_pca.shape[0]
     max_k = min(6, n_samples - 1)
@@ -592,7 +591,7 @@ def main() -> None:
     characterize_clusters(df, best_labels, best_k, "K-Means")
 
     # Stability check
-    print(f"\nStability check (leave-one-out) ...")
+    print("\nStability check (leave-one-out) ...")
     stability = stability_check(X_pca, best_k)
     print(f"  Stability: {stability:.0%} of days keep their cluster assignment")
 
@@ -620,9 +619,9 @@ def main() -> None:
         save_plots(X_pca, best_labels, best_k, df)
 
     # Summary
-    print(f"\n{'='*70}")
-    print(f"  SUMMARY")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print("  SUMMARY")
+    print(f"{'=' * 70}")
     print(f"  Days: {n_samples}")
     print(f"  Features used: {X_pca.shape[1]} PCA components from {len(df_feat.columns)} features")
     print(f"  Best k: {best_k}")

@@ -8,7 +8,6 @@ used across clustering.py, eda.py, and visualize.py.
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import psycopg2
 

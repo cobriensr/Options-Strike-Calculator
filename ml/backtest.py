@@ -19,7 +19,6 @@ try:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
-    import numpy as np
     import pandas as pd
     import seaborn as sns
 except ImportError:
@@ -256,12 +255,12 @@ def plot_equity_curves(
             f"Trades: {claude_m['num_trades']}",
         ]
         text = "\n".join(text_lines)
-        props = dict(
-            boxstyle="round,pad=0.5",
-            facecolor="#16213e",
-            edgecolor="#555",
-            alpha=0.9,
-        )
+        props = {
+            "boxstyle": "round,pad=0.5",
+            "facecolor": "#16213e",
+            "edgecolor": "#555",
+            "alpha": 0.9,
+        }
         ax.text(
             0.02, 0.98, text,
             transform=ax.transAxes,
@@ -284,7 +283,7 @@ def plot_equity_curves(
     path = PLOT_DIR / "backtest_equity.png"
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"  Saved: ml/plots/backtest_equity.png")
+    print("  Saved: ml/plots/backtest_equity.png")
 
 
 # ── Summary Report ───────────────────────────────────────────
@@ -325,7 +324,7 @@ def print_report(
     print(f"  Date range: {labeled.index.min():%Y-%m-%d} to {labeled.index.max():%Y-%m-%d}")
 
     structures = labeled["recommended_structure"].value_counts()
-    print(f"\n  Structure distribution:")
+    print("\n  Structure distribution:")
     for struct, count in structures.items():
         pct = count / len(labeled)
         print(f"    {struct}: {count} ({pct:.0%})")

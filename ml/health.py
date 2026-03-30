@@ -15,7 +15,6 @@ import sys
 from datetime import datetime, timedelta
 
 try:
-    import numpy as np
     import pandas as pd
 except ImportError:
     print("Missing dependencies. Run:")
@@ -116,7 +115,7 @@ def check_freshness(warnings: list[str], failures: list[str]) -> None:
 
 # ── Check 2: Feature Completeness Trend ────────────────────────
 
-def check_completeness(warnings: list[str], failures: list[str]) -> None:
+def check_completeness(warnings: list[str], _failures: list[str]) -> None:
     section("2. FEATURE COMPLETENESS TREND")
 
     df = load_data("""
@@ -227,7 +226,7 @@ def check_labels(warnings: list[str], failures: list[str]) -> None:
 
 # ── Check 4: Column Coverage ──────────────────────────────────
 
-def check_column_coverage(warnings: list[str], failures: list[str]) -> None:
+def check_column_coverage(warnings: list[str], _failures: list[str]) -> None:
     section("4. COLUMN COVERAGE (key features, last 10 days)")
 
     cols_sql = ", ".join(KEY_FEATURE_COLUMNS)
@@ -266,7 +265,7 @@ def check_column_coverage(warnings: list[str], failures: list[str]) -> None:
 
 # ── Check 5: Stationarity Alerts ──────────────────────────────
 
-def check_stationarity(warnings: list[str], failures: list[str]) -> None:
+def check_stationarity(warnings: list[str], _failures: list[str]) -> None:
     section("5. STATIONARITY ALERTS (regime change detection)")
 
     monitor_cols = ["vix", "gex_oi_t1", "flow_agreement_t1"]

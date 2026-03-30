@@ -16,7 +16,6 @@ try:
     import numpy as np
     import pandas as pd
     from scipy import stats
-    from scipy.stats import kruskal, fisher_exact
     from statsmodels.stats.proportion import proportion_confint
     from statsmodels.stats.multitest import multipletests
 except ImportError:
@@ -558,7 +557,7 @@ def key_findings(df: pd.DataFrame) -> None:
             worst_struct = (struct, pct)
 
     if best_struct[0]:
-        print(f"\n  WHAT'S WORKING:")
+        print("\n  WHAT'S WORKING:")
         print(f"  - {best_struct[0]} has the highest accuracy ({best_struct[1]:.0%})")
 
     # Confidence calibration summary
@@ -581,7 +580,7 @@ def key_findings(df: pd.DataFrame) -> None:
     # Failure patterns
     failures = labeled[labeled["structure_correct"] == False]
     if len(failures) > 0:
-        print(f"\n  WHAT TO WATCH:")
+        print("\n  WHAT TO WATCH:")
         for struct in structs:
             n_fail = len(failures[failures["recommended_structure"] == struct])
             if n_fail > 0:
@@ -618,7 +617,7 @@ def key_findings(df: pd.DataFrame) -> None:
                 anti.append(f"{label} ({pct:.0%})")
 
         if useful or anti:
-            print(f"\n  FLOW RELIABILITY (at T1):")
+            print("\n  FLOW RELIABILITY (at T1):")
             if useful:
                 print(f"  - Trust: {', '.join(useful)}")
             if anti:
@@ -628,7 +627,7 @@ def key_findings(df: pd.DataFrame) -> None:
     majority = labeled["recommended_structure"].value_counts()
     if len(majority) > 0:
         majority_pct = majority.iloc[0] / n_labeled if n_labeled > 0 else 0
-        print(f"\n  FOR PHASE 2 (Structure Classification):")
+        print("\n  FOR PHASE 2 (Structure Classification):")
         print(f"  - Majority class baseline: always predict "
               f"'{majority.index[0]}' = {majority_pct:.0%}")
         target_days = 60

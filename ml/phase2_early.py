@@ -339,7 +339,7 @@ def generate_shap_plot(
 
         plot_dir.mkdir(exist_ok=True)
 
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        _, _ax = plt.subplots(1, 1, figsize=(12, 8))
 
         # For multi-class, shap_values is a list of arrays
         if isinstance(shap_values, list):
@@ -360,7 +360,7 @@ def generate_shap_plot(
         out_path = plot_dir / "phase2_shap.png"
         plt.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close("all")
-        print(f"  Saved: ml/plots/phase2_shap.png")
+        print("  Saved: ml/plots/phase2_shap.png")
         return True
     except Exception as e:
         print(f"  SHAP plot failed: {e}")
@@ -478,7 +478,7 @@ def main() -> None:
 
     # Class distribution
     dist = df_labeled["recommended_structure"].value_counts()
-    print(f"\n  Class distribution:")
+    print("\n  Class distribution:")
     for struct, count in dist.items():
         print(f"    {struct:25s}  {count:3d}  ({count/len(df_labeled):.0%})")
 
@@ -525,7 +525,7 @@ def main() -> None:
     n_predictions = len(X) - min_train
     print(f"\n  Min training window: {min_train} days")
     print(f"  Predictions to make: {n_predictions}")
-    print(f"  Running walk-forward ...")
+    print("  Running walk-forward ...")
 
     wf_results = walk_forward(X, y, params, min_train=min_train)
 
@@ -579,8 +579,9 @@ def main() -> None:
     majority_acc = metrics["majority_baseline"]
 
     if acc > majority_acc + 0.05:
-        print(f"\n  {verdict(True)}")
-        print(f"  PROMISING -- model shows signal beyond majority class.")
+        tag = verdict(True)
+        print(f"\n  {tag}")
+        print("  PROMISING -- model shows signal beyond majority class.")
         print(f"  Accuracy {acc:.1%} vs baseline {majority_acc:.1%} "
               f"(+{lift:.1%} lift)")
         takeaway(
@@ -589,9 +590,10 @@ def main() -> None:
             "            and expanding to include SIT OUT as a 4th class."
         )
     elif acc > majority_acc:
-        print(f"\n  {verdict(False, 'marginal signal')}")
-        print(f"  MARGINAL -- weak signal, may need more data or "
-              f"better features.")
+        tag = verdict(False, 'marginal signal')
+        print(f"\n  {tag}")
+        print("  MARGINAL -- weak signal, may need more data or "
+              "better features.")
         print(f"  Accuracy {acc:.1%} vs baseline {majority_acc:.1%} "
               f"(+{lift:.1%} lift)")
         takeaway(
@@ -600,8 +602,9 @@ def main() -> None:
             "            feature engineering or a different model."
         )
     else:
-        print(f"\n  {verdict(False)}")
-        print(f"  NOT YET -- model doesn't beat "
+        tag = verdict(False)
+        print(f"\n  {tag}")
+        print("  NOT YET -- model doesn't beat "
               f"always-predict-{majority_name}.")
         print(f"  Accuracy {acc:.1%} vs baseline {majority_acc:.1%} "
               f"({lift:+.1%})")

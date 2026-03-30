@@ -26,8 +26,9 @@ except ImportError:
     print("  ml/.venv/bin/pip install psycopg2-binary pandas matplotlib seaborn")
     sys.exit(1)
 
-from utils import load_data, validate_dataframe
 from statsmodels.stats.proportion import proportion_confint
+
+from utils import load_data, validate_dataframe
 
 PLOT_DIR = Path(__file__).resolve().parent / "plots"
 PLOT_DIR.mkdir(exist_ok=True)
@@ -705,7 +706,7 @@ def main() -> None:
     plot_day_of_week(df)
     plot_stationarity(df)
 
-    print(f"\nAll plots saved to ml/plots/")
+    print("\nAll plots saved to ml/plots/")
 
 
 if __name__ == "__main__":

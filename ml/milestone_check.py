@@ -20,7 +20,7 @@ except ImportError:
     print("  ml/.venv/bin/pip install psycopg2-binary pandas")
     sys.exit(1)
 
-from utils import load_data, get_connection, section, subsection, takeaway
+from utils import get_connection, section, subsection, takeaway
 
 
 # ── Helpers ───────────────────────────────────────────────────
@@ -169,15 +169,6 @@ def print_milestones(data: dict) -> None:
     section("MILESTONES")
 
     n = data["labeled_days"]
-    last_date = data["last_date"]
-
-    if isinstance(last_date, pd.Timestamp):
-        last_dt = last_date.to_pydatetime().replace(tzinfo=None)
-    elif hasattr(last_date, "timetuple"):
-        last_dt = datetime.combine(last_date, datetime.min.time())
-    else:
-        last_dt = datetime.now()
-
     today = datetime.now()
 
     # Find where current position sits
