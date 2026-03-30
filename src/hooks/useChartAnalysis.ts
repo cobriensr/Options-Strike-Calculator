@@ -128,7 +128,10 @@ export function useChartAnalysis(opts: {
 
       const MAX_ATTEMPTS = 3;
       let lastError: unknown = null;
-      const deadline = Date.now() + 5 * 60 * 1000;
+      // Must exceed backend maxDuration (780s) so the server-side
+      // Anthropic timeout (720s) or Vercel function limit is the
+      // binding constraint, not the frontend.
+      const deadline = Date.now() + 14 * 60 * 1000;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (Date.now() >= deadline) {
@@ -141,7 +144,7 @@ export function useChartAnalysis(opts: {
         const controller = new AbortController();
         abortRef.current = controller;
         const remainingMs = Math.max(1000, deadline - Date.now());
-        const attemptTimeout = Math.min(750_000, remainingMs);
+        const attemptTimeout = Math.min(800_000, remainingMs);
         const timeout = setTimeout(() => controller.abort(), attemptTimeout);
 
         try {
