@@ -55,7 +55,6 @@ const MONTH_MAP: Record<string, string> = {
 
 /** Max strike distance (points) to consider two legs a spread */
 
-
 /** SPX multiplier */
 const MULTIPLIER = 100;
 
@@ -935,9 +934,7 @@ export function groupIntoSpreads(
 
   for (let ti = 0; ti < openTrades.length; ti++) {
     const trade = openTrades[ti]!;
-    const openLegs = trade.legs.filter(
-      (l) => l.posEffect === 'TO OPEN',
-    );
+    const openLegs = trade.legs.filter((l) => l.posEffect === 'TO OPEN');
     if (openLegs.length !== 2) continue;
 
     const sellLeg = openLegs.find((l) => l.side === 'SELL');
@@ -1003,8 +1000,7 @@ export function groupIntoSpreads(
       if (usedCCS.has(c)) continue;
       const ccs = tradeCCS[c]!;
 
-      const qtyMatch =
-        pcs.spread.contracts === ccs.spread.contracts;
+      const qtyMatch = pcs.spread.contracts === ccs.spread.contracts;
 
       if (qtyMatch) {
         usedPCS.add(p);
@@ -1014,8 +1010,7 @@ export function groupIntoSpreads(
         const totalCredit = round2(
           pcs.spread.creditReceived + ccs.spread.creditReceived,
         );
-        const totalCreditPerContract =
-          totalCredit / (MULTIPLIER * contracts);
+        const totalCreditPerContract = totalCredit / (MULTIPLIER * contracts);
 
         const putWingWidth = pcs.spread.wingWidth;
         const callWingWidth = ccs.spread.wingWidth;
@@ -1042,8 +1037,7 @@ export function groupIntoSpreads(
           ),
           putWingWidth,
           callWingWidth,
-          entryTime:
-            pcs.spread.entryTime ?? ccs.spread.entryTime,
+          entryTime: pcs.spread.entryTime ?? ccs.spread.entryTime,
         });
 
         break;
@@ -1073,10 +1067,26 @@ export function groupIntoSpreads(
     addCovered(s.longLeg.strike, s.longLeg.type, Math.abs(s.longLeg.qty));
   }
   for (const ic of allICs) {
-    addCovered(ic.putSpread.shortLeg.strike, ic.putSpread.shortLeg.type, ic.contracts);
-    addCovered(ic.putSpread.longLeg.strike, ic.putSpread.longLeg.type, ic.contracts);
-    addCovered(ic.callSpread.shortLeg.strike, ic.callSpread.shortLeg.type, ic.contracts);
-    addCovered(ic.callSpread.longLeg.strike, ic.callSpread.longLeg.type, ic.contracts);
+    addCovered(
+      ic.putSpread.shortLeg.strike,
+      ic.putSpread.shortLeg.type,
+      ic.contracts,
+    );
+    addCovered(
+      ic.putSpread.longLeg.strike,
+      ic.putSpread.longLeg.type,
+      ic.contracts,
+    );
+    addCovered(
+      ic.callSpread.shortLeg.strike,
+      ic.callSpread.shortLeg.type,
+      ic.contracts,
+    );
+    addCovered(
+      ic.callSpread.longLeg.strike,
+      ic.callSpread.longLeg.type,
+      ic.contracts,
+    );
   }
 
   for (const leg of legs) {
@@ -1089,8 +1099,7 @@ export function groupIntoSpreads(
     coveredLegs.set(key, covered + uncovered);
 
     if (leg.qty > 0) {
-      const entryCost =
-        Math.abs(leg.tradePrice) * MULTIPLIER * uncovered;
+      const entryCost = Math.abs(leg.tradePrice) * MULTIPLIER * uncovered;
       const hedgeCurrentValue =
         leg.markValue !== null
           ? round2((leg.markValue / Math.abs(leg.qty)) * uncovered)
@@ -1841,7 +1850,9 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
       grouped.ironCondors.reduce((s, ic) => s + ic.totalCredit, 0);
 
     if (totalCredit > 0) {
-      const estimateSpreadPnl = (credit: number): {
+      const estimateSpreadPnl = (
+        credit: number,
+      ): {
         openPnl: number;
         pctOfMaxProfit: number | null;
       } => {
@@ -1851,9 +1862,7 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
         // Open P&L = credit minus cost to close
         const openPnl = round2(credit - costToClose);
         const pctOfMaxProfit =
-          credit > 0
-            ? round2((openPnl / credit) * 100)
-            : null;
+          credit > 0 ? round2((openPnl / credit) * 100) : null;
         return { openPnl, pctOfMaxProfit };
       };
 
@@ -1867,12 +1876,8 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
       }
       for (let i = 0; i < grouped.ironCondors.length; i++) {
         const ic = grouped.ironCondors[i]!;
-        const putEst = estimateSpreadPnl(
-          ic.putSpread.creditReceived,
-        );
-        const callEst = estimateSpreadPnl(
-          ic.callSpread.creditReceived,
-        );
+        const putEst = estimateSpreadPnl(ic.putSpread.creditReceived);
+        const callEst = estimateSpreadPnl(ic.callSpread.creditReceived);
         (grouped.ironCondors as IronCondor[])[i] = {
           ...ic,
           putSpread: { ...ic.putSpread, ...putEst },
@@ -1939,10 +1944,7 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
 function timeToMinutes(t: string): number {
   const match = t.match(/(\d{1,2}):(\d{2})/);
   if (!match) return 0;
-  return (
-    Number.parseInt(match[1]!, 10) * 60 +
-    Number.parseInt(match[2]!, 10)
-  );
+  return Number.parseInt(match[1]!, 10) * 60 + Number.parseInt(match[2]!, 10);
 }
 
 /** 0DTE market session: 8:30 CT to 15:00 CT = 390 minutes */
@@ -1984,8 +1986,7 @@ export function applyBSEstimates(
     // Use matched trade entry price, or fall back to the
     // difference of leg trade prices from the Options section
     const netPrice =
-      s.entryNetPrice ??
-      Math.abs(s.shortLeg.tradePrice - s.longLeg.tradePrice);
+      s.entryNetPrice ?? Math.abs(s.shortLeg.tradePrice - s.longLeg.tradePrice);
     if (netPrice <= 0) return s;
 
     // Find when this spread was entered (minutes since midnight)
@@ -1994,14 +1995,8 @@ export function applyBSEstimates(
       : SESSION_START_MIN;
 
     // Minutes remaining at entry vs now
-    const entryRemaining = Math.max(
-      SESSION_END_MIN - entryMin,
-      1,
-    );
-    const nowRemaining = Math.max(
-      SESSION_END_MIN - currentMinute,
-      0,
-    );
+    const entryRemaining = Math.max(SESSION_END_MIN - entryMin, 1);
+    const nowRemaining = Math.max(SESSION_END_MIN - currentMinute, 0);
 
     // If the calculator time is before this position was entered,
     // the position doesn't exist yet — show full entry value
@@ -2016,19 +2011,13 @@ export function applyBSEstimates(
 
     // Sqrt-time decay: value decays with sqrt of time remaining
     const decayFactor = Math.sqrt(nowRemaining / entryRemaining);
-    const estimatedSpreadPrice = round2(
-      netPrice * decayFactor,
-    );
+    const estimatedSpreadPrice = round2(netPrice * decayFactor);
     const contracts = s.contracts;
-    const currentValue = round2(
-      estimatedSpreadPrice * contracts * 100,
-    );
+    const currentValue = round2(estimatedSpreadPrice * contracts * 100);
     const openPnl = round2(s.creditReceived - currentValue);
     const pctOfMaxProfit =
       s.maxProfit > 0
-        ? round2(
-            Math.min(100, (openPnl / s.maxProfit) * 100),
-          )
+        ? round2(Math.min(100, (openPnl / s.maxProfit) * 100))
         : null;
 
     return {
@@ -2051,14 +2040,8 @@ export function applyBSEstimates(
     // For hedges (long options), value also decays with sqrt-time
     if (h.entryCost <= 0) return h;
     const entryMin = SESSION_START_MIN; // approximate
-    const entryRemaining = Math.max(
-      SESSION_END_MIN - entryMin,
-      1,
-    );
-    const nowRemaining = Math.max(
-      SESSION_END_MIN - currentMinute,
-      0,
-    );
+    const entryRemaining = Math.max(SESSION_END_MIN - entryMin, 1);
+    const nowRemaining = Math.max(SESSION_END_MIN - currentMinute, 0);
     const decayFactor = Math.sqrt(nowRemaining / entryRemaining);
     const currentValue = round2(h.entryCost * decayFactor);
     const openPnl = round2(currentValue - h.entryCost);

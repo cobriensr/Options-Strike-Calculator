@@ -27,12 +27,9 @@ export default function DataQualityAlerts({
   // Deduplicate by message to avoid duplicate key warnings
   // (e.g. multiple UNMATCHED_SHORT warnings)
   const deduped = warnings.filter(
-    (w, i, arr) =>
-      arr.findIndex((x) => x.message === w.message) === i,
+    (w, i, arr) => arr.findIndex((x) => x.message === w.message) === i,
   );
-  const visible = deduped.filter(
-    (w) => !dismissed.has(w.message),
-  );
+  const visible = deduped.filter((w) => !dismissed.has(w.message));
 
   if (visible.length === 0) return null;
 
@@ -57,16 +54,11 @@ export default function DataQualityAlerts({
           className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${SEVERITY_STYLES[w.severity]}`}
           role="alert"
         >
-          <span
-            className="mt-0.5 shrink-0 text-sm"
-            aria-hidden="true"
-          >
+          <span className="mt-0.5 shrink-0 text-sm" aria-hidden="true">
             {SEVERITY_ICONS[w.severity]}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-sm font-medium">
-              {w.message}
-            </div>
+            <div className="font-sans text-sm font-medium">{w.message}</div>
             {w.detail && (
               <div className="mt-0.5 font-sans text-xs opacity-80">
                 {w.detail}

@@ -13,7 +13,7 @@
  * Extracted from App.tsx to reduce the root component's complexity.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { AmPm, IVMode } from '../types';
 import { IV_MODES } from '../constants';
 import { toETTime } from '../utils/calculator';
@@ -80,6 +80,11 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   // Destructure stable references so they can be listed in dependency arrays
   // without including the entire vix object (which is new on every render).
   const { selectedDate, setSelectedDate } = vix;
+
+  // Track which date we last auto-set IV mode for so we don't override the
+  // user's manual toggle on every re-render (historyData is a new object ref
+  // each render, which would otherwise re-trigger the history effect).
+  const ivModeAutoFilledDate = useRef<string | null>(null);
 
   // ── Auto-fill from live Schwab data (owner-only, silently skipped for public) ──
   useEffect(() => {
@@ -172,15 +177,23 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
         (vix1dStatic.loaded
           ? vix1dStatic.getVix1d(historyData.history!.date, etHour)
           : null);
+      const isNewDate =
+        ivModeAutoFilledDate.current !== historyData.history!.date;
       if (vix1dVal != null && vix1dVal > 0) {
-        setIvMode(IV_MODES.DIRECT);
+        // Only auto-switch IV mode when the date changes; always update the
+        // σ value so it stays current as the user scrubs time.
+        if (isNewDate) setIvMode(IV_MODES.DIRECT);
         setDirectIVInput((vix1dVal / 100).toFixed(4));
-      } else if (snapshot.vix != null) {
-        // No VIX1D available — fall back to VIX mode
+      } else if (snapshot.vix != null && isNewDate) {
+        // No VIX1D available — fall back to VIX mode (new date only)
         setIvMode(IV_MODES.VIX);
+      }
+      if (isNewDate) {
+        ivModeAutoFilledDate.current = historyData.history!.date;
       }
     } else if (market.data.quotes) {
       // Today (or no history): restore live prices if available
+      ivModeAutoFilledDate.current = null;
       const q = market.data.quotes;
       if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));

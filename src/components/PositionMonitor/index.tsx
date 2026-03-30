@@ -29,11 +29,8 @@ function timeToT(hour: number, minute: number): number | null {
 
 // ── Component ───────────────────────────────────────────
 
-export default function PositionMonitor({
-  spotPrice,
-}: PositionMonitorProps) {
-  const [rawStatement, setRawStatement] =
-    useState<DailyStatement | null>(null);
+export default function PositionMonitor({ spotPrice }: PositionMonitorProps) {
+  const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
   // Snapshot spot price at upload time to avoid re-renders from
   // parent prop changes (calculator spot fluctuates on past dates)
   const [uploadSpot, setUploadSpot] = useState(spotPrice);
@@ -79,9 +76,7 @@ export default function PositionMonitor({
           setCollapsed(false);
         } catch (err) {
           const msg =
-            err instanceof Error
-              ? err.message
-              : 'Failed to parse file';
+            err instanceof Error ? err.message : 'Failed to parse file';
           setError(msg);
         }
       };
@@ -98,14 +93,11 @@ export default function PositionMonitor({
 
   // Owner gating — only render for authenticated owner (or local dev)
   // Placed after hooks to satisfy Rules of Hooks
-  const isOwner =
-    import.meta.env.DEV ||
-    document.cookie.includes('sc-hint=');
+  const isOwner = import.meta.env.DEV || document.cookie.includes('sc-hint=');
   if (!isOwner) return null;
 
   const spreadCount = statement
-    ? statement.spreads.length +
-      statement.ironCondors.length
+    ? statement.spreads.length + statement.ironCondors.length
     : 0;
 
   // Format sim time for display
@@ -153,9 +145,7 @@ export default function PositionMonitor({
             <>
               <button
                 type="button"
-                onClick={() =>
-                  setDecayEnabled((p) => !p)
-                }
+                onClick={() => setDecayEnabled((p) => !p)}
                 className={
                   'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
                   (decayEnabled
@@ -164,9 +154,7 @@ export default function PositionMonitor({
                 }
                 title="Estimate theta decay at a specific time of day"
               >
-                {decayEnabled
-                  ? `Decay: ${fmtSimTime()}`
-                  : 'Decay: Off'}
+                {decayEnabled ? `Decay: ${fmtSimTime()}` : 'Decay: Off'}
               </button>
 
               {/* Time slider — only shown when decay is on */}
@@ -178,10 +166,7 @@ export default function PositionMonitor({
                   step={5}
                   value={simHour * 60 + simMinute}
                   onChange={(e) => {
-                    const val = Number.parseInt(
-                      e.target.value,
-                      10,
-                    );
+                    const val = Number.parseInt(e.target.value, 10);
                     setSimHour(Math.floor(val / 60));
                     setSimMinute(val % 60);
                   }}
@@ -220,8 +205,7 @@ export default function PositionMonitor({
       {/* Empty state */}
       {!statement && !error && (
         <div className="text-muted py-6 text-center font-sans text-sm">
-          Upload a thinkorswim paperMoney account statement
-          CSV to begin.
+          Upload a thinkorswim paperMoney account statement CSV to begin.
         </div>
       )}
 
@@ -276,9 +260,7 @@ export default function PositionMonitor({
           />
 
           {/* Execution Quality */}
-          <ExecutionQuality
-            execution={statement.executionQuality}
-          />
+          <ExecutionQuality execution={statement.executionQuality} />
         </div>
       )}
     </SectionBox>

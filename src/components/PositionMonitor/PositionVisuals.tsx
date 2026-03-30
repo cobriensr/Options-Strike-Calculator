@@ -68,14 +68,8 @@ function StrikeMap({
 
   let spotPrice = rawSpotPrice;
   if (shortPuts.length > 0 || shortCalls.length > 0) {
-    const highPut =
-      shortPuts.length > 0
-        ? Math.max(...shortPuts)
-        : null;
-    const lowCall =
-      shortCalls.length > 0
-        ? Math.min(...shortCalls)
-        : null;
+    const highPut = shortPuts.length > 0 ? Math.max(...shortPuts) : null;
+    const lowCall = shortCalls.length > 0 ? Math.min(...shortCalls) : null;
     const inferred =
       highPut != null && lowCall != null
         ? (highPut + lowCall) / 2
@@ -83,8 +77,7 @@ function StrikeMap({
           ? highPut + 30
           : lowCall! - 30;
     // Use inferred if calculator spot is >2% away
-    const deviation =
-      Math.abs(rawSpotPrice - inferred) / inferred;
+    const deviation = Math.abs(rawSpotPrice - inferred) / inferred;
     if (deviation > 0.02) {
       spotPrice = inferred;
     }
@@ -125,8 +118,7 @@ function StrikeMap({
   const PAD_L = 4;
   const PAD_R = 4;
   const plotW = W - PAD_L - PAD_R;
-  const toX = (strike: number) =>
-    PAD_L + ((strike - lo) / range) * plotW;
+  const toX = (strike: number) => PAD_L + ((strike - lo) / range) * plotW;
 
   const spotX = toX(spotPrice);
 
@@ -147,10 +139,7 @@ function StrikeMap({
       id: `s-${si}-${s.shortLeg.strike}-${s.longLeg.strike}`,
       shortStrike: s.shortLeg.strike,
       longStrike: s.longLeg.strike,
-      type:
-        s.spreadType === 'PUT_CREDIT_SPREAD'
-          ? 'PCS'
-          : 'CCS',
+      type: s.spreadType === 'PUT_CREDIT_SPREAD' ? 'PCS' : 'CCS',
       contracts: s.contracts,
       breakeven: s.breakeven,
     });
@@ -214,21 +203,15 @@ function StrikeMap({
       {/* Spread bars */}
       {bars.map((bar, i) => {
         const y = barsStartY + i * (barH + gap);
-        const x1 = toX(
-          Math.min(bar.shortStrike, bar.longStrike),
-        );
-        const x2 = toX(
-          Math.max(bar.shortStrike, bar.longStrike),
-        );
+        const x1 = toX(Math.min(bar.shortStrike, bar.longStrike));
+        const x2 = toX(Math.max(bar.shortStrike, bar.longStrike));
         const w = Math.max(x2 - x1, 2);
 
-        const isPut =
-          bar.type === 'PCS' || bar.type === 'IC_PUT';
+        const isPut = bar.type === 'PCS' || bar.type === 'IC_PUT';
         const fillColor = isPut
           ? 'var(--color-danger)'
           : 'var(--color-success)';
-        const fillOpacity =
-          bar.type.startsWith('IC') ? '0.35' : '0.5';
+        const fillOpacity = bar.type.startsWith('IC') ? '0.35' : '0.5';
 
         return (
           <g key={bar.id}>
@@ -264,8 +247,7 @@ function StrikeMap({
               fontWeight="600"
               fontFamily="var(--font-mono)"
             >
-              {fmtStrike(bar.shortStrike)}/
-              {fmtStrike(bar.longStrike)}{' '}
+              {fmtStrike(bar.shortStrike)}/{fmtStrike(bar.longStrike)}{' '}
               {isPut ? 'P' : 'C'} x{bar.contracts}
             </text>
             {/* Breakeven tick */}
@@ -412,9 +394,7 @@ function RiskWaterfall({
     segments.push({
       label: `${isPut ? 'P' : 'C'} ${fmtStrike(s.shortLeg.strike)}/${fmtStrike(s.longLeg.strike)}`,
       value: s.maxLoss,
-      color: isPut
-        ? 'var(--color-danger)'
-        : 'var(--color-success)',
+      color: isPut ? 'var(--color-danger)' : 'var(--color-success)',
       isHedge: false,
     });
   }
@@ -436,8 +416,7 @@ function RiskWaterfall({
   }
 
   // Scale bars relative to the largest individual segment
-  const maxVal =
-    Math.max(...segments.map((s) => Math.abs(s.value))) || 1;
+  const maxVal = Math.max(...segments.map((s) => Math.abs(s.value))) || 1;
   const W = 800;
   const barH = 26;
   const gap = 8;
@@ -445,8 +424,7 @@ function RiskWaterfall({
   const barAreaW = W - labelW - 80;
   const totalH = segments.length * (barH + gap) + 4;
 
-  const toW = (v: number) =>
-    (Math.abs(v) / maxVal) * barAreaW;
+  const toW = (v: number) => (Math.abs(v) / maxVal) * barAreaW;
 
   return (
     <svg
@@ -498,9 +476,7 @@ function RiskWaterfall({
               x={labelW + w + 6}
               y={y + barH / 2 + 4}
               fill={
-                seg.isHedge
-                  ? 'var(--color-accent)'
-                  : 'var(--color-secondary)'
+                seg.isHedge ? 'var(--color-accent)' : 'var(--color-secondary)'
               }
               fontSize="12"
               fontWeight="600"
@@ -534,16 +510,10 @@ function RiskWaterfall({
 
 // ── Panel 3: Credit vs Time ────────────────────────────
 
-function CreditTimeChart({
-  trades,
-}: {
-  trades: readonly ExecutedTrade[];
-}) {
+function CreditTimeChart({ trades }: { trades: readonly ExecutedTrade[] }) {
   // Filter to TO OPEN trades with positive net credits
   const openTrades = trades.filter(
-    (t) =>
-      t.legs.some((l) => l.posEffect === 'TO OPEN') &&
-      t.netPrice > 0,
+    (t) => t.legs.some((l) => l.posEffect === 'TO OPEN') && t.netPrice > 0,
   );
 
   if (openTrades.length === 0) {
@@ -558,10 +528,7 @@ function CreditTimeChart({
   const parseMin = (t: string): number => {
     const match = t.match(/(\d{1,2}):(\d{2})/);
     if (!match) return 0;
-    return (
-      Number.parseInt(match[1]!, 10) * 60 +
-      Number.parseInt(match[2]!, 10)
-    );
+    return Number.parseInt(match[1]!, 10) * 60 + Number.parseInt(match[2]!, 10);
   };
 
   const entries = openTrades.map((t) => ({
@@ -593,12 +560,9 @@ function CreditTimeChart({
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
 
-  const toX = (min: number) =>
-    PAD_L + ((min - minMin) / timeRange) * plotW;
+  const toX = (min: number) => PAD_L + ((min - minMin) / timeRange) * plotW;
   const toY = (credit: number) =>
-    PAD_T +
-    plotH -
-    ((credit - creditLo) / creditRange) * plotH;
+    PAD_T + plotH - ((credit - creditLo) / creditRange) * plotH;
 
   return (
     <svg
@@ -728,7 +692,7 @@ function ProfitGauges({
     const pct =
       putPct != null && callPct != null
         ? (putPct + callPct) / 2
-        : putPct ?? callPct;
+        : (putPct ?? callPct);
     gauges.push({
       label: `${fmtStrike(ic.putSpread.shortLeg.strike)}p/${fmtStrike(ic.callSpread.shortLeg.strike)}c`,
       pct,
@@ -741,10 +705,7 @@ function ProfitGauges({
       label: `${fmtStrike(s.shortLeg.strike)}/${fmtStrike(s.longLeg.strike)}${s.spreadType === 'PUT_CREDIT_SPREAD' ? 'p' : 'c'}`,
       pct: s.pctOfMaxProfit,
       credit: s.creditReceived,
-      type:
-        s.spreadType === 'PUT_CREDIT_SPREAD'
-          ? 'PCS'
-          : 'CCS',
+      type: s.spreadType === 'PUT_CREDIT_SPREAD' ? 'PCS' : 'CCS',
     });
   }
 
@@ -780,10 +741,7 @@ function ProfitGauges({
     <div className="grid grid-cols-5 gap-3">
       {gauges.map((g, i) => {
         const pct = g.pct != null ? Math.max(0, Math.min(100, g.pct)) : null;
-        const filled =
-          pct != null
-            ? (pct / 100) * arcLen
-            : 0;
+        const filled = pct != null ? (pct / 100) * arcLen : 0;
         const pctColor =
           pct == null
             ? 'var(--color-muted)'
@@ -832,14 +790,10 @@ function ProfitGauges({
                 fontWeight="700"
                 fontFamily="var(--font-mono)"
               >
-                {pct != null
-                  ? `${Math.round(pct)}%`
-                  : '\u2014'}
+                {pct != null ? `${Math.round(pct)}%` : '\u2014'}
               </text>
             </svg>
-            <div
-              className="text-secondary mt-1 text-center font-mono text-xs font-semibold leading-tight"
-            >
+            <div className="text-secondary mt-1 text-center font-mono text-xs leading-tight font-semibold">
               {g.label}
             </div>
             <div className="text-muted font-mono text-[10px]">
@@ -854,12 +808,8 @@ function ProfitGauges({
 
 // ── Main 4-Panel Component ─────────────────────────────
 
-export default function PositionVisuals(
-  props: PositionVisualsProps,
-) {
-  const [expanded, setExpanded] = useState<string | null>(
-    null,
-  );
+export default function PositionVisuals(props: PositionVisualsProps) {
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const panels = [
     {
@@ -899,10 +849,7 @@ export default function PositionVisuals(
       title: '% Max Profit',
       desc: 'Theta capture per position',
       content: (
-        <ProfitGauges
-          spreads={props.spreads}
-          ironCondors={props.ironCondors}
-        />
+        <ProfitGauges spreads={props.spreads} ironCondors={props.ironCondors} />
       ),
     },
   ] as const;
@@ -920,23 +867,17 @@ export default function PositionVisuals(
             <div
               key={panel.id}
               className={`bg-surface-alt border-edge flex flex-col rounded-lg border transition-all ${
-                isExpanded
-                  ? 'md:col-span-2'
-                  : ''
+                isExpanded ? 'md:col-span-2' : ''
               }`}
             >
               {/* Panel header */}
               <button
                 type="button"
-                onClick={() =>
-                  setExpanded(
-                    isExpanded ? null : panel.id,
-                  )
-                }
+                onClick={() => setExpanded(isExpanded ? null : panel.id)}
                 className="flex w-full shrink-0 cursor-pointer items-center justify-between px-4 pt-3 pb-1"
               >
                 <div>
-                  <span className="text-tertiary font-sans text-xs font-bold uppercase tracking-wider">
+                  <span className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">
                     {panel.title}
                   </span>
                   <span className="text-muted ml-2 font-sans text-[10px]">
