@@ -35,6 +35,7 @@ initBotId({
     { path: '/api/pre-market', method: 'POST' },
     { path: '/api/iv-term-structure', method: 'GET' },
     { path: '/api/ml/export', method: 'GET' },
+    { path: '/api/ml/prediction', method: 'GET' },
   ],
 });
 
