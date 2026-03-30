@@ -47,14 +47,19 @@ export default function PositionMonitor({
   const [simMinute, setSimMinute] = useState(0);
   const [decayEnabled, setDecayEnabled] = useState(false);
 
-  // Apply theta decay — spotPrice excluded from deps to prevent
-  // re-renders from parent prop changes; snapshotted at upload
+  // Apply theta decay — always return a new object so React
+  // reconciliation is consistent (avoids switching between
+  // the same rawStatement ref and a new decay-adjusted ref)
   const statement = useMemo(() => {
     if (!rawStatement) return null;
-    if (!decayEnabled) return rawStatement;
+    if (!decayEnabled) return { ...rawStatement };
     const t = timeToT(simHour, simMinute);
-    if (t == null || t <= 0) return rawStatement;
-    return applyBSEstimates(rawStatement, uploadSpot, 0, t);
+    if (t == null || t <= 0) return { ...rawStatement };
+    try {
+      return applyBSEstimates(rawStatement, uploadSpot, 0, t);
+    } catch {
+      return { ...rawStatement };
+    }
   }, [rawStatement, uploadSpot, decayEnabled, simHour, simMinute]);
 
   const handleUpload = useCallback(
