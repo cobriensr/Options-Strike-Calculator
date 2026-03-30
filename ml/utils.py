@@ -13,6 +13,26 @@ import pandas as pd
 import psycopg2
 
 
+# ── Feature Groups (shared across scripts) ─────────────────
+# Canonical lists used by clustering.py, phase2_early.py, etc.
+# Scripts may extend these with their own additions.
+
+VOLATILITY_FEATURES: list[str] = [
+    "vix", "vix1d", "vix1d_vix_ratio", "vix_vix9d_ratio",
+]
+
+GEX_FEATURES_T1T2: list[str] = [
+    "gex_oi_t1", "gex_oi_t2",
+    "gex_vol_t1", "gex_vol_t2",
+    "gex_dir_t1", "gex_dir_t2",
+]
+
+GREEK_FEATURES_CORE: list[str] = [
+    "agg_net_gamma", "dte0_net_charm", "dte0_charm_pct",
+    "charm_slope",
+]
+
+
 # ── Environment & DB ────────────────────────────────────────
 
 def load_env() -> dict[str, str]:

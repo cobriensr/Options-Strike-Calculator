@@ -45,20 +45,17 @@ from utils import (
     subsection,
     verdict,
     takeaway,
+    VOLATILITY_FEATURES,
+    GEX_FEATURES_T1T2,
+    GREEK_FEATURES_CORE,
 )
 
 
 # ── Feature Groups ───────────────────────────────────────────
 
-VOLATILITY_FEATURES = [
-    "vix", "vix1d", "vix1d_vix_ratio", "vix_vix9d_ratio",
-]
-
-GEX_FEATURES = [
-    "gex_oi_t1", "gex_oi_t2",
-    "gex_vol_t1", "gex_vol_t2",
-    "gex_dir_t1", "gex_dir_t2",
-]
+# VOLATILITY_FEATURES and GEX_FEATURES_T1T2 imported from utils.
+# Phase2 uses core greeks only (no charm OI).
+GREEK_FEATURES = GREEK_FEATURES_CORE
 
 FLOW_FEATURES_T1T2 = [
     "mt_ncp_t1", "mt_npp_t1",
@@ -78,11 +75,6 @@ FLOW_AGGREGATE = [
     "flow_agreement_t1", "flow_agreement_t2",
     "etf_tide_divergence_t1",
     "ncp_npp_gap_spx_t1",
-]
-
-GREEK_FEATURES = [
-    "agg_net_gamma", "dte0_net_charm", "dte0_charm_pct",
-    "charm_slope",
 ]
 
 PER_STRIKE_FEATURES = [
@@ -116,7 +108,7 @@ CATEGORICAL_FEATURES = [
 ]
 
 ALL_NUMERIC_FEATURES = (
-    VOLATILITY_FEATURES + GEX_FEATURES + FLOW_FEATURES_T1T2 +
+    VOLATILITY_FEATURES + GEX_FEATURES_T1T2 + FLOW_FEATURES_T1T2 +
     FLOW_AGGREGATE + GREEK_FEATURES + PER_STRIKE_FEATURES +
     CALCULATOR_FEATURES + CALENDAR_FEATURES + PHASE2_FEATURES
 )

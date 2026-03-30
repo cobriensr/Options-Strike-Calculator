@@ -36,15 +36,19 @@ except ImportError:
     print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn matplotlib")
     sys.exit(1)
 
-from utils import load_data, validate_dataframe
+from utils import (
+    load_data,
+    validate_dataframe,
+    VOLATILITY_FEATURES,
+    GEX_FEATURES_T1T2,
+    GREEK_FEATURES_CORE,
+)
 
 
 # ── Feature Groups ───────────────────────────────────────────
 
 # T1-T2 features only (first hour). Grouped by category for interpretability.
-VOLATILITY_FEATURES = [
-    "vix", "vix1d", "vix1d_vix_ratio", "vix_vix9d_ratio",
-]
+# VOLATILITY_FEATURES and GEX_FEATURES_T1T2 imported from utils.
 
 REGIME_FEATURES = [
     "cluster_mult", "dow_mult", "sigma",
@@ -79,16 +83,8 @@ FLOW_AGGREGATE_T1T2 = [
     "ncp_npp_gap_spx_t1", "ncp_npp_gap_spx_t2",
 ]
 
-GEX_FEATURES_T1T2 = [
-    "gex_oi_t1", "gex_oi_t2",
-    "gex_vol_t1", "gex_vol_t2",
-    "gex_dir_t1", "gex_dir_t2",
-]
-
-GREEK_FEATURES = [
-    "agg_net_gamma", "dte0_net_charm", "dte0_charm_pct",
-    "charm_slope", "charm_oi_t1", "charm_oi_t2",
-]
+# Clustering extends core greeks with charm OI features
+GREEK_FEATURES = GREEK_FEATURES_CORE + ["charm_oi_t1", "charm_oi_t2"]
 
 CHARM_PATTERN_COL = "charm_pattern"
 
