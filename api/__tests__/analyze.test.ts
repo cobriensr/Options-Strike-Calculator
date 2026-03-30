@@ -35,6 +35,8 @@ vi.mock('../_lib/db-strike-helpers.js', () => ({
 vi.mock('../_lib/lessons.js', () => ({
   getActiveLessons: vi.fn().mockResolvedValue([]),
   formatLessonsBlock: vi.fn().mockReturnValue(''),
+  getHistoricalWinRate: vi.fn().mockResolvedValue(null),
+  formatWinRateForClaude: vi.fn().mockReturnValue(''),
 }));
 
 // Mock the Anthropic SDK — capture the stream call
@@ -117,7 +119,12 @@ import {
   rejectIfRateLimited,
   checkBot,
 } from '../_lib/api-helpers.js';
-import { getActiveLessons, formatLessonsBlock } from '../_lib/lessons.js';
+import {
+  getActiveLessons,
+  formatLessonsBlock,
+  getHistoricalWinRate,
+  formatWinRateForClaude,
+} from '../_lib/lessons.js';
 import {
   getFlowData,
   formatFlowDataForClaude,
@@ -197,6 +204,8 @@ describe('POST /api/analyze', () => {
     // Restore module mock defaults that restoreAllMocks may strip
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+    vi.mocked(getHistoricalWinRate).mockResolvedValue(null);
+    vi.mocked(formatWinRateForClaude).mockReturnValue('');
     // Silence expected console.error/log from error-path tests
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -1241,5 +1250,297 @@ describe('POST /api/analyze', () => {
     expect(res._status).toBe(200);
     const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
     expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
+
+  // ── OI Concentration formatting ────────────────────────────
+
+  it('includes OI concentration section when topOIStrikes provided', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        topOIStrikes: [
+          {
+            strike: 5700,
+            putOI: 12000,
+            callOI: 8000,
+            totalOI: 20000,
+            distFromSpot: 0,
+            distPct: '0.0',
+            side: 'both',
+          },
+          {
+            strike: 5650,
+            putOI: 15000,
+            callOI: 2000,
+            totalOI: 17000,
+            distFromSpot: -50,
+            distPct: '-0.9',
+            side: 'put',
+          },
+        ],
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('OI Concentration');
+    expect(contextBlock).toContain('Pin Risk');
+    expect(contextBlock).toContain('5700');
+    expect(contextBlock).toContain('20.0K');
+    expect(contextBlock).toContain('12.0K');
+    expect(contextBlock).toContain('+0 pts');
+    expect(contextBlock).toContain('5650');
+    expect(contextBlock).toContain('-50 pts');
+    expect(contextBlock).toContain('put');
+  });
+
+  it('omits OI concentration when topOIStrikes is empty', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        topOIStrikes: [],
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).not.toContain('OI Concentration');
+  });
+
+  it('formats OI under 1000 without K suffix', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        topOIStrikes: [
+          {
+            strike: 5700,
+            putOI: 500,
+            callOI: 300,
+            totalOI: 800,
+            distFromSpot: 0,
+            distPct: '0.0',
+            side: 'both',
+          },
+        ],
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('Total: 800');
+    expect(contextBlock).toContain('Put: 500');
+    expect(contextBlock).toContain('Call: 300');
+  });
+
+  // ── IV Skew Metrics formatting ─────────────────────────────
+
+  it('includes IV skew section with STEEP signal', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        skewMetrics: {
+          put25dIV: 28.5,
+          call25dIV: 18.2,
+          atmIV: 20.0,
+          putSkew25d: 8.5,
+          callSkew25d: 1.8,
+          skewRatio: 2.5,
+        },
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('IV Skew Metrics');
+    expect(contextBlock).toContain('ATM IV: 20.0%');
+    expect(contextBlock).toContain('28.5%');
+    expect(contextBlock).toContain('STEEP');
+    expect(contextBlock).toContain('Strong put-over-call risk premium');
+  });
+
+  it('includes IV skew section with NORMAL signal', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        skewMetrics: {
+          put25dIV: 24.0,
+          call25dIV: 20.0,
+          atmIV: 20.0,
+          putSkew25d: 5.0,
+          callSkew25d: 2.0,
+          skewRatio: 1.5,
+        },
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('NORMAL');
+    expect(contextBlock).toContain('Normal asymmetry');
+  });
+
+  it('includes IV skew section with FLAT signal and symmetric ratio', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        skewMetrics: {
+          put25dIV: 22.0,
+          call25dIV: 20.5,
+          atmIV: 20.0,
+          putSkew25d: 2.0,
+          callSkew25d: 1.5,
+          skewRatio: 1.0,
+        },
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain('FLAT');
+    expect(contextBlock).toContain('Unusually symmetric');
+    expect(contextBlock).toContain('Supports IRON CONDOR');
+  });
+
+  it('omits IV skew section when skewMetrics not provided', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).not.toContain('IV Skew Metrics');
+  });
+
+  // ── Historical win rate context injection ──────────────────
+
+  it('includes win rate context when getHistoricalWinRate returns data', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    vi.mocked(getHistoricalWinRate).mockResolvedValueOnce({
+      total: 12,
+      wins: 9,
+      winRate: 75,
+      avgVix: 19.2,
+      structures: ['IRON CONDOR'],
+    });
+    vi.mocked(formatWinRateForClaude).mockReturnValueOnce(
+      'Historical Base Rate (VIX 13-23, GEX: GREEN, Friday):\n' +
+        '  Matching sessions: 12\n' +
+        '  Win rate: 75% (9/12)\n' +
+        '  Avg VIX: 19.2\n' +
+        '  Signal: Supports upgrading confidence by one level.',
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).toContain(
+      'Historical Base Rate (from lessons database)',
+    );
+    expect(contextBlock).toContain('Win rate: 75%');
+    expect(contextBlock).toContain('Supports upgrading confidence');
+  });
+
+  it('omits win rate context when getHistoricalWinRate returns null', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    vi.mocked(getHistoricalWinRate).mockResolvedValueOnce(null);
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).not.toContain('Historical Base Rate');
+  });
+
+  it('continues analysis when getHistoricalWinRate throws', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    vi.mocked(getHistoricalWinRate).mockRejectedValueOnce(
+      new Error('DB error fetching win rate'),
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const contextBlock = params.messages[0].content.at(-1).text;
+    expect(contextBlock).not.toContain('Historical Base Rate');
+  });
+
+  it('passes correct conditions to getHistoricalWinRate', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    vi.mocked(getHistoricalWinRate).mockResolvedValueOnce(null);
+
+    const body = makeBody({
+      context: {
+        ...makeBody().context,
+        vix: 22,
+        regimeZone: 'RED',
+        dowLabel: 'Wednesday',
+      },
+    });
+    const req = mockRequest({ method: 'POST', body });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(getHistoricalWinRate).toHaveBeenCalledWith({
+      vix: 22,
+      gexRegime: 'RED',
+      dayOfWeek: 'Wednesday',
+    });
   });
 });
