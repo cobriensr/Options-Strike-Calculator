@@ -911,13 +911,13 @@ export default function PositionVisuals(
       aria-label="Position visualizations"
       data-testid="position-visuals"
     >
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 md:[grid-auto-rows:minmax(400px,auto)]">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {panels.map((panel) => {
           const isExpanded = expanded === panel.id;
           return (
             <div
               key={panel.id}
-              className={`bg-surface-alt border-edge rounded-lg border transition-all ${
+              className={`bg-surface-alt border-edge flex flex-col rounded-lg border transition-all ${
                 isExpanded
                   ? 'md:col-span-2'
                   : ''
@@ -931,7 +931,7 @@ export default function PositionVisuals(
                     isExpanded ? null : panel.id,
                   )
                 }
-                className="flex w-full cursor-pointer items-center justify-between px-4 pt-3 pb-1"
+                className="flex w-full shrink-0 cursor-pointer items-center justify-between px-4 pt-3 pb-1"
               >
                 <div>
                   <span className="text-tertiary font-sans text-xs font-bold uppercase tracking-wider">
@@ -945,8 +945,8 @@ export default function PositionVisuals(
                   {isExpanded ? '\u25B2' : '\u25BC'}
                 </span>
               </button>
-              {/* Panel content */}
-              <div className="px-3 pb-3">
+              {/* Panel content — grows to fill panel */}
+              <div className="flex min-h-0 flex-1 flex-col justify-center px-3 pb-3">
                 {panel.content}
               </div>
             </div>
