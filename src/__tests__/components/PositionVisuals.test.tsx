@@ -249,12 +249,8 @@ describe('PositionVisuals', () => {
     render(<PositionVisuals {...defaultProps()} />);
     expect(screen.getByText('Positions relative to spot')).toBeInTheDocument();
     expect(screen.getByText('Max loss by position')).toBeInTheDocument();
-    expect(
-      screen.getByText('Entry prices by time of day'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('Theta capture per position'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Entry prices by time of day')).toBeInTheDocument();
+    expect(screen.getByText('Theta capture per position')).toBeInTheDocument();
   });
 
   // ── Expand / Collapse ───────────────────────────────────
@@ -323,11 +319,7 @@ describe('PositionVisuals', () => {
     // Put spread at 5650, calculator spot at 4000 (far away)
     // Should infer spot = 5650 + 30 = 5680 (only puts, no calls)
     render(
-      <PositionVisuals
-        {...defaultProps()}
-        spotPrice={4000}
-        ironCondors={[]}
-      />,
+      <PositionVisuals {...defaultProps()} spotPrice={4000} ironCondors={[]} />,
     );
     // Should display the inferred spot, not 4000
     expect(screen.queryByText(/SPX 4,000/)).not.toBeInTheDocument();
@@ -366,18 +358,13 @@ describe('PositionVisuals', () => {
   // ── Strike Map with hedges and naked ────────────────────
 
   it('renders hedge marker in strike map', () => {
-    render(
-      <PositionVisuals {...defaultProps()} hedges={[makeHedge()]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} hedges={[makeHedge()]} />);
     expect(screen.getByText(/H 5,600/)).toBeInTheDocument();
   });
 
   it('renders naked marker in strike map', () => {
     render(
-      <PositionVisuals
-        {...defaultProps()}
-        nakedPositions={[makeNaked()]}
-      />,
+      <PositionVisuals {...defaultProps()} nakedPositions={[makeNaked()]} />,
     );
     expect(screen.getByText(/! 5,800/)).toBeInTheDocument();
   });
@@ -386,9 +373,7 @@ describe('PositionVisuals', () => {
 
   it('renders iron condor bars in strike map', () => {
     const ic = makeIronCondor();
-    render(
-      <PositionVisuals {...defaultProps()} ironCondors={[ic]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} ironCondors={[ic]} />);
     // IC put side: 5620/5610
     expect(screen.getByText(/5,620\/5,610/)).toBeInTheDocument();
     // IC call side: 5780/5790
@@ -423,9 +408,7 @@ describe('PositionVisuals', () => {
   });
 
   it('renders hedge offset bar in waterfall', () => {
-    render(
-      <PositionVisuals {...defaultProps()} hedges={[makeHedge()]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} hedges={[makeHedge()]} />);
     // Hedge label: "Hedge 5,600P"
     expect(screen.getByText(/Hedge 5,600P/)).toBeInTheDocument();
   });
@@ -433,11 +416,7 @@ describe('PositionVisuals', () => {
   it('renders iron condor risk bar in waterfall', () => {
     const ic = makeIronCondor();
     render(
-      <PositionVisuals
-        {...defaultProps()}
-        spreads={[]}
-        ironCondors={[ic]}
-      />,
+      <PositionVisuals {...defaultProps()} spreads={[]} ironCondors={[ic]} />,
     );
     // IC label: "IC 5,620/5,780"
     expect(screen.getByText(/IC 5,620\/5,780/)).toBeInTheDocument();
@@ -456,12 +435,8 @@ describe('PositionVisuals', () => {
     const closingTrade = makeTrade({
       legs: [makeTradeLeg({ posEffect: 'TO CLOSE' })],
     });
-    render(
-      <PositionVisuals {...defaultProps()} trades={[closingTrade]} />,
-    );
-    expect(
-      screen.getByText('No opening trades to chart.'),
-    ).toBeInTheDocument();
+    render(<PositionVisuals {...defaultProps()} trades={[closingTrade]} />);
+    expect(screen.getByText('No opening trades to chart.')).toBeInTheDocument();
   });
 
   it('shows credit value bubble in chart', () => {
@@ -481,20 +456,14 @@ describe('PositionVisuals', () => {
 
   it('renders profit gauges for iron condors', () => {
     const ic = makeIronCondor();
-    render(
-      <PositionVisuals {...defaultProps()} ironCondors={[ic]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} ironCondors={[ic]} />);
     // IC gauge label: "5,620p/5,780c"
     expect(screen.getByText(/5,620p\/5,780c/)).toBeInTheDocument();
   });
 
   it('renders empty profit gauges when no positions', () => {
     render(
-      <PositionVisuals
-        {...defaultProps()}
-        spreads={[]}
-        ironCondors={[]}
-      />,
+      <PositionVisuals {...defaultProps()} spreads={[]} ironCondors={[]} />,
     );
     expect(
       screen.getByText('No positions for profit tracking.'),
@@ -509,9 +478,7 @@ describe('PositionVisuals', () => {
 
   it('shows dash for gauge with null pctOfMaxProfit', () => {
     const spread = makeSpread({ pctOfMaxProfit: null });
-    render(
-      <PositionVisuals {...defaultProps()} spreads={[spread]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} spreads={[spread]} />);
     // Unicode em dash
     expect(screen.getByText('\u2014')).toBeInTheDocument();
   });
@@ -535,12 +502,8 @@ describe('PositionVisuals', () => {
     render(<PositionVisuals {...props} />);
 
     // All four panels should have content (not empty state)
-    expect(
-      screen.queryByText('No positions to map.'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('No risk to display.'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('No positions to map.')).not.toBeInTheDocument();
+    expect(screen.queryByText('No risk to display.')).not.toBeInTheDocument();
     expect(
       screen.queryByText('No positions for profit tracking.'),
     ).not.toBeInTheDocument();
@@ -551,17 +514,13 @@ describe('PositionVisuals', () => {
   it('formats large dollar values with k suffix', () => {
     // Spread with maxLoss >= 1000 renders as $Xk in waterfall
     const bigSpread = makeSpread({ maxLoss: 4600 });
-    render(
-      <PositionVisuals {...defaultProps()} spreads={[bigSpread]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} spreads={[bigSpread]} />);
     expect(screen.getByText('$4.6k')).toBeInTheDocument();
   });
 
   it('formats credit >= 1000 with k suffix in gauges', () => {
     const bigSpread = makeSpread({ creditReceived: 1500 });
-    render(
-      <PositionVisuals {...defaultProps()} spreads={[bigSpread]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} spreads={[bigSpread]} />);
     expect(screen.getByText('$1.5k')).toBeInTheDocument();
   });
 
@@ -576,9 +535,7 @@ describe('PositionVisuals', () => {
       execTime: '3/27/26 10:15:00',
       netPrice: 1.2,
     });
-    render(
-      <PositionVisuals {...defaultProps()} trades={[trade1, trade2]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} trades={[trade1, trade2]} />);
     expect(screen.getByText('0.80')).toBeInTheDocument();
     expect(screen.getByText('1.20')).toBeInTheDocument();
   });
@@ -587,9 +544,7 @@ describe('PositionVisuals', () => {
 
   it('shows time axis labels extracted from trade times', () => {
     const trade = makeTrade({ execTime: '3/27/26 09:45:00' });
-    render(
-      <PositionVisuals {...defaultProps()} trades={[trade]} />,
-    );
+    render(<PositionVisuals {...defaultProps()} trades={[trade]} />);
     // fmtTime extracts "09:45"
     const timeLabels = screen.getAllByText('09:45');
     expect(timeLabels.length).toBeGreaterThanOrEqual(1);

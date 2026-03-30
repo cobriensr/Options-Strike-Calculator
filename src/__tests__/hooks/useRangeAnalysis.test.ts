@@ -34,9 +34,7 @@ function makeInputs(
 function render(
   overrides: Partial<Parameters<typeof useRangeAnalysis>[0]> = {},
 ) {
-  const { result } = renderHook(() =>
-    useRangeAnalysis(makeInputs(overrides)),
-  );
+  const { result } = renderHook(() => useRangeAnalysis(makeInputs(overrides)));
   return result.current;
 }
 
@@ -395,8 +393,7 @@ describe('useRangeAnalysis — annualization factor', () => {
     const high = 5800;
     const low = 5700;
     const logHL = Math.log(high / low);
-    const expectedRV =
-      Math.sqrt(1 / (4 * Math.LN2)) * logHL * Math.sqrt(252);
+    const expectedRV = Math.sqrt(1 / (4 * Math.LN2)) * logHL * Math.sqrt(252);
 
     const result = render({
       liveYesterdayHigh: high,

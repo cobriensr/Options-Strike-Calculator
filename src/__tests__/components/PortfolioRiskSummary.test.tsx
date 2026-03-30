@@ -110,8 +110,8 @@ function makeRisk(overrides: Partial<PortfolioRisk> = {}): PortfolioRisk {
     spotPrice: 5700,
     nearestShortStrikeDistance: 100,
     nakedCount: 0,
-    breakevenLow: 5597.50,
-    breakevenHigh: 5802.50,
+    breakevenLow: 5597.5,
+    breakevenHigh: 5802.5,
     buyingPowerUsed: 20000,
     buyingPowerAvailable: 80000,
     buyingPowerUtilization: 0.2,
@@ -181,8 +181,9 @@ describe('PortfolioRiskSummary', () => {
 
   it('displays total max loss with currency formatting', () => {
     renderSummary({ risk: { totalMaxLoss: 19000 } });
-    const card = screen.getByText('Total Max Loss').closest('div')!
-      .parentElement!;
+    const card = screen
+      .getByText('Total Max Loss')
+      .closest('div')!.parentElement!;
     expect(within(card).getByText('$19,000.00')).toBeInTheDocument();
   });
 
@@ -309,9 +310,9 @@ describe('PortfolioRiskSummary', () => {
     });
     renderSummary({ spreads: [ccs], ironCondors: [] });
     // The card's parent div (bg-surface-alt) contains all content
-    const card = screen.getByText('Risk Boundaries').closest(
-      '.bg-surface-alt',
-    )!;
+    const card = screen
+      .getByText('Risk Boundaries')
+      .closest('.bg-surface-alt')!;
     expect(card.textContent).toContain('\u2014');
   });
 
@@ -328,7 +329,7 @@ describe('PortfolioRiskSummary', () => {
 
   it('displays breakeven low and high', () => {
     renderSummary({
-      risk: { breakevenLow: 5597.50, breakevenHigh: 5802.50 },
+      risk: { breakevenLow: 5597.5, breakevenHigh: 5802.5 },
     });
     expect(screen.getByText('5597.50')).toBeInTheDocument();
     expect(screen.getByText('5802.50')).toBeInTheDocument();
@@ -338,9 +339,9 @@ describe('PortfolioRiskSummary', () => {
     renderSummary({
       risk: { breakevenLow: null, breakevenHigh: null },
     });
-    const card = screen.getByText('Breakeven Range').closest(
-      '.bg-surface-alt',
-    )!;
+    const card = screen
+      .getByText('Breakeven Range')
+      .closest('.bg-surface-alt')!;
     const spans = card.querySelectorAll('span');
     const dashTexts = Array.from(spans)
       .map((s) => s.textContent)
@@ -360,9 +361,9 @@ describe('PortfolioRiskSummary', () => {
     renderSummary({
       risk: { netPutRisk: 14200, netCallRisk: 15300 },
     });
-    const card = screen.getByText('Side Breakdown').closest(
-      '.bg-surface-alt',
-    ) as HTMLElement;
+    const card = screen
+      .getByText('Side Breakdown')
+      .closest('.bg-surface-alt') as HTMLElement;
     expect(within(card).getByText('$14,200.00')).toBeInTheDocument();
     expect(within(card).getByText('$15,300.00')).toBeInTheDocument();
   });
@@ -374,9 +375,7 @@ describe('PortfolioRiskSummary', () => {
 
   it('pluralizes hedge count when multiple hedges', () => {
     renderSummary({ hedges: [makeHedge(), makeHedge()] });
-    expect(
-      screen.getByText('Net risk by side (2 hedges)'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Net risk by side (2 hedges)')).toBeInTheDocument();
   });
 
   it('shows no hedge suffix when no hedges exist', () => {

@@ -575,9 +575,7 @@ describe('lessons.ts', () => {
   // getHistoricalWinRate
   // ============================================================
   describe('getHistoricalWinRate', () => {
-    function makeWinRateRow(
-      overrides: Partial<Record<string, unknown>> = {},
-    ) {
+    function makeWinRateRow(overrides: Partial<Record<string, unknown>> = {}) {
       return {
         total: 10,
         wins: 7,
@@ -610,10 +608,7 @@ describe('lessons.ts', () => {
       expect(result!.wins).toBe(7);
       expect(result!.winRate).toBe(70);
       expect(result!.avgVix).toBe(18.5);
-      expect(result!.structures).toEqual([
-        'IRON CONDOR',
-        'PUT CREDIT SPREAD',
-      ]);
+      expect(result!.structures).toEqual(['IRON CONDOR', 'PUT CREDIT SPREAD']);
     });
 
     it('rounds win rate to nearest integer', async () => {
@@ -634,9 +629,7 @@ describe('lessons.ts', () => {
     });
 
     it('returns null avgVix when DB returns null', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ avg_vix: null }),
-      ]);
+      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow({ avg_vix: null })]);
       const result = await getHistoricalWinRate({});
       expect(result!.avgVix).toBeNull();
     });
@@ -672,9 +665,7 @@ describe('lessons.ts', () => {
       await getHistoricalWinRate({ gexRegime: 'GREEN' });
 
       const query = mockSql.unsafe.mock.calls[0]![0] as string;
-      expect(query).toContain(
-        "market_conditions->>'gexRegime' = 'GREEN'",
-      );
+      expect(query).toContain("market_conditions->>'gexRegime' = 'GREEN'");
     });
 
     it('builds structure filter', async () => {
@@ -692,9 +683,7 @@ describe('lessons.ts', () => {
       await getHistoricalWinRate({ dayOfWeek: 'Friday' });
 
       const query = mockSql.unsafe.mock.calls[0]![0] as string;
-      expect(query).toContain(
-        "market_conditions->>'dayOfWeek' = 'Friday'",
-      );
+      expect(query).toContain("market_conditions->>'dayOfWeek' = 'Friday'");
     });
 
     it('combines all filters when all conditions provided', async () => {
@@ -780,9 +769,7 @@ describe('lessons.ts', () => {
       expect(output).toContain('Win rate: 80%');
       expect(output).toContain('8/10');
       expect(output).toContain('Avg VIX: 18.5');
-      expect(output).toContain(
-        'Supports upgrading confidence by one level.',
-      );
+      expect(output).toContain('Supports upgrading confidence by one level.');
     });
 
     it('formats neutral win rate (>=50%, <75%) with neutral signal', () => {
@@ -805,9 +792,7 @@ describe('lessons.ts', () => {
       };
       const output = formatWinRateForClaude(result, {});
       expect(output).toContain('Win rate: 40%');
-      expect(output).toContain(
-        'Supports downgrading confidence by one level.',
-      );
+      expect(output).toContain('Supports downgrading confidence by one level.');
     });
 
     it('formats exactly 75% as upgrade signal (boundary)', () => {
@@ -818,9 +803,7 @@ describe('lessons.ts', () => {
         total: 20,
       };
       const output = formatWinRateForClaude(result, {});
-      expect(output).toContain(
-        'Supports upgrading confidence by one level.',
-      );
+      expect(output).toContain('Supports upgrading confidence by one level.');
     });
 
     it('formats exactly 50% as neutral signal (boundary)', () => {
@@ -841,9 +824,7 @@ describe('lessons.ts', () => {
         total: 100,
       };
       const output = formatWinRateForClaude(result, {});
-      expect(output).toContain(
-        'Supports downgrading confidence by one level.',
-      );
+      expect(output).toContain('Supports downgrading confidence by one level.');
     });
 
     it('includes VIX range condition in header', () => {

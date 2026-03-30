@@ -3,12 +3,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const {
-  mockUnsafe,
-  mockPut,
-  mockList,
-  mockDel,
-} = vi.hoisted(() => ({
+const { mockUnsafe, mockPut, mockList, mockDel } = vi.hoisted(() => ({
   mockUnsafe: vi.fn(),
   mockPut: vi.fn(),
   mockList: vi.fn(),
@@ -174,12 +169,8 @@ describe('backup-tables handler', () => {
 
     // 16 tables = 16 sql.unsafe calls
     expect(mockUnsafe).toHaveBeenCalledTimes(16);
-    expect(mockUnsafe).toHaveBeenCalledWith(
-      'SELECT * FROM market_snapshots',
-    );
-    expect(mockUnsafe).toHaveBeenCalledWith(
-      'SELECT * FROM schema_migrations',
-    );
+    expect(mockUnsafe).toHaveBeenCalledWith('SELECT * FROM market_snapshots');
+    expect(mockUnsafe).toHaveBeenCalledWith('SELECT * FROM schema_migrations');
   });
 
   it('calls put() with correct path, options, and JSONL content', async () => {
@@ -287,10 +278,7 @@ describe('backup-tables handler', () => {
     expect(errors[0]).toContain('relation "outcomes" does not exist');
 
     // Sentry should capture the exception
-    expect(Sentry.setTag).toHaveBeenCalledWith(
-      'cron.job',
-      'backup-tables',
-    );
+    expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'backup-tables');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
 
     // put() should only be called 15 times (not for the failed table)
@@ -492,10 +480,7 @@ describe('backup-tables handler', () => {
     expect(errors[0]).toContain('Blob list failed');
 
     // Sentry should capture the pruning error
-    expect(Sentry.setTag).toHaveBeenCalledWith(
-      'cron.job',
-      'backup-tables',
-    );
+    expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'backup-tables');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
 
     // Backup data should still be present
@@ -584,8 +569,6 @@ describe('backup-tables handler', () => {
     });
     const res2 = mockResponse();
     await handler(req2, res2);
-    expect(
-      (res2._json as Record<string, unknown>).errors,
-    ).toBeDefined();
+    expect((res2._json as Record<string, unknown>).errors).toBeDefined();
   });
 });

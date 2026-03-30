@@ -12,9 +12,7 @@ import type {
 // FACTORIES
 // ============================================================
 
-function makeCashEntry(
-  overrides: Partial<CashEntry> = {},
-): CashEntry {
+function makeCashEntry(overrides: Partial<CashEntry> = {}): CashEntry {
   return {
     date: '2026-03-29',
     time: '09:30:00',
@@ -41,9 +39,7 @@ function makeAccountSummary(
   };
 }
 
-function makePnlSummary(
-  overrides: Partial<PnLSummary> = {},
-): PnLSummary {
+function makePnlSummary(overrides: Partial<PnLSummary> = {}): PnLSummary {
   return {
     entries: [],
     totals: null,
@@ -51,9 +47,7 @@ function makePnlSummary(
   };
 }
 
-function makeClosedSpread(
-  overrides: Partial<ClosedSpread> = {},
-): ClosedSpread {
+function makeClosedSpread(overrides: Partial<ClosedSpread> = {}): ClosedSpread {
   return {
     spreadType: 'PUT_CREDIT_SPREAD',
     shortStrike: 5650,
@@ -83,9 +77,7 @@ function renderOverview(overrides?: {
   return render(
     <AccountOverview
       cashEntries={overrides?.cashEntries ?? []}
-      accountSummary={
-        overrides?.accountSummary ?? makeAccountSummary()
-      }
+      accountSummary={overrides?.accountSummary ?? makeAccountSummary()}
       pnl={overrides?.pnl ?? makePnlSummary()}
       closedSpreads={overrides?.closedSpreads ?? []}
     />,
@@ -106,9 +98,7 @@ describe('AccountOverview', () => {
 
   it('renders the data-testid', () => {
     renderOverview();
-    expect(
-      screen.getByTestId('account-overview'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('account-overview')).toBeInTheDocument();
   });
 
   // ── Top Row Cards ──────────────────────────────────────
@@ -194,9 +184,7 @@ describe('AccountOverview', () => {
         netLiquidatingValue: 123456.78,
       }),
     });
-    expect(
-      screen.getByText('$123,456.78'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('$123,456.78')).toBeInTheDocument();
   });
 
   // ── Commissions & Fees ─────────────────────────────────
@@ -212,23 +200,15 @@ describe('AccountOverview', () => {
   });
 
   it('shows misc fee breakdown when present', () => {
-    const entries = [
-      makeCashEntry({ commissions: -2.6, miscFees: -0.4 }),
-    ];
+    const entries = [makeCashEntry({ commissions: -2.6, miscFees: -0.4 })];
     renderOverview({ cashEntries: entries });
-    expect(
-      screen.getByText(/Commissions:.*Fees:/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Commissions:.*Fees:/)).toBeInTheDocument();
   });
 
   it('hides misc fee breakdown when miscFees are zero', () => {
-    const entries = [
-      makeCashEntry({ commissions: -1.3, miscFees: 0 }),
-    ];
+    const entries = [makeCashEntry({ commissions: -1.3, miscFees: 0 })];
     renderOverview({ cashEntries: entries });
-    expect(
-      screen.queryByText(/Commissions:.*Fees:/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Commissions:.*Fees:/)).not.toBeInTheDocument();
   });
 
   it('computes fee drag as percentage of credits received', () => {
@@ -290,18 +270,14 @@ describe('AccountOverview', () => {
 
   it('does not render closed spreads section when empty', () => {
     renderOverview({ closedSpreads: [] });
-    expect(
-      screen.queryByText('Closed Spreads'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Closed Spreads')).not.toBeInTheDocument();
   });
 
   it('renders closed spreads section when spreads exist', () => {
     renderOverview({
       closedSpreads: [makeClosedSpread()],
     });
-    expect(
-      screen.getByText('Closed Spreads'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Closed Spreads')).toBeInTheDocument();
   });
 
   it('shows win/loss record', () => {
@@ -337,13 +313,10 @@ describe('AccountOverview', () => {
   });
 
   it('shows em dash for avg winner when no winners', () => {
-    const spreads = [
-      makeClosedSpread({ realizedPnl: -100 }),
-    ];
+    const spreads = [makeClosedSpread({ realizedPnl: -100 })];
     renderOverview({ closedSpreads: spreads });
     // avgWinner = 0, renders \u2014
-    expect(screen.getByText('Avg Winner').nextElementSibling)
-      .toBeTruthy();
+    expect(screen.getByText('Avg Winner').nextElementSibling).toBeTruthy();
     const avgWinnerStat = screen
       .getByText('Avg Winner')
       .closest('div')?.parentElement;
@@ -362,9 +335,7 @@ describe('AccountOverview', () => {
   });
 
   it('shows em dash for avg loser when no losers', () => {
-    const spreads = [
-      makeClosedSpread({ realizedPnl: 50 }),
-    ];
+    const spreads = [makeClosedSpread({ realizedPnl: 50 })];
     renderOverview({ closedSpreads: spreads });
     const avgLoserStat = screen
       .getByText('Avg Loser')
@@ -396,18 +367,14 @@ describe('AccountOverview', () => {
   });
 
   it('shows infinity symbol when no losers (profit factor)', () => {
-    const spreads = [
-      makeClosedSpread({ realizedPnl: 70 }),
-    ];
+    const spreads = [makeClosedSpread({ realizedPnl: 70 })];
     renderOverview({ closedSpreads: spreads });
     expect(screen.getByText('\u221E')).toBeInTheDocument();
   });
 
   it('shows 0.00 profit factor when no winners and no losers of trades with zero PnL', () => {
     // All scratch trades with realizedPnl === 0
-    const spreads = [
-      makeClosedSpread({ realizedPnl: 0 }),
-    ];
+    const spreads = [makeClosedSpread({ realizedPnl: 0 })];
     // closedSpreads.length > 0 so section renders, but
     // no winners/no losers → grossWins=0, grossLosses=0 → pf=0
     renderOverview({ closedSpreads: spreads });
@@ -508,8 +475,8 @@ describe('AccountOverview', () => {
     });
     // P&L Open label exists, the value $0.00 should have text-primary
     const stats = screen.getAllByText('$0.00');
-    const plOpenStat = stats.find(
-      (el) => el.className.includes('text-primary'),
+    const plOpenStat = stats.find((el) =>
+      el.className.includes('text-primary'),
     );
     expect(plOpenStat).toBeTruthy();
   });
@@ -518,21 +485,15 @@ describe('AccountOverview', () => {
 
   it('renders all top-row card labels', () => {
     renderOverview();
-    expect(
-      screen.getByText('Starting Balance'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('Ending Balance'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Starting Balance')).toBeInTheDocument();
+    expect(screen.getByText('Ending Balance')).toBeInTheDocument();
     expect(screen.getByText('Day P&L')).toBeInTheDocument();
     expect(screen.getByText('NLV')).toBeInTheDocument();
   });
 
   it('renders commissions section labels', () => {
     renderOverview();
-    expect(
-      screen.getByText('Commissions & Fees'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Commissions & Fees')).toBeInTheDocument();
     expect(screen.getByText('Today')).toBeInTheDocument();
     expect(screen.getByText('Fee Drag')).toBeInTheDocument();
     expect(screen.getByText('YTD')).toBeInTheDocument();

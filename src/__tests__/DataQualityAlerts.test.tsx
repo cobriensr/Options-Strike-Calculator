@@ -57,18 +57,12 @@ describe('DataQualityAlerts', () => {
 
   it('renders the data-testid', () => {
     renderAlerts([makeWarning()]);
-    expect(
-      screen.getByTestId('data-quality-alerts'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('data-quality-alerts')).toBeInTheDocument();
   });
 
   it('renders a single warning message', () => {
-    renderAlerts([
-      makeWarning({ message: 'Something is wrong' }),
-    ]);
-    expect(
-      screen.getByText('Something is wrong'),
-    ).toBeInTheDocument();
+    renderAlerts([makeWarning({ message: 'Something is wrong' })]);
+    expect(screen.getByText('Something is wrong')).toBeInTheDocument();
   });
 
   it('renders multiple warnings', () => {
@@ -87,15 +81,9 @@ describe('DataQualityAlerts', () => {
         message: 'Paper trading account',
       }),
     ]);
-    expect(
-      screen.getByText('Missing mark data'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('Unmatched short leg'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('Paper trading account'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Missing mark data')).toBeInTheDocument();
+    expect(screen.getByText('Unmatched short leg')).toBeInTheDocument();
+    expect(screen.getByText('Paper trading account')).toBeInTheDocument();
   });
 
   // ── Detail Text ────────────────────────────────────────
@@ -107,19 +95,13 @@ describe('DataQualityAlerts', () => {
         detail: 'Gap of $500 detected',
       }),
     ]);
-    expect(
-      screen.getByText('Gap of $500 detected'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Gap of $500 detected')).toBeInTheDocument();
   });
 
   it('does not render detail element when detail is undefined', () => {
-    renderAlerts([
-      makeWarning({ message: 'Simple warning' }),
-    ]);
+    renderAlerts([makeWarning({ message: 'Simple warning' })]);
     // Only the message should appear, no extra detail div
-    expect(
-      screen.queryByText('Simple warning'),
-    ).toBeInTheDocument();
+    expect(screen.queryByText('Simple warning')).toBeInTheDocument();
     // The message's parent should have exactly one child div
     // (just the message text)
     const messageEl = screen.getByText('Simple warning');
@@ -219,13 +201,9 @@ describe('DataQualityAlerts', () => {
 
   it('hides a warning when its dismiss button is clicked', async () => {
     const user = userEvent.setup();
-    renderAlerts([
-      makeWarning({ message: 'Dismissable alert' }),
-    ]);
+    renderAlerts([makeWarning({ message: 'Dismissable alert' })]);
 
-    expect(
-      screen.getByText('Dismissable alert'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Dismissable alert')).toBeInTheDocument();
 
     await user.click(
       screen.getByRole('button', {
@@ -233,9 +211,7 @@ describe('DataQualityAlerts', () => {
       }),
     );
 
-    expect(
-      screen.queryByText('Dismissable alert'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Dismissable alert')).not.toBeInTheDocument();
   });
 
   it('only dismisses the clicked warning, not others', async () => {
@@ -258,19 +234,13 @@ describe('DataQualityAlerts', () => {
       }),
     );
 
-    expect(
-      screen.queryByText('First alert'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByText('Second alert'),
-    ).toBeInTheDocument();
+    expect(screen.queryByText('First alert')).not.toBeInTheDocument();
+    expect(screen.getByText('Second alert')).toBeInTheDocument();
   });
 
   it('removes the entire region when all warnings are dismissed', async () => {
     const user = userEvent.setup();
-    renderAlerts([
-      makeWarning({ message: 'Only alert' }),
-    ]);
+    renderAlerts([makeWarning({ message: 'Only alert' })]);
 
     await user.click(
       screen.getByRole('button', {
@@ -352,8 +322,6 @@ describe('DataQualityAlerts', () => {
 
     // Only the other alert remains
     expect(screen.getAllByRole('alert')).toHaveLength(1);
-    expect(
-      screen.getByText('Other alert'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Other alert')).toBeInTheDocument();
   });
 });

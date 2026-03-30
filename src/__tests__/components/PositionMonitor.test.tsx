@@ -1,10 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  render,
-  screen,
-  fireEvent,
-  waitFor,
-} from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { DailyStatement } from '../../components/PositionMonitor/types';
 
@@ -28,27 +23,21 @@ vi.mock('../../components/PositionMonitor/DataQualityAlerts.tsx', () => ({
   ),
 }));
 
-vi.mock(
-  '../../components/PositionMonitor/ExecutionQuality.tsx',
-  () => ({
-    default: (props: Record<string, unknown>) => (
-      <div data-testid="execution-quality">
-        ExecutionQuality:{String(!!props.execution)}
-      </div>
-    ),
-  }),
-);
+vi.mock('../../components/PositionMonitor/ExecutionQuality.tsx', () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="execution-quality">
+      ExecutionQuality:{String(!!props.execution)}
+    </div>
+  ),
+}));
 
-vi.mock(
-  '../../components/PositionMonitor/PortfolioRiskSummary.tsx',
-  () => ({
-    default: (props: Record<string, unknown>) => (
-      <div data-testid="portfolio-risk-summary">
-        PortfolioRiskSummary:{String(!!props.risk)}
-      </div>
-    ),
-  }),
-);
+vi.mock('../../components/PositionMonitor/PortfolioRiskSummary.tsx', () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="portfolio-risk-summary">
+      PortfolioRiskSummary:{String(!!props.risk)}
+    </div>
+  ),
+}));
 
 vi.mock('../../components/PositionMonitor/PositionTable.tsx', () => ({
   default: (props: Record<string, unknown>) => (
@@ -58,16 +47,13 @@ vi.mock('../../components/PositionMonitor/PositionTable.tsx', () => ({
   ),
 }));
 
-vi.mock(
-  '../../components/PositionMonitor/PositionVisuals.tsx',
-  () => ({
-    default: (props: Record<string, unknown>) => (
-      <div data-testid="position-visuals">
-        PositionVisuals:{String(Array.isArray(props.spreads))}
-      </div>
-    ),
-  }),
-);
+vi.mock('../../components/PositionMonitor/PositionVisuals.tsx', () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="position-visuals">
+      PositionVisuals:{String(Array.isArray(props.spreads))}
+    </div>
+  ),
+}));
 
 vi.mock('../../components/PositionMonitor/TradeLog.tsx', () => ({
   default: (props: Record<string, unknown>) => (
@@ -81,9 +67,8 @@ vi.mock('../../components/PositionMonitor/TradeLog.tsx', () => ({
 // MOCK STATEMENT PARSER
 // ============================================================
 
-const mockParseStatement = vi.fn<
-  (csv: string, spotPrice: number) => DailyStatement
->();
+const mockParseStatement =
+  vi.fn<(csv: string, spotPrice: number) => DailyStatement>();
 
 vi.mock('../../components/PositionMonitor/statement-parser', () => ({
   parseStatement: (...args: unknown[]) =>
@@ -216,9 +201,7 @@ function createCSVFile(
 }
 
 async function uploadFile(file?: File) {
-  const input = screen.getByLabelText(
-    'Upload paper trading statement CSV',
-  );
+  const input = screen.getByLabelText('Upload paper trading statement CSV');
   const csvFile = file ?? createCSVFile();
 
   // Use fireEvent because userEvent doesn't support file inputs well
@@ -292,16 +275,11 @@ describe('PositionMonitor', () => {
     await uploadFile();
 
     expect(mockParseStatement).toHaveBeenCalledOnce();
-    expect(mockParseStatement).toHaveBeenCalledWith(
-      'fake,csv,data',
-      5700,
-    );
+    expect(mockParseStatement).toHaveBeenCalledWith('fake,csv,data', 5700);
 
     // Dashboard child components should be rendered
     expect(screen.getByTestId('data-quality-alerts')).toBeInTheDocument();
-    expect(
-      screen.getByTestId('portfolio-risk-summary'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('portfolio-risk-summary')).toBeInTheDocument();
     expect(screen.getByTestId('position-visuals')).toBeInTheDocument();
     expect(screen.getByTestId('position-table')).toBeInTheDocument();
     expect(screen.getByTestId('account-overview')).toBeInTheDocument();
@@ -354,9 +332,7 @@ describe('PositionMonitor', () => {
     render(<PositionMonitor spotPrice={5700} />);
     await uploadFile();
 
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      'Failed to parse file',
-    );
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to parse file');
   });
 
   it('clears error on subsequent successful upload', async () => {
@@ -383,9 +359,7 @@ describe('PositionMonitor', () => {
     render(<PositionMonitor spotPrice={5700} />);
     await uploadFile();
 
-    expect(
-      screen.getByRole('button', { name: /hide/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /hide/i })).toBeInTheDocument();
   });
 
   it('collapses dashboard when Hide is clicked', async () => {
@@ -399,13 +373,9 @@ describe('PositionMonitor', () => {
     await user.click(hideBtn);
 
     // Child components should be hidden
-    expect(
-      screen.queryByTestId('data-quality-alerts'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('data-quality-alerts')).not.toBeInTheDocument();
     // Show button should appear
-    expect(
-      screen.getByRole('button', { name: /show/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /show/i })).toBeInTheDocument();
   });
 
   it('re-expands dashboard when Show is clicked', async () => {
@@ -457,9 +427,7 @@ describe('PositionMonitor', () => {
     render(<PositionMonitor spotPrice={5700} />);
     await uploadFile();
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /decay: off/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /decay: off/i }));
 
     // Default sim time is 10:00 AM CT
     expect(
@@ -473,9 +441,7 @@ describe('PositionMonitor', () => {
     render(<PositionMonitor spotPrice={5700} />);
     await uploadFile();
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /decay: off/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /decay: off/i }));
 
     expect(
       screen.getByRole('slider', { name: /simulation time/i }),
@@ -489,9 +455,7 @@ describe('PositionMonitor', () => {
     await uploadFile();
 
     // Enable
-    fireEvent.click(
-      screen.getByRole('button', { name: /decay: off/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /decay: off/i }));
     expect(
       screen.getByRole('slider', { name: /simulation time/i }),
     ).toBeInTheDocument();
@@ -512,9 +476,7 @@ describe('PositionMonitor', () => {
     await uploadFile();
 
     // Enable decay
-    fireEvent.click(
-      screen.getByRole('button', { name: /decay: off/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /decay: off/i }));
 
     const slider = screen.getByRole('slider', {
       name: /simulation time/i,
@@ -543,9 +505,9 @@ describe('PositionMonitor', () => {
     );
 
     // PortfolioRiskSummary receives risk object
-    expect(
-      screen.getByTestId('portfolio-risk-summary'),
-    ).toHaveTextContent('PortfolioRiskSummary:true');
+    expect(screen.getByTestId('portfolio-risk-summary')).toHaveTextContent(
+      'PortfolioRiskSummary:true',
+    );
 
     // PositionVisuals receives spreads array
     expect(screen.getByTestId('position-visuals')).toHaveTextContent(
@@ -564,14 +526,10 @@ describe('PositionMonitor', () => {
     expect(screen.getByTestId('account-overview')).toHaveTextContent(
       'accountSummary',
     );
-    expect(screen.getByTestId('account-overview')).toHaveTextContent(
-      'pnl',
-    );
+    expect(screen.getByTestId('account-overview')).toHaveTextContent('pnl');
 
     // TradeLog receives trades array
-    expect(screen.getByTestId('trade-log')).toHaveTextContent(
-      'TradeLog:true',
-    );
+    expect(screen.getByTestId('trade-log')).toHaveTextContent('TradeLog:true');
 
     // ExecutionQuality receives execution object
     expect(screen.getByTestId('execution-quality')).toHaveTextContent(
@@ -614,9 +572,7 @@ describe('PositionMonitor', () => {
 
   it('has a hidden file input that accepts CSV', () => {
     render(<PositionMonitor spotPrice={5700} />);
-    const input = screen.getByLabelText(
-      'Upload paper trading statement CSV',
-    );
+    const input = screen.getByLabelText('Upload paper trading statement CSV');
     expect(input).toHaveAttribute('type', 'file');
     expect(input).toHaveAttribute('accept', '.csv');
     expect(input).toHaveClass('hidden');
@@ -633,9 +589,7 @@ describe('PositionMonitor', () => {
     ) as HTMLInputElement;
     const clickSpy = vi.spyOn(input, 'click');
 
-    await user.click(
-      screen.getByRole('button', { name: /upload statement/i }),
-    );
+    await user.click(screen.getByRole('button', { name: /upload statement/i }));
     expect(clickSpy).toHaveBeenCalledOnce();
   });
 
@@ -654,20 +608,10 @@ describe('PositionMonitor', () => {
     expect(
       screen.queryByTestId('portfolio-risk-summary'),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId('position-visuals'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId('position-table'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId('account-overview'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId('trade-log'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId('execution-quality'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('position-visuals')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('position-table')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('account-overview')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('trade-log')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('execution-quality')).not.toBeInTheDocument();
   });
 });

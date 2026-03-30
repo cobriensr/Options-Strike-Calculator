@@ -87,9 +87,7 @@ function makeClosingTrade(
   });
 }
 
-function makeCashEntry(
-  overrides: Partial<CashEntry> = {},
-): CashEntry {
+function makeCashEntry(overrides: Partial<CashEntry> = {}): CashEntry {
   return {
     date: '3/27/26',
     time: '09:30:00',
@@ -104,9 +102,7 @@ function makeCashEntry(
   };
 }
 
-function makeClosedSpread(
-  overrides: Partial<ClosedSpread> = {},
-): ClosedSpread {
+function makeClosedSpread(overrides: Partial<ClosedSpread> = {}): ClosedSpread {
   return {
     spreadType: 'CALL_CREDIT_SPREAD',
     shortStrike: 5800,
@@ -158,25 +154,19 @@ describe('TradeLog', () => {
   // ── Empty state ──────────────────────────────────────────
 
   it('shows empty message when no trades exist', () => {
-    render(
-      <TradeLog trades={[]} cashEntries={[]} closedSpreads={[]} />,
-    );
+    render(<TradeLog trades={[]} cashEntries={[]} closedSpreads={[]} />);
     expect(
       screen.getByText('No trades found in this statement.'),
     ).toBeInTheDocument();
   });
 
   it('renders data-testid when empty', () => {
-    render(
-      <TradeLog trades={[]} cashEntries={[]} closedSpreads={[]} />,
-    );
+    render(<TradeLog trades={[]} cashEntries={[]} closedSpreads={[]} />);
     expect(screen.getByTestId('trade-log')).toBeInTheDocument();
   });
 
   it('does not render a table when empty', () => {
-    render(
-      <TradeLog trades={[]} cashEntries={[]} closedSpreads={[]} />,
-    );
+    render(<TradeLog trades={[]} cashEntries={[]} closedSpreads={[]} />);
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
@@ -525,15 +515,9 @@ describe('TradeLog', () => {
 
   it('renders All, Opens, and Closes filter buttons', () => {
     renderTradeLog();
-    expect(
-      screen.getByRole('button', { name: 'All' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Opens' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Closes' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'All' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Opens' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Closes' })).toBeInTheDocument();
   });
 
   it('shows trade count next to filter buttons', () => {
@@ -569,15 +553,11 @@ describe('TradeLog', () => {
       cashEntries: [],
     });
 
-    await user.click(
-      screen.getByRole('button', { name: 'Opens' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Opens' }));
 
     expect(screen.getByText('1 trade')).toBeInTheDocument();
     expect(screen.getByText('SOLD TO OPEN')).toBeInTheDocument();
-    expect(
-      screen.queryByText('BOT TO CLOSE'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('BOT TO CLOSE')).not.toBeInTheDocument();
   });
 
   it('filters to only closes when Closes is clicked', async () => {
@@ -591,14 +571,10 @@ describe('TradeLog', () => {
       cashEntries: [],
     });
 
-    await user.click(
-      screen.getByRole('button', { name: 'Closes' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Closes' }));
 
     expect(screen.getByText('1 trade')).toBeInTheDocument();
-    expect(
-      screen.queryByText('SOLD TO OPEN'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('SOLD TO OPEN')).not.toBeInTheDocument();
     expect(screen.getByText('BOT TO CLOSE')).toBeInTheDocument();
   });
 
@@ -613,14 +589,10 @@ describe('TradeLog', () => {
       cashEntries: [],
     });
 
-    await user.click(
-      screen.getByRole('button', { name: 'Opens' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Opens' }));
     expect(screen.getByText('1 trade')).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole('button', { name: 'All' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'All' }));
     expect(screen.getByText('2 trades')).toBeInTheDocument();
   });
 
@@ -632,20 +604,12 @@ describe('TradeLog', () => {
     const opensBtn = screen.getByRole('button', { name: 'Opens' });
 
     // Default: All is active
-    expect(allBtn.className).toContain(
-      'border-chip-active-border',
-    );
-    expect(opensBtn.className).not.toContain(
-      'border-chip-active-border',
-    );
+    expect(allBtn.className).toContain('border-chip-active-border');
+    expect(opensBtn.className).not.toContain('border-chip-active-border');
 
     await user.click(opensBtn);
-    expect(opensBtn.className).toContain(
-      'border-chip-active-border',
-    );
-    expect(allBtn.className).not.toContain(
-      'border-chip-active-border',
-    );
+    expect(opensBtn.className).toContain('border-chip-active-border');
+    expect(allBtn.className).not.toContain('border-chip-active-border');
   });
 
   // ── Trade row expansion ──────────────────────────────────
@@ -709,9 +673,7 @@ describe('TradeLog', () => {
     // After expansion, find the leg row (second data row)
     const allDataRows = getDataRows();
     const legRow = allDataRows[1]!;
-    expect(
-      within(legRow).getByText('SELL TO OPEN'),
-    ).toBeInTheDocument();
+    expect(within(legRow).getByText('SELL TO OPEN')).toBeInTheDocument();
     expect(within(legRow).getByText('5600 P')).toBeInTheDocument();
     expect(within(legRow).getByText('3.50')).toBeInTheDocument();
     expect(within(legRow).getByText('CREDIT')).toBeInTheDocument();

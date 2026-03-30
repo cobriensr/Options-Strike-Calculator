@@ -39,9 +39,7 @@ function makeRejectionReason(
   };
 }
 
-function makeExecution(
-  overrides: Partial<ExecQualityT> = {},
-): ExecQualityT {
+function makeExecution(overrides: Partial<ExecQualityT> = {}): ExecQualityT {
   return {
     fills: [makeSlippageEntry()],
     averageSlippage: -0.02,
@@ -62,9 +60,7 @@ function makeExecution(
 }
 
 function renderExec(overrides: Partial<ExecQualityT> = {}) {
-  return render(
-    <ExecutionQuality execution={makeExecution(overrides)} />,
-  );
+  return render(<ExecutionQuality execution={makeExecution(overrides)} />);
 }
 
 // ============================================================
@@ -85,9 +81,7 @@ describe('ExecutionQuality', () => {
 
   it('renders the data-testid', () => {
     renderExec();
-    expect(
-      screen.getByTestId('execution-quality'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('execution-quality')).toBeInTheDocument();
   });
 
   // ── Fill Rate Card ─────────────────────────────────────
@@ -136,9 +130,7 @@ describe('ExecutionQuality', () => {
     renderExec({ rejectedOrders: 0 });
     // Find the "Rejected" card's value — 0 with text-success
     const rejectedLabel = screen.getByText('Rejected');
-    const card = rejectedLabel.closest(
-      '[class*="bg-surface-alt"]',
-    );
+    const card = rejectedLabel.closest('[class*="bg-surface-alt"]');
     const successVal = card?.querySelector('.text-success');
     expect(successVal?.textContent).toBe('0');
   });
@@ -146,9 +138,7 @@ describe('ExecutionQuality', () => {
   it('shows danger color when rejections exist', () => {
     renderExec({ rejectedOrders: 5 });
     const rejectedLabel = screen.getByText('Rejected');
-    const card = rejectedLabel.closest(
-      '[class*="bg-surface-alt"]',
-    );
+    const card = rejectedLabel.closest('[class*="bg-surface-alt"]');
     const dangerVal = card?.querySelector('.text-danger');
     expect(dangerVal?.textContent).toBe('5');
   });
@@ -163,9 +153,7 @@ describe('ExecutionQuality', () => {
         }),
       ],
     });
-    expect(
-      screen.getByText('Top: BUYING_POWER'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Top: BUYING_POWER')).toBeInTheDocument();
   });
 
   // ── Canceled Orders Card ───────────────────────────────
@@ -189,18 +177,14 @@ describe('ExecutionQuality', () => {
 
   it('shows amendment chains label', () => {
     renderExec();
-    expect(
-      screen.getByText('amendment chains'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('amendment chains')).toBeInTheDocument();
   });
 
   // ── Rejection Reasons Section ──────────────────────────
 
   it('does not render rejection reasons section when empty', () => {
     renderExec({ rejectionReasons: [] });
-    expect(
-      screen.queryByText('Rejection Reasons'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Rejection Reasons')).not.toBeInTheDocument();
   });
 
   it('renders rejection reasons when present', () => {
@@ -216,12 +200,8 @@ describe('ExecutionQuality', () => {
         }),
       ],
     });
-    expect(
-      screen.getByText('Rejection Reasons'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('BUYING_POWER'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Rejection Reasons')).toBeInTheDocument();
+    expect(screen.getByText('BUYING_POWER')).toBeInTheDocument();
     expect(screen.getByText('MARGIN_CALL')).toBeInTheDocument();
   });
 
@@ -292,9 +272,7 @@ describe('ExecutionQuality', () => {
       fills: [makeSlippageEntry()],
       averageSlippage: 0,
     });
-    expect(
-      screen.getByText('Flat (filled at limit)'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Flat (filled at limit)')).toBeInTheDocument();
   });
 
   it('formats avg slippage with c suffix', () => {
@@ -333,9 +311,7 @@ describe('ExecutionQuality', () => {
 
   it('shows no slippage message when fills are empty', () => {
     renderExec({ fills: [] });
-    expect(
-      screen.getByText('No slippage data available.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('No slippage data available.')).toBeInTheDocument();
   });
 
   // ── Session Timing Section ─────────────────────────────
@@ -406,22 +382,16 @@ describe('ExecutionQuality', () => {
     expect(screen.getByText('Fill Rate')).toBeInTheDocument();
     expect(screen.getByText('Rejected')).toBeInTheDocument();
     expect(screen.getByText('Canceled')).toBeInTheDocument();
-    expect(
-      screen.getByText('Replacements'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Replacements')).toBeInTheDocument();
   });
 
   it('renders slippage and session timing labels', () => {
     renderExec();
     expect(screen.getByText('Slippage')).toBeInTheDocument();
-    expect(
-      screen.getByText('Session Timing'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Session Timing')).toBeInTheDocument();
     expect(screen.getByText('First Trade')).toBeInTheDocument();
     expect(screen.getByText('Last Trade')).toBeInTheDocument();
     expect(screen.getByText('Session')).toBeInTheDocument();
-    expect(
-      screen.getByText('Trades/Hour'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Trades/Hour')).toBeInTheDocument();
   });
 });

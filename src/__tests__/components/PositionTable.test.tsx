@@ -96,9 +96,7 @@ function makeIC(overrides: Partial<IronCondor> = {}): IronCondor {
   };
 }
 
-function makeHedge(
-  overrides: Partial<HedgePosition> = {},
-): HedgePosition {
+function makeHedge(overrides: Partial<HedgePosition> = {}): HedgePosition {
   return {
     leg: makeLeg({
       strike: 5500,
@@ -117,9 +115,7 @@ function makeHedge(
   };
 }
 
-function makeNaked(
-  overrides: Partial<NakedPosition> = {},
-): NakedPosition {
+function makeNaked(overrides: Partial<NakedPosition> = {}): NakedPosition {
   return {
     leg: makeLeg({ strike: 5900, type: 'CALL', qty: -5 }),
     contracts: 5,
@@ -165,9 +161,7 @@ describe('PositionTable', () => {
   it('shows empty message when no positions exist', () => {
     renderTable();
     expect(
-      screen.getByText(
-        'No open positions found in this statement.',
-      ),
+      screen.getByText('No open positions found in this statement.'),
     ).toBeInTheDocument();
   });
 
@@ -403,9 +397,7 @@ describe('PositionTable', () => {
 
   it('renders IC breakeven range', () => {
     renderTable({
-      ironCondors: [
-        makeIC({ breakevenLow: 5597.5, breakevenHigh: 5802.5 }),
-      ],
+      ironCondors: [makeIC({ breakevenLow: 5597.5, breakevenHigh: 5802.5 })],
     });
     expect(screen.getByText(/5597\.50/)).toBeInTheDocument();
     expect(screen.getByText(/5802\.50/)).toBeInTheDocument();

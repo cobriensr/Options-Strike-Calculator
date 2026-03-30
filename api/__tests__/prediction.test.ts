@@ -178,8 +178,7 @@ describe('GET /api/ml/prediction', () => {
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
       prediction: null,
-      message:
-        'No predictions available yet. Model training in progress.',
+      message: 'No predictions available yet. Model training in progress.',
     });
   });
 
@@ -193,8 +192,7 @@ describe('GET /api/ml/prediction', () => {
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
       prediction: null,
-      message:
-        'No predictions available yet. Model training in progress.',
+      message: 'No predictions available yet. Model training in progress.',
     });
   });
 
@@ -264,9 +262,7 @@ describe('GET /api/ml/prediction', () => {
   });
 
   it('passes through date as-is when it is a string', async () => {
-    mockDbFn.mockResolvedValueOnce([
-      makePredictionRow({ date: '2026-02-20' }),
-    ]);
+    mockDbFn.mockResolvedValueOnce([makePredictionRow({ date: '2026-02-20' })]);
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
