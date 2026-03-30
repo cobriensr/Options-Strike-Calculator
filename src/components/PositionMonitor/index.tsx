@@ -34,6 +34,9 @@ export default function PositionMonitor({
 }: PositionMonitorProps) {
   const [rawStatement, setRawStatement] =
     useState<DailyStatement | null>(null);
+  // Snapshot spot price at upload time to avoid re-renders from
+  // parent prop changes (calculator spot fluctuates on past dates)
+  const [uploadSpot, setUploadSpot] = useState(spotPrice);
   const [collapsed, setCollapsed] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -44,15 +47,15 @@ export default function PositionMonitor({
   const [simMinute, setSimMinute] = useState(0);
   const [decayEnabled, setDecayEnabled] = useState(false);
 
-  // Apply theta decay — use simHour/simMinute directly as deps
-  // instead of a derived simT to guarantee React sees changes
+  // Apply theta decay — spotPrice excluded from deps to prevent
+  // re-renders from parent prop changes; snapshotted at upload
   const statement = useMemo(() => {
     if (!rawStatement) return null;
     if (!decayEnabled) return rawStatement;
     const t = timeToT(simHour, simMinute);
     if (t == null || t <= 0) return rawStatement;
-    return applyBSEstimates(rawStatement, spotPrice, 0, t);
-  }, [rawStatement, spotPrice, decayEnabled, simHour, simMinute]);
+    return applyBSEstimates(rawStatement, uploadSpot, 0, t);
+  }, [rawStatement, uploadSpot, decayEnabled, simHour, simMinute]);
 
   const handleUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -65,6 +68,7 @@ export default function PositionMonitor({
       reader.onload = () => {
         try {
           const text = reader.result as string;
+          setUploadSpot(spotPrice);
           const parsed = parseStatement(text, spotPrice);
           setRawStatement(parsed);
           setCollapsed(false);
