@@ -76,6 +76,16 @@ Apply Periscope Charm Ceiling Override if applicable.
 Set time-based exits adjusted for GEX regime, vanna, and charm decay.
 Apply Rule 5 (direction-aware stops — do NOT close the winning side on a thesis-confirming move).
 
+STEP 10 — DIRECTIONAL OPPORTUNITY CHECK (review and midday only):
+After 12:00 PM ET (or when hours remaining < 4), check if all 4 directional opportunity criteria were met:
+1. Hours remaining < 4
+2. Market Tide + at least 2 of (QQQ Net Flow, SPY ETF Tide, QQQ ETF Tide) agree on direction
+3. Negative gamma acceleration zone in the flow direction within 30-40 pts of price
+4. No high-impact event within 60 minutes
+If YES on midday: populate the directionalOpportunity field.
+If YES on review: add a DIRECTIONAL OPPORTUNITY entry to lessonsLearned with the time window, confirming signals, gamma acceleration zone, and what would have happened.
+If NO: set directionalOpportunity to null (midday) or omit from lessonsLearned (review).
+
 Avoid re-reading the same data twice. Make a decision and commit.
 When rules conflict, apply the priority ordering and note the conflict explicitly.
 </thinking_guidance>
