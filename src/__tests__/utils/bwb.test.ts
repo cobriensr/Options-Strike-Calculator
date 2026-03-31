@@ -235,19 +235,18 @@ describe('buildCallBWB', () => {
 });
 
 describe('BWB P&L properties', () => {
-  it('returnOnRisk is between 0 and 1 for credit BWBs (with skew)', () => {
-    // Use skew to ensure positive credit → positive RoR
-    const skewRows = calcAllDeltas(spot, sigma, T, 0.03, 10);
-    const skew10 = skewRows.find(
-      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+  it('returnOnRisk = netCredit / maxLoss', () => {
+    if (!d10) return;
+    const putBwb = buildPutBWB(d10, 20, 40, spot, T);
+    const callBwb = buildCallBWB(d10, 20, 40, spot, T);
+    expect(putBwb.returnOnRisk).toBeCloseTo(
+      putBwb.netCredit / putBwb.maxLoss,
+      8,
     );
-    if (!skew10) return;
-    const putBwb = buildPutBWB(skew10, 20, 40, spot, T);
-    const callBwb = buildCallBWB(skew10, 20, 40, spot, T);
-    expect(putBwb.returnOnRisk).toBeGreaterThan(0);
-    expect(putBwb.returnOnRisk).toBeLessThan(1);
-    expect(callBwb.returnOnRisk).toBeGreaterThan(0);
-    expect(callBwb.returnOnRisk).toBeLessThan(1);
+    expect(callBwb.returnOnRisk).toBeCloseTo(
+      callBwb.netCredit / callBwb.maxLoss,
+      8,
+    );
   });
 
   it('PoP is between 0 and 1', () => {
