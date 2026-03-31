@@ -140,6 +140,18 @@ import {
   formatGreekFlowForClaude,
 } from '../_lib/db-strike-helpers.js';
 
+/** Parse the final NDJSON line from the response chunks (skips keepalive pings). */
+function parseNdjsonResponse(
+  res: { _chunks: string[] },
+): Record<string, unknown> {
+  const lines = res._chunks
+    .join('')
+    .split('\n')
+    .filter((l) => l.trim().length > 0);
+  const last = lines.at(-1) ?? '{}';
+  return JSON.parse(last);
+}
+
 /** Minimal valid request body */
 function makeBody(
   overrides: Partial<{
@@ -277,7 +289,10 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS; raw: string };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+      raw: string;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
     expect(json.analysis.confidence).toBe('HIGH');
     expect(json.analysis.suggestedDelta).toBe(8);
@@ -325,7 +340,7 @@ describe('POST /api/analyze', () => {
     expect(params.messages[0].content).toHaveLength(5);
   });
 
-  it('returns 502 when Anthropic API returns 429', async () => {
+  it('returns error in NDJSON when Anthropic API returns 429', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     // Must throw on both Opus and Sonnet attempts to reach the outer catch
     const err = new MockErrors.RateLimitError('Rate limited');
@@ -335,8 +350,7 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(502);
-    const json = res._json as { error: string };
+    const json = parseNdjsonResponse(res) as { error: string };
     expect(json.error).toContain('Anthropic rate limit exceeded');
   });
 
@@ -352,7 +366,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: null; raw: string };
+    const json = parseNdjsonResponse(res) as { analysis: null; raw: string };
     expect(json.analysis).toBeNull();
     expect(json.raw).toBe('Not valid JSON response');
   });
@@ -370,7 +384,9 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
   });
 
@@ -384,8 +400,7 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Network failure' });
+    expect(parseNdjsonResponse(res)).toEqual({ error: 'Network failure' });
   });
 
   it('returns generic message for non-Error throws', async () => {
@@ -398,8 +413,7 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Analysis failed' });
+    expect(parseNdjsonResponse(res)).toEqual({ error: 'Analysis failed' });
   });
 
   it('includes midday mode text in context', async () => {
@@ -461,7 +475,9 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
   });
 
@@ -554,8 +570,7 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(502);
-    const json = res._json as { error: string };
+    const json = parseNdjsonResponse(res) as { error: string };
     expect(json.error).toContain('Anthropic API authentication error');
     expect(json.error).not.toContain('Invalid API key');
   });
@@ -570,8 +585,7 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(502);
-    const json = res._json as { error: string };
+    const json = parseNdjsonResponse(res) as { error: string };
     expect(json.error).toContain('Analysis service error (500)');
     expect(json.error).not.toContain('Internal server error');
   });
@@ -590,7 +604,9 @@ describe('POST /api/analyze', () => {
 
     // Response should still succeed
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
   });
 
@@ -634,7 +650,9 @@ describe('POST /api/analyze', () => {
 
     expect(res._status).toBe(200);
     expect(mockedSave).toHaveBeenCalledTimes(3);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
     vi.useRealTimers();
   });
@@ -659,7 +677,7 @@ describe('POST /api/analyze', () => {
     // First call is Opus, second is Sonnet fallback
     expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-6');
     expect(mockStream.mock.calls[1]![0].model).toBe('claude-sonnet-4-6');
-    const json = res._json as { model: string };
+    const json = parseNdjsonResponse(res) as { model: string };
     expect(json.model).toBe('claude-sonnet-4-6');
   });
 
@@ -675,10 +693,11 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(502);
     expect(mockStream).toHaveBeenCalledTimes(2);
     expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-6');
     expect(mockStream.mock.calls[1]![0].model).toBe('claude-sonnet-4-6');
+    const json = parseNdjsonResponse(res) as { error: string };
+    expect(json.error).toContain('Analysis service error (529)');
   });
 
   it('handles response with only thinking blocks (no text)', async () => {
@@ -693,7 +712,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: null; raw: string };
+    const json = parseNdjsonResponse(res) as { analysis: null; raw: string };
     expect(json.analysis).toBeNull();
     expect(json.raw).toBe('');
   });
@@ -767,7 +786,9 @@ describe('POST /api/analyze', () => {
 
     // Analysis should still succeed despite flow data failure
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
   });
 
@@ -784,7 +805,9 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
     // System prompt should NOT contain lessons block
     const params = mockStream.mock.calls[0]![0];
@@ -1080,7 +1103,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: null; raw: string };
+    const json = parseNdjsonResponse(res) as { analysis: null; raw: string };
     expect(json.analysis).toBeNull();
     expect(json.raw).toBe(truncated);
   });
@@ -1230,7 +1253,9 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
   });
 
@@ -1248,7 +1273,9 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { analysis: typeof SAMPLE_ANALYSIS };
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
     expect(json.analysis.structure).toBe('IRON CONDOR');
   });
 
