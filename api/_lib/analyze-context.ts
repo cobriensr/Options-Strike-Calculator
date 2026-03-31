@@ -354,12 +354,18 @@ export async function buildAnalysisContext(
     logger.error({ err: pmErr }, 'Failed to fetch pre-market data');
   }
 
-  // On-demand SPX candles from UW
+  // On-demand SPX candles from UW (fetches SPY, translates via ratio)
   if (!context.isBacktest) {
     try {
       const uwKey = process.env.UW_API_KEY;
+      const currentSpxC = context.spx as number | undefined;
+      const currentSpyC = context.spy as number | undefined;
+      const candleRatio =
+        currentSpxC && currentSpyC && currentSpyC > 0
+          ? currentSpxC / currentSpyC
+          : 10;
       const candleResult = uwKey
-        ? await fetchSPXCandles(uwKey, analysisDate)
+        ? await fetchSPXCandles(uwKey, analysisDate, candleRatio)
         : { candles: [], previousClose: null };
       if (candleResult.candles.length > 0) {
         previousClose = candleResult.previousClose;

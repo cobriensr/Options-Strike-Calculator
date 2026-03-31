@@ -1,13 +1,19 @@
 /**
  * SPX Intraday Candles (Unusual Whales)
  *
- * Fetches 5-minute OHLCV candles for SPX from the UW API.
+ * Fetches 5-minute OHLCV candles from the UW API and translates to
+ * SPX-equivalent prices. Uses SPY as the source ticker because Cboe
+ * prohibits external distribution of proprietary index prices (SPX,
+ * VIX, RUT, etc.) via API — only their web platform is allowed.
+ * SPY prices are multiplied by the SPX/SPY ratio to produce
+ * approximate SPX candles.
+ *
  * Used on-demand at analysis time (not a cron) to give Claude price
  * structure context: higher lows, range compression, wide-range bars,
  * session high/low relative to the straddle cone.
  *
  * Uses the same UW_API_KEY as all other UW integrations — no separate
- * OAuth dependency. Replaces the Schwab candles integration.
+ * OAuth dependency.
  */
 import logger from './logger.js';
 
@@ -15,7 +21,7 @@ const UW_BASE = 'https://api.unusualwhales.com/api';
 
 // ── Types ───────────────────────────────────────────────────
 
-/** UW candle format from /stock/SPX/ohlc/5m */
+/** UW candle format from /stock/SPY/ohlc/5m */
 interface UWCandle {
   open: string;
   high: string;
@@ -45,18 +51,28 @@ export interface SPXCandle {
 // ── Fetch ───────────────────────────────────────────────────
 
 /**
- * Fetch today's 5-minute SPX candles from UW API.
- * Returns candles ordered by time ascending, or empty array on failure.
+ * Fetch today's 5-minute candles via SPY and translate to SPX prices.
+ *
+ * Cboe prohibits SPX index OHLC distribution via API, so we fetch SPY
+ * candles and multiply by the SPX/SPY ratio. Returns candles ordered
+ * by time ascending, or empty array on failure.
  *
  * Only returns regular-session candles (market_time === 'r').
+ *
+ * @param apiKey - UW API key
+ * @param date - Optional date string (YYYY-MM-DD)
+ * @param spyToSpxRatio - SPX/SPY price ratio (default 10)
  */
 export async function fetchSPXCandles(
   apiKey: string,
   date?: string,
+  spyToSpxRatio?: number,
 ): Promise<{
   candles: SPXCandle[];
   previousClose: number | null;
 }> {
+  const ratio = spyToSpxRatio ?? 10;
+
   try {
     const params = new URLSearchParams();
     if (date) params.set('date', date);
@@ -65,7 +81,7 @@ export async function fetchSPXCandles(
 
     const qs = params.toString();
     const suffix = qs ? '?' + qs : '';
-    const url = `${UW_BASE}/stock/SPX/ohlc/5m${suffix}`;
+    const url = `${UW_BASE}/stock/SPY/ohlc/5m${suffix}`;
 
     const res = await fetch(url, {
       headers: {
@@ -90,15 +106,15 @@ export async function fetchSPXCandles(
       return { candles: [], previousClose: null };
     }
 
-    // Filter to regular session only and normalize
+    // Filter to regular session only, normalize, and translate to SPX
     const regularCandles = data.data
       .filter((c) => c.market_time === 'r')
       .map(
         (c): SPXCandle => ({
-          open: Number.parseFloat(c.open),
-          high: Number.parseFloat(c.high),
-          low: Number.parseFloat(c.low),
-          close: Number.parseFloat(c.close),
+          open: Number.parseFloat(c.open) * ratio,
+          high: Number.parseFloat(c.high) * ratio,
+          low: Number.parseFloat(c.low) * ratio,
+          close: Number.parseFloat(c.close) * ratio,
           volume: c.volume,
           datetime: new Date(c.start_time).getTime(),
         }),
@@ -112,18 +128,18 @@ export async function fetchSPXCandles(
       )
       .sort((a, b) => a.datetime - b.datetime);
 
-    // Derive previous close from the first premarket candle's open
-    // or from the candle just before the first regular session candle
+    // Derive previous close from the first premarket candle's open,
+    // translated to SPX via ratio
     let previousClose: number | null = null;
     const prCandles = data.data.filter((c) => c.market_time === 'pr');
     if (prCandles.length > 0) {
       const firstPr = Number.parseFloat(prCandles[0]!.open);
-      if (!Number.isNaN(firstPr)) previousClose = firstPr;
+      if (!Number.isNaN(firstPr)) previousClose = firstPr * ratio;
     }
 
     return { candles: regularCandles, previousClose };
   } catch (err) {
-    logger.error({ err }, 'Failed to fetch SPX candles from UW');
+    logger.error({ err }, 'Failed to fetch SPY candles from UW');
     return { candles: [], previousClose: null };
   }
 }

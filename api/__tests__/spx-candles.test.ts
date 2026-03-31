@@ -9,7 +9,7 @@ import {
 
 // ── Helpers ────────────────────────────────────────────────
 
-/** Build a UW API candle (string OHLC, as the real API returns) */
+/** Build a UW API candle (string OHLC in SPY prices, as the real API returns) */
 function uwCandle(
   overrides: Partial<{
     open: string;
@@ -23,10 +23,10 @@ function uwCandle(
   }> = {},
 ) {
   return {
-    open: '5700.00',
-    high: '5710.00',
-    low: '5695.00',
-    close: '5705.00',
+    open: '570.00',
+    high: '571.00',
+    low: '569.50',
+    close: '570.50',
     volume: 10_000,
     total_volume: 100_000,
     start_time: '2026-03-27T14:30:00Z',
@@ -95,20 +95,20 @@ describe('fetchSPXCandles', () => {
     vi.restoreAllMocks();
   });
 
-  it('fetches and normalizes regular-session candles', async () => {
+  it('fetches SPY candles and translates to SPX via ratio', async () => {
     const apiData = {
       data: [
         uwCandle({
           market_time: 'pr',
-          open: '5690.00',
+          open: '569.00',
           start_time: '2026-03-27T12:00:00Z',
         }),
         uwCandle({ start_time: '2026-03-27T13:30:00Z' }),
         uwCandle({
-          open: '5705.00',
-          high: '5715.00',
-          low: '5700.00',
-          close: '5712.00',
+          open: '570.50',
+          high: '571.50',
+          low: '570.00',
+          close: '571.20',
           start_time: '2026-03-27T13:35:00Z',
         }),
         uwCandle({ market_time: 'po', start_time: '2026-03-27T20:05:00Z' }),
@@ -123,17 +123,20 @@ describe('fetchSPXCandles', () => {
       }),
     );
 
+    // Default ratio = 10
     const result = await fetchSPXCandles('test-key');
 
     // Only 2 regular-session candles
     expect(result.candles).toHaveLength(2);
+    // SPY 570.00 * 10 = SPX 5700
     expect(result.candles[0]!.open).toBe(5700);
-    expect(result.candles[1]!.close).toBe(5712);
+    // SPY 571.20 * 10 = SPX 5712
+    expect(result.candles[1]!.close).toBeCloseTo(5712);
     // Sorted by datetime ascending
     expect(result.candles[0]!.datetime).toBeLessThan(
       result.candles[1]!.datetime,
     );
-    // Previous close from first premarket candle
+    // Previous close: SPY 569.00 * 10 = SPX 5690
     expect(result.previousClose).toBe(5690);
 
     vi.unstubAllGlobals();
@@ -151,7 +154,7 @@ describe('fetchSPXCandles', () => {
     const calledUrl = mockFetch.mock.calls[0]![0] as string;
     expect(calledUrl).toContain('date=2026-03-27');
     expect(calledUrl).toContain('limit=500');
-    expect(calledUrl).toContain('/stock/SPX/ohlc/5m?');
+    expect(calledUrl).toContain('/stock/SPY/ohlc/5m?');
 
     // Check auth header
     const calledOpts = mockFetch.mock.calls[0]![1] as RequestInit;
@@ -241,7 +244,7 @@ describe('fetchSPXCandles', () => {
     );
 
     const result = await fetchSPXCandles('key');
-    // Only the valid candle should remain
+    // Only the valid candle should remain (SPY 570.00 * 10 = SPX 5700)
     expect(result.candles).toHaveLength(1);
     expect(result.candles[0]!.open).toBe(5700);
 
@@ -285,6 +288,26 @@ describe('fetchSPXCandles', () => {
 
     const result = await fetchSPXCandles('key');
     expect(result.previousClose).toBeNull();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('uses custom spyToSpxRatio when provided', async () => {
+    const apiData = {
+      data: [uwCandle({ open: '570.00', market_time: 'r' })],
+    };
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(apiData),
+      }),
+    );
+
+    const result = await fetchSPXCandles('key', undefined, 10.5);
+    // SPY 570.00 * 10.5 = 5985
+    expect(result.candles[0]!.open).toBe(5985);
 
     vi.unstubAllGlobals();
   });
