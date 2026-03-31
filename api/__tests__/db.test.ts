@@ -30,6 +30,8 @@ import {
   getSpotExposures,
   formatSpotExposuresForClaude,
   getVixOhlcFromSnapshots,
+  saveDarkPoolSnapshot,
+  getDarkPoolSnapshot,
 } from '../_lib/db.js';
 import type { GreekExposureRow, SpotExposureRow } from '../_lib/db.js';
 import { neon } from '@neondatabase/serverless';
@@ -446,7 +448,8 @@ describe('db.ts', () => {
         { id: 17 },
         { id: 18 },
         { id: 19 },
-        { id: 19 },
+        { id: 20 },
+        { id: 21 },
       ]);
 
       const applied = await migrateDb();
@@ -484,11 +487,13 @@ describe('db.ts', () => {
         '#17: Add NOT NULL constraint to all created_at columns',
         '#18: Add JSONB type constraints on legs, full_response, and report',
         '#19: Create predictions table for ML model outputs',
+        '#20: Create dark_pool_snapshots table for persisted cluster data',
+        '#21: Add dark pool feature columns to training_features',
       ]);
-      // 49 (migrations #1-14 via legacy run()) + 24 (migrations #15-18) + 2 (migration #19) build queries via sql`` then pass to transaction
-      expect(mockSql).toHaveBeenCalledTimes(75);
-      // Migrations #15-19 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(5);
+      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) = 80
+      expect(mockSql).toHaveBeenCalledTimes(80);
+      // Migrations #15-21 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(7);
     });
 
     it('propagates errors from migration SQL', async () => {
@@ -1525,5 +1530,105 @@ describe('getVixOhlcFromSnapshots', () => {
       close: 16.0,
       count: 2,
     });
+  });
+});
+
+// ============================================================
+// saveDarkPoolSnapshot
+// ============================================================
+
+describe('saveDarkPoolSnapshot', () => {
+  beforeEach(() => {
+    mockSql.mockReset();
+    mockSql.transaction.mockReset().mockResolvedValue([]);
+    process.env.DATABASE_URL = 'postgresql://test';
+    _resetDb();
+  });
+
+  it('inserts and returns the new id', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+
+    const id = await saveDarkPoolSnapshot({
+      date: '2026-03-30',
+      timestamp: '2026-03-30T14:30:00Z',
+      snapshotId: 42,
+      spxPrice: 5800,
+      clusters: [
+        {
+          spyPriceLow: 579.5,
+          spyPriceHigh: 580.5,
+          spxApprox: 5800,
+          totalPremium: 10_000_000,
+          tradeCount: 3,
+          totalShares: 50_000,
+          buyerInitiated: 2,
+          sellerInitiated: 1,
+          neutral: 0,
+          latestTime: '2026-03-30T14:20:00Z',
+        },
+      ],
+    });
+
+    expect(id).toBe(1);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null when upsert returns empty', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const id = await saveDarkPoolSnapshot({
+      date: '2026-03-30',
+      timestamp: '2026-03-30T14:30:00Z',
+      snapshotId: null,
+      spxPrice: null,
+      clusters: [],
+    });
+
+    expect(id).toBeNull();
+  });
+});
+
+// ============================================================
+// getDarkPoolSnapshot
+// ============================================================
+
+describe('getDarkPoolSnapshot', () => {
+  beforeEach(() => {
+    mockSql.mockReset();
+    mockSql.transaction.mockReset().mockResolvedValue([]);
+    process.env.DATABASE_URL = 'postgresql://test';
+    _resetDb();
+  });
+
+  it('returns latest snapshot for date', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        spx_price: 5800,
+        clusters: [
+          {
+            spxApprox: 5800,
+            totalPremium: 10_000_000,
+            tradeCount: 3,
+            buyerInitiated: 2,
+            sellerInitiated: 1,
+          },
+        ],
+      },
+    ]);
+
+    const result = await getDarkPoolSnapshot('2026-03-30');
+
+    expect(result).not.toBeNull();
+    expect(result!.spxPrice).toBe(5800);
+    expect(result!.clusters).toHaveLength(1);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null when no data for date', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const result = await getDarkPoolSnapshot('2026-03-30');
+
+    expect(result).toBeNull();
   });
 });

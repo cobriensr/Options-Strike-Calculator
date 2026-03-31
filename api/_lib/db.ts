@@ -831,7 +831,9 @@ const MIGRATIONS: Migration[] = [
           ADD COLUMN IF NOT EXISTS dp_seller_initiated INTEGER,
           ADD COLUMN IF NOT EXISTS dp_net_bias         TEXT,
           ADD COLUMN IF NOT EXISTS dp_cluster_count    INTEGER,
-          ADD COLUMN IF NOT EXISTS dp_top_cluster_dist DECIMAL(10,2)
+          ADD COLUMN IF NOT EXISTS dp_top_cluster_dist DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS dp_support_premium  DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS dp_resistance_premium DECIMAL(14,2)
       `;
     },
     statements: (sql) => [
@@ -842,7 +844,9 @@ const MIGRATIONS: Migration[] = [
           ADD COLUMN IF NOT EXISTS dp_seller_initiated INTEGER,
           ADD COLUMN IF NOT EXISTS dp_net_bias         TEXT,
           ADD COLUMN IF NOT EXISTS dp_cluster_count    INTEGER,
-          ADD COLUMN IF NOT EXISTS dp_top_cluster_dist DECIMAL(10,2)
+          ADD COLUMN IF NOT EXISTS dp_top_cluster_dist DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS dp_support_premium  DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS dp_resistance_premium DECIMAL(14,2)
       `,
     ],
   },

@@ -542,10 +542,13 @@ describe('build-features handler', () => {
     // Call 12: next event
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 13: upsertFeatures INSERT
+    // Call 13: dark_pool_snapshots
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 14: extractLabelsForDate — analyses (no review found)
+    // Call 14: upsertFeatures INSERT
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 15: extractLabelsForDate — analyses (no review found)
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -565,7 +568,7 @@ describe('build-features handler', () => {
     });
 
     // 14 original test calls + 2 preamble
-    expect(mockSql).toHaveBeenCalledTimes(16);
+    expect(mockSql).toHaveBeenCalledTimes(17);
   });
 
   it('extracts labels from review analyses with outcomes', async () => {
@@ -579,7 +582,7 @@ describe('build-features handler', () => {
 
     // Calls 2-10 (buildFeaturesForDate): all empty
     // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]);
 
     // Call 11: upsertFeatures INSERT
     mockSql.mockResolvedValueOnce([]);
@@ -651,7 +654,7 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
     // Calls 2-10: buildFeaturesForDate queries → empty
     // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]);
     // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -706,7 +709,7 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
     // Calls 2-10: buildFeaturesForDate queries → empty
     // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]);
     // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -754,7 +757,7 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
     // Calls 2-10: buildFeaturesForDate queries → empty
     // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]);
     // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -828,8 +831,10 @@ describe('build-features handler', () => {
     ]);
     // Call 11: next event → empty
     mockSql.mockResolvedValueOnce([]);
+    // Call 12: dark_pool_snapshots → empty
+    mockSql.mockResolvedValueOnce([]);
 
-    // Call 12: upsertFeatures INSERT — capture the features being upserted
+    // Call 13: upsertFeatures INSERT — capture the features being upserted
     let upsertedFeatures: Record<string, unknown> | null = null;
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       // The tagged template literal passes strings as first arg, values as rest

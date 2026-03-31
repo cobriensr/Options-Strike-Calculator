@@ -450,6 +450,8 @@ const NULLABLE_FEATURE_KEYS = new Set([
   'dp_net_bias',
   'dp_cluster_count',
   'dp_top_cluster_dist',
+  'dp_support_premium',
+  'dp_resistance_premium',
 ]);
 
 /** Compute feature completeness as fraction of non-null values. */
@@ -899,6 +901,14 @@ async function buildFeaturesForDate(
         features.dp_top_cluster_dist =
           clusters[0]!.spxApprox - spxPrice;
       }
+
+      // Premium split by direction
+      features.dp_support_premium = clusters
+        .filter((c) => c.buyerInitiated > c.sellerInitiated)
+        .reduce((s, c) => s + c.totalPremium, 0);
+      features.dp_resistance_premium = clusters
+        .filter((c) => c.sellerInitiated > c.buyerInitiated)
+        .reduce((s, c) => s + c.totalPremium, 0);
     }
   } catch (dpErr) {
     logger.warn({ err: dpErr }, 'Dark pool feature extraction failed');
@@ -1080,7 +1090,8 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       vix_term_slope, vvix_percentile,
       event_type, is_fomc, is_opex, days_to_next_event, event_count,
       dp_total_premium, dp_buyer_initiated, dp_seller_initiated,
-      dp_net_bias, dp_cluster_count, dp_top_cluster_dist
+      dp_net_bias, dp_cluster_count, dp_top_cluster_dist,
+      dp_support_premium, dp_resistance_premium
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -1119,7 +1130,8 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.vix_term_slope}, ${f.vvix_percentile},
       ${f.event_type}, ${f.is_fomc}, ${f.is_opex}, ${f.days_to_next_event}, ${f.event_count},
       ${f.dp_total_premium}, ${f.dp_buyer_initiated}, ${f.dp_seller_initiated},
-      ${f.dp_net_bias}, ${f.dp_cluster_count}, ${f.dp_top_cluster_dist}
+      ${f.dp_net_bias}, ${f.dp_cluster_count}, ${f.dp_top_cluster_dist},
+      ${f.dp_support_premium}, ${f.dp_resistance_premium}
     )
     ON CONFLICT (date) DO UPDATE SET
       vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
@@ -1205,7 +1217,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       dp_seller_initiated = EXCLUDED.dp_seller_initiated,
       dp_net_bias = EXCLUDED.dp_net_bias,
       dp_cluster_count = EXCLUDED.dp_cluster_count,
-      dp_top_cluster_dist = EXCLUDED.dp_top_cluster_dist
+      dp_top_cluster_dist = EXCLUDED.dp_top_cluster_dist,
+      dp_support_premium = EXCLUDED.dp_support_premium,
+      dp_resistance_premium = EXCLUDED.dp_resistance_premium
   `;
 }
 
