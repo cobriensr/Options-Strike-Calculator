@@ -87,79 +87,56 @@ export default memo(function TradingScheduleSection() {
 
   return (
     <SectionBox label="Trading Schedule" badge="CT">
-      <div className="relative ml-2">
-        {/* vertical connector line */}
-        <div
-          className="absolute top-3 bottom-3 left-[5px] w-[2px] rounded-full"
-          style={{ background: tint(theme.textMuted, '30') }}
-        />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {PHASES.map((phase, i) => {
+          const active = i === activeIdx;
+          const past = activeIdx >= 0 && i < activeIdx;
 
-        <div className="space-y-1">
-          {PHASES.map((phase, i) => {
-            const active = i === activeIdx;
-            const past = activeIdx >= 0 && i < activeIdx;
-
-            return (
-              <div key={i} className="relative flex items-start pl-5">
-                {/* timeline dot */}
+          return (
+            <div
+              key={i}
+              className="rounded-lg border-t-[3px] px-3.5 py-3 transition-all duration-200"
+              style={{
+                borderTopColor: past
+                  ? tint(phase.color, '50')
+                  : phase.color,
+                background: active
+                  ? tint(phase.color, '0c')
+                  : tint(theme.textMuted, '08'),
+                boxShadow: active
+                  ? `inset 0 0 0 1.5px ${tint(phase.color, '25')}`
+                  : 'none',
+                opacity: past ? 0.45 : 1,
+              }}
+            >
+              <div className="flex items-center justify-between">
                 <span
-                  className="absolute top-3 left-0 h-[11px] w-[11px] rounded-full border-[2px]"
-                  style={{
-                    borderColor: past ? tint(phase.color, '50') : phase.color,
-                    background: active || past ? phase.color : 'transparent',
-                    boxShadow: active
-                      ? `0 0 8px ${tint(phase.color, '50')}`
-                      : 'none',
-                    opacity: past ? 0.45 : 1,
-                    transition: 'all 0.3s ease',
-                  }}
-                />
-
-                {/* phase card */}
-                <div
-                  className={`flex-1 rounded-lg px-3 py-2 transition-colors duration-200 ${
-                    active ? 'border-[1.5px]' : ''
-                  }`}
-                  style={{
-                    background: active
-                      ? tint(phase.color, '0a')
-                      : 'transparent',
-                    borderColor: active
-                      ? tint(phase.color, '25')
-                      : 'transparent',
-                    opacity: past ? 0.45 : 1,
-                  }}
+                  className="font-mono text-[12px] font-semibold tracking-wide"
+                  style={{ color: phase.color }}
                 >
-                  <div className="flex items-center justify-between">
-                    <span
-                      className="font-mono text-[12px] font-semibold tracking-wide"
-                      style={{ color: phase.color }}
-                    >
-                      {phase.timeLabel}
-                    </span>
-                    {active && (
-                      <span
-                        className="rounded-full px-2 py-0.5 text-[9px] font-bold tracking-widest uppercase"
-                        style={{
-                          color: phase.color,
-                          background: tint(phase.color, '18'),
-                        }}
-                      >
-                        Active
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-primary mt-0.5 text-[13px] font-semibold">
-                    {phase.title}
-                  </p>
-                  <p className="text-secondary mt-0.5 text-[11px] leading-relaxed">
-                    {phase.subtitle}
-                  </p>
-                </div>
+                  {phase.timeLabel}
+                </span>
+                {active && (
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[9px] font-bold tracking-widest uppercase"
+                    style={{
+                      color: phase.color,
+                      background: tint(phase.color, '18'),
+                    }}
+                  >
+                    Active
+                  </span>
+                )}
               </div>
-            );
-          })}
-        </div>
+              <p className="text-primary mt-1.5 text-[13px] font-semibold">
+                {phase.title}
+              </p>
+              <p className="text-secondary mt-1 text-[11px] leading-relaxed">
+                {phase.subtitle}
+              </p>
+            </div>
+          );
+        })}
       </div>
     </SectionBox>
   );
