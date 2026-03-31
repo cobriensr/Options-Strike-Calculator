@@ -137,7 +137,7 @@ ${JSON.stringify({
   },
   managementRules: {
     profitTarget:
-      'Target 50% profit by 1:00 PM ET as baseline. If NCP/NPP divergence is STILL widening at 1:00 PM ET, extend hold to 70-80% or settlement. Set a GTC limit at 50% at entry to capture mechanically.',
+      'Target 50% profit by 1:00 PM ET as baseline. If Market Tide NCP/NPP spread exceeds $200M with zero reversals by 11:00 AM ET, override to 70% target or 2:00 PM ET per Market Tide magnitude rule. If spread exceeds $500M and Rule 16 VIX1D Extension conditions are met, hold to settlement. Set a GTC limit at 50% at entry to capture mechanically.',
     stopConditions: [
       'Close PCS if SPX breaks below 6575.60 (lower straddle cone) and sustains for 10+ minutes — this would exceed the VIX1D implied move and invalidate the contained-range thesis',
       'Close PCS if positive gamma at 6600-6605 is breached (SPX below 6595 sustained) AND NCP reverses below +$50M — the structural floor has broken with flow confirmation',
@@ -155,7 +155,7 @@ ${JSON.stringify({
       sizePercent: 40,
       delta: 14,
       structure: 'PUT CREDIT SPREAD',
-      note: 'Initial position — triple-unanimity bullish flow confirmed with VIX1D extreme inversion. Place short put at 6570-6575 (14Δ), targeting calculator ceiling (15Δ) adjusted 1Δ for negative gamma at 6575-6585.',
+      note: 'FULL (40%) — triple-unanimity bullish flow at HIGH confidence with VIX1D extreme inversion. Place short put at 6570-6575 (14Δ), targeting calculator ceiling (15Δ) adjusted 1Δ for negative gamma at 6575-6585.',
     },
     entry2: {
       condition:
@@ -163,7 +163,7 @@ ${JSON.stringify({
       sizePercent: 30,
       delta: 14,
       structure: 'PUT CREDIT SPREAD',
-      note: 'Add if flow strength maintained. Same 14Δ target or step up to full 15Δ ceiling if the positive gamma wall at 6650-6660 has acted as a magnet and price has moved higher.',
+      note: 'STANDARD (30%) — flow confirmed but awaiting second checkpoint. Same 14Δ target or step up to full 15Δ ceiling if the positive gamma wall at 6650-6660 has acted as a magnet and price has moved higher.',
     },
     entry3: {
       condition:
@@ -171,7 +171,7 @@ ${JSON.stringify({
       sizePercent: 30,
       delta: 15,
       structure: 'PUT CREDIT SPREAD',
-      note: 'Final add — max position. If price is near 6650, step to full 15Δ ceiling as the move toward the gamma wall confirms the bullish thesis.',
+      note: 'STANDARD (30%) — final add, max position reached. If price is near 6650, step to full 15Δ ceiling as the move toward the gamma wall confirms the bullish thesis.',
     },
     maxTotalSize:
       '100% of daily risk budget across all entries. The VIX1D extreme inversion combined with triple-unanimity flow justifies full allocation.',

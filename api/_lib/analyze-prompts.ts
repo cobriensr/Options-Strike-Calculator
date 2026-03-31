@@ -334,7 +334,7 @@ Skew measures how institutions price tail risk relative to ATM. The 25Δ put ske
 - Intraday skew flattening (put skew dropping 2+ vol pts from open): hedge unwind in progress. Bullish for SPX. Increases PCS confidence by one level if confirmed by declining NPP.
 </iv_term_structure>
 <overnight_gap>
-ES Overnight Gap Analysis provides pre-market context from ES futures (Globex session: 5:00 PM – 8:30 AM CT). This is provided as structured API data from manual input.
+ES Overnight Gap Analysis provides pre-market context from ES futures (Globex session: 5:00 PM – 8:30 AM CT). This is provided as structured API data from pre-market inputs.
 Key values:
 - Gap size and direction: how far the cash open is from the previous close (NEGLIGIBLE/SMALL/MODERATE/LARGE/EXTREME)
 - Gap position vs overnight range: percentile rank of the cash open within the globex high/low range
@@ -361,6 +361,13 @@ Management implications:
 - If holding to settlement with less than 15 pts of cushion after 3:45 PM ET: CLOSE MANUALLY rather than risk the auction. The MOC imbalance can erase 10+ pts of cushion in minutes, and you cannot react once the imbalance is published.
 - If holding with 20+ pts of cushion: settlement risk is acceptable. The largest MOC-driven moves are typically 15-20 pts.
 - On quad-witching / monthly expiration days, MOC imbalances are 2-3x larger than normal. Add 10 pts to the "safe cushion" threshold on these days.
+Gamma Wall + OI Pin Convergence (Settlement Zone Predictor):
+At 2:30 PM ET, check whether the largest positive gamma wall (from Periscope or per-strike API data) and the #1 OI concentration strike are within 15 pts of each other. When they converge:
+- Settlement will gravitate to this zone with HIGH probability. Both gamma suppression (MMs absorbing moves toward the wall) and OI gravity (dealer hedging around the high-OI strike) pull price to the same target.
+- If the convergence zone is 50+ pts from your nearest short strike: holding to settlement is structurally safe. The gravitational pull works in your favor.
+- If the convergence zone is within 30 pts of a short strike: close the position. Settlement mechanics will pull price toward the zone, and oscillation around the convergence level creates whipsaw risk for nearby short strikes.
+- When the convergence zone aligns with max pain, this is the highest-confidence settlement target across all three signals.
+Validated March 28: 6335-6340 positive gamma wall + 6350 #1 OI strike (4.8K contracts) → settlement at 6348. March 31: 6520 positive gamma wall (~+8000-10000) + high OI concentration at 6520 → settlement at 6524. Both within 5-8 pts of the convergence zone.
 - The MOC risk is directionally random — it depends on institutional rebalancing needs, not a continuation of intraday flow direction. A bullish flow day can have a large sell-on-close imbalance from pension rebalancing.
 </settlement_mechanics>
 <pin_risk>
@@ -498,6 +505,10 @@ When SPX Net Flow NCP diverges from price direction AND 3+ other signals (Market
 - Do not let the positive SPX NCP prevent a directional CCS recommendation when all other signals agree on direction. Note the divergence as a risk factor and reduce sizing by one level, but do not override 3+ confirming signals.
 - The reverse also applies: if SPX NCP is deeply negative but SPX price is rising with Market Tide and SPY both bullish, the SPX put flow is likely institutional hedging — treat as CONFLICTED.
 - VIX 25+ REGIME OVERRIDE: When VIX is above 25, institutional hedging activity dominates aggregate flow signals (Market Tide, SPY). In this regime, if SPX Net Flow diverges from Market Tide/SPY, ALWAYS trust SPX Net Flow for structure selection without waiting for the standard 3+ confirming signals threshold. At VIX 25+, Market Tide and SPY bullish flow is overwhelmingly likely to be hedging noise from non-SPX instruments — do not let it override a bearish SPX NCP/NPP signal. This pattern has been confirmed across five sessions (Lessons 3, 33, 37, 53, and March 24 2026). Reduce the Rule 10 confirmation requirement from "3+ other signals" to "SPX Net Flow alone is sufficient" when VIX > 25.
+- FLOW REVERSAL TRIGGER CALIBRATION (VIX regime-dependent):
+  At VIX below 25: the flow reversal trigger for closing directional spreads is SPX NCP crossing zero (positive to negative for CCS closure, negative to positive for PCS closure).
+  At VIX 25+: recalibrate — the flow reversal trigger for CCS closure is SPX NCP exceeding +$100M sustained for 30+ minutes. For PCS closure, SPX NCP falling below -$100M sustained for 30+ minutes. The standard threshold (NCP crossing zero or -$100M) is too sensitive at VIX 25+ because institutional hedging routinely pushes SPX NCP positive during selloffs and negative during rallies. Market Tide NCP direction is the ground truth at VIX 25+ — do NOT close a directional spread based on SPX NCP alone when Market Tide NCP still confirms the original thesis.
+  Validated March 28: SPX NCP recovered from -$198M to +$72M (crossing -$100M trigger) while Market Tide NCP fell to -$301M and SPX dropped 75 pts. The -$100M trigger would have closed a profitable CCS during what was the strongest bearish session of the week.
 - TWO-SIGNAL PARTIAL DIVERGENCE (VIX < 25): When exactly 2 other signals (not 3+) confirm the opposite direction from SPX Net Flow: reduce SPX Net Flow's effective weight from 50% to 35%. Redistribute: Market Tide 30%, SPY 20%, QQQ 15%. Do NOT fully override SPX Net Flow — the divergence is partial, not confirmed. Flag as CONFLICTED with MODERATE confidence. Note which 2 signals are confirming — Market Tide + SPY is stronger confirmation than Market Tide + QQQ.
 RULE 11: Net Charm Confirms Directional Spread
 When the Net Charm profile shows massive positive charm values below current price (downside walls strengthening) and negative charm values above current price (upside walls decaying), this is a strong CCS confirmation. The mirror pattern (negative charm below, positive above) confirms PCS.
@@ -554,6 +565,12 @@ Use the OI Net Gamma Exposure from the API data to adjust management aggressiven
 - OI GEX DEEPLY NEGATIVE (below -150,000): The entire market is in acceleration mode. ALL Periscope walls are structurally compromised. Close CCS by 11:30 AM ET or at 40% profit, whichever comes first. Reduce position size by an additional 10%. Do not trust any single positive gamma bar to contain a momentum move. PCS positions with positive charm walls can still be held, but with tightened stops.
 - When Volume GEX is strongly positive while OI GEX is negative: today's active trading is adding suppression that partially offsets the negative regime. The session may be calmer than the OI number suggests — but don't extend management past the OI-based time limits, because volume-based suppression can evaporate in the final 2 hours when trading thins out.
 PERISCOPE CHARM CEILING OVERRIDE: When Periscope Charm shows +100M or more at a positive gamma wall ABOVE the CCS short call (within 20 pts), the CCS close deadline may be extended by 1-2 hours beyond the standard Rule 16 timeline. The charm-confirmed ceiling provides structural protection that the standard deadline assumes is absent. Example: Rule 16 moderately negative GEX sets 12:00 PM ET close, but Periscope Charm shows +160M at 6620 above the 6610 short call — extend to 1:00-2:00 PM ET. This override applies ONLY when the charm wall is within 20 pts of a positive gamma wall and ABOVE the short call. Do not extend based on distant charm alone. Validated March 24: 6620 wall with +160M Periscope Charm held as ceiling all day despite moderately negative GEX.
+VIX1D EXTREME INVERSION DEADLINE EXTENSION: When ALL of the following conditions are met, the Rule 16 CCS/PCS close deadline may be extended to 2:00 PM ET regardless of GEX regime:
+(1) VIX1D is 20%+ below VIX (extreme inversion confirmed)
+(2) ALL positions are defined-risk credit spreads (no naked short options)
+(3) Cushion from nearest short strike to current SPX price exceeds 60 pts
+(4) Periscope Charm confirms +50M at 3+ strikes protecting the short side (above short calls for CCS, below short puts for PCS)
+If ANY one condition fails, the standard Rule 16 deadline applies without extension. This extension acknowledges that VIX1D extreme inversion correctly predicts contained sessions where the standard deadlines leave $180-580 of premium on the table per session. Validated across March 25, 28, and 31 sessions — all positions expired worthless with 60-170 pts of cushion when held past the standard deadline under extreme inversion conditions.
 Rule 17 interaction: Rule 17's ±30 minute vanna adjustment applies to the final Rule 16 deadline AFTER any Periscope Charm Override has been applied. Example: Rule 16 moderately negative GEX = 12:00 PM ET → Charm Override extends to 1:00-2:00 PM ET → Rule 17 positive vanna + declining VIX tightens CCS by 30 min to 12:30-1:30 PM ET. Apply sequentially, not independently.
 THETA/GAMMA INVERSION PRINCIPLE:
 All time-based exit rules in this prompt are derived from the 0DTE theta/gamma inversion. Understanding this principle allows adaptation when conditions are non-standard.
@@ -605,6 +622,7 @@ When SPY/QQQ ETF Tide data is provided alongside SPY/QQQ Net Flow data, check fo
 - Both agree (same direction) = higher conviction in that direction. No adjustment needed.
 - ETF Tide data supplements — it does not override — the primary flow hierarchy (Rule 8). Use it as a tiebreaker or confidence modifier when the primary signals are ambiguous.
 Validated March 24: SPY Net Flow NCP +40.2M (bullish) but SPY ETF Tide NCP -94.5M (bearish). QQQ same pattern. Day was range-bound (65 pt range on VIX 27). Both CCS and PCS expired worthless — IC would have been optimal.
+VIX1D EXTREME INVERSION OVERRIDE: When VIX1D is 20%+ below VIX, the ETF Tide hedging divergence signal is unreliable for predicting range-bound conditions. The VIX1D macro regime signal dominates cross-signal divergence analysis. On VIX1D extreme inversion days, do NOT increase IC confidence based on ETF Tide divergence, and do NOT use ETF Tide divergence to argue against a directional structure that flow supports. ETF Tide divergence is most valuable as a tiebreaker when VIX1D is NOT in extreme inversion. Validated March 31: SPY ETF Tide bearish (-$152.9M) vs SPY Net Flow bullish (+$10M) predicted range-bound, but the session produced a 136pt directional rally under VIX1D extreme inversion (21.4% below VIX).
 </etf_tide_divergence>
 <analysis_modes>
 Mode: "entry" (Pre-Trade Analysis)
@@ -687,6 +705,10 @@ Give specific if/then rules for managing the position after entry:
 - Stop conditions based on flow: "Close the put side if NCP crosses below -200M" or "Close everything if price breaks below the straddle cone lower breakeven"
 - Time-based rules: "If still open after 2:30 PM ET with less than 30% profit, close — late-day gamma acceleration risk increases"
 - Flow reversal signals: "If NCP and NPP converge and cross, the directional bias has shifted — close the directional spread"
+- Market Tide magnitude targets: When Market Tide NCP/NPP spread exceeds $200M with zero convergence events through 11:00 AM ET, override the standard 50% profit target. Tiered by magnitude:
+  - $200-500M spread with monotonic trajectory: hold to 70% profit or 2:00 PM ET, whichever comes first.
+  - $500M+ spread with zero reversals: hold to settlement for defined-risk spreads that also meet the Rule 16 VIX1D Extension criteria (all 4 conditions). If the VIX1D Extension conditions are NOT met, hold to 70% profit or 2:00 PM ET.
+  The standard 50% target systematically underperforms on high-conviction monotonic flow days. Validated March 28 ($301M NCP/NPP spread, held to settlement successfully) and March 31 ($722M spread, held to settlement successfully — all positions expired worthless with 100-170 pts cushion).
 4. Multi-Entry Plan
 The trader ladders entries. Provide a plan:
 - Entry 1 (now): Size, delta, structure
