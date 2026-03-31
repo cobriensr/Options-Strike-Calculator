@@ -56,9 +56,12 @@ function computeEffectiveMaxLoss(
   let callSideRisk = 0;
   let putSideRisk = 0;
 
+  // creditReceived and maxLoss are already total dollar values
+  // (per-contract credit * $100 multiplier * contracts), so no
+  // additional scaling needed.
   for (const s of spreads) {
     const effectiveLoss = Math.min(
-      s.creditReceived * multiplier * 100,
+      s.creditReceived * multiplier,
       s.maxLoss,
     );
     if (s.spreadType === 'CALL_CREDIT_SPREAD') {
@@ -70,11 +73,11 @@ function computeEffectiveMaxLoss(
 
   for (const ic of ironCondors) {
     const callEffective = Math.min(
-      ic.callSpread.creditReceived * multiplier * 100,
+      ic.callSpread.creditReceived * multiplier,
       ic.callSpread.maxLoss,
     );
     const putEffective = Math.min(
-      ic.putSpread.creditReceived * multiplier * 100,
+      ic.putSpread.creditReceived * multiplier,
       ic.putSpread.maxLoss,
     );
     callSideRisk += callEffective;
