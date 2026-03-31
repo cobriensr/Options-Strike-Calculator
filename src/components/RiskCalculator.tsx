@@ -259,33 +259,7 @@ export default function RiskCalculator() {
           </div>
         </div>
 
-        {mode === 'sell' && (
-          <div>
-            <label
-              htmlFor="rc-wing"
-              className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
-            >
-              Wing Width (pts)
-            </label>
-            <div
-              id="rc-wing"
-              className="flex flex-wrap gap-1.5"
-              role="radiogroup"
-              aria-label="Wing width"
-            >
-              {WING_OPTIONS.map((w) => (
-                <Chip
-                  key={w}
-                  onClick={() => setWing(w)}
-                  active={wing === w}
-                  label={String(w)}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Contracts */}
+        {/* Contracts — always on this row */}
         <div>
           <label
             htmlFor="rc-contracts"
@@ -322,6 +296,32 @@ export default function RiskCalculator() {
             </button>
           </div>
         </div>
+
+        {mode === 'sell' && (
+          <div>
+            <label
+              htmlFor="rc-wing"
+              className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
+            >
+              Wing Width (pts)
+            </label>
+            <div
+              id="rc-wing"
+              className="flex flex-wrap gap-1.5"
+              role="radiogroup"
+              aria-label="Wing width"
+            >
+              {WING_OPTIONS.map((w) => (
+                <Chip
+                  key={w}
+                  onClick={() => setWing(w)}
+                  active={wing === w}
+                  label={String(w)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── ROW 2: settings ── */}
