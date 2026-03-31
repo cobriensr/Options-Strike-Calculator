@@ -323,6 +323,43 @@ describe('BWBCalculator component', () => {
     expect(contractInput).toHaveValue('1');
   });
 
+  it('sweet spot auto-fills strikes for calls', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    // Default narrow=20, wide=40
+    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+
+    // For calls: low = 6500-20 = 6480, mid = 6500, high = 6500+40 = 6540
+    expect(screen.getByLabelText('Low strike')).toHaveValue('6480');
+    expect(screen.getByLabelText('Mid strike')).toHaveValue('6500');
+    expect(screen.getByLabelText('High strike')).toHaveValue('6540');
+  });
+
+  it('sweet spot auto-fills strikes for puts', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.click(screen.getByText('Puts'));
+    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+
+    // For puts: low = 6500-40 = 6460, mid = 6500, high = 6500+20 = 6520
+    expect(screen.getByLabelText('Low strike')).toHaveValue('6460');
+    expect(screen.getByLabelText('Mid strike')).toHaveValue('6500');
+    expect(screen.getByLabelText('High strike')).toHaveValue('6520');
+  });
+
+  it('clear button resets sweet spot', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    await user.click(screen.getByText('Clear'));
+
+    expect(screen.getByLabelText('Sweet spot strike')).toHaveValue('');
+    expect(screen.getByLabelText('Low strike')).toHaveValue('');
+  });
+
   it('shows key numbers section with filled inputs', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);

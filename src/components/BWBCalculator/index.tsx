@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import type { BWBSide } from './bwb-math';
 import {
   calcNet,
@@ -10,6 +10,11 @@ import {
 
 const INPUT =
   'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[10px_12px] text-[15px] font-mono outline-none w-full transition-[border-color] duration-150';
+
+const INPUT_SM = INPUT.replace('p-[10px_12px]', 'p-[8px_10px]').replace(
+  'text-[15px]',
+  'text-sm',
+);
 
 const LABEL =
   'text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]';
@@ -23,6 +28,57 @@ export default function BWBCalculator() {
   const [midPrice, setMidPrice] = useState('');
   const [highPrice, setHighPrice] = useState('');
   const [contracts, setContracts] = useState(1);
+
+  // Sweet spot auto-fill state
+  const [sweetSpot, setSweetSpot] = useState('');
+  const [narrowWing, setNarrowWing] = useState(20);
+  const [wideWing, setWideWing] = useState(40);
+
+  // Auto-fill strikes from sweet spot + wing widths
+  const fillStrikes = useCallback(
+    (ss: number, narrow: number, wide: number, s: BWBSide) => {
+      if (s === 'calls') {
+        setLowStrike(String(ss - narrow));
+        setMidStrike(String(ss));
+        setHighStrike(String(ss + wide));
+      } else {
+        setLowStrike(String(ss - wide));
+        setMidStrike(String(ss));
+        setHighStrike(String(ss + narrow));
+      }
+    },
+    [],
+  );
+
+  const handleSweetSpotChange = (value: string) => {
+    setSweetSpot(value);
+    const ss = Number.parseFloat(value);
+    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, side);
+  };
+
+  const handleNarrowChange = (value: string) => {
+    const n = Number.parseInt(value);
+    if (Number.isFinite(n) && n > 0) {
+      setNarrowWing(n);
+      const ss = Number.parseFloat(sweetSpot);
+      if (Number.isFinite(ss)) fillStrikes(ss, n, wideWing, side);
+    }
+  };
+
+  const handleWideChange = (value: string) => {
+    const w = Number.parseInt(value);
+    if (Number.isFinite(w) && w > 0) {
+      setWideWing(w);
+      const ss = Number.parseFloat(sweetSpot);
+      if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, w, side);
+    }
+  };
+
+  const handleSideChange = (s: BWBSide) => {
+    setSide(s);
+    const ss = Number.parseFloat(sweetSpot);
+    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, s);
+  };
 
   // Parse inputs
   const low = Number.parseFloat(lowStrike);
@@ -54,6 +110,7 @@ export default function BWBCalculator() {
     : [];
 
   const handleClear = () => {
+    setSweetSpot('');
     setLowStrike('');
     setMidStrike('');
     setHighStrike('');
@@ -73,13 +130,13 @@ export default function BWBCalculator() {
   return (
     <section
       aria-label="BWB live calculator"
-      className="bg-surface border-edge-heavy rounded-[14px] border-2 p-[24px_20px] shadow-[0_4px_12px_rgba(0,0,0,0.08),0_12px_32px_rgba(0,0,0,0.06)]"
+      className="animate-fade-in-up bg-surface border-edge border-t-accent mt-6 flex flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)]"
     >
       {/* Header */}
-      <div className="mb-5 flex items-center justify-between">
-        <div className="text-accent font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+      <div className="mb-3.5 flex items-center justify-between">
+        <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
           BWB Live Calculator
-        </div>
+        </h2>
         <button
           onClick={handleClear}
           className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
@@ -94,7 +151,7 @@ export default function BWBCalculator() {
           {(['calls', 'puts'] as const).map((s) => (
             <button
               key={s}
-              onClick={() => setSide(s)}
+              onClick={() => handleSideChange(s)}
               className={
                 'cursor-pointer rounded-md border-[1.5px] px-4 py-1.5 font-sans text-xs font-semibold transition-colors duration-100 ' +
                 (side === s
@@ -132,6 +189,50 @@ export default function BWBCalculator() {
           >
             +
           </button>
+        </div>
+      </div>
+
+      {/* Sweet spot auto-fill (optional) */}
+      <div className="bg-surface-alt mb-4 rounded-lg p-3">
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <span className={LABEL}>Sweet Spot Auto-Fill</span>
+          <span className="text-muted text-[10px] italic">(optional)</span>
+        </div>
+        <div className="grid grid-cols-[1fr_auto_auto] items-end gap-2">
+          <div>
+            <div className={LABEL + ' mb-1'}>Sweet Spot</div>
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="e.g. 6500"
+              value={sweetSpot}
+              onChange={(e) => handleSweetSpotChange(e.target.value)}
+              className={INPUT_SM}
+              aria-label="Sweet spot strike"
+            />
+          </div>
+          <div>
+            <div className={LABEL + ' mb-1'}>Narrow</div>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={narrowWing}
+              onChange={(e) => handleNarrowChange(e.target.value)}
+              className={INPUT_SM + ' w-[60px]'}
+              aria-label="Narrow wing width"
+            />
+          </div>
+          <div>
+            <div className={LABEL + ' mb-1'}>Wide</div>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={wideWing}
+              onChange={(e) => handleWideChange(e.target.value)}
+              className={INPUT_SM + ' w-[60px]'}
+              aria-label="Wide wing width"
+            />
+          </div>
         </div>
       </div>
 
@@ -403,7 +504,7 @@ export default function BWBCalculator() {
 
       {/* Empty state */}
       {!allValid && (
-        <div className="text-muted mt-5 text-center text-sm italic">
+        <div className="text-muted mt-4 text-center text-sm italic">
           Enter three strikes and their fill prices to see the P&L profile.
         </div>
       )}
