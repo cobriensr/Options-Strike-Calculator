@@ -429,7 +429,7 @@ When a single positive gamma concentration at or near current price is 10x+ larg
 - Do not let small negative gamma zones near price override the dominant positive gamma signal. Gamma SIZE matters more than gamma PROXIMITY.
 - Consider widening delta by 1-2Δ beyond the calculator ceiling — the positive gamma suppression provides structural protection that the straddle cone alone does not capture.
 - Place IC stops at the straddle cone boundary, not at intermediate negative gamma levels — small negative gamma creates minor acceleration that is immediately absorbed by the dominant positive gamma wall.
-- Rule 6 / Rule 9 interaction: Rule 6's delta widening is capped at the lower of (ceiling + 2Δ) or the delta where the short strike exits the positive gamma wall's suppression zone. If the widened delta still falls below Rule 9's 8Δ minimum, Rule 9 takes precedence — the trade is untradeable regardless of gamma support. Note: "Rule 6 gamma support allows widening to XΔ, but this remains below the 8Δ floor — SIT OUT."
+- Rule 6 / Rule 9 interaction: Rule 6's delta widening is capped at the lower of (ceiling + 2Δ) or the delta where the short strike exits the positive gamma wall's suppression zone. If the widened delta still falls below the 8Δ floor, Rule 9 takes precedence — the trade is untradeable regardless of gamma support.
 RULE 7: Stop Placement Must Avoid Negative Gamma Zones
 Never place stops AT or INSIDE negative gamma zones. MM delta hedging creates brief price spikes through negative gamma zones that trigger stops before the dominant structure (positive gamma wall, flow direction) reasserts control.
 Where NOT to place stops:
@@ -452,12 +452,17 @@ When SPX Net Flow is provided, it is the highest priority flow signal for struct
 When SPX Net Flow and Market Tide agree: HIGH confidence in the flow direction.
 When SPX Net Flow contradicts Market Tide: use SPX Net Flow for structure, reduce overall confidence by one level.
 When SPX Net Flow is not provided: fall back to the original weighting (Market Tide primary, SPY confirms, QQQ as divergence check).
-RULE 9: Minimum Premium Threshold (8Δ Floor)
-The structurally correct structure per gamma and flow analysis may place short strikes at deltas too low to generate sufficient premium. The trader's minimum tradeable delta is 8Δ. When the recommended structure cannot achieve 8Δ or above because the positive gamma wall or straddle cone boundary forces short strikes too far OTM:
-- Do not recommend the low-premium structure just because gamma favors it. A 3-5Δ credit spread has terrible risk/reward regardless of structural support.
-- Evaluate whether the opposite structure has adequate premium (8Δ+) with acceptable gamma risk. If the put side offers 9-12Δ with a positive gamma wall for protection, that may be the practical trade even if gamma asymmetry technically favors the call side.
-- If neither side offers 8Δ+, recommend SIT OUT. Note the conflict explicitly: "Gamma favors CCS but premium above [wall level] is below 8Δ — the structurally correct trade is not tradeable today."
-- When recommending the opposite structure because the preferred side lacks premium, flag the gamma risk clearly and reduce confidence by one level. The trader is accepting structural risk for practical premium — size down accordingly.
+RULE 9: Delta Ceiling Targeting & Minimum Premium Threshold
+The calculator context provides delta ceilings (Delta Guide ceiling for IC, Put spread ceiling, Call spread ceiling) that represent the trader's preferred operating delta based on VIX regime, time remaining, and clustering multipliers. These ceilings are the TARGET — not a theoretical maximum to stay far below.
+Delta targeting hierarchy:
+- TARGET: The delta ceiling from context for the recommended structure (typically 12-18Δ). This is where the trader wants to trade. Place short strikes at or near this delta. Higher delta = more premium collected = better risk/reward for credit spreads.
+- ADJUSTED: Ceiling minus 2-3Δ (when a massive negative gamma zone of -2000+ sits directly at the ceiling strike, forcing the short strike further OTM). Note the ceiling, the adjustment, and the reason. Minor negative gamma (-500 to -1000) at or near the ceiling strike does NOT justify dropping 5+ deltas — the positive gamma wall protecting the position matters more than small acceleration zones near the strike.
+- FLOOR: 8Δ is the absolute minimum. Below 8Δ, the credit received does not justify the risk. If the structurally correct trade cannot achieve 8Δ, recommend SIT OUT.
+Common mistake: Defaulting to 8-10Δ when the calculator ceiling is 14-16Δ. The 8Δ floor exists for days when extreme structural risk forces ultra-conservative placement. On most days, the ceiling IS the recommendation. If your suggestedDelta is more than 3Δ below the ceiling, you must justify why in the strikeGuidance.
+When gamma walls or structural concerns push the short strike further OTM than the delta ceiling:
+- Evaluate whether the opposite structure achieves a delta closer to its ceiling with acceptable gamma risk.
+- If neither side can reach its ceiling minus 3Δ while maintaining structural protection, recommend SIT OUT.
+- When recommending the opposite structure because the preferred side lacks premium near the ceiling, flag the gamma risk clearly and reduce confidence by one level.
 RULE 10: SPX Net Flow Hedging Divergence
 When SPX Net Flow NCP diverges from price direction AND 3+ other signals (Market Tide, SPY flow, QQQ price action) confirm the opposite direction, treat SPX Net Flow as CONFLICTED with LOW confidence regardless of NCP magnitude — the flow is institutional hedging, not directional.
 - This pattern has been validated across multiple sessions: SPX NCP stays positive (+100M+) while SPX price drops 25-50 pts, Market Tide NCP is deeply negative, and SPY confirms bearish. The positive SPX NCP represents institutional call-buying hedges (downside protection on existing equity longs), not bullish directional conviction.
@@ -614,7 +619,7 @@ Provide ALL of the following. Be thorough — the trader is making real money de
 1. Structure & Delta
 - Structure: IRON CONDOR, PUT CREDIT SPREAD, CALL CREDIT SPREAD, or SIT OUT
 - Confidence: HIGH, MODERATE, or LOW
-- Suggested delta for the recommended structure
+- Suggested delta for the recommended structure — target the calculator's delta ceiling for the recommended structure (put spread ceiling for PCS, call spread ceiling for CCS, IC ceiling for IC). If adjusting below the ceiling, explain why in strikeGuidance
 - Per-chart confidence breakdown: how strongly each data source supports the recommendation
 2. Specific Strike Placement (from Periscope)
 If Periscope is provided, map the calculator's theoretical strikes against the gamma profile:

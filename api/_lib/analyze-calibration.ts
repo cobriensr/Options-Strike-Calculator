@@ -14,7 +14,7 @@
 const CALIBRATION_ENTRY = `<calibration_example>
 This is a real pre-trade analysis from March 25, 2026 that demonstrates correct application of all rules. Use it to calibrate your confidence levels, specificity of observations, strike guidance detail, and output structure.
 
-Session context: SPX 6608, VIX 25.28, VIX1D 14.66 (42% below VIX = extreme inversion), entry time 9:35 AM CT. Periscope showed +3000 positive gamma wall at 6650-6660. No aggregate GEX data available.
+Session context: SPX 6608, VIX 25.28, VIX1D 14.66 (42% below VIX = extreme inversion), entry time 9:35 AM CT. Calculator put spread ceiling: 15Δ. Periscope showed +3000 positive gamma wall at 6650-6660. No aggregate GEX data available.
 
 Key reasoning chain:
 1. Rule 8 weighting: SPX NCP +$102.5M (50%, BULLISH HIGH) + Market Tide NCP +$123M (25%, BULLISH HIGH) + SPY NCP +$6.3M (15%, CONFIRMS MODERATE) + QQQ neutral (10%, NEUTRAL) = net BULLISH at HIGH confidence
@@ -23,14 +23,14 @@ Key reasoning chain:
 4. RV/IV 0.70 = IV-rich, premium sellers overcompensated
 5. Structure: PCS. Not IC because triple-unanimity bullish flow is too directional for neutral structure. Not CCS because against all flow signals.
 6. Confidence: HIGH — 3 primary flow signals confirm with widening divergence, 0 contradict
-7. Strikes: 6560-6565 targeting positive gamma pocket at 6565, AVOIDING 6575-6585 negative gamma cluster near lower cone boundary
+7. Strikes: Put spread ceiling is 15Δ (~6580 zone). Negative gamma cluster at 6575-6585 forces 1Δ adjustment → targeting 14Δ at 6570-6575, with positive gamma pocket at 6565 as structural support below
 
 Correct output:
 ${JSON.stringify({
   mode: 'entry',
   structure: 'PUT CREDIT SPREAD',
   confidence: 'HIGH',
-  suggestedDelta: 10,
+  suggestedDelta: 14,
   reasoning:
     'Triple-unanimity bullish flow (SPX NCP +$102.5M rising, Market Tide NCP +$123M rising, SPY confirming) combined with extreme VIX1D inversion (42% below VIX) signals a contained bullish session ideal for aggressive put credit spreads with the 6650-6660 positive gamma wall acting as an upside price magnet.',
   chartConfidence: {
@@ -119,7 +119,7 @@ ${JSON.stringify({
   ],
   strikeGuidance: {
     adjustments: [
-      'Place short put at 6560-6565 — positive gamma pocket at 6565 and below the negative gamma cluster at 6575-6585',
+      'Place short put at 6570-6575 (14Δ) — ceiling is 15Δ, adjusted 1Δ for negative gamma at 6575-6585. Positive gamma pocket at 6565 provides structural backstop',
       'AVOID short put at 6575-6580 — negative gamma zone at cone boundary creates acceleration risk toward the position',
       'The 6600-6605 positive gamma (+1000 each) is the primary structural floor — any short put below this level has 35-45 pts of cushion plus gamma suppression',
       'If considering IC add-on later: short call at 6670-6680 with the 6650-6660 wall (+3000) and positive charm at 6665 as structural ceiling',
@@ -131,7 +131,7 @@ ${JSON.stringify({
         'Price at 6608 is inside the cone — 58 pts to upper boundary, 32 pts to lower boundary. VIX1D implies actual expected move of ~29 pts, meaning the cone is roughly 2x the likely realized range. The 6650-6660 gamma wall sits just inside the upper cone, creating a double ceiling.',
     },
     putStrikeNote:
-      'Short put should target the 6555-6565 zone. Positive gamma pocket at 6565 provides structural support. AVOID 6575-6585 where negative gamma creates acceleration risk near the lower cone boundary. The real structural floor is the +1000 positive gamma at 6600-6605 (25-30 pts of structural protection above any short put at 6560).',
+      'Calculator ceiling is 15Δ (~6580). Negative gamma at 6575-6585 forces 1Δ adjustment → short put at 6570-6575 (14Δ). Positive gamma pocket at 6565 provides structural support just below. The +1000 positive gamma floor at 6600-6605 gives 25-35 pts of structural protection above the short put.',
     callStrikeNote:
       'Not placing call leg. However, if converting to IC later, short call should be placed at 6670+ (above the 6666.20 upper cone boundary). The +3000 positive gamma wall at 6650-6660 with positive charm at 6665 provides a structural ceiling.',
   },
@@ -153,25 +153,25 @@ ${JSON.stringify({
     entry1: {
       timing: 'Now (9:35 AM CT / 10:35 AM ET)',
       sizePercent: 40,
-      delta: 10,
+      delta: 14,
       structure: 'PUT CREDIT SPREAD',
-      note: 'Initial position — triple-unanimity bullish flow confirmed with VIX1D extreme inversion. Place short put at 6560-6565 targeting positive gamma pocket.',
+      note: 'Initial position — triple-unanimity bullish flow confirmed with VIX1D extreme inversion. Place short put at 6570-6575 (14Δ), targeting calculator ceiling (15Δ) adjusted 1Δ for negative gamma at 6575-6585.',
     },
     entry2: {
       condition:
         'Flow still bullish at 10:30 AM CT (11:30 AM ET): SPX NCP above +$100M and NPP still negative. Price above 6600.',
       sizePercent: 30,
-      delta: 10,
+      delta: 14,
       structure: 'PUT CREDIT SPREAD',
-      note: 'Add if flow strength maintained. Consider same strikes or slightly higher delta (11-12Δ) if the positive gamma wall at 6650-6660 has acted as a magnet.',
+      note: 'Add if flow strength maintained. Same 14Δ target or step up to full 15Δ ceiling if the positive gamma wall at 6650-6660 has acted as a magnet and price has moved higher.',
     },
     entry3: {
       condition:
         'Flow strengthening at 11:30 AM CT (12:30 PM ET): NCP/NPP divergence wider than at Entry 1. Price approaching or above 6640.',
       sizePercent: 30,
-      delta: 12,
+      delta: 15,
       structure: 'PUT CREDIT SPREAD',
-      note: 'Final add — max position. If price is near 6650, can step up to 12Δ as the move toward the gamma wall confirms the bullish thesis.',
+      note: 'Final add — max position. If price is near 6650, step to full 15Δ ceiling as the move toward the gamma wall confirms the bullish thesis.',
     },
     maxTotalSize:
       '100% of daily risk budget across all entries. The VIX1D extreme inversion combined with triple-unanimity flow justifies full allocation.',
@@ -227,7 +227,7 @@ ${JSON.stringify({
   mode: 'midday',
   structure: 'PUT CREDIT SPREAD',
   confidence: 'HIGH',
-  suggestedDelta: 10,
+  suggestedDelta: 14,
   reasoning:
     'SPX Net Flow NPP at -$114.5M (massive institutional put selling) is the strongest bullish signal of the session, maintaining PCS thesis despite Market Tide convergence in the last 20 minutes; existing positions have 45+ pts cushion to nearest short put with a dominant +3500 positive gamma wall at 6605 standing between price and all short strikes.',
   chartConfidence: {
@@ -352,7 +352,7 @@ ${JSON.stringify({
     entry1: {
       timing: 'FILLED — 4 PCS positions active',
       sizePercent: 100,
-      delta: 10,
+      delta: 14,
       structure: 'PUT CREDIT SPREAD',
       note: 'Positions are live: short puts at 6535/6540/6545/6550 with 20 contracts each across various widths. All are well-placed with 45-65 pts of cushion. Unrealized P&L: +$150.',
     },
@@ -360,7 +360,7 @@ ${JSON.stringify({
       condition:
         'REVISED: Wait for ALL THREE conditions: (1) SPX price above 6605, (2) Market Tide NCP/NPP spread widens back above $130M, (3) SPX NCP stabilizes above +$100M. The Market Tide convergence must REVERSE before adding risk.',
       sizePercent: 0,
-      delta: 10,
+      delta: 14,
       structure: 'PUT CREDIT SPREAD',
       note: 'Entry 2 conditions from original plan are NOT met: SPX NCP at +$81.8M (below +$100M threshold), price at ~6596 (below 6600 threshold). Market Tide convergence is a warning — adding now would increase risk into a potentially fading signal.',
     },
@@ -368,7 +368,7 @@ ${JSON.stringify({
       condition:
         'CANCELLED unless Entry 2 fills AND flow re-strengthens. With the Market Tide fade, the original plan for 3 entries is overly aggressive.',
       sizePercent: 0,
-      delta: 8,
+      delta: 12,
       structure: 'PUT CREDIT SPREAD',
       note: 'Conservative posture given Market Tide convergence. Do not over-allocate into a fading signal.',
     },
