@@ -17,7 +17,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
  */
 export type ApiResult<T> =
   | { ok: true; data: T }
-  | { ok: false; error: string; status: number };
+  | { ok: false; error: string; status: number; code?: string };
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
 import { MARKET_MINUTES, TIMEOUTS } from './constants.js';
@@ -116,7 +116,7 @@ export function rejectIfNotOwner(
   if (!isOwner(req)) {
     // Don't cache 401s at the edge — each request should check the cookie
     res.setHeader('Cache-Control', 'no-store');
-    res.status(401).json({ error: 'Not authenticated' });
+    res.status(401).json({ error: 'Not authenticated', code: 'OWNER_CHECK' });
     return true;
   }
   return false;
@@ -251,7 +251,11 @@ async function schwabApiFetch<T>(
   if ('error' in authResult) {
     metrics.tokenRefresh(false);
     const status = authResult.error.type === 'expired_refresh' ? 401 : 500;
-    return { ok: false, error: authResult.error.message, status };
+    const code =
+      authResult.error.type === 'expired_refresh'
+        ? 'SCHWAB_TOKEN_EXPIRED'
+        : 'SCHWAB_TOKEN_ERROR';
+    return { ok: false, error: `[${code}] ${authResult.error.message}`, status };
   }
 
   const endpoint = path.split('?')[0] ?? path;
@@ -284,9 +288,11 @@ async function schwabApiFetch<T>(
   if (!res!.ok) {
     done(false);
     const body = await res!.text();
+    const code =
+      res!.status === 401 ? 'SCHWAB_API_REJECTED' : `SCHWAB_API_${res!.status}`;
     return {
       ok: false,
-      error: `Schwab API error (${res!.status}): ${body}`,
+      error: `[${code}] Schwab API error (${res!.status}): ${body}`,
       status: res!.status === 401 ? 401 : res!.status === 429 ? 429 : 502,
     };
   }
