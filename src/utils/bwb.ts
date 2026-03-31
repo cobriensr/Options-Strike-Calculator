@@ -44,7 +44,13 @@ export function buildPutBWB(
   const sigma = row.putSigma;
 
   // Price all legs
-  const shortPremium = blackScholesPrice(spotPrice, shortStrike, sigma, T, 'put');
+  const shortPremium = blackScholesPrice(
+    spotPrice,
+    shortStrike,
+    sigma,
+    T,
+    'put',
+  );
   const longNearPremium = blackScholesPrice(
     spotPrice,
     longNearStrike,

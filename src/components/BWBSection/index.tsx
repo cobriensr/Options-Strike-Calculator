@@ -68,8 +68,8 @@ export default function BWBSection({
       <p className="text-muted mt-2 text-[11px] italic">
         All dollar values: SPX $100 multiplier {'\u00D7'} {contracts} contract
         {contracts === 1 ? '' : 's'}. Put BWB = sell 2{'\u00D7'} short put, buy
-        long near put + long far put. Call BWB = sell 2{'\u00D7'} short call, buy
-        long near call + long far call. Sweet spot = max profit at the short
+        long near put + long far put. Call BWB = sell 2{'\u00D7'} short call,
+        buy long near call + long far call. Sweet spot = max profit at the short
         strike. Premiums theoretical (r=0).
       </p>
     </div>

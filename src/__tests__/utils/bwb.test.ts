@@ -12,9 +12,7 @@ const spot = 5800;
 const sigma = 0.2;
 const T = calcTimeToExpiry(3);
 const rows = calcAllDeltas(spot, sigma, T, 0, 10);
-const d10 = rows.find(
-  (r): r is DeltaRow => !('error' in r) && r.delta === 10,
-);
+const d10 = rows.find((r): r is DeltaRow => !('error' in r) && r.delta === 10);
 
 describe('buildPutBWB', () => {
   it('strike ordering: longFar < shortStrike < longNear', () => {
@@ -263,9 +261,7 @@ describe('BWB P&L properties', () => {
     if (!d10) return;
     const putBwb = buildPutBWB(d10, 20, 40, spot, T, 10, 20);
     const callBwb = buildCallBWB(d10, 20, 40, spot, T, 10, 20);
-    expect(putBwb.adjustedPoP).toBeLessThanOrEqual(
-      putBwb.probabilityOfProfit,
-    );
+    expect(putBwb.adjustedPoP).toBeLessThanOrEqual(putBwb.probabilityOfProfit);
     expect(callBwb.adjustedPoP).toBeLessThanOrEqual(
       callBwb.probabilityOfProfit,
     );
