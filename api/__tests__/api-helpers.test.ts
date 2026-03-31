@@ -212,7 +212,7 @@ describe('api-helpers', () => {
       const result = await schwabFetch('/quotes');
       expect(result).toEqual({
         ok: false,
-        error: 'Token expired',
+        error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
         status: 401,
       });
     });
@@ -224,7 +224,7 @@ describe('api-helpers', () => {
       const result = await schwabFetch('/quotes');
       expect(result).toEqual({
         ok: false,
-        error: 'Something broke',
+        error: '[SCHWAB_TOKEN_ERROR] Something broke',
         status: 500,
       });
     });
@@ -257,7 +257,7 @@ describe('api-helpers', () => {
       const result = await schwabFetch('/quotes');
       expect(result).toEqual({
         ok: false,
-        error: 'Schwab API error (403): Forbidden',
+        error: '[SCHWAB_API_403] Schwab API error (403): Forbidden',
         status: 502,
       });
       vi.unstubAllGlobals();
@@ -276,7 +276,7 @@ describe('api-helpers', () => {
       const result = await schwabFetch('/quotes');
       expect(result).toEqual({
         ok: false,
-        error: 'Schwab API error (401): Unauthorized',
+        error: '[SCHWAB_API_REJECTED] Schwab API error (401): Unauthorized',
         status: 401,
       });
       vi.unstubAllGlobals();
