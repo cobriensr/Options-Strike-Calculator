@@ -257,13 +257,29 @@ For management:
 - VWAP acts as a gravitational center. Price departing far from VWAP (10+ pts) tends to mean-revert. If your short strike is between price and VWAP, the mean-reversion threatens your position.
 </spx_candles>
 <dark_pool>
-SPY Dark Pool Institutional Blocks show large ($5M+) off-exchange block trades in SPY, translated to approximate SPX levels using the SPY/SPX ratio. This is provided as structured API data.
+SPY Dark Pool Institutional Blocks show large ($5M+) off-exchange block trades in SPY, translated to approximate SPX levels using the SPY/SPX ratio. This is provided as structured API data. Average-price and derivative-priced trades have been pre-filtered — every block in this data executed at the stated price, not a blended average.
 Dark pool prints reveal where institutions are buying or selling in size OFF-EXCHANGE. These prints create structural support/resistance levels that options flow, gamma, and charm cannot see — they represent committed capital, not hedging or market-making activity.
 Key concepts:
 - BUYER-INITIATED blocks (traded at or above the ask): institutions are accumulating at this level. Creates structural SUPPORT. Price is likely to bounce here.
 - SELLER-INITIATED blocks (traded at or below the bid): institutions are distributing at this level. Creates structural RESISTANCE. Price is likely to stall or reverse here.
 - BLOCK SIZE matters: a $50M buyer-initiated block creates stronger support than a $5M block. The data shows total volume and premium at each level.
 - CLUSTER effect: multiple blocks at the same SPX level (even from different timestamps) reinforce that level as structural support/resistance.
+Premium significance:
+Individual prints or daily clusters exceeding $100M in aggregate premium at a single price zone are widely considered whale-level institutional activity — the threshold professional traders watch for major support/resistance. Treat $100M+ clusters as high-confidence structural levels. Below this threshold, use the relative premium ranking (the data is sorted by premium descending) and trade count to judge significance — a cluster with many repeated blocks at the same zone signals more deliberate institutional positioning than a single large fill.
+Why dark pool levels matter as support/resistance:
+Institutions use dark pools specifically to avoid slippage — they deliberately choose a price level to transact at without moving the market. A large dark pool print at a price confirms an institution intentionally selected that price to commit capital. This deliberate price selection is what makes the level meaningful as support/resistance, regardless of whether the trade was a buy or sell.
+Direction classification limitations:
+The buyer/seller classification is inferred by comparing the trade price to the NBBO at execution time. This is a standard approach but has significant limitations:
+- Most dark pool trades execute at the NBBO midpoint (both parties get price improvement). These midpoint-matched trades are inherently directionless — the classification of midpoint-and-above as "buyer" systematically inflates buyer counts.
+- A trade at the ask could be a market maker filling inventory, not a directional buyer.
+- Multiple industry sources state directly: you cannot determine direction from dark pool prints alone.
+The LEVEL itself (where institutions chose to transact) is more reliable than the direction label. When the cluster direction label is MIXED, the level still has structural significance from committed capital — it just has no directional bias. Use options flow data (NCP/NPP, Market Tide) to resolve directional ambiguity, not the dark pool direction labels.
+Data quality considerations:
+- HFT pinging: High-frequency traders send small test orders to detect hidden institutional blocks. This can inflate trade counts within a cluster. Weight aggregate premium over trade count when assessing significance.
+- Reporting delays: FINRA requires normal-hours trades to be reported within 10 seconds, but late trades receive a modifier rather than being rejected. Extended after-hours trades may be reported the next business day by 8:15 AM ET. Some prints visible at market open may reflect prior-evening activity.
+- Not all dark pool activity is institutional: Average dark pool order sizes have declined significantly over the past decade. The $5M+ minimum premium filter in this data addresses this, but smaller blocks near the threshold may still include HFT or broker-routed retail flow.
+Magnet effect:
+Large dark pool clusters often act as price magnets — price consolidates around these heavy-volume levels before a decisive breakout or rejection. Dark pool magnets are strongest in the first 2-3 hours when institutional algorithms are most active. If a large dark pool cluster and max pain converge at the same level, note the convergence explicitly — both forces are pulling price toward the same target.
 How to use for structure selection:
 - When a dark pool buyer cluster at an SPX level ALIGNS with a positive gamma wall from Periscope: that level has the HIGHEST-CONFIDENCE structural support. Place PCS short puts AT or just below this level — it has both gamma suppression AND institutional capital defending it.
 - When a dark pool seller cluster ALIGNS with negative gamma: that level is a confirmed ceiling. Place CCS short calls ABOVE this level — institutions are selling there AND gamma accelerates moves away from it.
@@ -274,8 +290,10 @@ How to use for strike placement:
 - In the observations, note any dark pool levels that align with or contradict the Periscope gamma profile.
 How to use for management:
 - If SPX approaches a dark pool buyer level during a selloff and bounces, this confirms the level as support. Widen your PCS stop or hold with higher confidence.
-- If SPX breaks through a dark pool buyer level, the institutional support has FAILED — this is a stronger bearish signal than breaking through a gamma wall alone, because real capital was committed.
-- Dark pool levels are most relevant in the first 2-3 hours. By the final 90 minutes, 0DTE gamma mechanics dominate and dark pool levels become secondary.
+- If SPX breaks through a dark pool buyer level, the institutional support has FAILED — this is a stronger bearish signal than breaking through a gamma wall alone, because real capital was committed and lost.
+- Dark pool levels are most relevant in the first 2-3 hours. By the final 90 minutes, 0DTE gamma mechanics dominate and dark pool levels become secondary. Do not base afternoon management decisions on dark pool levels alone.
+Confluence:
+Dark pool data should never be used in isolation for structure selection. Its value is in confluence with other signals — options flow, gamma walls, charm, and technical levels. When a dark pool level aligns with a positive gamma wall, the combined signal is stronger than either alone. When dark pool and gamma disagree, gamma mechanics take precedence for strike placement (as noted above).
 </dark_pool>
 <max_pain>
 SPX 0DTE Max Pain is the strike price where the total dollar value of option holder losses is maximized — i.e., where MMs collectively profit the most if SPX settles there. This is provided as structured API data.
