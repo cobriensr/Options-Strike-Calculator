@@ -114,6 +114,20 @@ export interface AnalysisResult {
     maxTotalSize?: string;
     noEntryConditions?: string[];
   } | null;
+  directionalOpportunity?: {
+    direction: 'LONG CALL' | 'LONG PUT';
+    confidence: string;
+    reasoning: string;
+    entryTiming: string;
+    stopLoss: string;
+    profitTarget: string;
+    keyLevels: {
+      support: string | null;
+      resistance: string | null;
+      vwap: string | null;
+    };
+    signals: string[];
+  } | null;
   risks: string[];
   hedge?: {
     recommendation: string;
