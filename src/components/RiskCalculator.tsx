@@ -311,7 +311,7 @@ export default function RiskCalculator() {
               role="radiogroup"
               aria-label="Wing width"
             >
-              {WING_OPTIONS.map((w) => (
+              {WING_OPTIONS.filter((w) => w !== 50).map((w) => (
                 <Chip
                   key={w}
                   onClick={() => setWing(w)}
