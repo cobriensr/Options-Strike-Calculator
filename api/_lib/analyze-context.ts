@@ -429,8 +429,7 @@ export async function buildAnalysisContext(
           : null;
 
       if (flowDirection) {
-        const contractType =
-          flowDirection === 'bullish' ? 'CALL' : 'PUT';
+        const contractType = flowDirection === 'bullish' ? 'CALL' : 'PUT';
         // Target 14 DTE: window of 12-16 days out
         const now = new Date();
         const from = new Date(now);
@@ -486,13 +485,10 @@ export async function buildAnalysisContext(
               filtered.sort((a, b) => a.strikePrice - b.strikePrice);
               const expDate = bestExpKey.split(':')[0];
               const dte = bestExpKey.split(':')[1];
-              const side =
-                flowDirection === 'bullish' ? 'Call' : 'Put';
+              const side = flowDirection === 'bullish' ? 'Call' : 'Put';
               const tag = side[0]; // C or P
               const fmtOI = (n: number) =>
-                n >= 1000
-                  ? (n / 1000).toFixed(1) + 'K'
-                  : String(n);
+                n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
               const lines = filtered.map(
                 (c) =>
                   `  ${c.strikePrice}${tag}  Bid $${c.bid.toFixed(2)}  Ask $${c.ask.toFixed(2)}  Mid $${((c.bid + c.ask) / 2).toFixed(2)}  Δ ${c.delta.toFixed(2)}  IV ${c.volatility.toFixed(1)}%  OI ${fmtOI(c.openInterest)}  Vol ${fmtOI(c.totalVolume)}`,

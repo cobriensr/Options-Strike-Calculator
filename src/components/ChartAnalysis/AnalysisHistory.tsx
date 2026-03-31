@@ -188,9 +188,7 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   const runsAtTimeMode = useMemo(() => {
     if (!selectedTime || !selectedMode) return [];
     return filteredAnalyses
-      .filter(
-        (a) => a.entryTime === selectedTime && a.mode === selectedMode,
-      )
+      .filter((a) => a.entryTime === selectedTime && a.mode === selectedMode)
       .sort(
         (a, b) =>
           new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),

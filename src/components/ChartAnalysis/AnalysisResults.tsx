@@ -398,9 +398,7 @@ export default function AnalysisResults({
                 className="rounded px-1.5 py-0.5 text-[10px] font-bold"
                 style={{
                   backgroundColor: tint(
-                    confidenceColor(
-                      analysis.directionalOpportunity.confidence,
-                    ),
+                    confidenceColor(analysis.directionalOpportunity.confidence),
                     '18',
                   ),
                   color: confidenceColor(
@@ -463,7 +461,7 @@ export default function AnalysisResults({
                 }}
               >
                 <div
-                  className="mb-1 text-[10px] font-bold uppercase tracking-wider"
+                  className="mb-1 text-[10px] font-bold tracking-wider uppercase"
                   style={{ color: theme.accent }}
                 >
                   Key Levels
