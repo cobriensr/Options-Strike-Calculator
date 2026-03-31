@@ -40,7 +40,27 @@ import type { IvTermRow } from '../iv-term-structure.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
 import type { PreMarketData } from '../pre-market.js';
 import { formatOvernightForClaude } from './overnight-gap.js';
+import { schwabFetch } from './api-helpers.js';
 import type { ImageMediaType } from './analyze-prompts.js';
+
+// Minimal Schwab chain types for 14 DTE directional chain fetch
+interface SchwabContract {
+  strikePrice: number;
+  bid: number;
+  ask: number;
+  delta: number;
+  volatility: number; // IV as percentage (e.g. 25.5)
+  totalVolume: number;
+  openInterest: number;
+  daysToExpiration: number;
+  symbol: string;
+}
+
+interface SchwabChainData {
+  underlying: { last: number };
+  putExpDateMap: Record<string, Record<string, SchwabContract[]>>;
+  callExpDateMap: Record<string, Record<string, SchwabContract[]>>;
+}
 
 /** Safely extract a numeric value from the untyped context object. */
 export function numOrUndef(val: unknown): number | undefined {
@@ -157,6 +177,9 @@ export async function buildAnalysisContext(
   let greekFlowContext: string | null = null;
   let ivTermStructureContext: string | null = null;
   let overnightGapContext: string | null = null;
+  // Latest Market Tide NCP for directional chain fetch (hoisted for scope)
+  let latestTideNcp: number | null = null;
+  let latestTideNpp: number | null = null;
   let spxCandlesContext: string | null = null;
   let darkPoolContext: string | null = null;
   let maxPainContext: string | null = null;
@@ -199,6 +222,12 @@ export async function buildAnalysisContext(
       tideRows,
       'Market Tide (All-In)',
     );
+    // Capture latest tide for directional chain direction
+    if (tideRows.length > 0) {
+      const latest = tideRows.at(-1)!;
+      latestTideNcp = latest.ncp;
+      latestTideNpp = latest.npp;
+    }
     marketTideOtmContext = formatFlowDataForClaude(
       tideOtmRows,
       'Market Tide (OTM Only)',
@@ -387,6 +416,109 @@ export async function buildAnalysisContext(
     logger.error({ err: mpErr }, 'Failed to fetch max pain data');
   }
 
+  // On-demand 14 DTE directional chain (midday only, not backtests)
+  let directionalChainContext: string | null = null;
+  if (mode === 'midday' && !context.isBacktest) {
+    try {
+      // Determine flow direction from latest Market Tide NCP
+      const flowDirection: 'bullish' | 'bearish' | null =
+        latestTideNcp != null && latestTideNpp != null
+          ? latestTideNcp < latestTideNpp
+            ? 'bearish'
+            : 'bullish'
+          : null;
+
+      if (flowDirection) {
+        const contractType =
+          flowDirection === 'bullish' ? 'CALL' : 'PUT';
+        // Target 14 DTE: window of 12-16 days out
+        const now = new Date();
+        const from = new Date(now);
+        from.setDate(from.getDate() + 12);
+        const to = new Date(now);
+        to.setDate(to.getDate() + 16);
+        const fromStr = from.toLocaleDateString('en-CA', {
+          timeZone: 'America/New_York',
+        });
+        const toStr = to.toLocaleDateString('en-CA', {
+          timeZone: 'America/New_York',
+        });
+
+        const chainResult = await schwabFetch<SchwabChainData>(
+          `/chains?symbol=$SPX&contractType=${contractType}` +
+            `&includeUnderlyingQuote=true&strategy=SINGLE&range=NTM` +
+            `&fromDate=${fromStr}&toDate=${toStr}&strikeCount=20`,
+        );
+
+        if (chainResult.ok) {
+          const expMap =
+            flowDirection === 'bullish'
+              ? chainResult.data.callExpDateMap
+              : chainResult.data.putExpDateMap;
+
+          // Pick expiration closest to 14 DTE
+          let bestExpKey: string | null = null;
+          let bestDteDiff = Infinity;
+          for (const key of Object.keys(expMap)) {
+            const dte = Number.parseInt(key.split(':')[1] ?? '0');
+            const diff = Math.abs(dte - 14);
+            if (diff < bestDteDiff) {
+              bestDteDiff = diff;
+              bestExpKey = key;
+            }
+          }
+
+          if (bestExpKey) {
+            const strikes = expMap[bestExpKey]!;
+            const contracts: SchwabContract[] = [];
+            for (const strikeKey of Object.keys(strikes)) {
+              const list = strikes[strikeKey]!;
+              if (list.length > 0) contracts.push(list[0]!);
+            }
+
+            // Filter to |delta| between 0.40 and 0.65 (50Δ zone)
+            const filtered = contracts.filter((c) => {
+              const absDelta = Math.abs(c.delta);
+              return absDelta >= 0.4 && absDelta <= 0.65;
+            });
+
+            if (filtered.length > 0) {
+              filtered.sort((a, b) => a.strikePrice - b.strikePrice);
+              const expDate = bestExpKey.split(':')[0];
+              const dte = bestExpKey.split(':')[1];
+              const side =
+                flowDirection === 'bullish' ? 'Call' : 'Put';
+              const tag = side[0]; // C or P
+              const fmtOI = (n: number) =>
+                n >= 1000
+                  ? (n / 1000).toFixed(1) + 'K'
+                  : String(n);
+              const lines = filtered.map(
+                (c) =>
+                  `  ${c.strikePrice}${tag}  Bid $${c.bid.toFixed(2)}  Ask $${c.ask.toFixed(2)}  Mid $${((c.bid + c.ask) / 2).toFixed(2)}  Δ ${c.delta.toFixed(2)}  IV ${c.volatility.toFixed(1)}%  OI ${fmtOI(c.openInterest)}  Vol ${fmtOI(c.totalVolume)}`,
+              );
+              directionalChainContext =
+                `## ${dte} DTE SPX ${side} Chain (${expDate} expiry, 40-65Δ range)\n` +
+                `Flow direction: ${flowDirection.toUpperCase()} (from Market Tide NCP). ` +
+                `Showing ${side.toLowerCase()}s only.\n` +
+                lines.join('\n');
+            }
+          }
+        } else {
+          logger.warn(
+            { status: chainResult.status },
+            '14 DTE chain fetch failed — Schwab auth may be unavailable',
+          );
+        }
+      }
+    } catch (chainErr) {
+      logger.error(
+        { err: chainErr },
+        'Failed to fetch 14 DTE chain for directional opportunity',
+      );
+    }
+  }
+
   const marketTideOtmSection = marketTideOtmContext
     ? `\n${marketTideOtmContext}\n`
     : '';
@@ -528,6 +660,7 @@ ${(() => {
 })()}
 ${maxPainContext ? `\n## SPX 0DTE Max Pain (from API)\nMax pain is the strike where total option holder losses are maximized — MMs profit most if SPX settles here. On neutral/low-gamma days, settlement gravitates toward max pain in the final 2 hours. On days with a dominant gamma wall (Rule 6) or deeply negative GEX (cone-lower settlement pattern), the gamma wall or cone boundary overrides max pain. Use max pain as a tiebreaker when gamma and flow signals are ambiguous — if max pain aligns with a gamma wall, that level has the highest settlement probability.\n\n${maxPainContext}\n` : ''}
 ${spxCandlesContext ? `\n## SPX Intraday Price Action (5-min candles)\nReal OHLCV price data for today's session. Use this to assess price structure: is SPX making higher lows (uptrend intact despite flow concerns), compressing into a range (IC-favorable), or printing wide-range bars (elevated volatility)? The session range relative to the straddle cone shows how much of the expected move has been consumed. VWAP acts as an institutional reference price — sustained trading below VWAP on a bearish flow day confirms the thesis, while price reclaiming VWAP on a bearish day is a warning.\n\n${spxCandlesContext}\n` : ''}
+${directionalChainContext ? `\n${directionalChainContext}\nThis chain data is for the directional opportunity assessment. The trader buys 14 DTE ATM options at 50Δ minimum. Use bid/ask for entry price guidance. Do not vary strike or DTE — the trader sizes the position themselves.\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n⚠️ STRIKE OVERRIDE: Any strike prices or position descriptions in this section are from the prior recommendation — they describe what the trader was ADVISED to enter, not necessarily what was filled at those exact strikes. If "Current Open Positions" is provided above, those Schwab-verified strikes are ground truth and OVERRIDE any strike estimates here. Use ONLY the actual positions for all cushion, risk, and management calculations.\n\n${previousContext}\n` : ''}
 IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
