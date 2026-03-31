@@ -55,6 +55,7 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   const [analyses, setAnalyses] = useState<AnalysisEntry[]>([]);
   const [selectedTime, setSelectedTime] = useState<string>('');
   const [selectedMode, setSelectedMode] = useState<AnalysisMode | ''>('');
+  const [selectedRunIndex, setSelectedRunIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -182,16 +183,24 @@ export default function AnalysisHistory({ refreshKey }: Props) {
       .map((a) => a.mode);
   }, [filteredAnalyses, selectedTime]);
 
-  // ── Derived: the selected analysis ─────────────────────
+  // ── Derived: runs at selected (time, mode) ─────────────
+
+  const runsAtTimeMode = useMemo(() => {
+    if (!selectedTime || !selectedMode) return [];
+    return filteredAnalyses
+      .filter(
+        (a) => a.entryTime === selectedTime && a.mode === selectedMode,
+      )
+      .sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
+  }, [filteredAnalyses, selectedTime, selectedMode]);
 
   const selectedAnalysis = useMemo(() => {
-    if (!selectedTime || !selectedMode) return null;
-    return (
-      filteredAnalyses.find(
-        (a) => a.entryTime === selectedTime && a.mode === selectedMode,
-      ) ?? null
-    );
-  }, [filteredAnalyses, selectedTime, selectedMode]);
+    if (runsAtTimeMode.length === 0) return null;
+    return runsAtTimeMode[selectedRunIndex] ?? runsAtTimeMode[0] ?? null;
+  }, [runsAtTimeMode, selectedRunIndex]);
 
   // ── Auto-select first time when times load ─────────────
 
@@ -222,6 +231,7 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   const handleTimeChange = useCallback((time: string) => {
     setSelectedTime(time);
     setSelectedMode('');
+    setSelectedRunIndex(0);
   }, []);
 
   // ── No-op for image replace ────────────────────────────
@@ -386,7 +396,10 @@ export default function AnalysisHistory({ refreshKey }: Props) {
                   <button
                     key={m}
                     type="button"
-                    onClick={() => setSelectedMode(m)}
+                    onClick={() => {
+                      setSelectedMode(m);
+                      setSelectedRunIndex(0);
+                    }}
                     className="cursor-pointer rounded-md px-3 py-2 font-mono text-[10px] font-semibold transition-all duration-100"
                     style={{
                       backgroundColor: active
@@ -397,6 +410,37 @@ export default function AnalysisHistory({ refreshKey }: Props) {
                     }}
                   >
                     {MODE_LABELS[m].label}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        )}
+        {/* Run picker — only when multiple analyses share (time, mode) */}
+        {runsAtTimeMode.length > 1 && (
+          <fieldset className="m-0 border-0 p-0">
+            <legend className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase">
+              Run
+            </legend>
+            <div className="flex gap-1">
+              {runsAtTimeMode.map((run, i) => {
+                const active = selectedRunIndex === i;
+                const color = modeColor(run.mode);
+                return (
+                  <button
+                    key={run.id}
+                    type="button"
+                    onClick={() => setSelectedRunIndex(i)}
+                    className="cursor-pointer rounded-md px-3 py-2 font-mono text-[10px] font-semibold transition-all duration-100"
+                    style={{
+                      backgroundColor: active
+                        ? tint(color, '18')
+                        : 'transparent',
+                      color: active ? color : theme.textMuted,
+                      border: `1.5px solid ${active ? color + '40' : theme.border}`,
+                    }}
+                  >
+                    {i + 1}
                   </button>
                 );
               })}
