@@ -39,9 +39,7 @@ export async function saveDarkPoolSnapshot(
   return rows.length > 0 ? (rows[0]!.id as number) : null;
 }
 
-export async function getDarkPoolSnapshot(
-  date: string,
-): Promise<{
+export async function getDarkPoolSnapshot(date: string): Promise<{
   spxPrice: number | null;
   clusters: DarkPoolCluster[];
 } | null> {

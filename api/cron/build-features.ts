@@ -871,8 +871,7 @@ async function buildFeaturesForDate(
         buyerInitiated: number;
         sellerInitiated: number;
       }>;
-      const spxPrice =
-        Number.parseFloat(String(dpRows[0]!.spx_price)) || null;
+      const spxPrice = Number.parseFloat(String(dpRows[0]!.spx_price)) || null;
 
       features.dp_total_premium = clusters.reduce(
         (s, c) => s + c.totalPremium,
@@ -898,8 +897,7 @@ async function buildFeaturesForDate(
             : 'MIXED';
 
       if (clusters.length > 0 && spxPrice != null) {
-        features.dp_top_cluster_dist =
-          clusters[0]!.spxApprox - spxPrice;
+        features.dp_top_cluster_dist = clusters[0]!.spxApprox - spxPrice;
       }
 
       // Premium split by direction

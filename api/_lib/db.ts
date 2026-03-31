@@ -780,8 +780,7 @@ const MIGRATIONS: Migration[] = [
   },
   {
     id: 20,
-    description:
-      'Create dark_pool_snapshots table for persisted cluster data',
+    description: 'Create dark_pool_snapshots table for persisted cluster data',
     run: async (sql) => {
       await sql`
         CREATE TABLE IF NOT EXISTS dark_pool_snapshots (
@@ -821,8 +820,7 @@ const MIGRATIONS: Migration[] = [
   },
   {
     id: 21,
-    description:
-      'Add dark pool feature columns to training_features',
+    description: 'Add dark pool feature columns to training_features',
     run: async (sql) => {
       await sql`
         ALTER TABLE training_features
