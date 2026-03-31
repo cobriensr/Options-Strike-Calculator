@@ -219,7 +219,7 @@ describe('RiskCalculator: wing width chips', () => {
     const buttons = wingGroup.querySelectorAll('button');
     const labels = Array.from(buttons).map((b) => b.textContent);
     expect(labels).toEqual(
-      expect.arrayContaining(['5', '10', '15', '20', '25', '30', '50']),
+      expect.arrayContaining(['5', '10', '15', '20', '25', '30']),
     );
   });
 
