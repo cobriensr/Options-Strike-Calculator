@@ -1,0 +1,77 @@
+import type { DeltaRow, CalculationResults } from '../../types';
+import { buildPutBWB, buildCallBWB } from '../../utils/calculator';
+import BWBLegsTable from './BWBLegsTable';
+import BWBPnLProfileTable from './BWBPnLProfileTable';
+
+interface Props {
+  results: CalculationResults;
+  narrowWidth: number;
+  wideMultiplier: number;
+  contracts: number;
+  effectiveRatio: number;
+}
+
+export default function BWBSection({
+  results,
+  narrowWidth,
+  wideMultiplier,
+  contracts,
+  effectiveRatio,
+}: Props) {
+  const wideWidth = narrowWidth * wideMultiplier;
+
+  const validRows = results.allDeltas.filter(
+    (row): row is DeltaRow => !('error' in row),
+  );
+
+  const putRows = validRows.map((r) =>
+    buildPutBWB(
+      r,
+      narrowWidth,
+      wideWidth,
+      results.spot,
+      results.T,
+      effectiveRatio,
+      results.vix,
+    ),
+  );
+
+  const callRows = validRows.map((r) =>
+    buildCallBWB(
+      r,
+      narrowWidth,
+      wideWidth,
+      results.spot,
+      results.T,
+      effectiveRatio,
+      results.vix,
+    ),
+  );
+
+  return (
+    <div className="mt-4.5">
+      <div className="text-accent mb-2.5 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
+        Broken Wing Butterfly ({narrowWidth}/{wideWidth}-pt wings)
+      </div>
+
+      {/* Legs Table */}
+      <BWBLegsTable putRows={putRows} callRows={callRows} />
+
+      {/* P&L Profile Table */}
+      <BWBPnLProfileTable
+        putRows={putRows}
+        callRows={callRows}
+        contracts={contracts}
+        effectiveRatio={effectiveRatio}
+      />
+
+      <p className="text-muted mt-2 text-[11px] italic">
+        All dollar values: SPX $100 multiplier {'\u00D7'} {contracts} contract
+        {contracts === 1 ? '' : 's'}. Put BWB = sell 2{'\u00D7'} short put, buy
+        long near put + long far put. Call BWB = sell 2{'\u00D7'} short call, buy
+        long near call + long far call. Sweet spot = max profit at the short
+        strike. Premiums theoretical (r=0).
+      </p>
+    </div>
+  );
+}

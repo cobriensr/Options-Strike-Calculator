@@ -56,6 +56,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(screen.getByText(/Fill in the inputs above/)).toBeInTheDocument();
@@ -71,6 +74,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(screen.getByText('All Delta Strikes')).toBeInTheDocument();
@@ -86,6 +92,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(screen.getByText('SPY Spot')).toBeInTheDocument();
@@ -102,6 +111,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(
@@ -119,6 +131,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(screen.queryByText(/Iron Condor/)).not.toBeInTheDocument();
@@ -134,6 +149,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(screen.getByText(/Iron Condor \(10-pt wings\)/)).toBeInTheDocument();
@@ -149,6 +167,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={3}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(screen.getByText(/Put skew: \+3%/)).toBeInTheDocument();
@@ -164,6 +185,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(screen.queryByText(/Put skew:/)).not.toBeInTheDocument();
@@ -179,6 +203,9 @@ describe('ResultsSection', () => {
         wingWidth={10}
         contracts={1}
         skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
       />,
     );
     expect(screen.getByText(/derived/)).toBeInTheDocument();

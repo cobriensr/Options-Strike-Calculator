@@ -82,6 +82,12 @@ export default function StrikeCalculator() {
     setSkewPct,
     clusterMult,
     setClusterMult,
+    showBWB,
+    setShowBWB,
+    bwbNarrowWidth,
+    setBwbNarrowWidth,
+    bwbWideMultiplier,
+    setBwbWideMultiplier,
     dSpot,
     dSpx,
     dVix,
@@ -251,6 +257,10 @@ export default function StrikeCalculator() {
   );
 
   const handleToggleIC = useCallback(() => setShowIC((v) => !v), [setShowIC]);
+  const handleToggleBWB = useCallback(
+    () => setShowBWB((v) => !v),
+    [setShowBWB],
+  );
 
   const handleUseVix1dAsSigma = useCallback(
     (sigma: number) => {
@@ -547,6 +557,12 @@ export default function StrikeCalculator() {
                 onWingWidthChange={setWingWidth}
                 contracts={contracts}
                 onContractsChange={setContracts}
+                showBWB={showBWB}
+                onToggleBWB={handleToggleBWB}
+                bwbNarrowWidth={bwbNarrowWidth}
+                onBwbNarrowWidthChange={setBwbNarrowWidth}
+                bwbWideMultiplier={bwbWideMultiplier}
+                onBwbWideMultiplierChange={setBwbWideMultiplier}
                 results={results}
                 vixOHLC={vix.vixOHLC}
                 vixOHLCField={vix.vixOHLCField}
@@ -654,6 +670,9 @@ export default function StrikeCalculator() {
                 wingWidth={wingWidth}
                 contracts={contracts}
                 skewPct={skewPct}
+                showBWB={showBWB}
+                bwbNarrowWidth={bwbNarrowWidth}
+                bwbWideMultiplier={bwbWideMultiplier}
               />
             </ErrorBoundary>
           </main>
