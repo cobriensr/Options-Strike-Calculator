@@ -59,6 +59,14 @@ describe('fetchDarkPoolBlocks', () => {
     const extendedHoursTrade = makeTrade({
       trade_settlement: 'next_day_settlement',
     });
+    const avgPriceTrade = makeTrade({
+      sale_cond_codes: 'average_price_trade',
+      tracking_id: 900,
+    });
+    const derivativeTrade = makeTrade({
+      trade_code: 'derivative_priced',
+      tracking_id: 901,
+    });
 
     vi.stubGlobal(
       'fetch',
@@ -66,7 +74,13 @@ describe('fetchDarkPoolBlocks', () => {
         ok: true,
         json: () =>
           Promise.resolve({
-            data: [validTrade, canceledTrade, extendedHoursTrade],
+            data: [
+              validTrade,
+              canceledTrade,
+              extendedHoursTrade,
+              avgPriceTrade,
+              derivativeTrade,
+            ],
           }),
       }),
     );
@@ -75,6 +89,41 @@ describe('fetchDarkPoolBlocks', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]!.tracking_id).toBe(123456);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('accepts both "regular" and "regular_settlement" values', async () => {
+    const regularTrade = makeTrade({
+      trade_settlement: 'regular',
+      tracking_id: 100,
+    });
+    const regularSettlementTrade = makeTrade({
+      trade_settlement: 'regular_settlement',
+      tracking_id: 101,
+    });
+    const otherTrade = makeTrade({
+      trade_settlement: 'cash_settlement',
+      tracking_id: 102,
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [regularTrade, regularSettlementTrade, otherTrade],
+          }),
+      }),
+    );
+
+    const result = await fetchDarkPoolBlocks('test-key');
+
+    expect(result).toHaveLength(2);
+    expect(result.map((t) => t.tracking_id)).toEqual(
+      expect.arrayContaining([100, 101]),
+    );
 
     // Verify auth header and URL
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
