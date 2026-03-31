@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as XLSX from 'xlsx';
-import { exportPnLComparison } from '../../utils/exportXlsx';
+import {
+  exportPnLComparison,
+  exportBWBComparison,
+} from '../../utils/exportXlsx';
 import { calcAllDeltas, calcTimeToExpiry } from '../../utils/calculator';
 import type { CalculationResults } from '../../types';
 
@@ -600,6 +603,263 @@ describe('exportPnLComparison', () => {
         effectiveRatio: 10,
         skewPct: 3,
       });
+    });
+  });
+});
+
+// ============================================================
+// BWB Export
+// ============================================================
+
+describe('exportBWBComparison', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('calls XLSX.writeFile', async () => {
+    await exportBWBComparison({
+      results: makeResults(),
+      contracts: 1,
+      effectiveRatio: 10,
+    });
+    expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates filename with bwb prefix', async () => {
+    await exportBWBComparison({
+      results: makeResults(),
+      contracts: 1,
+      effectiveRatio: 10,
+    });
+    const filename = (XLSX.writeFile as ReturnType<typeof vi.fn>).mock
+      .calls[0]![1] as string;
+    expect(filename).toMatch(
+      /^strike-calc-bwb-\d{4}-\d{2}-\d{2}_\d{4}\.xlsx$/,
+    );
+  });
+
+  it('creates 2 sheets', async () => {
+    await exportBWBComparison({
+      results: makeResults(),
+      contracts: 1,
+      effectiveRatio: 10,
+    });
+    const wb = getWorkbook();
+    expect(wb.SheetNames).toHaveLength(2);
+    expect(wb.SheetNames).toEqual(['BWB Comparison', 'Inputs']);
+  });
+
+  describe('Sheet 1: BWB Comparison', () => {
+    it('has correct header columns', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      const headers = data[0];
+      expect(headers).toContain('Narrow');
+      expect(headers).toContain('Wide');
+      expect(headers).toContain('Mult');
+      expect(headers).toContain('Delta');
+      expect(headers).toContain('Side');
+      expect(headers).toContain('Net Credit (pts)');
+      expect(headers).toContain('Max Profit (pts)');
+      expect(headers).toContain('Max Loss (pts)');
+      expect(headers).toContain('Sweet Spot');
+      expect(headers).toContain('Breakeven');
+      expect(headers).toContain('Monthly Net ($)');
+    });
+
+    it('has 240 data rows (5 narrows × 4 mults × 6 deltas × 2 sides)', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      // 1 header + 240 data rows
+      expect(data.length).toBe(241);
+    });
+
+    it('contains both BWB side types', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      const sides = [...new Set(data.map((r) => r['Side']))];
+      expect(sides).toContain('Put BWB');
+      expect(sides).toContain('Call BWB');
+      expect(sides).toHaveLength(2);
+    });
+
+    it('contains all narrow widths', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      const narrows = [...new Set(data.map((r) => r['Narrow']))].sort(
+        (a, b) => Number(a) - Number(b),
+      );
+      expect(narrows).toEqual([10, 15, 20, 25, 30]);
+    });
+
+    it('contains all multipliers', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      const mults = [...new Set(data.map((r) => r['Mult']))];
+      expect(mults).toContain('1.5x');
+      expect(mults).toContain('2x');
+      expect(mults).toContain('2.5x');
+      expect(mults).toContain('3x');
+    });
+
+    it('max profit > net credit (sweet spot adds narrow width)', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      for (const row of data) {
+        expect(row['Max Profit (pts)']).toBeGreaterThan(
+          row['Net Credit (pts)'],
+        );
+      }
+    });
+
+    it('max loss is positive', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      for (const row of data) {
+        expect(row['Max Loss (pts)']).toBeGreaterThan(0);
+      }
+    });
+
+    it('buying power equals max loss', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      for (const row of data) {
+        expect(row['Buying Power ($)']).toBe(row['Max Loss ($)']);
+      }
+    });
+
+    it('dollar values scale with contracts', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb1 = getWorkbook();
+      const data1: any[] = XLSX.utils.sheet_to_json(
+        getSheet(wb1, 'BWB Comparison'),
+      );
+
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 10,
+        effectiveRatio: 10,
+      });
+      const wb10 = getWorkbook();
+      const data10: any[] = XLSX.utils.sheet_to_json(
+        getSheet(wb10, 'BWB Comparison'),
+      );
+
+      expect(data10[0]['Max Loss ($)']).toBeCloseTo(
+        data1[0]['Max Loss ($)'] * 10,
+        0,
+      );
+    });
+
+    it('PoP is between 0 and 100', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      for (const row of data) {
+        expect(row['PoP (%)']).toBeGreaterThan(0);
+        expect(row['PoP (%)']).toBeLessThan(100);
+      }
+    });
+
+    it('sweet spot is a valid SPX strike', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      for (const row of data) {
+        expect(row['Sweet Spot']).toBeGreaterThan(5000);
+        expect(row['Sweet Spot'] % 5).toBe(0);
+      }
+    });
+  });
+
+  describe('Sheet 2: Inputs', () => {
+    it('mentions BWB in title', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'Inputs');
+      const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      const flat = data.map((r) => r.join(' '));
+      expect(flat.some((s) => s.includes('BWB Export'))).toBe(true);
+    });
+
+    it('lists narrow widths and multipliers', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'Inputs');
+      const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      const flat = data.map((r) => r.join(' '));
+      expect(flat.some((s) => s.includes('10, 15, 20, 25, 30'))).toBe(true);
+      expect(flat.some((s) => s.includes('1.5x'))).toBe(true);
     });
   });
 });

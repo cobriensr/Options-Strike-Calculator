@@ -334,4 +334,23 @@ describe('BWBSection', () => {
       screen.getByText(/Broken Wing Butterfly \(20\/40-pt wings\)/),
     ).toBeInTheDocument();
   });
+
+  // ============================================================
+  // Export button
+  // ============================================================
+
+  it('shows export button', () => {
+    renderSection();
+    expect(
+      screen.getByRole('button', { name: 'Export BWB comparison to Excel' }),
+    ).toBeInTheDocument();
+  });
+
+  it('export button has correct text', () => {
+    renderSection();
+    const btn = screen.getByRole('button', {
+      name: 'Export BWB comparison to Excel',
+    });
+    expect(btn).toHaveTextContent('Export All BWB Widths to Excel');
+  });
 });
