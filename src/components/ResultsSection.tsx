@@ -3,6 +3,7 @@ import { DEFAULTS } from '../constants';
 import ParameterSummary from './ParameterSummary';
 import DeltaStrikesTable from './DeltaStrikesTable';
 import IronCondorSection from './IronCondorSection';
+import BWBSection from './BWBSection';
 
 interface Props {
   results: CalculationResults | null;
@@ -12,6 +13,9 @@ interface Props {
   wingWidth: number;
   contracts: number;
   skewPct: number;
+  showBWB: boolean;
+  bwbNarrowWidth: number;
+  bwbWideMultiplier: number;
 }
 
 export default function ResultsSection({
@@ -22,6 +26,9 @@ export default function ResultsSection({
   wingWidth,
   contracts,
   skewPct,
+  showBWB,
+  bwbNarrowWidth,
+  bwbWideMultiplier,
 }: Props) {
   return (
     <div id="results" tabIndex={-1} className="mt-6">
@@ -59,6 +66,16 @@ export default function ResultsSection({
               contracts={contracts}
               effectiveRatio={effectiveRatio}
               skewPct={skewPct}
+            />
+          )}
+
+          {showBWB && (
+            <BWBSection
+              results={results}
+              narrowWidth={bwbNarrowWidth}
+              wideMultiplier={bwbWideMultiplier}
+              contracts={contracts}
+              effectiveRatio={effectiveRatio}
             />
           )}
 

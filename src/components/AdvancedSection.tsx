@@ -1,6 +1,11 @@
 import { theme } from '../themes';
 import type { CalculationResults, VIXDayData, OHLCField } from '../types';
-import { getKurtosisFactor, WING_OPTIONS } from '../constants';
+import {
+  getKurtosisFactor,
+  WING_OPTIONS,
+  BWB_NARROW_OPTIONS,
+  BWB_WIDE_MULTIPLIERS,
+} from '../constants';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 import ThetaDecayChart from './ThetaDecayChart';
 
@@ -13,6 +18,12 @@ interface Props {
   onWingWidthChange: (v: number) => void;
   contracts: number;
   onContractsChange: (v: number) => void;
+  showBWB: boolean;
+  onToggleBWB: () => void;
+  bwbNarrowWidth: number;
+  onBwbNarrowWidthChange: (v: number) => void;
+  bwbWideMultiplier: number;
+  onBwbWideMultiplierChange: (v: number) => void;
   results?: CalculationResults | null;
   vixOHLC: VIXDayData | null;
   vixOHLCField: OHLCField;
@@ -30,6 +41,12 @@ export default function AdvancedSection({
   onWingWidthChange,
   contracts,
   onContractsChange,
+  showBWB,
+  onToggleBWB,
+  bwbNarrowWidth,
+  onBwbNarrowWidthChange,
+  bwbWideMultiplier,
+  onBwbWideMultiplierChange,
   results,
   vixOHLC,
   vixOHLCField,
@@ -46,17 +63,30 @@ export default function AdvancedSection({
     <SectionBox
       label="Advanced"
       headerRight={
-        <button
-          onClick={onToggleIC}
-          className={
-            'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
-            (showIC
-              ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-              : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
-          }
-        >
-          {showIC ? 'Hide' : 'Show'} Iron Condor
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={onToggleIC}
+            className={
+              'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
+              (showIC
+                ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
+            }
+          >
+            {showIC ? 'Hide' : 'Show'} Iron Condor
+          </button>
+          <button
+            onClick={onToggleBWB}
+            className={
+              'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
+              (showBWB
+                ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
+            }
+          >
+            {showBWB ? 'Hide' : 'Show'} BWB
+          </button>
+        </div>
       }
     >
       {/* Put Skew Slider */}
@@ -230,6 +260,72 @@ export default function AdvancedSection({
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {showBWB && (
+        <div className="border-edge border-t pt-3.5">
+          <div className="mb-1.5 flex items-center justify-between">
+            <label
+              htmlFor="bwb-narrow"
+              className="text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
+            >
+              BWB Narrow Wing (SPX pts)
+            </label>
+            <span className="text-accent font-mono text-sm font-medium">
+              {bwbNarrowWidth}
+            </span>
+          </div>
+          <div
+            className="flex flex-wrap gap-1.5"
+            role="radiogroup"
+            aria-label="BWB narrow wing width"
+          >
+            {BWB_NARROW_OPTIONS.map((w) => (
+              <Chip
+                key={w}
+                active={bwbNarrowWidth === w}
+                onClick={() => onBwbNarrowWidthChange(w)}
+                label={String(w)}
+              />
+            ))}
+          </div>
+          <p className="text-muted mt-1.5 mb-0 text-[11px] italic">
+            Distance from short strike to the near long (credit side).
+          </p>
+
+          <div className="mt-3.5">
+            <div className="mb-1.5 flex items-center justify-between">
+              <label
+                htmlFor="bwb-multiplier"
+                className="text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
+              >
+                Wide Wing Multiplier
+              </label>
+              <span className="text-accent font-mono text-sm font-medium">
+                {bwbWideMultiplier}x {'\u2192'}{' '}
+                {bwbNarrowWidth * bwbWideMultiplier}pt wide
+              </span>
+            </div>
+            <div
+              className="flex flex-wrap gap-1.5"
+              role="radiogroup"
+              aria-label="BWB wide wing multiplier"
+            >
+              {BWB_WIDE_MULTIPLIERS.map((m) => (
+                <Chip
+                  key={m}
+                  active={bwbWideMultiplier === m}
+                  onClick={() => onBwbWideMultiplierChange(m)}
+                  label={m + 'x'}
+                />
+              ))}
+            </div>
+            <p className="text-muted mt-1.5 mb-0 text-[11px] italic">
+              Wide wing = narrow {'\u00D7'} multiplier. Higher = more risk but
+              more credit.
+            </p>
+          </div>
         </div>
       )}
 
