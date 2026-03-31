@@ -20,7 +20,8 @@ const PHASES: Phase[] = [
     endMin: 11 * 60 + 30,
     timeLabel: '9:00 – 11:30',
     title: 'Sell Credit Spreads',
-    subtitle: 'Sell 0DTE put/call credit spreads — collect premium, let theta decay',
+    subtitle:
+      'Sell 0DTE put/call credit spreads — collect premium, let theta decay',
     color: theme.green,
   },
   {
@@ -102,13 +103,10 @@ export default memo(function TradingScheduleSection() {
               <div key={i} className="relative flex items-start pl-5">
                 {/* timeline dot */}
                 <span
-                  className="absolute left-0 top-3 h-[11px] w-[11px] rounded-full border-[2px]"
+                  className="absolute top-3 left-0 h-[11px] w-[11px] rounded-full border-[2px]"
                   style={{
-                    borderColor: past
-                      ? tint(phase.color, '50')
-                      : phase.color,
-                    background:
-                      active || past ? phase.color : 'transparent',
+                    borderColor: past ? tint(phase.color, '50') : phase.color,
+                    background: active || past ? phase.color : 'transparent',
                     boxShadow: active
                       ? `0 0 8px ${tint(phase.color, '50')}`
                       : 'none',
@@ -141,7 +139,7 @@ export default memo(function TradingScheduleSection() {
                     </span>
                     {active && (
                       <span
-                        className="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest"
+                        className="rounded-full px-2 py-0.5 text-[9px] font-bold tracking-widest uppercase"
                         style={{
                           color: phase.color,
                           background: tint(phase.color, '18'),
