@@ -778,6 +778,74 @@ const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 20,
+    description:
+      'Create dark_pool_snapshots table for persisted cluster data',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS dark_pool_snapshots (
+          id          SERIAL PRIMARY KEY,
+          date        DATE NOT NULL,
+          timestamp   TIMESTAMPTZ NOT NULL,
+          snapshot_id INTEGER REFERENCES market_snapshots(id),
+          spx_price   DECIMAL(10,2),
+          clusters    JSONB NOT NULL,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(date, timestamp)
+        )
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_dp_snapshots_date
+        ON dark_pool_snapshots (date)
+      `;
+    },
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS dark_pool_snapshots (
+          id          SERIAL PRIMARY KEY,
+          date        DATE NOT NULL,
+          timestamp   TIMESTAMPTZ NOT NULL,
+          snapshot_id INTEGER REFERENCES market_snapshots(id),
+          spx_price   DECIMAL(10,2),
+          clusters    JSONB NOT NULL,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(date, timestamp)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_dp_snapshots_date
+        ON dark_pool_snapshots (date)
+      `,
+    ],
+  },
+  {
+    id: 21,
+    description:
+      'Add dark pool feature columns to training_features',
+    run: async (sql) => {
+      await sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS dp_total_premium    DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS dp_buyer_initiated  INTEGER,
+          ADD COLUMN IF NOT EXISTS dp_seller_initiated INTEGER,
+          ADD COLUMN IF NOT EXISTS dp_net_bias         TEXT,
+          ADD COLUMN IF NOT EXISTS dp_cluster_count    INTEGER,
+          ADD COLUMN IF NOT EXISTS dp_top_cluster_dist DECIMAL(10,2)
+      `;
+    },
+    statements: (sql) => [
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS dp_total_premium    DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS dp_buyer_initiated  INTEGER,
+          ADD COLUMN IF NOT EXISTS dp_seller_initiated INTEGER,
+          ADD COLUMN IF NOT EXISTS dp_net_bias         TEXT,
+          ADD COLUMN IF NOT EXISTS dp_cluster_count    INTEGER,
+          ADD COLUMN IF NOT EXISTS dp_top_cluster_dist DECIMAL(10,2)
+      `,
+    ],
+  },
 ];
 
 /**
@@ -833,3 +901,4 @@ export * from './db-snapshots.js';
 export * from './db-analyses.js';
 export * from './db-flow.js';
 export * from './db-positions.js';
+export * from './db-darkpool.js';

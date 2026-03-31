@@ -26,7 +26,12 @@ import {
   formatGreekFlowForClaude,
 } from './db-strike-helpers.js';
 import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
-import { fetchDarkPoolBlocks, formatDarkPoolForClaude } from './darkpool.js';
+import {
+  fetchDarkPoolBlocks,
+  clusterDarkPoolTrades,
+  formatDarkPoolForClaude,
+} from './darkpool.js';
+import type { DarkPoolCluster } from './darkpool.js';
 import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
 import logger from './logger.js';
 import {
@@ -87,6 +92,8 @@ export interface AnalysisContextResult {
   mode: string;
   /** Active lessons block for system prompt injection. */
   lessonsBlock: string;
+  /** Clustered dark pool data for persistence (null if unavailable). */
+  darkPoolClusters: DarkPoolCluster[] | null;
 }
 
 /**
@@ -182,6 +189,7 @@ export async function buildAnalysisContext(
   let latestTideNpp: number | null = null;
   let spxCandlesContext: string | null = null;
   let darkPoolContext: string | null = null;
+  let darkPoolClusters: DarkPoolCluster[] | null = null;
   let maxPainContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
@@ -391,6 +399,7 @@ export async function buildAnalysisContext(
           currentSpx && currentSpy && currentSpy > 0
             ? currentSpx / currentSpy
             : 10;
+        darkPoolClusters = clusterDarkPoolTrades(trades, ratio);
         darkPoolContext = formatDarkPoolForClaude(trades, currentSpx, ratio);
       }
     }
@@ -692,5 +701,5 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
   const finalContextText = contextText + winRateContext;
   content.push({ type: 'text', text: finalContextText });
 
-  return { content, mode, lessonsBlock };
+  return { content, mode, lessonsBlock, darkPoolClusters };
 }

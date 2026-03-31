@@ -21,7 +21,7 @@ import {
   rejectIfRateLimited,
   checkBot,
 } from './_lib/api-helpers.js';
-import { saveAnalysis, getDb } from './_lib/db.js';
+import { saveAnalysis, saveDarkPoolSnapshot, getDb } from './_lib/db.js';
 import {
   analyzeBodySchema,
   analysisResponseSchema,
@@ -86,10 +86,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { images, context } = parsed.data;
 
   // Build analysis context (fetches flow, GEX, candles, dark pool, etc.)
-  const { content, mode, lessonsBlock } = await buildAnalysisContext(
-    images,
-    context,
-  );
+  const { content, mode, lessonsBlock, darkPoolClusters } =
+    await buildAnalysisContext(images, context);
 
   // Stable system prompt (cached 1h) — lessons appended outside cache boundary
   // Calibration example is mode-specific (entry/midday/review) so each mode
@@ -248,6 +246,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           );
           metrics.dbSave('analyses', true);
           saved = true;
+          // Persist dark pool clusters alongside the analysis
+          if (darkPoolClusters && darkPoolClusters.length > 0) {
+            try {
+              await saveDarkPoolSnapshot({
+                date,
+                timestamp: new Date().toISOString(),
+                snapshotId,
+                spxPrice: (context.spx as number) ?? null,
+                clusters: darkPoolClusters,
+              });
+            } catch (dpSaveErr) {
+              logger.error(
+                { err: dpSaveErr },
+                'dark pool snapshot save failed',
+              );
+            }
+          }
           break;
         } catch (dbErr) {
           logger.error(

@@ -38,7 +38,7 @@ export interface DarkPoolTrade {
   volume: number;
 }
 
-interface DarkPoolCluster {
+export interface DarkPoolCluster {
   spyPriceLow: number;
   spyPriceHigh: number;
   spxApprox: number;
@@ -87,9 +87,19 @@ export async function fetchDarkPoolBlocks(
     const body = await res.json();
     const trades: DarkPoolTrade[] = body.data ?? [];
 
-    // Filter out canceled trades and extended-hours-only trades
+    // Filter out canceled trades, extended-hours-only trades, and
+    // uncertain-price trades. Average-price and derivative-priced
+    // trades reflect a blended price over a period — they don't
+    // represent confirmed execution at the stated price, so they
+    // can inflate premium at price levels where no real institutional
+    // conviction existed.
     return trades.filter(
-      (t) => !t.canceled && t.trade_settlement === 'regular_settlement',
+      (t) =>
+        !t.canceled &&
+        (t.trade_settlement === 'regular' ||
+          t.trade_settlement === 'regular_settlement') &&
+        t.sale_cond_codes !== 'average_price_trade' &&
+        t.trade_code !== 'derivative_priced',
     );
   } catch (err) {
     logger.error({ err }, 'Failed to fetch dark pool data');

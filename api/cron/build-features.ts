@@ -444,6 +444,12 @@ const NULLABLE_FEATURE_KEYS = new Set([
   'gamma_asymmetry',
   'charm_max_pos_dist',
   'charm_max_neg_dist',
+  'dp_total_premium',
+  'dp_buyer_initiated',
+  'dp_seller_initiated',
+  'dp_net_bias',
+  'dp_cluster_count',
+  'dp_top_cluster_dist',
 ]);
 
 /** Compute feature completeness as fraction of non-null values. */
@@ -845,6 +851,59 @@ async function buildFeaturesForDate(
     }
   }
 
+  // 7. Dark pool features (from dark_pool_snapshots)
+  try {
+    const dpRows = await sql`
+      SELECT spx_price, clusters
+      FROM dark_pool_snapshots
+      WHERE date = ${dateStr}
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `;
+
+    if (dpRows.length > 0 && dpRows[0]!.clusters) {
+      const clusters = dpRows[0]!.clusters as Array<{
+        spxApprox: number;
+        totalPremium: number;
+        tradeCount: number;
+        buyerInitiated: number;
+        sellerInitiated: number;
+      }>;
+      const spxPrice =
+        Number.parseFloat(String(dpRows[0]!.spx_price)) || null;
+
+      features.dp_total_premium = clusters.reduce(
+        (s, c) => s + c.totalPremium,
+        0,
+      );
+      features.dp_buyer_initiated = clusters.reduce(
+        (s, c) => s + c.buyerInitiated,
+        0,
+      );
+      features.dp_seller_initiated = clusters.reduce(
+        (s, c) => s + c.sellerInitiated,
+        0,
+      );
+      features.dp_cluster_count = clusters.length;
+
+      const totalBuyer = features.dp_buyer_initiated as number;
+      const totalSeller = features.dp_seller_initiated as number;
+      features.dp_net_bias =
+        totalBuyer > totalSeller * 1.5
+          ? 'BUYER'
+          : totalSeller > totalBuyer * 1.5
+            ? 'SELLER'
+            : 'MIXED';
+
+      if (clusters.length > 0 && spxPrice != null) {
+        features.dp_top_cluster_dist =
+          clusters[0]!.spxApprox - spxPrice;
+      }
+    }
+  } catch (dpErr) {
+    logger.warn({ err: dpErr }, 'Dark pool feature extraction failed');
+  }
+
   features.feature_completeness = computeCompleteness(features);
 
   return features;
@@ -1019,7 +1078,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       prev_day_range_pts, prev_day_direction, prev_day_vix_change, prev_day_range_cat,
       realized_vol_5d, realized_vol_10d, rv_iv_ratio,
       vix_term_slope, vvix_percentile,
-      event_type, is_fomc, is_opex, days_to_next_event, event_count
+      event_type, is_fomc, is_opex, days_to_next_event, event_count,
+      dp_total_premium, dp_buyer_initiated, dp_seller_initiated,
+      dp_net_bias, dp_cluster_count, dp_top_cluster_dist
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -1056,7 +1117,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.prev_day_range_pts}, ${f.prev_day_direction}, ${f.prev_day_vix_change}, ${f.prev_day_range_cat},
       ${f.realized_vol_5d}, ${f.realized_vol_10d}, ${f.rv_iv_ratio},
       ${f.vix_term_slope}, ${f.vvix_percentile},
-      ${f.event_type}, ${f.is_fomc}, ${f.is_opex}, ${f.days_to_next_event}, ${f.event_count}
+      ${f.event_type}, ${f.is_fomc}, ${f.is_opex}, ${f.days_to_next_event}, ${f.event_count},
+      ${f.dp_total_premium}, ${f.dp_buyer_initiated}, ${f.dp_seller_initiated},
+      ${f.dp_net_bias}, ${f.dp_cluster_count}, ${f.dp_top_cluster_dist}
     )
     ON CONFLICT (date) DO UPDATE SET
       vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
@@ -1136,7 +1199,13 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       is_fomc = EXCLUDED.is_fomc,
       is_opex = EXCLUDED.is_opex,
       days_to_next_event = EXCLUDED.days_to_next_event,
-      event_count = EXCLUDED.event_count
+      event_count = EXCLUDED.event_count,
+      dp_total_premium = EXCLUDED.dp_total_premium,
+      dp_buyer_initiated = EXCLUDED.dp_buyer_initiated,
+      dp_seller_initiated = EXCLUDED.dp_seller_initiated,
+      dp_net_bias = EXCLUDED.dp_net_bias,
+      dp_cluster_count = EXCLUDED.dp_cluster_count,
+      dp_top_cluster_dist = EXCLUDED.dp_top_cluster_dist
   `;
 }
 
