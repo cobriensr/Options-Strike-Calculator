@@ -159,6 +159,53 @@ export interface IronCondorLegs {
   readonly adjustedCallSpreadPoP: number;
 }
 
+/** Broken wing butterfly legs for a single delta (put or call side) */
+export interface BWBLegs {
+  readonly side: 'put' | 'call';
+  readonly delta: DeltaTarget;
+  /** Short strike (2× sold — the sweet spot) */
+  readonly shortStrike: number;
+  /** Long near wing (closer to money — defines credit side) */
+  readonly longNearStrike: number;
+  /** Long far wing (further OTM — defines max loss side) */
+  readonly longFarStrike: number;
+  /** SPY equivalents */
+  readonly shortStrikeSpy: number;
+  readonly longNearStrikeSpy: number;
+  readonly longFarStrikeSpy: number;
+  /** Narrow wing width (near side, pts) */
+  readonly narrowWidth: number;
+  /** Wide wing width (far side, pts) */
+  readonly wideWidth: number;
+  /** Premium for each short contract (×2 sold) */
+  readonly shortPremium: number;
+  /** Premium for the long near wing */
+  readonly longNearPremium: number;
+  /** Premium for the long far wing */
+  readonly longFarPremium: number;
+  /** Net credit received (positive = credit, negative = debit) */
+  readonly netCredit: number;
+  /** Max profit at sweet spot = narrowWidth + netCredit */
+  readonly maxProfit: number;
+  /** Max loss on wide side = wideWidth - narrowWidth - netCredit */
+  readonly maxLoss: number;
+  /** Breakeven level (SPX) */
+  readonly breakeven: number;
+  /** Sweet spot = short strike */
+  readonly sweetSpot: number;
+  /** Return on risk = netCredit / maxLoss (for credit trades) */
+  readonly returnOnRisk: number;
+  /** Probability of profit (log-normal) */
+  readonly probabilityOfProfit: number;
+  /** Fat-tail adjusted PoP */
+  readonly adjustedPoP: number;
+  /** Aggregate Greeks across all 3 legs (net of 1 long near, 2 short, 1 long far) */
+  readonly netDelta: number;
+  readonly netGamma: number;
+  readonly netTheta: number;
+  readonly netVega: number;
+}
+
 /** Error delta row */
 export interface DeltaRowError {
   readonly delta: DeltaTarget;

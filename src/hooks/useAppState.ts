@@ -94,6 +94,11 @@ export function useAppState() {
   const [skewPct, setSkewPct] = useState(3);
   const [clusterMult, setClusterMult] = useState(1);
 
+  // BWB state
+  const [showBWB, setShowBWB] = useState(false);
+  const [bwbNarrowWidth, setBwbNarrowWidth] = useState(20);
+  const [bwbWideMultiplier, setBwbWideMultiplier] = useState(2);
+
   // Debounced values
   const dSpot = useDebounced(spotPrice);
   const dSpx = useDebounced(spxDirect);
@@ -158,6 +163,14 @@ export function useAppState() {
       clusterMult,
       setClusterMult,
 
+      // BWB
+      showBWB,
+      setShowBWB,
+      bwbNarrowWidth,
+      setBwbNarrowWidth,
+      bwbWideMultiplier,
+      setBwbWideMultiplier,
+
       // Debounced
       dSpot,
       dSpx,
@@ -190,6 +203,9 @@ export function useAppState() {
     contracts,
     skewPct,
     clusterMult,
+    showBWB,
+    bwbNarrowWidth,
+    bwbWideMultiplier,
     dSpot,
     dSpx,
     dVix,

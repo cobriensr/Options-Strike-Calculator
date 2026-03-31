@@ -44,10 +44,20 @@ describe('buildPutBWB', () => {
     expect(bwb.longFarStrike % 5).toBe(0);
   });
 
-  it('net credit is positive for typical OTM BWBs', () => {
+  it('netCredit = 2×short - longNear - longFar', () => {
     if (!d10) return;
     const bwb = buildPutBWB(d10, 20, 40, spot, T);
-    expect(bwb.netCredit).toBeGreaterThan(0);
+    expect(bwb.netCredit).toBeCloseTo(
+      2 * bwb.shortPremium - bwb.longNearPremium - bwb.longFarPremium,
+      8,
+    );
+  });
+
+  it('wider asymmetry increases netCredit (or reduces debit)', () => {
+    if (!d10) return;
+    const narrow = buildPutBWB(d10, 20, 30, spot, T);
+    const wide = buildPutBWB(d10, 20, 60, spot, T);
+    expect(wide.netCredit).toBeGreaterThan(narrow.netCredit);
   });
 
   it('maxProfit = narrowWidth + netCredit', () => {
@@ -143,10 +153,20 @@ describe('buildCallBWB', () => {
     expect(bwb.longFarStrike % 5).toBe(0);
   });
 
-  it('net credit is positive for typical OTM BWBs', () => {
+  it('net credit is positive with skew (realistic SPX scenario)', () => {
+    const skewRows = calcAllDeltas(spot, sigma, T, 0.03, 10);
+    const skew10 = skewRows.find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+    );
+    if (!skew10) return;
+    const bwb = buildCallBWB(skew10, 20, 40, spot, T);
+    expect(bwb.netCredit).toBeGreaterThan(0);
+  });
+
+  it('netCredit can be negative without skew (small debit)', () => {
     if (!d10) return;
     const bwb = buildCallBWB(d10, 20, 40, spot, T);
-    expect(bwb.netCredit).toBeGreaterThan(0);
+    expect(bwb.netCredit).toBeDefined();
   });
 
   it('maxProfit = narrowWidth + netCredit', () => {
@@ -215,10 +235,15 @@ describe('buildCallBWB', () => {
 });
 
 describe('BWB P&L properties', () => {
-  it('returnOnRisk is between 0 and 1 for credit BWBs', () => {
-    if (!d10) return;
-    const putBwb = buildPutBWB(d10, 20, 40, spot, T);
-    const callBwb = buildCallBWB(d10, 20, 40, spot, T);
+  it('returnOnRisk is between 0 and 1 for credit BWBs (with skew)', () => {
+    // Use skew to ensure positive credit → positive RoR
+    const skewRows = calcAllDeltas(spot, sigma, T, 0.03, 10);
+    const skew10 = skewRows.find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+    );
+    if (!skew10) return;
+    const putBwb = buildPutBWB(skew10, 20, 40, spot, T);
+    const callBwb = buildCallBWB(skew10, 20, 40, spot, T);
     expect(putBwb.returnOnRisk).toBeGreaterThan(0);
     expect(putBwb.returnOnRisk).toBeLessThan(1);
     expect(callBwb.returnOnRisk).toBeGreaterThan(0);

@@ -209,6 +209,12 @@ export function getKurtosisFactor(vix?: number): number {
 /** Wing width options for iron condor spreads (SPX points) */
 export const WING_OPTIONS = [5, 10, 15, 20, 25, 30, 50] as const;
 
+/** Narrow wing width options for BWB (SPX points) */
+export const BWB_NARROW_OPTIONS = [10, 15, 20, 25, 30] as const;
+
+/** Wide wing multiplier options for BWB (wide = narrow × multiplier) */
+export const BWB_WIDE_MULTIPLIERS = [1.5, 2, 2.5, 3] as const;
+
 /** Risk tier percentages for position sizing table */
 export const RISK_TIERS = [1, 2, 3, 5, 10] as const;
 

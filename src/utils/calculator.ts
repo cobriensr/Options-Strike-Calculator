@@ -40,6 +40,8 @@ export {
   calcThetaCurve,
 } from './iron-condor';
 
+export { buildPutBWB, buildCallBWB, bwbPnLAtExpiry } from './bwb';
+
 export { stressedSigma, calcHedge } from './hedge';
 
 export {
