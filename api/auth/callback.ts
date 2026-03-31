@@ -93,19 +93,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hintParts.join('; '),
       ]);
 
-      // Return a simple success page
+      // Show success confirmation, then auto-redirect after 3 seconds.
+      // The cookie is already set via Set-Cookie header above.
       done({ status: 200 });
       res.setHeader('Content-Type', 'text/html');
       res.status(200).send(`
     <!DOCTYPE html>
     <html>
-    <head><title>Auth Complete</title></head>
+    <head>
+      <title>Auth Complete</title>
+      <meta http-equiv="refresh" content="3;url=${appUrl}" />
+    </head>
     <body style="font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0a0a0a; color: #e5e5e5;">
       <div style="text-align: center;">
         <h1 style="color: #22c55e;">&#x2713; Authenticated</h1>
         <p>Schwab tokens stored. Session valid for 7 days.</p>
-        <p>Live data will auto-populate in the calculator.</p>
-        <p style="color: #888; font-size: 14px;">You can close this tab and return to the calculator.</p>
+        <p>Redirecting to calculator in 3 seconds&hellip;</p>
+        <p style="color: #888; font-size: 14px;"><a href="${appUrl}" style="color: #60a5fa;">Click here</a> if not redirected.</p>
       </div>
     </body>
     </html>
