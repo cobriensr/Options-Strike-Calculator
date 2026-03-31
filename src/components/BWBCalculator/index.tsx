@@ -329,16 +329,16 @@ export default function BWBCalculator() {
               >
                 <thead className="bg-table-header sticky top-0">
                   <tr>
-                    <th className="border-edge text-tertiary border-b-2 px-3 py-2 text-left text-[11px] font-bold uppercase tracking-[0.06em]">
+                    <th className="border-edge text-tertiary border-b-2 px-3 py-2 text-left text-[11px] font-bold tracking-[0.06em] uppercase">
                       SPX at Expiry
                     </th>
-                    <th className="border-edge text-tertiary border-b-2 px-3 py-2 text-right text-[11px] font-bold uppercase tracking-[0.06em]">
+                    <th className="border-edge text-tertiary border-b-2 px-3 py-2 text-right text-[11px] font-bold tracking-[0.06em] uppercase">
                       Per Contract
                     </th>
-                    <th className="border-edge text-tertiary border-b-2 px-3 py-2 text-right text-[11px] font-bold uppercase tracking-[0.06em]">
+                    <th className="border-edge text-tertiary border-b-2 px-3 py-2 text-right text-[11px] font-bold tracking-[0.06em] uppercase">
                       Total ({contracts})
                     </th>
-                    <th className="border-edge text-tertiary border-b-2 px-3 py-2 text-left text-[11px] font-bold uppercase tracking-[0.06em]">
+                    <th className="border-edge text-tertiary border-b-2 px-3 py-2 text-left text-[11px] font-bold tracking-[0.06em] uppercase">
                       Zone
                     </th>
                   </tr>
@@ -395,8 +395,8 @@ export default function BWBCalculator() {
           <p className="text-muted mt-2 text-[11px] italic">
             P&L based on actual fill prices entered above. SPX $100 multiplier
             {' \u00D7 '}
-            {contracts} contract{contracts === 1 ? '' : 's'}.{' '}
-            {'\u2605'} = sweet spot, {'\u25C0'} = wing strike.
+            {contracts} contract{contracts === 1 ? '' : 's'}. {'\u2605'} = sweet
+            spot, {'\u25C0'} = wing strike.
           </p>
         </>
       )}

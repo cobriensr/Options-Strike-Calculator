@@ -59,10 +59,7 @@ describe('bwb-math: calcPnl (calls)', () => {
     const maxLoss = calcPnl('calls', low, mid, high, net, 6540);
     expect(maxLoss).toBeCloseTo(-21.5, 6);
     // Further above is the same
-    expect(calcPnl('calls', low, mid, high, net, 6600)).toBeCloseTo(
-      maxLoss,
-      8,
-    );
+    expect(calcPnl('calls', low, mid, high, net, 6600)).toBeCloseTo(maxLoss, 8);
   });
 });
 

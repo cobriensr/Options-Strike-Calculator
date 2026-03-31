@@ -147,10 +147,7 @@ export function generatePnlRows(
   const metrics = calcMetrics(side, low, mid, high, net);
   const mult = 100 * contracts;
   const step = 5;
-  const padding = Math.max(
-    20,
-    Math.ceil(((high - low) * 0.3) / step) * step,
-  );
+  const padding = Math.max(20, Math.ceil(((high - low) * 0.3) / step) * step);
   const start = Math.floor((low - padding) / step) * step;
   const end = Math.ceil((high + padding) / step) * step;
 
