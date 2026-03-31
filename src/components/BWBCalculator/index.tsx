@@ -284,7 +284,10 @@ export default function BWBCalculator() {
               inputMode="decimal"
               placeholder="e.g. 6500"
               value={row.strike}
-              onChange={(e) => row.setStrike(e.target.value)}
+              onChange={(e) => {
+                row.setStrike(e.target.value);
+                setSweetSpot('');
+              }}
               className={INPUT}
               aria-label={row.label + ' strike'}
             />
