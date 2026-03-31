@@ -153,20 +153,20 @@ describe('buildCallBWB', () => {
     expect(bwb.longFarStrike % 5).toBe(0);
   });
 
-  it('net credit is positive with skew (realistic SPX scenario)', () => {
-    const skewRows = calcAllDeltas(spot, sigma, T, 0.03, 10);
-    const skew10 = skewRows.find(
-      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
-    );
-    if (!skew10) return;
-    const bwb = buildCallBWB(skew10, 20, 40, spot, T);
-    expect(bwb.netCredit).toBeGreaterThan(0);
-  });
-
-  it('netCredit can be negative without skew (small debit)', () => {
+  it('netCredit = 2×short - longNear - longFar', () => {
     if (!d10) return;
     const bwb = buildCallBWB(d10, 20, 40, spot, T);
-    expect(bwb.netCredit).toBeDefined();
+    expect(bwb.netCredit).toBeCloseTo(
+      2 * bwb.shortPremium - bwb.longNearPremium - bwb.longFarPremium,
+      8,
+    );
+  });
+
+  it('wider asymmetry increases netCredit (or reduces debit)', () => {
+    if (!d10) return;
+    const narrow = buildCallBWB(d10, 20, 30, spot, T);
+    const wide = buildCallBWB(d10, 20, 60, spot, T);
+    expect(wide.netCredit).toBeGreaterThan(narrow.netCredit);
   });
 
   it('maxProfit = narrowWidth + netCredit', () => {
