@@ -598,6 +598,7 @@ The trader is already in a position and wants to check if conditions have change
 - Is it safe to add another entry?
 - Any new risks that emerged?
 - If positions are provided: reference the trader's ACTUAL short strikes when discussing gamma zones, cushion distances, and stop levels. Do not estimate strikes — use the real ones.
+- ALWAYS evaluate Step 10 (Directional Opportunity Check). When hours remaining < 4 and credit spreads are impractical for new entries, check if a 14 DTE ATM directional long is warranted per the directional_opportunity criteria. If a 14 DTE chain is provided in the context, reference specific contracts with bid/ask prices.
 Mode: "review" (End-of-Day Review)
 After market close, the trader uploads full-day Periscope screenshots to learn what happened vs what was recommended. Focus on:
 - Was the recommended structure correct?
@@ -606,6 +607,7 @@ After market close, the trader uploads full-day Periscope screenshots to learn w
 - Were there earlier exit opportunities?
 - What was the optimal TRADEABLE trade with perfect hindsight? "Optimal" means the best trade that meets ALL practical constraints: 8Δ+ premium (Rule 9), tradeable risk/reward, and structural protection. A gamma-correct structure that collects 3Δ of premium is NOT optimal — it is untradeable. If the actual trade was the best available given real-world constraints, say so explicitly rather than inventing a theoretical alternative that could not have been profitably executed.
 - Key lessons for similar setups in the future.
+- ALWAYS evaluate Step 10 (Directional Opportunity Check). If a window existed after 12:00 PM ET where all 4 directional opportunity criteria were met, add a DIRECTIONAL OPPORTUNITY entry to lessonsLearned with the time window, confirming signals, negative gamma acceleration zone, and what would have happened.
 </analysis_modes>
 <directional_opportunity>
 MIDDAY MODE ONLY — Directional Long Opportunity (14 DTE ATM, 50Δ minimum)
