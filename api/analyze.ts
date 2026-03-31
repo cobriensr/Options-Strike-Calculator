@@ -97,6 +97,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const stableSystemText =
     SYSTEM_PROMPT_PART1 + '\n' + calibration + '\n' + SYSTEM_PROMPT_PART2;
   const analyzeStart = Date.now();
+
+  // Send keepalive pings every 30s to prevent proxy/browser idle disconnects.
+  // Vercel's edge proxy and browsers kill idle connections after ~5-10 minutes.
+  // Opus with adaptive thinking can take 5-10 minutes of silence before any
+  // response data arrives, so we write periodic newlines to keep the pipe open.
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering if present
+  const keepalive = setInterval(() => {
+    try {
+      res.write(JSON.stringify({ ping: true }) + '\n');
+    } catch {
+      // Response already closed — clear interval in finally block
+    }
+  }, 30_000);
+
   try {
     // Stream the response — Anthropic sends headers immediately with streaming,
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
@@ -286,33 +302,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       imageCount: images.length,
     });
     done({ status: 200 });
-    return res.status(200).json({
-      analysis,
-      raw: text,
-      model: usedModel,
-    });
+    res.write(JSON.stringify({ analysis, raw: text, model: usedModel }) + '\n');
+    return res.end();
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     logger.error({ err }, 'analyze unhandled error');
     // Map Anthropic SDK errors to client-friendly messages using typed exceptions
+    let errorMsg = err instanceof Error ? err.message : 'Analysis failed';
     if (err instanceof Anthropic.RateLimitError) {
-      return res.status(502).json({
-        error: 'Anthropic rate limit exceeded. Wait a moment and retry.',
-      });
+      errorMsg = 'Anthropic rate limit exceeded. Wait a moment and retry.';
+    } else if (err instanceof Anthropic.AuthenticationError) {
+      errorMsg = 'Anthropic API authentication error. Check API key.';
+    } else if (err instanceof Anthropic.APIError) {
+      errorMsg = `Analysis service error (${err.status}). Please retry.`;
     }
-    if (err instanceof Anthropic.AuthenticationError) {
-      return res
-        .status(502)
-        .json({ error: 'Anthropic API authentication error. Check API key.' });
-    }
-    if (err instanceof Anthropic.APIError) {
-      return res.status(502).json({
-        error: `Analysis service error (${err.status}). Please retry.`,
-      });
-    }
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : 'Analysis failed',
-    });
+    res.write(JSON.stringify({ error: errorMsg }) + '\n');
+    return res.end();
+  } finally {
+    clearInterval(keepalive);
   }
 }

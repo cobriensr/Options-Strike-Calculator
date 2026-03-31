@@ -858,15 +858,15 @@ describe('ChartAnalysis', () => {
   // ── ERROR EDGE CASES ──
 
   describe('error edge cases', () => {
-    it('fallback error on JSON parse failure', async () => {
+    it('fallback error on NDJSON parse failure', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
-          ok: false,
-          status: 500,
-          json: () => Promise.reject(new Error('bad')),
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve('not valid json\n'),
         }),
       );
       const { container } = render(
@@ -876,23 +876,26 @@ describe('ChartAnalysis', () => {
       await clickAnalyzeAndConfirm(user);
       await act(() => vi.advanceTimersByTimeAsync(5000));
       await waitFor(() => {
-        expect(screen.getByText('Request failed')).toBeInTheDocument();
+        expect(
+          screen.getByText((t) => t.includes('Unexpected token')),
+        ).toBeInTheDocument();
       });
       vi.useRealTimers();
     });
 
-    it('HTTP status when no error field', async () => {
+    it('NDJSON error field surfaces as error message', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation(
-          () =>
-            new Response(JSON.stringify({ message: 'x' }), {
-              status: 503,
-              headers: { 'Content-Type': 'application/json' },
-            }),
-        ),
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({ error: 'Service unavailable' }) + '\n',
+            ),
+        }),
       );
       const { container } = render(
         <ChartAnalysis results={null} context={makeContext()} />,
@@ -901,7 +904,9 @@ describe('ChartAnalysis', () => {
       await clickAnalyzeAndConfirm(user);
       await act(() => vi.advanceTimersByTimeAsync(5000));
       await waitFor(() => {
-        expect(screen.getByText('HTTP 503')).toBeInTheDocument();
+        expect(
+          screen.getByText('Service unavailable'),
+        ).toBeInTheDocument();
       });
       vi.useRealTimers();
     });

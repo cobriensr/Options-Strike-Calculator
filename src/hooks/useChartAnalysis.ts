@@ -156,16 +156,21 @@ export function useChartAnalysis(opts: {
 
           clearTimeout(timeout);
 
-          if (!res.ok) {
-            const body = await res
-              .json()
-              .catch(() => ({ error: 'Request failed' }));
-            const httpErr = new Error(body.error || `HTTP ${res.status}`);
+          // Response is NDJSON: keepalive pings followed by the
+          // final line with the real payload. Parse the last
+          // non-empty line as the response.
+          const ndjson = await res.text();
+          const lines = ndjson
+            .split('\n')
+            .filter((l) => l.trim().length > 0);
+          const lastLine = lines.at(-1) ?? '{}';
+          const data = JSON.parse(lastLine);
+
+          if (data.error) {
+            const httpErr = new Error(data.error);
             (httpErr as Error & { status: number }).status = res.status;
             throw httpErr;
           }
-
-          const data = await res.json();
 
           // Clear any interim retry message now that we have a response
           lastError = null;

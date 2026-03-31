@@ -58,10 +58,17 @@ const sampleAnalysis = {
 };
 
 function makeSuccessResponse(analysis = sampleAnalysis) {
+  // The endpoint returns NDJSON: keepalive pings + final JSON line.
+  // The hook reads via res.text() and parses the last line.
+  const ndjson =
+    JSON.stringify({ ping: true }) +
+    '\n' +
+    JSON.stringify({ analysis }) +
+    '\n';
   return {
     ok: true,
     status: 200,
-    json: () => Promise.resolve({ analysis }),
+    text: () => Promise.resolve(ndjson),
   };
 }
 
@@ -144,9 +151,12 @@ describe('useChartAnalysis', () => {
 
   it('sets error message on HTTP error', async () => {
     mockFetch.mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: () => Promise.resolve({ error: 'Internal server error' }),
+      ok: true,
+      status: 200,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({ error: 'Internal server error' }) + '\n',
+        ),
     });
 
     const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
@@ -323,10 +333,12 @@ describe('useChartAnalysis', () => {
   // ── HTTP 400-level error does not retry ──
 
   it('does not retry on 4xx client errors', async () => {
+    // Pre-Anthropic rejections (auth, validation) still return real HTTP
+    // status codes via res.json(), not NDJSON
     mockFetch.mockResolvedValue({
       ok: false,
       status: 401,
-      json: () => Promise.resolve({ error: 'Unauthorized' }),
+      text: () => Promise.resolve(JSON.stringify({ error: 'Unauthorized' })),
     });
 
     const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
