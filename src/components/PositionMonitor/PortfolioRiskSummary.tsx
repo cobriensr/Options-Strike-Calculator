@@ -12,6 +12,9 @@ interface PortfolioRiskSummaryProps {
   spreads: readonly Spread[];
   ironCondors: readonly IronCondor[];
   hedges: readonly HedgePosition[];
+  /** 0 = theoretical max loss, 2/3/4 = stop at Nx credit per spread */
+  stopMultiplier: number;
+  onStopMultiplierChange: (value: number) => void;
 }
 
 function formatCurrency(value: number): string {
@@ -40,15 +43,66 @@ function heatColor(maxLoss: number, nlv: number): string {
   return 'text-success';
 }
 
+/**
+ * Compute effective max loss using per-spread stop multiplier.
+ * Each spread's effective loss = min(credit x multiplier, theoretical max loss).
+ * For ICs, apply to each side independently (only one side can lose).
+ */
+function computeEffectiveMaxLoss(
+  spreads: readonly Spread[],
+  ironCondors: readonly IronCondor[],
+  multiplier: number,
+): number {
+  let callSideRisk = 0;
+  let putSideRisk = 0;
+
+  for (const s of spreads) {
+    const effectiveLoss = Math.min(
+      s.creditReceived * multiplier * 100,
+      s.maxLoss,
+    );
+    if (s.spreadType === 'CALL_CREDIT_SPREAD') {
+      callSideRisk += effectiveLoss;
+    } else {
+      putSideRisk += effectiveLoss;
+    }
+  }
+
+  for (const ic of ironCondors) {
+    const callEffective = Math.min(
+      ic.callSpread.creditReceived * multiplier * 100,
+      ic.callSpread.maxLoss,
+    );
+    const putEffective = Math.min(
+      ic.putSpread.creditReceived * multiplier * 100,
+      ic.putSpread.maxLoss,
+    );
+    callSideRisk += callEffective;
+    putSideRisk += putEffective;
+  }
+
+  // ICs can only lose on one side
+  return Math.max(callSideRisk, putSideRisk);
+}
+
 export default function PortfolioRiskSummary({
   risk,
   accountSummary,
   spreads,
   ironCondors,
   hedges,
+  stopMultiplier,
+  onStopMultiplierChange,
 }: PortfolioRiskSummaryProps) {
   const nlv = accountSummary.netLiquidatingValue;
-  const portfolioHeat = nlv > 0 ? (Math.abs(risk.totalMaxLoss) / nlv) * 100 : 0;
+
+  const effectiveMaxLoss =
+    stopMultiplier > 0
+      ? computeEffectiveMaxLoss(spreads, ironCondors, stopMultiplier)
+      : risk.totalMaxLoss;
+  const portfolioHeat =
+    nlv > 0 ? (Math.abs(effectiveMaxLoss) / nlv) * 100 : 0;
+  const canAbsorb = risk.buyingPowerAvailable > effectiveMaxLoss;
   const bpTotal = risk.buyingPowerUsed + risk.buyingPowerAvailable;
   const bpUtilPct = bpTotal > 0 ? (risk.buyingPowerUsed / bpTotal) * 100 : 0;
 
@@ -102,12 +156,19 @@ export default function PortfolioRiskSummary({
       role="region"
       aria-label="Portfolio risk summary"
     >
-      {/* 1 — Total Max Loss */}
-      <Card label="Total Max Loss" sub={`${formatPct(portfolioHeat)} of NLV`}>
+      {/* 1 — Total Max Loss (adjusted for stop multiplier) */}
+      <Card
+        label={
+          stopMultiplier > 0
+            ? `Max Loss (${stopMultiplier}x stop)`
+            : 'Total Max Loss'
+        }
+        sub={`${formatPct(portfolioHeat)} of NLV`}
+      >
         <span
-          className={`font-mono text-xl font-bold ${heatColor(risk.totalMaxLoss, nlv)}`}
+          className={`font-mono text-xl font-bold ${heatColor(effectiveMaxLoss, nlv)}`}
         >
-          {formatCurrency(risk.totalMaxLoss)}
+          {formatCurrency(effectiveMaxLoss)}
         </span>
       </Card>
 
@@ -121,7 +182,7 @@ export default function PortfolioRiskSummary({
       {/* 3 — Portfolio Heat */}
       <Card label="Portfolio Heat" sub="Max loss / NLV">
         <span
-          className={`font-mono text-xl font-bold ${heatColor(risk.totalMaxLoss, nlv)}`}
+          className={`font-mono text-xl font-bold ${heatColor(effectiveMaxLoss, nlv)}`}
         >
           {formatPct(portfolioHeat)}
         </span>
@@ -227,18 +288,41 @@ export default function PortfolioRiskSummary({
       <Card label="Can Absorb" sub="BP covers max loss?">
         <div className="flex items-center gap-2">
           <span
-            className={`text-xl ${risk.canAbsorbMaxLoss ? 'text-success' : 'text-danger'}`}
+            className={`text-xl ${canAbsorb ? 'text-success' : 'text-danger'}`}
             aria-hidden="true"
           >
-            {risk.canAbsorbMaxLoss ? '\u2713' : '\u2717'}
+            {canAbsorb ? '\u2713' : '\u2717'}
           </span>
           <span
-            className={`font-sans text-base font-bold ${risk.canAbsorbMaxLoss ? 'text-success' : 'text-danger'}`}
+            className={`font-sans text-base font-bold ${canAbsorb ? 'text-success' : 'text-danger'}`}
           >
-            {risk.canAbsorbMaxLoss ? 'Yes' : 'No'}
+            {canAbsorb ? 'Yes' : 'No'}
           </span>
         </div>
       </Card>
+
+      {/* 9 — Stop Multiplier Selector */}
+      <div className="col-span-2 md:col-span-4">
+        <div className="flex items-center gap-3">
+          <span className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">
+            Stop Loss
+          </span>
+          {[0, 2, 3, 4].map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => onStopMultiplierChange(m)}
+              className={`rounded-md px-3 py-1 font-sans text-xs font-bold transition-colors ${
+                stopMultiplier === m
+                  ? 'bg-accent text-white'
+                  : 'bg-surface-alt text-secondary hover:bg-edge'
+              }`}
+            >
+              {m === 0 ? 'Full' : `${m}x`}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

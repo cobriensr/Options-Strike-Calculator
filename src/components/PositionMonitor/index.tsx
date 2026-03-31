@@ -44,6 +44,10 @@ export default function PositionMonitor({ spotPrice }: PositionMonitorProps) {
   const [simMinute, setSimMinute] = useState(0);
   const [decayEnabled, setDecayEnabled] = useState(false);
 
+  // Stop-loss multiplier for realistic max loss estimates
+  // 0 = theoretical max loss (full wing width), 2-4 = stop at Nx credit
+  const [stopMultiplier, setStopMultiplier] = useState(0);
+
   // Apply theta decay — always return a new object so React
   // reconciliation is consistent (avoids switching between
   // the same rawStatement ref and a new decay-adjusted ref)
@@ -222,6 +226,8 @@ export default function PositionMonitor({ spotPrice }: PositionMonitorProps) {
             spreads={statement.spreads}
             ironCondors={statement.ironCondors}
             hedges={statement.hedges}
+            stopMultiplier={stopMultiplier}
+            onStopMultiplierChange={setStopMultiplier}
           />
 
           {/* Position Visualizations (4-panel) */}

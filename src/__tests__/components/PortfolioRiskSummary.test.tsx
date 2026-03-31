@@ -140,6 +140,7 @@ function renderSummary(
     spreads?: Spread[];
     ironCondors?: IronCondor[];
     hedges?: HedgePosition[];
+    stopMultiplier?: number;
   } = {},
 ) {
   return render(
@@ -149,6 +150,8 @@ function renderSummary(
       spreads={overrides.spreads ?? [makeSpread()]}
       ironCondors={overrides.ironCondors ?? []}
       hedges={overrides.hedges ?? []}
+      stopMultiplier={overrides.stopMultiplier ?? 0}
+      onStopMultiplierChange={() => {}}
     />,
   );
 }
@@ -391,18 +394,24 @@ describe('PortfolioRiskSummary', () => {
   });
 
   it('shows No when BP cannot absorb max loss', () => {
-    renderSummary({ risk: { canAbsorbMaxLoss: false } });
+    renderSummary({
+      risk: { totalMaxLoss: 100000, buyingPowerAvailable: 50000 },
+    });
     expect(screen.getByText('No')).toBeInTheDocument();
   });
 
   it('applies success color when can absorb', () => {
-    renderSummary({ risk: { canAbsorbMaxLoss: true } });
+    renderSummary({
+      risk: { totalMaxLoss: 50000, buyingPowerAvailable: 80000 },
+    });
     const yesText = screen.getByText('Yes');
     expect(yesText.className).toContain('text-success');
   });
 
   it('applies danger color when cannot absorb', () => {
-    renderSummary({ risk: { canAbsorbMaxLoss: false } });
+    renderSummary({
+      risk: { totalMaxLoss: 100000, buyingPowerAvailable: 50000 },
+    });
     const noText = screen.getByText('No');
     expect(noText.className).toContain('text-danger');
   });
