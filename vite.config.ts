@@ -171,6 +171,7 @@ export default defineConfig({
         'src/components/SettlementCheck/types.ts',
         'src/components/DeltaRegimeGuide/types.ts',
         'src/components/ChartAnalysis/types.ts',
+        'src/components/PositionMonitor/types.ts',
         'src/utils/calculator.ts', // barrel re-export only
       ],
     },
