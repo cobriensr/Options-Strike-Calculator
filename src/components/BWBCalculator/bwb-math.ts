@@ -144,6 +144,9 @@ export function generatePnlRows(
   net: number,
   contracts: number,
 ): PnlRow[] {
+  // Guard: if range is huge the user is mid-edit (e.g. cleared "6480" to "6")
+  if (high - low > 300) return [];
+
   const metrics = calcMetrics(side, low, mid, high, net);
   const mult = 100 * contracts;
   const step = 5;
