@@ -141,7 +141,9 @@ describe('BWBSection', () => {
       name: 'BWB legs by delta',
     });
     // Find the Put BWB row
-    const putRow = within(legsTable).getByText(/Put BWB/).closest('tr')!;
+    const putRow = within(legsTable)
+      .getByText(/Put BWB/)
+      .closest('tr')!;
     const cells = within(putRow).getAllByRole('cell');
 
     // cells: [Delta(rowSpan)] Side | LongFar | SPY | Short×2 | SPY | LongNear | SPY
@@ -162,7 +164,9 @@ describe('BWBSection', () => {
     const legsTable = screen.getByRole('table', {
       name: 'BWB legs by delta',
     });
-    const callRow = within(legsTable).getByText(/Call BWB/).closest('tr')!;
+    const callRow = within(legsTable)
+      .getByText(/Call BWB/)
+      .closest('tr')!;
 
     expect(within(callRow).getByText('5750')).toBeInTheDocument();
     expect(within(callRow).getByText('5770')).toBeInTheDocument();
@@ -199,7 +203,9 @@ describe('BWBSection', () => {
     const legsTable = screen.getByRole('table', {
       name: 'BWB legs by delta',
     });
-    const putRow = within(legsTable).getByText(/Put BWB/).closest('tr')!;
+    const putRow = within(legsTable)
+      .getByText(/Put BWB/)
+      .closest('tr')!;
 
     // putSnapped=5630, narrow=25, wide=75
     //   longFar = 5630 - 75 = 5555
