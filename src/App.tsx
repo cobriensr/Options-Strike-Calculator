@@ -31,6 +31,7 @@ import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
 import type { AnalysisContext } from './components/ChartAnalysis';
 import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
+import BWBCalculator from './components/BWBCalculator';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StatusBadge } from './components/ui';
@@ -659,6 +660,10 @@ export default function StrikeCalculator() {
               >
                 <PositionMonitor spotPrice={results?.spot ?? spxVal ?? 0} />
               </Suspense>
+            </ErrorBoundary>
+
+            <ErrorBoundary label="BWB Calculator">
+              <BWBCalculator />
             </ErrorBoundary>
 
             <ErrorBoundary label="Results">
