@@ -205,6 +205,23 @@ export const analysisResponseSchema = z.object({
       noEntryConditions: z.array(z.string()),
     })
     .nullable(),
+  directionalOpportunity: z
+    .object({
+      direction: z.enum(['LONG CALL', 'LONG PUT']),
+      confidence: z.enum(['HIGH', 'MODERATE', 'LOW']),
+      reasoning: z.string(),
+      entryTiming: z.string(),
+      stopLoss: z.string(),
+      profitTarget: z.string(),
+      keyLevels: z.object({
+        support: z.string().nullable(),
+        resistance: z.string().nullable(),
+        vwap: z.string().nullable(),
+      }),
+      signals: z.array(z.string()),
+    })
+    .nullable()
+    .optional(),
   risks: z.array(z.string()),
   hedge: z
     .object({

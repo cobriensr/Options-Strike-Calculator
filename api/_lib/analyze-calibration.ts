@@ -200,6 +200,7 @@ ${JSON.stringify({
     'Price at 6608-6610 sits on a +1000 positive gamma pocket at 6600-6605, providing immediate structural support. The dominant feature is the massive +3000 positive gamma wall at 6650-6660, approximately 42-52 pts above — in the bullish flow environment this acts as a powerful upside magnet. Between price and the wall, a negative gamma cluster at 6615-6640 will ACCELERATE any upward move, pushing price through that zone toward the wall. Below price, the lower cone at 6575.60 has negative gamma at 6575-6585 — if broken, this would accelerate downside. But positive gamma pockets at 6565 and 6550 provide stepping stones of support.',
   structureRationale:
     'PUT CREDIT SPREAD is the clear structure based on (1) triple-unanimity bullish flow across all three primary signals — SPX NCP +$102.5M rising, Market Tide NCP +$123M rising, SPY NCP +$6.3M rising — with QQQ neutral, (2) the dominant +3000 positive gamma wall at 6650-6660 acting as an upside magnet, and (3) the extreme VIX1D inversion (14.66 vs VIX 25.28, 42% below) confirming a contained daily range. IRON CONDOR was considered given the VIX1D extreme inversion override, but the flow is too directionally unanimous for a neutral structure. CALL CREDIT SPREAD is wrong-direction against all flow signals.',
+  directionalOpportunity: null,
   review: null,
   imageIssues: [],
 })}
@@ -400,6 +401,7 @@ ${JSON.stringify({
     "The Periscope gamma profile is dominated by the massive +3500-4000 positive gamma wall at 6605 (purple bar) — this is the session's structural anchor and sits just 9 pts above current price (~6596). ABOVE PRICE: Negative gamma cluster at 6615-6640 creates acceleration potential for upside moves toward the positive gamma at 6650-6660. BELOW PRICE: Small negative gamma at 6580-6590, orange bar at 6565. Positive gamma pockets at 6550 and 6520 provide support. All PCS short puts (6535-6550) are in zero-gamma territory — completely unthreatened.",
   structureRationale:
     'PUT CREDIT SPREAD remains the correct structure, consistent with the entry analysis. The primary signal (SPX Net Flow, 50% weight) has actually STRENGTHENED since entry: NPP plunged from -$15.5M to -$114.5M. Market Tide is still bullish but the convergence is a monitoring concern, not yet a reversal. SPY confirms. QQQ contradicts (10% weight). VIX1D extreme inversion remains the strongest macro signal for premium selling.',
+  directionalOpportunity: null,
   review: null,
   imageIssues: [],
 })}

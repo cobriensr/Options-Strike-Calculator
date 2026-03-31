@@ -597,6 +597,30 @@ After market close, the trader uploads full-day Periscope screenshots to learn w
 - What was the optimal TRADEABLE trade with perfect hindsight? "Optimal" means the best trade that meets ALL practical constraints: 8Δ+ premium (Rule 9), tradeable risk/reward, and structural protection. A gamma-correct structure that collects 3Δ of premium is NOT optimal — it is untradeable. If the actual trade was the best available given real-world constraints, say so explicitly rather than inventing a theoretical alternative that could not have been profitably executed.
 - Key lessons for similar setups in the future.
 </analysis_modes>
+<directional_opportunity>
+MIDDAY MODE ONLY — Directional Long Opportunity (14 DTE ATM, 50Δ minimum)
+
+This is a SEPARATE signal from the credit spread recommendation. The primary structure/entryPlan fields still reflect credit spread guidance for existing positions. directionalOpportunity is an additional actionable trade when the credit spread entry window has closed.
+
+Populate directionalOpportunity ONLY when ALL of the following are met:
+1. Hours remaining < 4 (credit spreads impractical — insufficient time for 40-50% decay)
+2. Directional flow agreement from ML-validated sources: Market Tide + at least 2 of (QQQ Net Flow, SPY ETF Tide, QQQ ETF Tide) agree on direction at MODERATE+ confidence. NOTE: For directional conviction, do NOT rely on SPX Net Flow — ML validation across 35 sessions shows it predicts settlement direction only 27% of the time (anti-signal). The reliable directional sources are QQQ Net Flow (61%), Market Tide (58%), SPY ETF Tide (56%), QQQ ETF Tide (56%). This weighting applies ONLY to directionalOpportunity — Rule 8 credit spread weighting is unchanged.
+3. Negative gamma acceleration zone in the flow direction within 30-40 pts of current price. For LONG CALL: negative gamma ABOVE price creates an upside acceleration ramp (MMs buy as price rises, amplifying the move). For LONG PUT: negative gamma BELOW price creates a downside acceleration ramp (MMs sell as price drops, amplifying the move). This is the OPPOSITE of credit spread strike placement — for directional longs, negative gamma is the catalyst, not the risk.
+4. No high-impact event within 60 minutes (FOMC, CPI would invalidate)
+
+When ANY criterion fails, set directionalOpportunity to null. Do not mention directional trades elsewhere in the analysis.
+
+The trader buys 14 DTE ATM options at 50Δ minimum. Do not vary the strike or DTE — these are fixed parameters. Focus the recommendation on:
+- Direction (LONG CALL vs LONG PUT) based on ML-validated flow sources + gamma acceleration
+- Entry timing (immediate vs wait for a specific condition like VWAP reclaim or flow confirmation)
+- Key support/resistance/VWAP levels for managing the position over multiple days
+- Stop loss based on structural level violation (gamma wall break, VWAP loss, flow reversal)
+- Profit target based on the magnitude of the directional signal and negative gamma acceleration
+
+REVIEW MODE — Retrospective Directional Opportunity:
+In review mode, if a window existed during the session where all 4 criteria above were met (after 12:00 PM ET), note it in the review.lessonsLearned array: "DIRECTIONAL OPPORTUNITY: [LONG CALL/PUT] signal existed at [time] — [which ML-validated sources confirmed, which negative gamma zone provided acceleration]. [What would have happened]."
+Do not populate the directionalOpportunity field in review mode — use lessonsLearned only.
+</directional_opportunity>
 <position_and_continuity>
 Using Live Position Data:
 When the "Current Open Positions" section is present in the context, the trader's ACTUAL open SPX 0DTE positions from Schwab are provided. Use this data to:
@@ -801,6 +825,20 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "entry3": { "condition": "Flow still bearish at 11:00 AM, price holding below 6700", "sizePercent": 30, "delta": 8, "structure": "CALL CREDIT SPREAD", "note": "Final add — max position reached" },
     "maxTotalSize": "100% of daily risk budget across all entries",
     "noEntryConditions": ["Opening range RED (> 65% consumed)", "NCP/NPP converge — directional bias unclear", "Price breaks straddle cone — sit on hands"]
+  },
+  "directionalOpportunity": null | {
+    "direction": "LONG CALL" | "LONG PUT",
+    "confidence": "HIGH" | "MODERATE" | "LOW",
+    "reasoning": "Market Tide bearish (HIGH) + QQQ NCP -$45M falling (CONFIRMS) + SPY ETF Tide bearish (CONFIRMS) + negative gamma at 5760-5780 below price creates downside acceleration ramp",
+    "entryTiming": "Now — ML-validated flow sources aligned for 2+ hours with no reversal signals",
+    "stopLoss": "Close if SPX reclaims VWAP (5785) and holds for 15 min — would invalidate bearish thesis",
+    "profitTarget": "Target 80-100% gain on premium over 2-3 sessions if flow direction persists into tomorrow",
+    "keyLevels": {
+      "support": "Gamma wall at 5750 (+3000) — price target on continued selling",
+      "resistance": "VWAP at 5785 — bearish thesis invalid above this level",
+      "vwap": "5785 — price currently 12 pts below, sustained below confirms sellers in control"
+    },
+    "signals": ["Market Tide NCP -$180M falling (HIGH)", "QQQ NCP -$45M falling (CONFIRMS)", "SPY ETF Tide NCP -$94M bearish (CONFIRMS)", "Negative gamma -2000 at 5760-5780 = downside acceleration ramp"]
   },
   "risks": ["risk 1", "risk 2"],
   "hedge": {
