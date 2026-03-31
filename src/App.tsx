@@ -32,6 +32,7 @@ import ResultsSection from './components/ResultsSection';
 import type { AnalysisContext } from './components/ChartAnalysis';
 import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
 import BWBCalculator from './components/BWBCalculator';
+import TradingScheduleSection from './components/TradingScheduleSection';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StatusBadge } from './components/ui';
@@ -591,6 +592,8 @@ export default function StrikeCalculator() {
                 termShapeAdvice={signals.vixTermShapeAdvice}
               />
             </div>
+
+            <TradingScheduleSection />
 
             <ErrorBoundary label="Risk Calculator">
               <Suspense
