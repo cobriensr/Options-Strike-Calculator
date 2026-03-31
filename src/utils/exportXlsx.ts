@@ -447,8 +447,8 @@ export async function exportBWBComparison({
   setColumnWidths(
     ws,
     [
-      8, 8, 6, 8, 10, 14, 12, 14, 12, 12, 12, 12, 8, 8, 10, 10, 10, 10, 10,
-      10, 10, 14, 14, 14,
+      8, 8, 6, 8, 10, 14, 12, 14, 12, 12, 12, 12, 8, 8, 10, 10, 10, 10, 10, 10,
+      10, 14, 14, 14,
     ],
   );
   XLSX.utils.book_append_sheet(wb, ws, 'BWB Comparison');
@@ -473,7 +473,10 @@ export async function exportBWBComparison({
     ['SPX Multiplier', '$100'],
     [],
     ['Narrow Widths Compared', BWB_NARROWS.join(', ')],
-    ['Wide Multipliers Compared', BWB_MULTIPLIERS.map((m) => m + 'x').join(', ')],
+    [
+      'Wide Multipliers Compared',
+      BWB_MULTIPLIERS.map((m) => m + 'x').join(', '),
+    ],
     ['Deltas Compared', deltaRows.map((r) => r.delta + 'Δ').join(', ')],
     [],
     ['Notes'],

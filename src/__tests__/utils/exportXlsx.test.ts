@@ -633,9 +633,7 @@ describe('exportBWBComparison', () => {
     });
     const filename = (XLSX.writeFile as ReturnType<typeof vi.fn>).mock
       .calls[0]![1] as string;
-    expect(filename).toMatch(
-      /^strike-calc-bwb-\d{4}-\d{2}-\d{2}_\d{4}\.xlsx$/,
-    );
+    expect(filename).toMatch(/^strike-calc-bwb-\d{4}-\d{2}-\d{2}_\d{4}\.xlsx$/);
   });
 
   it('creates 2 sheets', async () => {
