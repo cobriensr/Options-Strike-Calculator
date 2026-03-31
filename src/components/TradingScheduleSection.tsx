@@ -16,6 +16,14 @@ interface Phase {
 
 const PHASES: Phase[] = [
   {
+    startMin: 8 * 60 + 30,
+    endMin: 9 * 60,
+    timeLabel: '8:30 – 9:00',
+    title: 'Market Open',
+    subtitle: 'Establishing opening range — do not trade',
+    color: theme.red,
+  },
+  {
     startMin: 9 * 60,
     endMin: 11 * 60 + 30,
     timeLabel: '9:00 – 11:30',
@@ -87,7 +95,7 @@ export default memo(function TradingScheduleSection() {
 
   return (
     <SectionBox label="Trading Schedule" badge="CT">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {PHASES.map((phase, i) => {
           const active = i === activeIdx;
           const past = activeIdx >= 0 && i < activeIdx;
