@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ScrollHint } from '../ui';
 import type { CashEntry, ClosedSpread, ExecutedTrade } from './types';
 
@@ -145,7 +145,7 @@ export default function TradeLog({
     return filter === 'opens' ? isOpen : !isOpen;
   });
 
-  const toggleExpand = (idx: number) => {
+  const toggleExpand = useCallback((idx: number) => {
     setExpandedIdx((prev) => {
       const next = new Set(prev);
       if (next.has(idx)) {
@@ -155,7 +155,7 @@ export default function TradeLog({
       }
       return next;
     });
-  };
+  }, []);
 
   if (trades.length === 0) {
     return (
@@ -245,12 +245,13 @@ export default function TradeLog({
                 <TradeRow
                   key={`trade-${String(i)}`}
                   trade={trade}
+                  index={i}
                   action={action}
                   cash={cash}
                   closed={closed}
                   isExpanded={isExpanded}
                   bg={bg}
-                  onToggle={() => toggleExpand(i)}
+                  onToggle={toggleExpand}
                 />
               );
             })}
@@ -265,6 +266,7 @@ export default function TradeLog({
 
 function TradeRow({
   trade,
+  index,
   action,
   cash,
   closed,
@@ -273,20 +275,22 @@ function TradeRow({
   onToggle,
 }: {
   trade: ExecutedTrade;
+  index: number;
   action: { text: string; isOpen: boolean };
   cash: CashEntry | null;
   closed: ClosedSpread | null;
   isExpanded: boolean;
   bg: string;
-  onToggle: () => void;
+  onToggle: (idx: number) => void;
 }) {
   const fees = cash ? Math.abs(cash.commissions) + Math.abs(cash.miscFees) : 0;
+  const handleClick = useCallback(() => onToggle(index), [onToggle, index]);
 
   return (
     <>
       <tr
         className={`${bg} hover:bg-surface-alt/80 cursor-pointer`}
-        onClick={onToggle}
+        onClick={handleClick}
       >
         <td className={TD_LEFT}>
           <span className="inline-flex items-center gap-1">

@@ -286,15 +286,17 @@ export default function AnalysisResults({
           defaultOpen={!defaultCollapsed}
         >
           <div className="grid gap-2">
-            {[
-              analysis.entryPlan.entry1,
-              analysis.entryPlan.entry2,
-              analysis.entryPlan.entry3,
-            ].map((entry, i) => {
+            {(
+              [
+                [1, analysis.entryPlan.entry1],
+                [2, analysis.entryPlan.entry2],
+                [3, analysis.entryPlan.entry3],
+              ] as const
+            ).map(([num, entry]) => {
               if (!entry) return null;
               return (
                 <div
-                  key={i}
+                  key={`entry-${num}`}
                   className="bg-surface-alt flex items-start gap-2.5 rounded-md p-2"
                 >
                   <div
@@ -304,7 +306,7 @@ export default function AnalysisResults({
                       color: theme.accent,
                     }}
                   >
-                    {i + 1}
+                    {num}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -571,9 +573,9 @@ export default function AnalysisResults({
             {analysis.imageIssues.length === 1 ? 's' : ''} improvement
           </div>
           <div className="grid gap-2">
-            {analysis.imageIssues.map((issue, i) => (
+            {analysis.imageIssues.map((issue) => (
               <div
-                key={i}
+                key={`img-${issue.imageIndex}-${issue.label}`}
                 className="bg-surface border-edge flex items-start gap-2.5 rounded-md border p-2.5"
               >
                 <div className="min-w-0 flex-1">

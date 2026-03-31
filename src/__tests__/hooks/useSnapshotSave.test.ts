@@ -150,6 +150,7 @@ describe('useSnapshotSave', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: expect.any(String),
+      signal: expect.any(AbortSignal),
     });
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string);

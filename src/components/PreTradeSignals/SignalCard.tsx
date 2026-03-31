@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { SignalResult } from './classifiers';
@@ -8,7 +9,7 @@ interface Props {
   result: SignalResult;
 }
 
-export default function SignalCard({ title, subtitle, result }: Props) {
+export default memo(function SignalCard({ title, subtitle, result }: Props) {
   const color =
     result.signal === 'green'
       ? theme.green
@@ -46,4 +47,4 @@ export default function SignalCard({ title, subtitle, result }: Props) {
       </div>
     </div>
   );
-}
+});

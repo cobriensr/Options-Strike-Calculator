@@ -124,15 +124,21 @@ export function useSnapshotSave(
     };
 
     // Fire-and-forget — don't block the UI
+    const controller = new AbortController();
+
     fetch('/api/snapshot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }).catch(() => {
-      // Silently ignore — snapshot save is best-effort
-      // Remove from saved set so it retries next render
+      signal: controller.signal,
+    }).catch((err) => {
+      // Don't retry on abort — component unmounted or deps changed
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      // Network/server error — remove from saved set so it retries next render
       savedRef.current.delete(key);
     });
+
+    return () => controller.abort();
   }, [
     results,
     signals,

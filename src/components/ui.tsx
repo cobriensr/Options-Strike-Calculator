@@ -1,4 +1,5 @@
 import {
+  memo,
   useRef,
   useState,
   useCallback,
@@ -7,7 +8,7 @@ import {
 } from 'react';
 
 /** Reusable section wrapper with label and optional badge */
-export function SectionBox({
+export const SectionBox = memo(function SectionBox({
   label,
   badge,
   headerRight,
@@ -39,10 +40,10 @@ export function SectionBox({
       <div className="flex min-h-0 flex-1 flex-col">{children}</div>
     </section>
   );
-}
+});
 
 /** Chip toggle button */
-export function Chip({
+export const Chip = memo(function Chip({
   active,
   onClick,
   label,
@@ -68,7 +69,7 @@ export function Chip({
       {label}
     </button>
   );
-}
+});
 
 /** Wrapper that shows a right-edge fade when content overflows horizontally */
 export function ScrollHint({ children }: { children: ReactNode }) {
@@ -108,7 +109,7 @@ export function ScrollHint({ children }: { children: ReactNode }) {
 }
 
 /** Status badge with tinted background — used in the header for LIVE, CLOSED, BACKTEST, etc. */
-export function StatusBadge({
+export const StatusBadge = memo(function StatusBadge({
   label,
   color,
   dot,
@@ -151,10 +152,10 @@ export function StatusBadge({
       {content}
     </span>
   );
-}
+});
 
 /** Error message display */
-export function ErrorMsg({
+export const ErrorMsg = memo(function ErrorMsg({
   children,
   id,
 }: {
@@ -170,4 +171,4 @@ export function ErrorMsg({
       {children}
     </div>
   );
-}
+});

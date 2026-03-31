@@ -127,11 +127,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       setTimeAmPm(ampm);
       setTimezone('CT');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refs (spotEdited, spxEdited, vixEdited) are stable; listing them is misleading
   }, [
     market.data.quotes,
-    spotEdited,
-    spxEdited,
-    vixEdited,
     selectedDate,
     setSelectedDate,
     setSpotPrice,
@@ -198,13 +196,17 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- destructured to specific props to avoid re-firing on every render from unstable parent objects
   }, [
-    historyData,
+    historyData.hasHistory,
+    historyData.history,
+    historyData.getStateAtTime,
     timeHour,
     timeMinute,
     timeAmPm,
     timezone,
-    vix1dStatic,
+    vix1dStatic.loaded,
+    vix1dStatic.getVix1d,
     setSpotPrice,
     setSpxDirect,
     setVixInput,

@@ -136,6 +136,7 @@ describe('AnalysisHistory', () => {
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
           expect.stringContaining('dates=true'),
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
       });
     });
@@ -477,6 +478,7 @@ describe('AnalysisHistory', () => {
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
           expect.stringContaining('dates=true'),
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
       });
 

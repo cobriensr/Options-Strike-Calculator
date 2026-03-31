@@ -83,7 +83,16 @@ export function useVixData(
     } else {
       setVixOHLC(null);
     }
-  }, [selectedDate, vixData]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [
+    selectedDate,
+    vixData,
+    vixOHLCField,
+    ivMode,
+    timezone,
+    timeHour,
+    timeAmPm,
+    setVixInput,
+  ]);
 
   // API fallback: fetch from /api/vix-ohlc when static data has no entry
   useEffect(() => {

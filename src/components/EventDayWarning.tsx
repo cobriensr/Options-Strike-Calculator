@@ -61,8 +61,8 @@ export default function EventDayWarning({ selectedDate, liveEvents }: Props) {
       </div>
 
       {/* Event list */}
-      {events.map((evt, i) => (
-        <EventRow key={i} event={evt} />
+      {events.map((evt) => (
+        <EventRow key={`${evt.event}-${evt.time}`} event={evt} />
       ))}
 
       {/* Advice */}

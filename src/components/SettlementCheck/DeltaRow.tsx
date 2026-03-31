@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import type { SettlementResult } from './types';
@@ -9,7 +9,11 @@ interface Props {
   remainingLow: number;
 }
 
-export default function DeltaRow({ r, remainingHigh, remainingLow }: Props) {
+export default memo(function DeltaRow({
+  r,
+  remainingHigh,
+  remainingLow,
+}: Props) {
   const [showTooltip, setShowTooltip] = useState(false);
 
   const width = r.callStrike - r.putStrike;
@@ -264,4 +268,4 @@ export default function DeltaRow({ r, remainingHigh, remainingLow }: Props) {
       </div>
     </div>
   );
-}
+});

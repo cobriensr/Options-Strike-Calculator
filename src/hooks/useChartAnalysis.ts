@@ -50,6 +50,10 @@ export function useChartAnalysis(opts: {
   const [elapsed, setElapsed] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const lastAnalysisRef = useRef<AnalysisResult | null>(null);
+  const onAnalysisSavedRef = useRef(onAnalysisSaved);
+  const onModeCompletedRef = useRef(onModeCompleted);
+  onAnalysisSavedRef.current = onAnalysisSaved;
+  onModeCompletedRef.current = onModeCompleted;
 
   const cancelAnalysis = useCallback(() => {
     abortRef.current?.abort();
@@ -175,9 +179,9 @@ export function useChartAnalysis(opts: {
           if (data.analysis) {
             setAnalysis(data.analysis);
             lastAnalysisRef.current = data.analysis;
-            onAnalysisSaved?.();
+            onAnalysisSavedRef.current?.();
             // Notify parent so it can lock completed modes
-            onModeCompleted?.(mode);
+            onModeCompletedRef.current?.(mode);
 
             // Play a notification chime so the user knows analysis is ready
             try {
@@ -261,15 +265,7 @@ export function useChartAnalysis(opts: {
       abortRef.current = null;
       setLoading(false);
     }
-  }, [
-    images,
-    context,
-    results,
-    mode,
-    hasCSVPositions,
-    onAnalysisSaved,
-    onModeCompleted,
-  ]);
+  }, [images, context, results, mode, hasCSVPositions]);
 
   return {
     analysis,

@@ -10,7 +10,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import { theme } from '../../themes';
 import type { AnalysisMode, AnalysisResult } from './types';
 import { MODE_LABELS } from './types';
-import { SectionBox } from '../ui';
+import { ErrorMsg, SectionBox } from '../ui';
 import { tint } from '../../utils/ui-utils';
 import AnalysisResultsView from './AnalysisResults';
 
@@ -56,26 +56,41 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   const [selectedTime, setSelectedTime] = useState<string>('');
   const [selectedMode, setSelectedMode] = useState<AnalysisMode | ''>('');
   const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   // ── Fetch dates on mount + when refreshKey changes ────
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     (async () => {
       try {
-        const res = await fetch('/api/analyses?dates=true');
-        if (!res.ok) return;
+        const res = await fetch('/api/analyses?dates=true', {
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          if (!controller.signal.aborted)
+            setFetchError('Failed to load analysis dates');
+          return;
+        }
         const text = await res.text();
-        if (!text.startsWith('{')) return;
+        if (!text.startsWith('{')) {
+          if (!controller.signal.aborted)
+            setFetchError('Failed to load analysis dates');
+          return;
+        }
         const data = JSON.parse(text);
-        if (!cancelled) setAllDates(data.dates ?? []);
+        if (!controller.signal.aborted) {
+          setAllDates(data.dates ?? []);
+          setFetchError(null);
+        }
       } catch {
-        if (!cancelled) setAllDates([]);
+        if (!controller.signal.aborted) {
+          setAllDates([]);
+          setFetchError('Failed to load analysis dates');
+        }
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [refreshKey]);
 
   // ── Filtered dates based on mode filter ────────────────
@@ -248,12 +263,15 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   if (allDates.length === 0) {
     return (
       <SectionBox label="Analysis History">
-        <div
-          className="rounded-lg px-3 py-6 text-center font-sans text-[11px]"
-          style={{ color: theme.textMuted }}
-        >
-          No saved analyses yet. Run a chart analysis to get started.
-        </div>
+        {fetchError && <ErrorMsg>{fetchError}</ErrorMsg>}
+        {!fetchError && (
+          <div
+            className="rounded-lg px-3 py-6 text-center font-sans text-[11px]"
+            style={{ color: theme.textMuted }}
+          >
+            No saved analyses yet. Run a chart analysis to get started.
+          </div>
+        )}
       </SectionBox>
     );
   }
@@ -296,6 +314,8 @@ export default function AnalysisHistory({ refreshKey }: Props) {
           );
         })}
       </div>
+
+      {fetchError && <ErrorMsg>{fetchError}</ErrorMsg>}
 
       {/* ── Picker row ────────────────────────────────────── */}
       <div className="mb-4 flex flex-wrap items-end gap-3">

@@ -10,7 +10,7 @@
  * composition and rendering.
  */
 
-import { useState } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import type { IVMode, AmPm, Timezone } from '../types';
 import { DEFAULTS, IV_MODES } from '../constants';
 import { useDebounced } from './useDebounced';
@@ -43,14 +43,14 @@ export function useAppState() {
       return true;
     }
   });
-  const setDarkModeAndPersist = (value: boolean) => {
+  const setDarkModeAndPersist = useCallback((value: boolean) => {
     setDarkMode(value);
     try {
       localStorage.setItem('darkMode', String(value));
     } catch {
       // ignore
     }
-  };
+  }, []);
 
   // Spot price state — seeded with reasonable defaults so UI renders fully;
   // overwritten by live/historical data via useAutoFill on load.
@@ -101,75 +101,101 @@ export function useAppState() {
   const dIV = useDebounced(directIVInput);
   const dMult = useDebounced(multiplier);
 
-  // Derived SPX ratio
-  const spyVal = Number.parseFloat(dSpot);
-  const spxVal = Number.parseFloat(dSpx);
-  const spxDirectActive =
-    !!dSpx &&
-    !Number.isNaN(spxVal) &&
-    spxVal > 0 &&
-    !Number.isNaN(spyVal) &&
-    spyVal > 0;
-  const effectiveRatio = spxDirectActive ? spxVal / spyVal : spxRatio;
+  // Derived SPX ratio (memoized to stabilise object identity)
+  return useMemo(() => {
+    const spyVal = Number.parseFloat(dSpot);
+    const spxVal = Number.parseFloat(dSpx);
+    const spxDirectActive =
+      !!dSpx &&
+      !Number.isNaN(spxVal) &&
+      spxVal > 0 &&
+      !Number.isNaN(spyVal) &&
+      spyVal > 0;
+    const effectiveRatio = spxDirectActive ? spxVal / spyVal : spxRatio;
 
-  return {
-    // Theme
+    return {
+      // Theme
+      darkMode,
+      setDarkMode: setDarkModeAndPersist,
+
+      // Spot
+      spotPrice,
+      setSpotPrice,
+      spxDirect,
+      setSpxDirect,
+      spxRatio,
+      setSpxRatio,
+
+      // IV
+      ivMode,
+      setIvMode,
+      vixInput,
+      setVixInput,
+      multiplier,
+      setMultiplier,
+      directIVInput,
+      setDirectIVInput,
+
+      // Time
+      timeHour,
+      setTimeHour,
+      timeMinute,
+      setTimeMinute,
+      timeAmPm,
+      setTimeAmPm,
+      timezone,
+      setTimezone,
+
+      // IC & skew
+      wingWidth,
+      setWingWidth,
+      showIC,
+      setShowIC,
+      contracts,
+      setContracts,
+      skewPct,
+      setSkewPct,
+      clusterMult,
+      setClusterMult,
+
+      // Debounced
+      dSpot,
+      dSpx,
+      dVix,
+      dIV,
+      dMult,
+
+      // Derived
+      spyVal,
+      spxVal,
+      spxDirectActive,
+      effectiveRatio,
+    };
+  }, [
     darkMode,
-    setDarkMode: setDarkModeAndPersist,
-
-    // Spot
+    setDarkModeAndPersist,
     spotPrice,
-    setSpotPrice,
     spxDirect,
-    setSpxDirect,
     spxRatio,
-    setSpxRatio,
-
-    // IV
     ivMode,
-    setIvMode,
     vixInput,
-    setVixInput,
     multiplier,
-    setMultiplier,
     directIVInput,
-    setDirectIVInput,
-
-    // Time
     timeHour,
-    setTimeHour,
     timeMinute,
-    setTimeMinute,
     timeAmPm,
-    setTimeAmPm,
     timezone,
-    setTimezone,
-
-    // IC & skew
     wingWidth,
-    setWingWidth,
     showIC,
-    setShowIC,
     contracts,
-    setContracts,
     skewPct,
-    setSkewPct,
     clusterMult,
-    setClusterMult,
-
-    // Debounced
     dSpot,
     dSpx,
     dVix,
     dIV,
     dMult,
-
-    // Derived
-    spyVal,
-    spxVal,
-    spxDirectActive,
-    effectiveRatio,
-  };
+  ]);
 }
 
 export type AppState = ReturnType<typeof useAppState>;

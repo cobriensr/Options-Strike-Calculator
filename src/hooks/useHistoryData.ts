@@ -83,10 +83,12 @@ export interface UseHistoryDataReturn {
 
 async function fetchHistory(
   date: string,
+  signal?: AbortSignal,
 ): Promise<{ data: HistoryResponse } | { error: string }> {
   try {
     const res = await fetch(`/api/history?date=${date}`, {
       credentials: 'same-origin',
+      signal,
     });
     if (!res.ok) {
       const body = await res
@@ -96,6 +98,9 @@ async function fetchHistory(
     }
     return { data: await res.json() };
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return { error: 'AbortError' };
+    }
     return { error: err instanceof Error ? err.message : 'Network error' };
   }
 }
@@ -217,12 +222,12 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
 
-    fetchHistory(selectedDate).then((result) => {
-      if (cancelled) return;
+    fetchHistory(selectedDate, controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
       if ('error' in result) {
         setError(result.error);
         setHistory(null);
@@ -238,9 +243,7 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
       setLoading(false);
     });
 
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [selectedDate]);
 
   const getStateAtTime = useCallback(
