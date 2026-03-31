@@ -20,7 +20,7 @@ const PHASES: Phase[] = [
     endMin: 11 * 60 + 30,
     timeLabel: '9:00 – 11:30',
     title: 'Sell Credit Spreads',
-    subtitle: '0DTE put/call — collect premium, let theta decay',
+    subtitle: 'Sell 0DTE put/call credit spreads — collect premium, let theta decay',
     color: theme.green,
   },
   {
@@ -36,7 +36,7 @@ const PHASES: Phase[] = [
     endMin: 14 * 60 + 30,
     timeLabel: '1:00 – 2:30',
     title: 'Open BWB',
-    subtitle: 'Broken wing butterfly around likely pin',
+    subtitle: 'Open 0DTE broken wing butterfly around likely pin',
     color: theme.chartPurple,
   },
   {
