@@ -94,7 +94,10 @@ describe('api-helpers', () => {
       const rejected = rejectIfNotOwner(req, res);
       expect(rejected).toBe(true);
       expect(res._status).toBe(401);
-      expect(res._json).toEqual({ error: 'Not authenticated' });
+      expect(res._json).toEqual({
+        error: 'Not authenticated',
+        code: 'no_secret',
+      });
       expect(res._headers['Cache-Control']).toBe('no-store');
     });
 

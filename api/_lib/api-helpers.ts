@@ -114,9 +114,25 @@ export function rejectIfNotOwner(
   res: VercelResponse,
 ): boolean {
   if (!isOwner(req)) {
+    const cookies = parseCookies(req);
+    const hasCookie = OWNER_COOKIE in cookies && cookies[OWNER_COOKIE] !== '';
+    const reason = !process.env.OWNER_SECRET
+      ? 'no_secret'
+      : hasCookie
+        ? 'cookie_mismatch'
+        : 'no_cookie';
+    logger.warn(
+      {
+        path: req.url,
+        reason,
+        referer: req.headers.referer ?? null,
+        ua: req.headers['user-agent']?.slice(0, 80) ?? null,
+      },
+      `401 owner check failed: ${reason}`,
+    );
     // Don't cache 401s at the edge — each request should check the cookie
     res.setHeader('Cache-Control', 'no-store');
-    res.status(401).json({ error: 'Not authenticated', code: 'OWNER_CHECK' });
+    res.status(401).json({ error: 'Not authenticated', code: reason });
     return true;
   }
   return false;
