@@ -131,25 +131,20 @@ export function useChartAnalysis(opts: {
       });
 
       const MAX_ATTEMPTS = 3;
+      // Each attempt gets a full 800s timeout (exceeds backend maxDuration
+      // of 780s so the server-side limit is the binding constraint).
+      const PER_ATTEMPT_TIMEOUT = 800_000;
       let lastError: unknown = null;
-      // Must exceed backend maxDuration (780s) so the server-side
-      // Anthropic timeout (720s) or Vercel function limit is the
-      // binding constraint, not the frontend.
-      const deadline = Date.now() + 14 * 60 * 1000;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        if (Date.now() >= deadline) {
-          setError('Analysis timed out');
-          break;
-        }
-
         // Fresh controller per attempt so a timeout on attempt N
         // doesn't poison attempt N+1
         const controller = new AbortController();
         abortRef.current = controller;
-        const remainingMs = Math.max(1000, deadline - Date.now());
-        const attemptTimeout = Math.min(800_000, remainingMs);
-        const timeout = setTimeout(() => controller.abort(), attemptTimeout);
+        const timeout = setTimeout(
+          () => controller.abort(),
+          PER_ATTEMPT_TIMEOUT,
+        );
 
         try {
           const res = await fetch('/api/analyze', {
