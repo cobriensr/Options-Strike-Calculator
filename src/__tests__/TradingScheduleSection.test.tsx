@@ -13,9 +13,7 @@ function mockCT(hour: number, minute: number, weekday = 1) {
   // to the desired hour/minute. Using a fixed date in CDT (UTC-5).
   // 2026-03-31 is a Tuesday in CDT.
   const dayOffset = weekday - 2; // Tue = 2, so offset adjusts
-  const utc = new Date(
-    Date.UTC(2026, 2, 31 + dayOffset, hour + 5, minute, 0),
-  );
+  const utc = new Date(Date.UTC(2026, 2, 31 + dayOffset, hour + 5, minute, 0));
   vi.setSystemTime(utc);
 }
 
