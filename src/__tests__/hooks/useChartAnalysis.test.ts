@@ -61,10 +61,7 @@ function makeSuccessResponse(analysis = sampleAnalysis) {
   // The endpoint returns NDJSON: keepalive pings + final JSON line.
   // The hook reads via res.text() and parses the last line.
   const ndjson =
-    JSON.stringify({ ping: true }) +
-    '\n' +
-    JSON.stringify({ analysis }) +
-    '\n';
+    JSON.stringify({ ping: true }) + '\n' + JSON.stringify({ analysis }) + '\n';
   return {
     ok: true,
     status: 200,

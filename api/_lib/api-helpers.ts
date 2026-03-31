@@ -271,7 +271,11 @@ async function schwabApiFetch<T>(
       authResult.error.type === 'expired_refresh'
         ? 'SCHWAB_TOKEN_EXPIRED'
         : 'SCHWAB_TOKEN_ERROR';
-    return { ok: false, error: `[${code}] ${authResult.error.message}`, status };
+    return {
+      ok: false,
+      error: `[${code}] ${authResult.error.message}`,
+      status,
+    };
   }
 
   const endpoint = path.split('?')[0] ?? path;

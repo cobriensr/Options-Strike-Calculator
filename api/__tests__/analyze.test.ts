@@ -141,9 +141,9 @@ import {
 } from '../_lib/db-strike-helpers.js';
 
 /** Parse the final NDJSON line from the response chunks (skips keepalive pings). */
-function parseNdjsonResponse(
-  res: { _chunks: string[] },
-): Record<string, unknown> {
+function parseNdjsonResponse(res: {
+  _chunks: string[];
+}): Record<string, unknown> {
   const lines = res._chunks
     .join('')
     .split('\n')

@@ -904,9 +904,7 @@ describe('ChartAnalysis', () => {
       await clickAnalyzeAndConfirm(user);
       await act(() => vi.advanceTimersByTimeAsync(5000));
       await waitFor(() => {
-        expect(
-          screen.getByText('Service unavailable'),
-        ).toBeInTheDocument();
+        expect(screen.getByText('Service unavailable')).toBeInTheDocument();
       });
       vi.useRealTimers();
     });

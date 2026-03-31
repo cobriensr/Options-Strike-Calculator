@@ -60,10 +60,7 @@ function computeEffectiveMaxLoss(
   // (per-contract credit * $100 multiplier * contracts), so no
   // additional scaling needed.
   for (const s of spreads) {
-    const effectiveLoss = Math.min(
-      s.creditReceived * multiplier,
-      s.maxLoss,
-    );
+    const effectiveLoss = Math.min(s.creditReceived * multiplier, s.maxLoss);
     if (s.spreadType === 'CALL_CREDIT_SPREAD') {
       callSideRisk += effectiveLoss;
     } else {
@@ -103,8 +100,7 @@ export default function PortfolioRiskSummary({
     stopMultiplier > 0
       ? computeEffectiveMaxLoss(spreads, ironCondors, stopMultiplier)
       : risk.totalMaxLoss;
-  const portfolioHeat =
-    nlv > 0 ? (Math.abs(effectiveMaxLoss) / nlv) * 100 : 0;
+  const portfolioHeat = nlv > 0 ? (Math.abs(effectiveMaxLoss) / nlv) * 100 : 0;
   const canAbsorb = risk.buyingPowerAvailable > effectiveMaxLoss;
   const bpTotal = risk.buyingPowerUsed + risk.buyingPowerAvailable;
   const bpUtilPct = bpTotal > 0 ? (risk.buyingPowerUsed / bpTotal) * 100 : 0;

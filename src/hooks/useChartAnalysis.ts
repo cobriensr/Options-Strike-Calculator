@@ -160,9 +160,7 @@ export function useChartAnalysis(opts: {
           // final line with the real payload. Parse the last
           // non-empty line as the response.
           const ndjson = await res.text();
-          const lines = ndjson
-            .split('\n')
-            .filter((l) => l.trim().length > 0);
+          const lines = ndjson.split('\n').filter((l) => l.trim().length > 0);
           const lastLine = lines.at(-1) ?? '{}';
           const data = JSON.parse(lastLine);
 
