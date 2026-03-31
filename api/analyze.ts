@@ -98,29 +98,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     SYSTEM_PROMPT_PART1 + '\n' + calibration + '\n' + SYSTEM_PROMPT_PART2;
   const analyzeStart = Date.now();
 
-  // Keepalive pings prevent proxy/browser idle disconnects.
-  // Vercel's streaming proxy can kill connections with no body bytes after just
-  // a few seconds.  Opus with adaptive thinking may take minutes of silence
-  // before any response data arrives, so we:
-  //   1. Flush an immediate ping to get the first body byte out fast
-  //   2. Continue pinging every 5s to stay well under idle thresholds
+  // Send keepalive pings every 30s to prevent proxy/browser idle disconnects.
+  // Vercel's edge proxy and browsers kill idle connections after ~5-10 minutes.
+  // Opus with adaptive thinking can take 5-10 minutes of silence before any
+  // response data arrives, so we write periodic newlines to keep the pipe open.
   res.setHeader('Content-Type', 'application/x-ndjson');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering if present
-  res.setHeader('Connection', 'keep-alive');
-  // Immediate first byte — prevents proxy from seeing an empty body
-  try {
-    res.write(JSON.stringify({ ping: true }) + '\n');
-  } catch {
-    // Response already closed
-  }
   const keepalive = setInterval(() => {
     try {
       res.write(JSON.stringify({ ping: true }) + '\n');
     } catch {
       // Response already closed — clear interval in finally block
     }
-  }, 5_000);
+  }, 30_000);
 
   try {
     // Stream the response — Anthropic sends headers immediately with streaming,
