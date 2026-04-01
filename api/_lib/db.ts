@@ -866,6 +866,44 @@ const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 23,
+    description: 'Create oi_per_strike table for daily open interest by strike',
+    run: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS oi_per_strike (
+          id            SERIAL PRIMARY KEY,
+          date          DATE NOT NULL,
+          strike        DECIMAL(10,2) NOT NULL,
+          call_oi       INTEGER,
+          put_oi        INTEGER,
+          total_oi      INTEGER GENERATED ALWAYS AS (COALESCE(call_oi, 0) + COALESCE(put_oi, 0)) STORED,
+          created_at    TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(date, strike)
+        )
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_oi_per_strike_date ON oi_per_strike(date)
+      `;
+    },
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS oi_per_strike (
+          id            SERIAL PRIMARY KEY,
+          date          DATE NOT NULL,
+          strike        DECIMAL(10,2) NOT NULL,
+          call_oi       INTEGER,
+          put_oi        INTEGER,
+          total_oi      INTEGER GENERATED ALWAYS AS (COALESCE(call_oi, 0) + COALESCE(put_oi, 0)) STORED,
+          created_at    TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(date, strike)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_oi_per_strike_date ON oi_per_strike(date)
+      `,
+    ],
+  },
 ];
 
 /**

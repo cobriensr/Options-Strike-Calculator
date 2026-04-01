@@ -68,6 +68,10 @@
     {
       "path": "/api/health",
       "schedule": "25 13 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-oi-per-strike",
+      "schedule": "0 14 * * 1-5"
     }
   ],
   "functions": {

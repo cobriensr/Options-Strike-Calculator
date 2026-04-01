@@ -451,6 +451,7 @@ describe('db.ts', () => {
         { id: 20 },
         { id: 21 },
         { id: 22 },
+        { id: 23 },
       ]);
 
       const applied = await migrateDb();
@@ -491,11 +492,12 @@ describe('db.ts', () => {
         '#20: Create dark_pool_snapshots table for persisted cluster data',
         '#21: Add dark pool feature columns to training_features',
         '#22: Add max pain columns to training_features',
+        '#23: Create oi_per_strike table for daily open interest by strike',
       ]);
-      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) = 82
-      expect(mockSql).toHaveBeenCalledTimes(82);
-      // Migrations #15-22 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(8);
+      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) = 85
+      expect(mockSql).toHaveBeenCalledTimes(85);
+      // Migrations #15-23 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(9);
     });
 
     it('propagates errors from migration SQL', async () => {
