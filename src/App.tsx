@@ -507,8 +507,8 @@ export default function StrikeCalculator() {
             Black-Scholes approximation for delta-based strike placement
           </p>
           <p className="text-tertiary mb-8 text-xs italic">
-            Per Unusual Whales data policy, no market data, raw or derived,
-            is publicly available on this site.
+            Per Unusual Whales data policy, no market data, raw or derived, is
+            publicly available on this site.
           </p>
 
           <main>
