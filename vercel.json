@@ -15,39 +15,39 @@
     },
     {
       "path": "/api/cron/fetch-flow",
-      "schedule": "*/5 13-21 * * 1-5"
-    },
-    {
-      "path": "/api/cron/fetch-net-flow",
-      "schedule": "*/5 13-21 * * 1-5"
-    },
-    {
-      "path": "/api/cron/fetch-etf-tide",
-      "schedule": "*/5 13-21 * * 1-5"
+      "schedule": "0,5,10,15,20,25,30,35,40,45,50,55 13-21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-greek-exposure",
-      "schedule": "*/5 13-21 * * 1-5"
+      "schedule": "0,5,10,15,20,25,30,35,40,45,50,55 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-net-flow",
+      "schedule": "1,6,11,16,21,26,31,36,41,46,51,56 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-etf-tide",
+      "schedule": "2,7,12,17,22,27,32,37,42,47,52,57 13-21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-spot-gex",
-      "schedule": "*/5 13-21 * * 1-5"
+      "schedule": "2,7,12,17,22,27,32,37,42,47,52,57 13-21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-strike-exposure",
-      "schedule": "*/5 13-21 * * 1-5"
+      "schedule": "3,8,13,18,23,28,33,38,43,48,53,58 13-21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-strike-all",
-      "schedule": "*/5 13-21 * * 1-5"
-    },
-    {
-      "path": "/api/cron/fetch-zero-dte-flow",
-      "schedule": "*/5 13-21 * * 1-5"
+      "schedule": "3,8,13,18,23,28,33,38,43,48,53,58 13-21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-greek-flow",
-      "schedule": "*/5 13-21 * * 1-5"
+      "schedule": "3,8,13,18,23,28,33,38,43,48,53,58 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-zero-dte-flow",
+      "schedule": "4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-outcomes",
