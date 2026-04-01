@@ -431,4 +431,164 @@ describe('PortfolioRiskSummary', () => {
     });
     expect(screen.getByText('(1.8%)')).toBeInTheDocument();
   });
+
+  // ── Stop multiplier & computeEffectiveMaxLoss ───────────
+
+  it('shows "Max Loss (3x stop)" label when stopMultiplier is 3', () => {
+    renderSummary({ stopMultiplier: 3 });
+    expect(screen.getByText('Max Loss (3x stop)')).toBeInTheDocument();
+    expect(screen.queryByText('Total Max Loss')).not.toBeInTheDocument();
+  });
+
+  it('computes effective max loss for put spreads with stop multiplier', () => {
+    const pcs = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      creditReceived: 1500,
+      maxLoss: 18500,
+    });
+    // effective = min(1500 * 2, 18500) = 3000
+    renderSummary({
+      spreads: [pcs],
+      ironCondors: [],
+      stopMultiplier: 2,
+      risk: { totalMaxLoss: 18500 },
+    });
+    const card = screen
+      .getByText('Max Loss (2x stop)')
+      .closest('div')!.parentElement!;
+    expect(within(card).getByText('$3,000.00')).toBeInTheDocument();
+  });
+
+  it('computes effective max loss for call spreads with stop multiplier', () => {
+    const ccs = makeSpread({
+      spreadType: 'CALL_CREDIT_SPREAD',
+      shortLeg: makeLeg({ strike: 5800, type: 'CALL', qty: -10 }),
+      longLeg: makeLeg({ strike: 5820, type: 'CALL', qty: 10 }),
+      creditReceived: 1000,
+      maxLoss: 19000,
+    });
+    // effective = min(1000 * 2, 19000) = 2000
+    renderSummary({
+      spreads: [ccs],
+      ironCondors: [],
+      stopMultiplier: 2,
+      risk: { totalMaxLoss: 19000 },
+    });
+    const card = screen
+      .getByText('Max Loss (2x stop)')
+      .closest('div')!.parentElement!;
+    expect(within(card).getByText('$2,000.00')).toBeInTheDocument();
+  });
+
+  it('computes effective max loss for iron condors with stop multiplier', () => {
+    const ic = makeIC({
+      putSpread: makeSpread({
+        spreadType: 'PUT_CREDIT_SPREAD',
+        creditReceived: 1500,
+        maxLoss: 18500,
+      }),
+      callSpread: makeSpread({
+        spreadType: 'CALL_CREDIT_SPREAD',
+        shortLeg: makeLeg({ strike: 5800, type: 'CALL', qty: -10 }),
+        longLeg: makeLeg({ strike: 5820, type: 'CALL', qty: 10 }),
+        creditReceived: 1000,
+        maxLoss: 19000,
+      }),
+    });
+    // callEffective = min(1000 * 3, 19000) = 3000
+    // putEffective  = min(1500 * 3, 18500) = 4500
+    // result = max(3000, 4500) = 4500
+    renderSummary({
+      spreads: [],
+      ironCondors: [ic],
+      stopMultiplier: 3,
+      risk: { totalMaxLoss: 18500 },
+    });
+    const card = screen
+      .getByText('Max Loss (3x stop)')
+      .closest('div')!.parentElement!;
+    expect(within(card).getByText('$4,500.00')).toBeInTheDocument();
+  });
+
+  it('caps effective loss at maxLoss when multiplier is very high', () => {
+    const pcs = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      creditReceived: 1500,
+      maxLoss: 18500,
+    });
+    // effective = min(1500 * 100, 18500) = 18500 (capped)
+    renderSummary({
+      spreads: [pcs],
+      ironCondors: [],
+      stopMultiplier: 100,
+      risk: { totalMaxLoss: 18500 },
+    });
+    const card = screen
+      .getByText('Max Loss (100x stop)')
+      .closest('div')!.parentElement!;
+    expect(within(card).getByText('$18,500.00')).toBeInTheDocument();
+  });
+
+  it('combines spreads and ICs with stop multiplier', () => {
+    const pcs = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      creditReceived: 1500,
+      maxLoss: 18500,
+    });
+    const ic = makeIC({
+      putSpread: makeSpread({
+        spreadType: 'PUT_CREDIT_SPREAD',
+        creditReceived: 800,
+        maxLoss: 19200,
+      }),
+      callSpread: makeSpread({
+        spreadType: 'CALL_CREDIT_SPREAD',
+        shortLeg: makeLeg({ strike: 5800, type: 'CALL', qty: -10 }),
+        longLeg: makeLeg({ strike: 5820, type: 'CALL', qty: 10 }),
+        creditReceived: 600,
+        maxLoss: 19400,
+      }),
+    });
+    // Standalone put spread: min(1500*3, 18500) = 4500 -> putSideRisk
+    // IC put:  min(800*3, 19200)  = 2400 -> putSideRisk
+    // IC call: min(600*3, 19400)  = 1800 -> callSideRisk
+    // putSide = 4500 + 2400 = 6900, callSide = 1800
+    // result = max(6900, 1800) = 6900
+    renderSummary({
+      spreads: [pcs],
+      ironCondors: [ic],
+      stopMultiplier: 3,
+      risk: { totalMaxLoss: 18500 },
+    });
+    const card = screen
+      .getByText('Max Loss (3x stop)')
+      .closest('div')!.parentElement!;
+    expect(within(card).getByText('$6,900.00')).toBeInTheDocument();
+  });
+
+  it('renders all four stop multiplier buttons', () => {
+    renderSummary();
+    expect(
+      screen.getByRole('button', { name: 'Full' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '2x' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '3x' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '4x' }),
+    ).toBeInTheDocument();
+  });
+
+  it('applies danger heat color when NLV is zero', () => {
+    renderSummary({
+      account: { netLiquidatingValue: 0 },
+      stopMultiplier: 0,
+      risk: { totalMaxLoss: 5000 },
+    });
+    const maxLossText = screen.getByText('$5,000.00');
+    expect(maxLossText.className).toContain('text-danger');
+  });
 });
