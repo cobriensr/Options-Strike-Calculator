@@ -579,3 +579,76 @@ class TestComputeOiPin:
         result = compute_oi_pin(df)
         # idxmax returns first occurrence
         assert result["oi_pin_strike"] == 5790.0
+
+
+# ── High-level analysis functions ────────────────────────────
+
+
+from pin_analysis import (
+    analyze_directional_bias,
+    analyze_settlement_gravity,
+    analyze_time_improvement,
+)
+
+
+def _make_strike_df(n_days=3, n_strikes=5):
+    """Build a DataFrame matching load_strike_data output format."""
+    rng = np.random.default_rng(42)
+    rows = []
+    for day_offset in range(n_days):
+        date = pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)
+        settlement = 5800 + int(rng.integers(-20, 20))
+        day_open = settlement + int(rng.integers(-10, 10))
+        for hour_min in ["16:00", "18:00", "19:00", "19:30", "20:00"]:
+            ts = pd.Timestamp(f"{date.date()} {hour_min}", tz="UTC")
+            price = 5800 + int(rng.integers(-15, 15))
+            for i in range(n_strikes):
+                strike = 5780 + i * 10
+                rows.append(
+                    {
+                        "date": date.date(),
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": price,
+                        "call_gamma_oi": float(rng.integers(1, 50)),
+                        "put_gamma_oi": float(rng.integers(-40, 0)),
+                        "call_delta_oi": float(rng.integers(1, 100)),
+                        "put_delta_oi": float(rng.integers(-100, 0)),
+                        "settlement": settlement,
+                        "day_open": day_open,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+class TestAnalyzeSettlementGravity:
+    """Tests for analyze_settlement_gravity(df)."""
+
+    def test_analyze_settlement_gravity_runs(self, capsys):
+        """Runs without error and output contains expected section header."""
+        df = _make_strike_df(n_days=3, n_strikes=5)
+        analyze_settlement_gravity(df)
+        captured = capsys.readouterr()
+        assert "SETTLEMENT vs GAMMA" in captured.out
+
+
+class TestAnalyzeTimeImprovement:
+    """Tests for analyze_time_improvement(df)."""
+
+    def test_analyze_time_improvement_runs(self, capsys):
+        """Runs without error and output contains expected section header."""
+        df = _make_strike_df(n_days=3, n_strikes=5)
+        analyze_time_improvement(df)
+        captured = capsys.readouterr()
+        assert "TIME HORIZON" in captured.out
+
+
+class TestAnalyzeDirectionalBias:
+    """Tests for analyze_directional_bias(df)."""
+
+    def test_analyze_directional_bias_runs(self, capsys):
+        """Runs without error and output contains expected section header."""
+        df = _make_strike_df(n_days=3, n_strikes=5)
+        analyze_directional_bias(df)
+        captured = capsys.readouterr()
+        assert "GAMMA ASYMMETRY" in captured.out

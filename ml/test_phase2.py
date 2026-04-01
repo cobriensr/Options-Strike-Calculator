@@ -730,3 +730,204 @@ class TestEdgeCases:
         metrics = compute_metrics(results, y_full)
         assert metrics["accuracy"] == 0.8
         assert metrics["majority_class"] == "CALL CREDIT SPREAD"
+
+
+# ── print_model_comparison ─────────────────────────────────────
+
+
+from phase2_early import (
+    print_model_comparison,
+    print_feature_importance,
+    save_experiment,
+    train_final_model,
+)
+
+
+def _make_all_metrics(acc_a: float = 0.60, acc_b: float = 0.45) -> dict:
+    """Build a minimal all_metrics dict with two models."""
+    return {
+        "ModelA": {
+            "accuracy": acc_a,
+            "log_loss": 0.9,
+            "majority_baseline": 0.40,
+            "prev_day_baseline": 0.35,
+            "majority_class": "IRON CONDOR",
+            "per_class_f1": {
+                "CALL CREDIT SPREAD": 0.55,
+                "PUT CREDIT SPREAD": 0.50,
+                "IRON CONDOR": 0.65,
+            },
+            "walk_forward_folds": 10,
+        },
+        "ModelB": {
+            "accuracy": acc_b,
+            "log_loss": 1.1,
+            "majority_baseline": 0.40,
+            "prev_day_baseline": 0.35,
+            "majority_class": "IRON CONDOR",
+            "per_class_f1": {
+                "CALL CREDIT SPREAD": 0.40,
+                "PUT CREDIT SPREAD": 0.38,
+                "IRON CONDOR": 0.50,
+            },
+            "walk_forward_folds": 10,
+        },
+    }
+
+
+class TestPrintModelComparison:
+    """Tests for print_model_comparison(all_metrics)."""
+
+    def test_print_model_comparison_returns_best(self, capsys):
+        """Returns the model name with the highest accuracy."""
+        all_metrics = _make_all_metrics(acc_a=0.60, acc_b=0.45)
+        best = print_model_comparison(all_metrics)
+        assert best == "ModelA"
+        captured = capsys.readouterr()
+        assert "Model Comparison" in captured.out
+
+    def test_print_model_comparison_prints_baselines(self, capsys):
+        """Output must include both baseline rows."""
+        all_metrics = _make_all_metrics()
+        print_model_comparison(all_metrics)
+        captured = capsys.readouterr()
+        assert "Majority Baseline" in captured.out
+        assert "Previous-Day" in captured.out
+
+
+# ── train_final_model ──────────────────────────────────────────
+
+
+class TestTrainFinalModel:
+    """Tests for train_final_model(X, y, params)."""
+
+    def test_train_final_model_returns_importances(self):
+        """Returns (model, pd.Series) with importances summing to ~1.0."""
+        rng = np.random.default_rng(42)
+        n = 30
+        feature_names = ["f1", "f2", "f3", "f4", "f5"]
+        X = pd.DataFrame(
+            rng.standard_normal((n, len(feature_names))),
+            columns=feature_names,
+        )
+        y = pd.Series(rng.choice([0, 1, 2], size=n))
+        params = {
+            "objective": "multi:softprob",
+            "max_depth": 2,
+            "n_estimators": 10,
+            "random_state": 42,
+            "verbosity": 0,
+        }
+        model, importances = train_final_model(X, y, params)
+
+        assert hasattr(model, "predict")
+        assert isinstance(importances, pd.Series)
+        assert importances.sum() == pytest.approx(1.0, abs=0.01)
+        assert set(importances.index) == set(feature_names)
+
+
+# ── print_feature_importance ───────────────────────────────────
+
+
+class TestPrintFeatureImportance:
+    """Tests for print_feature_importance(importances, top_n)."""
+
+    def test_print_feature_importance(self, capsys):
+        """Top 15 features are printed when given 20."""
+        rng = np.random.default_rng(42)
+        names = [f"feature_{i}" for i in range(20)]
+        values = rng.random(20)
+        values = values / values.sum()
+        importances = pd.Series(values, index=names).sort_values(
+            ascending=False
+        )
+
+        print_feature_importance(importances, top_n=15)
+        captured = capsys.readouterr()
+
+        # All top 15 features should appear in the output
+        for feat in importances.head(15).index:
+            assert feat in captured.out
+
+        # The 16th-20th features should NOT appear
+        for feat in importances.tail(5).index:
+            if feat not in importances.head(15).index:
+                assert feat not in captured.out
+
+
+# ── save_experiment ────────────────────────────────────────────
+
+
+class TestSaveExperiment:
+    """Tests for save_experiment(...)."""
+
+    def test_save_experiment_creates_json(self, tmp_path, monkeypatch):
+        """Verify JSON file is created with expected keys."""
+        import phase2_early
+
+        monkeypatch.setattr(
+            phase2_early,
+            "__file__",
+            str(tmp_path / "phase2_early.py"),
+        )
+
+        rng = np.random.default_rng(42)
+        n = 10
+        feature_names = ["f1", "f2", "f3"]
+        df = pd.DataFrame(
+            rng.standard_normal((n, len(feature_names))),
+            columns=feature_names,
+        )
+        df.index = pd.date_range(
+            "2025-01-01", periods=n, freq="B", name="date"
+        )
+        y = pd.Series(rng.choice([0, 1, 2], size=n))
+        importances = pd.Series(
+            [0.5, 0.3, 0.2], index=feature_names
+        )
+        metrics = {
+            "accuracy": 0.55,
+            "log_loss": 0.9,
+            "per_class_f1": {
+                "CALL CREDIT SPREAD": 0.5,
+                "PUT CREDIT SPREAD": 0.5,
+                "IRON CONDOR": 0.5,
+            },
+            "majority_class": "IRON CONDOR",
+            "majority_baseline": 0.40,
+            "prev_day_baseline": 0.35,
+            "walk_forward_folds": 10,
+        }
+        params = {
+            "objective": "multi:softprob",
+            "max_depth": 3,
+            "n_estimators": 50,
+            "verbosity": 0,
+        }
+        all_model_metrics = _make_all_metrics()
+
+        save_experiment(
+            metrics,
+            params,
+            importances,
+            df,
+            y,
+            feature_names,
+            all_model_metrics=all_model_metrics,
+        )
+
+        exp_dir = tmp_path / "experiments"
+        assert exp_dir.exists()
+        json_files = list(exp_dir.glob("*.json"))
+        assert len(json_files) == 1
+
+        import json
+
+        data = json.loads(json_files[0].read_text())
+        assert data["phase"] == "phase2_early"
+        assert data["model"] == "xgboost"
+        assert "metrics" in data
+        assert "feature_importance_top10" in data
+        assert "data" in data
+        assert "model_comparison" in data
+        assert "best_model" in data
