@@ -9,6 +9,12 @@ Tests cover:
 - Constants: SPREAD_WIDTH, CREDIT_PER_CONTRACT, MAX_LOSS_PER_CONTRACT, CONFIDENCE_SIZING
 """
 
+from pathlib import Path
+from unittest.mock import patch
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 
@@ -16,9 +22,13 @@ from backtest import (
     CONFIDENCE_SIZING,
     CREDIT_PER_CONTRACT,
     MAX_LOSS_PER_CONTRACT,
+    PLOT_DIR,
     SPREAD_WIDTH,
     compute_metrics,
     find_max_drawdown_period,
+    plot_equity_curves,
+    print_metrics_table,
+    print_report,
     simulate_strategy,
 )
 
@@ -698,3 +708,316 @@ class TestIntegration:
         assert m["total_pnl"] == (200 * 5) + (-1800 * 5)
         assert m["avg_win"] == 1000
         assert m["avg_loss"] == -9000
+
+
+# ── plot_equity_curves ─────────────────────────────────────
+
+
+class TestPlotEquityCurves:
+    """Tests for plot_equity_curves."""
+
+    def test_plot_equity_curves_creates_file(self, tmp_path):
+        """Plot should create backtest_equity.png in the configured PLOT_DIR."""
+        records_win = [
+            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True}
+            for _ in range(8)
+        ] + [
+            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": False}
+            for _ in range(2)
+        ]
+        records_baseline = [
+            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            for _ in range(7)
+        ] + [
+            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False}
+            for _ in range(3)
+        ]
+        df_claude = make_df(records_win)
+        df_baseline = make_df(records_baseline)
+        df_equal = make_df(records_win)
+
+        strategies = {
+            "Claude Analysis": simulate_strategy(
+                df_claude, name="Claude Analysis", use_confidence_sizing=True,
+            ),
+            "Majority Class (CCS)": simulate_strategy(
+                df_baseline, name="Majority Class (CCS)", override_contracts=2,
+            ),
+            "Equal Size": simulate_strategy(
+                df_equal, name="Equal Size", use_confidence_sizing=False,
+            ),
+        }
+        metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
+
+        with patch("backtest.PLOT_DIR", tmp_path):
+            plot_equity_curves(strategies, metrics)
+
+        png = tmp_path / "backtest_equity.png"
+        assert png.exists(), "Expected backtest_equity.png to be created"
+        assert png.stat().st_size > 0, "PNG file should not be empty"
+        plt.close("all")
+
+    def test_plot_equity_curves_handles_empty_strategy(self):
+        """An empty strategy DataFrame should not crash plot_equity_curves."""
+        empty_df = make_df([])
+        empty_trades = simulate_strategy(empty_df, name="Empty")
+
+        win_records = [
+            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            for _ in range(5)
+        ]
+        valid_df = make_df(win_records)
+        valid_trades = simulate_strategy(valid_df, name="Claude Analysis")
+
+        strategies = {
+            "Claude Analysis": valid_trades,
+            "Empty Strategy": empty_trades,
+        }
+        metrics = {
+            "Claude Analysis": compute_metrics(valid_trades),
+            "Empty Strategy": compute_metrics(empty_trades),
+        }
+
+        with patch("backtest.PLOT_DIR", Path("/tmp")):
+            # Should not raise
+            plot_equity_curves(strategies, metrics)
+
+        plt.close("all")
+
+
+# ── print_report ───────────────────────────────────────────
+
+
+class TestPrintReport:
+    """Tests for print_report."""
+
+    def _build_scenario(self, win_count, loss_count, confidence="MODERATE"):
+        """Helper to build df, strategies, and metrics for a scenario."""
+        records = [
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": confidence,
+                "structure_correct": True,
+                "day_range_pts": 15.0,
+            }
+            for _ in range(win_count)
+        ] + [
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": confidence,
+                "structure_correct": False,
+                "day_range_pts": 25.0,
+            }
+            for _ in range(loss_count)
+        ]
+        df = make_df(records)
+
+        strategies = {
+            "Claude Analysis": simulate_strategy(
+                df, name="Claude Analysis", use_confidence_sizing=True,
+            ),
+            "Majority Class (CCS)": simulate_strategy(
+                df, name="Majority Class (CCS)",
+                override_structure="CCS", override_contracts=2,
+            ),
+            "Equal Size": simulate_strategy(
+                df, name="Equal Size",
+                use_confidence_sizing=False, override_contracts=1,
+            ),
+        }
+        metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
+        return df, strategies, metrics
+
+    def test_print_report_basic(self, capsys):
+        """print_report should print the full backtest summary report."""
+        df, strategies, metrics = self._build_scenario(13, 2)
+
+        print_report(df, strategies, metrics)
+
+        captured = capsys.readouterr()
+        assert "BACKTEST SUMMARY" in captured.out
+        assert "Data Overview" in captured.out
+        assert "Claude Analysis" in captured.out
+        assert "Majority Class (CCS)" in captured.out
+        assert "Equal Size" in captured.out
+        assert "TAKEAWAY" in captured.out
+
+    def test_print_report_high_win_rate(self, capsys):
+        """A 95%+ win rate should produce 'excellent' in the takeaway."""
+        # 19 wins, 1 loss = 95% win rate
+        df, strategies, metrics = self._build_scenario(19, 1)
+
+        print_report(df, strategies, metrics)
+
+        captured = capsys.readouterr()
+        assert "excellent" in captured.out.lower()
+
+    def test_print_report_low_win_rate(self, capsys):
+        """An 80% win rate should produce 'below' or 'threshold' in output."""
+        # 12 wins, 3 losses = 80% win rate
+        df, strategies, metrics = self._build_scenario(12, 3)
+
+        print_report(df, strategies, metrics)
+
+        captured = capsys.readouterr()
+        out_lower = captured.out.lower()
+        assert "below" in out_lower or "threshold" in out_lower
+
+    def test_print_report_confidence_breakdown(self, capsys):
+        """Confidence breakdown section should appear when label_confidence is present."""
+        records = [
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "HIGH",
+                "structure_correct": True,
+                "day_range_pts": 10.0,
+            }
+            for _ in range(5)
+        ] + [
+            {
+                "recommended_structure": "PCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+                "day_range_pts": 12.0,
+            }
+            for _ in range(5)
+        ] + [
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "LOW",
+                "structure_correct": False,
+                "day_range_pts": 30.0,
+            }
+            for _ in range(2)
+        ]
+        df = make_df(records)
+
+        strategies = {
+            "Claude Analysis": simulate_strategy(
+                df, name="Claude Analysis", use_confidence_sizing=True,
+            ),
+            "Majority Class (CCS)": simulate_strategy(
+                df, name="Majority Class (CCS)",
+                override_structure="CCS", override_contracts=2,
+            ),
+            "Equal Size": simulate_strategy(
+                df, name="Equal Size",
+                use_confidence_sizing=False, override_contracts=1,
+            ),
+        }
+        metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
+
+        print_report(df, strategies, metrics)
+
+        captured = capsys.readouterr()
+        assert "Claude Analysis by Confidence" in captured.out
+        assert "HIGH" in captured.out
+        assert "MODERATE" in captured.out
+
+    def test_print_report_outperforms(self, capsys):
+        """When Claude beats baseline, 'outperforms' should appear."""
+        # Claude uses confidence sizing (1x for MODERATE).
+        # Majority baseline uses override_contracts=2.
+        # With 80% win rate: Claude P&L = 12*200 - 3*1800 = -3000
+        # Majority P&L = 12*400 - 3*3600 = -6000 => Claude outperforms.
+        df, strategies, metrics = self._build_scenario(12, 3)
+
+        print_report(df, strategies, metrics)
+
+        captured = capsys.readouterr()
+        assert "outperforms" in captured.out.lower()
+
+    def test_print_report_underperforms(self, capsys):
+        """When baseline beats Claude, 'baseline outperforms' should appear."""
+        # Use HIGH confidence so Claude trades 2x.
+        # Both Claude and baseline trade 2 contracts, so P&L is the same.
+        # We need Claude < baseline. Use override_contracts=1 for baseline.
+        records = [
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "HIGH",
+                "structure_correct": True,
+                "day_range_pts": 10.0,
+            }
+            for _ in range(8)
+        ] + [
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "HIGH",
+                "structure_correct": False,
+                "day_range_pts": 30.0,
+            }
+            for _ in range(2)
+        ]
+        df = make_df(records)
+
+        # Claude uses HIGH confidence => 2 contracts.
+        # P&L: 8*400 - 2*3600 = 3200 - 7200 = -4000
+        strategies = {
+            "Claude Analysis": simulate_strategy(
+                df, name="Claude Analysis", use_confidence_sizing=True,
+            ),
+            # Majority baseline with 1 contract.
+            # P&L: 8*200 - 2*1800 = 1600 - 3600 = -2000 => better than Claude
+            "Majority Class (CCS)": simulate_strategy(
+                df, name="Majority Class (CCS)",
+                override_structure="CCS", override_contracts=1,
+            ),
+            "Equal Size": simulate_strategy(
+                df, name="Equal Size",
+                use_confidence_sizing=False, override_contracts=1,
+            ),
+        }
+        metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
+
+        print_report(df, strategies, metrics)
+
+        captured = capsys.readouterr()
+        out_lower = captured.out.lower()
+        assert "baseline outperforms" in out_lower or "not yet adding value" in out_lower
+
+    def test_print_report_sizing_adds_value(self, capsys):
+        """When confidence sizing > equal sizing, 'calibration is working' should appear."""
+        # HIGH confidence on all wins, LOW on the loss.
+        records = [
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "HIGH",
+                "structure_correct": True,
+                "day_range_pts": 10.0,
+            }
+            for _ in range(15)
+        ] + [
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "LOW",
+                "structure_correct": False,
+                "day_range_pts": 30.0,
+            }
+            for _ in range(1)
+        ]
+        df = make_df(records)
+
+        # Claude (confidence sizing): 15 wins at HIGH(2x)=400 each, 1 loss at LOW(1x)=-1800
+        # Total: 6000 - 1800 = 4200
+        # Equal (1 contract): 15*200 - 1*1800 = 3000 - 1800 = 1200
+        # Claude > Equal => sizing adds value
+        strategies = {
+            "Claude Analysis": simulate_strategy(
+                df, name="Claude Analysis", use_confidence_sizing=True,
+            ),
+            "Majority Class (CCS)": simulate_strategy(
+                df, name="Majority Class (CCS)",
+                override_structure="CCS", override_contracts=2,
+            ),
+            "Equal Size": simulate_strategy(
+                df, name="Equal Size",
+                use_confidence_sizing=False, override_contracts=1,
+            ),
+        }
+        metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
+
+        print_report(df, strategies, metrics)
+
+        captured = capsys.readouterr()
+        assert "calibration is working" in captured.out.lower()
