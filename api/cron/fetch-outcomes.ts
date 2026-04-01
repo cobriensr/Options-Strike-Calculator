@@ -284,7 +284,8 @@ async function handleBackfill(res: VercelResponse) {
           vix1dClose: undefined, // VIX1D not available in daily history
         });
         saved++;
-      } catch {
+      } catch (err) {
+        logger.warn({ err, dateStr: candle.datetime }, 'Backfill: skipped candle');
         skipped++;
       }
     }

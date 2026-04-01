@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { IVMode, CalculationResults } from '../types';
+import type { IVMode, AmPm, Timezone, CalculationResults } from '../types';
 import { IV_MODES } from '../constants';
 import {
   calcTimeToExpiry,
@@ -7,9 +7,6 @@ import {
   calcAllDeltas,
   to24Hour,
 } from '../utils/calculator';
-
-type AmPm = 'AM' | 'PM';
-type Timezone = 'ET' | 'CT';
 
 export interface UseCalculationReturn {
   results: CalculationResults | null;

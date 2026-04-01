@@ -61,8 +61,8 @@ export function calcBSDelta(
   if (type === 'call') {
     return normalCDF(d1);
   }
-  // put delta = N(d1) - 1, return absolute value
-  return Math.abs(normalCDF(d1) - 1);
+  // put delta = |N(d1) - 1| = 1 - N(d1), returned as absolute value
+  return 1 - normalCDF(d1);
 }
 
 /**

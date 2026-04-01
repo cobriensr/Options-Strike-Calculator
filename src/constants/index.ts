@@ -87,7 +87,7 @@ export const DEFAULTS = {
    * Reference z-score for skew scaling (10Δ = 1.28).
    * Skew is specified at this delta and scaled for other deltas.
    */
-  SKEW_REFERENCE_Z: 1.28,
+  SKEW_REFERENCE_Z: DELTA_Z_SCORES[10],
   /**
    * Convexity exponent for put skew (> 1 = convex = steeper far OTM).
    * Empirically calibrated for SPX: 5Δ puts trade at ~1.35× the linear
