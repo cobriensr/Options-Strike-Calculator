@@ -102,15 +102,44 @@ def compute_gamma_profile(snapshot: pd.DataFrame) -> dict:
     if df["abs_gamma"].sum() == 0:
         return {}
 
-    # Peak gamma strike (highest absolute gamma exposure)
+    # Peak absolute gamma (could be positive or negative)
     peak_idx = df["abs_gamma"].idxmax()
     peak_strike = df.loc[peak_idx, "strike"]
     peak_mag = df.loc[peak_idx, "abs_gamma"]
 
-    # Gamma-weighted centroid
+    # Peak POSITIVE gamma — the pinning force (MM mean-reversion hedging)
+    pos_gamma = df[df["net_gamma"] > 0]
+    if len(pos_gamma) > 0:
+        pos_peak_idx = pos_gamma["net_gamma"].idxmax()
+        pos_peak_strike = pos_gamma.loc[pos_peak_idx, "strike"]
+        pos_peak_mag = pos_gamma.loc[pos_peak_idx, "net_gamma"]
+    else:
+        pos_peak_strike = peak_strike
+        pos_peak_mag = 0.0
+
+    # Peak NEGATIVE gamma — the repelling force (MM acceleration hedging)
+    neg_gamma = df[df["net_gamma"] < 0]
+    if len(neg_gamma) > 0:
+        neg_peak_idx = neg_gamma["net_gamma"].abs().idxmax()
+        neg_peak_strike = neg_gamma.loc[neg_peak_idx, "strike"]
+        neg_peak_mag = neg_gamma.loc[neg_peak_idx, "net_gamma"]
+    else:
+        neg_peak_strike = peak_strike
+        neg_peak_mag = 0.0
+
+    # Gamma-weighted centroid (absolute weights)
     weights = df["abs_gamma"]
     total_weight = weights.sum()
     centroid = (df["strike"] * weights).sum() / total_weight if total_weight > 0 else 0
+
+    # Positive-gamma-only centroid (pinning centroid)
+    if len(pos_gamma) > 0:
+        pos_weights = pos_gamma["net_gamma"]
+        pos_centroid = (
+            (pos_gamma["strike"] * pos_weights).sum() / pos_weights.sum()
+        )
+    else:
+        pos_centroid = centroid
 
     # Gamma above/below current price
     price = df["price"].iloc[0]
@@ -123,7 +152,12 @@ def compute_gamma_profile(snapshot: pd.DataFrame) -> dict:
     return {
         "peak_gamma_strike": float(peak_strike),
         "peak_gamma_mag": float(peak_mag),
+        "pos_peak_strike": float(pos_peak_strike),
+        "pos_peak_mag": float(pos_peak_mag),
+        "neg_peak_strike": float(neg_peak_strike),
+        "neg_peak_mag": float(neg_peak_mag),
         "gamma_centroid": float(centroid),
+        "pos_centroid": float(pos_centroid),
         "pos_gamma_above": float(pos_gamma_above),
         "pos_gamma_below": float(pos_gamma_below),
         "price": float(price),
@@ -163,23 +197,22 @@ def find_nearest_snapshot(
 
 def analyze_settlement_gravity(df: pd.DataFrame) -> None:
     """Core analysis: does settlement gravitate toward gamma concentration?"""
-    section("1. SETTLEMENT vs PEAK GAMMA STRIKE")
-    print("  Does settlement land near the strike with the most gamma exposure?\n")
+    section("1. SETTLEMENT vs GAMMA PREDICTORS")
+    print("  Comparing positive gamma peak, negative gamma peak, and centroids\n")
+    print("  Positive gamma = MM pinning force (mean-reversion hedging)")
+    print("  Negative gamma = MM acceleration force (pushes price away)\n")
 
     dates = sorted(df["date"].unique())
     n_days = len(dates)
     print(f"  Analyzing {n_days} trading days with 0DTE strike data + outcomes\n")
 
-    # For each checkpoint, compute peak gamma and distance to settlement
     for cp_name, cp_time in CHECKPOINTS.items():
         subsection(f"{cp_name}")
 
-        distances = []
-        centroid_distances = []
-
+        rows = []
         for date in dates:
             day_data = df[df["date"] == date]
-            settlement = day_data["settlement"].iloc[0]
+            settlement = float(day_data["settlement"].iloc[0])
 
             snapshot = find_nearest_snapshot(day_data, cp_time)
             if snapshot is None:
@@ -189,44 +222,54 @@ def analyze_settlement_gravity(df: pd.DataFrame) -> None:
             if not profile:
                 continue
 
-            dist = settlement - profile["peak_gamma_strike"]
-            distances.append({
+            rows.append({
                 "date": date,
                 "settlement": settlement,
-                "peak_strike": profile["peak_gamma_strike"],
-                "distance": dist,
-                "abs_distance": abs(dist),
-                "centroid": profile["gamma_centroid"],
+                "pos_peak_dist": abs(settlement - profile["pos_peak_strike"]),
+                "neg_peak_dist": abs(settlement - profile["neg_peak_strike"]),
+                "abs_peak_dist": abs(settlement - profile["peak_gamma_strike"]),
                 "centroid_dist": abs(settlement - profile["gamma_centroid"]),
-                "price_at_snapshot": profile["price"],
+                "pos_centroid_dist": abs(settlement - profile["pos_centroid"]),
             })
 
-        if not distances:
+        if not rows:
             print("  No data available at this checkpoint")
             continue
 
-        dists = pd.DataFrame(distances)
+        dists = pd.DataFrame(rows)
         n = len(dists)
 
-        # Hit rates at various thresholds
-        print(f"  {'Threshold':<15s} {'Hit Rate':>10s} {'Count':>8s}")
-        print(f"  {'─' * 15} {'─' * 10} {'─' * 8}")
-        for thresh in HIT_THRESHOLDS:
-            hits = (dists["abs_distance"] <= thresh).sum()
-            rate = hits / n
-            print(f"  ±{thresh} pts{'':<9s} {rate:>9.0%} {hits:>5d}/{n}")
+        predictors = [
+            ("Pos γ peak (pin)", "pos_peak_dist"),
+            ("Neg γ peak (repel)", "neg_peak_dist"),
+            ("Abs γ peak", "abs_peak_dist"),
+            ("All-γ centroid", "centroid_dist"),
+            ("Pos-γ centroid", "pos_centroid_dist"),
+        ]
 
-        avg_dist = dists["abs_distance"].mean()
-        med_dist = dists["abs_distance"].median()
-        avg_centroid = dists["centroid_dist"].mean()
-        print(f"\n  Avg distance to peak gamma:    {avg_dist:.1f} pts")
-        print(f"  Median distance to peak gamma: {med_dist:.1f} pts")
-        print(f"  Avg distance to gamma centroid: {avg_centroid:.1f} pts")
+        print(f"  {'Predictor':<22s} {'Avg':>7s} {'Med':>7s} "
+              f"{'±10':>5s} {'±20':>5s} {'±30':>5s}")
+        print(f"  {'─' * 22} {'─' * 7} {'─' * 7} "
+              f"{'─' * 5} {'─' * 5} {'─' * 5}")
 
-        # Which is better — peak gamma or centroid?
-        peak_better = (dists["abs_distance"] < dists["centroid_dist"]).sum()
-        print(f"  Peak gamma closer than centroid: {peak_better}/{n} days "
-              f"({peak_better / n:.0%})")
+        best_name = ""
+        best_avg = float("inf")
+
+        for name, col in predictors:
+            vals = dists[col]
+            avg = vals.mean()
+            med = vals.median()
+            w10 = (vals <= 10).mean()
+            w20 = (vals <= 20).mean()
+            w30 = (vals <= 30).mean()
+            marker = ""
+            if avg < best_avg:
+                best_avg = avg
+                best_name = name
+            print(f"  {name:<22s} {avg:>6.1f} {med:>6.1f} "
+                  f"{w10:>4.0%} {w20:>4.0%} {w30:>4.0%}")
+
+        print(f"\n  Best: {best_name} ({best_avg:.1f} pts avg)")
 
 
 def analyze_time_improvement(df: pd.DataFrame) -> None:
@@ -441,10 +484,16 @@ def analyze_max_pain_comparison(
             "settlement": settlement,
             "max_pain": max_pain,
             "mp_dist": abs(settlement - max_pain),
+            "pos_peak": profile["pos_peak_strike"],
+            "pp_dist": abs(settlement - profile["pos_peak_strike"]),
+            "neg_peak": profile["neg_peak_strike"],
+            "np_dist": abs(settlement - profile["neg_peak_strike"]),
             "peak_gamma": profile["peak_gamma_strike"],
             "pg_dist": abs(settlement - profile["peak_gamma_strike"]),
             "centroid": profile["gamma_centroid"],
             "gc_dist": abs(settlement - profile["gamma_centroid"]),
+            "pos_centroid": profile["pos_centroid"],
+            "pc_dist": abs(settlement - profile["pos_centroid"]),
         })
 
     if not rows:
@@ -457,8 +506,11 @@ def analyze_max_pain_comparison(
     # Head-to-head comparison
     predictors = {
         "Max Pain": ("mp_dist", results["mp_dist"]),
-        "Peak Gamma": ("pg_dist", results["pg_dist"]),
-        "Gamma Centroid": ("gc_dist", results["gc_dist"]),
+        "Pos γ Peak (pin)": ("pp_dist", results["pp_dist"]),
+        "Neg γ Peak (repel)": ("np_dist", results["np_dist"]),
+        "Abs γ Peak": ("pg_dist", results["pg_dist"]),
+        "Pos-γ Centroid": ("pc_dist", results["pc_dist"]),
+        "All-γ Centroid": ("gc_dist", results["gc_dist"]),
     }
 
     print(f"  {'Predictor':<18s} {'Avg Dist':>9s} {'Med Dist':>9s} "
@@ -487,20 +539,20 @@ def analyze_max_pain_comparison(
 
     # Pairwise wins
     subsection("Head-to-Head: Which predictor was closest on each day?")
-    mp_wins = (results["mp_dist"] <= results["pg_dist"]).sum()
-    pg_wins = (results["pg_dist"] < results["mp_dist"]).sum()
-    print(f"  Max Pain closer than Peak Gamma:  {mp_wins}/{n} days ({mp_wins / n:.0%})")
-    print(f"  Peak Gamma closer than Max Pain:  {pg_wins}/{n} days ({pg_wins / n:.0%})")
+    pp_vs_mp = (results["pp_dist"] < results["mp_dist"]).sum()
+    pp_vs_np = (results["pp_dist"] < results["np_dist"]).sum()
+    print(f"  Pos γ peak closer than Max Pain:    {pp_vs_mp}/{n} days ({pp_vs_mp / n:.0%})")
+    print(f"  Pos γ peak closer than Neg γ peak:  {pp_vs_np}/{n} days ({pp_vs_np / n:.0%})")
 
-    gc_wins = (results["gc_dist"] <= results["mp_dist"]).sum()
-    print(f"  Centroid closer than Max Pain:    {gc_wins}/{n} days ({gc_wins / n:.0%})")
+    pc_vs_gc = (results["pc_dist"] < results["gc_dist"]).sum()
+    print(f"  Pos-γ centroid closer than All-γ:   {pc_vs_gc}/{n} days ({pc_vs_gc / n:.0%})")
 
-    # Composite: average of max pain and peak gamma
-    results["composite"] = (results["max_pain"] + results["peak_gamma"]) / 2
+    # Composite: average of pos peak and pos centroid
+    results["composite"] = (results["pos_peak"] + results["pos_centroid"]) / 2
     results["comp_dist"] = (results["settlement"] - results["composite"]).abs()
     comp_avg = results["comp_dist"].mean()
     comp_w20 = (results["comp_dist"] <= 20).mean()
-    print(f"\n  Composite (avg of max pain + peak gamma):")
+    print(f"\n  Composite (avg of pos γ peak + pos γ centroid):")
     print(f"    Avg distance: {comp_avg:.1f} pts, ±20 pts: {comp_w20:.0%}")
 
     if comp_avg < best_avg:
@@ -526,10 +578,10 @@ def analyze_per_day_detail(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
     dates = sorted(df["date"].unique())[-10:]
     mp_dates = set(max_pain_df["date"].values) if len(max_pain_df) > 0 else set()
 
-    print(f"  {'Date':<12s} {'Settle':>8s} {'Peak γ':>8s} {'γ Dist':>7s} "
-          f"{'MaxPain':>8s} {'MP Dist':>8s} {'Best':>8s}")
-    print(f"  {'─' * 12} {'─' * 8} {'─' * 8} {'─' * 7} "
-          f"{'─' * 8} {'─' * 8} {'─' * 8}")
+    print(f"  {'Date':<12s} {'Settle':>8s} {'+γ Peak':>8s} {'Dist':>6s} "
+          f"{'-γ Peak':>8s} {'Dist':>6s} {'MaxPain':>8s} {'Dist':>6s}")
+    print(f"  {'─' * 12} {'─' * 8} {'─' * 8} {'─' * 6} "
+          f"{'─' * 8} {'─' * 6} {'─' * 8} {'─' * 6}")
 
     for date in dates:
         day_data = df[df["date"] == date]
@@ -546,28 +598,24 @@ def analyze_per_day_detail(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
         if not profile:
             continue
 
-        peak = profile["peak_gamma_strike"]
-        pg_dist = abs(settlement - peak)
+        pos_peak = profile["pos_peak_strike"]
+        neg_peak = profile["neg_peak_strike"]
+        pp_dist = abs(settlement - pos_peak)
+        np_dist = abs(settlement - neg_peak)
 
         # Max pain if available
         mp_str = "—"
         mp_dist_str = "—"
-        mp_dist = float("inf")
         if date in mp_dates:
             mp_row = max_pain_df[max_pain_df["date"] == date].iloc[0]
             mp_val = float(mp_row["max_pain_0dte"])
-            mp_dist = abs(settlement - mp_val)
             mp_str = f"{mp_val:>.0f}"
-            mp_dist_str = f"{mp_dist:>.1f}"
-
-        best = "γ" if pg_dist <= mp_dist else "MP"
-        if mp_dist == float("inf"):
-            best = "γ"
+            mp_dist_str = f"{abs(settlement - mp_val):>.1f}"
 
         date_str = pd.Timestamp(date).strftime("%Y-%m-%d")
-        print(f"  {date_str:<12s} {settlement:>8.1f} {peak:>8.0f} "
-              f"{pg_dist:>6.1f} {mp_str:>8s} {mp_dist_str:>8s} "
-              f"{best:>8s}")
+        print(f"  {date_str:<12s} {settlement:>8.1f} {pos_peak:>8.0f} "
+              f"{pp_dist:>5.1f} {neg_peak:>8.0f} {np_dist:>5.1f} "
+              f"{mp_str:>8s} {mp_dist_str:>6s}")
 
 
 def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
@@ -576,8 +624,10 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
 
     dates = sorted(df["date"].unique())
 
-    # Compute T-30min stats for peak gamma
+    # Compute T-30min stats for positive gamma peak
     pg_dists = []
+    pos_peak_dists = []
+    pos_centroid_dists = []
     for date in dates:
         day_data = df[df["date"] == date]
         settlement = float(day_data["settlement"].iloc[0])
@@ -588,6 +638,8 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
         if not profile:
             continue
         pg_dists.append(abs(settlement - profile["peak_gamma_strike"]))
+        pos_peak_dists.append(abs(settlement - profile["pos_peak_strike"]))
+        pos_centroid_dists.append(abs(settlement - profile["pos_centroid"]))
 
     # Compute max pain stats
     mp_dates = set(max_pain_df["date"].values) if len(max_pain_df) > 0 else set()
@@ -600,16 +652,25 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
         mp_row = max_pain_df[max_pain_df["date"] == date].iloc[0]
         mp_dists.append(abs(settlement - float(mp_row["max_pain_0dte"])))
 
-    print(f"\n  PEAK GAMMA (at T-30min, n={len(pg_dists)}):")
-    if pg_dists:
-        avg = np.mean(pg_dists)
-        w10 = sum(1 for d in pg_dists if d <= 10) / len(pg_dists)
-        w20 = sum(1 for d in pg_dists if d <= 20) / len(pg_dists)
+    print(f"\n  POS GAMMA PEAK — the pin (at T-30min, n={len(pos_peak_dists)}):")
+    if pos_peak_dists:
+        avg = np.mean(pos_peak_dists)
+        w10 = sum(1 for d in pos_peak_dists if d <= 10) / len(pos_peak_dists)
+        w20 = sum(1 for d in pos_peak_dists if d <= 20) / len(pos_peak_dists)
         print(f"    Within ±10 pts: {w10:.0%}")
         print(f"    Within ±20 pts: {w20:.0%}")
         print(f"    Avg distance:   {avg:.1f} pts")
     else:
         print("    No data at T-30min checkpoint")
+
+    print(f"\n  POS-GAMMA CENTROID (at T-30min, n={len(pos_centroid_dists)}):")
+    if pos_centroid_dists:
+        avg_pc = np.mean(pos_centroid_dists)
+        w10_pc = sum(1 for d in pos_centroid_dists if d <= 10) / len(pos_centroid_dists)
+        w20_pc = sum(1 for d in pos_centroid_dists if d <= 20) / len(pos_centroid_dists)
+        print(f"    Within ±10 pts: {w10_pc:.0%}")
+        print(f"    Within ±20 pts: {w20_pc:.0%}")
+        print(f"    Avg distance:   {avg_pc:.1f} pts")
 
     print(f"\n  MAX PAIN (n={len(mp_dists)}):")
     if mp_dists:
@@ -624,26 +685,33 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
 
     # Recommendation
     print("\n  RECOMMENDATION:")
-    if pg_dists and mp_dists:
-        pg_avg = np.mean(pg_dists)
-        mp_avg = np.mean(mp_dists)
-        if pg_avg < mp_avg:
-            print(f"  Peak gamma ({pg_avg:.1f} pts) beats max pain "
-                  f"({mp_avg:.1f} pts) — use peak gamma as primary BWB anchor.")
-        elif mp_avg < pg_avg:
-            print(f"  Max pain ({mp_avg:.1f} pts) beats peak gamma "
-                  f"({pg_avg:.1f} pts) — use max pain as primary BWB anchor.")
+    if pos_peak_dists:
+        pp_avg = np.mean(pos_peak_dists)
+        pc_avg = np.mean(pos_centroid_dists) if pos_centroid_dists else float("inf")
+        mp_avg = np.mean(mp_dists) if mp_dists else float("inf")
+
+        # Find best
+        candidates = [
+            ("Pos gamma peak", pp_avg),
+            ("Pos-gamma centroid", pc_avg),
+        ]
+        if mp_dists:
+            candidates.append(("Max pain", mp_avg))
+
+        best_name, best_val = min(candidates, key=lambda x: x[1])
+        print(f"  Best BWB anchor: {best_name} ({best_val:.1f} pts avg)")
+
+        if best_name.startswith("Pos"):
+            print(f"  Use the largest positive gamma strike (or centroid of "
+                  f"positive gamma) at 3:30 PM ET as your BWB sweet spot.")
         else:
-            print("  Both are equally predictive — use the composite "
-                  "(average of both) for BWB placement.")
-    elif pg_dists:
-        pg_w20 = sum(1 for d in pg_dists if d <= 20) / len(pg_dists)
-        if pg_w20 >= 0.50:
-            print("  Peak gamma at T-30min is a useful BWB anchor (no max "
-                  "pain data yet for comparison).")
-        else:
-            print("  Peak gamma signal is weak. Wait for max pain data "
-                  "to compare.")
+            print(f"  Use max pain as the primary anchor, with positive "
+                  f"gamma as confirmation.")
+
+        if mp_dists:
+            print(f"\n  Max pain ({mp_avg:.1f} pts) vs Pos γ peak "
+                  f"({pp_avg:.1f} pts) — "
+                  f"{'gamma wins' if pp_avg < mp_avg else 'max pain wins'}.")
     else:
         print("  Insufficient data. Accumulate more trading days with "
               "dense intraday strike coverage.")
