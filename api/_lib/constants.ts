@@ -24,13 +24,3 @@ export const MARKET_MINUTES = {
 
 /** Unusual Whales API base URL */
 export const UW_BASE = 'https://api.unusualwhales.com/api';
-
-/** Rate limit defaults */
-export const RATE_LIMITS = {
-  /** Default requests per minute */
-  DEFAULT_PER_MINUTE: 5,
-  /** Data endpoint requests per minute */
-  DATA_PER_MINUTE: 20,
-  /** Analysis endpoint requests per minute */
-  ANALYZE_PER_MINUTE: 10,
-} as const;

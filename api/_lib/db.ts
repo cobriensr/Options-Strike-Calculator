@@ -192,11 +192,12 @@ export async function initDb() {
 interface Migration {
   id: number;
   description: string;
-  run: (sql: ReturnType<typeof getDb>) => Promise<void>;
+  /** Legacy sequential execution. Use `statements` for new migrations. */
+  run?: (sql: ReturnType<typeof getDb>) => Promise<void>;
   /**
-   * Optional: return an array of query promises for atomic execution.
-   * When provided, migrateDb() wraps these + the tracking INSERT in a
-   * single sql.transaction() — all-or-nothing. Prefer this for new migrations.
+   * Return an array of query promises for atomic execution.
+   * migrateDb() wraps these + the tracking INSERT in a single
+   * sql.transaction() — all-or-nothing. Prefer this for new migrations.
    */
   statements?: (
     sql: ReturnType<typeof getDb>,
@@ -671,9 +672,6 @@ const MIGRATIONS: Migration[] = [
     id: 15,
     description:
       'Add composite index on analyses (date, created_at DESC) for getPreviousRecommendation',
-    run: async (sql) => {
-      await sql`CREATE INDEX IF NOT EXISTS idx_analyses_date_created ON analyses (date, created_at DESC)`;
-    },
     statements: (sql) => [
       sql`CREATE INDEX IF NOT EXISTS idx_analyses_date_created ON analyses (date, created_at DESC)`,
     ],
@@ -682,9 +680,6 @@ const MIGRATIONS: Migration[] = [
     id: 16,
     description:
       'Add composite index on flow_data (date, source, timestamp) for time-windowed queries',
-    run: async (sql) => {
-      await sql`CREATE INDEX IF NOT EXISTS idx_flow_data_date_source_ts ON flow_data (date, source, timestamp)`;
-    },
     statements: (sql) => [
       sql`CREATE INDEX IF NOT EXISTS idx_flow_data_date_source_ts ON flow_data (date, source, timestamp)`,
     ],
@@ -692,20 +687,6 @@ const MIGRATIONS: Migration[] = [
   {
     id: 17,
     description: 'Add NOT NULL constraint to all created_at columns',
-    run: async (sql) => {
-      await sql`ALTER TABLE market_snapshots ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE analyses ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE outcomes ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE positions ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE lessons ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE lesson_reports ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE flow_data ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE greek_exposure ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE spot_exposures ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE strike_exposures ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE economic_events ALTER COLUMN created_at SET NOT NULL`;
-      await sql`ALTER TABLE es_overnight_summaries ALTER COLUMN created_at SET NOT NULL`;
-    },
     statements: (sql) => [
       sql`ALTER TABLE market_snapshots ALTER COLUMN created_at SET NOT NULL`,
       sql`ALTER TABLE analyses ALTER COLUMN created_at SET NOT NULL`,
@@ -725,14 +706,6 @@ const MIGRATIONS: Migration[] = [
     id: 18,
     description:
       'Add JSONB type constraints on legs, full_response, and report',
-    run: async (sql) => {
-      await sql`ALTER TABLE positions DROP CONSTRAINT IF EXISTS chk_legs_array`;
-      await sql`ALTER TABLE positions ADD CONSTRAINT chk_legs_array CHECK (jsonb_typeof(legs) = 'array')`;
-      await sql`ALTER TABLE analyses DROP CONSTRAINT IF EXISTS chk_full_response_obj`;
-      await sql`ALTER TABLE analyses ADD CONSTRAINT chk_full_response_obj CHECK (jsonb_typeof(full_response) = 'object')`;
-      await sql`ALTER TABLE lesson_reports DROP CONSTRAINT IF EXISTS chk_report_obj`;
-      await sql`ALTER TABLE lesson_reports ADD CONSTRAINT chk_report_obj CHECK (jsonb_typeof(report) = 'object')`;
-    },
     statements: (sql) => [
       sql`ALTER TABLE positions DROP CONSTRAINT IF EXISTS chk_legs_array`,
       sql`ALTER TABLE positions ADD CONSTRAINT chk_legs_array CHECK (jsonb_typeof(legs) = 'array')`,
@@ -745,22 +718,6 @@ const MIGRATIONS: Migration[] = [
   {
     id: 19,
     description: 'Create predictions table for ML model outputs',
-    run: async (sql) => {
-      await sql`
-        CREATE TABLE IF NOT EXISTS predictions (
-          date              DATE PRIMARY KEY,
-          ccs_prob          NUMERIC(5,4),
-          pcs_prob          NUMERIC(5,4),
-          ic_prob           NUMERIC(5,4),
-          sit_out_prob      NUMERIC(5,4),
-          predicted_class   TEXT,
-          model_version     TEXT NOT NULL,
-          feature_count     INTEGER,
-          top_features      JSONB,
-          created_at        TIMESTAMPTZ DEFAULT NOW()
-        )
-      `;
-    },
     statements: (sql) => [
       sql`
         CREATE TABLE IF NOT EXISTS predictions (
@@ -781,24 +738,6 @@ const MIGRATIONS: Migration[] = [
   {
     id: 20,
     description: 'Create dark_pool_snapshots table for persisted cluster data',
-    run: async (sql) => {
-      await sql`
-        CREATE TABLE IF NOT EXISTS dark_pool_snapshots (
-          id          SERIAL PRIMARY KEY,
-          date        DATE NOT NULL,
-          timestamp   TIMESTAMPTZ NOT NULL,
-          snapshot_id INTEGER REFERENCES market_snapshots(id),
-          spx_price   DECIMAL(10,2),
-          clusters    JSONB NOT NULL,
-          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          UNIQUE(date, timestamp)
-        )
-      `;
-      await sql`
-        CREATE INDEX IF NOT EXISTS idx_dp_snapshots_date
-        ON dark_pool_snapshots (date)
-      `;
-    },
     statements: (sql) => [
       sql`
         CREATE TABLE IF NOT EXISTS dark_pool_snapshots (
@@ -821,19 +760,6 @@ const MIGRATIONS: Migration[] = [
   {
     id: 21,
     description: 'Add dark pool feature columns to training_features',
-    run: async (sql) => {
-      await sql`
-        ALTER TABLE training_features
-          ADD COLUMN IF NOT EXISTS dp_total_premium    DECIMAL(14,2),
-          ADD COLUMN IF NOT EXISTS dp_buyer_initiated  INTEGER,
-          ADD COLUMN IF NOT EXISTS dp_seller_initiated INTEGER,
-          ADD COLUMN IF NOT EXISTS dp_net_bias         TEXT,
-          ADD COLUMN IF NOT EXISTS dp_cluster_count    INTEGER,
-          ADD COLUMN IF NOT EXISTS dp_top_cluster_dist DECIMAL(10,2),
-          ADD COLUMN IF NOT EXISTS dp_support_premium  DECIMAL(14,2),
-          ADD COLUMN IF NOT EXISTS dp_resistance_premium DECIMAL(14,2)
-      `;
-    },
     statements: (sql) => [
       sql`
         ALTER TABLE training_features
@@ -851,13 +777,6 @@ const MIGRATIONS: Migration[] = [
   {
     id: 22,
     description: 'Add max pain columns to training_features',
-    run: async (sql) => {
-      await sql`
-        ALTER TABLE training_features
-          ADD COLUMN IF NOT EXISTS max_pain_0dte  DECIMAL(10,2),
-          ADD COLUMN IF NOT EXISTS max_pain_dist  DECIMAL(10,2)
-      `;
-    },
     statements: (sql) => [
       sql`
         ALTER TABLE training_features
@@ -869,23 +788,6 @@ const MIGRATIONS: Migration[] = [
   {
     id: 23,
     description: 'Create oi_per_strike table for daily open interest by strike',
-    run: async (sql) => {
-      await sql`
-        CREATE TABLE IF NOT EXISTS oi_per_strike (
-          id            SERIAL PRIMARY KEY,
-          date          DATE NOT NULL,
-          strike        DECIMAL(10,2) NOT NULL,
-          call_oi       INTEGER,
-          put_oi        INTEGER,
-          total_oi      INTEGER GENERATED ALWAYS AS (COALESCE(call_oi, 0) + COALESCE(put_oi, 0)) STORED,
-          created_at    TIMESTAMPTZ DEFAULT NOW(),
-          UNIQUE(date, strike)
-        )
-      `;
-      await sql`
-        CREATE INDEX IF NOT EXISTS idx_oi_per_strike_date ON oi_per_strike(date)
-      `;
-    },
     statements: (sql) => [
       sql`
         CREATE TABLE IF NOT EXISTS oi_per_strike (
@@ -908,26 +810,6 @@ const MIGRATIONS: Migration[] = [
     id: 24,
     description:
       'Add options volume/premium feature columns to training_features',
-    run: async (sql) => {
-      await sql`
-        ALTER TABLE training_features
-          ADD COLUMN IF NOT EXISTS opt_call_volume       INTEGER,
-          ADD COLUMN IF NOT EXISTS opt_put_volume        INTEGER,
-          ADD COLUMN IF NOT EXISTS opt_call_oi           INTEGER,
-          ADD COLUMN IF NOT EXISTS opt_put_oi            INTEGER,
-          ADD COLUMN IF NOT EXISTS opt_call_premium      DECIMAL(14,2),
-          ADD COLUMN IF NOT EXISTS opt_put_premium       DECIMAL(14,2),
-          ADD COLUMN IF NOT EXISTS opt_bullish_premium   DECIMAL(14,2),
-          ADD COLUMN IF NOT EXISTS opt_bearish_premium   DECIMAL(14,2),
-          ADD COLUMN IF NOT EXISTS opt_call_vol_ask      INTEGER,
-          ADD COLUMN IF NOT EXISTS opt_put_vol_bid       INTEGER,
-          ADD COLUMN IF NOT EXISTS opt_vol_pcr           DECIMAL(6,4),
-          ADD COLUMN IF NOT EXISTS opt_oi_pcr            DECIMAL(6,4),
-          ADD COLUMN IF NOT EXISTS opt_premium_ratio     DECIMAL(6,4),
-          ADD COLUMN IF NOT EXISTS opt_call_vol_vs_avg30 DECIMAL(6,4),
-          ADD COLUMN IF NOT EXISTS opt_put_vol_vs_avg30  DECIMAL(6,4)
-      `;
-    },
     statements: (sql) => [
       sql`
         ALTER TABLE training_features
@@ -983,7 +865,7 @@ export async function migrateDb(): Promise<string[]> {
         ...migration.statements(sql),
         sql`INSERT INTO schema_migrations (id, description) VALUES (${migration.id}, ${migration.description})`,
       ]);
-    } else {
+    } else if (migration.run) {
       // Legacy: sequential execution (not atomic)
       await migration.run(sql);
       await sql`

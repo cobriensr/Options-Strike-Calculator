@@ -7,6 +7,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfNotOwner: vi.fn(),
   rejectIfRateLimited: vi.fn(),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  setCacheHeaders: vi.fn(),
 }));
 
 const mockSql = vi.fn();

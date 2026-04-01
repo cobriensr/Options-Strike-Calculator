@@ -20,18 +20,12 @@ import {
   getActiveLessons,
   formatLessonsBlock,
   buildMarketConditions,
-  insertLesson,
-  supersedeLesson,
   upsertReport,
   updateReport,
   getHistoricalWinRate,
   formatWinRateForClaude,
 } from '../_lib/lessons.js';
-import type {
-  Lesson,
-  InsertLessonParams,
-  WinRateResult,
-} from '../_lib/lessons.js';
+import type { Lesson, WinRateResult } from '../_lib/lessons.js';
 
 describe('lessons.ts', () => {
   const originalEnv = process.env;
@@ -399,107 +393,6 @@ describe('lessons.ts', () => {
       expect(mc.vix).toBe(26.2);
       expect(mc.vix1d).toBe(22.1);
       expect(mc.spx).toBe(5700.5);
-    });
-  });
-
-  // ============================================================
-  // insertLesson
-  // ============================================================
-  describe('insertLesson', () => {
-    const baseParams: InsertLessonParams = {
-      text: 'Trust charm walls in negative GEX.',
-      embedding: [0.1, 0.2, 0.3],
-      tags: ['charm', 'gex'],
-      category: 'gamma',
-      marketConditions: { vix: 26.2 },
-      sourceAnalysisId: 42,
-      sourceDate: '2026-03-20',
-    };
-
-    it('inserts a lesson and returns the new id', async () => {
-      mockSql.mockResolvedValueOnce([{ id: 7 }]);
-
-      const id = await insertLesson(baseParams);
-
-      expect(id).toBe(7);
-      expect(mockSql).toHaveBeenCalledTimes(1);
-    });
-
-    it('passes null for optional fields when null', async () => {
-      mockSql.mockResolvedValueOnce([{ id: 8 }]);
-
-      const id = await insertLesson({
-        ...baseParams,
-        category: null,
-        marketConditions: null,
-        sourceAnalysisId: null,
-      });
-
-      expect(id).toBe(8);
-    });
-
-    it('serializes embedding as vector string', async () => {
-      mockSql.mockResolvedValueOnce([{ id: 9 }]);
-
-      await insertLesson(baseParams);
-
-      // The tagged template literal will include the embedding string
-      // Verify the SQL was called (we can't easily inspect tagged template args)
-      expect(mockSql).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  // ============================================================
-  // supersedeLesson
-  // ============================================================
-  describe('supersedeLesson', () => {
-    const newLesson: InsertLessonParams = {
-      text: 'Updated lesson about charm walls.',
-      embedding: [0.4, 0.5, 0.6],
-      tags: ['charm', 'gex', 'updated'],
-      category: 'gamma',
-      marketConditions: { vix: 28.0 },
-      sourceAnalysisId: 55,
-      sourceDate: '2026-03-22',
-    };
-
-    it('pre-allocates ID and runs transaction', async () => {
-      // Step 1: nextval returns the new ID
-      mockSql.mockResolvedValueOnce([{ id: 10 }]);
-      // The two sql`` tagged template calls inside the transaction array
-      // also invoke mockSql when constructing the queries
-      mockSql.mockResolvedValueOnce(undefined);
-      mockSql.mockResolvedValueOnce(undefined);
-      // Step 2: transaction resolves
-      mockSql.transaction.mockResolvedValueOnce(undefined);
-
-      const newId = await supersedeLesson(newLesson, 3);
-
-      expect(newId).toBe(10);
-      // 1 nextval + 2 template literals for the transaction array = 3
-      expect(mockSql).toHaveBeenCalledTimes(3);
-      // transaction called with array of two queries
-      expect(mockSql.transaction).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns the pre-allocated ID on success', async () => {
-      mockSql.mockResolvedValueOnce([{ id: 42 }]);
-      mockSql.transaction.mockResolvedValueOnce(undefined);
-
-      const id = await supersedeLesson(newLesson, 1);
-
-      expect(id).toBe(42);
-    });
-
-    it('propagates transaction errors', async () => {
-      mockSql.mockResolvedValueOnce([{ id: 10 }]);
-      mockSql.transaction.mockRejectedValueOnce(
-        new Error('Transaction failed'),
-      );
-
-      await expect(supersedeLesson(newLesson, 3)).rejects.toThrow(
-        'Transaction failed',
-      );
     });
   });
 

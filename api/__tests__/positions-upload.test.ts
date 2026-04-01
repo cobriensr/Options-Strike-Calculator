@@ -25,11 +25,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../positions.js';
-import {
-  parseFullCSV,
-  parseTosExpiration,
-  parseDollarValue,
-} from '../_lib/csv-parser.js';
+import { parseFullCSV, parseTosExpiration } from '../_lib/csv-parser.js';
 import { rejectIfNotOwner, rejectIfRateLimited } from '../_lib/api-helpers.js';
 import { savePositions } from '../_lib/db.js';
 
@@ -146,24 +142,6 @@ describe('parseTosExpiration', () => {
 
   it('returns raw input for unparseable dates', () => {
     expect(parseTosExpiration('bad')).toBe('bad');
-  });
-});
-
-describe('parseDollarValue', () => {
-  it('parses "$450.00" → 450', () => {
-    expect(parseDollarValue('$450.00')).toBe(450);
-  });
-
-  it('parses "($1,050.00)" → -1050', () => {
-    expect(parseDollarValue('($1,050.00)')).toBe(-1050);
-  });
-
-  it('parses "($650.00)" → -650', () => {
-    expect(parseDollarValue('($650.00)')).toBe(-650);
-  });
-
-  it('parses "$550.00" → 550', () => {
-    expect(parseDollarValue('$550.00')).toBe(550);
   });
 });
 

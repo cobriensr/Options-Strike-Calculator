@@ -5,6 +5,7 @@ import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  setCacheHeaders: vi.fn(),
 }));
 
 vi.mock('../_lib/db.js', () => ({

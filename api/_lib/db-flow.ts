@@ -43,42 +43,6 @@ export async function getFlowData(
 }
 
 /**
- * Get flow data rows within a time window (e.g., last 60 minutes).
- * Useful for building the time series context for Claude.
- */
-export async function getRecentFlowData(
-  date: string,
-  source: string,
-  minutesBack: number = 60,
-): Promise<
-  Array<{
-    timestamp: string;
-    ncp: number;
-    npp: number;
-    netVolume: number;
-  }>
-> {
-  const sql = getDb();
-  const cutoff = new Date(Date.now() - minutesBack * 60 * 1000).toISOString();
-
-  const rows = await sql`
-    SELECT timestamp, ncp, npp, net_volume
-    FROM flow_data
-    WHERE date = ${date}
-      AND source = ${source}
-      AND timestamp >= ${cutoff}
-    ORDER BY timestamp ASC
-  `;
-
-  return rows.map((r) => ({
-    timestamp: r.timestamp as string,
-    ncp: Number(r.ncp),
-    npp: Number(r.npp),
-    netVolume: r.net_volume as number,
-  }));
-}
-
-/**
  * Format flow data as a structured text block for Claude's context.
  * Includes the time series, computed direction, and divergence pattern.
  *

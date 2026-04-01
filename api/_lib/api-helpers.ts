@@ -91,8 +91,8 @@ export function isOwner(req: VercelRequest): boolean {
   if (!secret) {
     if (!ownerSecretWarned && process.env.VERCEL) {
       ownerSecretWarned = true;
-      console.warn(
-        '[api-helpers] OWNER_SECRET is not set — all requests will get 401',
+      logger.warn(
+        'OWNER_SECRET is not set — all requests will get 401',
       );
     }
     return false;
@@ -139,29 +139,6 @@ export function rejectIfNotOwner(
 }
 
 /**
- * HTTP error class for use with requireOwner and other throwing guards.
- */
-export class HttpError extends Error {
-  constructor(
-    public readonly statusCode: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'HttpError';
-  }
-}
-
-/**
- * Throwing guard — use in try/catch handlers.
- * Throws HttpError(401) if the request isn't from the owner.
- */
-export function requireOwner(req: VercelRequest): void {
-  if (!isOwner(req)) {
-    throw new HttpError(401, 'Not authenticated');
-  }
-}
-
-/**
  * Standard error response format.
  * All API endpoints should use this for error responses.
  */
@@ -194,7 +171,7 @@ export function sendError(
  * @param maxPerMinute - Maximum requests allowed per 60-second window
  * @returns true if the request should be blocked
  */
-export async function isRateLimited(
+async function isRateLimited(
   key: string,
   maxPerMinute: number = 5,
 ): Promise<boolean> {
@@ -215,7 +192,7 @@ export async function isRateLimited(
  * Extract a rate-limit key from the request.
  * Uses X-Real-Ip (set by Vercel), then X-Forwarded-For, then 'unknown'.
  */
-export function getRateLimitKey(req: VercelRequest, endpoint: string): string {
+function getRateLimitKey(req: VercelRequest, endpoint: string): string {
   const realIp = req.headers['x-real-ip'];
   if (typeof realIp === 'string' && realIp) return `${endpoint}:${realIp}`;
 

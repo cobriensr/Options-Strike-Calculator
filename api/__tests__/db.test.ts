@@ -23,7 +23,6 @@ import {
   getLatestPositions,
   getPreviousRecommendation,
   getFlowData,
-  getRecentFlowData,
   formatFlowDataForClaude,
   getGreekExposure,
   formatGreekExposureForClaude,
@@ -31,7 +30,6 @@ import {
   formatSpotExposuresForClaude,
   getVixOhlcFromSnapshots,
   saveDarkPoolSnapshot,
-  getDarkPoolSnapshot,
 } from '../_lib/db.js';
 import type { GreekExposureRow, SpotExposureRow } from '../_lib/db.js';
 import { neon } from '@neondatabase/serverless';
@@ -865,38 +863,6 @@ describe('db.ts', () => {
   });
 
   // ============================================================
-  // getRecentFlowData
-  // ============================================================
-  describe('getRecentFlowData', () => {
-    it('returns mapped rows with time cutoff', async () => {
-      mockSql.mockResolvedValueOnce([
-        {
-          timestamp: '2026-03-24T14:30:00Z',
-          ncp: '200000000',
-          npp: '-100000000',
-          net_volume: 8000,
-        },
-      ]);
-
-      const result = await getRecentFlowData('2026-03-24', 'market_tide', 30);
-
-      expect(result).toHaveLength(1);
-      expect(result[0]).toEqual({
-        timestamp: '2026-03-24T14:30:00Z',
-        ncp: 200000000,
-        npp: -100000000,
-        netVolume: 8000,
-      });
-    });
-
-    it('returns empty array when no recent data', async () => {
-      mockSql.mockResolvedValueOnce([]);
-      const result = await getRecentFlowData('2026-03-24', 'market_tide');
-      expect(result).toEqual([]);
-    });
-  });
-
-  // ============================================================
   // formatFlowDataForClaude
   // ============================================================
   describe('formatFlowDataForClaude', () => {
@@ -1594,47 +1560,3 @@ describe('saveDarkPoolSnapshot', () => {
   });
 });
 
-// ============================================================
-// getDarkPoolSnapshot
-// ============================================================
-
-describe('getDarkPoolSnapshot', () => {
-  beforeEach(() => {
-    mockSql.mockReset();
-    mockSql.transaction.mockReset().mockResolvedValue([]);
-    process.env.DATABASE_URL = 'postgresql://test';
-    _resetDb();
-  });
-
-  it('returns latest snapshot for date', async () => {
-    mockSql.mockResolvedValueOnce([
-      {
-        spx_price: 5800,
-        clusters: [
-          {
-            spxApprox: 5800,
-            totalPremium: 10_000_000,
-            tradeCount: 3,
-            buyerInitiated: 2,
-            sellerInitiated: 1,
-          },
-        ],
-      },
-    ]);
-
-    const result = await getDarkPoolSnapshot('2026-03-30');
-
-    expect(result).not.toBeNull();
-    expect(result!.spxPrice).toBe(5800);
-    expect(result!.clusters).toHaveLength(1);
-    expect(mockSql).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns null when no data for date', async () => {
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await getDarkPoolSnapshot('2026-03-30');
-
-    expect(result).toBeNull();
-  });
-});

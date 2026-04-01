@@ -39,21 +39,3 @@ export async function saveDarkPoolSnapshot(
   return rows.length > 0 ? (rows[0]!.id as number) : null;
 }
 
-export async function getDarkPoolSnapshot(date: string): Promise<{
-  spxPrice: number | null;
-  clusters: DarkPoolCluster[];
-} | null> {
-  const sql = getDb();
-  const rows = await sql`
-    SELECT spx_price, clusters
-    FROM dark_pool_snapshots
-    WHERE date = ${date}
-    ORDER BY timestamp DESC
-    LIMIT 1
-  `;
-  if (rows.length === 0) return null;
-  return {
-    spxPrice: rows[0]!.spx_price as number | null,
-    clusters: rows[0]!.clusters as DarkPoolCluster[],
-  };
-}

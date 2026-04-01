@@ -4,7 +4,6 @@
  * Provides functions for managing validated trading lessons:
  *   - getActiveLessons / formatLessonsBlock — read + format for prompt injection
  *   - buildMarketConditions — derive JSONB context from analysis + snapshot rows
- *   - insertLesson / supersedeLesson — write operations
  *   - upsertReport / updateReport — lesson_reports bookkeeping
  */
 
@@ -33,16 +32,6 @@ export interface MarketConditions {
   wasCorrect: boolean | null;
   confidence: string | null;
   vixTermShape: string | null;
-}
-
-export interface InsertLessonParams {
-  text: string;
-  embedding: number[];
-  tags: string[];
-  category: string | null;
-  marketConditions: Record<string, unknown> | null;
-  sourceAnalysisId: number | null;
-  sourceDate: string;
 }
 
 export interface ReportData {
@@ -291,87 +280,6 @@ export function buildMarketConditions(
         ? String(snapshotRow.vix_term_signal)
         : null,
   };
-}
-
-// ============================================================
-// WRITE
-// ============================================================
-
-/**
- * Insert a new lesson row. Returns the new lesson ID.
- */
-export async function insertLesson(
-  params: InsertLessonParams,
-): Promise<number> {
-  const sql = getDb();
-
-  const embeddingStr = `[${params.embedding.join(',')}]`;
-
-  const rows = await sql`
-    INSERT INTO lessons (
-      text, embedding, tags, category,
-      market_conditions, source_analysis_id, source_date
-    ) VALUES (
-      ${params.text},
-      ${embeddingStr}::vector,
-      ${params.tags},
-      ${params.category},
-      ${params.marketConditions ? JSON.stringify(params.marketConditions) : null},
-      ${params.sourceAnalysisId},
-      ${params.sourceDate}
-    )
-    RETURNING id
-  `;
-
-  return rows[0]!.id as number;
-}
-
-/**
- * Supersede an old lesson with a new one in a single transaction.
- *
- * The Neon HTTP driver does NOT have sql.begin(). We:
- * 1. Pre-allocate the new ID via nextval() outside the transaction
- * 2. Use sql.transaction() to batch INSERT + UPDATE atomically
- */
-export async function supersedeLesson(
-  newLesson: InsertLessonParams,
-  oldLessonId: number,
-): Promise<number> {
-  const sql = getDb();
-
-  // Step 1: Pre-allocate the new lesson ID
-  const seqRows = await sql`SELECT nextval('lessons_id_seq') AS id`;
-  const newId = Number(seqRows[0]!.id);
-
-  const embeddingStr = `[${newLesson.embedding.join(',')}]`;
-
-  // Step 2: Atomic transaction — INSERT new lesson + UPDATE old lesson
-  await sql.transaction([
-    sql`
-      INSERT INTO lessons (
-        id, text, embedding, tags, category,
-        market_conditions, source_analysis_id, source_date
-      ) VALUES (
-        ${newId},
-        ${newLesson.text},
-        ${embeddingStr}::vector,
-        ${newLesson.tags},
-        ${newLesson.category},
-        ${newLesson.marketConditions ? JSON.stringify(newLesson.marketConditions) : null},
-        ${newLesson.sourceAnalysisId},
-        ${newLesson.sourceDate}
-      )
-    `,
-    sql`
-      UPDATE lessons
-      SET status = 'superseded',
-          superseded_by = ${newId},
-          superseded_at = NOW()
-      WHERE id = ${oldLessonId}
-    `,
-  ]);
-
-  return newId;
 }
 
 // ============================================================

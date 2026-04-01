@@ -12,6 +12,7 @@ vi.mock('../_lib/schwab.js', () => ({
 
 vi.mock('../_lib/api-helpers.js', () => ({
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  setCacheHeaders: vi.fn(),
 }));
 
 import handler from '../events.js';

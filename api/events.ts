@@ -19,7 +19,7 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot } from './_lib/api-helpers.js';
+import { checkBot, setCacheHeaders } from './_lib/api-helpers.js';
 import { redis } from './_lib/schwab.js';
 import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
@@ -490,10 +490,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         >(cacheKey);
         if (raw) {
           metrics.cacheResult('/api/events', true);
-          res.setHeader(
-            'Cache-Control',
-            's-maxage=43200, stale-while-revalidate=3600',
-          );
+          setCacheHeaders(res, 300, 120);
           res.setHeader('X-Cache', 'HIT');
           // Support both new wrapper format and legacy plain array
           const cachedEvents = Array.isArray(raw) ? raw : raw.data;
@@ -536,11 +533,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         logger.error({ err }, 'Failed to cache events in Redis');
       }
 
-      // Edge cache: 12 hours
-      res.setHeader(
-        'Cache-Control',
-        's-maxage=43200, stale-while-revalidate=3600',
-      );
+      setCacheHeaders(res, 300, 120);
       res.setHeader('X-Cache', 'MISS');
 
       done({ status: 200 });

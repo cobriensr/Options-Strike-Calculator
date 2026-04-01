@@ -23,8 +23,6 @@ import {
   rejectIfNotOwner,
   OWNER_COOKIE,
   OWNER_COOKIE_MAX_AGE,
-  isRateLimited,
-  getRateLimitKey,
   rejectIfRateLimited,
   schwabFetch,
   setCacheHeaders,
@@ -129,56 +127,6 @@ describe('api-helpers', () => {
   // ============================================================
   // RATE LIMITING
   // ============================================================
-
-  describe('getRateLimitKey', () => {
-    it('uses x-forwarded-for IP', () => {
-      const req = mockRequest({
-        headers: { 'x-forwarded-for': '1.2.3.4, 5.6.7.8' },
-      });
-      expect(getRateLimitKey(req, 'auth')).toBe('auth:1.2.3.4');
-    });
-
-    it('uses unknown when no forwarded header', () => {
-      const req = mockRequest({ headers: {} });
-      expect(getRateLimitKey(req, 'test')).toBe('test:unknown');
-    });
-
-    it('uses unknown when x-forwarded-for is an array', () => {
-      const req = mockRequest({
-        headers: { 'x-forwarded-for': ['1.2.3.4'] as unknown as string },
-      });
-      expect(getRateLimitKey(req, 'test')).toBe('test:unknown');
-    });
-  });
-
-  describe('isRateLimited', () => {
-    it('returns false when count is within limit', async () => {
-      mockPipeline.exec.mockResolvedValue([3]);
-      const result = await isRateLimited('key', 5);
-      expect(result).toBe(false);
-    });
-
-    it('returns true when count exceeds limit', async () => {
-      mockPipeline.exec.mockResolvedValue([6]);
-      const result = await isRateLimited('key', 5);
-      expect(result).toBe(true);
-    });
-
-    it('calls incr and expire on the pipeline', async () => {
-      mockPipeline.incr.mockClear();
-      mockPipeline.expire.mockClear();
-      mockPipeline.exec.mockResolvedValue([1]);
-      await isRateLimited('key', 5);
-      expect(mockPipeline.incr).toHaveBeenCalledWith('ratelimit:key');
-      expect(mockPipeline.expire).toHaveBeenCalledWith('ratelimit:key', 60);
-    });
-
-    it('fails open when Redis throws', async () => {
-      mockPipeline.exec.mockRejectedValue(new Error('redis down'));
-      const result = await isRateLimited('key', 5);
-      expect(result).toBe(false);
-    });
-  });
 
   describe('rejectIfRateLimited', () => {
     it('sends 429 when rate limited', async () => {

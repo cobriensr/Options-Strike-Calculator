@@ -60,6 +60,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const id = await saveSnapshot(parsed.data);
 
     metrics.dbSave('market_snapshots', true);
+    res.setHeader('Cache-Control', 'no-store');
     done({ status: 200 });
     return res.status(200).json({ id, saved: id != null });
   } catch (err) {

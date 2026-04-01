@@ -16,7 +16,7 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot } from './_lib/api-helpers.js';
+import { checkBot, setCacheHeaders } from './_lib/api-helpers.js';
 import { getVixOhlcFromSnapshots } from './_lib/db.js';
 
 const EMPTY = { open: null, high: null, low: null, close: null, count: 0 };
@@ -47,6 +47,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     try {
       const result = await getVixOhlcFromSnapshots(dateParam);
+      setCacheHeaders(res, 3600, 600);
       done({ status: 200 });
       return res.status(200).json(result ?? EMPTY);
     } catch (err) {

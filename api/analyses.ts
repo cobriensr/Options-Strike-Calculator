@@ -18,6 +18,7 @@ import {
   rejectIfNotOwner,
   rejectIfRateLimited,
   checkBot,
+  setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
@@ -70,6 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const sql = getDb();
+    setCacheHeaders(res, 60, 30);
     const { dates, date, mode, entryTime, id } = req.query;
 
     // ── Single analysis by ID ──────────────────────────────

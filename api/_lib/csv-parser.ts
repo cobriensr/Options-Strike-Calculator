@@ -87,7 +87,7 @@ export function parseTosExpiration(raw: string): string {
 }
 
 /** Parse "$450.00" → 450, "($1,050.00)" → -1050 */
-export function parseDollarValue(raw: string): number {
+function parseDollarValue(raw: string): number {
   const cleaned = raw.replaceAll(/[$,\s]/g, '');
   const match = /^\((.+)\)$/.exec(cleaned);
   if (match) return -Number.parseFloat(match[1]!);

@@ -16,6 +16,7 @@ import {
   rejectIfNotOwner,
   rejectIfRateLimited,
   checkBot,
+  setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
@@ -44,6 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE date = ${date} AND pre_market_data IS NOT NULL
         ORDER BY created_at DESC LIMIT 1
       `;
+      setCacheHeaders(res, 120, 60);
       if (rows.length > 0 && rows[0]?.pre_market_data) {
         return res.status(200).json({ data: rows[0].pre_market_data });
       }
