@@ -41,6 +41,7 @@ export default function BWBCalculator() {
     dist: number;
     charmAdjusted: number;
   } | null>(null);
+  const [useCharm, setUseCharm] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,7 +57,9 @@ export default function BWBCalculator() {
         });
       })
       .catch(() => {});
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Auto-fill strikes from sweet spot + wing widths
@@ -225,31 +228,55 @@ export default function BWBCalculator() {
         </div>
 
         {/* Gamma anchor suggestion */}
-        {anchor && (
-          <div className="border-accent/30 bg-accent/5 mb-2.5 flex items-center gap-2 rounded-md border px-2.5 py-1.5">
-            <span className="text-accent text-[10px] font-bold tracking-widest uppercase">
-              γ Anchor
-            </span>
-            <span className="text-primary font-mono text-sm font-semibold">
-              {anchor.strike}
-            </span>
-            <span className="text-muted text-[10px]">
-              ({anchor.dist > 0 ? '+' : ''}
-              {anchor.dist} from {anchor.price})
-            </span>
-            {anchor.charmAdjusted !== anchor.strike && (
-              <span className="text-muted text-[10px]">
-                · charm-adj: {anchor.charmAdjusted}
+        {anchor && (() => {
+          const hasCharmDiff = anchor.charmAdjusted !== anchor.strike;
+          const activeStrike = useCharm ? anchor.charmAdjusted : anchor.strike;
+          const activeDist = Math.round((activeStrike - anchor.price) * 10) / 10;
+          return (
+            <div className="border-accent/30 bg-accent/5 mb-2.5 flex items-center gap-2 rounded-md border px-2.5 py-1.5">
+              <span className="text-accent text-[10px] font-bold tracking-widest uppercase">
+                γ Anchor
               </span>
-            )}
-            <button
-              onClick={() => handleSweetSpotChange(String(anchor.strike))}
-              className="bg-accent/20 hover:bg-accent/30 text-accent ml-auto rounded px-2 py-0.5 text-[10px] font-bold transition-colors"
-            >
-              Use
-            </button>
-          </div>
-        )}
+              <span className="text-primary font-mono text-sm font-semibold">
+                {activeStrike}
+              </span>
+              <span className="text-muted text-[10px]">
+                ({activeDist > 0 ? '+' : ''}{activeDist} from {anchor.price})
+              </span>
+              {/* γ / γ+C toggle — only shown when charm differs */}
+              {hasCharmDiff && (
+                <div className="border-edge flex overflow-hidden rounded border text-[9px] font-bold">
+                  <button
+                    onClick={() => setUseCharm(false)}
+                    className={`px-1.5 py-0.5 transition-colors ${
+                      !useCharm
+                        ? 'bg-accent text-white'
+                        : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    γ
+                  </button>
+                  <button
+                    onClick={() => setUseCharm(true)}
+                    className={`border-edge border-l px-1.5 py-0.5 transition-colors ${
+                      useCharm
+                        ? 'bg-accent text-white'
+                        : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    γ+C
+                  </button>
+                </div>
+              )}
+              <button
+                onClick={() => handleSweetSpotChange(String(activeStrike))}
+                className="bg-accent/20 hover:bg-accent/30 text-accent ml-auto rounded px-2 py-0.5 text-[10px] font-bold transition-colors"
+              >
+                Use
+              </button>
+            </div>
+          );
+        })()}
 
         <div className="grid grid-cols-[1fr_auto_auto] items-end gap-2">
           <div>
