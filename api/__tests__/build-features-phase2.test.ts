@@ -975,9 +975,7 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // settlements
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([
-        { spx_price: 'invalid', clusters },
-      ]); // dpRows — spx_price parses to NaN → null
+      mockSql.mockResolvedValueOnce([{ spx_price: 'invalid', clusters }]); // dpRows — spx_price parses to NaN → null
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
