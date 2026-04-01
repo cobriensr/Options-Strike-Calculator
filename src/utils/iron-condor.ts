@@ -5,6 +5,7 @@ import {
 } from '../constants';
 import type { DeltaRow, IronCondorLegs } from '../types';
 import { normalCDF, blackScholesPrice } from './black-scholes';
+import { snapToSpyHalf } from './formatting';
 import { calcTimeToExpiry } from './time';
 
 /**
@@ -248,10 +249,10 @@ export function buildIronCondor(
     longPut,
     shortCall,
     longCall,
-    shortPutSpy: Math.round((shortPut / spxToSpyRatio) * 2) / 2,
-    longPutSpy: Math.round((longPut / spxToSpyRatio) * 2) / 2,
-    shortCallSpy: Math.round((shortCall / spxToSpyRatio) * 2) / 2,
-    longCallSpy: Math.round((longCall / spxToSpyRatio) * 2) / 2,
+    shortPutSpy: snapToSpyHalf(shortPut, spxToSpyRatio),
+    longPutSpy: snapToSpyHalf(longPut, spxToSpyRatio),
+    shortCallSpy: snapToSpyHalf(shortCall, spxToSpyRatio),
+    longCallSpy: snapToSpyHalf(longCall, spxToSpyRatio),
     wingWidthSpx,
     shortPutPremium,
     longPutPremium,

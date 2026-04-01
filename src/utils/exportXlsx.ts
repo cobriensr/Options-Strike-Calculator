@@ -1,10 +1,16 @@
 import type * as XLSX from 'xlsx';
 import type { DeltaRow, CalculationResults } from '../types';
 import { buildIronCondor, buildPutBWB, buildCallBWB } from './calculator';
+import {
+  WING_OPTIONS,
+  BWB_NARROW_OPTIONS,
+  BWB_WIDE_MULTIPLIERS,
+} from '../constants';
+import { round0, round1, round2, round4 } from './formatting';
 
-const ALL_WING_WIDTHS = [5, 10, 15, 20, 25, 30, 50];
-const BWB_NARROWS = [10, 15, 20, 25, 30];
-const BWB_MULTIPLIERS = [1.5, 2, 2.5, 3];
+const ALL_WING_WIDTHS = [...WING_OPTIONS];
+const BWB_NARROWS = [...BWB_NARROW_OPTIONS];
+const BWB_MULTIPLIERS = [...BWB_WIDE_MULTIPLIERS];
 
 interface ExportParams {
   results: CalculationResults;
@@ -511,20 +517,6 @@ export async function exportBWBComparison({
     .replace(':', '');
   const filename = 'strike-calc-bwb-' + timestamp + '.xlsx';
   XLSX.writeFile(wb, filename);
-}
-
-// Helpers
-function round0(n: number): number {
-  return Math.round(n);
-}
-function round1(n: number): number {
-  return Math.round(n * 10) / 10;
-}
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-function round4(n: number): number {
-  return Math.round(n * 10000) / 10000;
 }
 
 function setColumnWidths(ws: XLSX.WorkSheet, widths: number[]): void {

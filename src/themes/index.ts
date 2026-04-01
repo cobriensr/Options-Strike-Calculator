@@ -44,8 +44,3 @@ export const theme = {
 } as const;
 
 export type Theme = typeof theme;
-
-/** @deprecated Use the single `theme` export instead */
-export const lightTheme = theme;
-/** @deprecated Use the single `theme` export instead */
-export const darkTheme = theme;

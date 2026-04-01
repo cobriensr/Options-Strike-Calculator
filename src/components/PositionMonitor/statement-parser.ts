@@ -35,6 +35,8 @@ import type {
   WarningCode,
   WarningSeverity,
 } from './types';
+import { SPX_MULTIPLIER as MULTIPLIER } from '../../constants';
+import { round2 } from '../../utils/formatting';
 
 // ── Constants ──────────────────────────────────────────────
 
@@ -54,9 +56,6 @@ const MONTH_MAP: Record<string, string> = {
 };
 
 /** Max strike distance (points) to consider two legs a spread */
-
-/** SPX multiplier */
-const MULTIPLIER = 100;
 
 // ── CSV / Value Parsing ────────────────────────────────────
 
@@ -1735,10 +1734,6 @@ function makeWarning(
 }
 
 // ── Utilities ──────────────────────────────────────────────
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
 
 /**
  * Compute hold time in minutes between two time strings.

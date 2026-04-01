@@ -7,6 +7,7 @@ import {
   calcBSTheta,
   calcBSVega,
 } from './black-scholes';
+import { snapToSpyHalf } from './formatting';
 import { adjustPoPForKurtosis, calcSpreadPoP } from './iron-condor';
 import { snapToIncrement } from './strikes';
 
@@ -115,9 +116,9 @@ export function buildPutBWB(
     shortStrike,
     longNearStrike,
     longFarStrike,
-    shortStrikeSpy: Math.round((shortStrike / spxToSpyRatio) * 2) / 2,
-    longNearStrikeSpy: Math.round((longNearStrike / spxToSpyRatio) * 2) / 2,
-    longFarStrikeSpy: Math.round((longFarStrike / spxToSpyRatio) * 2) / 2,
+    shortStrikeSpy: snapToSpyHalf(shortStrike, spxToSpyRatio),
+    longNearStrikeSpy: snapToSpyHalf(longNearStrike, spxToSpyRatio),
+    longFarStrikeSpy: snapToSpyHalf(longFarStrike, spxToSpyRatio),
     narrowWidth,
     wideWidth,
     shortPremium,
@@ -242,9 +243,9 @@ export function buildCallBWB(
     shortStrike,
     longNearStrike,
     longFarStrike,
-    shortStrikeSpy: Math.round((shortStrike / spxToSpyRatio) * 2) / 2,
-    longNearStrikeSpy: Math.round((longNearStrike / spxToSpyRatio) * 2) / 2,
-    longFarStrikeSpy: Math.round((longFarStrike / spxToSpyRatio) * 2) / 2,
+    shortStrikeSpy: snapToSpyHalf(shortStrike, spxToSpyRatio),
+    longNearStrikeSpy: snapToSpyHalf(longNearStrike, spxToSpyRatio),
+    longFarStrikeSpy: snapToSpyHalf(longFarStrike, spxToSpyRatio),
     narrowWidth,
     wideWidth,
     shortPremium,
