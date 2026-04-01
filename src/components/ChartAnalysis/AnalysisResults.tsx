@@ -1,9 +1,14 @@
 import { theme } from '../../themes';
 import type { AnalysisMode, AnalysisResult } from './types';
-import { MODE_LABELS } from './types';
-import { tint } from '../../utils/ui-utils';
 import BulletList from './BulletList';
 import Collapsible from './Collapsible';
+import SummaryCard from './SummaryCard';
+import ChartConfidenceGrid from './ChartConfidenceGrid';
+import EntryPlan from './EntryPlan';
+import DirectionalOpportunity from './DirectionalOpportunity';
+import ManagementRules from './ManagementRules';
+import EndOfDayReview from './EndOfDayReview';
+import ImageIssues from './ImageIssues';
 
 interface Props {
   readonly analysis: AnalysisResult;
@@ -18,204 +23,14 @@ export default function AnalysisResults({
   onReplaceImage,
   defaultCollapsed = false,
 }: Props) {
-  const structureColor = (s: string) => {
-    if (s === 'IRON CONDOR') return theme.accent;
-    if (s === 'PUT CREDIT SPREAD') return theme.red;
-    if (s === 'CALL CREDIT SPREAD') return theme.green;
-    return theme.caution;
-  };
-
-  const confidenceColor = (c: string) => {
-    if (c === 'HIGH') return theme.green;
-    if (c === 'MODERATE') return theme.caution;
-    return theme.red;
-  };
-
-  const signalColor = (s: string) => {
-    if (
-      s === 'BEARISH' ||
-      s === 'CONTRADICTS' ||
-      s === 'UNFAVORABLE' ||
-      s === 'DECAYING' ||
-      s === 'NEGATIVE'
-    )
-      return theme.red;
-    if (
-      s === 'BULLISH' ||
-      s === 'CONFIRMS' ||
-      s === 'FAVORABLE' ||
-      s === 'SUPPORTIVE' ||
-      s === 'POSITIVE'
-    )
-      return theme.green;
-    if (s === 'NEUTRAL' || s === 'NOT PROVIDED') return theme.textMuted;
-    return theme.caution;
-  };
-
   return (
     <div className="grid gap-2.5">
       {/* TL;DR SUMMARY CARD (always visible) */}
-      <div
-        className="rounded-[10px] p-3.5"
-        style={{
-          backgroundColor: tint(structureColor(analysis.structure), '0C'),
-          border: `1.5px solid ${tint(structureColor(analysis.structure), '30')}`,
-        }}
-      >
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <span
-            className="font-sans text-[15px] font-bold"
-            style={{ color: structureColor(analysis.structure) }}
-          >
-            {analysis.structure}
-          </span>
-          <span
-            className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
-            style={{
-              backgroundColor: tint(confidenceColor(analysis.confidence), '18'),
-              color: confidenceColor(analysis.confidence),
-            }}
-          >
-            {analysis.confidence}
-          </span>
-          <span
-            className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
-            style={{
-              backgroundColor: tint(theme.accent, '18'),
-              color: theme.accent,
-            }}
-          >
-            {analysis.suggestedDelta}
-            {'\u0394'}
-          </span>
-          {analysis.hedge && analysis.hedge.recommendation !== 'NO HEDGE' && (
-            <span
-              className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
-              style={{
-                backgroundColor: tint(theme.caution, '18'),
-                color: theme.caution,
-              }}
-            >
-              {analysis.hedge.recommendation}
-            </span>
-          )}
-          <span
-            className="text-muted rounded-full px-2 py-0.5 font-mono text-[10px]"
-            style={{ backgroundColor: theme.surfaceAlt }}
-          >
-            {MODE_LABELS[analysis.mode ?? mode].label}
-          </span>
-        </div>
-
-        {/* One-line reasoning */}
-        <div className="text-secondary mb-2 text-[11px] leading-relaxed">
-          {analysis.reasoning}
-        </div>
-
-        {/* Quick-glance: Entry 1 + Hedge + Profit target */}
-        <div
-          className="grid gap-1 border-t pt-2"
-          style={{
-            borderColor: tint(structureColor(analysis.structure), '20'),
-          }}
-        >
-          {analysis.entryPlan?.entry1 && (
-            <div className="flex items-center gap-2 text-[10px]">
-              <span className="font-semibold" style={{ color: theme.accent }}>
-                Entry 1:
-              </span>
-              <span className="text-secondary">
-                {analysis.entryPlan.entry1.structure}{' '}
-                {analysis.entryPlan.entry1.delta}
-                {'\u0394'} at {analysis.entryPlan.entry1.sizePercent}% size
-              </span>
-              <span className="text-muted">{'\u2022'}</span>
-              <span className="text-muted italic">
-                {analysis.entryPlan.entry1.timing ||
-                  analysis.entryPlan.entry1.condition}
-              </span>
-            </div>
-          )}
-          {analysis.strikeGuidance?.adjustments &&
-            analysis.strikeGuidance.adjustments.length > 0 && (
-              <div className="flex items-center gap-2 text-[10px]">
-                <span className="font-semibold" style={{ color: theme.accent }}>
-                  Strike:
-                </span>
-                <span className="text-secondary">
-                  {analysis.strikeGuidance.adjustments[0]}
-                </span>
-              </div>
-            )}
-          {analysis.managementRules?.profitTarget && (
-            <div className="flex items-center gap-2 text-[10px]">
-              <span className="font-semibold" style={{ color: theme.green }}>
-                Target:
-              </span>
-              <span className="text-secondary">
-                {analysis.managementRules.profitTarget}
-              </span>
-            </div>
-          )}
-          {analysis.hedge && analysis.hedge.recommendation !== 'NO HEDGE' && (
-            <div className="flex items-center gap-2 text-[10px]">
-              <span className="font-semibold" style={{ color: theme.caution }}>
-                Hedge:
-              </span>
-              <span className="text-secondary">
-                {analysis.hedge.description}
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
+      <SummaryCard analysis={analysis} mode={mode} />
 
       {/* Per-Chart Confidence (always visible, compact) */}
       {analysis.chartConfidence && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-          {(
-            [
-              ['marketTide', 'Market Tide'],
-              ['spxNetFlow', 'SPX Flow'],
-              ['spyNetFlow', 'SPY Flow'],
-              ['qqqNetFlow', 'QQQ Flow'],
-              ['periscope', 'Periscope'],
-              ['netCharm', 'Net Charm'],
-              ['aggregateGex', 'Aggregate GEX'],
-              ['periscopeCharm', 'Periscope Charm'],
-            ] as const
-          ).map(([key, label]) => {
-            const sig = analysis.chartConfidence?.[key];
-            if (!sig || sig.signal === 'NOT PROVIDED') return null;
-            return (
-              <div
-                key={key}
-                className="bg-surface border-edge rounded-md border p-2.5"
-              >
-                <div className="text-muted mb-0.5 text-[10px] font-bold tracking-wider uppercase">
-                  {label}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className="text-[13px] font-bold"
-                    style={{ color: signalColor(sig.signal) }}
-                  >
-                    {sig.signal}
-                  </span>
-                  <span
-                    className="text-[10px] font-semibold"
-                    style={{ color: confidenceColor(sig.confidence) }}
-                  >
-                    {sig.confidence}
-                  </span>
-                </div>
-                <div className="text-muted mt-1 text-[10px] leading-snug">
-                  {sig.note}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <ChartConfidenceGrid chartConfidence={analysis.chartConfidence} />
       )}
 
       {/* COLLAPSIBLE DETAIL SECTIONS */}
@@ -280,320 +95,22 @@ export default function AnalysisResults({
 
       {/* Entry Plan */}
       {analysis.entryPlan && (
-        <Collapsible
-          title="Entry Plan"
-          color={theme.accent}
-          defaultOpen={!defaultCollapsed}
-        >
-          <div className="grid gap-2">
-            {(
-              [
-                [1, analysis.entryPlan.entry1],
-                [2, analysis.entryPlan.entry2],
-                [3, analysis.entryPlan.entry3],
-              ] as const
-            ).map(([num, entry]) => {
-              if (!entry) return null;
-              return (
-                <div
-                  key={`entry-${num}`}
-                  className="bg-surface-alt flex items-start gap-2.5 rounded-md p-2"
-                >
-                  <div
-                    className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-bold"
-                    style={{
-                      backgroundColor: tint(theme.accent, '18'),
-                      color: theme.accent,
-                    }}
-                  >
-                    {num}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span
-                        className="text-[11px] font-semibold"
-                        style={{ color: structureColor(entry.structure) }}
-                      >
-                        {entry.structure}
-                      </span>
-                      <span
-                        className="font-mono text-[10px] font-bold"
-                        style={{ color: theme.accent }}
-                      >
-                        {entry.delta}
-                        {'\u0394'}
-                      </span>
-                      <span className="text-muted text-[10px]">
-                        {entry.sizePercent}% size
-                      </span>
-                    </div>
-                    <div className="text-muted text-[10px]">
-                      {entry.timing || entry.condition}
-                    </div>
-                    <div className="text-secondary mt-0.5 text-[10px] italic">
-                      {entry.note}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            {analysis.entryPlan.maxTotalSize && (
-              <div className="text-muted text-[10px]">
-                Max size: {analysis.entryPlan.maxTotalSize}
-              </div>
-            )}
-            {analysis.entryPlan.noEntryConditions &&
-              analysis.entryPlan.noEntryConditions.length > 0 && (
-                <div className="mt-1">
-                  <div
-                    className="mb-0.5 text-[10px] font-bold uppercase"
-                    style={{ color: theme.red }}
-                  >
-                    Do NOT add entries if:
-                  </div>
-                  <BulletList
-                    defaultColor={theme.textMuted}
-                    items={analysis.entryPlan.noEntryConditions}
-                    icon={'\u2718'}
-                    color={theme.red}
-                  />
-                </div>
-              )}
-          </div>
-        </Collapsible>
+        <EntryPlan
+          entryPlan={analysis.entryPlan}
+          defaultCollapsed={defaultCollapsed}
+        />
       )}
 
       {/* Directional Opportunity (midday only, when present) */}
       {analysis.directionalOpportunity && (
-        <Collapsible
-          title="Directional Opportunity"
-          color={
-            analysis.directionalOpportunity.direction === 'LONG CALL'
-              ? theme.green
-              : theme.red
-          }
-          defaultOpen
-        >
-          <div className="grid gap-2">
-            {/* Header: direction + confidence + 14 DTE ATM */}
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className="rounded px-2 py-0.5 text-[11px] font-bold"
-                style={{
-                  backgroundColor: tint(
-                    analysis.directionalOpportunity.direction === 'LONG CALL'
-                      ? theme.green
-                      : theme.red,
-                    '30',
-                  ),
-                  color:
-                    analysis.directionalOpportunity.direction === 'LONG CALL'
-                      ? theme.green
-                      : theme.red,
-                }}
-              >
-                {analysis.directionalOpportunity.direction}
-              </span>
-              <span
-                className="rounded px-1.5 py-0.5 text-[10px] font-bold"
-                style={{
-                  backgroundColor: tint(
-                    confidenceColor(analysis.directionalOpportunity.confidence),
-                    '18',
-                  ),
-                  color: confidenceColor(
-                    analysis.directionalOpportunity.confidence,
-                  ),
-                }}
-              >
-                {analysis.directionalOpportunity.confidence}
-              </span>
-              <span
-                className="text-[10px] font-semibold"
-                style={{ color: theme.textMuted }}
-              >
-                14 DTE ATM
-              </span>
-            </div>
-
-            {/* Reasoning */}
-            <div className="text-secondary text-[11px] leading-relaxed">
-              {analysis.directionalOpportunity.reasoning}
-            </div>
-
-            {/* Entry timing + Stop + Target */}
-            <div className="grid gap-1.5">
-              <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: theme.accent }}>
-                  Entry:{' '}
-                </span>
-                <span className="text-secondary">
-                  {analysis.directionalOpportunity.entryTiming}
-                </span>
-              </div>
-              <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: theme.red }}>
-                  Stop:{' '}
-                </span>
-                <span className="text-secondary">
-                  {analysis.directionalOpportunity.stopLoss}
-                </span>
-              </div>
-              <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: theme.green }}>
-                  Target:{' '}
-                </span>
-                <span className="text-secondary">
-                  {analysis.directionalOpportunity.profitTarget}
-                </span>
-              </div>
-            </div>
-
-            {/* Key Levels */}
-            {(analysis.directionalOpportunity.keyLevels.support ||
-              analysis.directionalOpportunity.keyLevels.resistance ||
-              analysis.directionalOpportunity.keyLevels.vwap) && (
-              <div
-                className="rounded-md p-2"
-                style={{
-                  backgroundColor: tint(theme.accent, '0C'),
-                  border: `1px solid ${tint(theme.accent, '20')}`,
-                }}
-              >
-                <div
-                  className="mb-1 text-[10px] font-bold tracking-wider uppercase"
-                  style={{ color: theme.accent }}
-                >
-                  Key Levels
-                </div>
-                <div className="grid gap-1">
-                  {analysis.directionalOpportunity.keyLevels.support && (
-                    <div className="text-[10px]">
-                      <span
-                        className="font-semibold"
-                        style={{ color: theme.green }}
-                      >
-                        Support:{' '}
-                      </span>
-                      <span className="text-secondary">
-                        {analysis.directionalOpportunity.keyLevels.support}
-                      </span>
-                    </div>
-                  )}
-                  {analysis.directionalOpportunity.keyLevels.resistance && (
-                    <div className="text-[10px]">
-                      <span
-                        className="font-semibold"
-                        style={{ color: theme.red }}
-                      >
-                        Resistance:{' '}
-                      </span>
-                      <span className="text-secondary">
-                        {analysis.directionalOpportunity.keyLevels.resistance}
-                      </span>
-                    </div>
-                  )}
-                  {analysis.directionalOpportunity.keyLevels.vwap && (
-                    <div className="text-[10px]">
-                      <span
-                        className="font-semibold"
-                        style={{ color: theme.caution }}
-                      >
-                        VWAP:{' '}
-                      </span>
-                      <span className="text-secondary">
-                        {analysis.directionalOpportunity.keyLevels.vwap}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Confirming Signals */}
-            {analysis.directionalOpportunity.signals.length > 0 && (
-              <div>
-                <div
-                  className="mb-0.5 text-[10px] font-bold uppercase"
-                  style={{ color: theme.textMuted }}
-                >
-                  Confirming Signals
-                </div>
-                <BulletList
-                  defaultColor={theme.textMuted}
-                  items={analysis.directionalOpportunity.signals}
-                  icon={'\u2713'}
-                  color={
-                    analysis.directionalOpportunity.direction === 'LONG CALL'
-                      ? theme.green
-                      : theme.red
-                  }
-                />
-              </div>
-            )}
-          </div>
-        </Collapsible>
+        <DirectionalOpportunity
+          directionalOpportunity={analysis.directionalOpportunity}
+        />
       )}
 
       {/* Management Rules */}
       {analysis.managementRules && (
-        <Collapsible title="Position Management Rules" color={theme.caution}>
-          <div className="grid gap-1.5">
-            {analysis.managementRules.profitTarget && (
-              <div className="text-[11px] leading-relaxed">
-                <span className="font-semibold" style={{ color: theme.green }}>
-                  Profit target:{' '}
-                </span>
-                <span className="text-secondary">
-                  {analysis.managementRules.profitTarget}
-                </span>
-              </div>
-            )}
-            {analysis.managementRules.stopConditions &&
-              analysis.managementRules.stopConditions.length > 0 && (
-                <div>
-                  <span
-                    className="text-[10px] font-semibold"
-                    style={{ color: theme.red }}
-                  >
-                    Stop conditions:
-                  </span>
-                  <BulletList
-                    defaultColor={theme.textMuted}
-                    items={analysis.managementRules.stopConditions}
-                    icon={'\u26D4'}
-                    color={theme.red}
-                  />
-                </div>
-              )}
-            {analysis.managementRules.timeRules && (
-              <div className="text-[11px] leading-relaxed">
-                <span
-                  className="font-semibold"
-                  style={{ color: theme.caution }}
-                >
-                  Time rule:{' '}
-                </span>
-                <span className="text-secondary">
-                  {analysis.managementRules.timeRules}
-                </span>
-              </div>
-            )}
-            {analysis.managementRules.flowReversalSignal && (
-              <div className="text-[11px] leading-relaxed">
-                <span
-                  className="font-semibold"
-                  style={{ color: theme.caution }}
-                >
-                  Flow reversal:{' '}
-                </span>
-                <span className="text-secondary">
-                  {analysis.managementRules.flowReversalSignal}
-                </span>
-              </div>
-            )}
-          </div>
-        </Collapsible>
+        <ManagementRules managementRules={analysis.managementRules} />
       )}
 
       {/* Risk Factors */}
@@ -653,72 +170,7 @@ export default function AnalysisResults({
       )}
 
       {/* End-of-Day Review (always visible when present) */}
-      {analysis.review && (
-        <div
-          className="rounded-[10px] p-3.5"
-          style={{
-            backgroundColor: analysis.review.wasCorrect
-              ? tint(theme.green, '08')
-              : tint(theme.red, '08'),
-            border: `1.5px solid ${tint(analysis.review.wasCorrect ? theme.green : theme.red, '20')}`,
-          }}
-        >
-          <div className="mb-2 flex items-center gap-2">
-            <span
-              className="font-sans text-[11px] font-bold"
-              style={{
-                color: analysis.review.wasCorrect ? theme.green : theme.red,
-              }}
-            >
-              {analysis.review.wasCorrect
-                ? '\u2713 Recommendation was correct'
-                : '\u2717 Recommendation was incorrect'}
-            </span>
-          </div>
-          <div className="grid gap-2">
-            <div className="text-[11px] leading-relaxed">
-              <span className="font-semibold" style={{ color: theme.green }}>
-                What worked:{' '}
-              </span>
-              <span className="text-secondary">
-                {analysis.review.whatWorked}
-              </span>
-            </div>
-            <div className="text-[11px] leading-relaxed">
-              <span className="font-semibold" style={{ color: theme.caution }}>
-                What was missed:{' '}
-              </span>
-              <span className="text-secondary">
-                {analysis.review.whatMissed}
-              </span>
-            </div>
-            <div className="text-[11px] leading-relaxed">
-              <span className="font-semibold" style={{ color: theme.accent }}>
-                Optimal trade:{' '}
-              </span>
-              <span className="text-secondary">
-                {analysis.review.optimalTrade}
-              </span>
-            </div>
-            {analysis.review.lessonsLearned.length > 0 && (
-              <div>
-                <div
-                  className="mb-0.5 text-[10px] font-bold tracking-wider uppercase"
-                  style={{ color: theme.accent }}
-                >
-                  Lessons for next time
-                </div>
-                <BulletList
-                  defaultColor={theme.textMuted}
-                  items={analysis.review.lessonsLearned}
-                  icon={'\u{1F4A1}'}
-                  color={theme.accent}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {analysis.review && <EndOfDayReview review={analysis.review} />}
 
       {/* Structure Rationale */}
       <Collapsible title="Structure Rationale" color={theme.textMuted}>
@@ -729,62 +181,10 @@ export default function AnalysisResults({
 
       {/* Image Issues (always visible - actionable) */}
       {analysis.imageIssues && analysis.imageIssues.length > 0 && (
-        <div
-          className="rounded-lg p-3"
-          style={{
-            backgroundColor: tint(theme.caution, '08'),
-            border: '1px solid ' + tint(theme.caution, '20'),
-          }}
-        >
-          <div
-            className="mb-2 font-sans text-[10px] font-bold tracking-wider uppercase"
-            style={{ color: theme.caution }}
-          >
-            Image Issues {'\u2014'} {analysis.imageIssues.length} image
-            {analysis.imageIssues.length > 1 ? 's' : ''} need
-            {analysis.imageIssues.length === 1 ? 's' : ''} improvement
-          </div>
-          <div className="grid gap-2">
-            {analysis.imageIssues.map((issue) => (
-              <div
-                key={`img-${issue.imageIndex}-${issue.label}`}
-                className="bg-surface border-edge flex items-start gap-2.5 rounded-md border p-2.5"
-              >
-                <div className="min-w-0 flex-1">
-                  <div
-                    className="mb-0.5 font-sans text-[11px] font-semibold"
-                    style={{ color: theme.caution }}
-                  >
-                    Image {issue.imageIndex}: {issue.label}
-                  </div>
-                  <div className="text-secondary text-[10px] leading-relaxed">
-                    {issue.issue}
-                  </div>
-                  <div className="text-muted mt-0.5 text-[10px] italic">
-                    {'\u2192'} {issue.suggestion}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onReplaceImage(issue.imageIndex)}
-                  className="shrink-0 cursor-pointer rounded-md px-2.5 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
-                  style={{
-                    backgroundColor: tint(theme.caution, '18'),
-                    color: theme.caution,
-                    border: '1px solid ' + tint(theme.caution, '30'),
-                  }}
-                >
-                  Replace
-                </button>
-              </div>
-            ))}
-          </div>
-          <div className="text-muted mt-2 text-[10px]">
-            Replace the flagged image
-            {analysis.imageIssues.length > 1 ? 's' : ''}, then click{' '}
-            <strong>Analyze</strong> again.
-          </div>
-        </div>
+        <ImageIssues
+          imageIssues={analysis.imageIssues}
+          onReplaceImage={onReplaceImage}
+        />
       )}
     </div>
   );
