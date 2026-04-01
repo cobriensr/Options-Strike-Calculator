@@ -76,7 +76,7 @@ export default function BWBSection({
       {/* Export Button */}
       <button
         onClick={() =>
-          import('../../utils/exportXlsx')
+          import('../../utils/export')
             .then(({ exportBWBComparison }) =>
               exportBWBComparison({
                 results,

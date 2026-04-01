@@ -8,7 +8,7 @@ const exportMock = vi.hoisted(() => ({
   exportPnLComparison: vi.fn(),
 }));
 
-vi.mock('../../utils/exportXlsx', () => exportMock);
+vi.mock('../../utils/export', () => exportMock);
 
 // ============================================================
 // HELPERS

@@ -79,7 +79,7 @@ export default function IronCondorSection({
       {/* Export Button */}
       <button
         onClick={() =>
-          import('../../utils/exportXlsx')
+          import('../../utils/export')
             .then(({ exportPnLComparison }) =>
               exportPnLComparison({
                 results,

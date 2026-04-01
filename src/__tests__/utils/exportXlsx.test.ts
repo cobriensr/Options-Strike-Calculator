@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 import {
   exportPnLComparison,
   exportBWBComparison,
-} from '../../utils/exportXlsx';
+} from '../../utils/export';
 import { calcAllDeltas, calcTimeToExpiry } from '../../utils/calculator';
 import type { CalculationResults } from '../../types';
 
