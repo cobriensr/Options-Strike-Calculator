@@ -11,6 +11,7 @@ Requires: pip install psycopg2-binary pandas scikit-learn scipy statsmodels
 """
 
 import sys
+import warnings
 
 try:
     import numpy as np
@@ -343,7 +344,11 @@ def feature_importance(df: pd.DataFrame) -> None:
             if len(vals) >= 2:
                 groups.append(vals.values)
         if len(groups) >= 2:
-            h_stat, p = stats.kruskal(*groups)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", message="invalid value", category=RuntimeWarning
+                )
+                h_stat, p = stats.kruskal(*groups)
             if not np.isnan(h_stat):
                 f_scores.append((col, h_stat, p))
 

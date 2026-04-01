@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 import psycopg2
+from sqlalchemy import create_engine
 
 
 # ── Feature Groups (shared across scripts) ─────────────────
@@ -68,14 +69,20 @@ def get_connection() -> psycopg2.extensions.connection:
 
 def load_data(query: str) -> pd.DataFrame:
     """Execute a SQL query and return a DataFrame indexed by date."""
-    conn = get_connection()
+    env = load_env()
+    database_url = env.get("DATABASE_URL", "")
+    if not database_url:
+        print("Error: DATABASE_URL not found in .env")
+        sys.exit(1)
+
     try:
-        df = pd.read_sql_query(query, conn, parse_dates=["date"])
+        engine = create_engine(database_url)
+        df = pd.read_sql_query(query, engine, parse_dates=["date"])
     except Exception as e:
         print(f"Error: Query failed: {e}")
         sys.exit(1)
     finally:
-        conn.close()
+        engine.dispose()
     return df.set_index("date").sort_index()
 
 

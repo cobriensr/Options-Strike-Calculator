@@ -177,7 +177,8 @@ def plot_range_by_regime(df: pd.DataFrame) -> None:
         order = [o for o in order if o in charm_data["charm_pattern"].values]
         palette = [CHARM_COLORS.get(o, COLORS["gray"]) for o in order]
         sns.boxplot(data=charm_data, x="charm_pattern", y="day_range_pts",
-                    order=order, palette=palette, ax=ax, width=0.6)
+                    order=order, hue="charm_pattern", hue_order=order,
+                    palette=palette, ax=ax, width=0.6, legend=False)
         sns.swarmplot(data=charm_data, x="charm_pattern", y="day_range_pts",
                       order=order, color="white", size=5, alpha=0.6, ax=ax)
         _add_n_labels(ax, charm_data, "charm_pattern", order)
@@ -198,7 +199,8 @@ def plot_range_by_regime(df: pd.DataFrame) -> None:
         )
         palette = [COLORS["green"], COLORS["blue"], COLORS["orange"], COLORS["red"]]
         sns.boxplot(data=has_vix, x="VIX Regime", y="day_range_pts",
-                    palette=palette, ax=ax, width=0.6)
+                    hue="VIX Regime", palette=palette, ax=ax,
+                    width=0.6, legend=False)
         sns.swarmplot(data=has_vix, x="VIX Regime", y="day_range_pts",
                       color="white", size=5, alpha=0.6, ax=ax)
         _add_n_labels(ax, has_vix, "VIX Regime",
@@ -219,7 +221,8 @@ def plot_range_by_regime(df: pd.DataFrame) -> None:
         )
         palette = [COLORS["red"], COLORS["orange"], COLORS["green"]]
         sns.boxplot(data=has_gex, x="GEX Regime", y="day_range_pts",
-                    palette=palette, ax=ax, width=0.6)
+                    hue="GEX Regime", palette=palette, ax=ax,
+                    width=0.6, legend=False)
         sns.swarmplot(data=has_gex, x="GEX Regime", y="day_range_pts",
                       color="white", size=5, alpha=0.6, ax=ax)
         _add_n_labels(ax, has_gex, "GEX Regime",
@@ -603,7 +606,8 @@ def plot_day_of_week(df: pd.DataFrame) -> None:
     palette = [COLORS["red"], COLORS["blue"], COLORS["green"], COLORS["orange"], COLORS["purple"]]
 
     sns.boxplot(data=has_range, x="day_name", y="range", order=order,
-                palette=palette, ax=ax, width=0.5)
+                hue="day_name", hue_order=order, palette=palette,
+                ax=ax, width=0.5, legend=False)
     sns.swarmplot(data=has_range, x="day_name", y="range", order=order,
                   color="white", size=6, alpha=0.6, ax=ax)
 
