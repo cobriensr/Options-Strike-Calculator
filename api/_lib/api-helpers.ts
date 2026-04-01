@@ -20,7 +20,7 @@ export type ApiResult<T> =
   | { ok: false; error: string; status: number; code?: string };
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
-import { MARKET_MINUTES, TIMEOUTS } from './constants.js';
+import { MARKET_MINUTES, TIMEOUTS, UW_BASE } from './constants.js';
 import logger from './logger.js';
 import { metrics } from './sentry.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
@@ -431,4 +431,170 @@ export async function withRetry<T>(
     }
   }
   throw new Error('unreachable');
+}
+
+// ============================================================
+// UNUSUAL WHALES API HELPERS
+// ============================================================
+
+/**
+ * Fetch JSON from the Unusual Whales API.
+ *
+ * Handles auth header, timeout, non-OK responses, and returns the
+ * parsed `body.data` array. For endpoints with nested data structures
+ * (e.g., net-flow/expiry returns `data[0].data`), use the `extract`
+ * parameter to customize the extraction.
+ *
+ * @param apiKey - UW API key
+ * @param path - path after UW_BASE (e.g., "/market/SPY/etf-tide")
+ * @param extract - optional function to extract data from response body
+ */
+export async function uwFetch<T>(
+  apiKey: string,
+  path: string,
+  extract?: (body: Record<string, unknown>) => T[],
+): Promise<T[]> {
+  const url = path.startsWith('http') ? path : `${UW_BASE}${path}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
+  }
+
+  const body = await res.json();
+  return extract ? extract(body) : (body.data ?? []);
+}
+
+/**
+ * Round a Date to the nearest 5-minute boundary (floor).
+ *
+ * Used by all flow/GEX crons to sample intraday ticks at consistent
+ * 5-minute intervals. Returns a new Date — does not mutate input.
+ */
+export function roundTo5Min(dt: Date): Date {
+  const rounded = new Date(dt);
+  const minutes = rounded.getMinutes();
+  rounded.setMinutes(minutes - (minutes % 5), 0, 0);
+  return rounded;
+}
+
+// ============================================================
+// CRON GUARD
+// ============================================================
+
+interface CronGuardOptions {
+  /** Check isMarketHours(). Default: true. */
+  marketHours?: boolean;
+  /** Custom time-window check. Overrides marketHours when provided. */
+  timeCheck?: () => boolean;
+  /** Require UW_API_KEY. Default: true. */
+  requireApiKey?: boolean;
+}
+
+interface CronGuardResult {
+  apiKey: string;
+  today: string;
+}
+
+/**
+ * Common guard for cron handlers. Checks method, CRON_SECRET,
+ * time window, and API key. Returns `{ apiKey, today }` on success,
+ * or sends an error response and returns `null`.
+ *
+ * Usage:
+ * ```ts
+ * const guard = cronGuard(req, res);
+ * if (!guard) return;
+ * const { apiKey, today } = guard;
+ * ```
+ */
+export function cronGuard(
+  req: VercelRequest,
+  res: VercelResponse,
+  opts: CronGuardOptions = {},
+): CronGuardResult | null {
+  const {
+    marketHours: checkMarket = true,
+    timeCheck,
+    requireApiKey = true,
+  } = opts;
+
+  if (req.method !== 'GET') {
+    res.status(405).json({ error: 'GET only' });
+    return null;
+  }
+
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return null;
+  }
+
+  // Time window check
+  const customCheck = timeCheck ?? (checkMarket ? isMarketHours : null);
+  if (customCheck && !customCheck()) {
+    res.status(200).json({ skipped: true, reason: 'Outside time window' });
+    return null;
+  }
+
+  const apiKey = requireApiKey ? (process.env.UW_API_KEY ?? '') : '';
+  if (requireApiKey && !apiKey) {
+    logger.error('UW_API_KEY not configured');
+    res.status(500).json({ error: 'UW_API_KEY not configured' });
+    return null;
+  }
+
+  const today = getETDateStr(new Date());
+  return { apiKey, today };
+}
+
+// ============================================================
+// DATA QUALITY CHECKS
+// ============================================================
+
+interface DataQualityOptions {
+  /** Cron job name for Sentry tag */
+  job: string;
+  /** Table to query */
+  table: string;
+  /** Date to check */
+  date: string;
+  /** SQL WHERE condition for the source (e.g., "source = 'spy_etf_tide'") */
+  sourceFilter?: string;
+  /** SQL expression that should be non-zero for valid rows */
+  nonzeroExpr: string;
+  /** Minimum rows before alerting (default: 10) */
+  minRows?: number;
+}
+
+/**
+ * Check if stored data has all zero/null values and fire a Sentry
+ * warning if so. Catches upstream API issues where the response is
+ * structurally valid but contains empty data.
+ *
+ * Pass in the total and nonzero counts (computed by the caller with
+ * a tagged template query) rather than building dynamic SQL here.
+ */
+export async function checkDataQuality(
+  opts: Omit<DataQualityOptions, 'nonzeroExpr'> & {
+    total: number;
+    nonzero: number;
+  },
+): Promise<void> {
+  const { job, table, date, sourceFilter, total, nonzero, minRows = 10 } = opts;
+
+  if (total > minRows && nonzero === 0) {
+    const { Sentry } = await import('./sentry.js');
+    Sentry.setTag('cron.job', job);
+    const label = sourceFilter ?? table;
+    Sentry.captureMessage(
+      `Data quality alert: ${label} has ${total} rows but ALL values are zero/null for ${date}`,
+      'warning',
+    );
+    logger.warn({ job, table, total, date }, 'Data quality: all values zero');
+  }
 }
