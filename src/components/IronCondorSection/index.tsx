@@ -98,7 +98,7 @@ export default function IronCondorSection({
               }
             })
         }
-        aria-label="Export P&L comparison to Excel"
+        aria-label="Export All Wing Widths to Excel"
         className="border-accent bg-accent-bg text-accent mt-3 flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border-[1.5px] px-4 py-2.5 font-sans text-[13px] font-semibold"
       >
         {'\u2913'} Export All Wing Widths to Excel
