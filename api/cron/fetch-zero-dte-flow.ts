@@ -39,14 +39,14 @@ interface FlowTick {
 
 // ── Fetch helper ────────────────────────────────────────────
 
-async function fetchZeroDteFlow(
-  apiKey: string,
-  date: string,
-): Promise<FlowTick[]> {
+async function fetchZeroDteFlow(apiKey: string): Promise<FlowTick[]> {
+  // Omit date param for current-day fetches — the UW API returns
+  // null values when ?date= is the current trading day. Without it,
+  // the API returns the live cumulative intraday series. The backfill
+  // script passes ?date= for historical dates where it works correctly.
   const params = new URLSearchParams({
     expiration: 'zero_dte',
     tide_type: 'index_only',
-    date,
   });
 
   const res = await fetch(`${UW_BASE}/net-flow/expiry?${params}`, {
@@ -134,13 +134,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'UW_API_KEY not configured' });
   }
 
-  // Get today's date in ET
-  const today = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-
   try {
-    const ticks = await withRetry(() => fetchZeroDteFlow(apiKey, today));
+    const ticks = await withRetry(() => fetchZeroDteFlow(apiKey));
     const result = await withRetry(() => storeLatest(ticks));
 
     // Log latest values

@@ -41,9 +41,12 @@ interface EtfTideRow {
 async function fetchEtfTide(
   apiKey: string,
   ticker: string,
-  date: string,
 ): Promise<EtfTideRow[]> {
-  const res = await fetch(`${UW_BASE}/market/${ticker}/etf-tide?date=${date}`, {
+  // Omit ?date= for current-day fetches — the UW API returns zeros
+  // when ?date= is the current trading day. Without the param, it
+  // returns the live cumulative intraday series. The backfill script
+  // passes ?date= for historical dates where it works correctly.
+  const res = await fetch(`${UW_BASE}/market/${ticker}/etf-tide`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal: AbortSignal.timeout(TIMEOUTS.UW_API),
   });
@@ -163,7 +166,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       TICKERS.map(async ({ ticker, source }) => {
         try {
           const rows = await withRetry(() =>
-            fetchEtfTide(apiKey, ticker, today),
+            fetchEtfTide(apiKey, ticker),
           );
           const candles = sampleTo5Min(rows);
           const result = await storeAllCandles(candles, source, today);
