@@ -17,7 +17,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { schwabFetch } from '../_lib/api-helpers.js';
+import { schwabFetch, withRetry } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import { saveOutcome, getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
@@ -106,9 +106,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const start = now.getTime() - 24 * 60 * 60 * 1000;
     const end = now.getTime();
 
-    const intradayResult = await schwabFetch<PriceHistoryResponse>(
-      `/pricehistory?symbol=$SPX&periodType=day&frequencyType=minute&frequency=5` +
-        `&startDate=${start}&endDate=${end}&needExtendedHoursData=false`,
+    const intradayResult = await withRetry(() =>
+      schwabFetch<PriceHistoryResponse>(
+        `/pricehistory?symbol=$SPX&periodType=day&frequencyType=minute&frequency=5` +
+          `&startDate=${start}&endDate=${end}&needExtendedHoursData=false`,
+      ),
     );
 
     if (!intradayResult.ok) {
@@ -139,8 +141,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const settlement = candles.at(-1)!.close;
 
     // Fetch VIX and VIX1D quotes
-    const quotesResult = await schwabFetch<QuotesResponse>(
-      '/quotes?symbols=$VIX,$VIX1D&fields=quote',
+    const quotesResult = await withRetry(() =>
+      schwabFetch<QuotesResponse>(
+        '/quotes?symbols=$VIX,$VIX1D&fields=quote',
+      ),
     );
 
     let vixClose: number | undefined;

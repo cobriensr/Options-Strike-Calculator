@@ -17,6 +17,7 @@ import { getDb } from '../_lib/db.js';
 import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { withRetry } from '../_lib/api-helpers.js';
 import {
   getETTime,
   getETDayOfWeek,
@@ -112,7 +113,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const todayStr = getETDateStr(now);
 
   try {
-    const events = await fetchCalendar(apiKey);
+    const events = await withRetry(() => fetchCalendar(apiKey));
 
     // Filter to today's events only
     const todayEvents = events.filter((e) => {

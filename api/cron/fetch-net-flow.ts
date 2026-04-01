@@ -135,29 +135,35 @@ async function fetchNetFlow(
 
 // ── Store helper ────────────────────────────────────────────
 
-async function storeLatestCandle(
+async function storeAllCandles(
   candles: CumulatedTick[],
   source: string,
-): Promise<{ stored: boolean; timestamp?: string }> {
-  if (candles.length === 0) return { stored: false };
+): Promise<{ stored: number; skipped: number }> {
+  if (candles.length === 0) return { stored: 0, skipped: 0 };
 
-  const latest = candles.at(-1)!;
   const sql = getDb();
+  let stored = 0;
+  let skipped = 0;
 
-  await sql`
-    INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-    VALUES (
-      ${latest.date},
-      ${latest.timestamp},
-      ${source},
-      ${latest.ncp},
-      ${latest.npp},
-      ${latest.netVolume}
-    )
-    ON CONFLICT (date, timestamp, source) DO NOTHING
-  `;
+  for (const candle of candles) {
+    const result = await sql`
+      INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+      VALUES (
+        ${candle.date},
+        ${candle.timestamp},
+        ${source},
+        ${candle.ncp},
+        ${candle.npp},
+        ${candle.netVolume}
+      )
+      ON CONFLICT (date, timestamp, source) DO NOTHING
+      RETURNING id
+    `;
+    if (result.length > 0) stored++;
+    else skipped++;
+  }
 
-  return { stored: true, timestamp: latest.timestamp };
+  return { stored, skipped };
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -187,26 +193,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const results: Record<string, { stored: boolean; timestamp?: string }> = {};
+    const results: Record<
+      string,
+      { stored: number; skipped: number; candles: number }
+    > = {};
 
-    // Fetch all tickers in parallel
-    const fetches = await Promise.all(
-      TICKERS.map(async ({ ticker, source }) => {
-        try {
-          const candles = await withRetry(() => fetchNetFlow(apiKey, ticker));
-          const result = await withRetry(() =>
-            storeLatestCandle(candles, source),
-          );
-          return { source, result, candleCount: candles.length };
-        } catch (err) {
-          logger.warn({ err, ticker, source }, 'Failed to fetch net flow');
-          return { source, result: { stored: false }, candleCount: 0 };
-        }
-      }),
-    );
-
-    for (const f of fetches) {
-      results[f.source] = f.result;
+    // Fetch all tickers sequentially to respect UW concurrency limit
+    for (const { ticker, source } of TICKERS) {
+      try {
+        const candles = await withRetry(() => fetchNetFlow(apiKey, ticker));
+        const result = await storeAllCandles(candles, source);
+        results[source] = { ...result, candles: candles.length };
+      } catch (err) {
+        logger.warn({ err, ticker, source }, 'Failed to fetch net flow');
+        results[source] = { stored: 0, skipped: 0, candles: 0 };
+      }
     }
 
     // Data quality check: alert if all values are zero per source

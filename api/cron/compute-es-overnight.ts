@@ -183,10 +183,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const overnight = bars[0];
-    const globexHigh = parseFloat(overnight.globex_high as string);
-    const globexLow = parseFloat(overnight.globex_low as string);
-    const vwap = parseFloat(overnight.vwap as string);
-    const totalVolume = parseInt(overnight.total_volume as string);
+    const globexHigh = Number.parseFloat(String(overnight.globex_high));
+    const globexLow = Number.parseFloat(String(overnight.globex_low));
+    const vwap = Number.parseFloat(String(overnight.vwap));
+    const totalVolume = Number.parseInt(String(overnight.total_volume), 10);
     const rangePts = globexHigh - globexLow;
 
     // 2. Get previous SPX settlement
@@ -196,7 +196,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ORDER BY date DESC LIMIT 1
     `;
     const prevCashClose = prevOutcome[0]?.settlement
-      ? parseFloat(prevOutcome[0].settlement as string)
+      ? Number.parseFloat(String(prevOutcome[0].settlement))
       : null;
 
     // 3. Get today's SPX open from Schwab
@@ -214,7 +214,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       logger.warn({ err }, 'Could not fetch SPX open from Schwab');
     }
 
-    if (!cashOpen) cashOpen = parseFloat(overnight.globex_close as string);
+    if (!cashOpen) cashOpen = Number.parseFloat(String(overnight.globex_close));
 
     // 4. Compute all classifications
     const gapPts = prevCashClose ? cashOpen - prevCashClose : 0;
@@ -238,7 +238,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             (sum: number, r: Record<string, unknown>) =>
               sum +
               (typeof r.total_volume === 'string'
-                ? parseInt(r.total_volume)
+                ? Number.parseInt(r.total_volume, 10)
                 : Number(r.total_volume)),
             0,
           ) / histVol.length
@@ -326,7 +326,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       gap: `${gapPts >= 0 ? '+' : ''}${gapPts.toFixed(1)} ${gapDirection}`,
       fillProbability,
       fillScore,
-      barCount: parseInt(overnight.bar_count as string),
+      barCount: Number.parseInt(String(overnight.bar_count), 10),
       durationMs: Date.now() - startTime,
     });
   } catch (err) {

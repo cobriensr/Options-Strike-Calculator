@@ -44,14 +44,14 @@ export function formatEsOvernightForClaude(
 ): string | null {
   if (!row) return null;
 
-  const rangePts = parseFloat(row.range_pts);
-  const totalVol = parseInt(row.total_volume);
-  const volRatio = parseFloat(row.vol_ratio);
-  const gapPts = parseFloat(row.gap_pts);
-  const gapPct = parseFloat(row.gap_pct);
-  const pctRank = parseFloat(row.cash_open_pct_rank);
-  const vwapPts = parseFloat(row.gap_vs_vwap_pts);
-  const fillScore = parseInt(row.fill_score);
+  const rangePts = Number.parseFloat(row.range_pts);
+  const totalVol = Number.parseInt(row.total_volume);
+  const volRatio = Number.parseFloat(row.vol_ratio);
+  const gapPts = Number.parseFloat(row.gap_pts);
+  const gapPct = Number.parseFloat(row.gap_pct);
+  const pctRank = Number.parseFloat(row.cash_open_pct_rank);
+  const vwapPts = Number.parseFloat(row.gap_vs_vwap_pts);
+  const fillScore = Number.parseInt(row.fill_score);
 
   const lines: string[] = [];
 
@@ -66,19 +66,19 @@ export function formatEsOvernightForClaude(
   }
   lines.push('ES Overnight Session (Globex 6:00 PM – 9:30 AM ET):');
   lines.push(
-    `  Range: ${parseFloat(row.globex_low).toFixed(2)} – ${parseFloat(row.globex_high).toFixed(2)} (${rangePts.toFixed(2)} pts${rangeSuffix})`,
+    `  Range: ${Number.parseFloat(row.globex_low).toFixed(2)} – ${Number.parseFloat(row.globex_high).toFixed(2)} (${rangePts.toFixed(2)} pts${rangeSuffix})`,
   );
   lines.push(
     `  Volume: ${formatVolume(totalVol)} contracts (${row.vol_class}, ${volRatio.toFixed(2)}x 20-day avg)`,
   );
-  lines.push(`  VWAP: ${parseFloat(row.vwap).toFixed(2)}`);
+  lines.push(`  VWAP: ${Number.parseFloat(row.vwap).toFixed(2)}`);
 
   // Gap analysis
   lines.push('');
   lines.push('  Gap Analysis:');
   const sign = gapPts >= 0 ? '+' : '';
   lines.push(
-    `    Cash Open: ${parseFloat(row.cash_open).toFixed(2)} | Previous Close: ${parseFloat(row.prev_cash_close).toFixed(2)} | Gap: ${sign}${gapPts.toFixed(1)} pts ${row.gap_direction} (${gapPct.toFixed(2)}%)`,
+    `    Cash Open: ${Number.parseFloat(row.cash_open).toFixed(2)} | Previous Close: ${Number.parseFloat(row.prev_cash_close).toFixed(2)} | Gap: ${sign}${gapPts.toFixed(1)} pts ${row.gap_direction} (${gapPct.toFixed(2)}%)`,
   );
   lines.push(`    Gap Size: ${row.gap_size_class}`);
 
