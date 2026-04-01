@@ -1,6 +1,6 @@
 # Machine Learning Roadmap
 
-> Last updated: 2026-03-24 (senior ML review applied)
+> Last updated: 2026-03-31 (multi-model comparison added to Phase 2)
 
 ## Overview
 
@@ -99,7 +99,7 @@ This document outlines planned ML applications as sufficient labeled data is acc
 | **Phase 0**   | Data Infrastructure            | Existing pipeline                | **Complete**                 | Done            |
 | **Phase 1**   | Day Type Clustering            | Phase 0 + 30 days features       | **Complete** (re-run at 50d) | Done            |
 | **Phase 1.5** | Exploratory Data Analysis      | Phase 0 + outcomes               | **Complete**                 | Done            |
-| **Phase 2**   | Structure Classification       | 60-80 labeled trading days       | Planning (~30 days)          | May 2026        |
+| **Phase 2**   | Structure Classification       | 60-80 labeled trading days       | Early experiment (25/60 days)| May 2026        |
 | **Phase 3**   | Charm Divergence Predictor     | 50+ days with Periscope data     | Accumulating (4 days)        | TBD             |
 | **Phase 4**   | Intraday Range Regression      | 100+ days API-enriched data      | Accumulating                 | June 2026       |
 | **Phase 5**   | Optimal Exit Timing            | 100+ days with timestamped exits | Blocked (paper trading)      | TBD             |
@@ -359,10 +359,11 @@ See [PHASE-0-DATA-INFRASTRUCTURE.md](PHASE-0-DATA-INFRASTRUCTURE.md) for full sp
 
 ## Model Training and Serving Architecture
 
-### Training (Python, local or Colab)
+### Training (Python, local)
 
-- Connect to Neon Postgres directly, or use the export endpoint (`GET /api/ml/export`)
-- Libraries: XGBoost or LightGBM for gradient boosted trees, scikit-learn for preprocessing, lifelines for survival analysis
+- Connect to Neon Postgres directly via SQLAlchemy, or use the export endpoint (`GET /api/ml/export`)
+- Libraries: XGBoost for gradient boosted trees, scikit-learn (logistic regression, random forest, naive bayes, decision tree) for baselines and preprocessing, lifelines for survival analysis
+- All models run through walk-forward validation with a multi-model comparison table (`phase2_early.py`)
 - Export trained models to ONNX format for serving
 
 ### Serving (Vercel)

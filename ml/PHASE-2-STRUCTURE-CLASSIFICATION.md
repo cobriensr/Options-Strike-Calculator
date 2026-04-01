@@ -1,6 +1,6 @@
 # Phase 2: Structure Classification
 
-**Status:** Planning (accumulating data, ~30 of 60-80 days needed)
+**Status:** Early experiment running (25 labeled days, targeting 60-80)
 **Prerequisites:** Phase 0 complete, 60-80 labeled trading days
 **Goal:** Predict which structure (CCS, PCS, IC, SIT OUT) will be correct today, before chart analysis
 
@@ -20,19 +20,20 @@ This is a **pre-analysis prior**, not a trading signal. It tells you "historical
 
 ---
 
-## Current Data Assessment (as of 2026-03-25)
+## Current Data Assessment (as of 2026-03-31)
 
 ### What we have
 
-| Metric                                 | Count                                | Notes                                     |
-| -------------------------------------- | ------------------------------------ | ----------------------------------------- |
-| Days with features + labels + outcomes | 30                                   | Minimum for Phase 2 is 60-80              |
-| CCS labels                             | 16 (14 correct, 2 wrong)             | 55% of labels — majority class            |
-| PCS labels                             | 10 (10 correct, 0 wrong)             | 34% of labels — perfect so far            |
-| IC labels                              | 4 (3 correct, 1 wrong)               | 14% of labels — sparse                    |
-| SIT OUT labels                         | 0                                    | Not yet observed                          |
-| Feature completeness (labeled days)    | 95-98% for recent, 54-74% for oldest | Older days missing ETF tide, 0DTE sources |
-| Periscope charm labels                 | 4 days                               | Too few for charm divergence feature      |
+| Metric                                 | Count                                 | Notes                                     |
+| -------------------------------------- | ------------------------------------- | ----------------------------------------- |
+| Days with features + labels + outcomes | 34                                    | Minimum for Phase 2 is 60-80              |
+| Days with completeness >= 80%          | 25                                    | Used for walk-forward validation          |
+| CCS labels                             | 19 (17 correct, 2 wrong)              | 56% of labels — majority class            |
+| PCS labels                             | 11 (11 correct, 0 wrong)              | 32% of labels — perfect so far            |
+| IC labels                              | 4 (3 correct, 1 wrong)                | 12% of labels — sparse                    |
+| SIT OUT labels                         | 0                                     | Not yet observed                          |
+| Feature completeness (labeled days)    | 95-98% for recent, 54-74% for oldest  | Older days missing ETF tide, 0DTE sources |
+| Periscope charm labels                 | 4 days                                | Too few for charm divergence feature      |
 
 ### Class imbalance problem
 
@@ -88,15 +89,29 @@ Currently `is_event_day` is binary. Enrich with:
 
 ## Model Architecture
 
-### Algorithm: XGBoost multiclass classifier
+### Multi-model comparison (implemented in `phase2_early.py`)
 
-**Why XGBoost over alternatives:**
+The pipeline runs 5 models through walk-forward validation and prints a comparison table. This determines whether XGBoost actually outperforms simpler baselines at the current sample size.
 
-- Handles missing values natively (critical for older days with 54% completeness)
-- Built-in feature importance
-- Fast to train on small datasets
-- `multi:softprob` objective gives calibrated probabilities
-- No need to scale features (tree-based)
+| Model                        | Type            | Key settings                               | NaN handling       |
+| ---------------------------- | --------------- | ------------------------------------------ | ------------------ |
+| **XGBoost**                  | Gradient boost  | depth=3, 50 trees, L1+L2 regularization    | Native             |
+| **Logistic Regression (L2)** | Linear          | C=1.0, StandardScaler, lbfgs solver        | Median imputation  |
+| **Random Forest (15)**       | Ensemble trees  | 15 trees, depth=3                          | Median imputation  |
+| **Naive Bayes**              | Probabilistic   | Gaussian                                   | Median imputation  |
+| **Decision Tree (d=2)**      | Single tree     | depth=2 (decision stump)                   | Median imputation  |
+
+sklearn models are wrapped in `Pipeline(SimpleImputer → [StandardScaler →] Model)` since they can't handle NaN natively.
+
+### Why this model set
+
+- **XGBoost** — handles missing values natively, built-in regularization, feature importance
+- **Logistic Regression** — interpretable coefficients, strong baseline for small n, handles high feature-to-sample ratios with L2 penalty
+- **Random Forest** — feature importance, low variance with few trees, no feature scaling needed
+- **Naive Bayes** — works surprisingly well with tiny datasets, fast
+- **Decision Tree** — reveals simple decision rules the data supports, directly interpretable
+
+At n < 100, simpler models often outperform complex ones. If logistic regression beats XGBoost, use it — interpretability matters for trading decisions.
 
 ### Feature groups (using T1-T2 features per EDA recommendation)
 
@@ -260,32 +275,60 @@ days_to_next_event    INTEGER
 
 ```text
 ml/
-├── phase2_train.py          # Training + walk-forward validation
-├── phase2_predict.py        # Load model, predict today
-├── models/                  # Saved model artifacts
-│   └── structure_v1.json    # XGBoost model file
+├── phase2_early.py          # Walk-forward multi-model comparison (implemented)
+├── phase2_train.py          # Full training + deployment (future, at 60+ days)
+├── phase2_predict.py        # Load model, predict today (future)
+├── experiments/             # Saved experiment JSON files
+│   └── phase2_early_YYYY-MM-DD_v2.json
 └── plots/
-    ├── phase2_confusion.png # Confusion matrix
-    ├── phase2_calibration.png # Reliability diagram
-    └── phase2_importance.png  # Feature importance
+    └── phase2_shap.png      # SHAP beeswarm (with --shap flag)
 ```
 
-### Training script outline
+### Running the pipeline
 
-```python
-# 1. Load data (direct from Neon)
-# 2. Preprocess: one-hot charm_pattern, fill nulls, add prev-day features
-# 3. Walk-forward loop:
-#    for each fold:
-#      train XGBoost on days[:i]
-#      predict day[i]
-#      store prediction + true label
-# 4. Compute metrics: accuracy, log_loss, per-class F1, Brier
-# 5. Compare to baselines
-# 6. Feature importance plot
-# 7. Calibration diagram
-# 8. Save model trained on ALL data (for serving)
+```bash
+cd ml
+
+# Run the early feasibility experiment (multi-model comparison)
+make early
+
+# Run with SHAP feature importance plots
+make early-shap
+
+# Run the full pipeline (EDA + clustering + visualizations)
+make all
+
+# Run everything including backtest and milestones
+make full
 ```
+
+### What `make early` outputs
+
+1. **Data summary** — labeled days, class distribution, feature count
+2. **Model Comparison table** — all 5 models ranked by walk-forward accuracy with lift over majority baseline, log loss, and per-class F1
+3. **XGBoost feature importance** — top 15 features by gain
+4. **SHAP plot** (with `--shap`) — beeswarm plot for the most variable class
+5. **Experiment JSON** — saved to `ml/experiments/` with full metrics for all models
+6. **Verdict** — whether any model beats the majority class baseline
+
+### Interpreting the comparison table
+
+```text
+  Model                      Acc    Lift  LogLoss  Per-Class F1
+  ────────────────────── ─────── ─────── ────────  ──────────────────────
+  Majority Baseline       80.0%       —         —  (always predict CCS)
+  Previous-Day            80.0%  +0.0%         —  (repeat yesterday)
+  ────────────────────── ─────── ─────── ────────  ──────────────────────
+  XGBoost                 80.0%  +0.0%   0.7023  CCS=0.89  PCS=0.00  IC=0.00
+  Logistic Reg (L2)       60.0% -20.0%   8.5278  CCS=0.75  PCS=0.00  IC=0.00
+  ...
+```
+
+- **Acc** — walk-forward accuracy (expanding window, min 20 training days)
+- **Lift** — accuracy minus majority baseline (positive = model adds value)
+- **LogLoss** — lower is better; random baseline for 3-class is 1.099
+- **Per-Class F1** — 0.00 means the model never predicted that class (common with small n)
+- **`<-- best`** marker shows the top-performing model
 
 ---
 
@@ -324,14 +367,16 @@ Defer this until the model proves useful with Option A.
 
 ### Estimated timeline
 
-- Current: 30 labeled days (2026-03-25)
+- Current: 34 labeled days, 25 with completeness >= 80% (2026-03-31)
 - +1 day per trading session
 - 60 days: ~mid-May 2026
 - 80 days: ~early June 2026
 
-### Early experiment (optional at 45 days)
+### Early experiment (running now)
 
-Run the walk-forward validation with only 45 days to see if the features separate classes at all. Don't deploy — just check if accuracy exceeds majority class baseline. This tells you whether to wait for more data or whether the features need work.
+`phase2_early.py` runs walk-forward validation with the current dataset. As of 2026-03-31 with 25 usable days (min_train=20, yielding 5 predictions), no model beats the 80% majority baseline. XGBoost ties it while all sklearn baselines underperform at 60%.
+
+This is expected — 5 walk-forward folds is too few to draw conclusions. **Re-run `make early` weekly** as data accumulates. The comparison becomes meaningful at ~45 labeled days (25 predictions) and actionable at 60+ days.
 
 ---
 

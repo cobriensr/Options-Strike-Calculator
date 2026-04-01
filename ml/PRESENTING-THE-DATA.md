@@ -357,7 +357,58 @@ This is the most important diagnostic plot for knowing whether your data is trus
 
 ---
 
-## Part 4: How to Present Results to Others
+## Part 4: The Phase 2 Early Experiment (phase2_early.py)
+
+Run: `make early` or `python3 phase2_early.py` (add `--shap` for SHAP plots)
+
+This answers: **"Can any model predict today's correct structure better than always guessing the majority class?"**
+
+### The Model Comparison Table
+
+```text
+  Model                      Acc    Lift  LogLoss  Per-Class F1
+  ────────────────────── ─────── ─────── ────────  ──────────────────────
+  Majority Baseline       80.0%       —         —  (always predict CCS)
+  Previous-Day            80.0%  +0.0%         —  (repeat yesterday)
+  ────────────────────── ─────── ─────── ────────  ──────────────────────
+  XGBoost                 80.0%  +0.0%   0.7023  CCS=0.89  PCS=0.00  IC=0.00
+  Logistic Reg (L2)       60.0% -20.0%   8.5278  CCS=0.75  PCS=0.00  IC=0.00
+```
+
+**How to read it:**
+
+- **Acc** — walk-forward accuracy. Each day is predicted using only data from prior days. No future leakage.
+- **Lift** — accuracy minus the majority baseline. Positive = model adds value. Negative = model is worse than always guessing.
+- **LogLoss** — probability calibration. Lower is better. The random baseline for 3-class is 1.099. A model with LogLoss > 1.099 has worse-than-random probability estimates.
+- **Per-Class F1** — F1 score per structure. 0.00 means the model never predicted that class (common when one class dominates and n is small).
+- **`<-- best`** — marks the top-performing model.
+
+**How to interpret the results:**
+
+| Scenario | What it means | Action |
+| --- | --- | --- |
+| Best model has Lift > +5% | Model finds exploitable patterns | Consider using as a pre-analysis prior |
+| Best model ties majority (Lift ≈ 0%) | No model adds signal yet | Keep accumulating data, re-run weekly |
+| All models have Lift < 0% | Models are overfitting or features lack signal | Wait for 60+ days or revisit feature engineering |
+| A simple model (LogReg) beats XGBoost | Simpler model generalizes better at small n | Use the simpler model — it's also more interpretable |
+
+**When to re-run:** Weekly as new labeled days accumulate. The comparison becomes meaningful at ~45 labeled days (25+ predictions) and actionable at 60+ days.
+
+### Experiment Tracking
+
+Each run saves a JSON file to `ml/experiments/` with full metrics for all models. Compare across dates to see if models improve as data grows:
+
+```bash
+# View latest experiment
+cat ml/experiments/phase2_early_*.json | python3 -m json.tool
+
+# Compare accuracy across runs
+grep '"accuracy"' ml/experiments/phase2_early_*.json
+```
+
+---
+
+## Part 5: How to Present Results to Others
 
 ### The 5-Minute Briefing
 
@@ -423,7 +474,7 @@ When documenting findings for future reference:
 
 ---
 
-## Part 5: When Not to Trust the Numbers
+## Part 6: When Not to Trust the Numbers
 
 ### Red Flags
 
@@ -450,7 +501,7 @@ As data accumulates (50, 100, 200 days), re-run and watch which findings strengt
 
 ---
 
-## Part 6: The Pipeline at a Glance
+## Part 7: The Pipeline at a Glance
 
 ```text
                     ┌──────────────────────────────────────────────────────┐
@@ -493,9 +544,19 @@ As data accumulates (50, 100, 200 days), re-run and watch which findings strengt
                     │   visualize.py ──> 8 PNG plots (correlations,        │
                     │                    regime analysis, timeline,         │
                     │                    stationarity)                      │
+                    │                                                      │
+                    │   phase2_early.py ──> 5-model walk-forward           │
+                    │                       comparison table + experiment  │
+                    │                       JSON + SHAP plot (optional)    │
+                    │                                                      │
+                    │   backtest.py ──> P&L equity curves + strategy       │
+                    │                   comparison (Claude vs baselines)   │
                     └──────────────────────────────────────────────────────┘
 
-    Run everything: cd ml && make all
+    Run analysis:   cd ml && make all        (eda + clustering + visualize)
+    Run experiment: cd ml && make early       (Phase 2 multi-model comparison)
+    Run backtest:   cd ml && make backtest    (P&L simulation)
+    Run everything: cd ml && make full        (health + all + backtest + milestones)
 ```
 
 ---
