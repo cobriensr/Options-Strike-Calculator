@@ -131,6 +131,8 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom'],
           sentry: ['@sentry/react'],
+          export: ['xlsx'],
+          analytics: ['@vercel/analytics', '@vercel/speed-insights'],
         },
       },
     },
