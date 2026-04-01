@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { BWBSide } from './bwb-math';
 import {
-  calcNet,
   calcMetrics,
   generatePnlRows,
   fmtSpx,
@@ -28,9 +27,8 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
   const [lowStrike, setLowStrike] = useState('');
   const [midStrike, setMidStrike] = useState('');
   const [highStrike, setHighStrike] = useState('');
-  const [lowPrice, setLowPrice] = useState('');
-  const [midPrice, setMidPrice] = useState('');
-  const [highPrice, setHighPrice] = useState('');
+  const [netInput, setNetInput] = useState('');
+  const [isCredit, setIsCredit] = useState(true);
   const [contracts, setContracts] = useState(1);
 
   // Sweet spot auto-fill state
@@ -117,9 +115,6 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
   const low = Number.parseFloat(lowStrike);
   const mid = Number.parseFloat(midStrike);
   const high = Number.parseFloat(highStrike);
-  const lp = Number.parseFloat(lowPrice);
-  const mp = Number.parseFloat(midPrice);
-  const hp = Number.parseFloat(highPrice);
 
   const strikesValid =
     Number.isFinite(low) &&
@@ -127,16 +122,11 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
     Number.isFinite(high) &&
     low < mid &&
     mid < high;
-  const pricesValid =
-    Number.isFinite(lp) &&
-    Number.isFinite(mp) &&
-    Number.isFinite(hp) &&
-    lp >= 0 &&
-    mp >= 0 &&
-    hp >= 0;
-  const allValid = strikesValid && pricesValid;
+  const netParsed = Number.parseFloat(netInput);
+  const priceValid = Number.isFinite(netParsed) && netParsed >= 0;
+  const allValid = strikesValid && priceValid;
 
-  const net = allValid ? calcNet(lp, mp, hp) : 0;
+  const net = allValid ? (isCredit ? netParsed : -netParsed) : 0;
   const metrics = allValid ? calcMetrics(side, low, mid, high, net) : null;
   const pnlRows = allValid
     ? generatePnlRows(side, low, mid, high, net, contracts)
@@ -147,9 +137,8 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
     setLowStrike('');
     setMidStrike('');
     setHighStrike('');
-    setLowPrice('');
-    setMidPrice('');
-    setHighPrice('');
+    setNetInput('');
+    setIsCredit(true);
     setContracts(1);
   };
 
@@ -325,12 +314,11 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
         </div>
       </div>
 
-      {/* Strike + Price inputs */}
+      {/* Strikes */}
       <div className="border-edge rounded-lg border p-3">
-        <div className="mb-2 grid grid-cols-[auto_1fr_1fr] gap-x-3 gap-y-0.5">
+        <div className="mb-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
           <div />
           <div className={LABEL + ' text-center'}>Strike</div>
-          <div className={LABEL + ' text-center'}>Price (per ctr)</div>
         </div>
         {[
           {
@@ -338,35 +326,31 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
             sub: 'buy 1',
             strike: lowStrike,
             setStrike: setLowStrike,
-            price: lowPrice,
-            setPrice: setLowPrice,
           },
           {
             label: 'Mid',
             sub: 'sell \u00D72',
             strike: midStrike,
             setStrike: setMidStrike,
-            price: midPrice,
-            setPrice: setMidPrice,
           },
           {
             label: 'High',
             sub: 'buy 1',
             strike: highStrike,
             setStrike: setHighStrike,
-            price: highPrice,
-            setPrice: setHighPrice,
           },
         ].map((row) => (
           <div
             key={row.label}
-            className="mb-2 grid grid-cols-[auto_1fr_1fr] items-center gap-x-3"
+            className="mb-2 grid grid-cols-[auto_1fr] items-center gap-x-3"
           >
             <div className="w-[70px]">
               <span className="text-primary font-sans text-sm font-semibold">
                 {row.label}
               </span>
-              <span className="text-muted ml-1 text-[10px]">({row.sub})</span>
+              <span className="text-muted ml-1 text-[10px]">
+                ({row.sub})
+              </span>
             </div>
             <input
               type="text"
@@ -380,17 +364,46 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
               className={INPUT}
               aria-label={row.label + ' strike'}
             />
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder="e.g. 12.10"
-              value={row.price}
-              onChange={(e) => row.setPrice(e.target.value)}
-              className={INPUT}
-              aria-label={row.label + ' price'}
-            />
           </div>
         ))}
+      </div>
+
+      {/* Fill Price */}
+      <div className="border-edge mt-3 rounded-lg border p-3">
+        <div className={LABEL + ' mb-1.5'}>Fill Price</div>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            inputMode="decimal"
+            placeholder="e.g. 0.91"
+            value={netInput}
+            onChange={(e) => setNetInput(e.target.value)}
+            className={INPUT + ' flex-1'}
+            aria-label="Net fill price"
+          />
+          <div className="border-edge flex overflow-hidden rounded-md border">
+            <button
+              onClick={() => setIsCredit(false)}
+              className={`cursor-pointer px-3 py-2 text-xs font-semibold transition-colors ${
+                !isCredit
+                  ? 'bg-danger/20 text-danger'
+                  : 'text-muted hover:text-primary'
+              }`}
+            >
+              Debit
+            </button>
+            <button
+              onClick={() => setIsCredit(true)}
+              className={`border-edge cursor-pointer border-l px-3 py-2 text-xs font-semibold transition-colors ${
+                isCredit
+                  ? 'bg-success/20 text-success'
+                  : 'text-muted hover:text-primary'
+              }`}
+            >
+              Credit
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Validation hints */}
@@ -407,16 +420,13 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
           <div className="bg-surface-alt mt-4 rounded-lg p-3">
             <div className="text-secondary mb-2 font-mono text-[12px] leading-relaxed">
               <div>
-                Buy {contracts} {'\u00D7'} {lowStrike} {sideLabel} @ $
-                {lp.toFixed(2)}
+                Buy {contracts} {'\u00D7'} {lowStrike} {sideLabel}
               </div>
               <div className="text-accent font-semibold">
-                Sell {contracts * 2} {'\u00D7'} {midStrike} {sideLabel} @ $
-                {mp.toFixed(2)}
+                Sell {contracts * 2} {'\u00D7'} {midStrike} {sideLabel}
               </div>
               <div>
-                Buy {contracts} {'\u00D7'} {highStrike} {sideLabel} @ $
-                {hp.toFixed(2)}
+                Buy {contracts} {'\u00D7'} {highStrike} {sideLabel}
               </div>
             </div>
 
@@ -597,7 +607,7 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
       {/* Empty state */}
       {!allValid && (
         <div className="text-muted mt-4 text-center text-sm italic">
-          Enter three strikes and their fill prices to see the P&L profile.
+          Enter three strikes and a fill price to see the P&L profile.
         </div>
       )}
     </section>

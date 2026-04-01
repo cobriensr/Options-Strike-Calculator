@@ -224,20 +224,20 @@ describe('BWBCalculator component', () => {
     expect(screen.getByText('Clear')).toBeInTheDocument();
   });
 
-  it('renders 6 input fields (3 strikes + 3 prices)', () => {
+  it('renders 3 strike inputs and a fill price input', () => {
     render(<BWBCalculator />);
     expect(screen.getByLabelText('Low strike')).toBeInTheDocument();
     expect(screen.getByLabelText('Mid strike')).toBeInTheDocument();
     expect(screen.getByLabelText('High strike')).toBeInTheDocument();
-    expect(screen.getByLabelText('Low price')).toBeInTheDocument();
-    expect(screen.getByLabelText('Mid price')).toBeInTheDocument();
-    expect(screen.getByLabelText('High price')).toBeInTheDocument();
+    expect(screen.getByLabelText('Net fill price')).toBeInTheDocument();
+    expect(screen.getByText('Debit')).toBeInTheDocument();
+    expect(screen.getByText('Credit')).toBeInTheDocument();
   });
 
   it('shows empty state when inputs are incomplete', () => {
     render(<BWBCalculator />);
     expect(
-      screen.getByText(/Enter three strikes and their fill prices/),
+      screen.getByText(/Enter three strikes and a fill price/),
     ).toBeInTheDocument();
   });
 
@@ -248,9 +248,9 @@ describe('BWBCalculator component', () => {
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Low price'), '23');
-    await user.type(screen.getByLabelText('Mid price'), '12.10');
-    await user.type(screen.getByLabelText('High price'), '2.70');
+    await user.type(screen.getByLabelText('Net fill price'), '1.50');
+    // Default is credit, click Debit
+    await user.click(screen.getByText('Debit'));
 
     // Should show trade summary
     expect(screen.getByText(/DEBIT/)).toBeInTheDocument();
@@ -292,9 +292,7 @@ describe('BWBCalculator component', () => {
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Low price'), '23');
-    await user.type(screen.getByLabelText('Mid price'), '12.10');
-    await user.type(screen.getByLabelText('High price'), '2.70');
+    await user.type(screen.getByLabelText('Net fill price'), '1.50');
 
     // Switch to puts — trade summary changes from "Call" to "Put"
     await user.click(screen.getByText('Puts'));
@@ -367,9 +365,7 @@ describe('BWBCalculator component', () => {
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Low price'), '23');
-    await user.type(screen.getByLabelText('Mid price'), '12.10');
-    await user.type(screen.getByLabelText('High price'), '2.70');
+    await user.type(screen.getByLabelText('Net fill price'), '1.50');
 
     expect(screen.getByText('Max Profit')).toBeInTheDocument();
     expect(screen.getByText('Breakevens')).toBeInTheDocument();
