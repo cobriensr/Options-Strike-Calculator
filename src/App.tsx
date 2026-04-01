@@ -503,8 +503,12 @@ export default function StrikeCalculator() {
 
         <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
           {/* Subtitle — below sticky header */}
-          <p className="text-secondary mb-8 text-[15px] leading-normal">
+          <p className="text-secondary mb-1 text-[15px] leading-normal">
             Black-Scholes approximation for delta-based strike placement
+          </p>
+          <p className="text-tertiary mb-8 text-xs italic">
+            Per Unusual Whales data policy, no market data — raw or derived
+            — is publicly available on this site.
           </p>
 
           <main>
