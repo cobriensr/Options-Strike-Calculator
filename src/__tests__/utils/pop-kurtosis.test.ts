@@ -197,15 +197,7 @@ describe('adjustICPoPForKurtosis', () => {
       T,
       2.0,
     );
-    const wide = adjustICPoPForKurtosis(
-      spot,
-      5500,
-      6100,
-      sigma,
-      sigma,
-      T,
-      2.0,
-    );
+    const wide = adjustICPoPForKurtosis(spot, 5500, 6100, sigma, sigma, T, 2.0);
     expect(wide).toBeGreaterThan(narrow);
   });
 
@@ -343,20 +335,8 @@ describe('strike-delta accuracy', () => {
       if (isStrikeError(result)) continue;
 
       // Compute actual BS delta at the raw (unsnapped) strikes
-      const putDelta = calcBSDelta(
-        spot,
-        result.putStrike,
-        sigma,
-        T,
-        'put',
-      );
-      const callDelta = calcBSDelta(
-        spot,
-        result.callStrike,
-        sigma,
-        T,
-        'call',
-      );
+      const putDelta = calcBSDelta(spot, result.putStrike, sigma, T, 'put');
+      const callDelta = calcBSDelta(spot, result.callStrike, sigma, T, 'call');
 
       const targetFrac = d / 100;
       // Within 15% relative of target (generous for rounding to nearest integer)
@@ -398,8 +378,7 @@ describe('strike-delta accuracy', () => {
       const result = calcStrikes(s, sigma, T, 10, 0);
       if (isStrikeError(result)) continue;
 
-      const putDelta =
-        calcBSDelta(s, result.putStrike, sigma, T, 'put') * 100;
+      const putDelta = calcBSDelta(s, result.putStrike, sigma, T, 'put') * 100;
       const callDelta =
         calcBSDelta(s, result.callStrike, sigma, T, 'call') * 100;
 
