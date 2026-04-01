@@ -223,3 +223,164 @@ def test_run_clustering_metrics_are_numeric():
         assert np.isfinite(row["gmm_sil"])
         assert np.isfinite(row["hier_sil"])
         assert np.isfinite(row["gmm_bic"])
+
+
+# ── Additional clustering function tests ──────────────────────
+
+from clustering import (
+    print_results,
+    characterize_clusters,
+    stability_check,
+    permutation_test,
+    outcome_association_test,
+)
+
+
+def _make_clustering_results() -> dict:
+    """Build a results dict matching the shape returned by run_clustering."""
+    rng = np.random.default_rng(99)
+    results = {}
+    # k=2 has the best average silhouette by design
+    results[2] = {
+        "kmeans_sil": 0.60,
+        "gmm_sil": 0.55,
+        "hier_sil": 0.58,
+        "kmeans_ch": 120.0,
+        "kmeans_db": 0.8,
+        "gmm_bic": -200.0,
+        "kmeans_sizes": [15, 15],
+        "kmeans_labels": rng.choice([0, 1], size=30),
+    }
+    results[3] = {
+        "kmeans_sil": 0.40,
+        "gmm_sil": 0.38,
+        "hier_sil": 0.42,
+        "kmeans_ch": 90.0,
+        "kmeans_db": 1.1,
+        "gmm_bic": -180.0,
+        "kmeans_sizes": [10, 10, 10],
+        "kmeans_labels": rng.choice([0, 1, 2], size=30),
+    }
+    results[4] = {
+        "kmeans_sil": 0.30,
+        "gmm_sil": 0.28,
+        "hier_sil": 0.32,
+        "kmeans_ch": 70.0,
+        "kmeans_db": 1.5,
+        "gmm_bic": -160.0,
+        "kmeans_sizes": [8, 8, 7, 7],
+        "kmeans_labels": rng.choice([0, 1, 2, 3], size=30),
+    }
+    return results
+
+
+def test_print_results_returns_best_k():
+    """print_results should return the k with the highest avg silhouette."""
+    results = _make_clustering_results()
+    best_k = print_results(results)
+    # k=2 has avg sil (0.60 + 0.55 + 0.58) / 3 = 0.577, highest by design
+    assert best_k == 2
+
+
+def test_print_results_prints_table(capsys):
+    """print_results should print the results table header and k values."""
+    results = _make_clustering_results()
+    print_results(results)
+    captured = capsys.readouterr()
+    assert "CLUSTERING RESULTS" in captured.out
+    assert "2" in captured.out
+    assert "3" in captured.out
+    assert "4" in captured.out
+
+
+def test_characterize_clusters_prints_profiles(capsys):
+    """characterize_clusters should print a profile for each cluster."""
+    rng = np.random.default_rng(42)
+    n = 15
+    dates = pd.date_range("2026-01-01", periods=n, freq="B")
+    df = pd.DataFrame(
+        {
+            "vix": rng.uniform(12, 30, n),
+            "vix1d_vix_ratio": rng.uniform(0.8, 1.2, n),
+            "gex_oi_t1": rng.uniform(-50e9, 50e9, n),
+            "flow_agreement_t1": rng.uniform(-1, 1, n),
+            "charm_pattern": rng.choice(
+                ["all_negative", "all_positive", "mixed"], n
+            ),
+            "day_of_week": [d.weekday() for d in dates],
+            "range_category": rng.choice(["narrow", "normal", "wide"], n),
+            "recommended_structure": rng.choice(["IC", "PCS", "CCS"], n),
+            "structure_correct": rng.choice([0, 1], n).astype(float),
+            "settlement_direction": rng.choice(["up", "down", "flat"], n),
+        },
+        index=dates,
+    )
+    labels = np.array([0] * 5 + [1] * 5 + [2] * 5)
+
+    characterize_clusters(df, labels, 3, "K-Means")
+    captured = capsys.readouterr()
+    assert "Cluster 0" in captured.out
+    assert "Cluster 1" in captured.out
+    assert "Cluster 2" in captured.out
+
+
+def test_stability_check_returns_float():
+    """stability_check should return a float between 0.0 and 1.0."""
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((20, 3))
+    result = stability_check(X, k=2)
+    assert isinstance(result, float)
+    assert 0.0 <= result <= 1.0
+
+
+def test_stability_check_perfect_clusters():
+    """Well-separated clusters should yield stability close to 1.0."""
+    X = np.array([[-5, -5, -5]] * 10 + [[5, 5, 5]] * 10, dtype=float)
+    result = stability_check(X, k=2)
+    assert result >= 0.9, f"Expected stability >= 0.9, got {result}"
+
+
+def test_permutation_test_returns_p_value():
+    """permutation_test should return a p-value between 0.0 and 1.0."""
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((30, 5))
+    p = permutation_test(X, k=2, n_permutations=20)
+    assert isinstance(p, (float, np.floating))
+    assert 0.0 <= p <= 1.0
+
+
+def test_permutation_test_random_data_high_p():
+    """Fully random data should generally have a high p-value (not significant)."""
+    rng = np.random.default_rng(123)
+    X = rng.standard_normal((30, 5))
+    p = permutation_test(X, k=2, n_permutations=50)
+    assert 0.0 <= p <= 1.0
+    # Random data usually has p > 0.05; allow some tolerance
+    assert p > 0.01, f"Expected p > 0.01 for random data, got {p}"
+
+
+def test_outcome_association_prints(capsys):
+    """outcome_association_test should print chi-squared results."""
+    rng = np.random.default_rng(42)
+    n = 30
+    labels = np.array([0] * 10 + [1] * 10 + [2] * 10)
+    df = pd.DataFrame(
+        {
+            "range_category": rng.choice(
+                ["narrow", "normal", "wide"], n
+            ),
+            "settlement_direction": rng.choice(["up", "down", "flat"], n),
+            "recommended_structure": rng.choice(["IC", "PCS", "CCS"], n),
+            "structure_correct": rng.choice([0, 1], n).astype(float),
+            "cluster": labels,
+        },
+    )
+
+    outcome_association_test(df, labels, 3)
+    captured = capsys.readouterr()
+    # Should contain either chi-squared output or structure correctness
+    has_chi2 = "chi2" in captured.out.lower()
+    has_structure = "Structure correctness" in captured.out
+    assert has_chi2 or has_structure, (
+        f"Expected chi-squared or structure correctness output, got:\n{captured.out}"
+    )
