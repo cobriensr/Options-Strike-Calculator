@@ -24,16 +24,16 @@ This is a **pre-analysis prior**, not a trading signal. It tells you "historical
 
 ### What we have
 
-| Metric                                 | Count                                 | Notes                                     |
-| -------------------------------------- | ------------------------------------- | ----------------------------------------- |
-| Days with features + labels + outcomes | 34                                    | Minimum for Phase 2 is 60-80              |
-| Days with completeness >= 80%          | 25                                    | Used for walk-forward validation          |
-| CCS labels                             | 19 (17 correct, 2 wrong)              | 56% of labels — majority class            |
-| PCS labels                             | 11 (11 correct, 0 wrong)              | 32% of labels — perfect so far            |
-| IC labels                              | 4 (3 correct, 1 wrong)                | 12% of labels — sparse                    |
-| SIT OUT labels                         | 0                                     | Not yet observed                          |
-| Feature completeness (labeled days)    | 95-98% for recent, 54-74% for oldest  | Older days missing ETF tide, 0DTE sources |
-| Periscope charm labels                 | 4 days                                | Too few for charm divergence feature      |
+| Metric                                 | Count                                | Notes                                     |
+| -------------------------------------- | ------------------------------------ | ----------------------------------------- |
+| Days with features + labels + outcomes | 34                                   | Minimum for Phase 2 is 60-80              |
+| Days with completeness >= 80%          | 25                                   | Used for walk-forward validation          |
+| CCS labels                             | 19 (17 correct, 2 wrong)             | 56% of labels — majority class            |
+| PCS labels                             | 11 (11 correct, 0 wrong)             | 32% of labels — perfect so far            |
+| IC labels                              | 4 (3 correct, 1 wrong)               | 12% of labels — sparse                    |
+| SIT OUT labels                         | 0                                    | Not yet observed                          |
+| Feature completeness (labeled days)    | 95-98% for recent, 54-74% for oldest | Older days missing ETF tide, 0DTE sources |
+| Periscope charm labels                 | 4 days                               | Too few for charm divergence feature      |
 
 ### Class imbalance problem
 
@@ -93,13 +93,13 @@ Currently `is_event_day` is binary. Enrich with:
 
 The pipeline runs 5 models through walk-forward validation and prints a comparison table. This determines whether XGBoost actually outperforms simpler baselines at the current sample size.
 
-| Model                        | Type            | Key settings                               | NaN handling       |
-| ---------------------------- | --------------- | ------------------------------------------ | ------------------ |
-| **XGBoost**                  | Gradient boost  | depth=3, 50 trees, L1+L2 regularization    | Native             |
-| **Logistic Regression (L2)** | Linear          | C=1.0, StandardScaler, lbfgs solver        | Median imputation  |
-| **Random Forest (15)**       | Ensemble trees  | 15 trees, depth=3                          | Median imputation  |
-| **Naive Bayes**              | Probabilistic   | Gaussian                                   | Median imputation  |
-| **Decision Tree (d=2)**      | Single tree     | depth=2 (decision stump)                   | Median imputation  |
+| Model                        | Type           | Key settings                            | NaN handling      |
+| ---------------------------- | -------------- | --------------------------------------- | ----------------- |
+| **XGBoost**                  | Gradient boost | depth=3, 50 trees, L1+L2 regularization | Native            |
+| **Logistic Regression (L2)** | Linear         | C=1.0, StandardScaler, lbfgs solver     | Median imputation |
+| **Random Forest (15)**       | Ensemble trees | 15 trees, depth=3                       | Median imputation |
+| **Naive Bayes**              | Probabilistic  | Gaussian                                | Median imputation |
+| **Decision Tree (d=2)**      | Single tree    | depth=2 (decision stump)                | Median imputation |
 
 sklearn models are wrapped in `Pipeline(SimpleImputer → [StandardScaler →] Model)` since they can't handle NaN natively.
 

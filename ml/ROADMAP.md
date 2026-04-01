@@ -94,16 +94,16 @@ This document outlines planned ML applications as sufficient labeled data is acc
 
 ## Implementation Timeline (Revised)
 
-| Phase         | Model                          | Prerequisite                     | Status                       | Est. Data Ready |
-| ------------- | ------------------------------ | -------------------------------- | ---------------------------- | --------------- |
-| **Phase 0**   | Data Infrastructure            | Existing pipeline                | **Complete**                 | Done            |
-| **Phase 1**   | Day Type Clustering            | Phase 0 + 30 days features       | **Complete** (re-run at 50d) | Done            |
-| **Phase 1.5** | Exploratory Data Analysis      | Phase 0 + outcomes               | **Complete**                 | Done            |
-| **Phase 2**   | Structure Classification       | 60-80 labeled trading days       | Early experiment (25/60 days)| May 2026        |
-| **Phase 3**   | Charm Divergence Predictor     | 50+ days with Periscope data     | Accumulating (4 days)        | TBD             |
-| **Phase 4**   | Intraday Range Regression      | 100+ days API-enriched data      | Accumulating                 | June 2026       |
-| **Phase 5**   | Optimal Exit Timing            | 100+ days with timestamped exits | Blocked (paper trading)      | TBD             |
-| **Phase 6**   | Flow-Price Divergence Detector | 150+ labeled days                | Accumulating                 | Aug 2026        |
+| Phase         | Model                          | Prerequisite                     | Status                        | Est. Data Ready |
+| ------------- | ------------------------------ | -------------------------------- | ----------------------------- | --------------- |
+| **Phase 0**   | Data Infrastructure            | Existing pipeline                | **Complete**                  | Done            |
+| **Phase 1**   | Day Type Clustering            | Phase 0 + 30 days features       | **Complete** (re-run at 50d)  | Done            |
+| **Phase 1.5** | Exploratory Data Analysis      | Phase 0 + outcomes               | **Complete**                  | Done            |
+| **Phase 2**   | Structure Classification       | 60-80 labeled trading days       | Early experiment (25/60 days) | May 2026        |
+| **Phase 3**   | Charm Divergence Predictor     | 50+ days with Periscope data     | Accumulating (4 days)         | TBD             |
+| **Phase 4**   | Intraday Range Regression      | 100+ days API-enriched data      | Accumulating                  | June 2026       |
+| **Phase 5**   | Optimal Exit Timing            | 100+ days with timestamped exits | Blocked (paper trading)       | TBD             |
+| **Phase 6**   | Flow-Price Divergence Detector | 150+ labeled days                | Accumulating                  | Aug 2026        |
 
 ### Why this order changed
 

@@ -2,17 +2,20 @@
   "phase": "phase2_early",
   "model": "xgboost",
   "version": "v2",
-  "timestamp": "2026-04-01T04:39:25.887938+00:00",
+  "timestamp": "2026-04-01T06:10:35.583563+00:00",
   "data": {
-    "training_days": 25,
+    "training_days": 30,
     "feature_count": 74,
     "class_distribution": {
-      "CALL CREDIT SPREAD": 14,
-      "PUT CREDIT SPREAD": 7,
+      "CALL CREDIT SPREAD": 17,
+      "PUT CREDIT SPREAD": 9,
       "IRON CONDOR": 4
     },
     "feature_completeness_threshold": 0.8,
-    "date_range": ["2026-02-11", "2026-03-24"]
+    "date_range": [
+      "2026-02-11",
+      "2026-03-31"
+    ]
   },
   "xgboost_params": {
     "objective": "multi:softprob",
@@ -27,62 +30,92 @@
     "random_state": 42
   },
   "metrics": {
-    "accuracy": 0.8,
-    "log_loss": 0.7023,
+    "accuracy": 0.7,
+    "log_loss": 0.6756,
     "per_class_f1": {
-      "CALL CREDIT SPREAD": 0.889,
+      "CALL CREDIT SPREAD": 0.824,
       "PUT CREDIT SPREAD": 0.0,
       "IRON CONDOR": 0.0
     },
     "majority_class": "CALL CREDIT SPREAD",
-    "majority_baseline": 0.8,
-    "prev_day_baseline": 0.8,
-    "walk_forward_folds": 5
+    "majority_baseline": 0.7,
+    "prev_day_baseline": 0.7,
+    "walk_forward_folds": 10
   },
   "feature_importance_top10": [
-    ["mt_npp_t2", 0.1133],
-    ["gex_vol_t2", 0.0842],
-    ["neg_gamma_nearest_dist", 0.0839],
-    ["qqq_ncp_t2", 0.0709],
-    ["qqq_ncp_t1", 0.0708],
-    ["gex_vol_t1", 0.0576],
-    ["gamma_asymmetry", 0.0572],
-    ["realized_vol_5d", 0.0545],
-    ["spx_ncp_t2", 0.0534],
-    ["vix1d", 0.0492]
+    [
+      "gamma_asymmetry",
+      0.1095
+    ],
+    [
+      "qqq_ncp_t1",
+      0.105
+    ],
+    [
+      "gex_vol_t2",
+      0.0781
+    ],
+    [
+      "mt_ncp_t2",
+      0.0712
+    ],
+    [
+      "neg_gamma_nearest_dist",
+      0.069
+    ],
+    [
+      "mt_ncp_t1",
+      0.0563
+    ],
+    [
+      "vix1d",
+      0.0518
+    ],
+    [
+      "prev_direction_DOWN",
+      0.0454
+    ],
+    [
+      "prev_direction_UP",
+      0.0443
+    ],
+    [
+      "days_to_next_event",
+      0.0414
+    ]
   ],
   "notes": "Walk-forward comparison of 5 models on 3-class structure prediction (CCS/PCS/IC). XGBoost with conservative hyperparams + 4 sklearn baselines (logistic regression, random forest, naive bayes, decision tree).",
   "model_comparison": {
     "Logistic Reg (L2)": {
-      "accuracy": 0.6,
-      "log_loss": 8.5278,
+      "accuracy": 0.7,
+      "log_loss": 4.4079,
       "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.75,
-        "PUT CREDIT SPREAD": 0.0,
+        "CALL CREDIT SPREAD": 0.8,
+        "PUT CREDIT SPREAD": 0.4,
         "IRON CONDOR": 0.0
       }
     },
     "Random Forest (15)": {
-      "accuracy": 0.6,
-      "log_loss": 7.7793,
+      "accuracy": 0.7,
+      "log_loss": 4.1951,
       "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.75,
-        "PUT CREDIT SPREAD": 0.0,
+        "CALL CREDIT SPREAD": 0.8,
+        "PUT CREDIT SPREAD": 0.4,
         "IRON CONDOR": 0.0
       }
     },
     "Naive Bayes": {
-      "accuracy": 0.6,
-      "log_loss": 6.8889,
+      "accuracy": 0.7,
+      "log_loss": 3.5659,
       "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.75,
-        "PUT CREDIT SPREAD": 0.0,
+        "CALL CREDIT SPREAD": 0.857,
+        "PUT CREDIT SPREAD": 0.4,
         "IRON CONDOR": 0.0
       }
     },
     "Decision Tree (d=2)": {
       "accuracy": 0.6,
-      "log_loss": 7.5517,
+      "log_loss": 4.369,
       "per_class_f1": {
         "CALL CREDIT SPREAD": 0.75,
         "PUT CREDIT SPREAD": 0.0,
@@ -90,14 +123,14 @@
       }
     },
     "XGBoost": {
-      "accuracy": 0.8,
-      "log_loss": 0.7023,
+      "accuracy": 0.7,
+      "log_loss": 0.6756,
       "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.889,
+        "CALL CREDIT SPREAD": 0.824,
         "PUT CREDIT SPREAD": 0.0,
         "IRON CONDOR": 0.0
       }
     }
   },
-  "best_model": "XGBoost"
+  "best_model": "Logistic Reg (L2)"
 }

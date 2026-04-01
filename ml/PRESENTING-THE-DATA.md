@@ -385,12 +385,12 @@ This answers: **"Can any model predict today's correct structure better than alw
 
 **How to interpret the results:**
 
-| Scenario | What it means | Action |
-| --- | --- | --- |
-| Best model has Lift > +5% | Model finds exploitable patterns | Consider using as a pre-analysis prior |
-| Best model ties majority (Lift ≈ 0%) | No model adds signal yet | Keep accumulating data, re-run weekly |
-| All models have Lift < 0% | Models are overfitting or features lack signal | Wait for 60+ days or revisit feature engineering |
-| A simple model (LogReg) beats XGBoost | Simpler model generalizes better at small n | Use the simpler model — it's also more interpretable |
+| Scenario                              | What it means                                  | Action                                               |
+| ------------------------------------- | ---------------------------------------------- | ---------------------------------------------------- |
+| Best model has Lift > +5%             | Model finds exploitable patterns               | Consider using as a pre-analysis prior               |
+| Best model ties majority (Lift ≈ 0%)  | No model adds signal yet                       | Keep accumulating data, re-run weekly                |
+| All models have Lift < 0%             | Models are overfitting or features lack signal | Wait for 60+ days or revisit feature engineering     |
+| A simple model (LogReg) beats XGBoost | Simpler model generalizes better at small n    | Use the simpler model — it's also more interpretable |
 
 **When to re-run:** Weekly as new labeled days accumulate. The comparison becomes meaningful at ~45 labeled days (25+ predictions) and actionable at 60+ days.
 

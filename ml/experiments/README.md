@@ -26,7 +26,7 @@ Example: `phase2_early_2026-03-31_v2.json`
       "PUT CREDIT SPREAD": 7,
       "IRON CONDOR": 4
     },
-    "feature_completeness_threshold": 0.80,
+    "feature_completeness_threshold": 0.8,
     "date_range": ["2026-02-09", "2026-03-31"]
   },
   "xgboost_params": {
@@ -41,7 +41,7 @@ Example: `phase2_early_2026-03-31_v2.json`
     "reg_lambda": 2.0
   },
   "metrics": {
-    "accuracy": 0.80,
+    "accuracy": 0.8,
     "log_loss": 0.7023,
     "per_class_f1": {
       "CALL CREDIT SPREAD": 0.889,
@@ -49,16 +49,28 @@ Example: `phase2_early_2026-03-31_v2.json`
       "IRON CONDOR": 0.0
     },
     "majority_class": "CALL CREDIT SPREAD",
-    "majority_baseline": 0.80,
-    "prev_day_baseline": 0.80,
+    "majority_baseline": 0.8,
+    "prev_day_baseline": 0.8,
     "walk_forward_folds": 5
   },
   "model_comparison": {
-    "XGBoost": { "accuracy": 0.80, "log_loss": 0.7023, "per_class_f1": {} },
-    "Logistic Reg (L2)": { "accuracy": 0.60, "log_loss": 8.5278, "per_class_f1": {} },
-    "Random Forest (15)": { "accuracy": 0.60, "log_loss": 7.7793, "per_class_f1": {} },
-    "Naive Bayes": { "accuracy": 0.60, "log_loss": 6.8889, "per_class_f1": {} },
-    "Decision Tree (d=2)": { "accuracy": 0.60, "log_loss": 7.5517, "per_class_f1": {} }
+    "XGBoost": { "accuracy": 0.8, "log_loss": 0.7023, "per_class_f1": {} },
+    "Logistic Reg (L2)": {
+      "accuracy": 0.6,
+      "log_loss": 8.5278,
+      "per_class_f1": {}
+    },
+    "Random Forest (15)": {
+      "accuracy": 0.6,
+      "log_loss": 7.7793,
+      "per_class_f1": {}
+    },
+    "Naive Bayes": { "accuracy": 0.6, "log_loss": 6.8889, "per_class_f1": {} },
+    "Decision Tree (d=2)": {
+      "accuracy": 0.6,
+      "log_loss": 7.5517,
+      "per_class_f1": {}
+    }
   },
   "best_model": "XGBoost",
   "feature_importance_top10": [
@@ -72,12 +84,12 @@ Example: `phase2_early_2026-03-31_v2.json`
 
 ## Key fields
 
-| Field | Description |
-| --- | --- |
-| `metrics` | XGBoost walk-forward metrics (primary model) |
-| `model_comparison` | All 5 models' accuracy, log loss, and per-class F1 |
-| `best_model` | Name of the highest-accuracy model |
-| `xgboost_params` | XGBoost hyperparameters (sklearn models use defaults) |
+| Field              | Description                                           |
+| ------------------ | ----------------------------------------------------- |
+| `metrics`          | XGBoost walk-forward metrics (primary model)          |
+| `model_comparison` | All 5 models' accuracy, log loss, and per-class F1    |
+| `best_model`       | Name of the highest-accuracy model                    |
+| `xgboost_params`   | XGBoost hyperparameters (sklearn models use defaults) |
 
 ## Comparing experiments across dates
 
