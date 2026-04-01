@@ -568,18 +568,10 @@ describe('PortfolioRiskSummary', () => {
 
   it('renders all four stop multiplier buttons', () => {
     renderSummary();
-    expect(
-      screen.getByRole('button', { name: 'Full' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '2x' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '3x' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '4x' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Full' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '2x' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '3x' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '4x' })).toBeInTheDocument();
   });
 
   it('applies danger heat color when NLV is zero', () => {

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  within,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
 import BWBSection from '../../components/BWBSection';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
 
@@ -390,9 +396,7 @@ describe('BWBSection', () => {
     expect(callArgs).toHaveProperty('results');
     expect(callArgs).toHaveProperty('contracts', 3);
     expect(callArgs).toHaveProperty('effectiveRatio', 10);
-    expect(
-      (callArgs.results as { spot: number }).spot,
-    ).toBe(5700);
+    expect((callArgs.results as { spot: number }).spot).toBe(5700);
   });
 
   // ============================================================
@@ -402,9 +406,7 @@ describe('BWBSection', () => {
   it('export button shows reload prompt when export throws', async () => {
     mockExportBWBComparison.mockRejectedValue(new Error('chunk failed'));
 
-    const confirmSpy = vi
-      .spyOn(globalThis, 'confirm')
-      .mockReturnValue(true);
+    const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
 
     // Mock location.reload — need to replace the property
     const reloadSpy = vi.fn();
@@ -441,9 +443,7 @@ describe('BWBSection', () => {
   it('export button does not reload when user declines confirm', async () => {
     mockExportBWBComparison.mockRejectedValue(new Error('chunk failed'));
 
-    const confirmSpy = vi
-      .spyOn(globalThis, 'confirm')
-      .mockReturnValue(false);
+    const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(false);
 
     const reloadSpy = vi.fn();
     const originalLocation = globalThis.location;

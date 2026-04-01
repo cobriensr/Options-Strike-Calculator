@@ -46,9 +46,7 @@ import { Sentry } from '../_lib/sentry.js';
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 
-function makeOiRow(
-  overrides: Partial<Record<string, string | number>> = {},
-) {
+function makeOiRow(overrides: Partial<Record<string, string | number>> = {}) {
   return {
     strike: '5750',
     call_oi: '12345',
@@ -288,10 +286,7 @@ describe('fetch-oi-per-strike handler', () => {
   // ── DB conflict (ON CONFLICT DO NOTHING) ────────────────
 
   it('counts skipped rows when INSERT returns empty (conflict)', async () => {
-    const rows = [
-      makeOiRow({ strike: '5700' }),
-      makeOiRow({ strike: '5750' }),
-    ];
+    const rows = [makeOiRow({ strike: '5700' }), makeOiRow({ strike: '5750' })];
 
     // COUNT returns 0
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);

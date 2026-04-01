@@ -18,20 +18,11 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from './_lib/sentry.js';
-import {
-  checkBot,
-  setCacheHeaders,
-  sendError,
-} from './_lib/api-helpers.js';
+import { checkBot, setCacheHeaders, sendError } from './_lib/api-helpers.js';
 import { getStrikeExposures } from './_lib/db-strike-helpers.js';
-import {
-  getETDateStr,
-} from '../src/utils/timezone.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/bwb-anchor');
     const done = metrics.request('/api/bwb-anchor');
@@ -78,17 +69,14 @@ export default async function handler(
 
         // Charm boost: 1.5x for positive charm (strengthening wall)
         const charmBoost = s.netCharm > 0 ? 1.5 : 1.0;
-        const charmProxWeight = absGamma * charmBoost / (dist * dist);
+        const charmProxWeight = (absGamma * charmBoost) / (dist * dist);
         charmWeightedSum += s.strike * charmProxWeight;
         charmTotalWeight += charmProxWeight;
       }
 
-      const centroid = totalWeight > 0
-        ? weightedSum / totalWeight
-        : price;
-      const charmCentroid = charmTotalWeight > 0
-        ? charmWeightedSum / charmTotalWeight
-        : centroid;
+      const centroid = totalWeight > 0 ? weightedSum / totalWeight : price;
+      const charmCentroid =
+        charmTotalWeight > 0 ? charmWeightedSum / charmTotalWeight : centroid;
 
       // Round to nearest 5-pt SPX strike
       const anchor = Math.round(centroid / 5) * 5;

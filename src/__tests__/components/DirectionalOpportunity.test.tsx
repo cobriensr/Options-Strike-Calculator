@@ -47,20 +47,14 @@ function makeDirectional(
 describe('DirectionalOpportunity', () => {
   it('renders the Directional Opportunity title', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
-    expect(
-      screen.getByText('Directional Opportunity'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Directional Opportunity')).toBeInTheDocument();
   });
 
   it('shows the LONG CALL direction badge', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('LONG CALL')).toBeInTheDocument();
   });
@@ -78,40 +72,30 @@ describe('DirectionalOpportunity', () => {
 
   it('shows the confidence badge', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('HIGH')).toBeInTheDocument();
   });
 
   it('shows the 14 DTE ATM label', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('14 DTE ATM')).toBeInTheDocument();
   });
 
   it('shows the reasoning text', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(
-      screen.getByText(
-        'Strong bullish momentum with expanding volume',
-      ),
+      screen.getByText('Strong bullish momentum with expanding volume'),
     ).toBeInTheDocument();
   });
 
   it('shows the Entry field with timing text', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('Entry:')).toBeInTheDocument();
     expect(
@@ -121,26 +105,18 @@ describe('DirectionalOpportunity', () => {
 
   it('shows the Stop field with stop loss text', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('Stop:')).toBeInTheDocument();
-    expect(
-      screen.getByText('Close below 5660 (-0.7%)'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Close below 5660 (-0.7%)')).toBeInTheDocument();
   });
 
   it('shows the Target field with profit target text', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('Target:')).toBeInTheDocument();
-    expect(
-      screen.getByText('Target 5750 (+0.9%)'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Target 5750 (+0.9%)')).toBeInTheDocument();
   });
 
   it('shows the Key Levels section when at least one level is set', () => {
@@ -160,9 +136,7 @@ describe('DirectionalOpportunity', () => {
 
   it('shows the support level', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('Support:')).toBeInTheDocument();
     expect(screen.getByText('5680 (VWAP)')).toBeInTheDocument();
@@ -170,21 +144,15 @@ describe('DirectionalOpportunity', () => {
 
   it('shows the resistance level', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('Resistance:')).toBeInTheDocument();
-    expect(
-      screen.getByText('5750 (prior high)'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('5750 (prior high)')).toBeInTheDocument();
   });
 
   it('shows the VWAP level', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
     expect(screen.getByText('VWAP:')).toBeInTheDocument();
     expect(screen.getByText('5685')).toBeInTheDocument();
@@ -207,13 +175,9 @@ describe('DirectionalOpportunity', () => {
 
   it('shows confirming signals when signals array has items', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
-    expect(
-      screen.getByText('Bullish flow confirmation'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Bullish flow confirmation')).toBeInTheDocument();
     expect(screen.getByText('GEX supportive')).toBeInTheDocument();
   });
 
@@ -223,19 +187,13 @@ describe('DirectionalOpportunity', () => {
         directionalOpportunity={makeDirectional({ signals: [] })}
       />,
     );
-    expect(
-      screen.queryByText('Confirming Signals'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Confirming Signals')).not.toBeInTheDocument();
   });
 
   it('shows the Confirming Signals heading', () => {
     render(
-      <DirectionalOpportunity
-        directionalOpportunity={makeDirectional()}
-      />,
+      <DirectionalOpportunity directionalOpportunity={makeDirectional()} />,
     );
-    expect(
-      screen.getByText('Confirming Signals'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Confirming Signals')).toBeInTheDocument();
   });
 });

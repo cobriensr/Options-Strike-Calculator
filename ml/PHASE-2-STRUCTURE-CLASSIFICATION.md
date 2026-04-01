@@ -115,21 +115,21 @@ At n < 100, simpler models often outperform complex ones. If logistic regression
 
 ### Feature groups (using T1-T2 features per EDA recommendation)
 
-**Group 1: Volatility regime (always available)**
+#### Group 1: Volatility regime (always available)
 
 - `vix`, `vix1d`, `vix9d`, `vvix`
 - `vix1d_vix_ratio`, `vix_vix9d_ratio`
 - `vix_term_slope`, `vvix_percentile` (new)
 - `prev_day_vix_change` (new)
 
-**Group 2: GEX/Greek regime**
+#### Group 2: GEX/Greek regime
 
 - `gex_oi_t1`, `gex_oi_t2`, `gex_dir_t1`, `gex_dir_t2`, `gex_vol_t1`, `gex_vol_t2`
 - `agg_net_gamma`
 - `dte0_net_charm`, `dte0_charm_pct`
 - `charm_slope`, `charm_pattern` (one-hot encoded)
 
-**Group 3: Flow signals (first hour)**
+#### Group 3: Flow signals (first hour)
 
 - `mt_ncp_t1`, `mt_npp_t1`, `mt_ncp_t2`, `mt_npp_t2`
 - `spx_ncp_t1`, `spy_ncp_t1`, `qqq_ncp_t1` (+ t2 variants)
@@ -137,25 +137,25 @@ At n < 100, simpler models often outperform complex ones. If logistic regression
 - `flow_agreement_t1`, `flow_agreement_t2`
 - `etf_tide_divergence_t1`, `ncp_npp_gap_spx_t1`
 
-**Group 4: Per-strike structure**
+#### Group 4: Per-strike structure
 
 - `gamma_wall_above_dist`, `gamma_wall_below_dist`
 - `neg_gamma_nearest_dist`, `gamma_asymmetry`
 - `charm_max_pos_dist`, `charm_max_neg_dist`
 - `gamma_0dte_allexp_agree`
 
-**Group 5: Calendar/context**
+#### Group 5: Calendar/context
 
 - `day_of_week`, `is_friday`
 - `is_event_day`, `is_fomc`, `is_opex` (new)
 - `regime_zone`, `cluster_mult`, `dow_mult`
 
-**Group 6: Historical context (new)**
+#### Group 6: Historical context (new)
 
 - `prev_day_range_pts`, `prev_day_direction`, `prev_day_range_category`
 - `realized_vol_5d`, `realized_vol_10d`, `rv_iv_ratio`
 
-**Group 7: Calculator outputs**
+#### Group 7: Calculator outputs
 
 - `ic_ceiling`, `put_spread_ceiling`, `call_spread_ceiling`
 - `sigma`, `opening_range_signal`, `opening_range_pct_consumed`

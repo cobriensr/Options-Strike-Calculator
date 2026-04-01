@@ -121,9 +121,7 @@ function compute(overrides: Partial<UseAnalysisContextParams> = {}) {
 // HELPERS — chain data factories
 // ============================================================
 
-function makeChainStrike(
-  overrides: Partial<ChainStrike> = {},
-): ChainStrike {
+function makeChainStrike(overrides: Partial<ChainStrike> = {}): ChainStrike {
   return {
     strike: 5700,
     bid: 1.0,
@@ -141,9 +139,7 @@ function makeChainStrike(
   };
 }
 
-function makeChain(
-  overrides: Partial<ChainResponse> = {},
-): ChainResponse {
+function makeChain(overrides: Partial<ChainResponse> = {}): ChainResponse {
   return {
     underlying: { symbol: 'SPX', price: 5700, prevClose: 5690 },
     expirationDate: '2026-03-24',
@@ -443,7 +439,7 @@ describe('useAnalysisContext', () => {
         makeChainStrike({
           strike: 5750,
           delta: 0.25,
-          iv: 0.20,
+          iv: 0.2,
         }),
       ],
     });
@@ -566,13 +562,11 @@ describe('useAnalysisContext', () => {
   it('returns skewRatio 0 when callSkew25d is 0', () => {
     // When call25d IV equals ATM IV, callSkew25d = 0 → division avoided
     const chain = makeChain({
-      puts: [
-        makeChainStrike({ strike: 5600, delta: -0.25, iv: 0.22 }),
-      ],
+      puts: [makeChainStrike({ strike: 5600, delta: -0.25, iv: 0.22 })],
       calls: [
         // ATM and 25-delta call both have same IV
-        makeChainStrike({ strike: 5700, delta: 0.5, iv: 0.20 }),
-        makeChainStrike({ strike: 5750, delta: 0.25, iv: 0.20 }),
+        makeChainStrike({ strike: 5700, delta: 0.5, iv: 0.2 }),
+        makeChainStrike({ strike: 5750, delta: 0.25, iv: 0.2 }),
       ],
     });
     const ctx = compute({ chain });
