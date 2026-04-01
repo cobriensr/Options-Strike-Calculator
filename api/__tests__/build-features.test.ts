@@ -96,7 +96,7 @@ describe('build-features handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside post-close window (4:30-6:00 PM ET)',
+      reason: 'Outside time window',
     });
   });
 
