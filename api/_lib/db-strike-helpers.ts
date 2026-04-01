@@ -162,8 +162,7 @@ export async function getStrikeExposuresByExpiry(
       timestamp: r.timestamp as string,
       netGamma: callGOi + putGOi,
       netCharm: callCOi + putCOi,
-      netDelta:
-        (Number(r.call_delta_oi) || 0) + (Number(r.put_delta_oi) || 0),
+      netDelta: (Number(r.call_delta_oi) || 0) + (Number(r.put_delta_oi) || 0),
       callGammaOi: callGOi,
       putGammaOi: putGOi,
       callCharmOi: callCOi,

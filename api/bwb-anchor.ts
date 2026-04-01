@@ -29,9 +29,10 @@ import { getETDateStr } from '../src/utils/timezone.js';
 /**
  * Compute proximity-weighted centroid and top-3 gamma concentration.
  */
-function computeProxCentroid(
-  strikes: StrikeExposureRow[],
-): { centroid: number; concentration: number } {
+function computeProxCentroid(strikes: StrikeExposureRow[]): {
+  centroid: number;
+  concentration: number;
+} {
   const price = strikes[0]!.price;
   let weightedSum = 0;
   let totalWeight = 0;
@@ -80,10 +81,7 @@ function computeCharmCentroid(strikes: StrikeExposureRow[]): number {
 
 // ── Handler ────────────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/bwb-anchor');
     const done = metrics.request('/api/bwb-anchor');
@@ -134,22 +132,15 @@ export default async function handler(
       // 1 DTE data.
       const regime: '0dte' | '1dte' =
         concentration < 0.4 && has1dte ? '1dte' : '0dte';
-      const selectedCentroid =
-        regime === '1dte' ? centroid1dte! : centroid0dte;
+      const selectedCentroid = regime === '1dte' ? centroid1dte! : centroid0dte;
 
       // Disagreement between centroids (0 if only one available)
       const disagreement =
-        centroid1dte !== null
-          ? Math.abs(centroid0dte - centroid1dte)
-          : 0;
+        centroid1dte !== null ? Math.abs(centroid0dte - centroid1dte) : 0;
 
       // Confidence based on disagreement
       const confidence: 'HIGH' | 'MEDIUM' | 'LOW' =
-        disagreement <= 10
-          ? 'HIGH'
-          : disagreement <= 20
-            ? 'MEDIUM'
-            : 'LOW';
+        disagreement <= 10 ? 'HIGH' : disagreement <= 20 ? 'MEDIUM' : 'LOW';
 
       // Round to nearest 5-pt SPX strike
       const anchor = Math.round(selectedCentroid / 5) * 5;
@@ -167,9 +158,7 @@ export default async function handler(
         // Both centroids (rounded to 5-pt)
         centroid0dte: Math.round(centroid0dte / 5) * 5,
         centroid1dte:
-          centroid1dte !== null
-            ? Math.round(centroid1dte / 5) * 5
-            : null,
+          centroid1dte !== null ? Math.round(centroid1dte / 5) * 5 : null,
 
         // Composite strategy signals
         concentration: Math.round(concentration * 1000) / 1000,

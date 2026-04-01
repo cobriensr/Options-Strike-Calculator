@@ -48,35 +48,23 @@ describe('calcPnl — calls', () => {
   const net = 0.91;
 
   it('below low strike: all OTM, P&L = net', () => {
-    expect(calcPnl('calls', low, mid, high, net, 6550)).toBeCloseTo(
-      net,
-      10,
-    );
+    expect(calcPnl('calls', low, mid, high, net, 6550)).toBeCloseTo(net, 10);
   });
 
   it('at low strike: P&L = net (nothing ITM yet)', () => {
-    expect(calcPnl('calls', low, mid, high, net, low)).toBeCloseTo(
-      net,
-      10,
-    );
+    expect(calcPnl('calls', low, mid, high, net, low)).toBeCloseTo(net, 10);
   });
 
   it('at mid strike: max profit = narrowWidth + net', () => {
     // max(6590-6570,0) - 2*max(6590-6590,0) + max(6590-6630,0) + 0.91
     // = 20 - 0 + 0 + 0.91 = 20.91
-    expect(calcPnl('calls', low, mid, high, net, mid)).toBeCloseTo(
-      20.91,
-      10,
-    );
+    expect(calcPnl('calls', low, mid, high, net, mid)).toBeCloseTo(20.91, 10);
   });
 
   it('above high strike: max loss region', () => {
     // max(6650-6570,0) - 2*max(6650-6590,0) + max(6650-6630,0) + 0.91
     // = 80 - 120 + 20 + 0.91 = -19.09
-    expect(calcPnl('calls', low, mid, high, net, 6650)).toBeCloseTo(
-      -19.09,
-      10,
-    );
+    expect(calcPnl('calls', low, mid, high, net, 6650)).toBeCloseTo(-19.09, 10);
   });
 
   it('max loss is capped beyond high strike', () => {
@@ -102,35 +90,23 @@ describe('calcPnl — puts', () => {
   const net = 0.5;
 
   it('above high strike: all OTM, P&L = net', () => {
-    expect(calcPnl('puts', low, mid, high, net, 6650)).toBeCloseTo(
-      net,
-      10,
-    );
+    expect(calcPnl('puts', low, mid, high, net, 6650)).toBeCloseTo(net, 10);
   });
 
   it('at high strike: P&L = net (nothing ITM yet)', () => {
-    expect(calcPnl('puts', low, mid, high, net, high)).toBeCloseTo(
-      net,
-      10,
-    );
+    expect(calcPnl('puts', low, mid, high, net, high)).toBeCloseTo(net, 10);
   });
 
   it('at mid strike: max profit = narrowWidth + net', () => {
     // max(6550-6590,0) - 2*max(6590-6590,0) + max(6610-6590,0) + 0.5
     // = 0 - 0 + 20 + 0.5 = 20.5
-    expect(calcPnl('puts', low, mid, high, net, mid)).toBeCloseTo(
-      20.5,
-      10,
-    );
+    expect(calcPnl('puts', low, mid, high, net, mid)).toBeCloseTo(20.5, 10);
   });
 
   it('below low strike: max loss region', () => {
     // max(6550-6520,0) - 2*max(6590-6520,0) + max(6610-6520,0) + 0.5
     // = 30 - 140 + 90 + 0.5 = -19.5
-    expect(calcPnl('puts', low, mid, high, net, 6520)).toBeCloseTo(
-      -19.5,
-      10,
-    );
+    expect(calcPnl('puts', low, mid, high, net, 6520)).toBeCloseTo(-19.5, 10);
   });
 
   it('max loss is capped below low strike', () => {
@@ -242,14 +218,7 @@ describe('generatePnlRows', () => {
   });
 
   it('breakeven rows have pnlPerContract close to 0', () => {
-    const rows = generatePnlRows(
-      'calls',
-      6570,
-      6590,
-      6630,
-      -0.91,
-      1,
-    );
+    const rows = generatePnlRows('calls', 6570, 6590, 6630, -0.91, 1);
     const beRows = rows.filter((r) => r.label === 'Breakeven');
     // Debit BWB should have two breakevens
     expect(beRows.length).toBeGreaterThanOrEqual(1);
@@ -260,28 +229,11 @@ describe('generatePnlRows', () => {
   });
 
   it('respects contract multiplier for pnlTotal', () => {
-    const single = generatePnlRows(
-      'calls',
-      6570,
-      6590,
-      6630,
-      0.91,
-      1,
-    );
-    const triple = generatePnlRows(
-      'calls',
-      6570,
-      6590,
-      6630,
-      0.91,
-      3,
-    );
+    const single = generatePnlRows('calls', 6570, 6590, 6630, 0.91, 1);
+    const triple = generatePnlRows('calls', 6570, 6590, 6630, 0.91, 3);
     const sweetSingle = single.find((r) => r.label === 'Max profit');
     const sweetTriple = triple.find((r) => r.label === 'Max profit');
-    expect(sweetTriple!.pnlTotal).toBeCloseTo(
-      sweetSingle!.pnlTotal * 3,
-      0,
-    );
+    expect(sweetTriple!.pnlTotal).toBeCloseTo(sweetSingle!.pnlTotal * 3, 0);
   });
 
   it('returns empty array when high - low > 300 (guard clause)', () => {

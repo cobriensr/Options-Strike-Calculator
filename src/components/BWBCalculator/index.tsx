@@ -1,11 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { BWBSide } from './bwb-math';
-import {
-  calcMetrics,
-  generatePnlRows,
-  fmtSpx,
-  fmtPnl,
-} from './bwb-math';
+import { calcMetrics, generatePnlRows, fmtSpx, fmtPnl } from './bwb-math';
 
 const INPUT =
   'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[10px_12px] text-[15px] font-mono outline-none w-full transition-[border-color] duration-150';
@@ -348,9 +343,7 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
               <span className="text-primary font-sans text-sm font-semibold">
                 {row.label}
               </span>
-              <span className="text-muted ml-1 text-[10px]">
-                ({row.sub})
-              </span>
+              <span className="text-muted ml-1 text-[10px]">({row.sub})</span>
             </div>
             <input
               type="text"
