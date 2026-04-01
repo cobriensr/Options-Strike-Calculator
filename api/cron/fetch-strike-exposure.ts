@@ -1,8 +1,8 @@
 /**
  * GET /api/cron/fetch-strike-exposure
  *
- * Fetches per-strike Greek exposure for SPX 0DTE from Unusual Whales API.
- * Uses the expiry-strike endpoint filtered to today's expiration.
+ * Fetches per-strike Greek exposure for SPX 0DTE and 1DTE from Unusual Whales API.
+ * Uses the expiry-strike endpoint filtered to today's and tomorrow's expiration.
  *
  * This replaces the Net Charm (naive) screenshot:
  *   - Net gamma per strike (call_gamma_oi + put_gamma_oi) = naive gamma profile
@@ -12,7 +12,7 @@
  * Stores strikes within ±200 pts of ATM (about 80 strikes at $5 intervals).
  * Only stores the latest snapshot per cron invocation — builds time series over the day.
  *
- * Total API calls per invocation: 1
+ * Total API calls per invocation: 2 (0DTE + 1DTE)
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
@@ -30,6 +30,19 @@ import {
 } from '../_lib/api-helpers.js';
 
 const ATM_RANGE = 200; // ±200 pts from ATM
+
+// ── Helpers ─────────────────────────────────────────────────
+
+/** Get the next trading day (skip weekends) in YYYY-MM-DD format. */
+function getNextTradingDay(today: string): string {
+  const d = new Date(`${today}T12:00:00`);
+  d.setDate(d.getDate() + 1);
+  // Skip Saturday (6) and Sunday (0)
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() + 1);
+  }
+  return d.toISOString().slice(0, 10);
+}
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -61,10 +74,10 @@ interface StrikeRow {
 
 async function fetchStrikeExposure(
   apiKey: string,
-  today: string,
+  expiry: string,
 ): Promise<StrikeRow[]> {
   const params = new URLSearchParams({
-    'expirations[]': today,
+    'expirations[]': expiry,
     limit: '500',
   });
 
@@ -79,6 +92,7 @@ async function fetchStrikeExposure(
 async function storeStrikes(
   rows: StrikeRow[],
   today: string,
+  expiry: string,
 ): Promise<{ stored: number; skipped: number }> {
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
@@ -114,7 +128,7 @@ async function storeStrikes(
             call_vanna_oi, put_vanna_oi
           )
           VALUES (
-            ${today}, ${timestamp}, 'SPX', ${today}, ${row.strike}, ${row.price},
+            ${today}, ${timestamp}, 'SPX', ${expiry}, ${row.strike}, ${row.price},
             ${row.call_gamma_oi}, ${row.put_gamma_oi},
             ${row.call_gamma_ask}, ${row.call_gamma_bid},
             ${row.put_gamma_ask}, ${row.put_gamma_bid},
@@ -149,33 +163,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { apiKey, today } = guard;
 
   const startTime = Date.now();
+  const tomorrow = getNextTradingDay(today);
 
   try {
-    const rows = await withRetry(() => fetchStrikeExposure(apiKey, today));
+    // Fetch 0DTE and 1DTE in parallel
+    const [rows0dte, rows1dte] = await Promise.all([
+      withRetry(() => fetchStrikeExposure(apiKey, today)),
+      withRetry(() => fetchStrikeExposure(apiKey, tomorrow)),
+    ]);
 
-    if (rows.length === 0) {
+    if (rows0dte.length === 0 && rows1dte.length === 0) {
       return res
         .status(200)
-        .json({ stored: false, reason: 'No 0DTE strike data' });
+        .json({ stored: false, reason: 'No strike data' });
     }
 
-    const price = Number.parseFloat(rows[0]!.price);
-    const result = await withRetry(() => storeStrikes(rows, today));
+    const price = Number.parseFloat(
+      (rows0dte[0] ?? rows1dte[0])!.price,
+    );
+
+    // Store both expiries
+    const [result0dte, result1dte] = await Promise.all([
+      rows0dte.length > 0
+        ? withRetry(() => storeStrikes(rows0dte, today, today))
+        : { stored: 0, skipped: 0 },
+      rows1dte.length > 0
+        ? withRetry(() => storeStrikes(rows1dte, today, tomorrow))
+        : { stored: 0, skipped: 0 },
+    ]);
 
     logger.info(
       {
-        totalStrikes: rows.length,
-        filteredStrikes: result.stored + result.skipped,
-        stored: result.stored,
-        skipped: result.skipped,
+        dte0: {
+          total: rows0dte.length,
+          stored: result0dte.stored,
+          skipped: result0dte.skipped,
+        },
+        dte1: {
+          total: rows1dte.length,
+          stored: result1dte.stored,
+          skipped: result1dte.skipped,
+        },
         price,
         date: today,
       },
       'fetch-strike-exposure completed',
     );
 
-    // Data quality check: alert if all gamma values are null/zero
-    if (result.stored > 10) {
+    // Data quality check for 0DTE
+    if (result0dte.stored > 10) {
       const qcRows = await getDb()`
         SELECT COUNT(*) AS total,
                COUNT(*) FILTER (
@@ -189,18 +225,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         job: 'fetch-strike-exposure',
         table: 'strike_exposures',
         date: today,
-        sourceFilter: "expiry = today (0DTE)",
+        sourceFilter: 'expiry = today (0DTE)',
         total: Number(total),
         nonzero: Number(nonzero),
       });
     }
 
+    const totalStored = result0dte.stored + result1dte.stored;
+    const totalSkipped = result0dte.skipped + result1dte.skipped;
+
     return res.status(200).json({
       job: 'fetch-strike-exposure',
       success: true,
       price,
-      totalStrikes: rows.length,
-      ...result,
+      dte0: result0dte,
+      dte1: result1dte,
+      totalStored,
+      totalSkipped,
       durationMs: Date.now() - startTime,
     });
   } catch (err) {
