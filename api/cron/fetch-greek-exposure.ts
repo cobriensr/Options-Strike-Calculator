@@ -19,12 +19,14 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
+import {
+  uwFetch,
+  cronGuard,
+  checkDataQuality,
+  withRetry,
+} from '../_lib/api-helpers.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -57,33 +59,11 @@ interface ExpiryRow {
 // ── Fetch helpers ───────────────────────────────────────────
 
 async function fetchAggregate(apiKey: string): Promise<AggregateRow[]> {
-  const res = await fetch(`${UW_BASE}/stock/SPX/greek-exposure`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`UW aggregate API ${res.status}: ${text.slice(0, 200)}`);
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
+  return uwFetch<AggregateRow>(apiKey, '/stock/SPX/greek-exposure');
 }
 
 async function fetchByExpiry(apiKey: string): Promise<ExpiryRow[]> {
-  const res = await fetch(`${UW_BASE}/stock/SPX/greek-exposure/expiry`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`UW expiry API ${res.status}: ${text.slice(0, 200)}`);
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
+  return uwFetch<ExpiryRow>(apiKey, '/stock/SPX/greek-exposure/expiry');
 }
 
 // ── Store helpers ───────────────────────────────────────────
@@ -152,26 +132,9 @@ async function storeExpiryRows(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
-  }
-
-  const apiKey = process.env.UW_API_KEY;
-  if (!apiKey) {
-    logger.error('UW_API_KEY not configured');
-    return res.status(500).json({ error: 'UW_API_KEY not configured' });
-  }
+  const guard = cronGuard(req, res);
+  if (!guard) return;
+  const { apiKey, today } = guard;
 
   try {
     // Fetch aggregate and by-expiry in parallel; tolerate partial failures
@@ -236,9 +199,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     // Data quality check: alert if all gamma values are null/zero
-    const today = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
     const qcRows = await getDb()`
       SELECT COUNT(*) AS total,
              COUNT(*) FILTER (
@@ -249,17 +209,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       WHERE date = ${today} AND ticker = 'SPX'
     `;
     const { total: qcTotal, nonzero: qcNonzero } = qcRows[0]!;
-    if (Number(qcTotal) > 0 && Number(qcNonzero) === 0) {
-      Sentry.setTag('cron.job', 'fetch-greek-exposure');
-      Sentry.captureMessage(
-        `Data quality alert: greek_exposure has ${qcTotal} rows but ALL gamma values are null/zero for ${today}`,
-        'warning',
-      );
-      logger.warn(
-        { total: qcTotal, date: today },
-        'Greek exposure data quality: all gamma values null/zero',
-      );
-    }
+    await checkDataQuality({
+      job: 'fetch-greek-exposure',
+      table: 'greek_exposure',
+      date: today,
+      total: Number(qcTotal),
+      nonzero: Number(qcNonzero),
+      minRows: 0,
+    });
 
     if (!anyStored && partial) {
       return res.status(500).json({ error: 'All sources failed' });

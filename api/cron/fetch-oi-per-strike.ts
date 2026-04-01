@@ -14,12 +14,14 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
+import {
+  uwFetch,
+  cronGuard,
+  checkDataQuality,
+  withRetry,
+} from '../_lib/api-helpers.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -36,20 +38,7 @@ async function fetchOiPerStrike(
   apiKey: string,
   date: string,
 ): Promise<OiStrikeRow[]> {
-  const res = await fetch(`${UW_BASE}/stock/SPX/oi-per-strike?date=${date}`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(
-      `UW API ${res.status} for SPX OI per strike: ${text.slice(0, 200)}`,
-    );
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
+  return uwFetch<OiStrikeRow>(apiKey, `/stock/SPX/oi-per-strike?date=${date}`);
 }
 
 // ── Store helper ────────────────────────────────────────────
@@ -85,32 +74,11 @@ async function storeStrikes(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
-  }
+  const guard = cronGuard(req, res);
+  if (!guard) return;
+  const { apiKey, today } = guard;
 
   const startTime = Date.now();
-  const apiKey = process.env.UW_API_KEY;
-  if (!apiKey) {
-    logger.error('UW_API_KEY not configured');
-    return res.status(500).json({ error: 'UW_API_KEY not configured' });
-  }
-
-  // Get today's date in ET
-  const today = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
 
   try {
     // Skip if data already exists for today
@@ -138,17 +106,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE date = ${today}
       `;
       const { total, nonzero } = qcRows[0]!;
-      if (Number(total) > 10 && Number(nonzero) === 0) {
-        Sentry.setTag('cron.job', 'fetch-oi-per-strike');
-        Sentry.captureMessage(
-          `Data quality alert: oi_per_strike has ${total} rows but ALL OI values are zero for ${today}`,
-          'warning',
-        );
-        logger.warn(
-          { total, date: today },
-          'OI per strike data quality: all values zero',
-        );
-      }
+      await checkDataQuality({
+        job: 'fetch-oi-per-strike',
+        table: 'oi_per_strike',
+        date: today,
+        total: Number(total),
+        nonzero: Number(nonzero),
+      });
     }
 
     logger.info(

@@ -19,12 +19,15 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
+import {
+  uwFetch,
+  roundTo5Min,
+  cronGuard,
+  checkDataQuality,
+  withRetry,
+} from '../_lib/api-helpers.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -46,18 +49,7 @@ interface SpotExposureRow {
 // ── Fetch helper ────────────────────────────────────────────
 
 async function fetchSpotExposures(apiKey: string): Promise<SpotExposureRow[]> {
-  const res = await fetch(`${UW_BASE}/stock/SPX/spot-exposures`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
+  return uwFetch<SpotExposureRow>(apiKey, '/stock/SPX/spot-exposures');
 }
 
 // ── Sample to 5-min + store latest ──────────────────────────
@@ -71,9 +63,7 @@ async function storeLatest(
   const sampled = new Map<string, SpotExposureRow>();
   for (const row of rows) {
     const dt = new Date(row.start_time ?? row.time);
-    const minutes = dt.getMinutes();
-    const rounded = new Date(dt);
-    rounded.setMinutes(minutes - (minutes % 5), 0, 0);
+    const rounded = roundTo5Min(dt);
     sampled.set(rounded.toISOString(), row);
   }
 
@@ -116,36 +106,17 @@ async function storeLatest(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
-  }
+  const guard = cronGuard(req, res);
+  if (!guard) return;
+  const { apiKey, today } = guard;
 
   const startTime = Date.now();
-  const apiKey = process.env.UW_API_KEY;
-  if (!apiKey) {
-    logger.error('UW_API_KEY not configured');
-    return res.status(500).json({ error: 'UW_API_KEY not configured' });
-  }
 
   try {
     const rows = await withRetry(() => fetchSpotExposures(apiKey));
     const result = await withRetry(() => storeLatest(rows));
 
     // Data quality check: alert if all gamma_oi values are null/zero
-    const today = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
     const qcRows = await getDb()`
       SELECT COUNT(*) AS total,
              COUNT(*) FILTER (WHERE gamma_oi::numeric != 0) AS nonzero
@@ -153,17 +124,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       WHERE date = ${today} AND ticker = 'SPX'
     `;
     const { total, nonzero } = qcRows[0]!;
-    if (Number(total) > 10 && Number(nonzero) === 0) {
-      Sentry.setTag('cron.job', 'fetch-spot-gex');
-      Sentry.captureMessage(
-        `Data quality alert: spot_exposures has ${total} rows but ALL gamma_oi values are zero for ${today}`,
-        'warning',
-      );
-      logger.warn(
-        { total, date: today },
-        'Spot GEX data quality: all gamma_oi values zero',
-      );
-    }
+    await checkDataQuality({
+      job: 'fetch-spot-gex',
+      table: 'spot_exposures',
+      date: today,
+      total: Number(total),
+      nonzero: Number(nonzero),
+    });
 
     logger.info({ ticks: rows.length, ...result }, 'fetch-spot-gex completed');
 

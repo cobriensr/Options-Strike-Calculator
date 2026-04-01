@@ -19,19 +19,17 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
+import {
+  uwFetch,
+  roundTo5Min,
+  cronGuard,
+  checkDataQuality,
+  withRetry,
+} from '../_lib/api-helpers.js';
 
-const UW_BASE = 'https://api.unusualwhales.com/api';
 const ATM_RANGE = 200; // ±200 pts from ATM
-
-function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-}
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -70,21 +68,10 @@ async function fetchStrikeExposure(
     limit: '500',
   });
 
-  const res = await fetch(
-    `${UW_BASE}/stock/SPX/spot-exposures/expiry-strike?${params}`,
-    {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-    },
+  return uwFetch<StrikeRow>(
+    apiKey,
+    `/stock/SPX/spot-exposures/expiry-strike?${params}`,
   );
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
 }
 
 // ── Store helper ────────────────────────────────────────────
@@ -109,10 +96,7 @@ async function storeStrikes(
   if (filtered.length === 0) return { stored: 0, skipped: 0 };
 
   // Use the timestamp from the data, rounded to 5-min
-  const dataTime = new Date(rows[0]!.time);
-  const minutes = dataTime.getMinutes();
-  dataTime.setMinutes(minutes - (minutes % 5), 0, 0);
-  const timestamp = dataTime.toISOString();
+  const timestamp = roundTo5Min(new Date(rows[0]!.time)).toISOString();
 
   const sql = getDb();
 
@@ -160,29 +144,11 @@ async function storeStrikes(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
-  }
+  const guard = cronGuard(req, res);
+  if (!guard) return;
+  const { apiKey, today } = guard;
 
   const startTime = Date.now();
-  const apiKey = process.env.UW_API_KEY;
-  if (!apiKey) {
-    logger.error('UW_API_KEY not configured');
-    return res.status(500).json({ error: 'UW_API_KEY not configured' });
-  }
-
-  const today = getTodayET();
 
   try {
     const rows = await withRetry(() => fetchStrikeExposure(apiKey, today));
@@ -219,17 +185,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE date = ${today} AND expiry = ${today}
       `;
       const { total, nonzero } = qcRows[0]!;
-      if (Number(total) > 10 && Number(nonzero) === 0) {
-        Sentry.setTag('cron.job', 'fetch-strike-exposure');
-        Sentry.captureMessage(
-          `Data quality alert: strike_exposures (0DTE) has ${total} rows but ALL gamma values are zero for ${today}`,
-          'warning',
-        );
-        logger.warn(
-          { total, date: today },
-          'Strike exposure data quality: all gamma values zero',
-        );
-      }
+      await checkDataQuality({
+        job: 'fetch-strike-exposure',
+        table: 'strike_exposures',
+        date: today,
+        sourceFilter: "expiry = today (0DTE)",
+        total: Number(total),
+        nonzero: Number(nonzero),
+      });
     }
 
     return res.status(200).json({
