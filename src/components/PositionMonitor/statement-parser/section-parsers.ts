@@ -426,10 +426,7 @@ export function parseOptions(
   return { legs, hasMark };
 }
 
-export function parsePnL(
-  lines: string[],
-  bounds: SectionBounds,
-): PnLSummary {
+export function parsePnL(lines: string[], bounds: SectionBounds): PnLSummary {
   const entries: PnLEntry[] = [];
   let totals: PnLEntry | null = null;
 
