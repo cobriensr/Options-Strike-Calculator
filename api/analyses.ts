@@ -2,7 +2,7 @@
  * GET /api/analyses
  *
  * Browse past Claude chart analyses stored in Postgres.
- * No owner gating — this data is publicly accessible.
+ * Owner-gated — analysis output derives from licensed market data.
  * Rate limited to 30 requests per minute.
  *
  * Query params:
@@ -14,7 +14,11 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfRateLimited, checkBot } from './_lib/api-helpers.js';
+import {
+  rejectIfNotOwner,
+  rejectIfRateLimited,
+  checkBot,
+} from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 
@@ -51,6 +55,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (botCheck.isBot) {
     done({ status: 403 });
     return res.status(403).json({ error: 'Access denied' });
+  }
+
+  if (rejectIfNotOwner(req, res)) {
+    done({ status: 401 });
+    return;
   }
 
   const rateLimited = await rejectIfRateLimited(req, res, 'analyses', 30);

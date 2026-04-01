@@ -10,6 +10,7 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
+  rejectIfNotOwner: vi.fn(),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
@@ -25,7 +26,7 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 import handler from '../ml/prediction.js';
-import { checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -50,6 +51,7 @@ function makePredictionRow(overrides: Record<string, unknown> = {}) {
 describe('GET /api/ml/prediction', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockDbFn.mockReset();
   });
 
@@ -154,6 +156,18 @@ describe('GET /api/ml/prediction', () => {
 
     expect(res._status).toBe(405);
     expect(res._json).toEqual({ error: 'GET only' });
+  });
+
+  it('returns 401 when not owner', async () => {
+    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(401);
+    expect(mockDbFn).not.toHaveBeenCalled();
   });
 
   it('returns 403 when bot detected', async () => {

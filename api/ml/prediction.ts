@@ -8,14 +8,14 @@
  * Query params:
  *   date — Specific date to look up (YYYY-MM-DD). Defaults to today.
  *
- * Public endpoint — predictions are non-sensitive summary data.
+ * Owner-gated — predictions derive from licensed market data.
  *
- * Environment: DATABASE_URL
+ * Environment: DATABASE_URL, OWNER_SECRET
  */
 
 import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
@@ -31,6 +31,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (botCheck.isBot) {
     done({ status: 403 });
     return res.status(403).json({ error: 'Access denied' });
+  }
+
+  if (rejectIfNotOwner(req, res)) {
+    done({ status: 401 });
+    return;
   }
 
   const dateParam = req.query.date as string | undefined;

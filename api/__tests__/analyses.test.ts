@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
+  rejectIfNotOwner: vi.fn(),
   rejectIfRateLimited: vi.fn(),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
@@ -18,11 +19,12 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../analyses.js';
-import { rejectIfRateLimited } from '../_lib/api-helpers.js';
+import { rejectIfNotOwner, rejectIfRateLimited } from '../_lib/api-helpers.js';
 
 describe('GET /api/analyses', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
     mockSql.mockReset();
   });
@@ -32,6 +34,17 @@ describe('GET /api/analyses', () => {
     await handler(mockRequest({ method: 'POST' }), res);
     expect(res._status).toBe(405);
     expect(res._json).toEqual({ error: 'GET only' });
+  });
+
+  it('returns 401 when not owner', async () => {
+    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(401);
+    expect(mockSql).not.toHaveBeenCalled();
   });
 
   it('returns early when rate limited', async () => {
