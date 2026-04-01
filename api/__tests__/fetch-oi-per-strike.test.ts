@@ -26,13 +26,21 @@ vi.mock('../_lib/sentry.js', () => ({
   },
 }));
 
-vi.mock('../_lib/api-helpers.js', () => ({
-  isMarketHours: vi.fn(() => true),
-  withRetry: vi.fn((fn: () => unknown) => fn()),
-}));
+vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../_lib/api-helpers.js')
+  >();
+  return {
+    ...actual,
+    isMarketHours: vi.fn(() => true),
+    withRetry: vi.fn((fn: () => unknown) => fn()),
+  };
+});
 
 vi.mock('../_lib/constants.js', () => ({
-  TIMEOUTS: { UW_API: 15_000 },
+  TIMEOUTS: { UW_API: 15_000, SCHWAB_API: 30_000, DEFAULT: 10_000 },
+  MARKET_MINUTES: { OPEN: 570, CLOSE: 960 },
+  UW_BASE: 'https://api.unusualwhales.com/api',
 }));
 
 // ── Handler import (after mocks) ───────────────────────────
@@ -128,13 +136,14 @@ describe('fetch-oi-per-strike handler', () => {
   // ── Market hours guard ──────────────────────────────────
 
   it('skips outside market hours', async () => {
-    vi.mocked(isMarketHours).mockReturnValue(false);
+    // Set time outside market hours (6:00 AM ET) so real cronGuard skips
+    vi.setSystemTime(new Date('2026-03-24T11:00:00.000Z'));
     const res = mockResponse();
     await handler(authRequest(), res);
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside market hours',
+      reason: 'Outside time window',
     });
   });
 

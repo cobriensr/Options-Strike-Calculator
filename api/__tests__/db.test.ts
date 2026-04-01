@@ -1559,4 +1559,3 @@ describe('saveDarkPoolSnapshot', () => {
     expect(id).toBeNull();
   });
 });
-

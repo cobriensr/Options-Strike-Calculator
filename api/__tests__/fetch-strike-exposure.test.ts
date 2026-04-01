@@ -165,7 +165,7 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside market hours',
+      reason: 'Outside time window',
     });
   });
 
@@ -213,10 +213,11 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._json).toMatchObject({
       success: true,
       price: 5800.5,
-      stored: 1,
-      skipped: 0,
+      totalStored: 2,
+      totalSkipped: 0,
     });
-    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    // 2 transactions: one for 0DTE, one for 1DTE
+    expect(mockTransaction).toHaveBeenCalledTimes(2);
   });
 
   it('returns correct response for empty API data', async () => {
@@ -233,21 +234,24 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       stored: false,
-      reason: 'No 0DTE strike data',
+      reason: 'No strike data',
     });
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Override: all rows conflict (DO NOTHING returns empty)
-    mockTransaction.mockImplementationOnce(
-      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
-        const txnFn = () => ({});
-        const queries = fn(txnFn);
-        return queries.map(() => []);
-      },
-    );
+    // Override: all rows conflict (DO NOTHING returns empty) for both 0DTE and 1DTE
+    const conflictImpl = async (
+      fn: (txn: (...args: unknown[]) => unknown) => unknown[],
+    ) => {
+      const txnFn = () => ({});
+      const queries = fn(txnFn);
+      return queries.map(() => []);
+    };
+    mockTransaction
+      .mockImplementationOnce(conflictImpl)
+      .mockImplementationOnce(conflictImpl);
     stubFetch([makeStrikeRow()]);
 
     const req = mockRequest({
@@ -259,8 +263,8 @@ describe('fetch-strike-exposure handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      stored: 0,
-      skipped: 1,
+      totalStored: 0,
+      totalSkipped: 2,
     });
   });
 
@@ -281,11 +285,11 @@ describe('fetch-strike-exposure handler', () => {
     // Only the near strike (5800) should be stored; 6100 is >200 pts away
     expect(res._json).toMatchObject({
       success: true,
-      totalStrikes: 2,
-      stored: 1,
-      skipped: 0,
+      totalStored: 2,
+      totalSkipped: 0,
     });
-    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    // 2 transactions: one per expiry
+    expect(mockTransaction).toHaveBeenCalledTimes(2);
   });
 
   // ── Error handling ────────────────────────────────────────
@@ -332,7 +336,10 @@ describe('fetch-strike-exposure handler', () => {
 
   it('handles batch insert errors gracefully and logs warning', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    mockTransaction.mockRejectedValueOnce(new Error('DB batch insert failed'));
+    // Both 0DTE and 1DTE transactions fail
+    mockTransaction
+      .mockRejectedValueOnce(new Error('DB batch insert failed'))
+      .mockRejectedValueOnce(new Error('DB batch insert failed'));
     stubFetch([makeStrikeRow()]);
 
     const req = mockRequest({
@@ -345,8 +352,8 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       success: true,
-      stored: 0,
-      skipped: 1,
+      totalStored: 0,
+      totalSkipped: 2,
     });
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),

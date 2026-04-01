@@ -54,7 +54,8 @@ describe('fetch-economic-calendar handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([]);
+    // Default: return a row satisfying data-quality SELECT shapes
+    mockSql.mockResolvedValue([{ total: 0, has_name: 0 }]);
     process.env = { ...originalEnv };
     vi.setSystemTime(PREMARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -136,7 +137,7 @@ describe('fetch-economic-calendar handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside pre-market window',
+      reason: 'Outside time window',
     });
   });
 
@@ -256,8 +257,8 @@ describe('fetch-economic-calendar handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ eventsStored: 9 });
 
-    // Verify each SQL call was made with the right event_type
-    expect(mockSql).toHaveBeenCalledTimes(9);
+    // 9 INSERTs + 1 data-quality SELECT = 10
+    expect(mockSql).toHaveBeenCalledTimes(10);
 
     const expectedTypes = [
       'CPI',
@@ -303,8 +304,8 @@ describe('fetch-economic-calendar handler', () => {
       eventsStored: 1,
       events: ['CPI'],
     });
-    // Only one INSERT for today's event
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // 1 INSERT + 1 data-quality SELECT = 2
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
   // ── Error handling ────────────────────────────────────────

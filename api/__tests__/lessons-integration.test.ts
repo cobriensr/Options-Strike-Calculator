@@ -70,16 +70,23 @@ vi.mock('../_lib/embeddings.js', () => ({
 }));
 
 // --- API helpers mock (for analyze handler) ---
-vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn().mockReturnValue(false),
-  rejectIfRateLimited: vi.fn().mockResolvedValue(false),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
-}));
+vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../_lib/api-helpers.js')
+  >();
+  return {
+    ...actual,
+    rejectIfNotOwner: vi.fn().mockReturnValue(false),
+    rejectIfRateLimited: vi.fn().mockResolvedValue(false),
+    checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  };
+});
 
 // --- Logger mock ---
 vi.mock('../_lib/logger.js', () => ({
   default: {
     info: vi.fn(),
+    warn: vi.fn(),
     error: vi.fn(),
   },
 }));

@@ -133,9 +133,11 @@ describe('formatMaxPainForClaude', () => {
     expect(formatMaxPainForClaude([], DATE)).toBeNull();
   });
 
-  it('returns null when no 0DTE entry matches analysisDate', () => {
+  it('falls back to nearest monthly when no 0DTE entry matches analysisDate', () => {
     const entries = [{ expiry: '2026-03-26', max_pain: '5720' }];
-    expect(formatMaxPainForClaude(entries, DATE)).toBeNull();
+    const result = formatMaxPainForClaude(entries, DATE);
+    // Now falls back to nearest monthly instead of returning null
+    expect(result).toContain('Max Pain (nearest monthly (2026-03-26)): 5720');
   });
 
   it('returns null when max_pain is not a valid number', () => {
@@ -147,7 +149,7 @@ describe('formatMaxPainForClaude', () => {
     const entries = [{ expiry: '2026-03-24', max_pain: '5700' }];
     const result = formatMaxPainForClaude(entries, DATE);
 
-    expect(result).toContain('0DTE Max Pain: 5700');
+    expect(result).toContain('Max Pain (0DTE): 5700');
     expect(result).not.toContain('SPX at');
   });
 

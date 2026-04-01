@@ -76,7 +76,8 @@ describe('fetch-greek-exposure handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default: return a row satisfying INSERT RETURNING and data-quality shapes
+    mockSql.mockResolvedValue([{ id: 1, total: 0, nonzero: 0, qcTotal: 0, qcNonzero: 0 }]);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -158,7 +159,7 @@ describe('fetch-greek-exposure handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside market hours',
+      reason: 'Outside time window',
     });
   });
 
@@ -209,8 +210,8 @@ describe('fetch-greek-exposure handler', () => {
       stored: 1,
       skipped: 0,
     });
-    // 1 aggregate insert + 1 expiry insert = 2
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // 1 aggregate insert + 1 expiry insert + 1 data-quality = 3
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   it('handles empty aggregate with expiry rows', async () => {
@@ -230,8 +231,8 @@ describe('fetch-greek-exposure handler', () => {
       expiries: 1,
       stored: 1,
     });
-    // Only 1 expiry insert, no aggregate
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // 1 expiry insert + 1 data-quality = 2
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
   it('returns zeros for empty API responses', async () => {
@@ -252,13 +253,16 @@ describe('fetch-greek-exposure handler', () => {
       stored: 0,
       skipped: 0,
     });
-    expect(mockSql).not.toHaveBeenCalled();
+    // Only data-quality SELECT runs (1 call)
+    expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Empty result = ON CONFLICT DO NOTHING (duplicate)
-    mockSql.mockResolvedValue([]);
+    // Empty result = ON CONFLICT DO NOTHING (duplicate); keep data-quality row
+    mockSql
+      .mockResolvedValueOnce([])                              // expiry INSERT (conflict)
+      .mockResolvedValue([{ total: 0, nonzero: 0 }]);        // data-quality SELECT
     stubFetch([], [makeExpiryRow()]);
 
     const req = mockRequest({

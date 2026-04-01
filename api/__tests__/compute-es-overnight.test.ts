@@ -17,9 +17,15 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: { setTag: vi.fn(), captureException: vi.fn() },
 }));
 
-vi.mock('../_lib/api-helpers.js', () => ({
-  schwabFetch: vi.fn(),
-}));
+vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../_lib/api-helpers.js')
+  >();
+  return {
+    ...actual,
+    schwabFetch: vi.fn(),
+  };
+});
 
 import handler from '../cron/compute-es-overnight.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
@@ -142,7 +148,7 @@ describe('compute-es-overnight handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Before cash open (9:30 AM ET)',
+      reason: 'Outside time window',
     });
   });
 

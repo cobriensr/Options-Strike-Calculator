@@ -164,7 +164,7 @@ describe('fetch-strike-all handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside market hours',
+      reason: 'Outside time window',
     });
   });
 

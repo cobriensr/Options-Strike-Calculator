@@ -30,6 +30,7 @@ vi.mock('../_lib/embeddings.js', () => ({
 vi.mock('../_lib/logger.js', () => ({
   default: {
     info: vi.fn(),
+    warn: vi.fn(),
     error: vi.fn(),
   },
 }));

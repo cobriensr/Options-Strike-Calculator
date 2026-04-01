@@ -42,7 +42,9 @@ describe('fetch-flow handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([]);
+    // Default: return a row that satisfies both data-quality SELECT
+    // shapes (handler destructures rows[0]!) and any INSERT.
+    mockSql.mockResolvedValue([{ total: 0, nonzero: 0 }]);
     process.env = { ...originalEnv };
     // Default: market hours, API key set, no cron secret
     vi.setSystemTime(MARKET_TIME);
@@ -132,7 +134,7 @@ describe('fetch-flow handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside market hours',
+      reason: 'Outside time window',
     });
   });
 
@@ -189,8 +191,8 @@ describe('fetch-flow handler', () => {
       market_tide: { stored: true, timestamp: row.timestamp },
       market_tide_otm: { stored: true, timestamp: row.timestamp },
     });
-    // Two INSERT calls (one per source)
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // Two INSERT calls (one per source) + 2 data-quality SELECTs
+    expect(mockSql).toHaveBeenCalledTimes(4);
     vi.unstubAllGlobals();
   });
 
@@ -217,7 +219,8 @@ describe('fetch-flow handler', () => {
       market_tide: { stored: false },
       market_tide_otm: { stored: false },
     });
-    expect(mockSql).not.toHaveBeenCalled();
+    // No INSERTs, but 2 data-quality SELECTs still run
+    expect(mockSql).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
 

@@ -59,7 +59,8 @@ describe('fetch-spot-gex handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([]);
+    // Default: return a row satisfying data-quality SELECT shapes
+    mockSql.mockResolvedValue([{ total: 0, nonzero: 0 }]);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -141,7 +142,7 @@ describe('fetch-spot-gex handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside market hours',
+      reason: 'Outside time window',
     });
   });
 
@@ -191,7 +192,8 @@ describe('fetch-spot-gex handler', () => {
       stored: true,
       timestamp: expect.any(String),
     });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // 1 INSERT + 1 data-quality SELECT = 2
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
   it('samples multiple rows to 5-min intervals and stores latest', async () => {
@@ -216,8 +218,8 @@ describe('fetch-spot-gex handler', () => {
       ticks: 4,
       stored: true,
     });
-    // Only stores the latest 5-min candle
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // 1 INSERT (latest 5-min candle) + 1 data-quality = 2
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
   it('returns stored false for empty API response', async () => {
@@ -236,7 +238,8 @@ describe('fetch-spot-gex handler', () => {
       ticks: 0,
       stored: false,
     });
-    expect(mockSql).not.toHaveBeenCalled();
+    // No INSERTs, but 1 data-quality SELECT still runs
+    expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
   it('uses time field when start_time is absent', async () => {
@@ -254,7 +257,8 @@ describe('fetch-spot-gex handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ stored: true });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // 1 INSERT + 1 data-quality = 2
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
   // ── Error handling ────────────────────────────────────────

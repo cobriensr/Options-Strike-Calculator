@@ -61,7 +61,9 @@ describe('fetch-net-flow handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([]);
+    // Default: return a row that satisfies both INSERT RETURNING and
+    // data-quality SELECT shapes (the handler destructures rows[0]!).
+    mockSql.mockResolvedValue([{ id: 1, total: 0, nonzero: 0 }]);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -143,7 +145,7 @@ describe('fetch-net-flow handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       skipped: true,
-      reason: 'Outside market hours',
+      reason: 'Outside time window',
     });
   });
 
@@ -194,8 +196,8 @@ describe('fetch-net-flow handler', () => {
     // 3 fetch calls — one per ticker (SPX, SPY, QQQ)
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(3);
 
-    // 3 SQL inserts — one latest candle per ticker
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    // 3 SQL inserts (one per ticker) + 3 data-quality SELECTs = 6
+    expect(mockSql).toHaveBeenCalledTimes(6);
   });
 
   it('includes all 3 sources in results', async () => {
@@ -211,11 +213,11 @@ describe('fetch-net-flow handler', () => {
     await handler(req, res);
 
     const { results } = res._json as {
-      results: Record<string, { stored: boolean }>;
+      results: Record<string, { stored: number }>;
     };
-    expect(results.spx_flow).toMatchObject({ stored: true });
-    expect(results.spy_flow).toMatchObject({ stored: true });
-    expect(results.qqq_flow).toMatchObject({ stored: true });
+    expect(results.spx_flow).toMatchObject({ stored: 1 });
+    expect(results.spy_flow).toMatchObject({ stored: 1 });
+    expect(results.qqq_flow).toMatchObject({ stored: 1 });
   });
 
   it('returns stored: false for empty API responses', async () => {
@@ -231,12 +233,13 @@ describe('fetch-net-flow handler', () => {
 
     expect(res._status).toBe(200);
     const { results } = res._json as {
-      results: Record<string, { stored: boolean }>;
+      results: Record<string, { stored: number }>;
     };
-    expect(results.spx_flow).toMatchObject({ stored: false });
-    expect(results.spy_flow).toMatchObject({ stored: false });
-    expect(results.qqq_flow).toMatchObject({ stored: false });
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(results.spx_flow).toMatchObject({ stored: 0 });
+    expect(results.spy_flow).toMatchObject({ stored: 0 });
+    expect(results.qqq_flow).toMatchObject({ stored: 0 });
+    // No inserts, only 3 data-quality SELECTs
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   it('returns stored: false when API response has no data field', async () => {
@@ -258,9 +261,9 @@ describe('fetch-net-flow handler', () => {
 
     expect(res._status).toBe(200);
     const { results } = res._json as {
-      results: Record<string, { stored: boolean }>;
+      results: Record<string, { stored: number }>;
     };
-    expect(results.spx_flow).toMatchObject({ stored: false });
+    expect(results.spx_flow).toMatchObject({ stored: 0 });
   });
 
   // ── Cumulation logic ──────────────────────────────────────
@@ -297,10 +300,10 @@ describe('fetch-net-flow handler', () => {
     expect(res._status).toBe(200);
     // Both ticks fall in the 14:00 window, so the stored candle should have
     // cumulated values: ncp = 100000+200000 = 300000, npp = -50000+-100000 = -150000
-    // The tagged template call args include the cumulated values
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    // 3 inserts (one per ticker) + 3 data-quality SELECTs = 6
+    expect(mockSql).toHaveBeenCalledTimes(6);
 
-    // Check one of the SQL calls has the cumulated ncp value
+    // Check the first SQL call (an INSERT) has the cumulated ncp value
     const firstCall = mockSql.mock.calls[0]!;
     // Tagged template: strings array + interpolated values
     // Values are: date, timestamp, source, ncp, npp, netVolume
@@ -340,9 +343,9 @@ describe('fetch-net-flow handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // Two 5-min windows (14:00, 14:05) but storeLatestCandle only stores
-    // the LAST candle, so only 1 insert per ticker
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    // Two 5-min windows (14:00, 14:05): storeAllCandles stores 2 candles
+    // per ticker → 3 tickers × 2 = 6 inserts + 3 data-quality SELECTs = 9
+    expect(mockSql).toHaveBeenCalledTimes(9);
   });
 
   // ── Error handling ────────────────────────────────────────
@@ -392,7 +395,7 @@ describe('fetch-net-flow handler', () => {
             json: async () => ({ data: [makeNetPremTick()] }),
           };
         }
-        throw new Error('Network timeout');
+        throw new Error('Parse error');
       }),
     );
 

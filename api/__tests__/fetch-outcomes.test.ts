@@ -6,12 +6,24 @@ import { mockRequest, mockResponse } from './helpers';
 // Use vi.hoisted so mocks are available when vi.mock factories run (hoisted above imports)
 const mockSaveOutcome = vi.hoisted(() => vi.fn());
 
-vi.mock('../_lib/api-helpers.js', () => ({
-  schwabFetch: vi.fn(),
-}));
+vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../_lib/api-helpers.js')
+  >();
+  return {
+    ...actual,
+    schwabFetch: vi.fn(),
+    // Use passthrough withRetry to avoid fake-timer delays
+    withRetry: vi.fn((fn: () => unknown) => fn()),
+  };
+});
 
+const mockSql = vi.hoisted(() =>
+  vi.fn().mockResolvedValue([{ settlement: 5700 }]),
+);
 vi.mock('../_lib/db.js', () => ({
   saveOutcome: mockSaveOutcome,
+  getDb: vi.fn(() => mockSql),
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -81,6 +93,8 @@ describe('fetch-outcomes handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Restore mockSql default (resetAllMocks clears it)
+    mockSql.mockResolvedValue([{ settlement: 5700 }]);
     process.env = { ...originalEnv };
     vi.setSystemTime(CLOSE_WINDOW_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -146,7 +160,7 @@ describe('fetch-outcomes handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
       skipped: true,
-      reason: 'Outside post-close window (4:15-5:30 PM ET)',
+      reason: 'Outside time window',
     });
     expect(mockedSchwabFetch).not.toHaveBeenCalled();
   });
