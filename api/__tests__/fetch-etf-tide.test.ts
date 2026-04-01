@@ -165,6 +165,8 @@ describe('fetch-etf-tide handler', () => {
   it('stores the latest candle from each ticker and returns 200', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();
+    // Mock INSERT ... RETURNING id to indicate a successful insert
+    mockSql.mockResolvedValue([{ id: 1 }]);
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -182,10 +184,10 @@ describe('fetch-etf-tide handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      stored: true,
+      job: 'fetch-etf-tide',
       results: {
-        spy_etf_tide: { stored: true },
-        qqq_etf_tide: { stored: true },
+        spy_etf_tide: { stored: 1 },
+        qqq_etf_tide: { stored: 1 },
       },
     });
     // Two INSERT calls (one per ticker)
@@ -212,10 +214,10 @@ describe('fetch-etf-tide handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      stored: true,
+      job: 'fetch-etf-tide',
       results: {
-        spy_etf_tide: { stored: false },
-        qqq_etf_tide: { stored: false },
+        spy_etf_tide: { stored: 0 },
+        qqq_etf_tide: { stored: 0 },
       },
     });
     expect(mockSql).not.toHaveBeenCalled();
@@ -242,8 +244,8 @@ describe('fetch-etf-tide handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       results: {
-        spy_etf_tide: { stored: false },
-        qqq_etf_tide: { stored: false },
+        spy_etf_tide: { stored: 0 },
+        qqq_etf_tide: { stored: 0 },
       },
     });
     vi.unstubAllGlobals();
@@ -254,6 +256,8 @@ describe('fetch-etf-tide handler', () => {
   it('handles individual ticker failure gracefully', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();
+    // QQQ succeeds so the INSERT RETURNING should return a row
+    mockSql.mockResolvedValue([{ id: 1 }]);
     let callCount = 0;
     vi.stubGlobal(
       'fetch',
@@ -276,10 +280,10 @@ describe('fetch-etf-tide handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      stored: true,
+      job: 'fetch-etf-tide',
       results: {
-        spy_etf_tide: { stored: false },
-        qqq_etf_tide: { stored: true },
+        spy_etf_tide: { stored: 0 },
+        qqq_etf_tide: { stored: 1 },
       },
     });
     vi.unstubAllGlobals();
@@ -303,8 +307,8 @@ describe('fetch-etf-tide handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       results: {
-        spy_etf_tide: { stored: false },
-        qqq_etf_tide: { stored: false },
+        spy_etf_tide: { stored: 0 },
+        qqq_etf_tide: { stored: 0 },
       },
     });
     vi.unstubAllGlobals();

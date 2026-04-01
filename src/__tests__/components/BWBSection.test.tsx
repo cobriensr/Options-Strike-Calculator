@@ -342,14 +342,14 @@ describe('BWBSection', () => {
   it('shows export button', () => {
     renderSection();
     expect(
-      screen.getByRole('button', { name: 'Export BWB comparison to Excel' }),
+      screen.getByRole('button', { name: 'Export All BWB Widths to Excel' }),
     ).toBeInTheDocument();
   });
 
   it('export button has correct text', () => {
     renderSection();
     const btn = screen.getByRole('button', {
-      name: 'Export BWB comparison to Excel',
+      name: 'Export All BWB Widths to Excel',
     });
     expect(btn).toHaveTextContent('Export All BWB Widths to Excel');
   });

@@ -123,7 +123,7 @@ describe('IronCondorSection', () => {
   it('shows export button', () => {
     renderSection();
     expect(
-      screen.getByRole('button', { name: 'Export P&L comparison to Excel' }),
+      screen.getByRole('button', { name: 'Export All Wing Widths to Excel' }),
     ).toBeInTheDocument();
   });
 
@@ -298,7 +298,7 @@ describe('IronCondorSection', () => {
     renderSection();
 
     const btn = screen.getByRole('button', {
-      name: 'Export P&L comparison to Excel',
+      name: 'Export All Wing Widths to Excel',
     });
 
     // Click should not throw — the dynamic import fires but we don't
@@ -312,7 +312,7 @@ describe('IronCondorSection', () => {
   it('export button has correct label and text', () => {
     renderSection();
     const btn = screen.getByRole('button', {
-      name: 'Export P&L comparison to Excel',
+      name: 'Export All Wing Widths to Excel',
     });
     expect(btn).toHaveTextContent('⤓');
     expect(btn).toHaveTextContent('Export All Wing Widths to Excel');
@@ -476,7 +476,7 @@ describe('IronCondorSection', () => {
       renderSection();
 
       const exportBtn = screen.getByRole('button', {
-        name: 'Export P&L comparison to Excel',
+        name: 'Export All Wing Widths to Excel',
       });
       await user.click(exportBtn);
 
@@ -497,7 +497,7 @@ describe('IronCondorSection', () => {
       renderSection();
 
       const exportBtn = screen.getByRole('button', {
-        name: 'Export P&L comparison to Excel',
+        name: 'Export All Wing Widths to Excel',
       });
       await user.click(exportBtn);
 
