@@ -120,8 +120,19 @@ export const snapshotBodySchema = z.object({
   // Overnight
   overnightGap: num,
 
-  // Strikes
-  strikes: z.record(z.string(), z.unknown()).nullable().optional(),
+  // Strikes (keyed by delta, e.g. "5", "10", "15")
+  strikes: z
+    .record(
+      z.string(),
+      z.object({
+        put: z.number(),
+        call: z.number(),
+        putPct: z.number(),
+        callPct: z.number(),
+      }),
+    )
+    .nullable()
+    .optional(),
 
   // Events
   isEarlyClose: bool,

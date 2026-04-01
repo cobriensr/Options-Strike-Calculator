@@ -160,14 +160,19 @@ const LOCK_KEY = 'schwab:refresh_lock';
 const LOCK_TTL = 30; // seconds — must be >= SCHWAB_API timeout
 
 async function acquireLock(): Promise<boolean> {
-  try {
-    const result = await redis.set(LOCK_KEY, '1', { nx: true, ex: LOCK_TTL });
-    return result === 'OK';
-  } catch (err) {
-    logger.warn({ err }, 'Redis acquireLock failed, proceeding anyway');
-    metrics.increment('redis.error');
-    return true; // If Redis fails, proceed anyway
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const result = await redis.set(LOCK_KEY, '1', { nx: true, ex: LOCK_TTL });
+      return result === 'OK';
+    } catch (err) {
+      logger.warn({ err, attempt }, 'Redis acquireLock attempt failed');
+      metrics.increment('redis.error');
+      if (attempt < 2)
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+    }
   }
+  logger.error('acquireLock: all retries exhausted, proceeding without lock');
+  return true;
 }
 
 async function releaseLock(): Promise<void> {

@@ -213,6 +213,7 @@ function parseEntryTimeMinutes(t: string): number {
   if (!m) return NaN;
   let h = parseInt(m[1]!, 10);
   const min = parseInt(m[2]!, 10);
+  if (h < 1 || h > 12 || min < 0 || min > 59) return NaN;
   const isPm = m[3]!.toUpperCase() === 'PM';
   if (isPm && h !== 12) h += 12;
   else if (!isPm && h === 12) h = 0;
