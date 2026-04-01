@@ -1,0 +1,32 @@
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+  "--tb=short",
+  "--strict-markers",
+  "-q",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+  ".venv/*",
+  "test_*.py",
+  "__pycache__/*",
+  "experiments/*",
+  "plots/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+precision = 1
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.",
+  "if TYPE_CHECKING:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"

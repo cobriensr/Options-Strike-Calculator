@@ -23,10 +23,10 @@ requests==2.32.5
 scikit-learn==1.8.0
 scipy==1.17.1
 seaborn==0.13.2
-shap>=0.45shap>=0.45
+shap>=0.45
 six==1.17.0
 statsmodels==0.14.6
 threadpoolctl==3.6.0
 urllib3==2.6.3
 xgboost>=2.1
-xgboost>=2.1
+pytest-cov>=6.0

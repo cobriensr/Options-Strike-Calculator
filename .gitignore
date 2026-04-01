@@ -51,6 +51,8 @@ ml/.venv/
 ml/*.csv
 ml/__pycache__/
 ml/.pytest_cache/
+ml/htmlcov/
+ml/.coverage
 
 # Superpowers
 .superpowers/
