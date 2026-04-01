@@ -12,26 +12,15 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
-import { schwabFetch } from '../_lib/api-helpers.js';
+import { schwabFetch, cronGuard } from '../_lib/api-helpers.js';
+import { getETTime } from '../../src/utils/timezone.js';
 
 // ── Time helpers ────────────────────────────────────────────
 
-function getETNow(): Date {
-  return new Date(
-    new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
-  );
-}
-
 function isAfterCashOpen(): boolean {
-  const et = getETNow();
-  const totalMin = et.getHours() * 60 + et.getMinutes();
+  const { hour, minute } = getETTime(new Date());
+  const totalMin = hour * 60 + minute;
   return totalMin >= 570; // 9:30 AM
-}
-
-function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
 }
 
 /**
@@ -136,24 +125,15 @@ function computeFillScore(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!isAfterCashOpen()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Before cash open (9:30 AM ET)' });
-  }
+  const guard = cronGuard(req, res, {
+    timeCheck: isAfterCashOpen,
+    requireApiKey: false,
+  });
+  if (!guard) return;
+  const { today: tradeDate } = guard;
 
   const startTime = Date.now();
   const sql = getDb();
-  const tradeDate = getTodayET();
 
   try {
     // 1. Query overnight bars

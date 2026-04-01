@@ -15,6 +15,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { cronGuard } from '../_lib/api-helpers.js';
 import {
   getETTime,
   getETDayOfWeek,
@@ -1428,30 +1429,20 @@ async function upsertLabels(l: FeatureRow): Promise<void> {
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
   const backfill = req.query.backfill === 'true';
 
-  if (!backfill && !isPostClose()) {
-    return res.status(200).json({
-      skipped: true,
-      reason: 'Outside post-close window (4:30-6:00 PM ET)',
-    });
-  }
+  const guard = cronGuard(req, res, {
+    timeCheck: backfill ? () => true : isPostClose,
+    requireApiKey: false,
+  });
+  if (!guard) return;
 
   const startTime = Date.now();
   const sql = getDb();
   await sql`SET statement_timeout = '30000'`; // 30s per statement
 
   // Diagnostic: log flow_data coverage for today before doing any work
-  const today = new Date().toISOString().slice(0, 10);
+  const today = guard.today;
   const coverage = await sql`
     SELECT source, COUNT(*) as rows
     FROM flow_data

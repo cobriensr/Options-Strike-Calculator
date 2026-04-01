@@ -17,7 +17,12 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { schwabFetch, withRetry } from '../_lib/api-helpers.js';
+import {
+  schwabFetch,
+  withRetry,
+  cronGuard,
+  checkDataQuality,
+} from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import { saveOutcome, getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
@@ -74,32 +79,26 @@ interface QuotesResponse {
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const backfill = req.query.backfill === 'true';
-
-  if (backfill) {
+  if (req.query.backfill === 'true') {
+    // Backfill bypasses time check but still needs auth — check method + secret only
+    const guard = cronGuard(req, res, {
+      marketHours: false,
+      requireApiKey: false,
+    });
+    if (!guard) return;
     return handleBackfill(res);
   }
 
   const force = req.query.force === 'true';
-  if (!force && !isAfterClose()) {
-    return res.status(200).json({
-      skipped: true,
-      reason: 'Outside post-close window (4:15-5:30 PM ET)',
-    });
-  }
+  const guard = cronGuard(req, res, {
+    timeCheck: force ? () => true : isAfterClose,
+    requireApiKey: false,
+  });
+  if (!guard) return;
+  const { today: dateStr } = guard;
 
   const startTime = Date.now();
   const now = new Date();
-  const dateStr = getETDateStr(now);
 
   try {
     // Fetch SPX intraday candles for today
@@ -175,17 +174,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const qcRows = await getDb()`
       SELECT settlement FROM outcomes WHERE date = ${dateStr}
     `;
-    if (qcRows.length > 0 && qcRows[0]!.settlement == null) {
-      Sentry.setTag('cron.job', 'fetch-outcomes');
-      Sentry.captureMessage(
-        `Data quality alert: outcomes row for ${dateStr} has NULL settlement — ML pipeline will break`,
-        'warning',
-      );
-      logger.warn(
-        { date: dateStr },
-        'Outcomes data quality: settlement is null',
-      );
-    }
+    const hasSettlement = qcRows.length > 0 && qcRows[0]!.settlement != null;
+    await checkDataQuality({
+      job: 'fetch-outcomes',
+      table: 'outcomes',
+      date: dateStr,
+      total: qcRows.length,
+      nonzero: hasSettlement ? 1 : 0,
+      minRows: 0,
+    });
 
     logger.info(
       {

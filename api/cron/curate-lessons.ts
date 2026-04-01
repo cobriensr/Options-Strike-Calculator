@@ -22,6 +22,7 @@ import {
 import { generateEmbedding, findSimilarLessons } from '../_lib/embeddings.js';
 import type { SimilarLesson } from '../_lib/embeddings.js';
 import logger from '../_lib/logger.js';
+import { cronGuard } from '../_lib/api-helpers.js';
 
 export const config = { maxDuration: 780 };
 
@@ -108,16 +109,11 @@ interface PreparedLesson {
 // ============================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Method check — Vercel crons use GET
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  // Auth check
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+  const guard = cronGuard(req, res, {
+    marketHours: false,
+    requireApiKey: false,
+  });
+  if (!guard) return;
 
   try {
     // Step 0: Bootstrap report
@@ -603,13 +599,13 @@ Respond with JSON:
       !parsed.action ||
       !['add', 'supersede', 'skip'].includes(parsed.action)
     ) {
-      console.error('Invalid curation action:', rawText.slice(0, 200));
+      logger.error('Invalid curation action: %s', rawText.slice(0, 200));
       return null;
     }
 
     return parsed;
   } catch {
-    console.error('Failed to parse curation JSON:', rawText.slice(0, 200));
+    logger.error('Failed to parse curation JSON: %s', rawText.slice(0, 200));
     return null;
   }
 }

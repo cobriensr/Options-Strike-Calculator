@@ -14,17 +14,19 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { withRetry } from '../_lib/api-helpers.js';
+import {
+  cronGuard,
+  uwFetch,
+  withRetry,
+  checkDataQuality,
+} from '../_lib/api-helpers.js';
 import {
   getETTime,
   getETDayOfWeek,
   getETDateStr,
 } from '../../src/utils/timezone.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -65,55 +67,22 @@ function categorizeEvent(eventName: string): string {
   return 'OTHER';
 }
 
-// ── Fetch helper ────────────────────────────────────────────
-
-async function fetchCalendar(apiKey: string): Promise<CalendarEvent[]> {
-  const res = await fetch(`${UW_BASE}/market/economic-calendar`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`UW calendar API ${res.status}: ${text.slice(0, 200)}`);
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
-}
-
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
   const force = req.query.force === 'true';
-  if (!force && !isPreMarket()) {
-    return res.status(200).json({
-      skipped: true,
-      reason: 'Outside pre-market window',
-    });
-  }
+  const guard = cronGuard(req, res, {
+    timeCheck: force ? () => true : isPreMarket,
+  });
+  if (!guard) return;
+  const { apiKey, today: todayStr } = guard;
 
   const startTime = Date.now();
-  const apiKey = process.env.UW_API_KEY;
-  if (!apiKey) {
-    logger.error('UW_API_KEY not configured');
-    return res.status(500).json({ error: 'UW_API_KEY not configured' });
-  }
-
-  const now = new Date();
-  const todayStr = getETDateStr(now);
 
   try {
-    const events = await withRetry(() => fetchCalendar(apiKey));
+    const events = await withRetry(() =>
+      uwFetch<CalendarEvent>(apiKey, '/market/economic-calendar'),
+    );
 
     // Filter to today's events only
     const todayEvents = events.filter((e) => {
@@ -143,17 +112,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE date = ${todayStr}
       `;
       const { total, has_name } = qcRows[0]!;
-      if (Number(total) > 0 && Number(has_name) === 0) {
-        Sentry.setTag('cron.job', 'fetch-economic-calendar');
-        Sentry.captureMessage(
-          `Data quality alert: economic_events has ${total} rows but ALL event_name values are empty for ${todayStr}`,
-          'warning',
-        );
-        logger.warn(
-          { total, date: todayStr },
-          'Economic calendar data quality: all event names empty',
-        );
-      }
+      await checkDataQuality({
+        job: 'fetch-economic-calendar',
+        table: 'economic_events',
+        date: todayStr,
+        total: Number(total),
+        nonzero: Number(has_name),
+        minRows: 0,
+      });
     }
 
     logger.info(

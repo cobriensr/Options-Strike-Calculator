@@ -17,6 +17,7 @@ import { put, list, del } from '@vercel/blob';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { cronGuard } from '../_lib/api-helpers.js';
 
 export const config = { maxDuration: 300 };
 
@@ -86,16 +87,12 @@ async function pruneOldBackups(currentDate: string): Promise<string[]> {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
+  const guard = cronGuard(req, res, {
+    marketHours: false,
+    requireApiKey: false,
+  });
+  if (!guard) return;
+  const { today } = guard;
   const results: Record<string, { rows: number; bytes: number }> = {};
   const errors: string[] = [];
 
