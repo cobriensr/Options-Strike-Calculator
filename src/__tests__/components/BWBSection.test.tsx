@@ -1,7 +1,16 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import BWBSection from '../../components/BWBSection';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
+
+// ============================================================
+// MODULE MOCK (hoisted by vitest)
+// ============================================================
+
+const mockExportBWBComparison = vi.fn();
+vi.mock('../../utils/export', () => ({
+  exportBWBComparison: mockExportBWBComparison,
+}));
 
 // ============================================================
 // HELPERS
@@ -352,5 +361,116 @@ describe('BWBSection', () => {
       name: 'Export All BWB Widths to Excel',
     });
     expect(btn).toHaveTextContent('Export All BWB Widths to Excel');
+  });
+
+  // ============================================================
+  // Export click handler — happy path
+  // ============================================================
+
+  beforeEach(() => {
+    mockExportBWBComparison.mockReset();
+  });
+
+  it('export button click triggers exportBWBComparison with correct args', async () => {
+    mockExportBWBComparison.mockResolvedValue(undefined);
+    renderSection({}, { contracts: 3 });
+
+    const btn = screen.getByRole('button', {
+      name: 'Export All BWB Widths to Excel',
+    });
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(mockExportBWBComparison).toHaveBeenCalledTimes(1);
+    });
+
+    const firstCall = mockExportBWBComparison.mock.calls.at(0);
+    expect(firstCall).toBeDefined();
+    const callArgs = firstCall![0] as Record<string, unknown>;
+    expect(callArgs).toHaveProperty('results');
+    expect(callArgs).toHaveProperty('contracts', 3);
+    expect(callArgs).toHaveProperty('effectiveRatio', 10);
+    expect(
+      (callArgs.results as { spot: number }).spot,
+    ).toBe(5700);
+  });
+
+  // ============================================================
+  // Export click handler — error path (reload prompt)
+  // ============================================================
+
+  it('export button shows reload prompt when export throws', async () => {
+    mockExportBWBComparison.mockRejectedValue(new Error('chunk failed'));
+
+    const confirmSpy = vi
+      .spyOn(globalThis, 'confirm')
+      .mockReturnValue(true);
+
+    // Mock location.reload — need to replace the property
+    const reloadSpy = vi.fn();
+    const originalLocation = globalThis.location;
+    Object.defineProperty(globalThis, 'location', {
+      value: { ...originalLocation, reload: reloadSpy },
+      writable: true,
+      configurable: true,
+    });
+
+    renderSection();
+
+    const btn = screen.getByRole('button', {
+      name: 'Export All BWB Widths to Excel',
+    });
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith(
+        'A new version is available. Reload to use the export feature?',
+      );
+    });
+    expect(reloadSpy).toHaveBeenCalled();
+
+    // Restore
+    confirmSpy.mockRestore();
+    Object.defineProperty(globalThis, 'location', {
+      value: originalLocation,
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  it('export button does not reload when user declines confirm', async () => {
+    mockExportBWBComparison.mockRejectedValue(new Error('chunk failed'));
+
+    const confirmSpy = vi
+      .spyOn(globalThis, 'confirm')
+      .mockReturnValue(false);
+
+    const reloadSpy = vi.fn();
+    const originalLocation = globalThis.location;
+    Object.defineProperty(globalThis, 'location', {
+      value: { ...originalLocation, reload: reloadSpy },
+      writable: true,
+      configurable: true,
+    });
+
+    renderSection();
+
+    const btn = screen.getByRole('button', {
+      name: 'Export All BWB Widths to Excel',
+    });
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalled();
+    });
+    expect(reloadSpy).not.toHaveBeenCalled();
+
+    // Restore
+    confirmSpy.mockRestore();
+    Object.defineProperty(globalThis, 'location', {
+      value: originalLocation,
+      writable: true,
+      configurable: true,
+    });
   });
 });
