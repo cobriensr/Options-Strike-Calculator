@@ -90,6 +90,99 @@ export async function getStrikeExposures(
 }
 
 /**
+ * Get the most recent per-strike exposure snapshot for a specific DTE.
+ * @param date - Trading date (YYYY-MM-DD)
+ * @param expiryMode - '0dte' filters to expiry = date; '1dte' filters to expiry > date and expiry <= date + 3 days
+ */
+export async function getStrikeExposuresByExpiry(
+  date: string,
+  expiryMode: '0dte' | '1dte',
+  ticker: string = 'SPX',
+): Promise<StrikeExposureRow[]> {
+  const db = getDb();
+
+  // Find the latest timestamp for this date + expiry filter
+  const tsRows =
+    expiryMode === '0dte'
+      ? await db`
+          SELECT MAX(timestamp) as latest_ts
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${date}
+        `
+      : await db`
+          SELECT MAX(timestamp) as latest_ts
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = ${ticker}
+            AND expiry > ${date}
+            AND expiry <= (${date}::date + INTERVAL '3 days')::date
+        `;
+  const latestTs = tsRows[0]?.latest_ts;
+  if (!latestTs) return [];
+
+  const rows =
+    expiryMode === '0dte'
+      ? await db`
+          SELECT strike, price, timestamp,
+                 call_gamma_oi, put_gamma_oi,
+                 call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+                 call_charm_oi, put_charm_oi,
+                 call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+                 call_delta_oi, put_delta_oi,
+                 call_vanna_oi, put_vanna_oi
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = ${ticker}
+            AND timestamp = ${latestTs} AND expiry = ${date}
+          ORDER BY strike ASC
+        `
+      : await db`
+          SELECT strike, price, timestamp,
+                 call_gamma_oi, put_gamma_oi,
+                 call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+                 call_charm_oi, put_charm_oi,
+                 call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+                 call_delta_oi, put_delta_oi,
+                 call_vanna_oi, put_vanna_oi
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = ${ticker}
+            AND timestamp = ${latestTs}
+            AND expiry > ${date}
+            AND expiry <= (${date}::date + INTERVAL '3 days')::date
+          ORDER BY strike ASC
+        `;
+
+  return rows.map((r: Record<string, unknown>) => {
+    const callGOi = Number(r.call_gamma_oi) || 0;
+    const putGOi = Number(r.put_gamma_oi) || 0;
+    const callCOi = Number(r.call_charm_oi) || 0;
+    const putCOi = Number(r.put_charm_oi) || 0;
+
+    return {
+      strike: Number(r.strike),
+      price: Number(r.price),
+      timestamp: r.timestamp as string,
+      netGamma: callGOi + putGOi,
+      netCharm: callCOi + putCOi,
+      netDelta:
+        (Number(r.call_delta_oi) || 0) + (Number(r.put_delta_oi) || 0),
+      callGammaOi: callGOi,
+      putGammaOi: putGOi,
+      callCharmOi: callCOi,
+      putCharmOi: putCOi,
+      dirGamma:
+        (Number(r.call_gamma_ask) || 0) +
+        (Number(r.call_gamma_bid) || 0) +
+        (Number(r.put_gamma_ask) || 0) +
+        (Number(r.put_gamma_bid) || 0),
+      dirCharm:
+        (Number(r.call_charm_ask) || 0) +
+        (Number(r.call_charm_bid) || 0) +
+        (Number(r.put_charm_ask) || 0) +
+        (Number(r.put_charm_bid) || 0),
+    };
+  });
+}
+
+/**
  * Format per-strike exposure data as a structured text block for Claude's context.
  * Identifies key structural features: gamma walls, charm floors/ceilings, acceleration zones.
  * Presents a compact strike table around ATM.
