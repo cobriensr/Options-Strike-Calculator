@@ -39,10 +39,14 @@ interface FlowTick {
 
 // ── Fetch helper ────────────────────────────────────────────
 
-async function fetchZeroDteFlow(apiKey: string): Promise<FlowTick[]> {
+async function fetchZeroDteFlow(
+  apiKey: string,
+  date: string,
+): Promise<FlowTick[]> {
   const params = new URLSearchParams({
     expiration: 'zero_dte',
     tide_type: 'index_only',
+    date,
   });
 
   const res = await fetch(`${UW_BASE}/net-flow/expiry?${params}`, {
@@ -130,8 +134,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'UW_API_KEY not configured' });
   }
 
+  // Get today's date in ET
+  const today = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+
   try {
-    const ticks = await withRetry(() => fetchZeroDteFlow(apiKey));
+    const ticks = await withRetry(() => fetchZeroDteFlow(apiKey, today));
     const result = await withRetry(() => storeLatest(ticks));
 
     // Log latest values
