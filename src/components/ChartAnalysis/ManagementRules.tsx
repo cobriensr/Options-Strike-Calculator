@@ -40,23 +40,15 @@ export default function ManagementRules({ managementRules }: Props) {
           )}
         {managementRules.timeRules && (
           <div className="text-[11px] leading-relaxed">
-            <span
-              className="font-semibold"
-              style={{ color: theme.caution }}
-            >
+            <span className="font-semibold" style={{ color: theme.caution }}>
               Time rule:{' '}
             </span>
-            <span className="text-secondary">
-              {managementRules.timeRules}
-            </span>
+            <span className="text-secondary">{managementRules.timeRules}</span>
           </div>
         )}
         {managementRules.flowReversalSignal && (
           <div className="text-[11px] leading-relaxed">
-            <span
-              className="font-semibold"
-              style={{ color: theme.caution }}
-            >
+            <span className="font-semibold" style={{ color: theme.caution }}>
               Flow reversal:{' '}
             </span>
             <span className="text-secondary">

@@ -51,12 +51,8 @@ export function computeExecutionQuality(
   );
 
   // Count order outcomes
-  const filledOrders = orders.filter((o) =>
-    o.status.includes('FILLED'),
-  ).length;
-  const rejectedOrders = orders.filter(
-    (o) => o.status === 'REJECTED',
-  ).length;
+  const filledOrders = orders.filter((o) => o.status.includes('FILLED')).length;
+  const rejectedOrders = orders.filter((o) => o.status === 'REJECTED').length;
   const canceledOrders = orders.filter((o) =>
     o.status.includes('CANCELED'),
   ).length;

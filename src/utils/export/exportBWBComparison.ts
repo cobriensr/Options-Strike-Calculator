@@ -1,9 +1,6 @@
 import type { DeltaRow, CalculationResults } from '../../types';
 import { buildPutBWB, buildCallBWB } from '../calculator';
-import {
-  BWB_NARROW_OPTIONS,
-  BWB_WIDE_MULTIPLIERS,
-} from '../../constants';
+import { BWB_NARROW_OPTIONS, BWB_WIDE_MULTIPLIERS } from '../../constants';
 import { round0, round1, round2, round4 } from '../formatting';
 import { setColumnWidths } from './helpers';
 

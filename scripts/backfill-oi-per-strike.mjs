@@ -55,10 +55,9 @@ function getTradingDays(count) {
 // ── Fetch OI per strike for one date ────────────────────────
 
 async function fetchOiPerStrike(date) {
-  const res = await fetch(
-    `${UW_BASE}/stock/SPX/oi-per-strike?date=${date}`,
-    { headers: { Authorization: `Bearer ${UW_API_KEY}` } },
-  );
+  const res = await fetch(`${UW_BASE}/stock/SPX/oi-per-strike?date=${date}`, {
+    headers: { Authorization: `Bearer ${UW_API_KEY}` },
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -139,9 +138,7 @@ async function main() {
       .sort((a, b) => b.total - a.total)
       .slice(0, 3);
 
-    const top3 = ranked
-      .map((r) => `${r.strike} (${fmt(r.total)})`)
-      .join(', ');
+    const top3 = ranked.map((r) => `${r.strike} (${fmt(r.total)})`).join(', ');
 
     console.log(
       `  ${date}: ${rows.length} strikes (${result.stored} new) | Top OI: ${top3 || 'N/A'}`,

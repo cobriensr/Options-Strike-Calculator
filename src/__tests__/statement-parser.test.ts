@@ -2404,19 +2404,10 @@ describe('matchClosedSpreads (edge cases)', () => {
 describe('generateWarnings (additional)', () => {
   const allSections = new Map([
     ['Cash Balance', { headerIndex: 0, dataStart: 1, dataEnd: 5 }],
-    [
-      'Account Order History',
-      { headerIndex: 6, dataStart: 7, dataEnd: 10 },
-    ],
-    [
-      'Account Trade History',
-      { headerIndex: 11, dataStart: 12, dataEnd: 15 },
-    ],
+    ['Account Order History', { headerIndex: 6, dataStart: 7, dataEnd: 10 }],
+    ['Account Trade History', { headerIndex: 11, dataStart: 12, dataEnd: 15 }],
     ['Options', { headerIndex: 16, dataStart: 17, dataEnd: 20 }],
-    [
-      'Profits and Losses',
-      { headerIndex: 21, dataStart: 22, dataEnd: 25 },
-    ],
+    ['Profits and Losses', { headerIndex: 21, dataStart: 22, dataEnd: 25 }],
     ['Account Summary', { headerIndex: 26, dataStart: 27, dataEnd: 30 }],
   ]);
 
@@ -2459,9 +2450,7 @@ describe('generateWarnings (additional)', () => {
       [],
     );
 
-    expect(warnings.some((w) => w.code === 'BALANCE_DISCONTINUITY')).toBe(
-      true,
-    );
+    expect(warnings.some((w) => w.code === 'BALANCE_DISCONTINUITY')).toBe(true);
   });
 
   it('does not emit BALANCE_DISCONTINUITY for small rounding differences', () => {

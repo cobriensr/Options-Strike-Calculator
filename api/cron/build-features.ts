@@ -994,12 +994,8 @@ async function buildFeaturesForDate(
           // Premium
           const callPrem = Number.parseFloat(String(ov.call_premium ?? '0'));
           const putPrem = Number.parseFloat(String(ov.put_premium ?? '0'));
-          const bullPrem = Number.parseFloat(
-            String(ov.bullish_premium ?? '0'),
-          );
-          const bearPrem = Number.parseFloat(
-            String(ov.bearish_premium ?? '0'),
-          );
+          const bullPrem = Number.parseFloat(String(ov.bullish_premium ?? '0'));
+          const bearPrem = Number.parseFloat(String(ov.bearish_premium ?? '0'));
           features.opt_call_premium = callPrem || null;
           features.opt_put_premium = putPrem || null;
           features.opt_bullish_premium = bullPrem || null;

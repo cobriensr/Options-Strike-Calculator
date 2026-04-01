@@ -119,8 +119,7 @@ export function computePortfolioRisk(
     }
   }
   for (const ic of ironCondors) {
-    const putCredit =
-      ic.putSpread.creditReceived / (ic.contracts * MULTIPLIER);
+    const putCredit = ic.putSpread.creditReceived / (ic.contracts * MULTIPLIER);
     const callCredit =
       ic.callSpread.creditReceived / (ic.contracts * MULTIPLIER);
     if (ic.putSpread.shortLeg.strike < lowestShortPutStrike) {

@@ -15,16 +15,10 @@ export default function DirectionalOpportunity({
   directionalOpportunity,
 }: Props) {
   const dirColor =
-    directionalOpportunity.direction === 'LONG CALL'
-      ? theme.green
-      : theme.red;
+    directionalOpportunity.direction === 'LONG CALL' ? theme.green : theme.red;
 
   return (
-    <Collapsible
-      title="Directional Opportunity"
-      color={dirColor}
-      defaultOpen
-    >
+    <Collapsible title="Directional Opportunity" color={dirColor} defaultOpen>
       <div className="grid gap-2">
         {/* Header: direction + confidence + 14 DTE ATM */}
         <div className="flex flex-wrap items-center gap-2">
@@ -123,10 +117,7 @@ export default function DirectionalOpportunity({
               )}
               {directionalOpportunity.keyLevels.resistance && (
                 <div className="text-[10px]">
-                  <span
-                    className="font-semibold"
-                    style={{ color: theme.red }}
-                  >
+                  <span className="font-semibold" style={{ color: theme.red }}>
                     Resistance:{' '}
                   </span>
                   <span className="text-secondary">

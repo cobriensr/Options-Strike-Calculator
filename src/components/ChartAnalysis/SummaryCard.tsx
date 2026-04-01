@@ -28,10 +28,7 @@ export default function SummaryCard({ analysis, mode }: Props) {
         <span
           className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
           style={{
-            backgroundColor: tint(
-              confidenceColor(analysis.confidence),
-              '18',
-            ),
+            backgroundColor: tint(confidenceColor(analysis.confidence), '18'),
             color: confidenceColor(analysis.confidence),
           }}
         >
@@ -98,10 +95,7 @@ export default function SummaryCard({ analysis, mode }: Props) {
         {analysis.strikeGuidance?.adjustments &&
           analysis.strikeGuidance.adjustments.length > 0 && (
             <div className="flex items-center gap-2 text-[10px]">
-              <span
-                className="font-semibold"
-                style={{ color: theme.accent }}
-              >
+              <span className="font-semibold" style={{ color: theme.accent }}>
                 Strike:
               </span>
               <span className="text-secondary">
@@ -121,15 +115,10 @@ export default function SummaryCard({ analysis, mode }: Props) {
         )}
         {analysis.hedge && analysis.hedge.recommendation !== 'NO HEDGE' && (
           <div className="flex items-center gap-2 text-[10px]">
-            <span
-              className="font-semibold"
-              style={{ color: theme.caution }}
-            >
+            <span className="font-semibold" style={{ color: theme.caution }}>
               Hedge:
             </span>
-            <span className="text-secondary">
-              {analysis.hedge.description}
-            </span>
+            <span className="text-secondary">{analysis.hedge.description}</span>
           </div>
         )}
       </div>

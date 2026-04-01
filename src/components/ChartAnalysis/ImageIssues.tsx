@@ -61,8 +61,8 @@ export default function ImageIssues({ imageIssues, onReplaceImage }: Props) {
       </div>
       <div className="text-muted mt-2 text-[10px]">
         Replace the flagged image
-        {imageIssues.length > 1 ? 's' : ''}, then click{' '}
-        <strong>Analyze</strong> again.
+        {imageIssues.length > 1 ? 's' : ''}, then click <strong>Analyze</strong>{' '}
+        again.
       </div>
     </div>
   );

@@ -36,13 +36,10 @@ async function fetchOiPerStrike(
   apiKey: string,
   date: string,
 ): Promise<OiStrikeRow[]> {
-  const res = await fetch(
-    `${UW_BASE}/stock/SPX/oi-per-strike?date=${date}`,
-    {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-    },
-  );
+  const res = await fetch(`${UW_BASE}/stock/SPX/oi-per-strike?date=${date}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -87,19 +84,13 @@ async function storeStrikes(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'GET only' });
   }
 
   const cronSecret = process.env.CRON_SECRET;
-  if (
-    !cronSecret ||
-    req.headers.authorization !== `Bearer ${cronSecret}`
-  ) {
+  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -113,9 +104,7 @@ export default async function handler(
   const apiKey = process.env.UW_API_KEY;
   if (!apiKey) {
     logger.error('UW_API_KEY not configured');
-    return res
-      .status(500)
-      .json({ error: 'UW_API_KEY not configured' });
+    return res.status(500).json({ error: 'UW_API_KEY not configured' });
   }
 
   // Get today's date in ET
@@ -137,9 +126,7 @@ export default async function handler(
       });
     }
 
-    const rows = await withRetry(() =>
-      fetchOiPerStrike(apiKey, today),
-    );
+    const rows = await withRetry(() => fetchOiPerStrike(apiKey, today));
     const result = await storeStrikes(rows, today);
 
     logger.info(

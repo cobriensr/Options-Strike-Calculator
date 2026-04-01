@@ -8,11 +8,7 @@
  * It runs entirely in the browser — no server dependencies.
  */
 
-import type {
-  DailyStatement,
-  IronCondor,
-  Spread,
-} from './types';
+import type { DailyStatement, IronCondor, Spread } from './types';
 import { round2 } from '../../utils/formatting';
 import { parseShortDate } from './statement-parser/value-parsers';
 import {

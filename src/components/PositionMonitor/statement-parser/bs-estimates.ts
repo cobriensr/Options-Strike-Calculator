@@ -58,8 +58,7 @@ export function applyBSEstimates(
     // Use matched trade entry price, or fall back to the
     // difference of leg trade prices from the Options section
     const netPrice =
-      s.entryNetPrice ??
-      Math.abs(s.shortLeg.tradePrice - s.longLeg.tradePrice);
+      s.entryNetPrice ?? Math.abs(s.shortLeg.tradePrice - s.longLeg.tradePrice);
     if (netPrice <= 0) return s;
 
     // Find when this spread was entered (minutes since midnight)

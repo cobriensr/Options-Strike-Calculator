@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as XLSX from 'xlsx';
-import {
-  exportPnLComparison,
-  exportBWBComparison,
-} from '../../utils/export';
+import { exportPnLComparison, exportBWBComparison } from '../../utils/export';
 import { calcAllDeltas, calcTimeToExpiry } from '../../utils/calculator';
 import type { CalculationResults } from '../../types';
 
