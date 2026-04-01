@@ -35,7 +35,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // Accept ?date=YYYY-MM-DD for backtest mode, default to today
-      const dateParam = typeof req.query.date === 'string' ? req.query.date : '';
+      const dateParam =
+        typeof req.query.date === 'string' ? req.query.date : '';
       const date = /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
         ? dateParam
         : getETDateStr(new Date());
