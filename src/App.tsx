@@ -569,7 +569,7 @@ export default function StrikeCalculator() {
             </ErrorBoundary>
 
             <ErrorBoundary label="BWB Calculator">
-              <BWBCalculator />
+              <BWBCalculator selectedDate={vix.selectedDate} />
             </ErrorBoundary>
 
             <ErrorBoundary label="Results">

@@ -19,7 +19,11 @@ const INPUT_SM = INPUT.replace('p-[10px_12px]', 'p-[8px_10px]').replace(
 const LABEL =
   'text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]';
 
-export default function BWBCalculator() {
+interface BWBCalculatorProps {
+  selectedDate?: string;
+}
+
+export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
   const [side, setSide] = useState<BWBSide>('calls');
   const [lowStrike, setLowStrike] = useState('');
   const [midStrike, setMidStrike] = useState('');
@@ -45,7 +49,8 @@ export default function BWBCalculator() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/bwb-anchor', { credentials: 'include' })
+    const qs = selectedDate ? `?date=${selectedDate}` : '';
+    fetch(`/api/bwb-anchor${qs}`, { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data?.anchor) return;
@@ -60,7 +65,7 @@ export default function BWBCalculator() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [selectedDate]);
 
   // Auto-fill strikes from sweet spot + wing widths
   const fillStrikes = useCallback(
@@ -222,9 +227,8 @@ export default function BWBCalculator() {
 
       {/* Sweet spot auto-fill (optional) */}
       <div className="bg-surface-alt mb-4 rounded-lg p-3">
-        <div className="mb-1.5 flex items-center gap-1.5">
-          <span className={LABEL}>Sweet Spot Auto-Fill</span>
-          <span className="text-muted text-[10px] italic">(optional)</span>
+        <div className="mb-1.5">
+          <span className={LABEL}>Sweet Spot</span>
         </div>
 
         {/* Gamma anchor suggestion */}
