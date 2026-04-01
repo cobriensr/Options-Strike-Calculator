@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Local backfill script for per-strike Greek exposure (SPX 0DTE).
- * Fetches per-strike gamma, charm, delta, vanna for 0DTE expiration.
+ * Local backfill script for per-strike Greek exposure (SPX 0DTE + 1DTE).
+ * Fetches per-strike gamma, charm, delta, vanna for 0DTE and 1DTE expirations.
  * Stores strikes within ±200 pts of ATM.
  *
  * Usage:
@@ -54,11 +54,22 @@ function getTradingDays(count) {
   return dates.reverse();
 }
 
+// ── Get next trading day (skip weekends) ───────────────────
+
+function getNextTradingDay(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  d.setDate(d.getDate() + 1);
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() + 1);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
 // ── Fetch per-strike data for one date ──────────────────────
 
-async function fetchStrikeExposure(date) {
+async function fetchStrikeExposure(date, expiry) {
   const params = new URLSearchParams({
-    'expirations[]': date,
+    'expirations[]': expiry,
     date,
     limit: '500',
   });
@@ -80,7 +91,7 @@ async function fetchStrikeExposure(date) {
 
 // ── Store strikes ───────────────────────────────────────────
 
-async function storeStrikes(rows, date) {
+async function storeStrikes(rows, date, expiry) {
   if (rows.length === 0) return { stored: 0, price: null, filtered: 0 };
 
   const price = Number.parseFloat(rows[0].price);
@@ -113,7 +124,7 @@ async function storeStrikes(rows, date) {
           call_vanna_oi, put_vanna_oi
         )
         VALUES (
-          ${date}, ${timestamp}, 'SPX', ${date}, ${row.strike}, ${row.price},
+          ${date}, ${timestamp}, 'SPX', ${expiry}, ${row.strike}, ${row.price},
           ${row.call_gamma_oi}, ${row.put_gamma_oi},
           ${row.call_gamma_ask}, ${row.call_gamma_bid},
           ${row.put_gamma_ask}, ${row.put_gamma_bid},
@@ -153,7 +164,7 @@ function fmt(val) {
 async function main() {
   const tradingDays = getTradingDays(days);
 
-  console.log(`Backfilling SPX 0DTE Per-Strike Greek Exposure`);
+  console.log(`Backfilling SPX 0DTE + 1DTE Per-Strike Greek Exposure`);
   console.log(
     `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`,
   );
@@ -163,18 +174,23 @@ async function main() {
   for (const date of tradingDays) {
     await new Promise((r) => setTimeout(r, 400));
 
-    const rows = await fetchStrikeExposure(date);
-    const result = await storeStrikes(rows, date);
+    const nextDay = getNextTradingDay(date);
+    const [rows0dte, rows1dte] = await Promise.all([
+      fetchStrikeExposure(date, date),
+      fetchStrikeExposure(date, nextDay),
+    ]);
+    const result0dte = await storeStrikes(rows0dte, date, date);
+    const result1dte = await storeStrikes(rows1dte, date, nextDay);
 
-    totalStored += result.stored;
+    totalStored += result0dte.stored + result1dte.stored;
 
-    // Find peak positive and negative gamma/charm for logging
+    // Find peak positive and negative gamma/charm for logging (0DTE)
     let peakGamma = { strike: 0, val: 0 };
     let troughGamma = { strike: 0, val: 0 };
     let peakCharm = { strike: 0, val: 0 };
 
-    const price = result.price ?? 0;
-    for (const row of rows) {
+    const price = result0dte.price ?? 0;
+    for (const row of rows0dte) {
       const s = Number.parseFloat(row.strike);
       if (Math.abs(s - price) > ATM_RANGE) continue;
       const netG =
@@ -189,12 +205,12 @@ async function main() {
     }
 
     console.log(
-      `  ${date}: ${rows.length} total → ${result.filtered} filtered (${result.stored} new) | SPX: ${result.price ?? 'N/A'} | Peak γ: ${peakGamma.strike} (${fmt(peakGamma.val)}) | Trough γ: ${troughGamma.strike} (${fmt(troughGamma.val)}) | Peak charm: ${peakCharm.strike} (${fmt(peakCharm.val)})`,
+      `  ${date}: 0DTE ${rows0dte.length} total → ${result0dte.filtered} filtered (${result0dte.stored} new) | 1DTE (${nextDay}) ${rows1dte.length} total → ${result1dte.filtered} filtered (${result1dte.stored} new) | SPX: ${result0dte.price ?? 'N/A'} | Peak γ: ${peakGamma.strike} (${fmt(peakGamma.val)}) | Trough γ: ${troughGamma.strike} (${fmt(troughGamma.val)}) | Peak charm: ${peakCharm.strike} (${fmt(peakCharm.val)})`,
     );
   }
 
   console.log(`\nDone!`);
-  console.log(`  Total strike rows stored: ${totalStored}`);
+  console.log(`  Total strike rows stored (0DTE + 1DTE): ${totalStored}`);
 }
 
 try {
