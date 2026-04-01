@@ -883,7 +883,10 @@ def analyze_dte_comparison() -> None:
 
     print(f"\n  {len(common_dates)} common dates for comparison\n")
 
-    # Predictors to evaluate at T-30min
+    # Checkpoints to try, in preference order.
+    # Backfill data only has ~20:10 UTC, so we cascade through checkpoints.
+    COMPARE_CHECKPOINTS = ['19:30', '19:00', '20:00', '20:15']
+
     predictor_defs = [
         ("Prox-wt centroid", "prox_centroid"),
         ("All-gamma centroid", "gamma_centroid"),
@@ -908,9 +911,11 @@ def analyze_dte_comparison() -> None:
 
         for mode in ('0dte', '1dte', 'combined'):
             day_data = datasets[mode][datasets[mode]['date'] == date]
-            snapshot = find_nearest_snapshot(day_data, '19:30')
-            if snapshot is None:
-                snapshot = find_nearest_snapshot(day_data, '19:00')
+            snapshot = None
+            for cp in COMPARE_CHECKPOINTS:
+                snapshot = find_nearest_snapshot(day_data, cp)
+                if snapshot is not None:
+                    break
             if snapshot is None:
                 continue
 
@@ -1012,6 +1017,418 @@ def analyze_dte_comparison() -> None:
             )
 
 
+def analyze_dte_regime() -> None:
+    """What distinguishes days when 1 DTE gamma wins from 0 DTE wins?"""
+    section("7. REGIME ANALYSIS: WHEN DOES 1 DTE WIN?")
+    print("  Identifying features that predict which gamma profile to trust\n")
+
+    # Load both datasets
+    df_0dte = load_strike_data('0dte')
+    df_1dte = load_strike_data('1dte')
+
+    if len(df_1dte) == 0 or df_1dte["date"].nunique() < 3:
+        print("  Insufficient 1 DTE data — skipping regime analysis.")
+        return
+
+    # Snapshot cascade (backfill has 20:10 UTC, cron has 19:30)
+    SNAP_CASCADE = ['19:30', '19:00', '20:00', '20:15']
+
+    # Load training_features for VIX and regime context
+    env = load_env()
+    database_url = env.get("DATABASE_URL", "")
+    engine = create_engine(database_url)
+    try:
+        tf = pd.read_sql_query(text("""
+            SELECT date, vix, vix1d, agg_net_gamma, gamma_asymmetry,
+                   dte0_net_charm, regime_zone, is_friday, is_opex,
+                   gex_oi_t1, gex_oi_t2
+            FROM training_features
+            WHERE vix IS NOT NULL
+            ORDER BY date
+        """), engine)
+    finally:
+        engine.dispose()
+    tf["date"] = pd.to_datetime(tf["date"])
+    tf_dates = set(tf["date"].values)
+
+    # Find common dates
+    dates_0 = set(df_0dte["date"].unique())
+    dates_1 = set(df_1dte["date"].unique())
+    common_dates = sorted(dates_0 & dates_1)
+
+    if len(common_dates) < 5:
+        print(f"  Only {len(common_dates)} common dates — need at least 5.")
+        return
+
+    # Label each day and compute features
+    rows = []
+    for date in common_dates:
+        day_0 = df_0dte[df_0dte["date"] == date]
+        day_1 = df_1dte[df_1dte["date"] == date]
+        settlement = float(day_0["settlement"].iloc[0])
+
+        # Find best available snapshot for each
+        snap_0, snap_1 = None, None
+        for cp in SNAP_CASCADE:
+            if snap_0 is None:
+                snap_0 = find_nearest_snapshot(day_0, cp)
+            if snap_1 is None:
+                snap_1 = find_nearest_snapshot(day_1, cp)
+        if snap_0 is None or snap_1 is None:
+            continue
+
+        prof_0 = compute_gamma_profile(snap_0)
+        prof_1 = compute_gamma_profile(snap_1)
+        if not prof_0 or not prof_1:
+            continue
+
+        # Settlement distances
+        dist_0 = abs(settlement - prof_0["prox_centroid"])
+        dist_1 = abs(settlement - prof_1["prox_centroid"])
+        winner = "1dte" if dist_1 < dist_0 else "0dte"
+
+        # ── Feature extraction ──
+
+        # 1. Gamma concentration: what fraction of total |gamma| is in top 3
+        def gamma_concentration(snap: pd.DataFrame) -> float:
+            s = snap.copy()
+            s["call_gamma_oi"] = pd.to_numeric(
+                s["call_gamma_oi"], errors="coerce"
+            )
+            s["put_gamma_oi"] = pd.to_numeric(
+                s["put_gamma_oi"], errors="coerce"
+            )
+            s["abs_g"] = (
+                s["call_gamma_oi"].fillna(0) + s["put_gamma_oi"].fillna(0)
+            ).abs()
+            total = s["abs_g"].sum()
+            if total == 0:
+                return 0.0
+            top3 = s.nlargest(3, "abs_g")["abs_g"].sum()
+            return float(top3 / total)
+
+        # 2. Gamma spread: std dev of net gamma across strikes
+        def gamma_spread(snap: pd.DataFrame) -> float:
+            s = snap.copy()
+            s["call_gamma_oi"] = pd.to_numeric(
+                s["call_gamma_oi"], errors="coerce"
+            )
+            s["put_gamma_oi"] = pd.to_numeric(
+                s["put_gamma_oi"], errors="coerce"
+            )
+            s["net_g"] = (
+                s["call_gamma_oi"].fillna(0) + s["put_gamma_oi"].fillna(0)
+            )
+            return float(s["net_g"].std()) if len(s) > 1 else 0.0
+
+        conc_0 = gamma_concentration(snap_0)
+        conc_1 = gamma_concentration(snap_1)
+        spread_0 = gamma_spread(snap_0)
+        spread_1 = gamma_spread(snap_1)
+
+        # 3. Peak magnitude ratio (1 DTE / 0 DTE)
+        mag_0 = prof_0["peak_gamma_mag"]
+        mag_1 = prof_1["peak_gamma_mag"]
+        mag_ratio = mag_1 / mag_0 if mag_0 > 0 else 0.0
+
+        # 4. Peak agreement: distance between 0 DTE and 1 DTE prox centroids
+        peak_disagreement = abs(
+            prof_0["prox_centroid"] - prof_1["prox_centroid"]
+        )
+
+        # 5. Net gamma sign for 0 DTE (positive = pinning, negative = accel)
+        net_g_0 = float(snap_0["call_gamma_oi"].astype(float).sum()
+                        + snap_0["put_gamma_oi"].astype(float).sum())
+        net_g_sign_0 = "positive" if net_g_0 > 0 else "negative"
+
+        row = {
+            "date": date,
+            "winner": winner,
+            "dist_0dte": dist_0,
+            "dist_1dte": dist_1,
+            "margin": abs(dist_0 - dist_1),
+            "conc_0dte": conc_0,
+            "conc_1dte": conc_1,
+            "spread_0dte": spread_0,
+            "spread_1dte": spread_1,
+            "mag_ratio": mag_ratio,
+            "peak_disagree": peak_disagreement,
+            "net_gamma_sign": net_g_sign_0,
+        }
+
+        # Add training_features if available
+        if date in tf_dates:
+            tf_row = tf[tf["date"] == date].iloc[0]
+            row["vix"] = float(tf_row["vix"]) if pd.notna(
+                tf_row["vix"]
+            ) else np.nan
+            row["agg_net_gamma"] = float(
+                tf_row["agg_net_gamma"]
+            ) if pd.notna(tf_row["agg_net_gamma"]) else np.nan
+            row["gamma_asymmetry"] = float(
+                tf_row["gamma_asymmetry"]
+            ) if pd.notna(tf_row["gamma_asymmetry"]) else np.nan
+            row["regime_zone"] = str(tf_row["regime_zone"]) if pd.notna(
+                tf_row["regime_zone"]
+            ) else "unknown"
+            row["is_friday"] = bool(tf_row["is_friday"]) if pd.notna(
+                tf_row["is_friday"]
+            ) else False
+            row["is_opex"] = bool(tf_row["is_opex"]) if pd.notna(
+                tf_row["is_opex"]
+            ) else False
+        else:
+            row["vix"] = np.nan
+            row["agg_net_gamma"] = np.nan
+            row["gamma_asymmetry"] = np.nan
+            row["regime_zone"] = "unknown"
+            row["is_friday"] = False
+            row["is_opex"] = False
+
+        rows.append(row)
+
+    if len(rows) < 5:
+        print(f"  Only {len(rows)} days with both snapshots — need 5+.")
+        return
+
+    results = pd.DataFrame(rows)
+    wins_0 = results[results["winner"] == "0dte"]
+    wins_1 = results[results["winner"] == "1dte"]
+    n = len(results)
+
+    print(f"  {len(wins_0)} days 0 DTE won, {len(wins_1)} days 1 DTE won "
+          f"(out of {n})\n")
+
+    if len(wins_1) == 0:
+        print("  1 DTE never won — no regime to analyze yet.")
+        return
+
+    # ── Feature comparison ──
+    subsection("Feature comparison: 0 DTE wins vs 1 DTE wins")
+
+    numeric_features = [
+        ("0 DTE γ concentration", "conc_0dte",
+         "Top-3 strike share of total |gamma|"),
+        ("1 DTE γ concentration", "conc_1dte",
+         "Top-3 strike share of total |gamma|"),
+        ("0 DTE γ spread (std)", "spread_0dte",
+         "Dispersion of gamma across strikes"),
+        ("1 DTE / 0 DTE peak ratio", "mag_ratio",
+         "Relative strength of 1 DTE peak"),
+        ("Peak disagreement (pts)", "peak_disagree",
+         "Distance between 0 DTE and 1 DTE centroids"),
+        ("VIX", "vix", "Implied volatility level"),
+        ("Agg net gamma", "agg_net_gamma",
+         "Market-wide net gamma (Rule 16)"),
+        ("Gamma asymmetry", "gamma_asymmetry",
+         "Above-vs-below ATM gamma skew"),
+    ]
+
+    print(f"  {'Feature':<28s} {'0DTE wins':>11s} {'1DTE wins':>11s} "
+          f"{'Signal?':>8s}")
+    print(f"  {'─' * 28} {'─' * 11} {'─' * 11} {'─' * 8}")
+
+    signals = []
+    for label, col, desc in numeric_features:
+        if col not in results.columns:
+            continue
+        v0 = wins_0[col].dropna()
+        v1 = wins_1[col].dropna()
+        if len(v0) < 2 or len(v1) < 2:
+            print(f"  {label:<28s}  insufficient data")
+            continue
+
+        m0 = v0.median()
+        m1 = v1.median()
+
+        # Effect size: difference of medians / pooled std
+        pooled = pd.concat([v0, v1])
+        pooled_std = pooled.std()
+        if pooled_std > 0:
+            effect = abs(m1 - m0) / pooled_std
+        else:
+            effect = 0.0
+
+        sig = ""
+        if effect > 0.8:
+            sig = "STRONG"
+        elif effect > 0.5:
+            sig = "moderate"
+        elif effect > 0.3:
+            sig = "weak"
+
+        fmt_0 = f"{m0:.4g}" if abs(m0) < 1e6 else f"{m0:.2e}"
+        fmt_1 = f"{m1:.4g}" if abs(m1) < 1e6 else f"{m1:.2e}"
+        print(f"  {label:<28s} {fmt_0:>11s} {fmt_1:>11s} "
+              f"{sig:>8s}")
+
+        if sig:
+            direction = "higher" if m1 > m0 else "lower"
+            signals.append((label, direction, sig, desc))
+
+    # ── Categorical features ──
+    subsection("Categorical splits")
+
+    # Net gamma sign
+    for sign in ("positive", "negative"):
+        subset = results[results["net_gamma_sign"] == sign]
+        if len(subset) == 0:
+            continue
+        w1 = (subset["winner"] == "1dte").sum()
+        pct = w1 / len(subset) if len(subset) > 0 else 0
+        print(f"  Net gamma {sign}: 1 DTE won "
+              f"{w1}/{len(subset)} ({pct:.0%})")
+
+    # Regime zone
+    print()
+    for zone in sorted(results["regime_zone"].unique()):
+        subset = results[results["regime_zone"] == zone]
+        if len(subset) < 2:
+            continue
+        w1 = (subset["winner"] == "1dte").sum()
+        pct = w1 / len(subset) if len(subset) > 0 else 0
+        print(f"  Regime '{zone}': 1 DTE won "
+              f"{w1}/{len(subset)} ({pct:.0%})")
+
+    # Friday / OPEX
+    for label, col in [("Friday", "is_friday"), ("OPEX", "is_opex")]:
+        yes = results[results[col] == True]  # noqa: E712
+        no = results[results[col] == False]  # noqa: E712
+        if len(yes) > 0:
+            w1_yes = (yes["winner"] == "1dte").sum()
+            pct_yes = w1_yes / len(yes)
+            print(f"  {label}: 1 DTE won {w1_yes}/{len(yes)} ({pct_yes:.0%})")
+        if len(no) > 0:
+            w1_no = (no["winner"] == "1dte").sum()
+            pct_no = w1_no / len(no)
+            print(f"  Non-{label}: 1 DTE won "
+                  f"{w1_no}/{len(no)} ({pct_no:.0%})")
+
+    # ── Per-day detail ──
+    subsection("Per-day detail")
+    print(f"  {'Date':<12s} {'Winner':>7s} {'0DTE':>6s} {'1DTE':>6s} "
+          f"{'Margin':>7s} {'Conc0':>6s} {'Conc1':>6s} "
+          f"{'MagR':>6s} {'Disagr':>7s} {'VIX':>5s}")
+    print(f"  {'─' * 12} {'─' * 7} {'─' * 6} {'─' * 6} "
+          f"{'─' * 7} {'─' * 6} {'─' * 6} "
+          f"{'─' * 6} {'─' * 7} {'─' * 5}")
+
+    for _, r in results.iterrows():
+        date_str = pd.Timestamp(r["date"]).strftime("%Y-%m-%d")
+        vix_str = f"{r['vix']:.1f}" if pd.notna(r.get("vix")) else "—"
+        print(
+            f"  {date_str:<12s} {r['winner']:>7s} "
+            f"{r['dist_0dte']:>5.1f} {r['dist_1dte']:>5.1f} "
+            f"{r['margin']:>6.1f} {r['conc_0dte']:>5.1%} "
+            f"{r['conc_1dte']:>5.1%} "
+            f"{r['mag_ratio']:>5.2f} {r['peak_disagree']:>6.1f} "
+            f"{vix_str:>5s}"
+        )
+
+    # ── Summary & decision rule ──
+    subsection("Potential decision rules")
+
+    if signals:
+        print("  Detected signals:")
+        for label, direction, strength, desc in signals:
+            print(f"    {strength.upper()}: {label} is {direction} "
+                  f"when 1 DTE wins")
+            print(f"           ({desc})")
+        print()
+
+    # Test simple threshold rules
+    best_rule = None
+    best_accuracy = 0.5  # baseline = always pick 0 DTE
+
+    # Rule 1: Low 0 DTE concentration → 1 DTE
+    if "conc_0dte" in results.columns:
+        for threshold in [0.10, 0.15, 0.20, 0.25, 0.30]:
+            pred = results["conc_0dte"].apply(
+                lambda x, t=threshold: "1dte" if x < t else "0dte"
+            )
+            acc = (pred == results["winner"]).mean()
+            if acc > best_accuracy:
+                best_accuracy = acc
+                best_rule = (
+                    f"If 0 DTE concentration < {threshold:.0%}, use 1 DTE",
+                    acc,
+                )
+
+    # Rule 2: High magnitude ratio → 1 DTE
+    if "mag_ratio" in results.columns:
+        for threshold in [0.5, 1.0, 2.0, 5.0, 10.0]:
+            pred = results["mag_ratio"].apply(
+                lambda x, t=threshold: "1dte" if x > t else "0dte"
+            )
+            acc = (pred == results["winner"]).mean()
+            if acc > best_accuracy:
+                best_accuracy = acc
+                best_rule = (
+                    f"If 1DTE/0DTE peak ratio > {threshold:.1f}, use 1 DTE",
+                    acc,
+                )
+
+    # Rule 3: High peak disagreement → 1 DTE
+    if "peak_disagree" in results.columns:
+        for threshold in [10, 20, 30, 50, 75]:
+            pred = results["peak_disagree"].apply(
+                lambda x, t=threshold: "1dte" if x > t else "0dte"
+            )
+            acc = (pred == results["winner"]).mean()
+            if acc > best_accuracy:
+                best_accuracy = acc
+                best_rule = (
+                    f"If peak disagreement > {threshold} pts, use 1 DTE",
+                    acc,
+                )
+
+    # Rule 4: Negative net gamma → 1 DTE
+    if "net_gamma_sign" in results.columns:
+        pred = results["net_gamma_sign"].apply(
+            lambda x: "1dte" if x == "negative" else "0dte"
+        )
+        acc = (pred == results["winner"]).mean()
+        if acc > best_accuracy:
+            best_accuracy = acc
+            best_rule = (
+                "If net gamma is negative, use 1 DTE",
+                acc,
+            )
+
+    baseline_acc = (results["winner"] == "0dte").mean()
+    print(f"  Baseline (always use 0 DTE): {baseline_acc:.0%} accuracy")
+
+    if best_rule:
+        rule_text, rule_acc = best_rule
+        lift = rule_acc - baseline_acc
+        print(f"  Best rule: {rule_text}")
+        print(f"  Accuracy:  {rule_acc:.0%} (+{lift:.0%} over baseline)")
+
+        if lift > 0.10:
+            takeaway(
+                f"'{rule_text}' improves accuracy by {lift:.0%}.\n"
+                "            When this condition is met, anchor BWB "
+                "to the 1 DTE prox-centroid instead."
+            )
+        elif lift > 0.0:
+            takeaway(
+                f"Best rule adds {lift:.0%} — marginal improvement.\n"
+                "            Accumulate more data before relying on "
+                "this rule for live trading."
+            )
+        else:
+            takeaway(
+                "No simple rule beats always using 0 DTE.\n"
+                "            Stick with 0 DTE prox-centroid as the "
+                "primary BWB anchor."
+            )
+    else:
+        takeaway(
+            "No decision rule found that beats baseline.\n"
+            "            Stick with 0 DTE prox-centroid for now."
+        )
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1052,6 +1469,7 @@ def main() -> None:
     analyze_per_day_detail(df, max_pain_df)
     key_findings(df, max_pain_df)
     analyze_dte_comparison()
+    analyze_dte_regime()
     print()
 
 
