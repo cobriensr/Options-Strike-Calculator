@@ -58,7 +58,7 @@ function makeStrikeRow(overrides = {}) {
   };
 }
 
-/** Stub fetch to return strike exposure data */
+/** Stub fetch to return the same strike exposure data for all calls */
 function stubFetch(data: unknown[] = []) {
   vi.stubGlobal(
     'fetch',
@@ -67,6 +67,21 @@ function stubFetch(data: unknown[] = []) {
       json: async () => ({ data }),
     }),
   );
+}
+
+/**
+ * Stub fetch to return different data per sequential call.
+ * Each entry maps to one fetch invocation in order.
+ */
+function stubFetchSequential(responses: unknown[][]) {
+  const mockFetch = vi.fn();
+  for (const data of responses) {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data }),
+    });
+  }
+  vi.stubGlobal('fetch', mockFetch);
 }
 
 describe('fetch-strike-exposure handler', () => {
@@ -215,6 +230,8 @@ describe('fetch-strike-exposure handler', () => {
       price: 5800.5,
       totalStored: 2,
       totalSkipped: 0,
+      dte0: { stored: 1, skipped: 0 },
+      dte1: { stored: 1, skipped: 0 },
     });
     // 2 transactions: one for 0DTE, one for 1DTE
     expect(mockTransaction).toHaveBeenCalledTimes(2);
@@ -266,6 +283,52 @@ describe('fetch-strike-exposure handler', () => {
       totalStored: 0,
       totalSkipped: 2,
     });
+  });
+
+  it('handles 1DTE returning empty data gracefully', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // 0DTE has data, 1DTE returns empty
+    stubFetchSequential([[makeStrikeRow()], []]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      success: true,
+      dte0: { stored: 1, skipped: 0 },
+      dte1: { stored: 0, skipped: 0 },
+      totalStored: 1,
+      totalSkipped: 0,
+    });
+    // Only 1 transaction: 0DTE only
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles 0DTE empty but 1DTE has data', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetchSequential([[], [makeStrikeRow()]]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      success: true,
+      dte0: { stored: 0, skipped: 0 },
+      dte1: { stored: 1, skipped: 0 },
+      totalStored: 1,
+      totalSkipped: 0,
+    });
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('filters out strikes beyond ±200 pts from ATM', async () => {
