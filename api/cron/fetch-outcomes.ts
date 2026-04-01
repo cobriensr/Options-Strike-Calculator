@@ -285,7 +285,10 @@ async function handleBackfill(res: VercelResponse) {
         });
         saved++;
       } catch (err) {
-        logger.warn({ err, dateStr: candle.datetime }, 'Backfill: skipped candle');
+        logger.warn(
+          { err, dateStr: candle.datetime },
+          'Backfill: skipped candle',
+        );
         skipped++;
       }
     }

@@ -103,7 +103,7 @@ describe('adjustPoPForKurtosis', () => {
     // put: min(1, 0.15 * 3.0) = 0.45 → PoP = 0.55
     // call: min(1, 0.15 * 2.0) = 0.30 → PoP = 0.70
     expect(putResult).toBeCloseTo(0.55, 10);
-    expect(callResult).toBeCloseTo(0.70, 10);
+    expect(callResult).toBeCloseTo(0.7, 10);
   });
 });
 
