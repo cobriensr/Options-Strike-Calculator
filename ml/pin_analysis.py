@@ -48,17 +48,40 @@ HIT_THRESHOLDS = [5, 10, 15, 20, 30]
 
 # ── Data Loading ─────────────────────────────────────────────
 
-def load_strike_data() -> pd.DataFrame:
-    """Load all 0DTE strike exposures with settlement outcomes."""
+def load_strike_data(dte_filter: str = '0dte') -> pd.DataFrame:
+    """Load strike exposures with settlement outcomes.
+
+    Args:
+        dte_filter: '0dte' (expiry == date), '1dte' (next trading day),
+                    or 'combined' (both 0 DTE and 1 DTE rows merged).
+    """
     env = load_env()
     database_url = env.get("DATABASE_URL", "")
     if not database_url:
         print("Error: DATABASE_URL not found in .env")
         sys.exit(1)
 
+    expiry_clauses = {
+        '0dte': 'se.expiry = se.date',
+        '1dte': (
+            'se.expiry > se.date '
+            "AND se.expiry <= se.date + INTERVAL '3 days'"
+        ),
+        'combined': (
+            'se.expiry >= se.date '
+            "AND se.expiry <= se.date + INTERVAL '3 days'"
+        ),
+    }
+    where = expiry_clauses.get(dte_filter)
+    if where is None:
+        raise ValueError(
+            f"Invalid dte_filter: {dte_filter!r}. "
+            "Expected '0dte', '1dte', or 'combined'."
+        )
+
     engine = create_engine(database_url)
     try:
-        df = pd.read_sql_query(text("""
+        df = pd.read_sql_query(text(f"""
             SELECT
                 se.date, se.timestamp, se.strike, se.price,
                 se.call_gamma_oi, se.put_gamma_oi,
@@ -66,7 +89,7 @@ def load_strike_data() -> pd.DataFrame:
                 o.settlement, o.day_open
             FROM strike_exposures se
             JOIN outcomes o ON o.date = se.date
-            WHERE se.expiry = se.date
+            WHERE {where}
             ORDER BY se.date, se.timestamp, se.strike
         """), engine)
     finally:
@@ -817,6 +840,178 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
               "dense intraday strike coverage.")
 
 
+def analyze_dte_comparison() -> None:
+    """Compare 0 DTE, 1 DTE, and combined gamma as settlement predictors."""
+    section("6. 0 DTE vs 1 DTE vs COMBINED GAMMA")
+    print("  Does 1 DTE gamma predict settlement better than 0 DTE?\n")
+
+    # Load all three datasets
+    datasets: dict[str, pd.DataFrame] = {}
+    for mode in ('0dte', '1dte', 'combined'):
+        print(f"  Loading {mode} strike data ...")
+        d = load_strike_data(mode)
+        n = d["date"].nunique() if len(d) > 0 else 0
+        print(f"    {len(d):,} rows across {n} days")
+        datasets[mode] = d
+
+    # Check 1 DTE data availability
+    if len(datasets['1dte']) == 0:
+        print("\n  No 1 DTE data yet — skipping comparison.")
+        print("  Once strike_exposures has rows with expiry > date,")
+        print("  re-run this script to see the comparison.")
+        return
+
+    n_1dte = datasets['1dte']["date"].nunique()
+    if n_1dte < 3:
+        print(f"\n  Only {n_1dte} days with 1 DTE data — need at least 3.")
+        print("  Accumulate more data, then re-run.")
+        return
+
+    # Find common dates across all three datasets
+    date_sets = {
+        mode: set(d["date"].unique())
+        for mode, d in datasets.items()
+    }
+    common_dates = sorted(
+        date_sets['0dte'] & date_sets['1dte'] & date_sets['combined']
+    )
+
+    if len(common_dates) < 3:
+        print(f"\n  Only {len(common_dates)} common dates across all 3 modes")
+        print("  — need at least 3. Accumulate more data, then re-run.")
+        return
+
+    print(f"\n  {len(common_dates)} common dates for comparison\n")
+
+    # Predictors to evaluate at T-30min
+    predictor_defs = [
+        ("Prox-wt centroid", "prox_centroid"),
+        ("All-gamma centroid", "gamma_centroid"),
+        ("Pos-gamma peak", "pos_peak_strike"),
+    ]
+
+    # Collect distances: {mode: {predictor_name: [dists]}}
+    mode_results: dict[str, dict[str, list[float]]] = {
+        mode: {name: [] for name, _ in predictor_defs}
+        for mode in ('0dte', '1dte', 'combined')
+    }
+    # Per-day winner tracking
+    day_winners: list[dict] = []
+
+    for date in common_dates:
+        # Get settlement from 0dte data (same outcome for all modes)
+        day_0dte = datasets['0dte'][datasets['0dte']['date'] == date]
+        settlement = float(day_0dte['settlement'].iloc[0])
+
+        day_best_mode = None
+        day_best_dist = float('inf')
+
+        for mode in ('0dte', '1dte', 'combined'):
+            day_data = datasets[mode][datasets[mode]['date'] == date]
+            snapshot = find_nearest_snapshot(day_data, '19:30')
+            if snapshot is None:
+                snapshot = find_nearest_snapshot(day_data, '19:00')
+            if snapshot is None:
+                continue
+
+            profile = compute_gamma_profile(snapshot)
+            if not profile:
+                continue
+
+            for name, key in predictor_defs:
+                dist = abs(settlement - profile[key])
+                mode_results[mode][name].append(dist)
+
+            # Track per-day winner using prox-centroid
+            prox_dist = abs(settlement - profile['prox_centroid'])
+            if prox_dist < day_best_dist:
+                day_best_dist = prox_dist
+                day_best_mode = mode
+
+        if day_best_mode:
+            day_winners.append({
+                'date': date,
+                'winner': day_best_mode,
+                'dist': day_best_dist,
+            })
+
+    # ── Comparison table ──
+    subsection("Comparison: Avg distance to settlement (T-30min)")
+
+    header_modes = ['0 DTE', '1 DTE', 'Combined']
+    mode_keys = ['0dte', '1dte', 'combined']
+
+    for pred_name, _ in predictor_defs:
+        print(f"\n  {pred_name}:")
+        print(f"  {'DTE Mode':<12s} {'Avg':>7s} {'Med':>7s} "
+              f"{'+-10':>5s} {'+-20':>5s} {'n':>4s}")
+        print(f"  {'---' * 4:<12s} {'---':>7s} {'---':>7s} "
+              f"{'---':>5s} {'---':>5s} {'---':>4s}")
+
+        best_mode_name = ''
+        best_avg = float('inf')
+
+        for mode_key, mode_label in zip(mode_keys, header_modes):
+            dists = mode_results[mode_key][pred_name]
+            if not dists:
+                print(f"  {mode_label:<12s}   (no data)")
+                continue
+            vals = np.array(dists)
+            avg = vals.mean()
+            med = float(np.median(vals))
+            w10 = (vals <= 10).mean()
+            w20 = (vals <= 20).mean()
+            n = len(vals)
+            if avg < best_avg:
+                best_avg = avg
+                best_mode_name = mode_label
+            print(f"  {mode_label:<12s} {avg:>6.1f} {med:>6.1f} "
+                  f"{w10:>4.0%} {w20:>4.0%} {n:>4d}")
+
+        if best_mode_name:
+            print(f"  Best: {best_mode_name} ({best_avg:.1f} pts avg)")
+
+    # ── Per-day winner breakdown ──
+    subsection("Per-day winner (prox-weighted centroid)")
+
+    winner_counts = {'0dte': 0, '1dte': 0, 'combined': 0}
+    for w in day_winners:
+        winner_counts[w['winner']] += 1
+
+    total = len(day_winners)
+    for mode_key, mode_label in zip(mode_keys, header_modes):
+        count = winner_counts[mode_key]
+        pct = count / total if total > 0 else 0
+        print(f"  {mode_label:<12s}  won {count}/{total} days ({pct:.0%})")
+
+    # ── Takeaway ──
+    # Determine overall best mode by prox-centroid avg
+    mode_avgs = {}
+    for mode_key, mode_label in zip(mode_keys, header_modes):
+        dists = mode_results[mode_key]['Prox-wt centroid']
+        if dists:
+            mode_avgs[mode_label] = np.mean(dists)
+
+    if mode_avgs:
+        best_label = min(mode_avgs, key=mode_avgs.get)
+        best_val = mode_avgs[best_label]
+        runner_up = sorted(mode_avgs.items(), key=lambda x: x[1])
+        if len(runner_up) >= 2:
+            gap = runner_up[1][1] - runner_up[0][1]
+            takeaway(
+                f"{best_label} gamma is the best settlement predictor "
+                f"by prox-centroid ({best_val:.1f} pts avg, "
+                f"{gap:.1f} pts better than {runner_up[1][0]}).\n"
+                "            If 1 DTE wins, consider using tomorrow's "
+                "gamma profile for BWB placement."
+            )
+        else:
+            takeaway(
+                f"{best_label} gamma is the best settlement predictor "
+                f"({best_val:.1f} pts avg)."
+            )
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def main() -> None:
@@ -856,6 +1051,7 @@ def main() -> None:
     analyze_all_predictors(df, max_pain_df, oi_df)
     analyze_per_day_detail(df, max_pain_df)
     key_findings(df, max_pain_df)
+    analyze_dte_comparison()
     print()
 
 
