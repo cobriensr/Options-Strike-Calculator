@@ -3,7 +3,7 @@
 
 PYTHON := .venv/bin/python
 
-.PHONY: all eda cluster visualize health milestone backtest early clean help
+.PHONY: all eda cluster visualize health milestone backtest early pin clean help
 
 all: eda cluster visualize ## Run full analysis pipeline
 
@@ -30,6 +30,9 @@ early: ## Run Phase 2 early feasibility experiment
 
 early-shap: ## Run Phase 2 early experiment with SHAP plots
 	$(PYTHON) phase2_early.py --shap
+
+pin: ## Run settlement pin risk / gamma correlation analysis
+	$(PYTHON) pin_analysis.py
 
 full: health all backtest milestone ## Run everything: health + analysis + backtest + milestones
 

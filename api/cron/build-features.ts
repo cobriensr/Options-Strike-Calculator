@@ -20,6 +20,7 @@ import {
   getETDayOfWeek,
   getETDateStr,
 } from '../../src/utils/timezone.js';
+import { fetchMaxPain } from '../_lib/max-pain.js';
 
 export const config = { maxDuration: 300 };
 
@@ -452,6 +453,8 @@ const NULLABLE_FEATURE_KEYS = new Set([
   'dp_top_cluster_dist',
   'dp_support_premium',
   'dp_resistance_premium',
+  'max_pain_0dte',
+  'max_pain_dist',
 ]);
 
 /** Compute feature completeness as fraction of non-null values. */
@@ -853,7 +856,29 @@ async function buildFeaturesForDate(
     }
   }
 
-  // 7. Dark pool features (from dark_pool_snapshots)
+  // 7. Max pain (from Unusual Whales API)
+  try {
+    const apiKey = process.env.UW_API_KEY;
+    if (apiKey) {
+      const maxPainEntries = await fetchMaxPain(apiKey, dateStr);
+      const zeroDte = maxPainEntries.find((e) => e.expiry === dateStr);
+      if (zeroDte) {
+        const mp = Number.parseFloat(zeroDte.max_pain);
+        if (!Number.isNaN(mp)) {
+          features.max_pain_0dte = mp;
+          // Distance from open to max pain (positive = max pain above open)
+          const spxOpen = features.spx_open as number | undefined;
+          if (spxOpen != null && spxOpen > 0) {
+            features.max_pain_dist = mp - spxOpen;
+          }
+        }
+      }
+    }
+  } catch (mpErr) {
+    logger.warn({ err: mpErr }, 'Max pain feature extraction failed');
+  }
+
+  // 8. Dark pool features (from dark_pool_snapshots)
   try {
     const dpRows = await sql`
       SELECT spx_price, clusters
@@ -1089,7 +1114,8 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       event_type, is_fomc, is_opex, days_to_next_event, event_count,
       dp_total_premium, dp_buyer_initiated, dp_seller_initiated,
       dp_net_bias, dp_cluster_count, dp_top_cluster_dist,
-      dp_support_premium, dp_resistance_premium
+      dp_support_premium, dp_resistance_premium,
+      max_pain_0dte, max_pain_dist
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -1129,7 +1155,8 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.event_type}, ${f.is_fomc}, ${f.is_opex}, ${f.days_to_next_event}, ${f.event_count},
       ${f.dp_total_premium}, ${f.dp_buyer_initiated}, ${f.dp_seller_initiated},
       ${f.dp_net_bias}, ${f.dp_cluster_count}, ${f.dp_top_cluster_dist},
-      ${f.dp_support_premium}, ${f.dp_resistance_premium}
+      ${f.dp_support_premium}, ${f.dp_resistance_premium},
+      ${f.max_pain_0dte}, ${f.max_pain_dist}
     )
     ON CONFLICT (date) DO UPDATE SET
       vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
@@ -1217,7 +1244,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       dp_cluster_count = EXCLUDED.dp_cluster_count,
       dp_top_cluster_dist = EXCLUDED.dp_top_cluster_dist,
       dp_support_premium = EXCLUDED.dp_support_premium,
-      dp_resistance_premium = EXCLUDED.dp_resistance_premium
+      dp_resistance_premium = EXCLUDED.dp_resistance_premium,
+      max_pain_0dte = EXCLUDED.max_pain_0dte,
+      max_pain_dist = EXCLUDED.max_pain_dist
   `;
 }
 

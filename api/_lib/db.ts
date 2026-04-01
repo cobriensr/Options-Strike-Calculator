@@ -848,6 +848,24 @@ const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 22,
+    description: 'Add max pain columns to training_features',
+    run: async (sql) => {
+      await sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS max_pain_0dte  DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS max_pain_dist  DECIMAL(10,2)
+      `;
+    },
+    statements: (sql) => [
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS max_pain_0dte  DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS max_pain_dist  DECIMAL(10,2)
+      `,
+    ],
+  },
 ];
 
 /**
