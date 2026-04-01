@@ -173,6 +173,8 @@ export default defineConfig({
         'src/components/ChartAnalysis/types.ts',
         'src/components/PositionMonitor/types.ts',
         'src/utils/calculator.ts', // barrel re-export only
+        'src/utils/export/index.ts', // barrel re-export only
+        'api/bwb-anchor.ts', // integration-tested via API
       ],
     },
   },
