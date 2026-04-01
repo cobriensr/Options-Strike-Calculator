@@ -373,71 +373,74 @@ describe('calcIVAcceleration', () => {
 // ============================================================
 
 describe('adjustPoPForKurtosis', () => {
+  const kp = (v: number) => ({ crash: v, rally: v });
+
   it('returns original PoP when kurtosis <= 1', () => {
-    expect(adjustPoPForKurtosis(0.9, 1)).toBe(0.9);
-    expect(adjustPoPForKurtosis(0.9, 0.5)).toBe(0.9);
+    expect(adjustPoPForKurtosis(0.9, kp(1))).toBe(0.9);
+    expect(adjustPoPForKurtosis(0.9, kp(0.5))).toBe(0.9);
   });
 
   it('reduces PoP by inflating breach probability', () => {
-    const adjusted = adjustPoPForKurtosis(0.9, 2.0);
+    const adjusted = adjustPoPForKurtosis(0.9, kp(2.0));
     expect(adjusted).toBeLessThan(0.9);
     // breach = 0.1, adjusted breach = 0.2, adjusted PoP = 0.8
     expect(adjusted).toBeCloseTo(0.8, 6);
   });
 
   it('never goes below 0', () => {
-    expect(adjustPoPForKurtosis(0.3, 5)).toBeGreaterThanOrEqual(0);
+    expect(adjustPoPForKurtosis(0.3, kp(5))).toBeGreaterThanOrEqual(0);
   });
 
   it('handles PoP = 1 (no breach)', () => {
-    expect(adjustPoPForKurtosis(1.0, 2.0)).toBe(1);
+    expect(adjustPoPForKurtosis(1.0, kp(2.0))).toBe(1);
   });
 
   it('handles PoP = 0 (full breach)', () => {
-    expect(adjustPoPForKurtosis(0, 2.0)).toBe(0);
+    expect(adjustPoPForKurtosis(0, kp(2.0))).toBe(0);
   });
 
-  it('with default kurtosis factor of 2.0', () => {
+  it('with default kurtosis factor (put side)', () => {
     const pop = adjustPoPForKurtosis(0.85);
-    // breach = 0.15, adjusted = 0.30, pop = 0.70
-    expect(pop).toBeCloseTo(0.7, 6);
+    // Default crash = 2.5 → breach 0.15 * 2.5 = 0.375 → PoP = 0.625
+    expect(pop).toBeCloseTo(0.625, 6);
   });
 });
 
 describe('getKurtosisFactor: VIX-regime-dependent', () => {
-  it('returns default 2.0 when VIX is undefined', () => {
-    expect(getKurtosisFactor()).toBe(2.0);
+  it('returns default pair when VIX is undefined', () => {
+    expect(getKurtosisFactor()).toEqual({ crash: 2.5, rally: 1.5 });
   });
 
-  it('returns 1.5 for low VIX (< 15)', () => {
-    expect(getKurtosisFactor(12)).toBe(1.5);
-    expect(getKurtosisFactor(14.9)).toBe(1.5);
+  it('returns asymmetric pair for low VIX (< 15)', () => {
+    expect(getKurtosisFactor(12)).toEqual({ crash: 1.8, rally: 1.2 });
+    expect(getKurtosisFactor(14.9)).toEqual({ crash: 1.8, rally: 1.2 });
   });
 
-  it('returns 2.0 for moderate VIX (15-20)', () => {
-    expect(getKurtosisFactor(15)).toBe(2.0);
-    expect(getKurtosisFactor(18)).toBe(2.0);
+  it('returns asymmetric pair for moderate VIX (15-20)', () => {
+    expect(getKurtosisFactor(15)).toEqual({ crash: 2.5, rally: 1.5 });
+    expect(getKurtosisFactor(18)).toEqual({ crash: 2.5, rally: 1.5 });
   });
 
-  it('returns 2.5 for elevated VIX (20-25)', () => {
-    expect(getKurtosisFactor(20)).toBe(2.5);
-    expect(getKurtosisFactor(24)).toBe(2.5);
+  it('returns asymmetric pair for elevated VIX (20-25)', () => {
+    expect(getKurtosisFactor(20)).toEqual({ crash: 3.0, rally: 2.0 });
+    expect(getKurtosisFactor(24)).toEqual({ crash: 3.0, rally: 2.0 });
   });
 
-  it('returns 3.0 for high VIX (25-30)', () => {
-    expect(getKurtosisFactor(25)).toBe(3.0);
-    expect(getKurtosisFactor(29)).toBe(3.0);
+  it('returns asymmetric pair for high VIX (25-30)', () => {
+    expect(getKurtosisFactor(25)).toEqual({ crash: 3.5, rally: 2.5 });
+    expect(getKurtosisFactor(29)).toEqual({ crash: 3.5, rally: 2.5 });
   });
 
-  it('returns 3.5 for crisis VIX (30+)', () => {
-    expect(getKurtosisFactor(30)).toBe(3.5);
-    expect(getKurtosisFactor(50)).toBe(3.5);
+  it('returns asymmetric pair for crisis VIX (30+)', () => {
+    expect(getKurtosisFactor(30)).toEqual({ crash: 4.0, rally: 3.0 });
+    expect(getKurtosisFactor(50)).toEqual({ crash: 4.0, rally: 3.0 });
   });
 
-  it('monotonically increases with VIX', () => {
+  it('monotonically increases with VIX (both crash and rally)', () => {
     const factors = [12, 17, 22, 27, 35].map((v) => getKurtosisFactor(v));
     for (let i = 1; i < factors.length; i++) {
-      expect(factors[i]).toBeGreaterThanOrEqual(factors[i - 1]!);
+      expect(factors[i]!.crash).toBeGreaterThanOrEqual(factors[i - 1]!.crash);
+      expect(factors[i]!.rally).toBeGreaterThanOrEqual(factors[i - 1]!.rally);
     }
   });
 });
@@ -449,6 +452,7 @@ describe('adjustICPoPForKurtosis', () => {
   const putSigma = 0.2;
   const callSigma = 0.18;
   const T = 0.003;
+  const kp = (v: number) => ({ crash: v, rally: v });
 
   it('returns lower PoP than log-normal calcPoP', () => {
     const logNormal = calcPoP(spot, beLow, beHigh, putSigma, callSigma, T);
@@ -472,7 +476,7 @@ describe('adjustICPoPForKurtosis', () => {
       putSigma,
       callSigma,
       T,
-      1,
+      kp(1),
     );
     expect(noAdj).toBeCloseTo(logNormal, 6);
   });
@@ -485,7 +489,7 @@ describe('adjustICPoPForKurtosis', () => {
       putSigma,
       callSigma,
       0,
-      2,
+      kp(2),
     );
     expect(result).toBe(0); // calcPoP returns 0 for T <= 0
   });
@@ -498,7 +502,7 @@ describe('adjustICPoPForKurtosis', () => {
       putSigma,
       callSigma,
       T,
-      5,
+      kp(5),
     );
     expect(result).toBeGreaterThanOrEqual(0);
     expect(result).toBeLessThanOrEqual(1);

@@ -85,6 +85,7 @@ export function buildPutBWB(
   const adjustedPoP = adjustPoPForKurtosis(
     probabilityOfProfit,
     getKurtosisFactor(vix),
+    'put',
   );
 
   // Aggregate Greeks: +1 long near, -2 short, +1 long far
@@ -213,6 +214,7 @@ export function buildCallBWB(
   const adjustedPoP = adjustPoPForKurtosis(
     probabilityOfProfit,
     getKurtosisFactor(vix),
+    'call',
   );
 
   // Aggregate Greeks: +1 long near, -2 short, +1 long far

@@ -365,24 +365,24 @@ describe('AdvancedSection', () => {
   });
 
   it('displays Kurtosis factor based on VIX level', () => {
-    // VIX 18 → getKurtosisFactor returns 2.0
+    // VIX 18 → getKurtosisFactor returns { crash: 2.5, rally: 1.5 }
     render(
       <AdvancedSection
         {...defaultProps({ results: makeResults({ vix: 18 }) })}
       />,
     );
     expect(screen.getByText('Kurtosis')).toBeInTheDocument();
-    expect(screen.getByText('2.0x')).toBeInTheDocument();
+    expect(screen.getByText('2.5/1.5x')).toBeInTheDocument();
   });
 
   it('displays different Kurtosis factor for high VIX', () => {
-    // VIX 32 → getKurtosisFactor returns 3.5
+    // VIX 32 → getKurtosisFactor returns { crash: 4.0, rally: 3.0 }
     render(
       <AdvancedSection
         {...defaultProps({ results: makeResults({ vix: 32 }) })}
       />,
     );
-    expect(screen.getByText('3.5x')).toBeInTheDocument();
+    expect(screen.getByText('4.0/3.0x')).toBeInTheDocument();
   });
 
   it('uses border-t separator on Model Parameters container', () => {

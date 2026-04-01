@@ -356,7 +356,10 @@ export default function AdvancedSection({
               },
               {
                 label: 'Kurtosis',
-                value: getKurtosisFactor(results.vix).toFixed(1) + 'x',
+                value: (() => {
+                  const k = getKurtosisFactor(results.vix);
+                  return `${k.crash.toFixed(1)}/${k.rally.toFixed(1)}x`;
+                })(),
               },
             ].map(({ label, value }) => (
               <div

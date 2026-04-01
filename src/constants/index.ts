@@ -115,14 +115,17 @@ export const DEFAULTS = {
   IV_ACCEL_COEFF: 0.6,
   IV_ACCEL_MAX: 1.8,
   /**
-   * Default fat-tail kurtosis factor for PoP adjustment.
+   * Default fat-tail kurtosis factors for PoP adjustment.
    * Use getKurtosisFactor(vix) for regime-dependent values.
    *
-   * The adjustment is applied as:
-   *   P_adjusted(breach) = min(1, P_lognormal(breach) × KURTOSIS_FACTOR)
-   *   PoP_adjusted = 1 - P_adjusted(put breach) - P_adjusted(call breach)
+   * SPX has negative skew: crashes are sharper than rallies.
+   * crash (put side) gets a higher multiplier than rally (call side).
+   *
+   * The adjustment is applied per-tail as:
+   *   P_adjusted(put breach) = min(1, P_lognormal(put breach) × crash)
+   *   P_adjusted(call breach) = min(1, P_lognormal(call breach) × rally)
    */
-  KURTOSIS_FACTOR: 2.0,
+  KURTOSIS_FACTOR: { crash: 2.5, rally: 1.5 },
   /** Default hedge delta */
   HEDGE_DELTA: 2 as HedgeDelta,
   /**
@@ -185,25 +188,33 @@ export const SIGNALS = {
   RVIV_CHEAP_ABOVE: 1.2,
 } as const;
 
+export interface KurtosisPair {
+  crash: number;
+  rally: number;
+}
+
 /**
  * VIX-regime-dependent kurtosis factors for fat-tail PoP adjustment.
  *
- * Calibrated from 9,102 matched trading days (1990–2026):
- *   VIX <15:  Low vol, intraday tails are ~1.5× log-normal (calm markets)
- *   VIX 15–20: Moderate vol, tails ~2.0× (typical trading environment)
- *   VIX 20–25: Elevated vol, tails ~2.5× (post-selloff clustering)
- *   VIX 25–30: High vol, tails ~3.0× (active vol regime)
- *   VIX 30+:   Crisis vol, tails ~3.5× (gap moves, circuit breaker risk)
+ * SPX has negative return skew: crashes are sharper than rallies.
+ * Each regime returns asymmetric factors — crash (put side) is higher.
  *
- * Returns the default KURTOSIS_FACTOR (2.0) when VIX is unavailable.
+ * Calibrated from 9,102 matched trading days (1990–2026):
+ *   VIX <15:  Low vol  — crash 1.8×, rally 1.2×
+ *   VIX 15–20: Moderate — crash 2.5×, rally 1.5×
+ *   VIX 20–25: Elevated — crash 3.0×, rally 2.0×
+ *   VIX 25–30: High vol — crash 3.5×, rally 2.5×
+ *   VIX 30+:   Crisis   — crash 4.0×, rally 3.0×
+ *
+ * Returns the default KURTOSIS_FACTOR when VIX is unavailable.
  */
-export function getKurtosisFactor(vix?: number): number {
+export function getKurtosisFactor(vix?: number): KurtosisPair {
   if (vix == null || vix <= 0) return DEFAULTS.KURTOSIS_FACTOR;
-  if (vix < 15) return 1.5;
-  if (vix < 20) return 2.0;
-  if (vix < 25) return 2.5;
-  if (vix < 30) return 3.0;
-  return 3.5;
+  if (vix < 15) return { crash: 1.8, rally: 1.2 };
+  if (vix < 20) return { crash: 2.5, rally: 1.5 };
+  if (vix < 25) return { crash: 3.0, rally: 2.0 };
+  if (vix < 30) return { crash: 3.5, rally: 2.5 };
+  return { crash: 4.0, rally: 3.0 };
 }
 
 /** Wing width options for iron condor spreads (SPX points) */

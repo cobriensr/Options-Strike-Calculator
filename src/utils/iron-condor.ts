@@ -2,6 +2,7 @@ import {
   DEFAULTS,
   DEFAULT_SPX_SPY_RATIO,
   getKurtosisFactor,
+  type KurtosisPair,
 } from '../constants';
 import type { DeltaRow, IronCondorLegs } from '../types';
 import { normalCDF, blackScholesPrice } from './black-scholes';
@@ -11,33 +12,29 @@ import { calcTimeToExpiry } from './time';
 /**
  * Adjusts a log-normal PoP for fat-tailed (leptokurtic) intraday returns.
  *
- * SPX intraday returns have excess kurtosis ~3-5, meaning tail events
- * happen 2-3× more often than the log-normal model predicts. This function
- * inflates the breach probability on each tail by the kurtosis factor,
- * then recomputes PoP.
- *
- * For an iron condor with breakevens BE_low and BE_high:
- *   P(breach_low) = 1 - P(S_T > BE_low)  → inflated by kurtosis
- *   P(breach_high) = 1 - P(S_T < BE_high) → inflated by kurtosis
- *   PoP_adjusted = 1 - P_adj(breach_low) - P_adj(breach_high)
+ * SPX has negative return skew — crashes are sharper than rallies.
+ * The kurtosis pair provides asymmetric factors:
+ *   - 'put' side uses crash factor (higher — more conservative)
+ *   - 'call' side uses rally factor (lower)
  *
  * For a single spread:
- *   PoP_adjusted = 1 - min(1, (1 - PoP_lognormal) × kurtosis_factor)
+ *   PoP_adjusted = 1 - min(1, (1 - PoP_lognormal) × factor)
  */
 export function adjustPoPForKurtosis(
   popLogNormal: number,
-  kurtosis: number = DEFAULTS.KURTOSIS_FACTOR,
+  kurtosis: KurtosisPair = DEFAULTS.KURTOSIS_FACTOR,
+  side: 'put' | 'call' = 'put',
 ): number {
-  if (kurtosis <= 1) return popLogNormal;
-  // Breach probability = 1 - PoP
+  const k = side === 'put' ? kurtosis.crash : kurtosis.rally;
+  if (k <= 1) return popLogNormal;
   const breachProb = 1 - popLogNormal;
-  // Inflate breach probability by kurtosis factor
-  const adjustedBreach = Math.min(1, breachProb * kurtosis);
+  const adjustedBreach = Math.min(1, breachProb * k);
   return Math.max(0, 1 - adjustedBreach);
 }
 
 /**
  * Adjusts iron condor PoP for fat tails by inflating each tail independently.
+ * Uses asymmetric kurtosis: crash factor for put-side, rally factor for call-side.
  * This is more accurate than adjusting the combined PoP because IC has two
  * independent breach regions (below put BE and above call BE).
  */
@@ -48,24 +45,24 @@ export function adjustICPoPForKurtosis(
   putSigma: number,
   callSigma: number,
   T: number,
-  kurtosis: number = DEFAULTS.KURTOSIS_FACTOR,
+  kurtosis: KurtosisPair = DEFAULTS.KURTOSIS_FACTOR,
 ): number {
-  if (kurtosis <= 1 || T <= 0)
+  if ((kurtosis.crash <= 1 && kurtosis.rally <= 1) || T <= 0)
     return calcPoP(spot, beLow, beHigh, putSigma, callSigma, T);
 
   const sqrtT = Math.sqrt(T);
 
-  // Put-side breach: P(S_T < BE_low)
+  // Put-side breach: P(S_T < BE_low) — uses crash factor
   const d2Low =
     (Math.log(spot / beLow) - ((putSigma * putSigma) / 2) * T) /
     (putSigma * sqrtT);
-  const pBreachLow = Math.min(1, normalCDF(-d2Low) * kurtosis);
+  const pBreachLow = Math.min(1, normalCDF(-d2Low) * kurtosis.crash);
 
-  // Call-side breach: P(S_T > BE_high)
+  // Call-side breach: P(S_T > BE_high) — uses rally factor
   const d2High =
     (Math.log(spot / beHigh) - ((callSigma * callSigma) / 2) * T) /
     (callSigma * sqrtT);
-  const pBreachHigh = Math.min(1, normalCDF(d2High) * kurtosis);
+  const pBreachHigh = Math.min(1, normalCDF(d2High) * kurtosis.rally);
 
   return Math.max(0, Math.min(1, 1 - pBreachLow - pBreachHigh));
 }
@@ -288,10 +285,12 @@ export function buildIronCondor(
     adjustedPutSpreadPoP: adjustPoPForKurtosis(
       putSpreadPoP,
       getKurtosisFactor(vix),
+      'put',
     ),
     adjustedCallSpreadPoP: adjustPoPForKurtosis(
       callSpreadPoP,
       getKurtosisFactor(vix),
+      'call',
     ),
   };
 }
