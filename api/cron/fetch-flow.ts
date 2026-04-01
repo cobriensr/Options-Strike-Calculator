@@ -12,12 +12,14 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
+import {
+  cronGuard,
+  uwFetch,
+  withRetry,
+  checkDataQuality,
+} from '../_lib/api-helpers.js';
 
 // ── Fetch helper ────────────────────────────────────────────
 
@@ -33,21 +35,10 @@ async function fetchMarketTide(
   apiKey: string,
   otmOnly: boolean,
 ): Promise<MarketTideRow[]> {
-  const params = new URLSearchParams({ interval_5m: 'true' });
-  if (otmOnly) params.set('otm_only', 'true');
-
-  const res = await fetch(`${UW_BASE}/market/market-tide?${params}`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
+  const qs = otmOnly
+    ? '/market/market-tide?interval_5m=true&otm_only=true'
+    : '/market/market-tide?interval_5m=true';
+  return uwFetch<MarketTideRow>(apiKey, qs);
 }
 
 // ── Store helper ────────────────────────────────────────────
@@ -59,7 +50,7 @@ async function storeLatestCandle(
   if (rows.length === 0) return { stored: false };
 
   // Get the most recent candle
-  const latest = rows[rows.length - 1]!;
+  const latest = rows.at(-1)!;
   const sql = getDb();
 
   await sql`
@@ -81,29 +72,9 @@ async function storeLatestCandle(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Only allow GET
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  // Verify cron secret (Vercel sends this header for cron invocations)
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  // Skip outside market hours
-  if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
-  }
-
-  const apiKey = process.env.UW_API_KEY;
-  if (!apiKey) {
-    logger.error('UW_API_KEY not configured');
-    return res.status(500).json({ error: 'UW_API_KEY not configured' });
-  }
+  const guard = cronGuard(req, res);
+  if (!guard) return;
+  const { apiKey, today } = guard;
 
   try {
     // Fetch both all-in and OTM Market Tide in parallel; partial failures are tolerated
@@ -157,9 +128,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       otmStore.status === 'rejected';
 
     // Data quality check: alert if all values are zero
-    const today = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
     for (const source of ['market_tide', 'market_tide_otm'] as const) {
       const rows = await getDb()`
         SELECT COUNT(*) AS total,
@@ -168,17 +136,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE date = ${today} AND source = ${source}
       `;
       const { total, nonzero } = rows[0]!;
-      if (Number(total) > 10 && Number(nonzero) === 0) {
-        Sentry.setTag('cron.job', 'fetch-flow');
-        Sentry.captureMessage(
-          `Data quality alert: ${source} has ${total} rows but ALL values are zero for ${today}`,
-          'warning',
-        );
-        logger.warn(
-          { source, total, date: today },
-          'Market Tide data quality: all values zero',
-        );
-      }
+      await checkDataQuality({
+        job: 'fetch-flow',
+        table: 'flow_data',
+        date: today,
+        sourceFilter: source,
+        total: Number(total),
+        nonzero: Number(nonzero),
+      });
     }
 
     logger.info(

@@ -15,12 +15,15 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
+import {
+  cronGuard,
+  uwFetch,
+  roundTo5Min,
+  withRetry,
+  checkDataQuality,
+} from '../_lib/api-helpers.js';
 
 const TICKERS: Array<{ ticker: string; source: string }> = [
   { ticker: 'SPY', source: 'spy_etf_tide' },
@@ -46,20 +49,7 @@ async function fetchEtfTide(
   // when ?date= is the current trading day. Without the param, it
   // returns the live cumulative intraday series. The backfill script
   // passes ?date= for historical dates where it works correctly.
-  const res = await fetch(`${UW_BASE}/market/${ticker}/etf-tide`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(
-      `UW API ${res.status} for ${ticker} ETF Tide: ${text.slice(0, 200)}`,
-    );
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
+  return uwFetch<EtfTideRow>(apiKey, `/market/${ticker}/etf-tide`);
 }
 
 // ── Sample to 5-min intervals ───────────────────────────────
@@ -75,10 +65,7 @@ function sampleTo5Min(
   >();
 
   for (const row of rows) {
-    const dt = new Date(row.timestamp);
-    const minutes = dt.getMinutes();
-    const rounded = new Date(dt);
-    rounded.setMinutes(minutes - (minutes % 5), 0, 0);
+    const rounded = roundTo5Min(new Date(row.timestamp));
     const key = rounded.toISOString();
 
     sampled.set(key, {
@@ -129,32 +116,11 @@ async function storeAllCandles(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
-  }
+  const guard = cronGuard(req, res);
+  if (!guard) return;
+  const { apiKey, today } = guard;
 
   const startTime = Date.now();
-  const apiKey = process.env.UW_API_KEY;
-  if (!apiKey) {
-    logger.error('UW_API_KEY not configured');
-    return res.status(500).json({ error: 'UW_API_KEY not configured' });
-  }
-
-  // Get today's date in ET
-  const today = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
 
   try {
     const results: Record<
@@ -190,17 +156,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           WHERE date = ${today} AND source = ${source}
         `;
         const { total, nonzero } = rows[0]!;
-        if (Number(total) > 10 && Number(nonzero) === 0) {
-          Sentry.setTag('cron.job', 'fetch-etf-tide');
-          Sentry.captureMessage(
-            `Data quality alert: ${source} has ${total} rows but ALL values are zero for ${today}`,
-            'warning',
-          );
-          logger.warn(
-            { source, total, date: today },
-            'ETF Tide data quality: all values zero',
-          );
-        }
+        await checkDataQuality({
+          job: 'fetch-etf-tide',
+          table: 'flow_data',
+          date: today,
+          sourceFilter: source,
+          total: Number(total),
+          nonzero: Number(nonzero),
+        });
       }
     }
 

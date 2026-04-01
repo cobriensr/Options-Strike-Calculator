@@ -18,12 +18,15 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { TIMEOUTS } from '../_lib/constants.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { isMarketHours, withRetry } from '../_lib/api-helpers.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
+import {
+  cronGuard,
+  uwFetch,
+  roundTo5Min,
+  withRetry,
+  checkDataQuality,
+} from '../_lib/api-helpers.js';
 
 const TICKERS: Array<{ ticker: string; source: string }> = [
   { ticker: 'SPX', source: 'spx_flow' },
@@ -59,20 +62,10 @@ async function fetchNetFlow(
   apiKey: string,
   ticker: string,
 ): Promise<CumulatedTick[]> {
-  const res = await fetch(`${UW_BASE}/stock/${ticker}/net-prem-ticks`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(
-      `UW API ${res.status} for ${ticker}: ${text.slice(0, 200)}`,
-    );
-  }
-
-  const body = await res.json();
-  const ticks: NetPremTick[] = body.data ?? [];
+  const ticks = await uwFetch<NetPremTick>(
+    apiKey,
+    `/stock/${ticker}/net-prem-ticks`,
+  );
 
   if (ticks.length === 0) return [];
 
@@ -111,11 +104,7 @@ async function fetchNetFlow(
   const sampled = new Map<string, CumulatedTick>();
 
   for (const tick of cumulated) {
-    const dt = new Date(tick.timestamp);
-    // Round down to nearest 5-minute boundary
-    const minutes = dt.getMinutes();
-    const rounded = new Date(dt);
-    rounded.setMinutes(minutes - (minutes % 5), 0, 0);
+    const rounded = roundTo5Min(new Date(tick.timestamp));
     const key = rounded.toISOString();
 
     // Keep the latest tick in each 5-min window (overwrites earlier ones)
@@ -169,28 +158,11 @@ async function storeAllCandles(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  // Verify cron secret
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!isMarketHours()) {
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'Outside market hours' });
-  }
+  const guard = cronGuard(req, res);
+  if (!guard) return;
+  const { apiKey, today } = guard;
 
   const startTime = Date.now();
-  const apiKey = process.env.UW_API_KEY;
-  if (!apiKey) {
-    logger.error('UW_API_KEY not configured');
-    return res.status(500).json({ error: 'UW_API_KEY not configured' });
-  }
 
   try {
     const results: Record<
@@ -211,9 +183,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Data quality check: alert if all values are zero per source
-    const today = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
     for (const { source } of TICKERS) {
       const rows = await getDb()`
         SELECT COUNT(*) AS total,
@@ -222,17 +191,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE date = ${today} AND source = ${source}
       `;
       const { total, nonzero } = rows[0]!;
-      if (Number(total) > 10 && Number(nonzero) === 0) {
-        Sentry.setTag('cron.job', 'fetch-net-flow');
-        Sentry.captureMessage(
-          `Data quality alert: ${source} has ${total} rows but ALL values are zero for ${today}`,
-          'warning',
-        );
-        logger.warn(
-          { source, total, date: today },
-          'Net flow data quality: all values zero',
-        );
-      }
+      await checkDataQuality({
+        job: 'fetch-net-flow',
+        table: 'flow_data',
+        date: today,
+        sourceFilter: source,
+        total: Number(total),
+        nonzero: Number(nonzero),
+      });
     }
 
     logger.info({ results }, 'fetch-net-flow completed');
