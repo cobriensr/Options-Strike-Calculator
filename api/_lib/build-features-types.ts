@@ -2,10 +2,7 @@
  * Shared types, constants, and helpers for the build-features modules.
  */
 
-import {
-  getETTime,
-  getETDateStr,
-} from '../../src/utils/timezone.js';
+import { getETTime, getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Types ──────────────────────────────────────────────────
 

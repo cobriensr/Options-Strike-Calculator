@@ -38,8 +38,7 @@ function classifyCharmPattern(
 
   for (const s of nearby) {
     const strike = num(s.strike)!;
-    const netCharm =
-      (num(s.call_charm_oi) ?? 0) + (num(s.put_charm_oi) ?? 0);
+    const netCharm = (num(s.call_charm_oi) ?? 0) + (num(s.put_charm_oi) ?? 0);
     if (strike >= atmPrice) {
       if (netCharm > 0) posAbove++;
       else negAbove++;
@@ -53,10 +52,8 @@ function classifyCharmPattern(
 
   if (totalNeg / total > 0.8) return 'all_negative';
   if (totalPos / total > 0.8) return 'all_positive';
-  if (posAbove > negAbove * 2 && negBelow >= posBelow)
-    return 'ccs_confirming';
-  if (posBelow > negBelow * 2 && negAbove >= posAbove)
-    return 'pcs_confirming';
+  if (posAbove > negAbove * 2 && negBelow >= posBelow) return 'ccs_confirming';
+  if (posBelow > negBelow * 2 && negAbove >= posAbove) return 'pcs_confirming';
   return 'mixed';
 }
 
@@ -103,8 +100,7 @@ function computeStrikeFeatures(
     if (strike == null) continue;
 
     const netGamma = gammas[i]!;
-    const netCharm =
-      (num(s.call_charm_oi) ?? 0) + (num(s.put_charm_oi) ?? 0);
+    const netCharm = (num(s.call_charm_oi) ?? 0) + (num(s.put_charm_oi) ?? 0);
     const dist = strike - atmPrice;
 
     // Gamma walls
@@ -115,8 +111,7 @@ function computeStrikeFeatures(
       }
       if (
         dist < 0 &&
-        (wallBelowDist == null ||
-          Math.abs(dist) < Math.abs(wallBelowDist))
+        (wallBelowDist == null || Math.abs(dist) < Math.abs(wallBelowDist))
       ) {
         wallBelowDist = Math.abs(dist);
         wallBelowMag = netGamma;
@@ -163,8 +158,7 @@ function computeStrikeFeatures(
   features.neg_gamma_nearest_dist = negNearestDist;
   features.neg_gamma_nearest_mag = negNearestMag;
 
-  features.gamma_asymmetry =
-    sumPosBelow > 0 ? sumPosAbove / sumPosBelow : null;
+  features.gamma_asymmetry = sumPosBelow > 0 ? sumPosAbove / sumPosBelow : null;
 
   const avgCharmAbove =
     charmCountAbove > 0 ? charmSumAbove / charmCountAbove : 0;
@@ -249,8 +243,7 @@ export async function engineerGexFeatures(
     // 0DTE charm as % of total
     const totalCharm = greekRows.reduce(
       (sum, r) =>
-        sum +
-        Math.abs((num(r.call_charm) ?? 0) + (num(r.put_charm) ?? 0)),
+        sum + Math.abs((num(r.call_charm) ?? 0) + (num(r.put_charm) ?? 0)),
       0,
     );
     const dte0Charm = Math.abs(features.dte0_net_charm as number);
@@ -275,8 +268,7 @@ export async function engineerGexFeatures(
     ORDER BY s.strike ASC
   `) as StrikeRow[];
 
-  const atmPrice =
-    strikeRows.length > 0 ? (num(strikeRows[0]!.price) ?? 0) : 0;
+  const atmPrice = strikeRows.length > 0 ? (num(strikeRows[0]!.price) ?? 0) : 0;
   const strikeFeatures = computeStrikeFeatures(strikeRows, atmPrice);
   Object.assign(features, strikeFeatures);
 
@@ -298,8 +290,7 @@ export async function engineerGexFeatures(
     const topZeroDte = strikeRows
       .map((s) => ({
         strike: num(s.strike)!,
-        gamma:
-          (num(s.call_gamma_oi) ?? 0) + (num(s.put_gamma_oi) ?? 0),
+        gamma: (num(s.call_gamma_oi) ?? 0) + (num(s.put_gamma_oi) ?? 0),
       }))
       .sort((a, b) => b.gamma - a.gamma)
       .slice(0, 3);
@@ -307,8 +298,7 @@ export async function engineerGexFeatures(
     const topAllExp = allExpStrikes
       .map((s) => ({
         strike: num(s.strike)!,
-        gamma:
-          (num(s.call_gamma_oi) ?? 0) + (num(s.put_gamma_oi) ?? 0),
+        gamma: (num(s.call_gamma_oi) ?? 0) + (num(s.put_gamma_oi) ?? 0),
       }))
       .sort((a, b) => b.gamma - a.gamma)
       .slice(0, 3);

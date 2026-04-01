@@ -173,14 +173,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ]);
 
     if (rows0dte.length === 0 && rows1dte.length === 0) {
-      return res
-        .status(200)
-        .json({ stored: false, reason: 'No strike data' });
+      return res.status(200).json({ stored: false, reason: 'No strike data' });
     }
 
-    const price = Number.parseFloat(
-      (rows0dte[0] ?? rows1dte[0])!.price,
-    );
+    const price = Number.parseFloat((rows0dte[0] ?? rows1dte[0])!.price);
 
     // Store both expiries
     const [result0dte, result1dte] = await Promise.all([

@@ -71,9 +71,8 @@ vi.mock('../_lib/embeddings.js', () => ({
 
 // --- API helpers mock (for analyze handler) ---
 vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import('../_lib/api-helpers.js')
-  >();
+  const actual =
+    await importOriginal<typeof import('../_lib/api-helpers.js')>();
   return {
     ...actual,
     rejectIfNotOwner: vi.fn().mockReturnValue(false),

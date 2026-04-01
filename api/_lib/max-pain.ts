@@ -104,9 +104,7 @@ export function formatMaxPainForClaude(
 
   // Label reflects whether we matched 0DTE exactly or used nearest monthly
   const isExact = zeroDte.expiry === analysisDate;
-  const expiryLabel = isExact
-    ? '0DTE'
-    : `nearest monthly (${zeroDte.expiry})`;
+  const expiryLabel = isExact ? '0DTE' : `nearest monthly (${zeroDte.expiry})`;
   lines.push(`Max Pain (${expiryLabel}): ${zeroDteStrike.toFixed(0)}`);
 
   if (currentSpx != null) {

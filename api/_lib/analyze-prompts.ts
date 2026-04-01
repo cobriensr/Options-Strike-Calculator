@@ -168,6 +168,7 @@ Gamma bar magnitude estimation: The Periscope gamma bar profile uses a scale whe
 - ~50-75% of profile width ≈ 5,000-15,000 gamma — dominant feature, session-defining wall or danger zone
 - ~75%+ of profile width ≈ 15,000+ gamma — extreme, rare, highest-confidence structural anchor
 When the API per-strike profile is also provided, cross-reference your visual estimates against the API gamma values at the same strikes. If they diverge significantly, trust the API values for magnitude and use Periscope only for the CONFIRMED (green/red) direction and wall identification.
+LATE-SESSION 1DTE TRANSITION: After 2:00 PM ET (1:00 PM CT), the trader switches Periscope to show 1DTE (next-day) expiry instead of 0DTE. By this time, 0DTE gamma has collapsed to within 10-15 pts of ATM and no longer governs structural walls further out. The 1DTE gamma profile has time value spread across the full strike range and becomes the dominant force for settlement mechanics, structural support/resistance beyond 15 pts from ATM, and broken wing butterfly targeting. When afternoon Periscope images are provided, treat them as 1DTE data — the walls shown are tomorrow's expiry, not today's.
 </periscope>
 <net_charm>
 Net Charm Exposure (0 DTE - SPX) shows how each gamma wall will evolve with time. Charm measures the rate at which delta changes as time passes (delta decay). This data is provided via API as the "0DTE Per-Strike Greek Profile" with per-strike charm values and a computed charm pattern (CCS-CONFIRMING, PCS-CONFIRMING, ALL-NEGATIVE, ALL-POSITIVE, or MIXED).

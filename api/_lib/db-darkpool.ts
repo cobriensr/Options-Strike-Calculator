@@ -38,4 +38,3 @@ export async function saveDarkPoolSnapshot(
   `;
   return rows.length > 0 ? (rows[0]!.id as number) : null;
 }
-

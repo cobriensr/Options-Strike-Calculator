@@ -77,7 +77,9 @@ describe('fetch-greek-exposure handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     // Default: return a row satisfying INSERT RETURNING and data-quality shapes
-    mockSql.mockResolvedValue([{ id: 1, total: 0, nonzero: 0, qcTotal: 0, qcNonzero: 0 }]);
+    mockSql.mockResolvedValue([
+      { id: 1, total: 0, nonzero: 0, qcTotal: 0, qcNonzero: 0 },
+    ]);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -261,8 +263,8 @@ describe('fetch-greek-exposure handler', () => {
     process.env.UW_API_KEY = 'uwkey';
     // Empty result = ON CONFLICT DO NOTHING (duplicate); keep data-quality row
     mockSql
-      .mockResolvedValueOnce([])                              // expiry INSERT (conflict)
-      .mockResolvedValue([{ total: 0, nonzero: 0 }]);        // data-quality SELECT
+      .mockResolvedValueOnce([]) // expiry INSERT (conflict)
+      .mockResolvedValue([{ total: 0, nonzero: 0 }]); // data-quality SELECT
     stubFetch([], [makeExpiryRow()]);
 
     const req = mockRequest({

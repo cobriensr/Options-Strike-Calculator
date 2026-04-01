@@ -7,9 +7,8 @@ import { mockRequest, mockResponse } from './helpers';
 const mockSaveOutcome = vi.hoisted(() => vi.fn());
 
 vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import('../_lib/api-helpers.js')
-  >();
+  const actual =
+    await importOriginal<typeof import('../_lib/api-helpers.js')>();
   return {
     ...actual,
     schwabFetch: vi.fn(),

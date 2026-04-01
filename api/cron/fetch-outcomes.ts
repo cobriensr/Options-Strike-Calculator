@@ -141,9 +141,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Fetch VIX and VIX1D quotes
     const quotesResult = await withRetry(() =>
-      schwabFetch<QuotesResponse>(
-        '/quotes?symbols=$VIX,$VIX1D&fields=quote',
-      ),
+      schwabFetch<QuotesResponse>('/quotes?symbols=$VIX,$VIX1D&fields=quote'),
     );
 
     let vixClose: number | undefined;

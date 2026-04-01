@@ -131,9 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await Promise.all(
       TICKERS.map(async ({ ticker, source }) => {
         try {
-          const rows = await withRetry(() =>
-            fetchEtfTide(apiKey, ticker),
-          );
+          const rows = await withRetry(() => fetchEtfTide(apiKey, ticker));
           const candles = sampleTo5Min(rows);
           const result = await storeAllCandles(candles, source, today);
           results[source] = { ...result, candles: candles.length };
