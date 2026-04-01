@@ -1429,6 +1429,286 @@ def analyze_dte_regime() -> None:
         )
 
 
+def gamma_concentration(snapshot: pd.DataFrame) -> float:
+    """Fraction of total |gamma| in the top 3 strikes."""
+    s = snapshot.copy()
+    s["call_gamma_oi"] = pd.to_numeric(s["call_gamma_oi"], errors="coerce")
+    s["put_gamma_oi"] = pd.to_numeric(s["put_gamma_oi"], errors="coerce")
+    s["abs_g"] = (
+        s["call_gamma_oi"].fillna(0) + s["put_gamma_oi"].fillna(0)
+    ).abs()
+    total = s["abs_g"].sum()
+    if total == 0:
+        return 0.0
+    top3 = s.nlargest(3, "abs_g")["abs_g"].sum()
+    return float(top3 / total)
+
+
+def backtest_composite_strategy() -> None:
+    """
+    Backtest the concentration-gated composite strategy.
+
+    Strategy:
+      1. Compute 0 DTE gamma concentration (top-3 share)
+      2. HIGH concentration (≥ threshold): trust 0 DTE prox-centroid
+      3. LOW concentration (< threshold): switch to 1 DTE prox-centroid
+      4. Confidence tiers based on alignment of 0 DTE and 1 DTE centroids
+
+    Compares against baselines:
+      A) Always use 0 DTE prox-centroid
+      B) Always use 1 DTE prox-centroid
+    """
+    section("8. COMPOSITE STRATEGY BACKTEST")
+    print("  Concentration-gated 0 DTE / 1 DTE switching strategy\n")
+
+    df_0dte = load_strike_data('0dte')
+    df_1dte = load_strike_data('1dte')
+
+    if len(df_1dte) == 0 or df_1dte["date"].nunique() < 3:
+        print("  Insufficient 1 DTE data — skipping backtest.")
+        return
+
+    SNAP_CASCADE = ['19:30', '19:00', '20:00', '20:15']
+
+    dates_0 = set(df_0dte["date"].unique())
+    dates_1 = set(df_1dte["date"].unique())
+    common_dates = sorted(dates_0 & dates_1)
+
+    if len(common_dates) < 5:
+        print(f"  Only {len(common_dates)} common dates — need 5+.")
+        return
+
+    # ── Collect per-day profiles ──
+    day_profiles: list[dict] = []
+
+    for date in common_dates:
+        day_0 = df_0dte[df_0dte["date"] == date]
+        day_1 = df_1dte[df_1dte["date"] == date]
+        settlement = float(day_0["settlement"].iloc[0])
+
+        snap_0, snap_1 = None, None
+        for cp in SNAP_CASCADE:
+            if snap_0 is None:
+                snap_0 = find_nearest_snapshot(day_0, cp)
+            if snap_1 is None:
+                snap_1 = find_nearest_snapshot(day_1, cp)
+        if snap_0 is None or snap_1 is None:
+            continue
+
+        prof_0 = compute_gamma_profile(snap_0)
+        prof_1 = compute_gamma_profile(snap_1)
+        if not prof_0 or not prof_1:
+            continue
+
+        conc = gamma_concentration(snap_0)
+        centroid_0 = prof_0["prox_centroid"]
+        centroid_1 = prof_1["prox_centroid"]
+        disagreement = abs(centroid_0 - centroid_1)
+
+        dist_0 = abs(settlement - centroid_0)
+        dist_1 = abs(settlement - centroid_1)
+
+        # Find 1 DTE gamma wall (pos peak) nearest the 0 DTE centroid
+        wall_1dte_near_0dte = prof_1["pos_peak_strike"]
+        # If the 1 DTE prox centroid is closer to the 0 DTE centroid
+        # than the 1 DTE pos peak, use the centroid instead
+        if (abs(centroid_1 - centroid_0)
+                < abs(prof_1["pos_peak_strike"] - centroid_0)):
+            wall_1dte_near_0dte = centroid_1
+        dist_1_anchored = abs(settlement - wall_1dte_near_0dte)
+
+        day_profiles.append({
+            "date": date,
+            "settlement": settlement,
+            "conc_0dte": conc,
+            "centroid_0dte": centroid_0,
+            "centroid_1dte": centroid_1,
+            "disagreement": disagreement,
+            "dist_0dte": dist_0,
+            "dist_1dte": dist_1,
+            "dist_1dte_anchored": dist_1_anchored,
+            "actual_winner": "1dte" if dist_1 < dist_0 else "0dte",
+        })
+
+    if len(day_profiles) < 5:
+        print(f"  Only {len(day_profiles)} usable days — need 5+.")
+        return
+
+    results = pd.DataFrame(day_profiles)
+    n = len(results)
+
+    # ── Baselines ──
+    subsection("Baselines")
+
+    baseline_0 = results["dist_0dte"].mean()
+    baseline_1 = results["dist_1dte"].mean()
+    baseline_0_w10 = (results["dist_0dte"] <= 10).mean()
+    baseline_1_w10 = (results["dist_1dte"] <= 10).mean()
+
+    print(f"  Always 0 DTE prox-centroid:  "
+          f"avg {baseline_0:.1f} pts, {baseline_0_w10:.0%} within ±10")
+    print(f"  Always 1 DTE prox-centroid:  "
+          f"avg {baseline_1:.1f} pts, {baseline_1_w10:.0%} within ±10")
+
+    # ── Sweep concentration thresholds ──
+    subsection("Concentration threshold sweep")
+    print("  Strategy: if 0 DTE conc < threshold, use 1 DTE; else 0 DTE\n")
+
+    print(f"  {'Threshold':>10s} {'Avg Dist':>9s} {'±10':>5s} {'±20':>5s} "
+          f"{'Switch%':>8s} {'vs Base':>8s}")
+    print(f"  {'─' * 10} {'─' * 9} {'─' * 5} {'─' * 5} "
+          f"{'─' * 8} {'─' * 8}")
+
+    best_thresh = 0.0
+    best_avg = baseline_0  # must beat always-0-DTE
+
+    for thresh in [0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]:
+        dists = []
+        switches = 0
+        for _, r in results.iterrows():
+            if r["conc_0dte"] < thresh:
+                dists.append(r["dist_1dte"])
+                switches += 1
+            else:
+                dists.append(r["dist_0dte"])
+
+        arr = np.array(dists)
+        avg = arr.mean()
+        w10 = (arr <= 10).mean()
+        w20 = (arr <= 20).mean()
+        switch_pct = switches / n
+        delta = baseline_0 - avg
+
+        marker = " ◀" if avg < best_avg else ""
+        if avg < best_avg:
+            best_avg = avg
+            best_thresh = thresh
+
+        print(f"  {thresh:>9.0%} {avg:>8.1f} {w10:>4.0%} {w20:>4.0%} "
+              f"{switch_pct:>7.0%} {delta:>+7.1f}{marker}")
+
+    print(f"\n  Best threshold: {best_thresh:.0%} "
+          f"(avg {best_avg:.1f} pts)")
+
+    # ── Run best strategy with confidence tiers ──
+    subsection(f"Strategy detail (threshold = {best_thresh:.0%})")
+
+    CONFIDENCE_TIERS = [
+        ("HIGH — aligned", 10),
+        ("MEDIUM — mild disagreement", 20),
+        ("LOW — strong disagreement", float("inf")),
+    ]
+
+    print(f"  {'Date':<12s} {'Settle':>7s} {'Conc':>6s} {'Regime':>8s} "
+          f"{'Anchor':>8s} {'Dist':>6s} {'0DTE':>6s} {'1DTE':>6s} "
+          f"{'Conf':>6s} {'Better?':>8s}")
+    print(f"  {'─' * 12} {'─' * 7} {'─' * 6} {'─' * 8} "
+          f"{'─' * 8} {'─' * 6} {'─' * 6} {'─' * 6} "
+          f"{'─' * 6} {'─' * 8}")
+
+    strat_dists = []
+    confidence_results = {"HIGH": [], "MEDIUM": [], "LOW": []}
+
+    for _, r in results.iterrows():
+        date_str = pd.Timestamp(r["date"]).strftime("%Y-%m-%d")
+        conc = r["conc_0dte"]
+
+        if conc < best_thresh:
+            regime = "1DTE"
+            anchor = r["centroid_1dte"]
+        else:
+            regime = "0DTE"
+            anchor = r["centroid_0dte"]
+
+        dist = abs(r["settlement"] - anchor)
+        strat_dists.append(dist)
+
+        # Confidence tier
+        disagree = r["disagreement"]
+        conf = "LOW"
+        for tier_name, tier_max in CONFIDENCE_TIERS:
+            if disagree <= tier_max:
+                conf = tier_name.split(" —")[0]
+                break
+
+        confidence_results[conf].append(dist)
+
+        # Did the strategy beat always-0DTE?
+        better = dist < r["dist_0dte"]
+        same = abs(dist - r["dist_0dte"]) < 0.01
+        marker = "✓" if better else ("=" if same else "✗")
+
+        print(f"  {date_str:<12s} {r['settlement']:>7.1f} "
+              f"{conc:>5.0%} {regime:>8s} "
+              f"{anchor:>7.0f} {dist:>5.1f} "
+              f"{r['dist_0dte']:>5.1f} {r['dist_1dte']:>5.1f} "
+              f"{conf:>6s} {marker:>8s}")
+
+    # ── Summary ──
+    subsection("Strategy summary")
+
+    strat_arr = np.array(strat_dists)
+    strat_avg = strat_arr.mean()
+    strat_w10 = (strat_arr <= 10).mean()
+    strat_w20 = (strat_arr <= 20).mean()
+    improvement = baseline_0 - strat_avg
+    beat_count = sum(
+        1 for s, b in zip(strat_dists, results["dist_0dte"])
+        if s < b
+    )
+
+    print(f"  {'Strategy':<28s} {'Avg':>7s} {'±10':>5s} {'±20':>5s}")
+    print(f"  {'─' * 28} {'─' * 7} {'─' * 5} {'─' * 5}")
+    print(f"  {'Always 0 DTE':<28s} {baseline_0:>6.1f} "
+          f"{baseline_0_w10:>4.0%} "
+          f"{(results['dist_0dte'] <= 20).mean():>4.0%}")
+    print(f"  {'Always 1 DTE':<28s} {baseline_1:>6.1f} "
+          f"{baseline_1_w10:>4.0%} "
+          f"{(results['dist_1dte'] <= 20).mean():>4.0%}")
+    print(f"  {'Composite (conc-gated)':<28s} {strat_avg:>6.1f} "
+          f"{strat_w10:>4.0%} {strat_w20:>4.0%}")
+
+    print(f"\n  Improvement over baseline: {improvement:+.1f} pts avg")
+    print(f"  Beat baseline on {beat_count}/{n} days "
+          f"({beat_count / n:.0%})")
+
+    # Confidence tier breakdown
+    print(f"\n  Confidence tier accuracy:")
+    for tier in ("HIGH", "MEDIUM", "LOW"):
+        tier_dists = confidence_results[tier]
+        if tier_dists:
+            tier_avg = np.mean(tier_dists)
+            tier_w10 = sum(1 for d in tier_dists if d <= 10) / len(tier_dists)
+            print(f"    {tier:<8s}  n={len(tier_dists):<3d}  "
+                  f"avg {tier_avg:.1f} pts, {tier_w10:.0%} within ±10")
+        else:
+            print(f"    {tier:<8s}  n=0")
+
+    # ── Final recommendation ──
+    if improvement > 0.5:
+        takeaway(
+            f"Composite strategy beats always-0-DTE by "
+            f"{improvement:.1f} pts.\n"
+            f"            Rule: if 0 DTE concentration < {best_thresh:.0%}, "
+            f"switch to 1 DTE prox-centroid.\n"
+            "            When 0 DTE and 1 DTE centroids align within 10 pts,"
+            " highest confidence."
+        )
+    elif improvement > 0:
+        takeaway(
+            f"Composite strategy is marginally better "
+            f"({improvement:+.1f} pts).\n"
+            "            The signal exists but needs more data to confirm.\n"
+            f"            Tentative rule: switch to 1 DTE when "
+            f"0 DTE conc < {best_thresh:.0%}."
+        )
+    else:
+        takeaway(
+            "Composite strategy does not beat always-0-DTE.\n"
+            "            Stick with 0 DTE prox-centroid as primary anchor."
+        )
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1470,6 +1750,7 @@ def main() -> None:
     key_findings(df, max_pain_df)
     analyze_dte_comparison()
     analyze_dte_regime()
+    backtest_composite_strategy()
     print()
 
 
