@@ -26,6 +26,13 @@ try:
         f1_score,
         log_loss,
     )
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.naive_bayes import GaussianNB
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.pipeline import make_pipeline
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import StandardScaler
 except ImportError:
     print("Missing dependencies. Run:")
     print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn xgboost")
@@ -182,13 +189,14 @@ def encode_target(df: pd.DataFrame) -> pd.Series:
 def walk_forward(
     X: pd.DataFrame,
     y: pd.Series,
-    params: dict,
+    model_factory,
     min_train: int = 20,
 ) -> dict:
     """
     Expanding-window walk-forward validation.
 
     Train on days 1..i, predict day i+1.
+    model_factory: callable returning a fresh sklearn-compatible model.
     Returns dict with predictions, probabilities, and indices.
     """
     n = len(X)
@@ -205,14 +213,23 @@ def walk_forward(
         X_test = X.iloc[[i]]
         y_test = y.iloc[i]
 
-        model = XGBClassifier(
-            num_class=n_classes,
-            **params,
-        )
-        model.fit(X_train, y_train, verbose=False)
+        model = model_factory()
+        model.fit(X_train, y_train)
 
         pred = model.predict(X_test)[0]
-        prob = model.predict_proba(X_test)[0]
+        prob_raw = model.predict_proba(X_test)[0]
+
+        # Pad probability vector if model hasn't seen all classes
+        if len(prob_raw) < n_classes:
+            prob = np.zeros(n_classes)
+            model_classes = (
+                model.classes_ if hasattr(model, "classes_")
+                else list(range(n_classes))
+            )
+            for j, cls in enumerate(model_classes):
+                prob[int(cls)] = prob_raw[j]
+        else:
+            prob = prob_raw
 
         preds.append(pred)
         probs.append(prob)
@@ -278,6 +295,98 @@ def compute_metrics(
         "prev_day_baseline": round(float(prev_day_acc), 4),
         "walk_forward_folds": results["n_folds"],
     }
+
+
+# ── Model Configs ────────────────────────────────────────────
+
+def build_model_configs(n_classes: int, xgb_params: dict) -> dict:
+    """
+    Define all models for walk-forward comparison.
+
+    sklearn models are wrapped in Pipelines with median imputation
+    (XGBoost handles NaN natively). Logistic regression also gets
+    StandardScaler since it's sensitive to feature scale.
+    """
+    return {
+        "Logistic Reg (L2)": lambda: make_pipeline(
+            SimpleImputer(strategy="median"),
+            StandardScaler(),
+            LogisticRegression(
+                C=1.0, solver="lbfgs",
+                max_iter=1000, random_state=42,
+            ),
+        ),
+        "Random Forest (15)": lambda: make_pipeline(
+            SimpleImputer(strategy="median"),
+            RandomForestClassifier(
+                n_estimators=15, max_depth=3, random_state=42,
+            ),
+        ),
+        "Naive Bayes": lambda: make_pipeline(
+            SimpleImputer(strategy="median"),
+            GaussianNB(),
+        ),
+        "Decision Tree (d=2)": lambda: make_pipeline(
+            SimpleImputer(strategy="median"),
+            DecisionTreeClassifier(max_depth=2, random_state=42),
+        ),
+        "XGBoost": lambda: XGBClassifier(
+            num_class=n_classes, **xgb_params,
+        ),
+    }
+
+
+def print_model_comparison(
+    all_metrics: dict[str, dict],
+) -> str:
+    """Print comparison table of all models. Returns best model name."""
+    subsection("Model Comparison")
+
+    # Header
+    print(f"  {'Model':<22s} {'Acc':>7s} {'Lift':>7s} "
+          f"{'LogLoss':>8s}  Per-Class F1")
+    print(f"  {'─' * 22} {'─' * 7} {'─' * 7} "
+          f"{'─' * 8}  {'─' * 30}")
+
+    # Baselines (grab from any model's metrics)
+    first = next(iter(all_metrics.values()))
+    majority_acc = first["majority_baseline"]
+    prev_day_acc = first["prev_day_baseline"]
+    prev_lift = prev_day_acc - majority_acc
+
+    print(f"  {'Majority Baseline':<22s} {majority_acc:>6.1%} "
+          f"{'—':>7s}  {'—':>8s}  (always predict "
+          f"{first['majority_class']})")
+    print(f"  {'Previous-Day':<22s} {prev_day_acc:>6.1%} "
+          f"{prev_lift:>+6.1%}  {'—':>8s}  "
+          f"(repeat yesterday)")
+
+    print(f"  {'─' * 22} {'─' * 7} {'─' * 7} "
+          f"{'─' * 8}  {'─' * 30}")
+
+    # Models sorted by accuracy descending
+    sorted_models = sorted(
+        all_metrics.items(),
+        key=lambda x: x[1]["accuracy"],
+        reverse=True,
+    )
+    best_name = sorted_models[0][0]
+
+    for name, m in sorted_models:
+        lift = m["accuracy"] - majority_acc
+        f1_parts = []
+        for struct, val in m["per_class_f1"].items():
+            short = {"CALL CREDIT SPREAD": "CCS",
+                     "PUT CREDIT SPREAD": "PCS",
+                     "IRON CONDOR": "IC"}.get(struct, struct[:3])
+            f1_parts.append(f"{short}={val:.2f}")
+        f1_str = "  ".join(f1_parts)
+        marker = "  <-- best" if name == best_name else ""
+        print(f"  {name:<22s} {m['accuracy']:>6.1%} "
+              f"{lift:>+6.1%}  {m['log_loss']:>7.4f}  "
+              f"{f1_str}{marker}")
+
+    return best_name
 
 
 # ── Feature Importance ───────────────────────────────────────
@@ -376,6 +485,8 @@ def save_experiment(
     df: pd.DataFrame,
     y: pd.Series,
     feature_names: list[str],
+    *,
+    all_model_metrics: dict[str, dict] | None = None,
 ) -> None:
     """Save experiment results to ml/experiments/."""
     class_dist = y.value_counts().to_dict()
@@ -392,7 +503,7 @@ def save_experiment(
     experiment = {
         "phase": "phase2_early",
         "model": "xgboost",
-        "version": "v1",
+        "version": "v2",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": {
             "training_days": int(len(y)),
@@ -404,22 +515,38 @@ def save_experiment(
                 df.index.max().strftime("%Y-%m-%d"),
             ],
         },
-        "params": {k: v for k, v in params.items()
-                   if k != "verbosity"},
+        "xgboost_params": {k: v for k, v in params.items()
+                           if k != "verbosity"},
         "metrics": metrics,
         "feature_importance_top10": top10,
         "notes": (
-            "Early feasibility check: walk-forward XGBoost on 3-class "
-            "structure prediction (CCS/PCS/IC). Conservative hyperparams, "
-            "no tuning. Baseline comparison against majority class and "
-            "previous-day heuristic."
+            "Walk-forward comparison of 5 models on 3-class structure "
+            "prediction (CCS/PCS/IC). XGBoost with conservative "
+            "hyperparams + 4 sklearn baselines (logistic regression, "
+            "random forest, naive bayes, decision tree)."
         ),
     }
+
+    # Add comparison results for all models
+    if all_model_metrics:
+        comparison = {}
+        for name, m in all_model_metrics.items():
+            comparison[name] = {
+                "accuracy": m["accuracy"],
+                "log_loss": m["log_loss"],
+                "per_class_f1": m["per_class_f1"],
+            }
+        best_name = max(
+            all_model_metrics,
+            key=lambda k: all_model_metrics[k]["accuracy"],
+        )
+        experiment["model_comparison"] = comparison
+        experiment["best_model"] = best_name
 
     exp_dir = Path(__file__).resolve().parent / "experiments"
     exp_dir.mkdir(exist_ok=True)
     date_str = datetime.now().strftime("%Y-%m-%d")
-    filename = f"phase2_early_xgboost_{date_str}_v1.json"
+    filename = f"phase2_early_{date_str}_v2.json"
     out_path = exp_dir / filename
     out_path.write_text(json.dumps(experiment, indent=2))
     print(f"  Saved experiment: {out_path.name}")
@@ -507,7 +634,7 @@ def main() -> None:
     # ── Walk-forward validation ──────────────────────────────
     section("WALK-FORWARD VALIDATION")
 
-    params = {
+    xgb_params = {
         "objective": "multi:softprob",
         "max_depth": 3,
         "n_estimators": 50,
@@ -521,43 +648,37 @@ def main() -> None:
         "verbosity": 0,
     }
 
+    n_classes = y.nunique()
     min_train = 20
     n_predictions = len(X) - min_train
+
+    models = build_model_configs(n_classes, xgb_params)
+
     print(f"\n  Min training window: {min_train} days")
     print(f"  Predictions to make: {n_predictions}")
-    print("  Running walk-forward ...")
+    print(f"  Models: {', '.join(models.keys())}")
+    print("  Running walk-forward for all models ...")
 
-    wf_results = walk_forward(X, y, params, min_train=min_train)
+    all_results: dict[str, dict] = {}
+    all_metrics: dict[str, dict] = {}
+    for name, factory in models.items():
+        wf = walk_forward(X, y, factory, min_train=min_train)
+        all_results[name] = wf
+        all_metrics[name] = compute_metrics(wf, y)
 
-    # ── Compute metrics ──────────────────────────────────────
+    # ── Results ──────────────────────────────────────────────
     section("RESULTS")
-    metrics = compute_metrics(wf_results, y)
+    best_model = print_model_comparison(all_metrics)
 
-    subsection("Accuracy")
-    print(f"  Walk-forward accuracy:  {metrics['accuracy']:.1%}  "
-          f"({wf_results['n_folds']} predictions)")
-    print(f"  Majority baseline:     {metrics['majority_baseline']:.1%}  "
-          f"(always predict {metrics['majority_class']})")
-    print(f"  Previous-day baseline: {metrics['prev_day_baseline']:.1%}  "
-          f"(predict yesterday's structure)")
-
-    lift = metrics["accuracy"] - metrics["majority_baseline"]
-    print(f"\n  Lift over majority:    {lift:+.1%}")
-
-    subsection("Log Loss")
-    n_classes = y.nunique()
+    # Random baseline for log loss context
     random_ll = -np.log(1.0 / n_classes)
-    print(f"  Model log loss:   {metrics['log_loss']:.4f}")
-    print(f"  Random baseline:  {random_ll:.4f}  (uniform {n_classes}-class)")
+    print(f"\n  Random log loss baseline: {random_ll:.4f} "
+          f"(uniform {n_classes}-class)")
 
-    subsection("Per-Class F1")
-    for struct, f1_val in metrics["per_class_f1"].items():
-        print(f"  {struct:25s}  F1 = {f1_val:.3f}")
-
-    # ── Feature importance ───────────────────────────────────
-    section("FEATURE IMPORTANCE")
-    print("\n  Training final model on all data ...")
-    model, importances = train_final_model(X, y, params)
+    # ── Feature importance (XGBoost) ─────────────────────────
+    section("FEATURE IMPORTANCE (XGBoost)")
+    print("\n  Training final XGBoost on all data ...")
+    model, importances = train_final_model(X, y, xgb_params)
     print_feature_importance(importances, top_n=15)
 
     # SHAP plot
@@ -568,50 +689,63 @@ def main() -> None:
 
     # ── Save experiment ──────────────────────────────────────
     section("EXPERIMENT TRACKING")
-    save_experiment(metrics, params, importances, df_labeled, y,
-                    feature_names)
+    save_experiment(
+        all_metrics["XGBoost"], xgb_params, importances,
+        df_labeled, y, feature_names,
+        all_model_metrics=all_metrics,
+    )
 
     # ── Verdict ──────────────────────────────────────────────
     section("VERDICT")
 
-    majority_name = metrics["majority_class"]
-    acc = metrics["accuracy"]
-    majority_acc = metrics["majority_baseline"]
+    best_metrics = all_metrics[best_model]
+    majority_acc = best_metrics["majority_baseline"]
+    best_acc = best_metrics["accuracy"]
+    lift = best_acc - majority_acc
 
-    if acc > majority_acc + 0.05:
+    xgb_acc = all_metrics["XGBoost"]["accuracy"]
+    xgb_lift = xgb_acc - majority_acc
+
+    if best_acc > majority_acc + 0.05:
         tag = verdict(True)
         print(f"\n  {tag}")
-        print("  PROMISING -- model shows signal beyond majority class.")
-        print(f"  Accuracy {acc:.1%} vs baseline {majority_acc:.1%} "
-              f"(+{lift:.1%} lift)")
-        takeaway(
-            "The model finds exploitable patterns in T1-T2 features.\n"
-            "            Next steps: hyperparameter tuning, feature selection,\n"
-            "            and expanding to include SIT OUT as a 4th class."
-        )
-    elif acc > majority_acc:
-        tag = verdict(False, 'marginal signal')
+        print(f"  PROMISING -- {best_model} shows signal "
+              "beyond majority class.")
+        print(f"  Best: {best_acc:.1%} vs baseline "
+              f"{majority_acc:.1%} ({lift:+.1%} lift)")
+        if best_model != "XGBoost":
+            print(f"  XGBoost: {xgb_acc:.1%} ({xgb_lift:+.1%} lift)")
+            takeaway(
+                f"{best_model} outperforms XGBoost -- simpler model\n"
+                "            is better with this sample size. Consider\n"
+                "            using it as the primary model until n > 60."
+            )
+        else:
+            takeaway(
+                "XGBoost leads the pack. Next steps: hyperparameter\n"
+                "            tuning, feature selection, and expanding to\n"
+                "            include SIT OUT as a 4th class."
+            )
+    elif best_acc > majority_acc:
+        tag = verdict(False, "marginal signal")
         print(f"\n  {tag}")
-        print("  MARGINAL -- weak signal, may need more data or "
-              "better features.")
-        print(f"  Accuracy {acc:.1%} vs baseline {majority_acc:.1%} "
-              f"(+{lift:.1%} lift)")
+        print(f"  MARGINAL -- {best_model} shows weak signal.")
+        print(f"  Best: {best_acc:.1%} vs baseline "
+              f"{majority_acc:.1%} ({lift:+.1%} lift)")
         takeaway(
-            "Model slightly beats majority class but the edge is thin.\n"
-            "            Wait for more labeled days and revisit with\n"
-            "            feature engineering or a different model."
+            "Models slightly beat majority class but the edge is\n"
+            "            thin. Wait for more labeled days and revisit."
         )
     else:
         tag = verdict(False)
         print(f"\n  {tag}")
-        print("  NOT YET -- model doesn't beat "
-              f"always-predict-{majority_name}.")
-        print(f"  Accuracy {acc:.1%} vs baseline {majority_acc:.1%} "
-              f"({lift:+.1%})")
+        print("  NOT YET -- no model beats majority class.")
+        print(f"  Best: {best_acc:.1%} vs baseline "
+              f"{majority_acc:.1%} ({lift:+.1%})")
         takeaway(
-            "Not enough signal in current features or not enough data.\n"
-            "            Keep labeling days and re-run when you have 60+\n"
-            "            labeled samples."
+            "Not enough signal in current features or not enough\n"
+            "            data. Keep labeling days and re-run when you\n"
+            "            have 60+ labeled samples."
         )
 
     print()
