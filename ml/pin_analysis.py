@@ -371,17 +371,165 @@ def analyze_directional_bias(df: pd.DataFrame) -> None:
         )
 
 
-def analyze_per_day_detail(df: pd.DataFrame) -> None:
+def load_max_pain() -> pd.DataFrame:
+    """Load max pain values from training_features."""
+    env = load_env()
+    database_url = env.get("DATABASE_URL", "")
+    if not database_url:
+        return pd.DataFrame()
+
+    engine = create_engine(database_url)
+    try:
+        df = pd.read_sql_query(text("""
+            SELECT date, max_pain_0dte, max_pain_dist, spx_open
+            FROM training_features
+            WHERE max_pain_0dte IS NOT NULL
+            ORDER BY date
+        """), engine)
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        engine.dispose()
+
+    if len(df) == 0:
+        return df
+
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def analyze_max_pain_comparison(
+    df: pd.DataFrame,
+    max_pain_df: pd.DataFrame,
+) -> None:
+    """Compare max pain vs peak gamma vs centroid as settlement predictors."""
+    section("4. MAX PAIN vs PEAK GAMMA vs CENTROID")
+    print("  Which settlement attractor is most accurate?\n")
+
+    if len(max_pain_df) == 0:
+        print("  No max pain data in training_features yet.")
+        print("  Run build-features?backfill=true after deploy to populate.")
+        return
+
+    dates = sorted(df["date"].unique())
+    mp_dates = set(max_pain_df["date"].values)
+    rows = []
+
+    for date in dates:
+        if date not in mp_dates:
+            continue
+
+        day_data = df[df["date"] == date]
+        settlement = float(day_data["settlement"].iloc[0])
+
+        mp_row = max_pain_df[max_pain_df["date"] == date].iloc[0]
+        max_pain = float(mp_row["max_pain_0dte"])
+
+        # Use T-30min snapshot for peak gamma (actionable BWB window)
+        snapshot = find_nearest_snapshot(day_data, "19:30")
+        if snapshot is None:
+            snapshot = find_nearest_snapshot(day_data, "19:00")
+        if snapshot is None:
+            continue
+
+        profile = compute_gamma_profile(snapshot)
+        if not profile:
+            continue
+
+        rows.append({
+            "date": date,
+            "settlement": settlement,
+            "max_pain": max_pain,
+            "mp_dist": abs(settlement - max_pain),
+            "peak_gamma": profile["peak_gamma_strike"],
+            "pg_dist": abs(settlement - profile["peak_gamma_strike"]),
+            "centroid": profile["gamma_centroid"],
+            "gc_dist": abs(settlement - profile["gamma_centroid"]),
+        })
+
+    if not rows:
+        print("  No overlapping days with max pain + strike data at T-30min.")
+        return
+
+    results = pd.DataFrame(rows)
+    n = len(results)
+
+    # Head-to-head comparison
+    predictors = {
+        "Max Pain": ("mp_dist", results["mp_dist"]),
+        "Peak Gamma": ("pg_dist", results["pg_dist"]),
+        "Gamma Centroid": ("gc_dist", results["gc_dist"]),
+    }
+
+    print(f"  {'Predictor':<18s} {'Avg Dist':>9s} {'Med Dist':>9s} "
+          f"{'±10 pts':>8s} {'±20 pts':>8s} {'±30 pts':>8s} {'n':>4s}")
+    print(f"  {'─' * 18} {'─' * 9} {'─' * 9} "
+          f"{'─' * 8} {'─' * 8} {'─' * 8} {'─' * 4}")
+
+    best_name = ""
+    best_avg = float("inf")
+
+    for name, (_, dists) in predictors.items():
+        avg = dists.mean()
+        med = dists.median()
+        w10 = (dists <= 10).mean()
+        w20 = (dists <= 20).mean()
+        w30 = (dists <= 30).mean()
+        marker = ""
+        if avg < best_avg:
+            best_avg = avg
+            best_name = name
+        print(f"  {name:<18s} {avg:>8.1f} {med:>8.1f} "
+              f"{w10:>7.0%} {w20:>7.0%} {w30:>7.0%} {n:>4d}")
+
+    # Mark best after printing (re-print with marker)
+    print(f"\n  Best predictor by avg distance: {best_name} ({best_avg:.1f} pts)")
+
+    # Pairwise wins
+    subsection("Head-to-Head: Which predictor was closest on each day?")
+    mp_wins = (results["mp_dist"] <= results["pg_dist"]).sum()
+    pg_wins = (results["pg_dist"] < results["mp_dist"]).sum()
+    print(f"  Max Pain closer than Peak Gamma:  {mp_wins}/{n} days ({mp_wins / n:.0%})")
+    print(f"  Peak Gamma closer than Max Pain:  {pg_wins}/{n} days ({pg_wins / n:.0%})")
+
+    gc_wins = (results["gc_dist"] <= results["mp_dist"]).sum()
+    print(f"  Centroid closer than Max Pain:    {gc_wins}/{n} days ({gc_wins / n:.0%})")
+
+    # Composite: average of max pain and peak gamma
+    results["composite"] = (results["max_pain"] + results["peak_gamma"]) / 2
+    results["comp_dist"] = (results["settlement"] - results["composite"]).abs()
+    comp_avg = results["comp_dist"].mean()
+    comp_w20 = (results["comp_dist"] <= 20).mean()
+    print(f"\n  Composite (avg of max pain + peak gamma):")
+    print(f"    Avg distance: {comp_avg:.1f} pts, ±20 pts: {comp_w20:.0%}")
+
+    if comp_avg < best_avg:
+        takeaway(
+            "COMPOSITE wins — averaging max pain and peak gamma\n"
+            "            is a better BWB anchor than either alone.\n"
+            f"            Composite avg distance: {comp_avg:.1f} pts "
+            f"vs best single: {best_avg:.1f} pts."
+        )
+    else:
+        takeaway(
+            f"{best_name} is the best single predictor "
+            f"({best_avg:.1f} pts avg).\n"
+            "            Use it as the primary BWB sweet-spot anchor."
+        )
+
+
+def analyze_per_day_detail(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
     """Show per-day detail for the most recent 10 days."""
-    section("4. RECENT DAY DETAIL")
-    print("  Per-day peak gamma vs settlement for the last 10 trading days\n")
+    section("5. RECENT DAY DETAIL")
+    print("  Per-day settlement attractors for the last 10 trading days\n")
 
     dates = sorted(df["date"].unique())[-10:]
+    mp_dates = set(max_pain_df["date"].values) if len(max_pain_df) > 0 else set()
 
-    print(f"  {'Date':<12s} {'Settle':>8s} {'Peak γ':>8s} {'Dist':>7s} "
-          f"{'Centroid':>9s} {'C-Dist':>7s} {'Within':>8s}")
+    print(f"  {'Date':<12s} {'Settle':>8s} {'Peak γ':>8s} {'γ Dist':>7s} "
+          f"{'MaxPain':>8s} {'MP Dist':>8s} {'Best':>8s}")
     print(f"  {'─' * 12} {'─' * 8} {'─' * 8} {'─' * 7} "
-          f"{'─' * 9} {'─' * 7} {'─' * 8}")
+          f"{'─' * 8} {'─' * 8} {'─' * 8}")
 
     for date in dates:
         day_data = df[df["date"] == date]
@@ -399,25 +547,37 @@ def analyze_per_day_detail(df: pd.DataFrame) -> None:
             continue
 
         peak = profile["peak_gamma_strike"]
-        centroid = profile["gamma_centroid"]
-        dist = abs(settlement - peak)
-        c_dist = abs(settlement - centroid)
-        within = "✓ ±10" if dist <= 10 else ("~ ±20" if dist <= 20 else "✗")
+        pg_dist = abs(settlement - peak)
+
+        # Max pain if available
+        mp_str = "—"
+        mp_dist_str = "—"
+        mp_dist = float("inf")
+        if date in mp_dates:
+            mp_row = max_pain_df[max_pain_df["date"] == date].iloc[0]
+            mp_val = float(mp_row["max_pain_0dte"])
+            mp_dist = abs(settlement - mp_val)
+            mp_str = f"{mp_val:>.0f}"
+            mp_dist_str = f"{mp_dist:>.1f}"
+
+        best = "γ" if pg_dist <= mp_dist else "MP"
+        if mp_dist == float("inf"):
+            best = "γ"
 
         date_str = pd.Timestamp(date).strftime("%Y-%m-%d")
         print(f"  {date_str:<12s} {settlement:>8.1f} {peak:>8.0f} "
-              f"{dist:>6.1f} {centroid:>9.1f} {c_dist:>6.1f} "
-              f"{within:>8s}")
+              f"{pg_dist:>6.1f} {mp_str:>8s} {mp_dist_str:>8s} "
+              f"{best:>8s}")
 
 
-def key_findings(df: pd.DataFrame) -> None:
+def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
     """Print actionable summary."""
     section("KEY FINDINGS — BWB PLACEMENT")
 
     dates = sorted(df["date"].unique())
 
-    # Compute final-snapshot stats
-    dists = []
+    # Compute T-30min stats for peak gamma
+    pg_dists = []
     for date in dates:
         day_data = df[df["date"] == date]
         settlement = float(day_data["settlement"].iloc[0])
@@ -427,33 +587,66 @@ def key_findings(df: pd.DataFrame) -> None:
         profile = compute_gamma_profile(snapshot)
         if not profile:
             continue
-        dists.append(abs(settlement - profile["peak_gamma_strike"]))
+        pg_dists.append(abs(settlement - profile["peak_gamma_strike"]))
 
-    if not dists:
-        print("\n  Insufficient data for conclusions.")
-        return
+    # Compute max pain stats
+    mp_dates = set(max_pain_df["date"].values) if len(max_pain_df) > 0 else set()
+    mp_dists = []
+    for date in dates:
+        if date not in mp_dates:
+            continue
+        day_data = df[df["date"] == date]
+        settlement = float(day_data["settlement"].iloc[0])
+        mp_row = max_pain_df[max_pain_df["date"] == date].iloc[0]
+        mp_dists.append(abs(settlement - float(mp_row["max_pain_0dte"])))
 
-    n = len(dists)
-    avg = np.mean(dists)
-    within_10 = sum(1 for d in dists if d <= 10) / n
-    within_20 = sum(1 for d in dists if d <= 20) / n
-
-    print(f"\n  Dataset: {n} trading days with 0DTE strike + settlement data")
-    print(f"  At T-30min (3:30 PM ET):")
-    print(f"    Settlement within ±10 pts of peak gamma: {within_10:.0%}")
-    print(f"    Settlement within ±20 pts of peak gamma: {within_20:.0%}")
-    print(f"    Average distance: {avg:.1f} pts")
-
-    if within_20 >= 0.50:
-        print(f"\n  SIGNAL: Peak gamma at 3:30 PM is a useful BWB anchor.")
-        print(f"  Place the BWB sweet spot within ±20 pts of the peak gamma "
-              f"strike.")
-    elif within_20 >= 0.35:
-        print(f"\n  MARGINAL: Peak gamma has moderate predictive power.")
-        print(f"  Use it as one input alongside max pain and price action.")
+    print(f"\n  PEAK GAMMA (at T-30min, n={len(pg_dists)}):")
+    if pg_dists:
+        avg = np.mean(pg_dists)
+        w10 = sum(1 for d in pg_dists if d <= 10) / len(pg_dists)
+        w20 = sum(1 for d in pg_dists if d <= 20) / len(pg_dists)
+        print(f"    Within ±10 pts: {w10:.0%}")
+        print(f"    Within ±20 pts: {w20:.0%}")
+        print(f"    Avg distance:   {avg:.1f} pts")
     else:
-        print(f"\n  WEAK: Peak gamma is NOT a strong settlement predictor.")
-        print(f"  Do not rely on it for BWB placement.")
+        print("    No data at T-30min checkpoint")
+
+    print(f"\n  MAX PAIN (n={len(mp_dists)}):")
+    if mp_dists:
+        mp_avg = np.mean(mp_dists)
+        mp_w10 = sum(1 for d in mp_dists if d <= 10) / len(mp_dists)
+        mp_w20 = sum(1 for d in mp_dists if d <= 20) / len(mp_dists)
+        print(f"    Within ±10 pts: {mp_w10:.0%}")
+        print(f"    Within ±20 pts: {mp_w20:.0%}")
+        print(f"    Avg distance:   {mp_avg:.1f} pts")
+    else:
+        print("    No max pain data yet — run build-features?backfill=true")
+
+    # Recommendation
+    print("\n  RECOMMENDATION:")
+    if pg_dists and mp_dists:
+        pg_avg = np.mean(pg_dists)
+        mp_avg = np.mean(mp_dists)
+        if pg_avg < mp_avg:
+            print(f"  Peak gamma ({pg_avg:.1f} pts) beats max pain "
+                  f"({mp_avg:.1f} pts) — use peak gamma as primary BWB anchor.")
+        elif mp_avg < pg_avg:
+            print(f"  Max pain ({mp_avg:.1f} pts) beats peak gamma "
+                  f"({pg_avg:.1f} pts) — use max pain as primary BWB anchor.")
+        else:
+            print("  Both are equally predictive — use the composite "
+                  "(average of both) for BWB placement.")
+    elif pg_dists:
+        pg_w20 = sum(1 for d in pg_dists if d <= 20) / len(pg_dists)
+        if pg_w20 >= 0.50:
+            print("  Peak gamma at T-30min is a useful BWB anchor (no max "
+                  "pain data yet for comparison).")
+        else:
+            print("  Peak gamma signal is weak. Wait for max pain data "
+                  "to compare.")
+    else:
+        print("  Insufficient data. Accumulate more trading days with "
+              "dense intraday strike coverage.")
 
 
 # ── Main ─────────────────────────────────────────────────────
@@ -471,11 +664,21 @@ def main() -> None:
         print("Error: Need at least 3 days with strike + settlement data.")
         sys.exit(1)
 
+    print("Loading max pain data from training_features ...")
+    max_pain_df = load_max_pain()
+    mp_count = len(max_pain_df)
+    if mp_count > 0:
+        print(f"  {mp_count} days with max pain data")
+    else:
+        print("  No max pain data yet (run build-features?backfill=true "
+              "after deploy)")
+
     analyze_settlement_gravity(df)
     analyze_time_improvement(df)
     analyze_directional_bias(df)
-    analyze_per_day_detail(df)
-    key_findings(df)
+    analyze_max_pain_comparison(df, max_pain_df)
+    analyze_per_day_detail(df, max_pain_df)
+    key_findings(df, max_pain_df)
     print()
 
 
