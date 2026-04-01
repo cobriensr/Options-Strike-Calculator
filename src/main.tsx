@@ -36,6 +36,7 @@ initBotId({
     { path: '/api/iv-term-structure', method: 'GET' },
     { path: '/api/ml/export', method: 'GET' },
     { path: '/api/ml/prediction', method: 'GET' },
+    { path: '/api/bwb-anchor', method: 'GET' },
   ],
 });
 

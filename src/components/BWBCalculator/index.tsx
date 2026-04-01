@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { BWBSide } from './bwb-math';
 import {
   calcNet,
@@ -33,6 +33,31 @@ export default function BWBCalculator() {
   const [sweetSpot, setSweetSpot] = useState('');
   const [narrowWing, setNarrowWing] = useState(20);
   const [wideWing, setWideWing] = useState(40);
+
+  // Gamma anchor from API
+  const [anchor, setAnchor] = useState<{
+    strike: number;
+    price: number;
+    dist: number;
+    charmAdjusted: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/bwb-anchor', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.anchor) return;
+        setAnchor({
+          strike: data.anchor,
+          price: data.price,
+          dist: data.distFromPrice,
+          charmAdjusted: data.charmAdjusted,
+        });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Auto-fill strikes from sweet spot + wing widths
   const fillStrikes = useCallback(
@@ -198,13 +223,41 @@ export default function BWBCalculator() {
           <span className={LABEL}>Sweet Spot Auto-Fill</span>
           <span className="text-muted text-[10px] italic">(optional)</span>
         </div>
+
+        {/* Gamma anchor suggestion */}
+        {anchor && (
+          <div className="border-accent/30 bg-accent/5 mb-2.5 flex items-center gap-2 rounded-md border px-2.5 py-1.5">
+            <span className="text-accent text-[10px] font-bold tracking-widest uppercase">
+              γ Anchor
+            </span>
+            <span className="text-primary font-mono text-sm font-semibold">
+              {anchor.strike}
+            </span>
+            <span className="text-muted text-[10px]">
+              ({anchor.dist > 0 ? '+' : ''}
+              {anchor.dist} from {anchor.price})
+            </span>
+            {anchor.charmAdjusted !== anchor.strike && (
+              <span className="text-muted text-[10px]">
+                · charm-adj: {anchor.charmAdjusted}
+              </span>
+            )}
+            <button
+              onClick={() => handleSweetSpotChange(String(anchor.strike))}
+              className="bg-accent/20 hover:bg-accent/30 text-accent ml-auto rounded px-2 py-0.5 text-[10px] font-bold transition-colors"
+            >
+              Use
+            </button>
+          </div>
+        )}
+
         <div className="grid grid-cols-[1fr_auto_auto] items-end gap-2">
           <div>
             <div className={LABEL + ' mb-1'}>Sweet Spot</div>
             <input
               type="text"
               inputMode="decimal"
-              placeholder="e.g. 6500"
+              placeholder={anchor ? String(anchor.strike) : 'e.g. 6500'}
               value={sweetSpot}
               onChange={(e) => handleSweetSpotChange(e.target.value)}
               className={INPUT_SM}
