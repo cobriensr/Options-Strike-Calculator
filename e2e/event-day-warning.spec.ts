@@ -33,7 +33,7 @@ function makeEventsResponse(
 /**
  * E2E tests for the EventDayWarning component.
  *
- * The component renders inside the "Date & Time" section when
+ * The component renders as a full-width banner in <main> when
  * /api/events returns events matching the selected date.
  */
 test.describe('Event Day Warning', () => {
@@ -69,15 +69,11 @@ test.describe('Event Day Warning', () => {
     await page.getByRole('radio', { name: 'AM' }).click();
 
     // Verify the high-severity banner text and event tag
-    const dateTimeSection = page.locator('section').filter({
-      has: page.getByText('Date & Time', { exact: true }),
+    const main = page.locator('main');
+    await expect(main.getByText('High-Impact Event Day')).toBeVisible({
+      timeout: 10000,
     });
-    await expect(
-      dateTimeSection.getByText('High-Impact Event Day'),
-    ).toBeVisible({ timeout: 10000 });
-    await expect(
-      dateTimeSection.getByText('CPI', { exact: true }),
-    ).toBeVisible();
+    await expect(main.getByText('CPI', { exact: true })).toBeVisible();
   });
 
   test('medium-severity event shows caution banner', async ({ page }) => {
@@ -109,15 +105,11 @@ test.describe('Event Day Warning', () => {
     await page.getByLabel('Minute').selectOption('30');
     await page.getByRole('radio', { name: 'AM' }).click();
 
-    const dateTimeSection = page.locator('section').filter({
-      has: page.getByText('Date & Time', { exact: true }),
-    });
-    await expect(dateTimeSection.getByText('Economic Event Day')).toBeVisible({
+    const main = page.locator('main');
+    await expect(main.getByText('Economic Event Day')).toBeVisible({
       timeout: 10000,
     });
-    await expect(
-      dateTimeSection.getByText('GDP', { exact: true }),
-    ).toBeVisible();
+    await expect(main.getByText('GDP', { exact: true })).toBeVisible();
   });
 
   test('market closed event shows closed banner', async ({ page }) => {
@@ -150,15 +142,11 @@ test.describe('Event Day Warning', () => {
     await page.getByLabel('Minute').selectOption('30');
     await page.getByRole('radio', { name: 'AM' }).click();
 
-    const dateTimeSection = page.locator('section').filter({
-      has: page.getByText('Date & Time', { exact: true }),
-    });
-    await expect(dateTimeSection.getByText('Market Closed')).toBeVisible({
+    const main = page.locator('main');
+    await expect(main.getByText('Market Closed')).toBeVisible({
       timeout: 10000,
     });
-    await expect(
-      dateTimeSection.getByText('No 0DTE trading possible'),
-    ).toBeVisible();
+    await expect(main.getByText('No 0DTE trading possible')).toBeVisible();
   });
 
   test('no events renders nothing', async ({ page }) => {
@@ -184,15 +172,9 @@ test.describe('Event Day Warning', () => {
     await page.getByRole('radio', { name: 'AM' }).click();
 
     // None of the warning banners should appear
-    const dateTimeSection = page.locator('section').filter({
-      has: page.getByText('Date & Time', { exact: true }),
-    });
-    await expect(
-      dateTimeSection.getByText('High-Impact Event Day'),
-    ).not.toBeVisible();
-    await expect(
-      dateTimeSection.getByText('Economic Event Day'),
-    ).not.toBeVisible();
-    await expect(dateTimeSection.getByText('Market Closed')).not.toBeVisible();
+    const main = page.locator('main');
+    await expect(main.getByText('High-Impact Event Day')).not.toBeVisible();
+    await expect(main.getByText('Economic Event Day')).not.toBeVisible();
+    await expect(main.getByText('Market Closed')).not.toBeVisible();
   });
 });

@@ -2,8 +2,6 @@ import { memo, useEffect, useRef } from 'react';
 import type { AmPm, Timezone } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 import { tinyLbl, inputCls, selectCls } from '../utils/ui-utils';
-import EventDayWarning from './EventDayWarning';
-import type { EventItem } from '../types/api';
 
 /**
  * Isolated memo'd wrapper around the native date input.
@@ -50,7 +48,6 @@ interface Props {
   selectedDate: string;
   onDateChange: (date: string) => void;
   vixDataLoaded: boolean;
-  liveEvents?: readonly EventItem[];
   timeHour: string;
   onHourChange: (v: string) => void;
   timeMinute: string;
@@ -67,7 +64,6 @@ export default function DateTimeSection({
   selectedDate,
   onDateChange,
   vixDataLoaded,
-  liveEvents,
   timeHour,
   onHourChange,
   timeMinute,
@@ -168,8 +164,6 @@ export default function DateTimeSection({
         </div>
         {errors['time'] && <ErrorMsg id="err-time">{errors['time']}</ErrorMsg>}
       </div>
-
-      <EventDayWarning selectedDate={selectedDate} liveEvents={liveEvents} />
     </SectionBox>
   );
 }

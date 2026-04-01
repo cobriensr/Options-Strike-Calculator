@@ -17,7 +17,6 @@ function renderSection(
     selectedDate: '2026-03-15',
     onDateChange: vi.fn(),
     vixDataLoaded: true,
-    liveEvents: undefined,
     timeHour: '9',
     onHourChange: vi.fn(),
     timeMinute: '30',
@@ -331,16 +330,6 @@ describe('DateTimeSection', () => {
       expect(minuteSelect).not.toHaveAttribute('aria-describedby');
       expect(hourSelect).toHaveAttribute('aria-invalid', 'false');
       expect(minuteSelect).toHaveAttribute('aria-invalid', 'false');
-    });
-  });
-
-  describe('EventDayWarning', () => {
-    it('renders EventDayWarning component', () => {
-      // EventDayWarning renders nothing when no events are scheduled
-      // for the selected date, so we just verify no crash occurs
-      renderSection({ selectedDate: '2026-03-15' });
-      // The section should still render normally
-      expect(screen.getByText('Date & Time')).toBeInTheDocument();
     });
   });
 });

@@ -23,6 +23,7 @@ import { useChainData } from './hooks/useChainData';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
 import DateTimeSection from './components/DateTimeSection';
+import EventDayWarning from './components/EventDayWarning';
 import SpotPriceSection from './components/SpotPriceSection';
 import IVInputSection from './components/IVInputSection';
 import AdvancedSection from './components/AdvancedSection';
@@ -412,7 +413,6 @@ export default function StrikeCalculator() {
                 selectedDate={vix.selectedDate}
                 onDateChange={vix.setSelectedDate}
                 vixDataLoaded={vix.vixDataLoaded}
-                liveEvents={market.data.events?.events}
                 timeHour={timeHour}
                 onHourChange={setTimeHour}
                 timeMinute={timeMinute}
@@ -438,6 +438,11 @@ export default function StrikeCalculator() {
                 errors={errors}
               />
             </div>
+
+            <EventDayWarning
+              selectedDate={vix.selectedDate}
+              liveEvents={market.data.events?.events}
+            />
 
             {market.hasData && (
               <PreMarketInput

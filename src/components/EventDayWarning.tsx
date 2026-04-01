@@ -30,7 +30,7 @@ export default function EventDayWarning({ selectedDate, liveEvents }: Props) {
 
   return (
     <div
-      className="mt-3 rounded-[10px] p-3 sm:p-4"
+      className="mt-4 rounded-[10px] p-3 sm:p-4"
       style={{ backgroundColor: bg, border: '1.5px solid ' + border }}
     >
       {/* Header */}
