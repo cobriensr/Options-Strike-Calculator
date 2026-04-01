@@ -47,7 +47,7 @@ vi.mock('../../components/PositionMonitor/PositionTable.tsx', () => ({
   ),
 }));
 
-vi.mock('../../components/PositionMonitor/PositionVisuals.tsx', () => ({
+vi.mock('../../components/PositionMonitor/PositionVisuals', () => ({
   default: (props: Record<string, unknown>) => (
     <div data-testid="position-visuals">
       PositionVisuals:{String(Array.isArray(props.spreads))}
