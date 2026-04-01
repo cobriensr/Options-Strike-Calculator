@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useMemo } from 'react';
+import { useIsOwner } from '../../hooks/useIsOwner';
 import { SectionBox } from '../ui';
 import { parseStatement, applyBSEstimates } from './statement-parser';
 import AccountOverview from './AccountOverview';
@@ -97,7 +98,7 @@ export default function PositionMonitor({ spotPrice }: PositionMonitorProps) {
 
   // Owner gating — only render for authenticated owner (or local dev)
   // Placed after hooks to satisfy Rules of Hooks
-  const isOwner = import.meta.env.DEV || document.cookie.includes('sc-hint=');
+  const isOwner = useIsOwner();
   if (!isOwner) return null;
 
   const spreadCount = statement

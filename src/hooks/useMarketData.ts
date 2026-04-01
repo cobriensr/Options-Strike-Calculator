@@ -18,6 +18,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
+import { useIsOwner } from './useIsOwner';
 import type {
   QuotesResponse,
   IntradayResponse,
@@ -118,7 +119,7 @@ export function useMarketData(): MarketDataState {
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   // Track if the owner cookie is present (any endpoint returned 200,
   // or the sc-hint cookie exists from a prior auth session).
-  const isOwnerRef = useRef(document.cookie.includes('sc-hint='));
+  const isOwnerRef = useRef(useIsOwner());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const consecutiveFailsRef = useRef(0);
 

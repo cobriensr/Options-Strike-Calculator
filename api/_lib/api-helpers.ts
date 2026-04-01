@@ -311,20 +311,25 @@ export function schwabTraderFetch<T>(path: string): Promise<ApiResult<T>> {
 // MARKET HOURS CHECKS
 // ============================================================
 
-/** Check if current time is within extended market hours (9:25 AM - 4:05 PM ET). */
+/**
+ * Check if current time is within extended market hours.
+ * Uses isMarketOpen() (holiday/early-close aware) with a 5-minute buffer
+ * on each side so cron jobs running at :00 catch data at open/close.
+ */
 export function isMarketHours(): boolean {
   const now = new Date();
-  const et = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York' }),
-  );
-  const day = et.getDay();
+  const day = getETDayOfWeek(now);
   if (day === 0 || day === 6) return false;
 
-  const hour = et.getHours();
-  const minute = et.getMinutes();
-  const timeMinutes = hour * 60 + minute;
+  const dateStr = getETDateStr(now);
+  const closeHour = getMarketCloseHourET(dateStr);
+  if (closeHour == null) return false; // holiday
 
-  return timeMinutes >= 565 && timeMinutes <= 965;
+  const { hour, minute } = getETTime(now);
+  const totalMin = hour * 60 + minute;
+  const closeMin = closeHour * 60;
+  // 5-minute buffer: 9:25 AM (565) to close + 5 min
+  return totalMin >= MARKET_MINUTES.OPEN - 5 && totalMin <= closeMin + 5;
 }
 
 // ============================================================

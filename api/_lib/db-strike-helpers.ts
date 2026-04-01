@@ -2,6 +2,13 @@
 
 import { getDb } from './db.js';
 
+/**
+ * Sentinel value for all-expiry aggregate rows in strike_exposures.
+ * Distinguishes rows that aggregate across all expirations from
+ * rows for a specific expiry date.
+ */
+const ALL_EXPIRY_SENTINEL = '1970-01-01';
+
 export interface StrikeExposureRow {
   strike: number;
   price: number;
@@ -16,6 +23,37 @@ export interface StrikeExposureRow {
   // Directionalized (ask/bid) — approximates confirmed MM exposure
   dirGamma: number; // sum of call_gamma_ask + call_gamma_bid + put_gamma_ask + put_gamma_bid
   dirCharm: number;
+}
+
+/** Map a raw DB row to a StrikeExposureRow. */
+function mapStrikeRow(r: Record<string, unknown>): StrikeExposureRow {
+  const callGOi = Number(r.call_gamma_oi) || 0;
+  const putGOi = Number(r.put_gamma_oi) || 0;
+  const callCOi = Number(r.call_charm_oi) || 0;
+  const putCOi = Number(r.put_charm_oi) || 0;
+
+  return {
+    strike: Number(r.strike),
+    price: Number(r.price),
+    timestamp: r.timestamp as string,
+    netGamma: callGOi + putGOi,
+    netCharm: callCOi + putCOi,
+    netDelta: (Number(r.call_delta_oi) || 0) + (Number(r.put_delta_oi) || 0),
+    callGammaOi: callGOi,
+    putGammaOi: putGOi,
+    callCharmOi: callCOi,
+    putCharmOi: putCOi,
+    dirGamma:
+      (Number(r.call_gamma_ask) || 0) +
+      (Number(r.call_gamma_bid) || 0) +
+      (Number(r.put_gamma_ask) || 0) +
+      (Number(r.put_gamma_bid) || 0),
+    dirCharm:
+      (Number(r.call_charm_ask) || 0) +
+      (Number(r.call_charm_bid) || 0) +
+      (Number(r.put_charm_ask) || 0) +
+      (Number(r.put_charm_bid) || 0),
+  };
 }
 
 export interface FlowDataRow {
@@ -40,7 +78,7 @@ export async function getStrikeExposures(
   const tsRows = await db`
     SELECT MAX(timestamp) as latest_ts
     FROM strike_exposures
-    WHERE date = ${date} AND ticker = ${ticker} AND expiry != '1970-01-01'
+    WHERE date = ${date} AND ticker = ${ticker} AND expiry != ${ALL_EXPIRY_SENTINEL}
   `;
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
@@ -54,39 +92,11 @@ export async function getStrikeExposures(
            call_delta_oi, put_delta_oi,
            call_vanna_oi, put_vanna_oi
     FROM strike_exposures
-    WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs} AND expiry != '1970-01-01'
+    WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs} AND expiry != ${ALL_EXPIRY_SENTINEL}
     ORDER BY strike ASC
   `;
 
-  return rows.map((r: Record<string, unknown>) => {
-    const callGOi = Number(r.call_gamma_oi) || 0;
-    const putGOi = Number(r.put_gamma_oi) || 0;
-    const callCOi = Number(r.call_charm_oi) || 0;
-    const putCOi = Number(r.put_charm_oi) || 0;
-
-    return {
-      strike: Number(r.strike),
-      price: Number(r.price),
-      timestamp: r.timestamp as string,
-      netGamma: callGOi + putGOi,
-      netCharm: callCOi + putCOi,
-      netDelta: (Number(r.call_delta_oi) || 0) + (Number(r.put_delta_oi) || 0),
-      callGammaOi: callGOi,
-      putGammaOi: putGOi,
-      callCharmOi: callCOi,
-      putCharmOi: putCOi,
-      dirGamma:
-        (Number(r.call_gamma_ask) || 0) +
-        (Number(r.call_gamma_bid) || 0) +
-        (Number(r.put_gamma_ask) || 0) +
-        (Number(r.put_gamma_bid) || 0),
-      dirCharm:
-        (Number(r.call_charm_ask) || 0) +
-        (Number(r.call_charm_bid) || 0) +
-        (Number(r.put_charm_ask) || 0) +
-        (Number(r.put_charm_bid) || 0),
-    };
-  });
+  return rows.map(mapStrikeRow);
 }
 
 /**
@@ -150,35 +160,7 @@ export async function getStrikeExposuresByExpiry(
           ORDER BY strike ASC
         `;
 
-  return rows.map((r: Record<string, unknown>) => {
-    const callGOi = Number(r.call_gamma_oi) || 0;
-    const putGOi = Number(r.put_gamma_oi) || 0;
-    const callCOi = Number(r.call_charm_oi) || 0;
-    const putCOi = Number(r.put_charm_oi) || 0;
-
-    return {
-      strike: Number(r.strike),
-      price: Number(r.price),
-      timestamp: r.timestamp as string,
-      netGamma: callGOi + putGOi,
-      netCharm: callCOi + putCOi,
-      netDelta: (Number(r.call_delta_oi) || 0) + (Number(r.put_delta_oi) || 0),
-      callGammaOi: callGOi,
-      putGammaOi: putGOi,
-      callCharmOi: callCOi,
-      putCharmOi: putCOi,
-      dirGamma:
-        (Number(r.call_gamma_ask) || 0) +
-        (Number(r.call_gamma_bid) || 0) +
-        (Number(r.put_gamma_ask) || 0) +
-        (Number(r.put_gamma_bid) || 0),
-      dirCharm:
-        (Number(r.call_charm_ask) || 0) +
-        (Number(r.call_charm_bid) || 0) +
-        (Number(r.put_charm_ask) || 0) +
-        (Number(r.put_charm_bid) || 0),
-    };
-  });
+  return rows.map(mapStrikeRow);
 }
 
 /**
@@ -351,10 +333,6 @@ function fmtStrike(value: number): string {
 // ============================================================
 
 // Uses the same StrikeExposureRow interface as the 0DTE helpers.
-// The sentinel value '1970-01-01' in the expiry column distinguishes
-// all-expiry rows from 0DTE rows.
-
-const ALL_EXPIRY_SENTINEL = '1970-01-01';
 
 /**
  * Get the most recent all-expiry per-strike exposure snapshot for a given date.
