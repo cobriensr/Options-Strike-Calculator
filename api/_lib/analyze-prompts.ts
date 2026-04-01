@@ -28,7 +28,7 @@ For each data source present in the context, extract or verify the key values.
 Record specific numbers. For Periscope images, note what you can and cannot read clearly.
 
 STEP 2 — FLOW CONSENSUS:
-Apply Rule 8 weighting (SPX 50%, Market Tide 25%, SPY 15%, QQQ 10%).
+Apply Rule 8 weighting (Market Tide 30%, QQQ Net Flow 25%, ETF Tide 20%, SPY 15%, SPX 10%).
 Check Rule 10 hedging divergence (does SPX flow diverge from 3+ other signals? Or from SPX alone if VIX > 25?).
 Check ETF Tide divergence (SPY/QQQ ETF Tide vs Net Flow — hedging divergence favors IC).
 What is the weighted flow direction? What confidence level?
@@ -112,23 +112,21 @@ The sentiment in the options market becomes increasingly bearish if:
 2. The aggregated put premium is increasing at a faster rate.
 The volume is calculated by taking the aggregated call volume and subtracted by the aggregated put volume. Not all option contracts are priced similarly, so the premium must be examined alongside the volume.
 OTM versions show out-of-the-money flow specifically, which is more relevant for 0DTE trading.
-For structure selection interpretation and weighting, see Rule 8 (SPX Flow Primary) and the Phase 1 rules.
+For structure selection interpretation and weighting, see Rule 8 (Data-Informed Flow Weighting) and the Phase 1 rules.
 </market_tide>
 <spx_net_flow>
 Net Flow for SPX shows the change in net premium of calls, of puts, and aggregated volume specifically for SPX index options. This is the most directly relevant flow data for the trader's instrument because the trader sells SPX 0DTE options.
 - Net Call Premium (NCP) vs Net Put Premium (NPP) — same mechanics as Market Tide but specific to SPX
+IMPORTANT — SPX Net Flow directional accuracy: Backtesting across 34 labeled days shows SPX Net Flow predicts settlement direction only 26% of the time (statistically significant anti-signal). This is because SPX options are heavily institutional — large block trades often represent dealer hedging or institutional positioning that is OPPOSITE to the day's directional outcome.
 SPX Net Flow vs Market Tide:
 Market Tide aggregates ALL tickers and ALL expirations. SPX Net Flow isolates SPX specifically. When they diverge:
-- SPX Net Flow bearish + Market Tide neutral = the bearish pressure is concentrated in the trader's exact instrument — HIGHER relevance for structure selection than Market Tide alone
-- Market Tide bearish + SPX Net Flow neutral = the selling pressure is in other instruments or expirations — LOWER relevance for 0DTE SPX trades
-- Both agree = highest conviction
+- Market Tide is almost always more reliable for direction (59% vs 26%). Trust Market Tide over SPX in the default regime (VIX < 25).
+- EXCEPTION — VIX 25+: When VIX exceeds 25, institutional hedging dominates Market Tide and SPY. In this regime, SPX Net Flow may be the more honest directional signal. See Rule 10 for full handling.
 SPX Net Flow vs SPY Net Flow:
 SPX and SPY track the same underlying but attract different participants:
-- SPX options are heavily institutional (tax advantages, cash-settled, European-style). Large block trades in SPX Net Flow often represent dealer hedging or institutional positioning.
-- SPY options are a mix of retail and institutional. SPY flow can be noisier.
-- When SPX and SPY Net Flow agree: strong confirmation.
-- When SPX Net Flow shows a signal that SPY does not: trust SPX — it's the trader's actual instrument and reflects the flow that directly impacts SPX option pricing.
-- When SPY shows a signal that SPX does not: the signal may not translate to SPX. Reduce confidence.
+- SPX options are heavily institutional (tax advantages, cash-settled, European-style). This is WHY SPX is an anti-signal — institutional hedging flow dominates.
+- SPY options are a mix of retail and institutional. SPY flow is closer to a coin flip (47%) for direction.
+- When SPX and SPY disagree: neither is reliable. Fall back to Market Tide + QQQ + ETF Tide consensus.
 Scale awareness: SPX Net Flow values are typically much larger in magnitude than SPY (e.g., NCP at -102M for SPX vs -15M for SPY). Do not compare raw values across instruments — compare direction and acceleration instead.
 For structure selection weighting and hedging divergence detection, see Rule 8 and Rule 10.
 Recency weighting: When assessing flow direction, weight the LATEST 3 readings (15 minutes at 5-min intervals) most heavily. The trajectory matters more than the absolute level:
@@ -478,15 +476,26 @@ On high-volatility mornings (first-hour range > 60 pts):
 - Expect temporary price spikes through negative gamma zones that reverse within 15-30 minutes
 - Widen stops to the straddle cone boundary or use flow-based stops exclusively
 - If all flow charts still agree on direction during a pullback, the pullback is mechanical (gamma-driven), not directional — do not exit
-RULE 8: SPX Net Flow Is the Primary Flow Signal
-When SPX Net Flow is provided, it is the highest priority flow signal for structure selection because it directly measures flow in the trader's instrument. Weighting hierarchy:
-1. SPX Net Flow (50%) — the trader's exact instrument
-2. Market Tide (25%) — broad market context
-3. SPY Net Flow (15%) — confirms/contradicts SPX
-4. QQQ Net Flow (10%) — tech sector divergence check
-When SPX Net Flow and Market Tide agree: HIGH confidence in the flow direction.
-When SPX Net Flow contradicts Market Tide: use SPX Net Flow for structure, reduce overall confidence by one level.
-When SPX Net Flow is not provided: fall back to the original weighting (Market Tide primary, SPY confirms, QQQ as divergence check).
+RULE 8: Flow Signal Weighting (Data-Informed)
+Backtested directional accuracy across 34 labeled trading days (as of March 2026) shows the following reliability ranking for predicting settlement direction:
+- QQQ Net Flow: 62% accurate
+- SPY ETF Tide: 60% accurate
+- QQQ ETF Tide: 60% accurate
+- Market Tide: 59% accurate
+- 0DTE Index: 52% (coin flip — do not use for direction)
+- SPY Net Flow: 47% (coin flip — do not use for direction)
+- SPX Net Flow: 26% accurate (ANTI-SIGNAL — systematically wrong on direction)
+Weighting hierarchy for structure selection:
+1. Market Tide (30%) — broad market context, consistently reliable
+2. QQQ Net Flow (25%) — highest directional accuracy
+3. SPY/QQQ ETF Tide (20%) — hedging-filtered signal, supplements primary flow
+4. SPY Net Flow (15%) — confirms/contradicts primary signals
+5. SPX Net Flow (10%) — KNOWN ANTI-SIGNAL for direction at VIX < 25. When SPX Net Flow contradicts the other sources, the other sources are almost always right. Do not let SPX Net Flow override a consensus from Market Tide + QQQ + ETF Tide.
+When Market Tide and QQQ Net Flow agree: HIGH confidence in the flow direction.
+When Market Tide contradicts QQQ Net Flow: MODERATE confidence, use ETF Tide and SPY as tiebreakers.
+When SPX Net Flow is the ONLY bearish/bullish signal and all others disagree: trust the consensus, not SPX. Flag SPX as likely hedging flow.
+When SPX Net Flow is not provided: no significant loss of signal quality — the remaining sources are more reliable.
+EXCEPTION — VIX 25+ REGIME: When VIX exceeds 25, institutional hedging dominates aggregate flow (Market Tide, SPY). In this regime SPX Net Flow directional accuracy improves because it captures the actual instrument's positioning. Increase SPX weight to 35% and reduce Market Tide to 25% when VIX > 25. See Rule 10 for full VIX 25+ handling.
 RULE 9: Delta Ceiling Targeting & Minimum Premium Threshold
 The calculator context provides delta ceilings (Delta Guide ceiling for IC, Put spread ceiling, Call spread ceiling) that represent the trader's preferred operating delta based on VIX regime, time remaining, and clustering multipliers. These ceilings are the TARGET — not a theoretical maximum to stay far below.
 Delta targeting hierarchy:
@@ -499,17 +508,17 @@ When gamma walls or structural concerns push the short strike further OTM than t
 - If neither side can reach its ceiling minus 3Δ while maintaining structural protection, recommend SIT OUT.
 - When recommending the opposite structure because the preferred side lacks premium near the ceiling, flag the gamma risk clearly and reduce confidence by one level.
 RULE 10: SPX Net Flow Hedging Divergence
-When SPX Net Flow NCP diverges from price direction AND 3+ other signals (Market Tide, SPY flow, QQQ price action) confirm the opposite direction, treat SPX Net Flow as CONFLICTED with LOW confidence regardless of NCP magnitude — the flow is institutional hedging, not directional.
+SPX Net Flow is a confirmed anti-signal for settlement direction at VIX < 25 (26% accuracy across 34 labeled days). When SPX Net Flow NCP diverges from the consensus of Market Tide, QQQ Net Flow, and ETF Tide sources, trust the consensus — do not let SPX override it.
 - This pattern has been validated across multiple sessions: SPX NCP stays positive (+100M+) while SPX price drops 25-50 pts, Market Tide NCP is deeply negative, and SPY confirms bearish. The positive SPX NCP represents institutional call-buying hedges (downside protection on existing equity longs), not bullish directional conviction.
-- When this pattern is identified: reduce SPX Net Flow's effective weight from 50% to 25%. Redistribute the weight to Market Tide (now 37.5%) and SPY (now 22.5%). QQQ stays at 10%.
-- Do not let the positive SPX NCP prevent a directional CCS recommendation when all other signals agree on direction. Note the divergence as a risk factor and reduce sizing by one level, but do not override 3+ confirming signals.
-- The reverse also applies: if SPX NCP is deeply negative but SPX price is rising with Market Tide and SPY both bullish, the SPX put flow is likely institutional hedging — treat as CONFLICTED.
+- When SPX diverges from 2+ other sources: effectively ignore SPX for direction. The Rule 8 weighting already assigns SPX only 10%, but even that small weight should not flip a directional call. Note the divergence in observations but follow the consensus.
+- Do not let the positive SPX NCP prevent a directional CCS recommendation when Market Tide + QQQ + ETF Tide agree on direction. The consensus sources are right ~60% of the time; SPX is right ~26% of the time.
+- The reverse also applies: if SPX NCP is deeply negative but Market Tide and QQQ are both bullish, the SPX put flow is likely institutional hedging — trust Market Tide and QQQ.
 - VIX 25+ REGIME OVERRIDE: When VIX is above 25, institutional hedging activity dominates aggregate flow signals (Market Tide, SPY). In this regime, if SPX Net Flow diverges from Market Tide/SPY, ALWAYS trust SPX Net Flow for structure selection without waiting for the standard 3+ confirming signals threshold. At VIX 25+, Market Tide and SPY bullish flow is overwhelmingly likely to be hedging noise from non-SPX instruments — do not let it override a bearish SPX NCP/NPP signal. This pattern has been confirmed across five sessions (Lessons 3, 33, 37, 53, and March 24 2026). Reduce the Rule 10 confirmation requirement from "3+ other signals" to "SPX Net Flow alone is sufficient" when VIX > 25.
 - FLOW REVERSAL TRIGGER CALIBRATION (VIX regime-dependent):
   At VIX below 25: the flow reversal trigger for closing directional spreads is SPX NCP crossing zero (positive to negative for CCS closure, negative to positive for PCS closure).
   At VIX 25+: recalibrate — the flow reversal trigger for CCS closure is SPX NCP exceeding +$100M sustained for 30+ minutes. For PCS closure, SPX NCP falling below -$100M sustained for 30+ minutes. The standard threshold (NCP crossing zero or -$100M) is too sensitive at VIX 25+ because institutional hedging routinely pushes SPX NCP positive during selloffs and negative during rallies. Market Tide NCP direction is the ground truth at VIX 25+ — do NOT close a directional spread based on SPX NCP alone when Market Tide NCP still confirms the original thesis.
   Validated March 28: SPX NCP recovered from -$198M to +$72M (crossing -$100M trigger) while Market Tide NCP fell to -$301M and SPX dropped 75 pts. The -$100M trigger would have closed a profitable CCS during what was the strongest bearish session of the week.
-- TWO-SIGNAL PARTIAL DIVERGENCE (VIX < 25): When exactly 2 other signals (not 3+) confirm the opposite direction from SPX Net Flow: reduce SPX Net Flow's effective weight from 50% to 35%. Redistribute: Market Tide 30%, SPY 20%, QQQ 15%. Do NOT fully override SPX Net Flow — the divergence is partial, not confirmed. Flag as CONFLICTED with MODERATE confidence. Note which 2 signals are confirming — Market Tide + SPY is stronger confirmation than Market Tide + QQQ.
+- TWO-SIGNAL PARTIAL DIVERGENCE (VIX < 25): When exactly 2 other sources confirm the opposite direction from SPX Net Flow: trust the 2 confirming sources. SPX is already weighted at 10% and has 26% directional accuracy — even partial disagreement from more reliable sources should override it. Flag as MODERATE confidence and note which sources are confirming — Market Tide + QQQ is the strongest pair (59% + 62%), Market Tide + SPY is weaker (59% + 47%).
 RULE 11: Net Charm Confirms Directional Spread
 When the Net Charm profile shows massive positive charm values below current price (downside walls strengthening) and negative charm values above current price (upside walls decaying), this is a strong CCS confirmation. The mirror pattern (negative charm below, positive above) confirms PCS.
 - If charm aligns with the flow-based structure recommendation: increase confidence by one level (LOW → MODERATE, MODERATE → HIGH).
@@ -610,7 +619,7 @@ Time-Bounded Analysis:
 The trader specifies an entry time. Charts may show the full day (especially when backtesting). Only analyze what was visible at the entry time. Draw a mental vertical line at the entry time — everything to the RIGHT does not exist yet. Do not reference any price action, flow, or volume after the entry time.
 Missing Data Protocol:
 When a "Data Sources Unavailable" section is present in the context, these are API data sources that failed to fetch. Periscope availability is determined separately by whether images were uploaded.
-- A missing PRIMARY API signal (SPX Net Flow, Market Tide, Aggregate GEX) automatically caps confidence at MODERATE. Two or more missing primary API signals caps confidence at LOW.
+- A missing PRIMARY API signal (Market Tide, QQQ Net Flow, Aggregate GEX) automatically caps confidence at MODERATE. Two or more missing primary API signals caps confidence at LOW. SPX Net Flow missing does not cap confidence — the remaining sources are more reliable for direction.
 - Periscope not uploaded (no images): caps confidence at MODERATE independently of API availability.
 - A missing SECONDARY signal (dark pool, max pain, IV term structure, candles, overnight gap) reduces confidence by one level only if the remaining primary signals are in conflict.
 - Always note unavailable sources in observations: "SPX Net Flow unavailable — flow assessment relies on Market Tide and SPY only, reducing directional conviction."
@@ -620,7 +629,7 @@ When SPY/QQQ ETF Tide data is provided alongside SPY/QQQ Net Flow data, check fo
 - SPY/QQQ Net Flow BULLISH + SPY/QQQ ETF Tide BEARISH = HEDGING DIVERGENCE. The ETF-level call buying is institutional hedging, not directional conviction. The underlying stock-level flow (bearish) is more directionally honest. This combination predicts RANGE-BOUND conditions — competing forces (bullish ETF hedging vs bearish stock flow) cancel out, making it favorable for IRON CONDOR. When this divergence is present, increase IC confidence by one level.
 - SPY/QQQ Net Flow BEARISH + SPY/QQQ ETF Tide BULLISH = CONVICTION DIVERGENCE. The underlying stocks are seeing bullish flow despite ETF-level selling — potential reversal setup. Monitor for the ETF flow to align with holdings flow.
 - Both agree (same direction) = higher conviction in that direction. No adjustment needed.
-- ETF Tide data supplements — it does not override — the primary flow hierarchy (Rule 8). Use it as a tiebreaker or confidence modifier when the primary signals are ambiguous.
+- ETF Tide data is part of the primary flow hierarchy (Rule 8, 20% weight). Both SPY and QQQ ETF Tide have 60% directional accuracy — use them as a core signal alongside Market Tide and QQQ Net Flow, not just a tiebreaker.
 Validated March 24: SPY Net Flow NCP +40.2M (bullish) but SPY ETF Tide NCP -94.5M (bearish). QQQ same pattern. Day was range-bound (65 pt range on VIX 27). Both CCS and PCS expired worthless — IC would have been optimal.
 VIX1D EXTREME INVERSION OVERRIDE: When VIX1D is 20%+ below VIX, the ETF Tide hedging divergence signal is unreliable for predicting range-bound conditions. The VIX1D macro regime signal dominates cross-signal divergence analysis. On VIX1D extreme inversion days, do NOT increase IC confidence based on ETF Tide divergence, and do NOT use ETF Tide divergence to argue against a directional structure that flow supports. ETF Tide divergence is most valuable as a tiebreaker when VIX1D is NOT in extreme inversion. Validated March 31: SPY ETF Tide bearish (-$152.9M) vs SPY Net Flow bullish (+$10M) predicted range-bound, but the session produced a 136pt directional rally under VIX1D extreme inversion (21.4% below VIX).
 </etf_tide_divergence>
