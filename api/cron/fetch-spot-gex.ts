@@ -142,6 +142,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rows = await withRetry(() => fetchSpotExposures(apiKey));
     const result = await withRetry(() => storeLatest(rows));
 
+    // Data quality check: alert if all gamma_oi values are null/zero
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    const qcRows = await getDb()`
+      SELECT COUNT(*) AS total,
+             COUNT(*) FILTER (WHERE gamma_oi::numeric != 0) AS nonzero
+      FROM spot_exposures
+      WHERE date = ${today} AND ticker = 'SPX'
+    `;
+    const { total, nonzero } = qcRows[0]!;
+    if (Number(total) > 10 && Number(nonzero) === 0) {
+      Sentry.setTag('cron.job', 'fetch-spot-gex');
+      Sentry.captureMessage(
+        `Data quality alert: spot_exposures has ${total} rows but ALL gamma_oi values are zero for ${today}`,
+        'warning',
+      );
+      logger.warn(
+        { total, date: today },
+        'Spot GEX data quality: all gamma_oi values zero',
+      );
+    }
+
     logger.info({ ticks: rows.length, ...result }, 'fetch-spot-gex completed');
 
     return res.status(200).json({

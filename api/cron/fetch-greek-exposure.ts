@@ -235,6 +235,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-greek-exposure completed',
     );
 
+    // Data quality check: alert if all gamma values are null/zero
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    const qcRows = await getDb()`
+      SELECT COUNT(*) AS total,
+             COUNT(*) FILTER (
+               WHERE (call_gamma::numeric IS NOT NULL AND call_gamma::numeric != 0)
+                  OR (put_gamma::numeric IS NOT NULL AND put_gamma::numeric != 0)
+             ) AS nonzero
+      FROM greek_exposure
+      WHERE date = ${today} AND ticker = 'SPX'
+    `;
+    const { total: qcTotal, nonzero: qcNonzero } = qcRows[0]!;
+    if (Number(qcTotal) > 0 && Number(qcNonzero) === 0) {
+      Sentry.setTag('cron.job', 'fetch-greek-exposure');
+      Sentry.captureMessage(
+        `Data quality alert: greek_exposure has ${qcTotal} rows but ALL gamma values are null/zero for ${today}`,
+        'warning',
+      );
+      logger.warn(
+        { total: qcTotal, date: today },
+        'Greek exposure data quality: all gamma values null/zero',
+      );
+    }
+
     if (!anyStored && partial) {
       return res.status(500).json({ error: 'All sources failed' });
     }

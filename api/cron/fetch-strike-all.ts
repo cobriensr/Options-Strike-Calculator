@@ -200,6 +200,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-strike-all completed',
     );
 
+    // Data quality check: alert if all gamma values are null/zero
+    if (result.stored > 10) {
+      const qcRows = await getDb()`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (
+                 WHERE call_gamma_oi::numeric != 0 OR put_gamma_oi::numeric != 0
+               ) AS nonzero
+        FROM strike_exposures
+        WHERE date = ${today} AND expiry = ${ALL_EXPIRY_SENTINEL}
+      `;
+      const { total, nonzero } = qcRows[0]!;
+      if (Number(total) > 10 && Number(nonzero) === 0) {
+        Sentry.setTag('cron.job', 'fetch-strike-all');
+        Sentry.captureMessage(
+          `Data quality alert: strike_exposures (all-expiry) has ${total} rows but ALL gamma values are zero for ${today}`,
+          'warning',
+        );
+        logger.warn(
+          { total, date: today },
+          'All-expiry strike data quality: all gamma values zero',
+        );
+      }
+    }
+
     return res.status(200).json({
       job: 'fetch-strike-all',
       success: true,

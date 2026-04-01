@@ -129,6 +129,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rows = await withRetry(() => fetchOiPerStrike(apiKey, today));
     const result = await storeStrikes(rows, today);
 
+    // Data quality check: alert if all OI values are zero
+    if (result.stored > 10) {
+      const qcRows = await sql`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE call_oi != 0 OR put_oi != 0) AS nonzero
+        FROM oi_per_strike
+        WHERE date = ${today}
+      `;
+      const { total, nonzero } = qcRows[0]!;
+      if (Number(total) > 10 && Number(nonzero) === 0) {
+        Sentry.setTag('cron.job', 'fetch-oi-per-strike');
+        Sentry.captureMessage(
+          `Data quality alert: oi_per_strike has ${total} rows but ALL OI values are zero for ${today}`,
+          'warning',
+        );
+        logger.warn(
+          { total, date: today },
+          'OI per strike data quality: all values zero',
+        );
+      }
+    }
+
     logger.info(
       { date: today, ...result, total: rows.length },
       'fetch-oi-per-strike completed',

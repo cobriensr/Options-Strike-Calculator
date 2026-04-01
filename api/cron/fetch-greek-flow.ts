@@ -163,6 +163,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-greek-flow completed',
     );
 
+    // Data quality check: alert if all values are zero/null
+    if (result.stored > 10) {
+      const rows = await getDb()`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE ncp::numeric != 0 OR npp::numeric != 0) AS nonzero
+        FROM flow_data
+        WHERE date = ${today} AND source = ${SOURCE}
+      `;
+      const { total, nonzero } = rows[0]!;
+      if (Number(total) > 10 && Number(nonzero) === 0) {
+        Sentry.setTag('cron.job', 'fetch-greek-flow');
+        Sentry.captureMessage(
+          `Data quality alert: ${SOURCE} has ${total} rows but ALL values are zero for ${today}`,
+          'warning',
+        );
+        logger.warn(
+          { total, date: today },
+          'Greek flow data quality: all values zero',
+        );
+      }
+    }
+
     return res.status(200).json({
       job: 'fetch-greek-flow',
       ticks: ticks.length,

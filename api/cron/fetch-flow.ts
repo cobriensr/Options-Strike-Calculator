@@ -156,6 +156,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       otmFetch.status === 'rejected' ||
       otmStore.status === 'rejected';
 
+    // Data quality check: alert if all values are zero
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    for (const source of ['market_tide', 'market_tide_otm'] as const) {
+      const rows = await getDb()`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE ncp::numeric != 0 OR npp::numeric != 0) AS nonzero
+        FROM flow_data
+        WHERE date = ${today} AND source = ${source}
+      `;
+      const { total, nonzero } = rows[0]!;
+      if (Number(total) > 10 && Number(nonzero) === 0) {
+        Sentry.setTag('cron.job', 'fetch-flow');
+        Sentry.captureMessage(
+          `Data quality alert: ${source} has ${total} rows but ALL values are zero for ${today}`,
+          'warning',
+        );
+        logger.warn(
+          { source, total, date: today },
+          'Market Tide data quality: all values zero',
+        );
+      }
+    }
+
     logger.info(
       {
         allIn: allInResult,

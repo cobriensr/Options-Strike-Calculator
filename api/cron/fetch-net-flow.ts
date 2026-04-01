@@ -209,6 +209,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       results[f.source] = f.result;
     }
 
+    // Data quality check: alert if all values are zero per source
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    for (const { source } of TICKERS) {
+      const rows = await getDb()`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE ncp::numeric != 0 OR npp::numeric != 0) AS nonzero
+        FROM flow_data
+        WHERE date = ${today} AND source = ${source}
+      `;
+      const { total, nonzero } = rows[0]!;
+      if (Number(total) > 10 && Number(nonzero) === 0) {
+        Sentry.setTag('cron.job', 'fetch-net-flow');
+        Sentry.captureMessage(
+          `Data quality alert: ${source} has ${total} rows but ALL values are zero for ${today}`,
+          'warning',
+        );
+        logger.warn(
+          { source, total, date: today },
+          'Net flow data quality: all values zero',
+        );
+      }
+    }
+
     logger.info({ results }, 'fetch-net-flow completed');
 
     return res.status(200).json({

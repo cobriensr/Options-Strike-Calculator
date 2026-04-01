@@ -131,6 +131,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `;
     }
 
+    // Data quality check: alert if API returned events but all key fields are null
+    if (todayEvents.length > 0) {
+      const qcRows = await sql`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (
+                 WHERE event_name IS NOT NULL AND event_name != ''
+               ) AS has_name
+        FROM economic_events
+        WHERE date = ${todayStr}
+      `;
+      const { total, has_name } = qcRows[0]!;
+      if (Number(total) > 0 && Number(has_name) === 0) {
+        Sentry.setTag('cron.job', 'fetch-economic-calendar');
+        Sentry.captureMessage(
+          `Data quality alert: economic_events has ${total} rows but ALL event_name values are empty for ${todayStr}`,
+          'warning',
+        );
+        logger.warn(
+          { total, date: todayStr },
+          'Economic calendar data quality: all event names empty',
+        );
+      }
+    }
+
     logger.info(
       {
         date: todayStr,

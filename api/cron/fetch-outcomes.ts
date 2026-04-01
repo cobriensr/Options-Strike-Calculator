@@ -19,7 +19,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { schwabFetch } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
-import { saveOutcome } from '../_lib/db.js';
+import { saveOutcome, getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
   getETTime,
@@ -166,6 +166,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       vixClose,
       vix1dClose,
     });
+
+    // Data quality check: alert if settlement is null
+    const qcRows = await getDb()`
+      SELECT settlement FROM outcomes WHERE date = ${dateStr}
+    `;
+    if (qcRows.length > 0 && qcRows[0]!.settlement == null) {
+      Sentry.setTag('cron.job', 'fetch-outcomes');
+      Sentry.captureMessage(
+        `Data quality alert: outcomes row for ${dateStr} has NULL settlement — ML pipeline will break`,
+        'warning',
+      );
+      logger.warn(
+        { date: dateStr },
+        'Outcomes data quality: settlement is null',
+      );
+    }
 
     logger.info(
       {
