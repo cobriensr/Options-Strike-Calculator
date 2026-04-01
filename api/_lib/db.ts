@@ -904,6 +904,51 @@ const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 24,
+    description:
+      'Add options volume/premium feature columns to training_features',
+    run: async (sql) => {
+      await sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS opt_call_volume       INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_put_volume        INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_call_oi           INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_put_oi            INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_call_premium      DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS opt_put_premium       DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS opt_bullish_premium   DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS opt_bearish_premium   DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS opt_call_vol_ask      INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_put_vol_bid       INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_vol_pcr           DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS opt_oi_pcr            DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS opt_premium_ratio     DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS opt_call_vol_vs_avg30 DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS opt_put_vol_vs_avg30  DECIMAL(6,4)
+      `;
+    },
+    statements: (sql) => [
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS opt_call_volume       INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_put_volume        INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_call_oi           INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_put_oi            INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_call_premium      DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS opt_put_premium       DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS opt_bullish_premium   DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS opt_bearish_premium   DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS opt_call_vol_ask      INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_put_vol_bid       INTEGER,
+          ADD COLUMN IF NOT EXISTS opt_vol_pcr           DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS opt_oi_pcr            DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS opt_premium_ratio     DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS opt_call_vol_vs_avg30 DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS opt_put_vol_vs_avg30  DECIMAL(6,4)
+      `,
+    ],
+  },
 ];
 
 /**

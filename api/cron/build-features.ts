@@ -455,6 +455,21 @@ const NULLABLE_FEATURE_KEYS = new Set([
   'dp_resistance_premium',
   'max_pain_0dte',
   'max_pain_dist',
+  'opt_call_volume',
+  'opt_put_volume',
+  'opt_call_oi',
+  'opt_put_oi',
+  'opt_call_premium',
+  'opt_put_premium',
+  'opt_bullish_premium',
+  'opt_bearish_premium',
+  'opt_call_vol_ask',
+  'opt_put_vol_bid',
+  'opt_vol_pcr',
+  'opt_oi_pcr',
+  'opt_premium_ratio',
+  'opt_call_vol_vs_avg30',
+  'opt_put_vol_vs_avg30',
 ]);
 
 /** Compute feature completeness as fraction of non-null values. */
@@ -942,6 +957,99 @@ async function buildFeaturesForDate(
     logger.warn({ err: dpErr }, 'Dark pool feature extraction failed');
   }
 
+  // 9. Options volume & premium (from Unusual Whales API)
+  try {
+    const apiKey = process.env.UW_API_KEY;
+    if (apiKey) {
+      const ovRes = await fetch(
+        `https://api.unusualwhales.com/api/stock/SPX/options-volume?limit=1&date=${dateStr}`,
+        {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (ovRes.ok) {
+        const ovBody = await ovRes.json();
+        const ovData = ovBody.data;
+        if (Array.isArray(ovData) && ovData.length > 0) {
+          const ov = ovData[0]!;
+
+          // Raw volumes and OI
+          const callVol = Number.parseInt(String(ov.call_volume ?? '0'), 10);
+          const putVol = Number.parseInt(String(ov.put_volume ?? '0'), 10);
+          const callOI = Number.parseInt(
+            String(ov.call_open_interest ?? '0'),
+            10,
+          );
+          const putOI = Number.parseInt(
+            String(ov.put_open_interest ?? '0'),
+            10,
+          );
+
+          features.opt_call_volume = callVol || null;
+          features.opt_put_volume = putVol || null;
+          features.opt_call_oi = callOI || null;
+          features.opt_put_oi = putOI || null;
+
+          // Premium
+          const callPrem = Number.parseFloat(String(ov.call_premium ?? '0'));
+          const putPrem = Number.parseFloat(String(ov.put_premium ?? '0'));
+          const bullPrem = Number.parseFloat(
+            String(ov.bullish_premium ?? '0'),
+          );
+          const bearPrem = Number.parseFloat(
+            String(ov.bearish_premium ?? '0'),
+          );
+          features.opt_call_premium = callPrem || null;
+          features.opt_put_premium = putPrem || null;
+          features.opt_bullish_premium = bullPrem || null;
+          features.opt_bearish_premium = bearPrem || null;
+
+          // Aggressive side volume
+          const callAsk = Number.parseInt(
+            String(ov.call_volume_ask_side ?? '0'),
+            10,
+          );
+          const putBid = Number.parseInt(
+            String(ov.put_volume_bid_side ?? '0'),
+            10,
+          );
+          features.opt_call_vol_ask = callAsk || null;
+          features.opt_put_vol_bid = putBid || null;
+
+          // Derived ratios
+          if (callVol > 0) {
+            features.opt_vol_pcr = putVol / callVol;
+          }
+          if (callOI > 0) {
+            features.opt_oi_pcr = putOI / callOI;
+          }
+          if (bullPrem + bearPrem > 0) {
+            features.opt_premium_ratio = bullPrem / (bullPrem + bearPrem);
+          }
+
+          // Volume vs 30-day average
+          const avg30Call = Number.parseInt(
+            String(ov.avg_30_day_call_volume ?? '0'),
+            10,
+          );
+          const avg30Put = Number.parseInt(
+            String(ov.avg_30_day_put_volume ?? '0'),
+            10,
+          );
+          if (avg30Call > 0) {
+            features.opt_call_vol_vs_avg30 = callVol / avg30Call;
+          }
+          if (avg30Put > 0) {
+            features.opt_put_vol_vs_avg30 = putVol / avg30Put;
+          }
+        }
+      }
+    }
+  } catch (ovErr) {
+    logger.warn({ err: ovErr }, 'Options volume feature extraction failed');
+  }
+
   features.feature_completeness = computeCompleteness(features);
 
   return features;
@@ -1120,7 +1228,13 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       dp_total_premium, dp_buyer_initiated, dp_seller_initiated,
       dp_net_bias, dp_cluster_count, dp_top_cluster_dist,
       dp_support_premium, dp_resistance_premium,
-      max_pain_0dte, max_pain_dist
+      max_pain_0dte, max_pain_dist,
+      opt_call_volume, opt_put_volume, opt_call_oi, opt_put_oi,
+      opt_call_premium, opt_put_premium,
+      opt_bullish_premium, opt_bearish_premium,
+      opt_call_vol_ask, opt_put_vol_bid,
+      opt_vol_pcr, opt_oi_pcr, opt_premium_ratio,
+      opt_call_vol_vs_avg30, opt_put_vol_vs_avg30
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -1161,7 +1275,14 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.dp_total_premium}, ${f.dp_buyer_initiated}, ${f.dp_seller_initiated},
       ${f.dp_net_bias}, ${f.dp_cluster_count}, ${f.dp_top_cluster_dist},
       ${f.dp_support_premium}, ${f.dp_resistance_premium},
-      ${f.max_pain_0dte}, ${f.max_pain_dist}
+      ${f.max_pain_0dte}, ${f.max_pain_dist},
+      ${f.opt_call_volume}, ${f.opt_put_volume},
+      ${f.opt_call_oi}, ${f.opt_put_oi},
+      ${f.opt_call_premium}, ${f.opt_put_premium},
+      ${f.opt_bullish_premium}, ${f.opt_bearish_premium},
+      ${f.opt_call_vol_ask}, ${f.opt_put_vol_bid},
+      ${f.opt_vol_pcr}, ${f.opt_oi_pcr}, ${f.opt_premium_ratio},
+      ${f.opt_call_vol_vs_avg30}, ${f.opt_put_vol_vs_avg30}
     )
     ON CONFLICT (date) DO UPDATE SET
       vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
@@ -1251,7 +1372,22 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       dp_support_premium = EXCLUDED.dp_support_premium,
       dp_resistance_premium = EXCLUDED.dp_resistance_premium,
       max_pain_0dte = EXCLUDED.max_pain_0dte,
-      max_pain_dist = EXCLUDED.max_pain_dist
+      max_pain_dist = EXCLUDED.max_pain_dist,
+      opt_call_volume = EXCLUDED.opt_call_volume,
+      opt_put_volume = EXCLUDED.opt_put_volume,
+      opt_call_oi = EXCLUDED.opt_call_oi,
+      opt_put_oi = EXCLUDED.opt_put_oi,
+      opt_call_premium = EXCLUDED.opt_call_premium,
+      opt_put_premium = EXCLUDED.opt_put_premium,
+      opt_bullish_premium = EXCLUDED.opt_bullish_premium,
+      opt_bearish_premium = EXCLUDED.opt_bearish_premium,
+      opt_call_vol_ask = EXCLUDED.opt_call_vol_ask,
+      opt_put_vol_bid = EXCLUDED.opt_put_vol_bid,
+      opt_vol_pcr = EXCLUDED.opt_vol_pcr,
+      opt_oi_pcr = EXCLUDED.opt_oi_pcr,
+      opt_premium_ratio = EXCLUDED.opt_premium_ratio,
+      opt_call_vol_vs_avg30 = EXCLUDED.opt_call_vol_vs_avg30,
+      opt_put_vol_vs_avg30 = EXCLUDED.opt_put_vol_vs_avg30
   `;
 }
 
