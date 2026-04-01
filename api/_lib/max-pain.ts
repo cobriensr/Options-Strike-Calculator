@@ -87,23 +87,33 @@ export function formatMaxPainForClaude(
 ): string | null {
   if (entries.length === 0) return null;
 
-  // Find today's 0DTE max pain
-  const zeroDte = entries.find((e) => e.expiry === analysisDate);
+  // UW API returns monthly expirations only — find exact 0DTE match
+  // first, then fall back to the nearest expiry on or after this date
+  // (the dominant OI anchor for settlement gravitational pull).
+  const zeroDte =
+    entries.find((e) => e.expiry === analysisDate) ??
+    entries
+      .filter((e) => e.expiry >= analysisDate)
+      .sort((a, b) => a.expiry.localeCompare(b.expiry))[0];
   if (!zeroDte) return null;
 
-  const zeroDteStrike = parseFloat(zeroDte.max_pain);
-  if (isNaN(zeroDteStrike)) return null;
+  const zeroDteStrike = Number.parseFloat(zeroDte.max_pain);
+  if (Number.isNaN(zeroDteStrike)) return null;
 
   const lines: string[] = [];
 
-  // 0DTE max pain — the primary signal
-  lines.push(`0DTE Max Pain: ${zeroDteStrike.toFixed(0)}`);
+  // Label reflects whether we matched 0DTE exactly or used nearest monthly
+  const isExact = zeroDte.expiry === analysisDate;
+  const expiryLabel = isExact
+    ? '0DTE'
+    : `nearest monthly (${zeroDte.expiry})`;
+  lines.push(`Max Pain (${expiryLabel}): ${zeroDteStrike.toFixed(0)}`);
 
   if (currentSpx != null) {
     const dist = currentSpx - zeroDteStrike;
     const dir = dist > 0 ? 'above' : 'below';
     lines.push(
-      `  SPX at ${currentSpx.toFixed(1)} is ${Math.abs(dist).toFixed(0)} pts ${dir} 0DTE max pain`,
+      `  SPX at ${currentSpx.toFixed(1)} is ${Math.abs(dist).toFixed(0)} pts ${dir} max pain`,
     );
 
     // Interpretation
