@@ -861,12 +861,17 @@ async function buildFeaturesForDate(
     const apiKey = process.env.UW_API_KEY;
     if (apiKey) {
       const maxPainEntries = await fetchMaxPain(apiKey, dateStr);
-      const zeroDte = maxPainEntries.find((e) => e.expiry === dateStr);
-      if (zeroDte) {
-        const mp = Number.parseFloat(zeroDte.max_pain);
+      // UW API returns monthly expirations only — find the nearest
+      // expiry on or after this date (the dominant OI anchor).
+      // Fall back to exact 0DTE match if available (monthly opex days).
+      const sorted = maxPainEntries
+        .filter((e) => e.expiry >= dateStr)
+        .sort((a, b) => a.expiry.localeCompare(b.expiry));
+      const best = sorted[0];
+      if (best) {
+        const mp = Number.parseFloat(best.max_pain);
         if (!Number.isNaN(mp)) {
           features.max_pain_0dte = mp;
-          // Distance from open to max pain (positive = max pain above open)
           const spxOpen = features.spx_open as number | undefined;
           if (spxOpen != null && spxOpen > 0) {
             features.max_pain_dist = mp - spxOpen;
