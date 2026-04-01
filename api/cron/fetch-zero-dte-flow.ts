@@ -150,6 +150,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-zero-dte-flow completed',
     );
 
+    // Data quality check: alert if all values are null/zero
+    if (result.stored > 10) {
+      const today = new Date().toLocaleDateString('en-CA', {
+        timeZone: 'America/New_York',
+      });
+      const rows = await getDb()`
+        SELECT COUNT(*) AS total,
+               COUNT(ncp) AS non_null
+        FROM flow_data
+        WHERE date = ${today} AND source = ${SOURCE}
+      `;
+      const { total, non_null } = rows[0]!;
+      if (Number(total) > 10 && Number(non_null) === 0) {
+        Sentry.setTag('cron.job', 'fetch-zero-dte-flow');
+        Sentry.captureMessage(
+          `Data quality alert: ${SOURCE} has ${total} rows but ALL NCP values are null for ${today}`,
+          'warning',
+        );
+        logger.warn(
+          { total, date: today },
+          '0DTE flow data quality: all NCP values null',
+        );
+      }
+    }
+
     return res.status(200).json({
       job: 'fetch-zero-dte-flow',
       ticks: ticks.length,

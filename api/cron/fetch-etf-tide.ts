@@ -178,6 +178,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }),
     );
 
+    // Data quality check: alert if all values are zero
+    for (const [source, r] of Object.entries(results)) {
+      if (r.candles > 10 && r.stored === r.candles) {
+        // All candles were new (no duplicates) — check the raw data
+        // for all-zero values which indicate an upstream data issue
+        const rows = await getDb()`
+          SELECT COUNT(*) AS total,
+                 COUNT(*) FILTER (WHERE ncp::numeric != 0 OR npp::numeric != 0) AS nonzero
+          FROM flow_data
+          WHERE date = ${today} AND source = ${source}
+        `;
+        const { total, nonzero } = rows[0]!;
+        if (Number(total) > 10 && Number(nonzero) === 0) {
+          Sentry.setTag('cron.job', 'fetch-etf-tide');
+          Sentry.captureMessage(
+            `Data quality alert: ${source} has ${total} rows but ALL values are zero for ${today}`,
+            'warning',
+          );
+          logger.warn(
+            { source, total, date: today },
+            'ETF Tide data quality: all values zero',
+          );
+        }
+      }
+    }
+
     logger.info({ results }, 'fetch-etf-tide completed');
 
     return res.status(200).json({
