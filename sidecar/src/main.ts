@@ -1,4 +1,4 @@
-import { getAccessToken, getMdAccessToken } from './tradovate-auth.js';
+import { getAccessToken } from './tradovate-auth.js';
 import { TradovateWsClient, type TradovateQuote } from './tradovate-ws.js';
 import { BarAggregator, type Tick } from './bar-aggregator.js';
 import { resolveContractSymbol } from './contract-roller.js';
