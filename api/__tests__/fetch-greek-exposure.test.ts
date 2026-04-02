@@ -353,4 +353,68 @@ describe('fetch-greek-exposure handler', () => {
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'All sources failed' });
   });
+
+  // ── storeExpiryRows individual row insert failure ────────
+
+  it('counts individual expiry row INSERT failures as skipped', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const rows = [
+      makeExpiryRow({ expiry: '2026-03-24', dte: 0 }),
+      makeExpiryRow({ expiry: '2026-03-25', dte: 1 }),
+    ];
+    stubFetch([], rows);
+
+    // First expiry INSERT succeeds, second throws
+    mockSql
+      .mockResolvedValueOnce([{ id: 1 }]) // first expiry INSERT OK
+      .mockRejectedValueOnce(new Error('constraint violation')) // second throws
+      .mockResolvedValue([{ total: 1, nonzero: 0 }]); // data-quality
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      stored: 1,
+      skipped: 1,
+    });
+  });
+
+  // ── Reverse failure: aggregate fails, expiry succeeds ────
+
+  it('returns 200 partial when aggregate API fails but expiry succeeds', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/greek-exposure/expiry')) {
+          return {
+            ok: true,
+            json: async () => ({ data: [makeExpiryRow()] }),
+          };
+        }
+        return { ok: false, status: 500, text: async () => 'Server error' };
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Expiry stored successfully, aggregate failed → partial success (200)
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      aggregateStored: false,
+      expiries: 1,
+      stored: 1,
+      partial: true,
+    });
+  });
 });
