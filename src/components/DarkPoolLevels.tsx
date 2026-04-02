@@ -10,6 +10,7 @@
 
 import { memo, useMemo } from 'react';
 import { theme } from '../themes';
+import { SectionBox } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
 
 const PREMIUM_FLOOR = 100_000_000; // $100M minimum to display
@@ -84,52 +85,58 @@ export default memo(function DarkPoolLevels({
 
   const totalClusters = levels.length;
 
+  const badge =
+    totalClusters > 0
+      ? `${filtered.length} of ${totalClusters}`
+      : null;
+
+  const headerRight = updatedAt ? (
+    <span className="text-muted font-sans text-[10px]">
+      {formatTime(updatedAt)}
+    </span>
+  ) : null;
+
   if (loading) {
     return (
-      <div className="bg-surface border-edge rounded-[10px] border p-4">
+      <SectionBox label="Dark Pool Levels" headerRight={headerRight}>
         <div className="text-muted animate-pulse text-center font-sans text-xs">
           Loading dark pool data...
         </div>
-      </div>
+      </SectionBox>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-surface border-edge rounded-[10px] border p-4">
-        <div className="text-muted text-center font-sans text-xs">{error}</div>
-      </div>
+      <SectionBox label="Dark Pool Levels" headerRight={headerRight}>
+        <div className="text-muted text-center font-sans text-xs">
+          {error}
+        </div>
+      </SectionBox>
     );
   }
 
   if (filtered.length === 0) {
     return (
-      <div className="bg-surface border-edge rounded-[10px] border p-4">
-        <Header
-          filteredCount={0}
-          totalClusters={totalClusters}
-          updatedAt={updatedAt}
-        />
-        <div className="text-muted mt-3 text-center font-sans text-xs">
+      <SectionBox
+        label="Dark Pool Levels"
+        badge={badge}
+        headerRight={headerRight}
+      >
+        <div className="text-muted text-center font-sans text-xs">
           No clusters above $100M threshold
         </div>
-      </div>
+      </SectionBox>
     );
   }
 
   return (
-    <div className="bg-surface border-edge rounded-[10px] border p-4">
-      <Header
-        filteredCount={filtered.length}
-        totalClusters={totalClusters}
-        updatedAt={updatedAt}
-      />
-
-      <div
-        className="border-edge-strong mt-3 border-t pt-3"
-        role="table"
-        aria-label="Dark pool levels"
-      >
+    <SectionBox
+      label="Dark Pool Levels"
+      badge={badge}
+      headerRight={headerRight}
+    >
+      <div role="table" aria-label="Dark pool levels">
         <div className="sr-only" role="row">
           <span role="columnheader">SPX Level</span>
           <span role="columnheader">Premium</span>
@@ -144,39 +151,9 @@ export default memo(function DarkPoolLevels({
           />
         ))}
       </div>
-    </div>
+    </SectionBox>
   );
 });
-
-function Header({
-  filteredCount,
-  totalClusters,
-  updatedAt,
-}: {
-  filteredCount: number;
-  totalClusters: number;
-  updatedAt: string | null;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <div>
-        <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-          Dark Pool Levels (&gt;$100M)
-        </div>
-        <div className="text-muted font-sans text-[10px]">
-          {totalClusters > 0
-            ? `${filteredCount} of ${totalClusters} clusters shown`
-            : 'No data yet'}
-        </div>
-      </div>
-      {updatedAt && (
-        <div className="text-muted font-sans text-[10px]">
-          {formatTime(updatedAt)}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function LevelRow({
   level,

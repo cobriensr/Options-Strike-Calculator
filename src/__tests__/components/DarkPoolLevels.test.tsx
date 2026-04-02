@@ -39,6 +39,20 @@ describe('DarkPoolLevels: loading state', () => {
     );
     expect(screen.getByText(/loading dark pool/i)).toBeInTheDocument();
   });
+
+  it('renders inside a SectionBox with label', () => {
+    render(
+      <DarkPoolLevels
+        levels={[]}
+        loading={true}
+        error={null}
+        updatedAt={null}
+      />,
+    );
+    expect(
+      screen.getByRole('region', { name: /dark pool levels/i }),
+    ).toBeInTheDocument();
+  });
 });
 
 // ============================================================
@@ -75,7 +89,9 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no clusters above \$100M/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no clusters above \$100M/i),
+    ).toBeInTheDocument();
   });
 
   it('shows no clusters when all levels below threshold', () => {
@@ -91,10 +107,12 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no clusters above \$100M/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no clusters above \$100M/i),
+    ).toBeInTheDocument();
   });
 
-  it('shows total cluster count even when none above threshold', () => {
+  it('shows badge with cluster count even when none above threshold', () => {
     const levels = [
       makeLevel({ totalPremium: 50_000_000 }),
       makeLevel({ spxApprox: 6550, totalPremium: 80_000_000 }),
@@ -107,7 +125,8 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/0 of 2 clusters shown/)).toBeInTheDocument();
+    // SectionBox badge renders "0 of 2"
+    expect(screen.getByText('0 of 2')).toBeInTheDocument();
   });
 });
 
@@ -162,7 +181,7 @@ describe('DarkPoolLevels: rendering levels', () => {
     expect(screen.queryByText('6540')).not.toBeInTheDocument();
   });
 
-  it('shows cluster count summary', () => {
+  it('shows badge with cluster count', () => {
     const levels = [
       makeLevel({ spxApprox: 6575, totalPremium: 500_000_000 }),
       makeLevel({ spxApprox: 6540, totalPremium: 50_000_000 }),
@@ -176,7 +195,8 @@ describe('DarkPoolLevels: rendering levels', () => {
       />,
     );
 
-    expect(screen.getByText(/1 of 2 clusters shown/)).toBeInTheDocument();
+    // SectionBox badge: "1 of 2"
+    expect(screen.getByText('1 of 2')).toBeInTheDocument();
   });
 });
 
@@ -317,8 +337,6 @@ describe('DarkPoolLevels: premium bar sizing', () => {
       />,
     );
 
-    // The bars are rendered as divs with role="cell"
-    // The first (max) should be 100%, second 50%
     const barLabels = screen.getAllByLabelText(/premium/);
     expect(barLabels).toHaveLength(2);
 
@@ -354,6 +372,20 @@ describe('DarkPoolLevels: premium bar sizing', () => {
 // ============================================================
 
 describe('DarkPoolLevels: accessibility', () => {
+  it('has SectionBox with aria-label', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+      />,
+    );
+    expect(
+      screen.getByRole('region', { name: /dark pool levels/i }),
+    ).toBeInTheDocument();
+  });
+
   it('has table role for screen readers', () => {
     render(
       <DarkPoolLevels
@@ -415,7 +447,7 @@ describe('DarkPoolLevels: accessibility', () => {
 // ============================================================
 
 describe('DarkPoolLevels: header', () => {
-  it('shows title with threshold', () => {
+  it('shows section title via SectionBox', () => {
     render(
       <DarkPoolLevels
         levels={[makeLevel()]}
@@ -424,10 +456,12 @@ describe('DarkPoolLevels: header', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/dark pool levels/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /dark pool levels/i }),
+    ).toBeInTheDocument();
   });
 
-  it('shows "No data yet" when no levels at all', () => {
+  it('does not show badge when no levels at all', () => {
     render(
       <DarkPoolLevels
         levels={[]}
@@ -436,7 +470,8 @@ describe('DarkPoolLevels: header', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText('No data yet')).toBeInTheDocument();
+    // Badge is null when totalClusters is 0
+    expect(screen.queryByText(/of/)).not.toBeInTheDocument();
   });
 
   it('does not show updatedAt time when null', () => {
@@ -448,9 +483,10 @@ describe('DarkPoolLevels: header', () => {
         updatedAt={null}
       />,
     );
-    // The header should not contain a time element
-    // Only the title and cluster count should be present
-    expect(screen.getByText(/dark pool levels/i)).toBeInTheDocument();
-    expect(screen.getByText(/1 of 1 clusters shown/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /dark pool levels/i }),
+    ).toBeInTheDocument();
+    // Badge shows count
+    expect(screen.getByText('1 of 1')).toBeInTheDocument();
   });
 });
