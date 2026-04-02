@@ -734,4 +734,26 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 26,
+    description:
+      'Add IV monitor and flow ratio monitor feature columns to training_features',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS iv_open          DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS iv_max           DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS iv_range         DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS iv_crush_rate    DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS iv_spike_count   INTEGER,
+          ADD COLUMN IF NOT EXISTS iv_at_t2         DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_open         DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_max          DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_min          DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_range        DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_trend_t1_t2  DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS pcr_spike_count  INTEGER
+      `,
+    ],
+  },
 ];

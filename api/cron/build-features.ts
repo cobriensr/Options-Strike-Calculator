@@ -12,6 +12,7 @@
  *   build-features-flow.ts   — flow checkpoint NCP/NPP + agreement
  *   build-features-gex.ts    — GEX, Greek exposure, per-strike features
  *   build-features-phase2.ts — prev day, realized vol, events, max pain, dark pool, options
+ *   build-features-monitor.ts — IV monitor + flow ratio monitor dynamics
  *   build-features-types.ts  — shared types, constants, and helpers
  *
  * Environment: DATABASE_URL, CRON_SECRET
@@ -40,6 +41,7 @@ import {
 import { engineerFlowFeatures } from '../_lib/build-features-flow.js';
 import { engineerGexFeatures } from '../_lib/build-features-gex.js';
 import { engineerPhase2Features } from '../_lib/build-features-phase2.js';
+import { engineerMonitorFeatures } from '../_lib/build-features-monitor.js';
 
 export const config = { maxDuration: 300 };
 
@@ -98,6 +100,18 @@ const NULLABLE_FEATURE_KEYS = new Set([
   'opt_premium_ratio',
   'opt_call_vol_vs_avg30',
   'opt_put_vol_vs_avg30',
+  'iv_open',
+  'iv_max',
+  'iv_range',
+  'iv_crush_rate',
+  'iv_spike_count',
+  'iv_at_t2',
+  'pcr_open',
+  'pcr_max',
+  'pcr_min',
+  'pcr_range',
+  'pcr_trend_t1_t2',
+  'pcr_spike_count',
 ]);
 
 /** Compute feature completeness as fraction of non-null values. */
@@ -183,6 +197,9 @@ async function buildFeaturesForDate(
 
   // 6-9. Phase 2: prev day, realized vol, events, max pain, dark pool, options
   await engineerPhase2Features(sql, dateStr, features);
+
+  // 10. Monitor features: IV dynamics + flow ratio dynamics
+  await engineerMonitorFeatures(sql, dateStr, features);
 
   features.feature_completeness = computeCompleteness(features);
 
@@ -367,7 +384,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       opt_bullish_premium, opt_bearish_premium,
       opt_call_vol_ask, opt_put_vol_bid,
       opt_vol_pcr, opt_oi_pcr, opt_premium_ratio,
-      opt_call_vol_vs_avg30, opt_put_vol_vs_avg30
+      opt_call_vol_vs_avg30, opt_put_vol_vs_avg30,
+      iv_open, iv_max, iv_range, iv_crush_rate, iv_spike_count, iv_at_t2,
+      pcr_open, pcr_max, pcr_min, pcr_range, pcr_trend_t1_t2, pcr_spike_count
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -415,7 +434,11 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.opt_bullish_premium}, ${f.opt_bearish_premium},
       ${f.opt_call_vol_ask}, ${f.opt_put_vol_bid},
       ${f.opt_vol_pcr}, ${f.opt_oi_pcr}, ${f.opt_premium_ratio},
-      ${f.opt_call_vol_vs_avg30}, ${f.opt_put_vol_vs_avg30}
+      ${f.opt_call_vol_vs_avg30}, ${f.opt_put_vol_vs_avg30},
+      ${f.iv_open}, ${f.iv_max}, ${f.iv_range},
+      ${f.iv_crush_rate}, ${f.iv_spike_count}, ${f.iv_at_t2},
+      ${f.pcr_open}, ${f.pcr_max}, ${f.pcr_min},
+      ${f.pcr_range}, ${f.pcr_trend_t1_t2}, ${f.pcr_spike_count}
     )
     ON CONFLICT (date) DO UPDATE SET
       vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
@@ -520,7 +543,14 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       opt_oi_pcr = EXCLUDED.opt_oi_pcr,
       opt_premium_ratio = EXCLUDED.opt_premium_ratio,
       opt_call_vol_vs_avg30 = EXCLUDED.opt_call_vol_vs_avg30,
-      opt_put_vol_vs_avg30 = EXCLUDED.opt_put_vol_vs_avg30
+      opt_put_vol_vs_avg30 = EXCLUDED.opt_put_vol_vs_avg30,
+      iv_open = EXCLUDED.iv_open, iv_max = EXCLUDED.iv_max,
+      iv_range = EXCLUDED.iv_range, iv_crush_rate = EXCLUDED.iv_crush_rate,
+      iv_spike_count = EXCLUDED.iv_spike_count, iv_at_t2 = EXCLUDED.iv_at_t2,
+      pcr_open = EXCLUDED.pcr_open, pcr_max = EXCLUDED.pcr_max,
+      pcr_min = EXCLUDED.pcr_min, pcr_range = EXCLUDED.pcr_range,
+      pcr_trend_t1_t2 = EXCLUDED.pcr_trend_t1_t2,
+      pcr_spike_count = EXCLUDED.pcr_spike_count
   `;
 }
 

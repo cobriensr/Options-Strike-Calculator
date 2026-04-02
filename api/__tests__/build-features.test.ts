@@ -567,8 +567,8 @@ describe('build-features handler', () => {
       errors: 0,
     });
 
-    // 14 original test calls + 2 preamble
-    expect(mockSql).toHaveBeenCalledTimes(17);
+    // 14 original test calls + 2 preamble + 2 monitor queries (iv_monitor + flow_ratio_monitor)
+    expect(mockSql).toHaveBeenCalledTimes(19);
   });
 
   it('extracts labels from review analyses with outcomes', async () => {
@@ -581,8 +581,8 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
 
     // Calls 2-10 (buildFeaturesForDate): all empty
-    // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]);
+    // (6 original + 3 Phase 2 + 2 monitor; vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 12; i++) mockSql.mockResolvedValueOnce([]);
 
     // Call 11: upsertFeatures INSERT
     mockSql.mockResolvedValueOnce([]);
@@ -653,8 +653,8 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
     // Calls 2-10: buildFeaturesForDate queries → empty
-    // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]);
+    // (6 original + 3 Phase 2 + 2 monitor; vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 12; i++) mockSql.mockResolvedValueOnce([]);
     // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -708,8 +708,8 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
     // Calls 2-10: buildFeaturesForDate queries → empty
-    // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]);
+    // (6 original + 3 Phase 2 + 2 monitor; vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 12; i++) mockSql.mockResolvedValueOnce([]);
     // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -756,8 +756,8 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
     // Calls 2-10: buildFeaturesForDate queries → empty
-    // (6 original + 3 Phase 2; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]);
+    // (6 original + 3 Phase 2 + 2 monitor; vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 12; i++) mockSql.mockResolvedValueOnce([]);
     // Call 12: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -833,8 +833,12 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([]);
     // Call 12: dark_pool_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
+    // Call 13: iv_monitor → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 14: flow_ratio_monitor → empty
+    mockSql.mockResolvedValueOnce([]);
 
-    // Call 13: upsertFeatures INSERT — capture the features being upserted
+    // Call 15: upsertFeatures INSERT — capture the features being upserted
     let upsertedFeatures: Record<string, unknown> | null = null;
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       // The tagged template literal passes strings as first arg, values as rest
@@ -1095,10 +1099,14 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([]);
     // Call 10: next event → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 11: upsertFeatures
+    // Call 11: iv_monitor → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: flow_ratio_monitor → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 13: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 12: extractLabelsForDate — analyses with review
+    // Call 14: extractLabelsForDate — analyses with review
     mockSql.mockResolvedValueOnce([
       {
         id: 70,
@@ -1109,7 +1117,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 13: outcomes — settlement > open → UP
+    // Call 15: outcomes — settlement > open → UP
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5750,
@@ -1120,7 +1128,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 14: flow_data — majority of AGREEMENT_SOURCES have positive ncp → bullish
+    // Call 16: flow_data — majority of AGREEMENT_SOURCES have positive ncp → bullish
     mockSql.mockResolvedValueOnce([
       { timestamp: t2, source: 'market_tide', ncp: '500000' },
       { timestamp: t2, source: 'market_tide_otm', ncp: '300000' },
@@ -1161,10 +1169,14 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([]);
     // Call 10: next event → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 11: upsertFeatures
+    // Call 11: iv_monitor → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: flow_ratio_monitor → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 13: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 12: analyses with review
+    // Call 14: analyses with review
     mockSql.mockResolvedValueOnce([
       {
         id: 71,
@@ -1175,7 +1187,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 13: outcomes — settlement > open → UP
+    // Call 15: outcomes — settlement > open → UP
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5720,
@@ -1228,10 +1240,14 @@ describe('build-features handler', () => {
     mockSql.mockResolvedValueOnce([]);
     // Call 10: next event → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 11: upsertFeatures
+    // Call 11: iv_monitor → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 12: flow_ratio_monitor → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 13: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 12: analyses with review
+    // Call 14: analyses with review
     mockSql.mockResolvedValueOnce([
       {
         id: 72,
@@ -1242,7 +1258,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 13: outcomes — settlement > open → UP
+    // Call 15: outcomes — settlement > open → UP
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5730,
