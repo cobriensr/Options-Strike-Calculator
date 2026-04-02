@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import BWBCalculator from '../../components/BWBCalculator';
 import {
@@ -369,5 +369,223 @@ describe('BWBCalculator component', () => {
 
     expect(screen.getByText('Max Profit')).toBeInTheDocument();
     expect(screen.getByText('Breakevens')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// BWBCalculator — anchor / charm / wing / credit-debit coverage
+// ============================================================
+
+describe('BWBCalculator anchor + charm', () => {
+  const anchorResponse = {
+    anchor: 5700,
+    price: 5680,
+    distFromPrice: 20,
+    charmAdjusted: 5705,
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(anchorResponse),
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('renders gamma anchor after successful fetch', async () => {
+    render(<BWBCalculator />);
+    await waitFor(() => {
+      expect(screen.getByText('5700')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/γ Anchor/)).toBeInTheDocument();
+  });
+
+  it('shows charm toggle when charmAdjusted differs from strike', async () => {
+    render(<BWBCalculator />);
+    await waitFor(() => {
+      expect(screen.getByText('γ+C')).toBeInTheDocument();
+    });
+    expect(screen.getByText('γ', { exact: true })).toBeInTheDocument();
+  });
+
+  it('hides charm toggle when charmAdjusted equals strike', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ ...anchorResponse, charmAdjusted: 5700 }),
+      }),
+    );
+    render(<BWBCalculator />);
+    await waitFor(() => {
+      expect(screen.getByText('5700')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('γ+C')).not.toBeInTheDocument();
+  });
+
+  it('clicking γ+C switches to charm-adjusted strike', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+    await waitFor(() => {
+      expect(screen.getByText('γ+C')).toBeInTheDocument();
+    });
+    await user.click(screen.getByText('γ+C'));
+    // Now should show charmAdjusted value (5705) instead of 5700
+    expect(screen.getByText('5705')).toBeInTheDocument();
+  });
+
+  it('Use button fills sweet spot with anchor strike', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+    await waitFor(() => {
+      expect(screen.getByText('Use')).toBeInTheDocument();
+    });
+    await user.click(screen.getByText('Use'));
+    expect(screen.getByLabelText('Sweet spot strike')).toHaveValue('5700');
+    // Auto-filled strikes (calls, narrow=20, wide=40):
+    expect(screen.getByLabelText('Low strike')).toHaveValue('5680');
+    expect(screen.getByLabelText('Mid strike')).toHaveValue('5700');
+    expect(screen.getByLabelText('High strike')).toHaveValue('5740');
+  });
+
+  it('passes selectedDate as query param to fetch', async () => {
+    render(<BWBCalculator selectedDate="2026-04-01" />);
+    await waitFor(() => {
+      expect(screen.getByText('5700')).toBeInTheDocument();
+    });
+    const fetchCalls = vi.mocked(fetch).mock.calls;
+    expect(fetchCalls[0]![0]).toBe('/api/bwb-anchor?date=2026-04-01');
+  });
+
+  it('handles fetch failure gracefully', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new Error('Network error')),
+    );
+    render(<BWBCalculator />);
+    // Should still render without anchor
+    expect(screen.getByText('BWB Live Calculator')).toBeInTheDocument();
+    expect(screen.queryByText(/γ Anchor/)).not.toBeInTheDocument();
+  });
+
+  it('handles non-ok response gracefully', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        json: () => Promise.resolve(null),
+      }),
+    );
+    render(<BWBCalculator />);
+    // Wait for fetch to settle
+    await waitFor(() => {
+      expect(vi.mocked(fetch)).toHaveBeenCalled();
+    });
+    expect(screen.queryByText(/γ Anchor/)).not.toBeInTheDocument();
+  });
+});
+
+describe('BWBCalculator wing width + credit/debit', () => {
+  it('changing narrow width re-fills strikes', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    // Default narrow=20 => low=6480
+    expect(screen.getByLabelText('Low strike')).toHaveValue('6480');
+
+    // For controlled numeric inputs, fireEvent.change is more reliable
+    // than userEvent.type since the handler ignores non-numeric values
+    const narrowInput = screen.getByLabelText('Narrow wing width');
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.change(narrowInput, { target: { value: '25' } });
+    // low = 6500 - 25 = 6475
+    expect(screen.getByLabelText('Low strike')).toHaveValue('6475');
+  });
+
+  it('changing wide width re-fills strikes', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    // Default wide=40 => high=6540
+    expect(screen.getByLabelText('High strike')).toHaveValue('6540');
+
+    const wideInput = screen.getByLabelText('Wide wing width');
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.change(wideInput, { target: { value: '50' } });
+    // high = 6500 + 50 = 6550
+    expect(screen.getByLabelText('High strike')).toHaveValue('6550');
+  });
+
+  it('manual strike edit clears sweet spot', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    expect(screen.getByLabelText('Sweet spot strike')).toHaveValue('6500');
+
+    // Manually edit low strike
+    await user.clear(screen.getByLabelText('Low strike'));
+    await user.type(screen.getByLabelText('Low strike'), '6485');
+    expect(screen.getByLabelText('Sweet spot strike')).toHaveValue('');
+  });
+
+  it('credit toggle shows CREDIT label in trade summary', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Low strike'), '6480');
+    await user.type(screen.getByLabelText('Mid strike'), '6500');
+    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('Net fill price'), '0.91');
+    // Default is credit
+    expect(screen.getByText('CREDIT')).toBeInTheDocument();
+  });
+
+  it('debit toggle shows DEBIT label', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Low strike'), '6480');
+    await user.type(screen.getByLabelText('Mid strike'), '6500');
+    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('Net fill price'), '1.50');
+    await user.click(screen.getByText('Debit'));
+    expect(screen.getByText('DEBIT')).toBeInTheDocument();
+  });
+
+  it('contracts > 1 shows plural in footer', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Low strike'), '6480');
+    await user.type(screen.getByLabelText('Mid strike'), '6500');
+    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('Net fill price'), '1.50');
+    await user.click(screen.getByText('+'));
+    await user.click(screen.getByText('+'));
+    // 3 contracts — use getAllByText since it appears in both header and footer
+    const matches = screen.getAllByText(/3 contracts/);
+    expect(matches.length).toBeGreaterThan(0);
+  });
+
+  it('contracts direct input accepts valid values', async () => {
+    render(<BWBCalculator />);
+
+    const contractInput = screen.getByLabelText('Number of contracts');
+    const { fireEvent: fe } = await import('@testing-library/react');
+    fe.change(contractInput, { target: { value: '5' } });
+    expect(contractInput).toHaveValue('5');
+
+    // Empty resets to 1
+    fe.change(contractInput, { target: { value: '' } });
+    expect(contractInput).toHaveValue('1');
   });
 });

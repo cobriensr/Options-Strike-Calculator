@@ -29,9 +29,7 @@ const multipleIssues = [
 
 describe('ImageIssues', () => {
   it('renders singular text for a single issue', () => {
-    render(
-      <ImageIssues imageIssues={singleIssue} onReplaceImage={vi.fn()} />,
-    );
+    render(<ImageIssues imageIssues={singleIssue} onReplaceImage={vi.fn()} />);
     // "1 image needs improvement" (singular: no 's' on image, 's' on needs)
     expect(screen.getByText(/1 image needs improvement/i)).toBeInTheDocument();
   });
@@ -41,9 +39,7 @@ describe('ImageIssues', () => {
       <ImageIssues imageIssues={multipleIssues} onReplaceImage={vi.fn()} />,
     );
     // "2 images need improvement" (plural: 's' on images, no 's' on need)
-    expect(
-      screen.getByText(/2 images need improvement/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/2 images need improvement/i)).toBeInTheDocument();
   });
 
   it('renders each issue label and details', () => {
@@ -59,9 +55,7 @@ describe('ImageIssues', () => {
   });
 
   it('renders suggestion text', () => {
-    render(
-      <ImageIssues imageIssues={singleIssue} onReplaceImage={vi.fn()} />,
-    );
+    render(<ImageIssues imageIssues={singleIssue} onReplaceImage={vi.fn()} />);
     expect(
       screen.getByText(/Upload a higher resolution screenshot/),
     ).toBeInTheDocument();
@@ -90,9 +84,7 @@ describe('ImageIssues', () => {
   });
 
   it('renders footer with singular form when single issue', () => {
-    render(
-      <ImageIssues imageIssues={singleIssue} onReplaceImage={vi.fn()} />,
-    );
+    render(<ImageIssues imageIssues={singleIssue} onReplaceImage={vi.fn()} />);
     // "Replace the flagged image, then click Analyze again."
     expect(screen.getByText(/Replace the flagged image,/)).toBeInTheDocument();
   });
