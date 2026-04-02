@@ -454,10 +454,7 @@ describe('compute-es-overnight handler', () => {
       ok: true,
       data: { candles: [{ open: 5705.0, datetime: Date.now() }] },
     });
-    setupSqlSequence(
-      [makeBarRow()],
-      [makePrevOutcome('5700.00')],
-    );
+    setupSqlSequence([makeBarRow()], [makePrevOutcome('5700.00')]);
     const res = mockResponse();
     await handler(authedReq(), res);
     expect(res._status).toBe(200);
@@ -470,10 +467,7 @@ describe('compute-es-overnight handler', () => {
       ok: true,
       data: { candles: [{ open: 5715.0, datetime: Date.now() }] },
     });
-    setupSqlSequence(
-      [makeBarRow()],
-      [makePrevOutcome('5700.00')],
-    );
+    setupSqlSequence([makeBarRow()], [makePrevOutcome('5700.00')]);
     const res = mockResponse();
     await handler(authedReq(), res);
     expect(res._status).toBe(200);

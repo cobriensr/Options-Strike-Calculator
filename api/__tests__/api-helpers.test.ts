@@ -335,12 +335,8 @@ describe('api-helpers', () => {
     });
 
     it('throws immediately on non-transient error', async () => {
-      const fn = vi
-        .fn()
-        .mockRejectedValue(new Error('syntax error in SQL'));
-      await expect(withRetry(fn, 2)).rejects.toThrow(
-        'syntax error in SQL',
-      );
+      const fn = vi.fn().mockRejectedValue(new Error('syntax error in SQL'));
+      await expect(withRetry(fn, 2)).rejects.toThrow('syntax error in SQL');
       expect(fn).toHaveBeenCalledTimes(1);
     });
 
@@ -422,8 +418,7 @@ describe('api-helpers', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () =>
-            Promise.resolve({ data: [{ nested: [1, 2, 3] }] }),
+          json: () => Promise.resolve({ data: [{ nested: [1, 2, 3] }] }),
         }),
       );
       const extract = (body: Record<string, unknown>) => {
@@ -457,9 +452,7 @@ describe('api-helpers', () => {
           text: () => Promise.reject(new Error('body consumed')),
         }),
       );
-      await expect(uwFetch('key123', '/path')).rejects.toThrow(
-        'UW API 500: ',
-      );
+      await expect(uwFetch('key123', '/path')).rejects.toThrow('UW API 500: ');
     });
 
     it('uses full URL when path starts with http', async () => {
@@ -469,9 +462,7 @@ describe('api-helpers', () => {
       });
       vi.stubGlobal('fetch', mockFetch);
       await uwFetch('key123', 'https://custom.api.com/data');
-      expect(mockFetch.mock.calls[0]![0]).toBe(
-        'https://custom.api.com/data',
-      );
+      expect(mockFetch.mock.calls[0]![0]).toBe('https://custom.api.com/data');
     });
   });
 
@@ -657,10 +648,7 @@ describe('api-helpers', () => {
         total: 50,
         nonzero: 0,
       });
-      expect(Sentry.setTag).toHaveBeenCalledWith(
-        'cron.job',
-        'test-job',
-      );
+      expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'test-job');
       expect(Sentry.captureMessage).toHaveBeenCalledWith(
         expect.stringContaining(
           'test_table has 50 rows but ALL values are zero',

@@ -481,16 +481,14 @@ describe('fetch-etf-tide handler', () => {
 
     // Use mockImplementation to return different results for
     // INSERT vs SELECT COUNT queries
-    mockSql.mockImplementation(
-      (strings: TemplateStringsArray) => {
-        const query = strings.join('');
-        if (query.includes('SELECT COUNT')) {
-          return Promise.resolve([{ total: 11, nonzero: 0 }]);
-        }
-        // INSERT ... RETURNING id
-        return Promise.resolve([{ id: 1 }]);
-      },
-    );
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const query = strings.join('');
+      if (query.includes('SELECT COUNT')) {
+        return Promise.resolve([{ total: 11, nonzero: 0 }]);
+      }
+      // INSERT ... RETURNING id
+      return Promise.resolve([{ id: 1 }]);
+    });
 
     vi.stubGlobal(
       'fetch',
@@ -631,15 +629,13 @@ describe('fetch-etf-tide handler', () => {
 
     // INSERT succeeds, but the SELECT COUNT query in the data
     // quality check throws, landing in the outer catch block
-    mockSql.mockImplementation(
-      (strings: TemplateStringsArray) => {
-        const query = strings.join('');
-        if (query.includes('SELECT COUNT')) {
-          return Promise.reject(new Error('DB connection lost'));
-        }
-        return Promise.resolve([{ id: 1 }]);
-      },
-    );
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const query = strings.join('');
+      if (query.includes('SELECT COUNT')) {
+        return Promise.reject(new Error('DB connection lost'));
+      }
+      return Promise.resolve([{ id: 1 }]);
+    });
 
     vi.stubGlobal(
       'fetch',

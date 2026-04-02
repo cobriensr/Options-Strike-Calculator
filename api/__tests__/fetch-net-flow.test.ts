@@ -530,9 +530,7 @@ describe('fetch-net-flow handler', () => {
   it('counts skipped rows when INSERT returns empty', async () => {
     process.env.UW_API_KEY = 'uwkey';
 
-    const ticks = [
-      makeNetPremTick({ tape_time: '2026-03-24T14:01:00.000Z' }),
-    ];
+    const ticks = [makeNetPremTick({ tape_time: '2026-03-24T14:01:00.000Z' })];
     stubFetchWith(ticks);
 
     // First 3 calls are INSERTs (one per ticker) — return empty to

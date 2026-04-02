@@ -15,10 +15,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import { engineerGexFeatures } from '../_lib/build-features-gex.js';
-import type {
-  FeatureRow,
-  StrikeRow,
-} from '../_lib/build-features-types.js';
+import type { FeatureRow, StrikeRow } from '../_lib/build-features-types.js';
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -178,15 +175,15 @@ describe('engineerGexFeatures', () => {
       // Below ATM: negative charm dominates (negBelow >= posBelow)
       const strikes = buildCharmStrikes([
         { strike: 5760, callCharm: -100, putCharm: -50 }, // below, neg
-        { strike: 5770, callCharm: -80, putCharm: -60 },  // below, neg
-        { strike: 5780, callCharm: -90, putCharm: -40 },  // below, neg
+        { strike: 5770, callCharm: -80, putCharm: -60 }, // below, neg
+        { strike: 5780, callCharm: -90, putCharm: -40 }, // below, neg
         { strike: 5790, callCharm: -110, putCharm: -30 }, // below, neg
-        { strike: 5800, callCharm: 200, putCharm: 100 },  // at/above, pos
-        { strike: 5810, callCharm: 250, putCharm: 80 },   // above, pos
-        { strike: 5820, callCharm: 300, putCharm: 50 },   // above, pos
-        { strike: 5830, callCharm: 180, putCharm: 100 },  // above, pos
-        { strike: 5840, callCharm: 200, putCharm: 90 },   // above, pos
-        { strike: 5850, callCharm: -5, putCharm: -5 },    // above, neg (1 neg)
+        { strike: 5800, callCharm: 200, putCharm: 100 }, // at/above, pos
+        { strike: 5810, callCharm: 250, putCharm: 80 }, // above, pos
+        { strike: 5820, callCharm: 300, putCharm: 50 }, // above, pos
+        { strike: 5830, callCharm: 180, putCharm: 100 }, // above, pos
+        { strike: 5840, callCharm: 200, putCharm: 90 }, // above, pos
+        { strike: 5850, callCharm: -5, putCharm: -5 }, // above, neg (1 neg)
       ]);
 
       mockSql.mockResolvedValueOnce([]); // spot_exposures
@@ -205,16 +202,16 @@ describe('engineerGexFeatures', () => {
       // Below ATM: mostly positive charm (posBelow >> negBelow)
       // Above ATM: negative charm dominates (negAbove >= posAbove)
       const strikes = buildCharmStrikes([
-        { strike: 5760, callCharm: 200, putCharm: 100 },  // below, pos
-        { strike: 5770, callCharm: 250, putCharm: 80 },   // below, pos
-        { strike: 5780, callCharm: 300, putCharm: 50 },   // below, pos
-        { strike: 5790, callCharm: 180, putCharm: 100 },  // below, pos
+        { strike: 5760, callCharm: 200, putCharm: 100 }, // below, pos
+        { strike: 5770, callCharm: 250, putCharm: 80 }, // below, pos
+        { strike: 5780, callCharm: 300, putCharm: 50 }, // below, pos
+        { strike: 5790, callCharm: 180, putCharm: 100 }, // below, pos
         { strike: 5800, callCharm: -100, putCharm: -50 }, // at/above, neg
-        { strike: 5810, callCharm: -80, putCharm: -60 },  // above, neg
-        { strike: 5820, callCharm: -90, putCharm: -40 },  // above, neg
+        { strike: 5810, callCharm: -80, putCharm: -60 }, // above, neg
+        { strike: 5820, callCharm: -90, putCharm: -40 }, // above, neg
         { strike: 5830, callCharm: -110, putCharm: -30 }, // above, neg
         { strike: 5840, callCharm: -100, putCharm: -20 }, // above, neg
-        { strike: 5850, callCharm: -5, putCharm: -5 },    // above, neg
+        { strike: 5850, callCharm: -5, putCharm: -5 }, // above, neg
       ]);
 
       mockSql.mockResolvedValueOnce([]); // spot_exposures
@@ -232,16 +229,16 @@ describe('engineerGexFeatures', () => {
 
       // Roughly even split of positive/negative charm above and below
       const strikes = buildCharmStrikes([
-        { strike: 5760, callCharm: 100, putCharm: 50 },   // below, pos
-        { strike: 5770, callCharm: -80, putCharm: -60 },  // below, neg
-        { strike: 5780, callCharm: 90, putCharm: 40 },    // below, pos
+        { strike: 5760, callCharm: 100, putCharm: 50 }, // below, pos
+        { strike: 5770, callCharm: -80, putCharm: -60 }, // below, neg
+        { strike: 5780, callCharm: 90, putCharm: 40 }, // below, pos
         { strike: 5790, callCharm: -110, putCharm: -30 }, // below, neg
-        { strike: 5800, callCharm: 70, putCharm: 50 },    // at/above, pos
+        { strike: 5800, callCharm: 70, putCharm: 50 }, // at/above, pos
         { strike: 5810, callCharm: -120, putCharm: -10 }, // above, neg
-        { strike: 5820, callCharm: 60, putCharm: 80 },    // above, pos
+        { strike: 5820, callCharm: 60, putCharm: 80 }, // above, pos
         { strike: 5830, callCharm: -100, putCharm: -20 }, // above, neg
-        { strike: 5840, callCharm: 90, putCharm: 30 },    // above, pos
-        { strike: 5850, callCharm: -85, putCharm: -15 },  // above, neg
+        { strike: 5840, callCharm: 90, putCharm: 30 }, // above, pos
+        { strike: 5850, callCharm: -85, putCharm: -15 }, // above, neg
       ]);
 
       mockSql.mockResolvedValueOnce([]); // spot_exposures
@@ -293,13 +290,13 @@ describe('engineerGexFeatures', () => {
       // Note: dist=0 (at ATM) goes to the else branch (sumPosBelow),
       // so the ATM strike must also have negative gamma.
       const strikes = [
-        makeStrike(5790, { callGamma: -10, putGamma: -5 }),  // below, neg
-        makeStrike(5795, { callGamma: -8, putGamma: -3 }),   // below, neg
-        makeStrike(5800, { callGamma: -5, putGamma: -2 }),   // at ATM, neg
+        makeStrike(5790, { callGamma: -10, putGamma: -5 }), // below, neg
+        makeStrike(5795, { callGamma: -8, putGamma: -3 }), // below, neg
+        makeStrike(5800, { callGamma: -5, putGamma: -2 }), // at ATM, neg
         makeStrike(5805, { callGamma: 400, putGamma: 200 }), // above, pos
         makeStrike(5810, { callGamma: 300, putGamma: 100 }), // above, pos
-        makeStrike(5815, { callGamma: 200, putGamma: 50 }),  // above, pos
-        makeStrike(5820, { callGamma: 150, putGamma: 30 }),  // above, pos
+        makeStrike(5815, { callGamma: 200, putGamma: 50 }), // above, pos
+        makeStrike(5820, { callGamma: 150, putGamma: 30 }), // above, pos
       ];
 
       mockSql.mockResolvedValueOnce([]); // spot_exposures
@@ -320,12 +317,12 @@ describe('engineerGexFeatures', () => {
       // dist = strike - 5800.
       // At dist=0 (strike 5800), positive gamma goes to sumPosBelow (else branch).
       const strikes = [
-        makeStrike(5780, { callGamma: 100, putGamma: 50 }),  // dist=-20, gamma=150 → sumPosBelow
+        makeStrike(5780, { callGamma: 100, putGamma: 50 }), // dist=-20, gamma=150 → sumPosBelow
         makeStrike(5790, { callGamma: 200, putGamma: 100 }), // dist=-10, gamma=300 → sumPosBelow
-        makeStrike(5800, { callGamma: 10, putGamma: 5 }),    // dist=0, gamma=15 → sumPosBelow
+        makeStrike(5800, { callGamma: 10, putGamma: 5 }), // dist=0, gamma=15 → sumPosBelow
         makeStrike(5810, { callGamma: 300, putGamma: 150 }), // dist=10, gamma=450 → sumPosAbove
         makeStrike(5820, { callGamma: 400, putGamma: 200 }), // dist=20, gamma=600 → sumPosAbove
-        makeStrike(5830, { callGamma: 50, putGamma: 25 }),   // dist=30, gamma=75 → sumPosAbove
+        makeStrike(5830, { callGamma: 50, putGamma: 25 }), // dist=30, gamma=75 → sumPosAbove
       ];
 
       mockSql.mockResolvedValueOnce([]); // spot_exposures
