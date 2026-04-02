@@ -372,16 +372,16 @@ describe('engineerMonitorFeatures', () => {
       expect(features.pcr_trend_t1_t2).toBeUndefined();
     });
 
-    it('counts pcr spikes where |ratio delta| >= 0.4 from 5-rows-ago', async () => {
-      // Need >= 6 rows. Spike when |current - prev[i-5]| >= 0.4
+    it('counts pcr spikes where |ratio delta| >= 0.7 from 5-rows-ago', async () => {
+      // Need >= 6 rows. Spike when |current - prev[i-5]| >= 0.7
       const ratioRows = [
         makeRatioRow(570, 0.8),
         makeRatioRow(571, 0.82),
         makeRatioRow(572, 0.81),
         makeRatioRow(573, 0.83),
         makeRatioRow(574, 0.8),
-        makeRatioRow(575, 1.25), // |1.25 - 0.80| = 0.45 >= 0.4 → spike
-        makeRatioRow(576, 1.3), // |1.30 - 0.82| = 0.48 >= 0.4 → spike
+        makeRatioRow(575, 1.55), // |1.55 - 0.80| = 0.75 >= 0.7 → spike
+        makeRatioRow(576, 1.6), // |1.60 - 0.82| = 0.78 >= 0.7 → spike
       ];
       const mockSql = vi.fn();
       mockSql.mockResolvedValueOnce([]);
@@ -443,7 +443,7 @@ describe('engineerMonitorFeatures', () => {
         makeRatioRow(580, 0.81),
         makeRatioRow(585, 0.83),
         makeRatioRow(590, 0.8),
-        makeRatioRow(595, 1.3), // |1.30-0.80|=0.50 → spike
+        makeRatioRow(595, 1.55), // |1.55-0.80|=0.75 → spike
         makeRatioRow(600, 0.9), // near T1
         makeRatioRow(630, 1.05), // near T2
         makeRatioRow(660, 0.95),
@@ -469,12 +469,12 @@ describe('engineerMonitorFeatures', () => {
 
       // PCR features
       expect(features.pcr_open).toBeCloseTo(0.8, 4);
-      expect(features.pcr_max).toBeCloseTo(1.3, 4);
+      expect(features.pcr_max).toBeCloseTo(1.55, 4);
       expect(features.pcr_min).toBeCloseTo(0.8, 4);
-      expect(features.pcr_range).toBeCloseTo(0.5, 4);
+      expect(features.pcr_range).toBeCloseTo(0.75, 4);
       // trend: ratio_T2(1.05) - ratio_T1(0.90) = 0.15
       expect(features.pcr_trend_t1_t2).toBeCloseTo(0.15, 4);
-      // spike at index 5: |1.30-0.80|=0.50≥0.4
+      // spike at index 5: |1.55-0.80|=0.75≥0.7
       expect(features.pcr_spike_count).toBe(1);
     });
   });

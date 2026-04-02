@@ -16,6 +16,9 @@ export const ALERT_THRESHOLDS = {
   RATIO_DELTA_MIN: 0.7,
   /** Lookback window for ratio comparison (minutes) */
   RATIO_LOOKBACK_MINUTES: 5,
+  /** Minimum premium movement ($) to qualify a ratio surge — filters
+   *  low-volume ratio swings that lack institutional conviction. */
+  RATIO_PREMIUM_MIN: 5_000_000,
   /** Suppress duplicate alerts of same type within this window (minutes) */
   COOLDOWN_MINUTES: 5,
   /** Window for combined alert: both IV spike + ratio surge within this window (minutes) */

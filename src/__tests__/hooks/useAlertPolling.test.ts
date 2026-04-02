@@ -307,12 +307,14 @@ describe('useAlertPolling: unacknowledgedCount', () => {
 
     const { result } = renderHook(() => useAlertPolling(true));
 
-    await waitFor(() => expect(result.current.alerts.length).toBe(3));
+    // Only unacknowledged alerts (id 1, 3) are added to state
+    await waitFor(() => expect(result.current.alerts.length).toBe(2));
 
     expect(result.current.unacknowledgedCount).toBe(2);
   });
 
   it('returns 0 when all alerts are acknowledged', async () => {
+    // Acknowledged alerts are filtered out during fetch
     const alerts = [
       makeAlert({ id: 1, acknowledged: true }),
       makeAlert({ id: 2, acknowledged: true }),
@@ -324,8 +326,10 @@ describe('useAlertPolling: unacknowledgedCount', () => {
 
     const { result } = renderHook(() => useAlertPolling(true));
 
-    await waitFor(() => expect(result.current.alerts.length).toBe(2));
+    // No alerts added — all were acknowledged
+    await act(async () => {});
 
+    expect(result.current.alerts.length).toBe(0);
     expect(result.current.unacknowledgedCount).toBe(0);
   });
 });

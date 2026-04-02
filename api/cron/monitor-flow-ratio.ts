@@ -136,15 +136,20 @@ async function detectRatioSurge(
 
   if (Math.abs(ratioDelta) < ALERT_THRESHOLDS.RATIO_DELTA_MIN) return null;
 
+  const nppChange = current.absNpp - prevNpp;
+  const ncpChange = current.absNcp - prevNcp;
+
+  // Premium filter: the driving side must have moved at least $5M.
+  // Filters low-volume ratio swings that lack institutional conviction.
+  const maxPremiumDelta = Math.max(Math.abs(nppChange), Math.abs(ncpChange));
+  if (maxPremiumDelta < ALERT_THRESHOLDS.RATIO_PREMIUM_MIN) return null;
+
   const direction = classifyDirection(
     current.absNpp,
     current.absNcp,
     prevNpp,
     prevNcp,
   );
-
-  const nppChange = current.absNpp - prevNpp;
-  const ncpChange = current.absNcp - prevNcp;
   const driver =
     Math.abs(nppChange) > Math.abs(ncpChange)
       ? `NPP ${nppChange >= 0 ? '+' : ''}$${(nppChange / 1e6).toFixed(1)}M`
