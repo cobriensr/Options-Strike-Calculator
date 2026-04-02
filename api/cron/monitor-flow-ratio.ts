@@ -46,7 +46,10 @@ interface RatioReading {
 
 // ── Fetch helper ────────────────────────────────────────────
 
-async function fetchLatestFlowTick(apiKey: string): Promise<FlowTick | null> {
+async function fetchLatestFlowTick(
+  apiKey: string,
+  today: string,
+): Promise<FlowTick | null> {
   const ticks = await uwFetch<FlowTick>(
     apiKey,
     '/net-flow/expiry?expiration=zero_dte&tide_type=index_only',
@@ -57,7 +60,10 @@ async function fetchLatestFlowTick(apiKey: string): Promise<FlowTick | null> {
     },
   );
 
-  return ticks.at(-1) ?? null;
+  // Filter to today's ticks only — at session start the endpoint may
+  // still return yesterday's stale data with null values.
+  const todayTicks = ticks.filter((t) => t.date === today);
+  return todayTicks.at(-1) ?? null;
 }
 
 // ── Store reading ───────────────────────────────────────────
@@ -184,7 +190,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const startTime = Date.now();
 
   try {
-    const tick = await withRetry(() => fetchLatestFlowTick(apiKey));
+    const tick = await withRetry(() => fetchLatestFlowTick(apiKey, today));
 
     if (!tick) {
       logger.info('monitor-flow-ratio: no flow ticks returned');
