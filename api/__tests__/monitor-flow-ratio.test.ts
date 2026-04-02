@@ -24,6 +24,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 vi.mock('../_lib/alerts.js', () => ({
   writeAlertIfNew: vi.fn().mockResolvedValue(false),
+  checkForCombinedAlert: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -42,7 +43,10 @@ vi.mock('../_lib/alert-thresholds.js', () => ({
 
 import handler from '../cron/monitor-flow-ratio.js';
 import { cronGuard, uwFetch } from '../_lib/api-helpers.js';
-import { writeAlertIfNew } from '../_lib/alerts.js';
+import {
+  writeAlertIfNew,
+  checkForCombinedAlert,
+} from '../_lib/alerts.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
@@ -149,7 +153,7 @@ describe('monitor-flow-ratio handler', () => {
     ]);
 
     mockSql
-      .mockResolvedValueOnce([])  // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
       .mockResolvedValueOnce([]); // detectRatioSurge SELECT prev
 
     const res = mockResponse();
@@ -176,7 +180,7 @@ describe('monitor-flow-ratio handler', () => {
     ]);
 
     mockSql
-      .mockResolvedValueOnce([])  // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
       .mockResolvedValueOnce([]); // detectRatioSurge: ratio is null, returns early
 
     const res = mockResponse();
@@ -201,11 +205,14 @@ describe('monitor-flow-ratio handler', () => {
     // absNpp=55M, absNcp=43M, ratio = 55/43 ≈ 1.279
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
-      .mockResolvedValueOnce([{  // detectRatioSurge: prev reading
-        ratio: '1.15',
-        abs_npp: '50000000',
-        abs_ncp: '43000000',
-      }]);
+      .mockResolvedValueOnce([
+        {
+          // detectRatioSurge: prev reading
+          ratio: '1.15',
+          abs_npp: '50000000',
+          abs_ncp: '43000000',
+        },
+      ]);
     // delta = 1.279 - 1.15 = 0.129 < 0.4
 
     const res = mockResponse();
@@ -228,11 +235,14 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
-      .mockResolvedValueOnce([{  // detectRatioSurge: prev reading
-        ratio: '1.15',
-        abs_npp: '50000000',
-        abs_ncp: '43000000',
-      }]);
+      .mockResolvedValueOnce([
+        {
+          // detectRatioSurge: prev reading
+          ratio: '1.15',
+          abs_npp: '50000000',
+          abs_ncp: '43000000',
+        },
+      ]);
     // delta = 1.6 - 1.15 = 0.45 >= 0.4
     // NPP delta = 80M - 50M = 30M, NCP delta = 50M - 43M = 7M
     // |nppDelta| > |ncpDelta| and nppDelta > 0 → BEARISH
@@ -264,11 +274,14 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
-      .mockResolvedValueOnce([{  // detectRatioSurge: prev reading
-        ratio: '1.10',
-        abs_npp: '55000000',
-        abs_ncp: '50000000',
-      }]);
+      .mockResolvedValueOnce([
+        {
+          // detectRatioSurge: prev reading
+          ratio: '1.10',
+          abs_npp: '55000000',
+          abs_ncp: '50000000',
+        },
+      ]);
     // delta = 0.625 - 1.10 = -0.475, |delta| = 0.475 >= 0.4
     // NPP delta = 50M - 55M = -5M, NCP delta = 80M - 50M = 30M
     // |ncpDelta| > |nppDelta| and ncpDelta > 0 → BULLISH (call side growing)
@@ -297,13 +310,13 @@ describe('monitor-flow-ratio handler', () => {
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
 
-    mockSql
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
         ratio: '1.15',
         abs_npp: '50000000',
         abs_ncp: '43000000',
-      }]);
+      },
+    ]);
     // delta = 2.0 - 1.15 = 0.85 >= 0.6
 
     const res = mockResponse();
@@ -329,13 +342,13 @@ describe('monitor-flow-ratio handler', () => {
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
 
-    mockSql
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
         ratio: '1.10',
         abs_npp: '50000000',
         abs_ncp: '45000000',
-      }]);
+      },
+    ]);
     // absNpp=90M, absNcp=45M, ratio=2.0, delta=0.9
     // nppDelta = 90M-50M = 40M, ncpDelta = 45M-45M = 0
     // |nppDelta| > |ncpDelta|, nppDelta > 0 → BEARISH
@@ -359,13 +372,13 @@ describe('monitor-flow-ratio handler', () => {
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
 
-    mockSql
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
         ratio: '1.30',
         abs_npp: '78000000',
         abs_ncp: '60000000',
-      }]);
+      },
+    ]);
     // absNpp=78M, absNcp=20M, ratio=3.9, delta=2.6 >= 0.4
     // nppDelta = 78M-78M = 0, ncpDelta = 20M-60M = -40M
     // |ncpDelta| > |nppDelta|, ncpDelta < 0 → BEARISH
@@ -383,7 +396,7 @@ describe('monitor-flow-ratio handler', () => {
     vi.mocked(uwFetch).mockResolvedValue([makeFlowTick()]);
 
     mockSql
-      .mockResolvedValueOnce([])  // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
       .mockResolvedValueOnce([]); // detectRatioSurge: no prev
 
     const res = mockResponse();
@@ -422,5 +435,77 @@ describe('monitor-flow-ratio handler', () => {
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'Internal error' });
     expect(vi.mocked(Sentry.captureException)).toHaveBeenCalled();
+  });
+
+  // ── Combined alert integration ────────────────────────────
+
+  it('calls checkForCombinedAlert with ratio_surge when alert fires', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '50000000',
+        net_put_premium: '-80000000',
+      }),
+    ]);
+    vi.mocked(writeAlertIfNew).mockResolvedValue(true);
+    vi.mocked(checkForCombinedAlert).mockResolvedValue(true);
+
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        ratio: '1.15',
+        abs_npp: '50000000',
+        abs_ncp: '43000000',
+      },
+    ]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(vi.mocked(checkForCombinedAlert)).toHaveBeenCalledWith(
+      '2026-03-24',
+      'ratio_surge',
+    );
+    expect(res._json).toMatchObject({ combined: true });
+  });
+
+  it('does not call checkForCombinedAlert when no alert fires', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([makeFlowTick()]);
+
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]); // detectRatioSurge: no prev
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(vi.mocked(checkForCombinedAlert)).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ combined: false });
+  });
+
+  it('returns combined: false when alert fires but no iv_spike exists', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '50000000',
+        net_put_premium: '-80000000',
+      }),
+    ]);
+    vi.mocked(writeAlertIfNew).mockResolvedValue(true);
+    vi.mocked(checkForCombinedAlert).mockResolvedValue(false);
+
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        ratio: '1.15',
+        abs_npp: '50000000',
+        abs_ncp: '43000000',
+      },
+    ]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(vi.mocked(checkForCombinedAlert)).toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      alerted: true,
+      combined: false,
+    });
   });
 });

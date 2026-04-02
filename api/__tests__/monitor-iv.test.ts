@@ -24,6 +24,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 vi.mock('../_lib/alerts.js', () => ({
   writeAlertIfNew: vi.fn().mockResolvedValue(false),
+  checkForCombinedAlert: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -43,7 +44,7 @@ vi.mock('../_lib/alert-thresholds.js', () => ({
 
 import handler from '../cron/monitor-iv.js';
 import { cronGuard, uwFetch } from '../_lib/api-helpers.js';
-import { writeAlertIfNew } from '../_lib/alerts.js';
+import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
@@ -96,7 +97,13 @@ describe('monitor-iv handler', () => {
   it('returns skipped when no 0DTE IV data from UW', async () => {
     // uwFetch returns rows with no 0DTE entry (days > 1)
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 7, volatility: '0.20', implied_move_perc: '1.2', percentile: '45' },
+      {
+        date: '2026-03-24',
+        days: 7,
+        volatility: '0.20',
+        implied_move_perc: '1.2',
+        percentile: '45',
+      },
     ]);
     // SPX price query returns nothing
     mockSql.mockResolvedValue([]);
@@ -127,7 +134,13 @@ describe('monitor-iv handler', () => {
 
   it('returns skipped when volatility is NaN', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: 'N/A', implied_move_perc: '1.2', percentile: '45' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: 'N/A',
+        implied_move_perc: '1.2',
+        percentile: '45',
+      },
     ]);
     mockSql.mockResolvedValue([]);
 
@@ -142,12 +155,18 @@ describe('monitor-iv handler', () => {
 
   it('stores IV reading on happy path', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: '0.250', implied_move_perc: '1.5', percentile: '55' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.250',
+        implied_move_perc: '1.5',
+        percentile: '55',
+      },
     ]);
     // getLatestSpxPrice: flow_ratio_monitor returns price
     mockSql
       .mockResolvedValueOnce([{ spx_price: '6600' }]) // getLatestSpxPrice
-      .mockResolvedValueOnce([])  // storeIvReading INSERT
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
       .mockResolvedValueOnce([]); // detectIvSpike SELECT prev
 
     const res = mockResponse();
@@ -167,11 +186,17 @@ describe('monitor-iv handler', () => {
 
   it('does NOT fire alert when IV delta < threshold', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: '0.250', implied_move_perc: '1.5', percentile: '55' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.250',
+        implied_move_perc: '1.5',
+        percentile: '55',
+      },
     ]);
     mockSql
       .mockResolvedValueOnce([{ spx_price: '6600' }]) // getLatestSpxPrice
-      .mockResolvedValueOnce([])  // storeIvReading INSERT
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
       .mockResolvedValueOnce([{ volatility: '0.240', spx_price: '6600' }]); // prev reading
 
     const res = mockResponse();
@@ -184,13 +209,19 @@ describe('monitor-iv handler', () => {
 
   it('fires alert when IV spikes >= 3 vol pts while SPX < 5 pt move', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: '0.277', implied_move_perc: '1.8', percentile: '72' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.277',
+        implied_move_perc: '1.8',
+        percentile: '72',
+      },
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
 
     mockSql
-      .mockResolvedValueOnce([{ spx_price: '6600' }])  // getLatestSpxPrice
-      .mockResolvedValueOnce([])                        // storeIvReading INSERT
+      .mockResolvedValueOnce([{ spx_price: '6600' }]) // getLatestSpxPrice
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
       .mockResolvedValueOnce([{ volatility: '0.229', spx_price: '6600' }]); // prev
 
     const res = mockResponse();
@@ -209,12 +240,18 @@ describe('monitor-iv handler', () => {
 
   it('does NOT fire alert when IV spikes but SPX also moved >= 5 pts', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: '0.277', implied_move_perc: '1.8', percentile: '72' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.277',
+        implied_move_perc: '1.8',
+        percentile: '72',
+      },
     ]);
 
     mockSql
-      .mockResolvedValueOnce([{ spx_price: '6607' }])  // getLatestSpxPrice (current)
-      .mockResolvedValueOnce([])                        // storeIvReading INSERT
+      .mockResolvedValueOnce([{ spx_price: '6607' }]) // getLatestSpxPrice (current)
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
       .mockResolvedValueOnce([{ volatility: '0.229', spx_price: '6600' }]); // prev (7 pt diff)
 
     const res = mockResponse();
@@ -227,7 +264,13 @@ describe('monitor-iv handler', () => {
 
   it('sets severity to critical when IV delta >= 5 vol pts', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: '0.300', implied_move_perc: '2.0', percentile: '80' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.300',
+        implied_move_perc: '2.0',
+        percentile: '80',
+      },
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
 
@@ -249,13 +292,19 @@ describe('monitor-iv handler', () => {
 
   it('does not fire alert when no previous reading exists', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: '0.277', implied_move_perc: '1.8', percentile: '72' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.277',
+        implied_move_perc: '1.8',
+        percentile: '72',
+      },
     ]);
 
     mockSql
       .mockResolvedValueOnce([{ spx_price: '6600' }]) // getLatestSpxPrice
-      .mockResolvedValueOnce([])                       // storeIvReading INSERT
-      .mockResolvedValueOnce([]);                      // detectIvSpike: no prev
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
+      .mockResolvedValueOnce([]); // detectIvSpike: no prev
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -269,13 +318,19 @@ describe('monitor-iv handler', () => {
 
   it('returns null spxPrice when neither monitor nor flow_data has price', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: '0.250', implied_move_perc: '1.5', percentile: '55' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.250',
+        implied_move_perc: '1.5',
+        percentile: '55',
+      },
     ]);
     // flow_ratio_monitor empty, flow_data empty
     mockSql
-      .mockResolvedValueOnce([])  // flow_ratio_monitor
-      .mockResolvedValueOnce([])  // flow_data fallback
-      .mockResolvedValueOnce([])  // storeIvReading INSERT
+      .mockResolvedValueOnce([]) // flow_ratio_monitor
+      .mockResolvedValueOnce([]) // flow_data fallback
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
       .mockResolvedValueOnce([]); // detectIvSpike SELECT
 
     const res = mockResponse();
@@ -308,7 +363,13 @@ describe('monitor-iv handler', () => {
 
   it('returns 500 when DB throws during storeIvReading', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
-      { date: '2026-03-24', days: 0, volatility: '0.250', implied_move_perc: '1.5', percentile: '55' },
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.250',
+        implied_move_perc: '1.5',
+        percentile: '55',
+      },
     ]);
     mockSql
       .mockResolvedValueOnce([{ spx_price: '6600' }])
@@ -320,5 +381,86 @@ describe('monitor-iv handler', () => {
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'Internal error' });
     expect(vi.mocked(Sentry.captureException)).toHaveBeenCalled();
+  });
+
+  // ── Combined alert integration ────────────────────────────
+
+  it('calls checkForCombinedAlert with iv_spike when alert fires', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.277',
+        implied_move_perc: '1.8',
+        percentile: '72',
+      },
+    ]);
+    vi.mocked(writeAlertIfNew).mockResolvedValue(true);
+    vi.mocked(checkForCombinedAlert).mockResolvedValue(true);
+
+    mockSql
+      .mockResolvedValueOnce([{ spx_price: '6600' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ volatility: '0.229', spx_price: '6600' }]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(vi.mocked(checkForCombinedAlert)).toHaveBeenCalledWith(
+      '2026-03-24',
+      'iv_spike',
+    );
+    expect(res._json).toMatchObject({ combined: true });
+  });
+
+  it('does not call checkForCombinedAlert when no alert fires', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.250',
+        implied_move_perc: '1.5',
+        percentile: '55',
+      },
+    ]);
+
+    mockSql
+      .mockResolvedValueOnce([{ spx_price: '6600' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(vi.mocked(checkForCombinedAlert)).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ combined: false });
+  });
+
+  it('returns combined: false when alert fires but no ratio_surge exists', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.277',
+        implied_move_perc: '1.8',
+        percentile: '72',
+      },
+    ]);
+    vi.mocked(writeAlertIfNew).mockResolvedValue(true);
+    vi.mocked(checkForCombinedAlert).mockResolvedValue(false);
+
+    mockSql
+      .mockResolvedValueOnce([{ spx_price: '6600' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ volatility: '0.229', spx_price: '6600' }]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(vi.mocked(checkForCombinedAlert)).toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      alerted: true,
+      combined: false,
+    });
   });
 });
