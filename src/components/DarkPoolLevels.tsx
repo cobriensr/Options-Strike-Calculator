@@ -1,0 +1,242 @@
+/**
+ * DarkPoolLevels — compact dashboard widget showing institutional
+ * dark pool block trade clusters, auto-refreshed every 60 seconds.
+ *
+ * Displays SPX levels where large ($5M+) SPY dark pool prints have
+ * clustered, filtered to $100M+ aggregate premium. Color-coded by
+ * direction: green for buyer-initiated, red for seller-initiated,
+ * gray for mixed. Horizontal bars show relative premium magnitude.
+ */
+
+import { memo, useMemo } from 'react';
+import { theme } from '../themes';
+import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
+
+const PREMIUM_FLOOR = 100_000_000; // $100M minimum to display
+
+interface Props {
+  levels: DarkPoolLevel[];
+  loading: boolean;
+  error: string | null;
+  updatedAt: string | null;
+}
+
+const DIRECTION_COLORS: Record<
+  DarkPoolLevel['direction'],
+  { bar: string; text: string; label: string }
+> = {
+  BUY: {
+    bar: 'var(--color-success)',
+    text: 'var(--color-success)',
+    label: 'BUY',
+  },
+  SELL: {
+    bar: 'var(--color-danger)',
+    text: 'var(--color-danger)',
+    label: 'SELL',
+  },
+  MIXED: {
+    bar: 'var(--color-muted)',
+    text: 'var(--color-muted)',
+    label: 'MIXED',
+  },
+};
+
+function formatPremium(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `$${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `$${(abs / 1_000_000).toFixed(0)}M`;
+  if (abs >= 1_000) return `$${(abs / 1_000).toFixed(0)}K`;
+  return `$${abs.toFixed(0)}`;
+}
+
+function formatTime(iso: string | null): string {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: 'America/Chicago',
+    });
+  } catch {
+    return '';
+  }
+}
+
+export default memo(function DarkPoolLevels({
+  levels,
+  loading,
+  error,
+  updatedAt,
+}: Props) {
+  const filtered = useMemo(
+    () => levels.filter((l) => l.totalPremium >= PREMIUM_FLOOR),
+    [levels],
+  );
+
+  const maxPremium = useMemo(
+    () =>
+      filtered.length > 0
+        ? Math.max(...filtered.map((l) => l.totalPremium))
+        : 1,
+    [filtered],
+  );
+
+  const totalClusters = levels.length;
+
+  if (loading) {
+    return (
+      <div className="bg-surface border-edge rounded-[10px] border p-4">
+        <div className="text-muted animate-pulse text-center font-sans text-xs">
+          Loading dark pool data...
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-surface border-edge rounded-[10px] border p-4">
+        <div className="text-muted text-center font-sans text-xs">{error}</div>
+      </div>
+    );
+  }
+
+  if (filtered.length === 0) {
+    return (
+      <div className="bg-surface border-edge rounded-[10px] border p-4">
+        <Header
+          filteredCount={0}
+          totalClusters={totalClusters}
+          updatedAt={updatedAt}
+        />
+        <div className="text-muted mt-3 text-center font-sans text-xs">
+          No clusters above $100M threshold
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface border-edge rounded-[10px] border p-4">
+      <Header
+        filteredCount={filtered.length}
+        totalClusters={totalClusters}
+        updatedAt={updatedAt}
+      />
+
+      <div
+        className="border-edge-strong mt-3 border-t pt-3"
+        role="table"
+        aria-label="Dark pool levels"
+      >
+        <div className="sr-only" role="row">
+          <span role="columnheader">SPX Level</span>
+          <span role="columnheader">Premium</span>
+          <span role="columnheader">Direction</span>
+          <span role="columnheader">Blocks</span>
+        </div>
+        {filtered.map((level) => (
+          <LevelRow
+            key={level.spxApprox}
+            level={level}
+            maxPremium={maxPremium}
+          />
+        ))}
+      </div>
+    </div>
+  );
+});
+
+function Header({
+  filteredCount,
+  totalClusters,
+  updatedAt,
+}: {
+  filteredCount: number;
+  totalClusters: number;
+  updatedAt: string | null;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <div>
+        <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+          Dark Pool Levels (&gt;$100M)
+        </div>
+        <div className="text-muted font-sans text-[10px]">
+          {totalClusters > 0
+            ? `${filteredCount} of ${totalClusters} clusters shown`
+            : 'No data yet'}
+        </div>
+      </div>
+      {updatedAt && (
+        <div className="text-muted font-sans text-[10px]">
+          {formatTime(updatedAt)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LevelRow({
+  level,
+  maxPremium,
+}: {
+  level: DarkPoolLevel;
+  maxPremium: number;
+}) {
+  const colors = DIRECTION_COLORS[level.direction];
+  const barWidth = Math.max((level.totalPremium / maxPremium) * 100, 2);
+
+  return (
+    <div role="row" className="flex items-center gap-2 py-1.5">
+      {/* SPX Level */}
+      <span
+        role="cell"
+        className="w-[52px] shrink-0 text-right font-mono text-sm font-bold"
+        style={{ color: theme.text }}
+      >
+        {level.spxApprox}
+      </span>
+
+      {/* Premium bar */}
+      <div role="cell" className="min-w-0 flex-1">
+        <div
+          className="h-[14px] rounded-sm transition-[width] duration-300"
+          style={{
+            width: `${barWidth}%`,
+            backgroundColor: colors.bar,
+            opacity: 0.7,
+          }}
+          aria-label={`${formatPremium(level.totalPremium)} premium`}
+        />
+      </div>
+
+      {/* Premium value */}
+      <span
+        role="cell"
+        className="w-[56px] shrink-0 text-right font-mono text-xs font-semibold"
+        style={{ color: theme.textSecondary }}
+      >
+        {formatPremium(level.totalPremium)}
+      </span>
+
+      {/* Direction badge */}
+      <span
+        role="cell"
+        className="w-[44px] shrink-0 text-center font-sans text-[10px] font-bold"
+        style={{ color: colors.text }}
+      >
+        {colors.label}
+      </span>
+
+      {/* Block count */}
+      <span
+        role="cell"
+        className="text-muted w-[60px] shrink-0 text-right font-sans text-[10px]"
+      >
+        {level.tradeCount} block{level.tradeCount !== 1 ? 's' : ''}
+      </span>
+    </div>
+  );
+}

@@ -49,9 +49,7 @@ Sentry.init({
   enabled: import.meta.env.PROD,
   beforeSend(event) {
     const frames =
-      event.exception?.values?.flatMap(
-        (v) => v.stacktrace?.frames ?? [],
-      ) ?? [];
+      event.exception?.values?.flatMap((v) => v.stacktrace?.frames ?? []) ?? [];
     if (frames.some((f) => f.filename?.includes('vercel.live'))) return null;
     return event;
   },

@@ -21,6 +21,8 @@ import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
+import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
+import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
 import DateTimeSection from './components/DateTimeSection';
@@ -37,6 +39,7 @@ import TradingScheduleSection from './components/TradingScheduleSection';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import AlertBanner from './components/AlertBanner';
+import DarkPoolLevels from './components/DarkPoolLevels';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { Analytics } from '@vercel/analytics/react';
@@ -51,6 +54,7 @@ const PositionMonitor = lazy(() => import('./components/PositionMonitor'));
 // ============================================================
 export default function StrikeCalculator() {
   // Consolidated UI state (inputs, debounced values, derived ratio)
+  const isOwner = useIsOwner();
   const state = useAppState();
   const {
     darkMode,
@@ -126,6 +130,7 @@ export default function StrikeCalculator() {
     market.data.quotes?.marketOpen ?? false,
   );
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
+  const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -547,6 +552,17 @@ export default function StrikeCalculator() {
               />
             </ErrorBoundary>
 
+            {isOwner && market.hasData && (
+              <ErrorBoundary label="Dark Pool Levels">
+                <DarkPoolLevels
+                  levels={darkPool.levels}
+                  loading={darkPool.loading}
+                  error={darkPool.error}
+                  updatedAt={darkPool.updatedAt}
+                />
+              </ErrorBoundary>
+            )}
+
             {/* Chart Analysis — owner-only (requires auth session or backtest with results) */}
             {(market.hasData || !!historySnapshot) && (
               <ErrorBoundary label="Chart Analysis">
@@ -583,9 +599,11 @@ export default function StrikeCalculator() {
               </Suspense>
             </ErrorBoundary>
 
-            <ErrorBoundary label="BWB Calculator">
-              <BWBCalculator selectedDate={vix.selectedDate} />
-            </ErrorBoundary>
+            {isOwner && (
+              <ErrorBoundary label="BWB Calculator">
+                <BWBCalculator selectedDate={vix.selectedDate} />
+              </ErrorBoundary>
+            )}
 
             <ErrorBoundary label="Results">
               <ResultsSection

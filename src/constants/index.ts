@@ -250,6 +250,8 @@ export const POLL_INTERVALS = {
   HISTORY: 10_000,
   /** Alert polling interval (useAlertPolling) */
   ALERTS: 10_000,
+  /** Dark pool levels refresh (useDarkPoolLevels) */
+  DARK_POOL: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */

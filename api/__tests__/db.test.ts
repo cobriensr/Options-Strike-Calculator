@@ -453,6 +453,7 @@ describe('db.ts', () => {
         { id: 24 },
         { id: 25 },
         { id: 26 },
+        { id: 27 },
       ]);
 
       const applied = await migrateDb();
@@ -497,11 +498,12 @@ describe('db.ts', () => {
         '#24: Add options volume/premium feature columns to training_features',
         '#25: Create iv_monitor, flow_ratio_monitor, and market_alerts tables',
         '#26: Add IV monitor and flow ratio monitor feature columns to training_features',
+        '#27: Create dark_pool_levels table for cron-refreshed dark pool clusters',
       ]);
-      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) + 2 (#24: ALTER+INSERT) + 11 (#25: 3 CREATE+7 INDEX+INSERT) + 2 (#26: ALTER+INSERT) = 100
-      expect(mockSql).toHaveBeenCalledTimes(100);
-      // Migrations #15-26 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(12);
+      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) + 2 (#24: ALTER+INSERT) + 11 (#25: 3 CREATE+7 INDEX+INSERT) + 2 (#26: ALTER+INSERT) + 3 (#27: CREATE+INDEX+INSERT) = 103
+      expect(mockSql).toHaveBeenCalledTimes(103);
+      // Migrations #15-27 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(13);
     });
 
     it('propagates errors from migration SQL', async () => {

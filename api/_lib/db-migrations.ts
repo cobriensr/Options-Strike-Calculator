@@ -756,4 +756,32 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 27,
+    description:
+      'Create dark_pool_levels table for cron-refreshed dark pool clusters',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS dark_pool_levels (
+          id               SERIAL PRIMARY KEY,
+          date             DATE NOT NULL,
+          spx_approx       INTEGER NOT NULL,
+          spy_price_low    DECIMAL(8,2),
+          spy_price_high   DECIMAL(8,2),
+          total_premium    DECIMAL(16,2) NOT NULL,
+          trade_count      INTEGER NOT NULL,
+          total_shares     INTEGER NOT NULL,
+          buyer_initiated  INTEGER NOT NULL DEFAULT 0,
+          seller_initiated INTEGER NOT NULL DEFAULT 0,
+          neutral          INTEGER NOT NULL DEFAULT 0,
+          latest_time      TIMESTAMPTZ,
+          updated_at       TIMESTAMPTZ DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_dark_pool_levels_date
+          ON dark_pool_levels(date)
+      `,
+    ],
+  },
 ];

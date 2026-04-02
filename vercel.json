@@ -80,6 +80,10 @@
     {
       "path": "/api/cron/monitor-flow-ratio",
       "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-darkpool",
+      "schedule": "0,5,10,15,20,25,30,35,40,45,50,55 13-21 * * 1-5"
     }
   ],
   "functions": {
