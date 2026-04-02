@@ -17,7 +17,16 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
+}));
+
 import handler from '../cron/fetch-etf-tide.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
@@ -311,6 +320,345 @@ describe('fetch-etf-tide handler', () => {
         qqq_etf_tide: { stored: 0 },
       },
     });
+    vi.unstubAllGlobals();
+  });
+
+  // ── Duplicate / skip counting ─────────────────────────────
+
+  it('counts skipped candles when INSERT conflicts', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const row = makeEtfTideRow();
+    // ON CONFLICT DO NOTHING returns empty array (no RETURNING id)
+    mockSql.mockResolvedValue([]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [row] }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-etf-tide',
+      results: {
+        spy_etf_tide: { stored: 0, skipped: 1 },
+        qqq_etf_tide: { stored: 0, skipped: 1 },
+      },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  // ── sampleTo5Min edge cases ───────────────────────────────
+
+  it('handles NaN net_call_premium and zero net_volume', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const row = makeEtfTideRow({
+      net_call_premium: 'not-a-number',
+      net_put_premium: 'also-bad',
+      net_volume: 0,
+    });
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [row] }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Should still store 1 candle per ticker with fallback 0 values
+    expect(res._json).toMatchObject({
+      results: {
+        spy_etf_tide: { stored: 1, candles: 1 },
+        qqq_etf_tide: { stored: 1, candles: 1 },
+      },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('deduplicates rows in the same 5-min bucket', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // Two rows within the same 5-min window (both round to 14:00)
+    const row1 = makeEtfTideRow({
+      timestamp: '2026-03-24T14:01:00.000Z',
+      net_call_premium: '100',
+    });
+    const row2 = makeEtfTideRow({
+      timestamp: '2026-03-24T14:03:00.000Z',
+      net_call_premium: '200',
+    });
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [row1, row2] }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Both rows map to same 5-min bucket → only 1 candle
+    expect(res._json).toMatchObject({
+      results: {
+        spy_etf_tide: { candles: 1 },
+        qqq_etf_tide: { candles: 1 },
+      },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('sorts sampled candles by timestamp', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // Rows in different 5-min buckets, provided out of order
+    const rowLate = makeEtfTideRow({
+      timestamp: '2026-03-24T14:10:00.000Z',
+    });
+    const rowEarly = makeEtfTideRow({
+      timestamp: '2026-03-24T14:00:00.000Z',
+    });
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [rowLate, rowEarly] }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // 2 distinct 5-min buckets → 2 candles
+    expect(res._json).toMatchObject({
+      results: {
+        spy_etf_tide: { stored: 2, candles: 2 },
+        qqq_etf_tide: { stored: 2, candles: 2 },
+      },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  // ── Data quality check ────────────────────────────────────
+
+  it('runs data quality check when all candles are new and > 10', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // Generate 11 rows in distinct 5-min buckets
+    const rows = Array.from({ length: 11 }, (_, i) => {
+      const minutes = i * 5;
+      const hour = 14 + Math.floor(minutes / 60);
+      const min = minutes % 60;
+      const ts = `2026-03-24T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:00.000Z`;
+      return makeEtfTideRow({ timestamp: ts });
+    });
+
+    // Use mockImplementation to return different results for
+    // INSERT vs SELECT COUNT queries
+    mockSql.mockImplementation(
+      (strings: TemplateStringsArray) => {
+        const query = strings.join('');
+        if (query.includes('SELECT COUNT')) {
+          return Promise.resolve([{ total: 11, nonzero: 0 }]);
+        }
+        // INSERT ... RETURNING id
+        return Promise.resolve([{ id: 1 }]);
+      },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: rows }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      results: {
+        spy_etf_tide: { stored: 11, candles: 11 },
+        qqq_etf_tide: { stored: 11, candles: 11 },
+      },
+    });
+
+    // checkDataQuality should have been called, which triggers
+    // Sentry.captureMessage when nonzero === 0
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('ALL values are zero'),
+      'warning',
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('skips data quality check when candles <= 10', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // Generate exactly 10 rows (threshold is > 10, so 10 should NOT trigger)
+    const rows = Array.from({ length: 10 }, (_, i) => {
+      const minutes = i * 5;
+      const hour = 14 + Math.floor(minutes / 60);
+      const min = minutes % 60;
+      const ts = `2026-03-24T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:00.000Z`;
+      return makeEtfTideRow({ timestamp: ts });
+    });
+
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: rows }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      results: {
+        spy_etf_tide: { stored: 10, candles: 10 },
+      },
+    });
+
+    // No SELECT COUNT query should have been made
+    const selectCalls = mockSql.mock.calls.filter(
+      (args: unknown[]) =>
+        typeof args[0] === 'object' &&
+        Array.isArray(args[0]) &&
+        (args[0] as string[]).join('').includes('SELECT COUNT'),
+    );
+    expect(selectCalls).toHaveLength(0);
+    vi.unstubAllGlobals();
+  });
+
+  it('skips data quality check when some candles are duplicates', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // Generate 11 rows
+    const rows = Array.from({ length: 11 }, (_, i) => {
+      const minutes = i * 5;
+      const hour = 14 + Math.floor(minutes / 60);
+      const min = minutes % 60;
+      const ts = `2026-03-24T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:00.000Z`;
+      return makeEtfTideRow({ timestamp: ts });
+    });
+
+    let callCount = 0;
+    // First insert returns id (stored), rest return empty (skipped)
+    mockSql.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve([{ id: 1 }]);
+      return Promise.resolve([]);
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: rows }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // stored !== candles, so data quality check should be skipped
+    const result = res._json as Record<string, unknown>;
+    const results = result.results as Record<
+      string,
+      { stored: number; candles: number }
+    >;
+    for (const r of Object.values(results)) {
+      expect(r.stored).not.toBe(r.candles);
+    }
+    vi.unstubAllGlobals();
+  });
+
+  // ── Outer catch block ─────────────────────────────────────
+
+  it('returns 500 when data quality check throws', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // Generate 11 rows to trigger the data quality check path
+    const rows = Array.from({ length: 11 }, (_, i) => {
+      const minutes = i * 5;
+      const hour = 14 + Math.floor(minutes / 60);
+      const min = minutes % 60;
+      const ts = `2026-03-24T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:00.000Z`;
+      return makeEtfTideRow({ timestamp: ts });
+    });
+
+    // INSERT succeeds, but the SELECT COUNT query in the data
+    // quality check throws, landing in the outer catch block
+    mockSql.mockImplementation(
+      (strings: TemplateStringsArray) => {
+        const query = strings.join('');
+        if (query.includes('SELECT COUNT')) {
+          return Promise.reject(new Error('DB connection lost'));
+        }
+        return Promise.resolve([{ id: 1 }]);
+      },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: rows }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });
