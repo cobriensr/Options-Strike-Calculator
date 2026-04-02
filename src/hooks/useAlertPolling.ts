@@ -133,17 +133,20 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
       const newest = data.alerts[0]!.created_at;
       lastSeenRef.current = newest;
 
-      // Fire notifications for each new alert
-      for (const alert of data.alerts) {
-        showBrowserNotification(alert);
-        playAlertTone(alert.severity);
-      }
-
-      // Merge with existing alerts (deduplicate by id)
+      // Deduplicate first, then notify only for genuinely new alerts
       setAlerts((prev) => {
         const ids = new Set(prev.map((a) => a.id));
-        const fresh = data.alerts.filter((a) => !ids.has(a.id));
-        return [...fresh, ...prev].slice(0, 50); // keep last 50
+        const fresh = data.alerts.filter(
+          (a) => !ids.has(a.id) && !a.acknowledged,
+        );
+
+        // Fire notifications only for new, unacknowledged alerts
+        for (const alert of fresh) {
+          showBrowserNotification(alert);
+          playAlertTone(alert.severity);
+        }
+
+        return [...fresh, ...prev].slice(0, 50);
       });
     } catch {
       // Network error — silent, retry on next interval
