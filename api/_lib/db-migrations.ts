@@ -652,4 +652,86 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 25,
+    description:
+      'Create iv_monitor, flow_ratio_monitor, and market_alerts tables',
+    statements: (sql) => [
+      // ── iv_monitor: 1-minute ATM IV time series ──────────
+      sql`
+        CREATE TABLE IF NOT EXISTS iv_monitor (
+          id           SERIAL PRIMARY KEY,
+          date         DATE NOT NULL,
+          timestamp    TIMESTAMPTZ NOT NULL,
+          volatility   DECIMAL(8,4) NOT NULL,
+          implied_move DECIMAL(8,6),
+          percentile   DECIMAL(6,2),
+          spx_price    DECIMAL(10,2),
+          created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(date, timestamp)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_iv_monitor_date
+          ON iv_monitor(date)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_iv_monitor_ts
+          ON iv_monitor(timestamp DESC)
+      `,
+      // ── flow_ratio_monitor: 1-minute put/call ratio ──────
+      sql`
+        CREATE TABLE IF NOT EXISTS flow_ratio_monitor (
+          id         SERIAL PRIMARY KEY,
+          date       DATE NOT NULL,
+          timestamp  TIMESTAMPTZ NOT NULL,
+          abs_npp    DECIMAL(14,2) NOT NULL,
+          abs_ncp    DECIMAL(14,2) NOT NULL,
+          ratio      DECIMAL(8,4),
+          spx_price  DECIMAL(10,2),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(date, timestamp)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_flow_ratio_date
+          ON flow_ratio_monitor(date)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_flow_ratio_ts
+          ON flow_ratio_monitor(timestamp DESC)
+      `,
+      // ── market_alerts: alert records for frontend polling ─
+      sql`
+        CREATE TABLE IF NOT EXISTS market_alerts (
+          id             SERIAL PRIMARY KEY,
+          date           DATE NOT NULL,
+          timestamp      TIMESTAMPTZ NOT NULL,
+          type           TEXT NOT NULL,
+          severity       TEXT NOT NULL,
+          direction      TEXT NOT NULL,
+          title          TEXT NOT NULL,
+          body           TEXT NOT NULL,
+          current_values JSONB NOT NULL,
+          delta_values   JSONB NOT NULL,
+          acknowledged   BOOLEAN DEFAULT FALSE,
+          sms_sent       BOOLEAN DEFAULT FALSE,
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_market_alerts_date
+          ON market_alerts(date)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_market_alerts_created
+          ON market_alerts(created_at DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_market_alerts_unack
+          ON market_alerts(date, acknowledged)
+          WHERE NOT acknowledged
+      `,
+    ],
+  },
 ];

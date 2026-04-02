@@ -20,6 +20,7 @@ import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
+import { useAlertPolling } from './hooks/useAlertPolling';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
 import DateTimeSection from './components/DateTimeSection';
@@ -35,6 +36,8 @@ import BWBCalculator from './components/BWBCalculator';
 import TradingScheduleSection from './components/TradingScheduleSection';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
+import AlertBanner from './components/AlertBanner';
+import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
@@ -122,6 +125,7 @@ export default function StrikeCalculator() {
     market.hasData && !historyData.hasHistory,
     market.data.quotes?.marketOpen ?? false,
   );
+  const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -297,6 +301,10 @@ export default function StrikeCalculator() {
 
   return (
     <>
+      <AlertBanner
+        alerts={alertState.alerts}
+        onAcknowledge={alertState.acknowledge}
+      />
       <div
         id="app-shell"
         className="text-primary min-h-screen font-serif transition-[background-color,color] duration-[250ms]"
@@ -395,6 +403,13 @@ export default function StrikeCalculator() {
             </div>
           </div>
         </header>
+
+        {market.hasData && (
+          <NotificationPermission
+            permission={alertState.notificationPermission}
+            onRequest={alertState.requestPermission}
+          />
+        )}
 
         <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
           {/* Subtitle — below sticky header */}

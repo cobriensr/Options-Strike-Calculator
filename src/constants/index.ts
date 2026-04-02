@@ -248,6 +248,8 @@ export const POLL_INTERVALS = {
   MARKET_DATA: 60_000,
   /** History data refresh (useHistoryData) */
   HISTORY: 10_000,
+  /** Alert polling interval (useAlertPolling) */
+  ALERTS: 10_000,
 } as const;
 
 /** Progress messages shown during chart analysis */

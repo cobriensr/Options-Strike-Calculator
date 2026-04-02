@@ -72,6 +72,14 @@
     {
       "path": "/api/cron/fetch-oi-per-strike",
       "schedule": "0 14 * * 1-5"
+    },
+    {
+      "path": "/api/cron/monitor-iv",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/monitor-flow-ratio",
+      "schedule": "* 13-21 * * 1-5"
     }
   ],
   "functions": {

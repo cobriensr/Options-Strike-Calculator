@@ -1,0 +1,240 @@
+/**
+ * GET /api/cron/monitor-flow-ratio
+ *
+ * 1-minute cron that monitors the 0DTE put/call premium ratio for
+ * sudden shifts. Fetches the UW 0DTE index flow, computes |NPP|/|NCP|,
+ * stores in flow_ratio_monitor, and fires a market alert when the
+ * ratio delta exceeds 0.4 in a 5-minute window.
+ *
+ * Uses delta-based detection (not hardcoded levels) so it catches
+ * regime shifts regardless of where the ratio started the session.
+ *
+ * Directional decomposition: determines BEARISH vs BULLISH by which
+ * side (NPP or NCP) drove the ratio change.
+ *
+ * Total API calls per invocation: 1 (net-flow/expiry)
+ *
+ * Environment: UW_API_KEY, CRON_SECRET
+ */
+
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { getDb } from '../_lib/db.js';
+import { Sentry } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
+import { cronGuard, uwFetch, withRetry } from '../_lib/api-helpers.js';
+import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
+import type { AlertPayload, AlertDirection } from '../_lib/alerts.js';
+import { ALERT_THRESHOLDS } from '../_lib/alert-thresholds.js';
+
+// ── Types ───────────────────────────────────────────────────
+
+interface FlowTick {
+  timestamp: string;
+  date: string;
+  net_call_premium: string;
+  net_put_premium: string;
+  net_volume: string;
+  underlying_price: string;
+}
+
+interface RatioReading {
+  absNpp: number;
+  absNcp: number;
+  ratio: number | null;
+  spxPrice: number;
+}
+
+// ── Fetch helper ────────────────────────────────────────────
+
+async function fetchLatestFlowTick(apiKey: string): Promise<FlowTick | null> {
+  const ticks = await uwFetch<FlowTick>(
+    apiKey,
+    '/net-flow/expiry?expiration=zero_dte&tide_type=index_only',
+    (body) => {
+      const outer = (body.data as Array<{ data?: FlowTick[] }>) ?? [];
+      if (outer.length === 0) return [];
+      return outer[0]?.data ?? [];
+    },
+  );
+
+  return ticks.at(-1) ?? null;
+}
+
+// ── Store reading ───────────────────────────────────────────
+
+async function storeRatioReading(
+  today: string,
+  reading: RatioReading,
+): Promise<void> {
+  const sql = getDb();
+  const now = new Date().toISOString();
+
+  await sql`
+    INSERT INTO flow_ratio_monitor (
+      date, timestamp, abs_npp, abs_ncp, ratio, spx_price
+    )
+    VALUES (
+      ${today}, ${now},
+      ${reading.absNpp}, ${reading.absNcp}, ${reading.ratio},
+      ${reading.spxPrice}
+    )
+    ON CONFLICT (date, timestamp) DO NOTHING
+  `;
+}
+
+// ── Surge detection ─────────────────────────────────────────
+
+function classifyDirection(
+  currentNpp: number,
+  currentNcp: number,
+  prevNpp: number,
+  prevNcp: number,
+): AlertDirection {
+  const nppDelta = currentNpp - prevNpp;
+  const ncpDelta = currentNcp - prevNcp;
+
+  // Which side moved more? Positive delta = that premium grew.
+  if (Math.abs(nppDelta) > Math.abs(ncpDelta)) {
+    // Put side drove the change
+    return nppDelta > 0 ? 'BEARISH' : 'BULLISH';
+  }
+  // Call side drove the change
+  return ncpDelta < 0 ? 'BEARISH' : 'BULLISH';
+}
+
+async function detectRatioSurge(
+  today: string,
+  current: RatioReading,
+): Promise<AlertPayload | null> {
+  if (current.ratio == null) return null;
+
+  const sql = getDb();
+  const lookback = ALERT_THRESHOLDS.RATIO_LOOKBACK_MINUTES;
+
+  const prev = await sql`
+    SELECT ratio, abs_npp, abs_ncp FROM flow_ratio_monitor
+    WHERE date = ${today}
+      AND ratio IS NOT NULL
+      AND timestamp <= NOW() - make_interval(mins => ${lookback})
+    ORDER BY timestamp DESC LIMIT 1
+  `;
+
+  if (prev.length === 0) return null;
+
+  const prevRatio = Number(prev[0]!.ratio);
+  const prevNpp = Number(prev[0]!.abs_npp);
+  const prevNcp = Number(prev[0]!.abs_ncp);
+  const ratioDelta = current.ratio - prevRatio;
+
+  if (Math.abs(ratioDelta) < ALERT_THRESHOLDS.RATIO_DELTA_MIN) return null;
+
+  const direction = classifyDirection(
+    current.absNpp,
+    current.absNcp,
+    prevNpp,
+    prevNcp,
+  );
+
+  const nppChange = current.absNpp - prevNpp;
+  const ncpChange = current.absNcp - prevNcp;
+  const driver =
+    Math.abs(nppChange) > Math.abs(ncpChange)
+      ? `NPP ${nppChange >= 0 ? '+' : ''}$${(nppChange / 1e6).toFixed(1)}M`
+      : `NCP ${ncpChange >= 0 ? '+' : ''}$${(ncpChange / 1e6).toFixed(1)}M`;
+
+  const severity: AlertPayload['severity'] =
+    Math.abs(ratioDelta) >= 0.6 ? 'critical' : 'warning';
+
+  return {
+    type: 'ratio_surge',
+    severity,
+    direction,
+    title: `${direction} Ratio Surge: ${prevRatio.toFixed(2)} -> ${current.ratio.toFixed(2)}`,
+    body: [
+      `0DTE P/C ratio ${ratioDelta > 0 ? 'spiked' : 'collapsed'}`,
+      `${prevRatio.toFixed(2)} -> ${current.ratio.toFixed(2)}`,
+      `(delta ${ratioDelta > 0 ? '+' : ''}${ratioDelta.toFixed(2)})`,
+      `in ${lookback}min.`,
+      `Driver: ${driver}.`,
+      direction === 'BEARISH'
+        ? 'Tighten PCS stops, CCS safe.'
+        : 'Tighten CCS stops, PCS safe.',
+    ].join(' '),
+    currentValues: {
+      ratio: current.ratio,
+      absNpp: current.absNpp,
+      absNcp: current.absNcp,
+      spxPrice: current.spxPrice,
+    },
+    deltaValues: {
+      ratioDelta,
+      nppDelta: nppChange,
+      ncpDelta: ncpChange,
+    },
+  };
+}
+
+// ── Handler ─────────────────────────────────────────────────
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const guard = cronGuard(req, res);
+  if (!guard) return;
+  const { apiKey, today } = guard;
+
+  const startTime = Date.now();
+
+  try {
+    const tick = await withRetry(() => fetchLatestFlowTick(apiKey));
+
+    if (!tick) {
+      logger.info('monitor-flow-ratio: no flow ticks returned');
+      return res.status(200).json({
+        job: 'monitor-flow-ratio',
+        skipped: true,
+        reason: 'no flow data',
+      });
+    }
+
+    const ncp = Number.parseFloat(tick.net_call_premium);
+    const npp = Number.parseFloat(tick.net_put_premium);
+    const spxPrice = Number.parseFloat(tick.underlying_price);
+
+    if (isNaN(ncp) || isNaN(npp) || isNaN(spxPrice)) {
+      logger.warn({ tick }, 'monitor-flow-ratio: invalid tick values');
+      return res.status(200).json({
+        job: 'monitor-flow-ratio',
+        skipped: true,
+        reason: 'invalid values',
+      });
+    }
+
+    const absNpp = Math.abs(npp);
+    const absNcp = Math.abs(ncp);
+    const ratio = absNcp > 0 ? absNpp / absNcp : null;
+
+    const reading: RatioReading = { absNpp, absNcp, ratio, spxPrice };
+
+    await storeRatioReading(today, reading);
+    const alert = await detectRatioSurge(today, reading);
+    const alerted = alert ? await writeAlertIfNew(today, alert) : false;
+    const combined = alerted
+      ? await checkForCombinedAlert(today, 'ratio_surge')
+      : false;
+
+    return res.status(200).json({
+      job: 'monitor-flow-ratio',
+      ratio,
+      absNpp,
+      absNcp,
+      spxPrice,
+      alerted,
+      combined,
+      durationMs: Date.now() - startTime,
+    });
+  } catch (err) {
+    Sentry.setTag('cron.job', 'monitor-flow-ratio');
+    Sentry.captureException(err);
+    logger.error({ err }, 'monitor-flow-ratio error');
+    return res.status(500).json({ error: 'Internal error' });
+  }
+}
