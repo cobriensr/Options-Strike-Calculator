@@ -163,8 +163,8 @@ describe('useSnapshotSave', () => {
     expect(body.strikes['5']).toEqual({
       put: 5400,
       call: 5600,
-      putPct: '-1.82',
-      callPct: '1.82',
+      putPct: -1.82,
+      callPct: 1.82,
     });
   });
 
@@ -229,8 +229,8 @@ describe('useSnapshotSave', () => {
     expect(body.strikes['10']).toEqual({
       put: 5350,
       call: 5650,
-      putPct: '-2.73',
-      callPct: '2.73',
+      putPct: -2.73,
+      callPct: 2.73,
     });
   });
 });

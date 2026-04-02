@@ -45,14 +45,15 @@ export function useSnapshotSave(
     savedRef.current.add(key);
 
     // Build the strikes JSONB from allDeltas
+    // putPct/callPct are formatted strings (e.g. "2.15%") — parse to numbers
     const strikes: Record<string, Record<string, unknown>> = {};
     for (const d of results.allDeltas) {
       if ('error' in d) continue;
       strikes[String(d.delta)] = {
         put: d.putSnapped,
         call: d.callSnapped,
-        putPct: d.putPct,
-        callPct: d.callPct,
+        putPct: Number.parseFloat(d.putPct) || 0,
+        callPct: Number.parseFloat(d.callPct) || 0,
       };
     }
 
