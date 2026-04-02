@@ -43,11 +43,14 @@ interface IvReading {
 
 // ── Fetch helpers ───────────────────────────────────────────
 
-async function fetchZeroDteIv(apiKey: string): Promise<IvReading | null> {
-  // Omit ?date= for current-day fetches — the UW API returns empty
-  // data when the date param is the current trading day (same
-  // behavior as the net-flow/expiry endpoint).
-  const rows = await uwFetch<IvTermRow>(apiKey, '/stock/SPX/interpolated-iv');
+async function fetchZeroDteIv(
+  apiKey: string,
+  today: string,
+): Promise<IvReading | null> {
+  const rows = await uwFetch<IvTermRow>(
+    apiKey,
+    `/stock/SPX/interpolated-iv?date=${today}`,
+  );
 
   // Find the 0DTE row (days <= 1)
   const zeroDte = rows.find((r) => r.days <= 1);
@@ -199,7 +202,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     // Fetch IV and SPX price in parallel
     const [ivResult, spxPrice] = await Promise.all([
-      withRetry(() => fetchZeroDteIv(apiKey)),
+      withRetry(() => fetchZeroDteIv(apiKey, today)),
       getLatestSpxPrice(today),
     ]);
 
