@@ -86,9 +86,7 @@ export default memo(function DarkPoolLevels({
   const totalClusters = levels.length;
 
   const badge =
-    totalClusters > 0
-      ? `${filtered.length} of ${totalClusters}`
-      : null;
+    totalClusters > 0 ? `${filtered.length} of ${totalClusters}` : null;
 
   const headerRight = updatedAt ? (
     <span className="text-muted font-sans text-[10px]">
@@ -109,9 +107,7 @@ export default memo(function DarkPoolLevels({
   if (error) {
     return (
       <SectionBox label="Dark Pool Levels" headerRight={headerRight}>
-        <div className="text-muted text-center font-sans text-xs">
-          {error}
-        </div>
+        <div className="text-muted text-center font-sans text-xs">{error}</div>
       </SectionBox>
     );
   }

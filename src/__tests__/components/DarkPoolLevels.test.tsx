@@ -89,9 +89,7 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(
-      screen.getByText(/no clusters above \$100M/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no clusters above \$100M/i)).toBeInTheDocument();
   });
 
   it('shows no clusters when all levels below threshold', () => {
@@ -107,9 +105,7 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(
-      screen.getByText(/no clusters above \$100M/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no clusters above \$100M/i)).toBeInTheDocument();
   });
 
   it('shows badge with cluster count even when none above threshold', () => {
