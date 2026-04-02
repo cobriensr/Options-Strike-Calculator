@@ -174,6 +174,17 @@ export function useChartAnalysis(opts: {
           lastError = null;
           setError(null);
 
+          // If the server timed out mid-stream, the last NDJSON line
+          // is a keepalive ping with no meaningful payload. Treat as
+          // a retryable timeout so the user gets feedback.
+          if (!data.analysis && !data.raw && !data.error) {
+            const timeoutErr = new Error(
+              'Server connection dropped — the analysis may have timed out.',
+            );
+            (timeoutErr as Error & { status: number }).status = 504;
+            throw timeoutErr;
+          }
+
           if (data.analysis) {
             setAnalysis(data.analysis);
             lastAnalysisRef.current = data.analysis;
