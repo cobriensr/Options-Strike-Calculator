@@ -205,7 +205,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const npp = Number.parseFloat(tick.net_put_premium);
     const spxPrice = Number.parseFloat(tick.underlying_price);
 
-    if (isNaN(ncp) || isNaN(npp) || isNaN(spxPrice)) {
+    if (Number.isNaN(ncp) || Number.isNaN(npp) || Number.isNaN(spxPrice)) {
       logger.warn({ tick }, 'monitor-flow-ratio: invalid tick values');
       return res.status(200).json({
         job: 'monitor-flow-ratio',
