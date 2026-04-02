@@ -454,4 +454,185 @@ describe('fetch-net-flow handler', () => {
       Authorization: 'Bearer my-test-key',
     });
   });
+
+  // ── Cumulation with zero/null values ─────────────────────
+
+  it('treats zero string premium as 0 in cumulation', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    const ticks = [
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:01:00.000Z',
+        net_call_premium: '0',
+        net_put_premium: '0',
+        net_call_volume: 0,
+        net_put_volume: 0,
+      }),
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:02:00.000Z',
+        net_call_premium: '100000',
+        net_put_premium: '-50000',
+        net_call_volume: 10,
+        net_put_volume: 5,
+      }),
+    ];
+    stubFetchWith(ticks);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Both ticks land in the 14:00 window — cumulated ncp = 0 + 100000
+    const firstCall = mockSql.mock.calls[0]!;
+    const callValues = firstCall.slice(1);
+    expect(callValues[3]).toBe(100000);
+    expect(callValues[4]).toBe(-50000);
+    // netVolume = (0 + 10) + (0 + 5) = 15
+    expect(callValues[5]).toBe(15);
+  });
+
+  it('treats non-numeric premium strings as 0 via || 0 fallback', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    const ticks = [
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:01:00.000Z',
+        net_call_premium: 'N/A',
+        net_put_premium: '',
+        net_call_volume: null,
+        net_put_volume: undefined,
+      }),
+    ];
+    stubFetchWith(ticks);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Non-numeric parseFloat → NaN, || 0 → 0; null/undefined volumes → 0
+    const firstCall = mockSql.mock.calls[0]!;
+    const callValues = firstCall.slice(1);
+    expect(callValues[3]).toBe(0); // ncp
+    expect(callValues[4]).toBe(0); // npp
+    expect(callValues[5]).toBe(0); // netVolume
+  });
+
+  // ── Skipped rows (ON CONFLICT DO NOTHING) ────────────────
+
+  it('counts skipped rows when INSERT returns empty', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    const ticks = [
+      makeNetPremTick({ tape_time: '2026-03-24T14:01:00.000Z' }),
+    ];
+    stubFetchWith(ticks);
+
+    // First 3 calls are INSERTs (one per ticker) — return empty to
+    // simulate ON CONFLICT DO NOTHING; remaining 3 are data-quality SELECTs
+    mockSql
+      .mockResolvedValueOnce([]) // SPX insert → skipped
+      .mockResolvedValueOnce([]) // SPY insert → skipped
+      .mockResolvedValueOnce([]) // QQQ insert → skipped
+      .mockResolvedValue([{ id: 1, total: 0, nonzero: 0 }]); // quality checks
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const { results } = res._json as {
+      results: Record<string, { stored: number; skipped: number }>;
+    };
+    expect(results.spx_flow).toMatchObject({ stored: 0, skipped: 1 });
+    expect(results.spy_flow).toMatchObject({ stored: 0, skipped: 1 });
+    expect(results.qqq_flow).toMatchObject({ stored: 0, skipped: 1 });
+  });
+
+  // ── Sampling boundary conditions ─────────────────────────
+
+  it('keeps only the last tick per 5-min window', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // Three ticks in the same 5-min window: only the last should be stored
+    const ticks = [
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:00:30.000Z',
+        net_call_premium: '100000',
+        net_put_premium: '-50000',
+      }),
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:01:30.000Z',
+        net_call_premium: '200000',
+        net_put_premium: '-100000',
+      }),
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:03:00.000Z',
+        net_call_premium: '300000',
+        net_put_premium: '-150000',
+      }),
+    ];
+    stubFetchWith(ticks);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // All 3 ticks → same 14:00 window → 1 candle per ticker
+    // 3 inserts + 3 quality checks = 6
+    expect(mockSql).toHaveBeenCalledTimes(6);
+
+    // The stored candle should have the cumulated value of all 3 ticks
+    const firstCall = mockSql.mock.calls[0]!;
+    const callValues = firstCall.slice(1);
+    // ncp = 100000 + 200000 + 300000 = 600000
+    expect(callValues[3]).toBe(600000);
+    // npp = -50000 + -100000 + -150000 = -300000
+    expect(callValues[4]).toBe(-300000);
+  });
+
+  it('produces sorted output across multiple 5-min windows', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // Ticks spanning 3 distinct 5-min windows
+    const ticks = [
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:11:00.000Z',
+        net_call_premium: '100000',
+      }),
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:01:00.000Z',
+        net_call_premium: '200000',
+      }),
+      makeNetPremTick({
+        tape_time: '2026-03-24T14:06:00.000Z',
+        net_call_premium: '300000',
+      }),
+    ];
+    stubFetchWith(ticks);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // 3 windows × 3 tickers = 9 inserts + 3 quality = 12
+    expect(mockSql).toHaveBeenCalledTimes(12);
+  });
 });

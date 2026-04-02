@@ -364,4 +364,144 @@ describe('fetch-strike-all handler', () => {
       skipped: 1,
     });
   });
+
+  // ── Data quality check conditional ────────────────────────
+
+  it('skips data quality check when stored <= 10', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // 1 strike stored → stored (1) <= 10 → no quality SELECT
+    stubFetch([makeStrikeRow()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ success: true, stored: 1 });
+    // Only the transaction call — no additional mockSql call for quality check
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('runs data quality check when stored > 10', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // Generate 11 strikes within ATM range to trigger quality check
+    const strikes = Array.from({ length: 11 }, (_, i) =>
+      makeStrikeRow({ strike: String(5750 + i * 5), price: '5800.5' }),
+    );
+    stubFetch(strikes);
+
+    // Quality check SELECT needs a return value
+    mockSql.mockResolvedValueOnce([{ total: 11, nonzero: 10 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ success: true, stored: 11 });
+    // mockSql should have been called once for the data quality SELECT
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  // ── ATM range filtering edge cases ────────────────────────
+
+  it('includes strikes exactly at ATM ± 200 boundary', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // Price = 5800, so range is [5600, 6000]
+    const atLowerBound = makeStrikeRow({
+      strike: '5600',
+      price: '5800',
+    });
+    const atUpperBound = makeStrikeRow({
+      strike: '6000',
+      price: '5800',
+    });
+    stubFetch([atLowerBound, atUpperBound]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Both boundary strikes should be included (>= and <=)
+    expect(res._json).toMatchObject({
+      success: true,
+      totalStrikes: 2,
+      stored: 2,
+      skipped: 0,
+    });
+  });
+
+  it('excludes strikes just beyond ATM ± 200 boundary', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // Price = 5800, so range is [5600, 6000]
+    const belowLower = makeStrikeRow({
+      strike: '5599',
+      price: '5800',
+    });
+    const aboveUpper = makeStrikeRow({
+      strike: '6001',
+      price: '5800',
+    });
+    stubFetch([belowLower, aboveUpper]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Both strikes are outside the range → filtered.length === 0
+    // storeStrikes returns { stored: 0, skipped: 0 } for empty filtered
+    expect(res._json).toMatchObject({
+      success: true,
+      totalStrikes: 2,
+      stored: 0,
+      skipped: 0,
+    });
+    // No transaction should be called when all strikes are filtered out
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns stored: 0 when all strikes are outside ATM range', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    const farStrikes = [
+      makeStrikeRow({ strike: '4000', price: '5800' }),
+      makeStrikeRow({ strike: '7000', price: '5800' }),
+      makeStrikeRow({ strike: '3500', price: '5800' }),
+    ];
+    stubFetch(farStrikes);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      success: true,
+      totalStrikes: 3,
+      stored: 0,
+      skipped: 0,
+    });
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
 });
