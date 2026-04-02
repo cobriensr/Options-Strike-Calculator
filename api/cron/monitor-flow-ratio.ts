@@ -52,7 +52,7 @@ async function fetchLatestFlowTick(
 ): Promise<FlowTick | null> {
   const ticks = await uwFetch<FlowTick>(
     apiKey,
-    '/net-flow/expiry?expiration=zero_dte&tide_type=index_only',
+    `/net-flow/expiry?date=${today}&expiration=zero_dte&tide_type=index_only`,
     (body) => {
       const outer = (body.data as Array<{ data?: FlowTick[] }>) ?? [];
       if (outer.length === 0) return [];
@@ -60,10 +60,7 @@ async function fetchLatestFlowTick(
     },
   );
 
-  // Filter to today's ticks only — at session start the endpoint may
-  // still return yesterday's stale data with null values.
-  const todayTicks = ticks.filter((t) => t.date === today);
-  return todayTicks.at(-1) ?? null;
+  return ticks.at(-1) ?? null;
 }
 
 // ── Store reading ───────────────────────────────────────────
