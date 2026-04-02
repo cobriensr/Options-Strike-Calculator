@@ -235,6 +235,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         'Analysis response JSON parse failed',
       );
     }
+    // Stream corruption: Claude said "end_turn" but the JSON is incomplete.
+    // This happens when SSE content chunks are lost over long-running streams
+    // (10+ min with adaptive thinking). Return 502 so the frontend retry
+    // loop fires automatically instead of showing broken output.
+    if (!analysis && text.length > 0) {
+      metrics.increment('analyze.stream_corruption');
+      logger.error(
+        { stopReason: data.stop_reason, textLen: text.length },
+        'Returning 502 — response text present but unparseable',
+      );
+      metrics.analyzeCall({
+        model: usedModel,
+        mode: String(mode),
+        durationMs: Date.now() - analyzeStart,
+        imageCount: images.length,
+      });
+      done({ status: 502 });
+      res.write(
+        JSON.stringify({
+          error:
+            'Analysis completed but the response was corrupted in transit. Retrying…',
+        }) + '\n',
+      );
+      return res.end();
+    }
     // Save to Postgres before responding (Vercel kills the function after res.json).
     // Retry the save up to 2 extra times — after a long Anthropic retry the first
     // Neon call can fail due to connection pressure / cold-start latency.
