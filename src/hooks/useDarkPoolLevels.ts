@@ -37,12 +37,6 @@ export interface UseDarkPoolLevelsReturn {
   updatedAt: string | null;
 }
 
-function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-}
-
 export function useDarkPoolLevels(
   marketOpen: boolean,
   selectedDate?: string,
@@ -54,7 +48,7 @@ export function useDarkPoolLevels(
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
-  const isBacktest = selectedDate != null && selectedDate !== getTodayET();
+  const hasExplicitDate = selectedDate != null;
 
   const fetchLevels = useCallback(async () => {
     try {
@@ -104,14 +98,15 @@ export function useDarkPoolLevels(
       return;
     }
 
-    // Backtest: fetch once for the historical date
-    if (isBacktest) {
+    // Explicit date (today or past): fetch once, no polling.
+    // Data is either backfilled or already stored by the cron.
+    if (hasExplicitDate) {
       setLoading(true);
       fetchLevels();
       return;
     }
 
-    // Live: poll only while market is open
+    // No date selected: poll only while market is open
     if (!marketOpen) {
       setLoading(false);
       return;
@@ -121,7 +116,7 @@ export function useDarkPoolLevels(
 
     const id = setInterval(fetchLevels, POLL_INTERVALS.DARK_POOL);
     return () => clearInterval(id);
-  }, [isOwner, marketOpen, isBacktest, fetchLevels]);
+  }, [isOwner, marketOpen, hasExplicitDate, fetchLevels]);
 
   return { levels, loading, error, updatedAt };
 }
