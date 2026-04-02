@@ -13,7 +13,7 @@ describe('ALERT_THRESHOLDS', () => {
       RATIO_LOOKBACK_MINUTES: 5,
       COOLDOWN_MINUTES: 5,
       COMBINED_WINDOW_MINUTES: 30,
-      SMS_MIN_SEVERITY: 'critical',
+      SMS_MIN_SEVERITY: 'warning',
     });
   });
 

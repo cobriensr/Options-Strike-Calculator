@@ -21,5 +21,5 @@ export const ALERT_THRESHOLDS = {
   /** Window for combined alert: both IV spike + ratio surge within this window (minutes) */
   COMBINED_WINDOW_MINUTES: 30,
   /** Minimum severity to trigger SMS notification */
-  SMS_MIN_SEVERITY: 'critical' as const,
+  SMS_MIN_SEVERITY: 'warning' as const,
 } as const;
