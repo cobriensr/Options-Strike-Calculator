@@ -105,6 +105,7 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
   const isOwner = useIsOwner();
   const [alerts, setAlerts] = useState<MarketAlert[]>([]);
   const lastSeenRef = useRef<string | null>(null);
+  const seenIdsRef = useRef<Set<number>>(new Set());
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | 'unsupported'
   >(
@@ -133,21 +134,23 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
       const newest = data.alerts[0]!.created_at;
       lastSeenRef.current = newest;
 
-      // Deduplicate first, then notify only for genuinely new alerts
-      setAlerts((prev) => {
-        const ids = new Set(prev.map((a) => a.id));
-        const fresh = data.alerts.filter(
-          (a) => !ids.has(a.id) && !a.acknowledged,
-        );
+      // Deduplicate via ref (stable across renders, not called twice)
+      const fresh = data.alerts.filter(
+        (a) => !seenIdsRef.current.has(a.id) && !a.acknowledged,
+      );
 
-        // Fire notifications only for new, unacknowledged alerts
-        for (const alert of fresh) {
-          showBrowserNotification(alert);
-          playAlertTone(alert.severity);
-        }
+      // Mark as seen BEFORE playing sound — prevents duplicates
+      for (const a of fresh) seenIdsRef.current.add(a.id);
 
-        return [...fresh, ...prev].slice(0, 50);
-      });
+      // Fire notifications outside state updater (side-effect safe)
+      for (const alert of fresh) {
+        showBrowserNotification(alert);
+        playAlertTone(alert.severity);
+      }
+
+      if (fresh.length > 0) {
+        setAlerts((prev) => [...fresh, ...prev].slice(0, 50));
+      }
     } catch {
       // Network error — silent, retry on next interval
     }
