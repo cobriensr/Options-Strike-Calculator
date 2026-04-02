@@ -13,6 +13,7 @@ import { MODE_LABELS } from './types';
 import { ErrorMsg, SectionBox } from '../ui';
 import { tint } from '../../utils/ui-utils';
 import AnalysisResultsView from './AnalysisResults';
+import { useIsOwner } from '../../hooks/useIsOwner';
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -235,6 +236,11 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   // ── No-op for image replace ────────────────────────────
 
   const noopReplace = useCallback(() => {}, []);
+
+  // Owner gating — only render for authenticated owner (or local dev)
+  // Placed after hooks to satisfy Rules of Hooks
+  const isOwner = useIsOwner();
+  if (!isOwner) return null;
 
   // ── Helpers ────────────────────────────────────────────
 

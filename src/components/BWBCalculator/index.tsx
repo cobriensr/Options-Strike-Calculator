@@ -271,8 +271,8 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
             );
           })()}
 
-        <div className="grid grid-cols-[1fr_auto_auto] items-end gap-2">
-          <div>
+        <div className="grid grid-cols-[1fr_1fr] items-end gap-2 sm:grid-cols-[1fr_auto_auto]">
+          <div className="col-span-2 sm:col-span-1">
             <div className={LABEL + ' mb-1'}>Sweet Spot</div>
             <input
               type="text"
@@ -291,7 +291,7 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
               inputMode="numeric"
               value={narrowWing}
               onChange={(e) => handleNarrowChange(e.target.value)}
-              className={INPUT_SM + ' w-[60px]'}
+              className={INPUT_SM + ' w-full sm:w-[60px]'}
               aria-label="Narrow wing width"
             />
           </div>
@@ -302,7 +302,7 @@ export default function BWBCalculator({ selectedDate }: BWBCalculatorProps) {
               inputMode="numeric"
               value={wideWing}
               onChange={(e) => handleWideChange(e.target.value)}
-              className={INPUT_SM + ' w-[60px]'}
+              className={INPUT_SM + ' w-full sm:w-[60px]'}
               aria-label="Wide wing width"
             />
           </div>
