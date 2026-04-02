@@ -82,6 +82,35 @@ describe('GET /api/darkpool-levels', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('uses date query param when provided', async () => {
+    mockSql.mockResolvedValue([makeDbRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-03-28' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as { date: string };
+    expect(body.date).toBe('2026-03-28');
+  });
+
+  it('rejects invalid date format', async () => {
+    mockSql.mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: 'not-a-date' } }),
+      res,
+    );
+
+    // Falls back to today's date rather than passing invalid input
+    expect(res._status).toBe(200);
+    const body = res._json as { date: string };
+    expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
   it('returns levels sorted by premium with computed direction', async () => {
     const rows = [
       makeDbRow({

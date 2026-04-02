@@ -1,9 +1,14 @@
 /**
  * useDarkPoolLevels — polls /api/darkpool-levels every 60 seconds.
  *
- * Returns today's dark pool cluster data for the DarkPoolLevels widget.
+ * Returns dark pool cluster data for the DarkPoolLevels widget.
  * Owner-only — skips polling for public visitors.
- * Gated on marketOpen to avoid unnecessary requests outside hours.
+ *
+ * Behavior:
+ *   - Live mode (no selectedDate or selectedDate = today): polls every
+ *     60s while marketOpen, stops when market closes.
+ *   - Backtest mode (selectedDate in the past): fetches once for that
+ *     date, no polling (data is static).
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -32,8 +37,15 @@ export interface UseDarkPoolLevelsReturn {
   updatedAt: string | null;
 }
 
+function getTodayET(): string {
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+}
+
 export function useDarkPoolLevels(
   marketOpen: boolean,
+  selectedDate?: string,
 ): UseDarkPoolLevelsReturn {
   const isOwner = useIsOwner();
   const [levels, setLevels] = useState<DarkPoolLevel[]>([]);
@@ -42,9 +54,12 @@ export function useDarkPoolLevels(
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
+  const isBacktest = selectedDate != null && selectedDate !== getTodayET();
+
   const fetchLevels = useCallback(async () => {
     try {
-      const res = await fetch('/api/darkpool-levels', {
+      const params = selectedDate ? `?date=${selectedDate}` : '';
+      const res = await fetch(`/api/darkpool-levels${params}`, {
         credentials: 'same-origin',
         signal: AbortSignal.timeout(5_000),
       });
@@ -74,7 +89,7 @@ export function useDarkPoolLevels(
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, []);
+  }, [selectedDate]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -84,7 +99,20 @@ export function useDarkPoolLevels(
   }, []);
 
   useEffect(() => {
-    if (!isOwner || !marketOpen) {
+    if (!isOwner) {
+      setLoading(false);
+      return;
+    }
+
+    // Backtest: fetch once for the historical date
+    if (isBacktest) {
+      setLoading(true);
+      fetchLevels();
+      return;
+    }
+
+    // Live: poll only while market is open
+    if (!marketOpen) {
       setLoading(false);
       return;
     }
@@ -93,7 +121,7 @@ export function useDarkPoolLevels(
 
     const id = setInterval(fetchLevels, POLL_INTERVALS.DARK_POOL);
     return () => clearInterval(id);
-  }, [isOwner, marketOpen, fetchLevels]);
+  }, [isOwner, marketOpen, isBacktest, fetchLevels]);
 
   return { levels, loading, error, updatedAt };
 }

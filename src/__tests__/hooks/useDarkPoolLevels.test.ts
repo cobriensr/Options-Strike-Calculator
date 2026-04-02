@@ -274,3 +274,71 @@ describe('useDarkPoolLevels: error handling', () => {
     await waitFor(() => expect(result.current.error).toBeNull());
   });
 });
+
+// ============================================================
+// BACKTEST MODE (selectedDate)
+// ============================================================
+
+describe('useDarkPoolLevels: backtest mode', () => {
+  it('fetches with date param when selectedDate is in the past', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ levels: [makeLevel()], date: '2026-03-28' }),
+    });
+
+    renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
+
+    await act(async () => {});
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const url = mockFetch.mock.calls[0]?.[0] as string;
+    expect(url).toContain('?date=2026-03-28');
+  });
+
+  it('fetches once without polling in backtest mode', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ levels: [], date: '2026-03-28' }),
+    });
+
+    renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
+
+    await act(async () => {});
+
+    const initialCalls = mockFetch.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL * 3);
+    });
+
+    // No additional fetches — backtest data is static
+    expect(mockFetch.mock.calls.length).toBe(initialCalls);
+  });
+
+  it('returns levels from backtest date', async () => {
+    const levels = [makeLevel({ spxApprox: 6550, direction: 'SELL' })];
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ levels, date: '2026-03-28' }),
+    });
+
+    const { result } = renderHook(() =>
+      useDarkPoolLevels(false, '2026-03-28'),
+    );
+
+    await waitFor(() => expect(result.current.levels).toHaveLength(1));
+
+    expect(result.current.levels[0]!.spxApprox).toBe(6550);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('does not fetch in backtest mode when not owner', async () => {
+    vi.mocked(useIsOwner).mockReturnValue(false);
+
+    renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
+
+    await act(async () => {});
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});

@@ -130,7 +130,10 @@ export default function StrikeCalculator() {
     market.data.quotes?.marketOpen ?? false,
   );
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
-  const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
+  const darkPool = useDarkPoolLevels(
+    market.data.quotes?.marketOpen ?? false,
+    vix.selectedDate,
+  );
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -552,7 +555,7 @@ export default function StrikeCalculator() {
               />
             </ErrorBoundary>
 
-            {isOwner && market.hasData && (
+            {isOwner && (market.hasData || !!historySnapshot) && (
               <ErrorBoundary label="Dark Pool Levels">
                 <DarkPoolLevels
                   levels={darkPool.levels}

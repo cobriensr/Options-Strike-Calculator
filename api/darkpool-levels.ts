@@ -1,9 +1,13 @@
 /**
  * GET /api/darkpool-levels
  *
- * Returns today's dark pool cluster levels sorted by aggregate premium.
+ * Returns dark pool cluster levels sorted by aggregate premium.
  * Data is stored by the fetch-darkpool cron every 5 minutes.
  * The frontend polls this every 60 seconds — no Claude involved.
+ *
+ * Query params:
+ *   ?date=YYYY-MM-DD  — return levels for a specific date
+ *   (default: today in ET)
  *
  * Owner-gated — dark pool data derives from UW API (OPRA compliance).
  */
@@ -27,9 +31,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const sql = getDb();
 
-      const today = new Date().toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
+      const dateParam = req.query.date as string | undefined;
+      const date =
+        dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+          ? dateParam
+          : new Date().toLocaleDateString('en-CA', {
+              timeZone: 'America/New_York',
+            });
 
       const rows = await sql`
         SELECT spx_approx, spy_price_low, spy_price_high,
@@ -37,7 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                buyer_initiated, seller_initiated, neutral,
                latest_time, updated_at
         FROM dark_pool_levels
-        WHERE date = ${today}
+        WHERE date = ${date}
         ORDER BY total_premium DESC
       `;
 
@@ -62,7 +70,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }));
 
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ levels, date: today });
+      return res.status(200).json({ levels, date });
     } catch (err) {
       Sentry.captureException(err);
       logger.error({ err }, 'darkpool-levels fetch error');
