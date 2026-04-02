@@ -207,7 +207,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ]);
 
     if (!ivResult) {
-      logger.info('monitor-iv: no 0DTE IV row returned');
+      logger.warn({ today }, 'monitor-iv: no 0DTE IV row returned');
       return res.status(200).json({
         job: 'monitor-iv',
         skipped: true,
@@ -224,6 +224,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const combined = alerted
       ? await checkForCombinedAlert(today, 'iv_spike')
       : false;
+
+    logger.info(
+      {
+        iv: ivResult.volatility,
+        spxPrice,
+        alerted,
+        combined,
+      },
+      'monitor-iv completed',
+    );
 
     return res.status(200).json({
       job: 'monitor-iv',
