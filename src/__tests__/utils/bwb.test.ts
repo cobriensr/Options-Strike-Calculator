@@ -571,3 +571,62 @@ describe('BWB PoP uses base sigma', () => {
     expect(open10.baseCallSigma).toBeCloseTo(open10.callSigma, 10);
   });
 });
+
+describe('BWB branch edge cases', () => {
+  it('returnOnRisk is 0 when maxLoss <= 0 (put BWB)', () => {
+    if (!d10) return;
+    // Use equal wing widths with a deep OTM strike where netCredit > wideWidth - narrowWidth
+    // This is hard to achieve naturally, so we construct a DeltaRow with zero-cost wings
+    const row: DeltaRow = {
+      ...d10,
+      putSnapped: spot - 100, // deep OTM
+    };
+    // When narrowWidth === wideWidth, maxLoss = wideWidth - narrowWidth - netCredit = -netCredit
+    // If netCredit > 0, maxLoss < 0 => returnOnRisk = 0
+    const bwb = buildPutBWB(row, 25, 25, spot, T);
+    if (bwb.maxLoss <= 0) {
+      expect(bwb.returnOnRisk).toBe(0);
+    } else {
+      // If maxLoss > 0, returnOnRisk = netCredit / maxLoss
+      expect(bwb.returnOnRisk).toBeCloseTo(bwb.netCredit / bwb.maxLoss, 8);
+    }
+  });
+
+  it('returnOnRisk is 0 when maxLoss <= 0 (call BWB)', () => {
+    if (!d10) return;
+    const row: DeltaRow = {
+      ...d10,
+      callSnapped: spot + 100, // deep OTM
+    };
+    const bwb = buildCallBWB(row, 25, 25, spot, T);
+    if (bwb.maxLoss <= 0) {
+      expect(bwb.returnOnRisk).toBe(0);
+    } else {
+      expect(bwb.returnOnRisk).toBeCloseTo(bwb.netCredit / bwb.maxLoss, 8);
+    }
+  });
+
+  it('uses putSigma fallback when basePutSigma is undefined', () => {
+    if (!d10) return;
+    const row: DeltaRow = {
+      ...d10,
+      basePutSigma: undefined as unknown as number,
+    };
+    // Should not throw — falls back to row.putSigma
+    const bwb = buildPutBWB(row, 20, 40, spot, T);
+    expect(bwb.probabilityOfProfit).toBeGreaterThan(0);
+    expect(bwb.probabilityOfProfit).toBeLessThan(1);
+  });
+
+  it('uses callSigma fallback when baseCallSigma is undefined', () => {
+    if (!d10) return;
+    const row: DeltaRow = {
+      ...d10,
+      baseCallSigma: undefined as unknown as number,
+    };
+    // Should not throw — falls back to row.callSigma
+    const bwb = buildCallBWB(row, 20, 40, spot, T);
+    expect(bwb.probabilityOfProfit).toBeGreaterThan(0);
+    expect(bwb.probabilityOfProfit).toBeLessThan(1);
+  });
+});
