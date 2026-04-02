@@ -353,7 +353,7 @@ describe('POST /api/analyze', () => {
     expect(json.error).toContain('Anthropic rate limit exceeded');
   });
 
-  it('returns raw text when Claude response is not valid JSON', async () => {
+  it('returns stream corruption error when Claude response is not valid JSON', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: 'Not valid JSON response' }],
@@ -364,10 +364,11 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
+    // Handler returns 200 (streaming default) with error payload
+    // since the stream corruption guard doesn't call res.status()
     expect(res._status).toBe(200);
-    const json = parseNdjsonResponse(res) as { analysis: null; raw: string };
-    expect(json.analysis).toBeNull();
-    expect(json.raw).toBe('Not valid JSON response');
+    const json = parseNdjsonResponse(res) as { error: string };
+    expect(json.error).toContain('corrupted in transit');
   });
 
   it('parses structured output JSON directly', async () => {
@@ -1086,7 +1087,7 @@ describe('POST /api/analyze', () => {
 
   // ── Truncated JSON returns null (structured outputs prevent this in practice) ──
 
-  it('returns null analysis for truncated JSON', async () => {
+  it('returns stream corruption error for truncated JSON', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     // Truncated JSON — structured outputs prevents this, but if max_tokens
     // is hit the response may be incomplete
@@ -1101,10 +1102,10 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
+    // Stream corruption guard fires — text present but unparseable
     expect(res._status).toBe(200);
-    const json = parseNdjsonResponse(res) as { analysis: null; raw: string };
-    expect(json.analysis).toBeNull();
-    expect(json.raw).toBe(truncated);
+    const json = parseNdjsonResponse(res) as { error: string };
+    expect(json.error).toContain('corrupted in transit');
   });
 
   // ── Snapshot ID lookup ────────────────────────────────────
