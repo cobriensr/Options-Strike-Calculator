@@ -13,7 +13,7 @@ import { theme } from '../themes';
 import { SectionBox } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
 
-const PREMIUM_FLOOR = 100_000_000; // $100M minimum to display
+const PREMIUM_FLOOR = 25_000_000; // $25M minimum to display
 
 interface Props {
   levels: DarkPoolLevel[];
@@ -120,7 +120,7 @@ export default memo(function DarkPoolLevels({
         headerRight={headerRight}
       >
         <div className="text-muted text-center font-sans text-xs">
-          No clusters above $100M threshold
+          No clusters above $25M threshold
         </div>
       </SectionBox>
     );
@@ -138,6 +138,7 @@ export default memo(function DarkPoolLevels({
           <span role="columnheader">Premium</span>
           <span role="columnheader">Direction</span>
           <span role="columnheader">Blocks</span>
+          <span role="columnheader">Time</span>
         </div>
         {filtered.map((level) => (
           <LevelRow
@@ -206,9 +207,17 @@ function LevelRow({
       {/* Block count */}
       <span
         role="cell"
-        className="text-muted w-[60px] shrink-0 text-right font-sans text-[10px]"
+        className="text-muted w-[52px] shrink-0 text-right font-sans text-[10px]"
       >
         {level.tradeCount} block{level.tradeCount !== 1 ? 's' : ''}
+      </span>
+
+      {/* Latest trade time */}
+      <span
+        role="cell"
+        className="text-muted w-[52px] shrink-0 text-right font-mono text-[10px]"
+      >
+        {formatTime(level.latestTime)}
       </span>
     </div>
   );

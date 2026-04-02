@@ -89,13 +89,13 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no clusters above \$100M/i)).toBeInTheDocument();
+    expect(screen.getByText(/no clusters above \$25M/i)).toBeInTheDocument();
   });
 
   it('shows no clusters when all levels below threshold', () => {
     const levels = [
-      makeLevel({ totalPremium: 50_000_000 }),
-      makeLevel({ spxApprox: 6550, totalPremium: 80_000_000 }),
+      makeLevel({ totalPremium: 10_000_000 }),
+      makeLevel({ spxApprox: 6550, totalPremium: 20_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -105,13 +105,13 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no clusters above \$100M/i)).toBeInTheDocument();
+    expect(screen.getByText(/no clusters above \$25M/i)).toBeInTheDocument();
   });
 
   it('shows badge with cluster count even when none above threshold', () => {
     const levels = [
-      makeLevel({ totalPremium: 50_000_000 }),
-      makeLevel({ spxApprox: 6550, totalPremium: 80_000_000 }),
+      makeLevel({ totalPremium: 10_000_000 }),
+      makeLevel({ spxApprox: 6550, totalPremium: 20_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -162,7 +162,7 @@ describe('DarkPoolLevels: rendering levels', () => {
   it('filters out levels below threshold', () => {
     const levels = [
       makeLevel({ spxApprox: 6575, totalPremium: 500_000_000 }),
-      makeLevel({ spxApprox: 6540, totalPremium: 50_000_000 }),
+      makeLevel({ spxApprox: 6540, totalPremium: 10_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -180,7 +180,7 @@ describe('DarkPoolLevels: rendering levels', () => {
   it('shows badge with cluster count', () => {
     const levels = [
       makeLevel({ spxApprox: 6575, totalPremium: 500_000_000 }),
-      makeLevel({ spxApprox: 6540, totalPremium: 50_000_000 }),
+      makeLevel({ spxApprox: 6540, totalPremium: 10_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -271,16 +271,16 @@ describe('DarkPoolLevels: premium formatting', () => {
   // unreachable in this component because the $100M floor filter
   // guarantees only M and B values display. This is expected.
 
-  it('formats exact $100M threshold', () => {
+  it('formats exact $25M threshold', () => {
     render(
       <DarkPoolLevels
-        levels={[makeLevel({ totalPremium: 100_000_000 })]}
+        levels={[makeLevel({ totalPremium: 25_000_000 })]}
         loading={false}
         error={null}
         updatedAt={null}
       />,
     );
-    expect(screen.getByText('$100M')).toBeInTheDocument();
+    expect(screen.getByText('$25M')).toBeInTheDocument();
   });
 });
 
@@ -345,7 +345,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
   it('uses minimum 2% bar width', () => {
     const levels = [
       makeLevel({ spxApprox: 6575, totalPremium: 10_000_000_000 }),
-      makeLevel({ spxApprox: 6555, totalPremium: 100_000_000 }),
+      makeLevel({ spxApprox: 6555, totalPremium: 25_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -409,6 +409,7 @@ describe('DarkPoolLevels: accessibility', () => {
     expect(screen.getByText('Premium')).toBeInTheDocument();
     expect(screen.getByText('Direction')).toBeInTheDocument();
     expect(screen.getByText('Blocks')).toBeInTheDocument();
+    expect(screen.getByText('Time')).toBeInTheDocument();
   });
 
   it('renders rows with role="row"', () => {
@@ -435,6 +436,25 @@ describe('DarkPoolLevels: accessibility', () => {
       />,
     );
     expect(screen.getByLabelText('$500M premium')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// TIME DISPLAY
+// ============================================================
+
+describe('DarkPoolLevels: time display', () => {
+  it('shows latest trade time for each level', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel({ latestTime: '2026-04-02T19:30:00Z' })]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+      />,
+    );
+    // 19:30 UTC = 2:30 PM CT
+    expect(screen.getByText(/2:30/)).toBeInTheDocument();
   });
 });
 
