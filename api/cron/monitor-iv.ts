@@ -43,16 +43,11 @@ interface IvReading {
 
 // ── Fetch helpers ───────────────────────────────────────────
 
-async function fetchZeroDteIv(
-  apiKey: string,
-): Promise<IvReading | null> {
+async function fetchZeroDteIv(apiKey: string): Promise<IvReading | null> {
   // Omit ?date= for current-day fetches — the UW API returns empty
   // data when the date param is the current trading day (same
   // behavior as the net-flow/expiry endpoint).
-  const rows = await uwFetch<IvTermRow>(
-    apiKey,
-    '/stock/SPX/interpolated-iv',
-  );
+  const rows = await uwFetch<IvTermRow>(apiKey, '/stock/SPX/interpolated-iv');
 
   // Find the 0DTE row (days <= 1)
   const zeroDte = rows.find((r) => r.days <= 1);
