@@ -8,11 +8,7 @@
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import type { FeatureRow } from './build-features-types.js';
-import {
-  CHECKPOINTS,
-  TOLERANCE_MINUTES,
-  num,
-} from './build-features-types.js';
+import { CHECKPOINTS, TOLERANCE_MINUTES, num } from './build-features-types.js';
 import { getETTime, getETDateStr } from '../../src/utils/timezone.js';
 import { ALERT_THRESHOLDS } from './alert-thresholds.js';
 
@@ -186,8 +182,7 @@ export async function engineerMonitorFeatures(
       if (t1Row && t2Row) {
         const r1 = num(t1Row.ratio);
         const r2 = num(t2Row.ratio);
-        features.pcr_trend_t1_t2 =
-          r1 != null && r2 != null ? r2 - r1 : null;
+        features.pcr_trend_t1_t2 = r1 != null && r2 != null ? r2 - r1 : null;
       }
     }
 

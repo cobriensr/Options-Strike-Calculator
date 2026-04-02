@@ -80,11 +80,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]); // flow_ratio_monitor
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.iv_open).toBeUndefined();
       expect(features.iv_max).toBeUndefined();
@@ -105,11 +101,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]); // ratios
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.iv_open).toBeCloseTo(0.229, 4);
     });
@@ -125,11 +117,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.iv_max).toBeCloseTo(0.25, 4);
     });
@@ -138,18 +126,14 @@ describe('engineerMonitorFeatures', () => {
       const ivRows = [
         makeIvRow(570, 0.18),
         makeIvRow(575, 0.25),
-        makeIvRow(580, 0.20),
+        makeIvRow(580, 0.2),
       ];
       const mockSql = vi.fn();
       mockSql.mockResolvedValueOnce(ivRows);
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       // max=0.25, min=0.18 → range=0.07
       expect(features.iv_range).toBeCloseTo(0.07, 4);
@@ -158,7 +142,7 @@ describe('engineerMonitorFeatures', () => {
     it('sets iv_at_t2 to nearest reading within 5 min of 10:30 AM', async () => {
       // T2 = 630 min ET = 10:30 AM
       const ivRows = [
-        makeIvRow(570, 0.20),
+        makeIvRow(570, 0.2),
         makeIvRow(628, 0.195), // 2 min before T2 — closest
         makeIvRow(660, 0.22),
       ];
@@ -167,11 +151,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.iv_at_t2).toBeCloseTo(0.195, 4);
     });
@@ -179,7 +159,7 @@ describe('engineerMonitorFeatures', () => {
     it('sets iv_at_t2 to null when no reading near T2', async () => {
       // All readings far from 630 min (more than 5 min away)
       const ivRows = [
-        makeIvRow(570, 0.20), // 60 min away
+        makeIvRow(570, 0.2), // 60 min away
         makeIvRow(700, 0.22), // 70 min away
       ];
       const mockSql = vi.fn();
@@ -187,11 +167,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.iv_at_t2).toBeNull();
     });
@@ -209,11 +185,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       // endVol - startVol = 0.15 - 0.22 = -0.07 (negative = crush)
       expect(features.iv_crush_rate).toBeCloseTo(-0.07, 4);
@@ -230,11 +202,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       // crushStart is null → feature not set (remains undefined)
       expect(features.iv_crush_rate).toBeUndefined();
@@ -243,11 +211,11 @@ describe('engineerMonitorFeatures', () => {
     it('counts iv spikes where vol jumped >= 0.03 with SPX < 5 pts', async () => {
       // Need >= 6 rows. Spike at index 5: vol[5] - vol[0] >= 0.03
       const ivRows = [
-        makeIvRow(570, 0.20, 6600),
-        makeIvRow(571, 0.20, 6600),
-        makeIvRow(572, 0.20, 6600),
-        makeIvRow(573, 0.20, 6601),
-        makeIvRow(574, 0.20, 6601),
+        makeIvRow(570, 0.2, 6600),
+        makeIvRow(571, 0.2, 6600),
+        makeIvRow(572, 0.2, 6600),
+        makeIvRow(573, 0.2, 6601),
+        makeIvRow(574, 0.2, 6601),
         makeIvRow(575, 0.24, 6602), // +0.04 vol, +2 pts SPX → spike
         makeIvRow(576, 0.25, 6602), // +0.05 from [1], +2 → spike
       ];
@@ -256,11 +224,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.iv_spike_count).toBe(2);
     });
@@ -268,11 +232,11 @@ describe('engineerMonitorFeatures', () => {
     it('excludes vol jump when SPX moved >= 5 pts', async () => {
       // Vol jumps but SPX also moves >= 5 pts → not a spike
       const ivRows = [
-        makeIvRow(570, 0.20, 6600),
-        makeIvRow(571, 0.20, 6600),
-        makeIvRow(572, 0.20, 6600),
-        makeIvRow(573, 0.20, 6600),
-        makeIvRow(574, 0.20, 6600),
+        makeIvRow(570, 0.2, 6600),
+        makeIvRow(571, 0.2, 6600),
+        makeIvRow(572, 0.2, 6600),
+        makeIvRow(573, 0.2, 6600),
+        makeIvRow(574, 0.2, 6600),
         makeIvRow(575, 0.24, 6606), // +0.04 vol, +6 pts SPX → excluded
       ];
       const mockSql = vi.fn();
@@ -280,31 +244,23 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.iv_spike_count).toBe(0);
     });
 
     it('returns iv_spike_count 0 when fewer than 6 rows', async () => {
       const ivRows = [
-        makeIvRow(570, 0.20),
+        makeIvRow(570, 0.2),
         makeIvRow(571, 0.25),
-        makeIvRow(572, 0.30),
+        makeIvRow(572, 0.3),
       ];
       const mockSql = vi.fn();
       mockSql.mockResolvedValueOnce(ivRows);
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.iv_spike_count).toBe(0);
     });
@@ -319,11 +275,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]); // flow_ratio_monitor
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.pcr_open).toBeUndefined();
       expect(features.pcr_max).toBeUndefined();
@@ -336,7 +288,7 @@ describe('engineerMonitorFeatures', () => {
     it('sets pcr_open to the first ratio reading', async () => {
       const ratioRows = [
         makeRatioRow(570, 0.85),
-        makeRatioRow(575, 0.90),
+        makeRatioRow(575, 0.9),
         makeRatioRow(580, 0.88),
       ];
       const mockSql = vi.fn();
@@ -344,11 +296,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce(ratioRows);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.pcr_open).toBeCloseTo(0.85, 4);
     });
@@ -356,8 +304,8 @@ describe('engineerMonitorFeatures', () => {
     it('sets pcr_max and pcr_min correctly', async () => {
       const ratioRows = [
         makeRatioRow(570, 0.85),
-        makeRatioRow(575, 1.20),
-        makeRatioRow(580, 0.60),
+        makeRatioRow(575, 1.2),
+        makeRatioRow(580, 0.6),
         makeRatioRow(585, 0.95),
       ];
       const mockSql = vi.fn();
@@ -365,11 +313,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce(ratioRows);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.pcr_max).toBeCloseTo(1.2, 4);
       expect(features.pcr_min).toBeCloseTo(0.6, 4);
@@ -378,19 +322,15 @@ describe('engineerMonitorFeatures', () => {
     it('sets pcr_range to max - min ratio', async () => {
       const ratioRows = [
         makeRatioRow(570, 0.85),
-        makeRatioRow(575, 1.20),
-        makeRatioRow(580, 0.60),
+        makeRatioRow(575, 1.2),
+        makeRatioRow(580, 0.6),
       ];
       const mockSql = vi.fn();
       mockSql.mockResolvedValueOnce([]);
       mockSql.mockResolvedValueOnce(ratioRows);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       // 1.20 - 0.60 = 0.60
       expect(features.pcr_range).toBeCloseTo(0.6, 4);
@@ -399,21 +339,17 @@ describe('engineerMonitorFeatures', () => {
     it('computes pcr_trend_t1_t2 as ratio_at_T2 - ratio_at_T1', async () => {
       // T1 = 600 min (10:00 AM), T2 = 630 min (10:30 AM)
       const ratioRows = [
-        makeRatioRow(570, 0.80),
-        makeRatioRow(599, 0.90), // near T1
-        makeRatioRow(631, 1.10), // near T2
-        makeRatioRow(660, 1.00),
+        makeRatioRow(570, 0.8),
+        makeRatioRow(599, 0.9), // near T1
+        makeRatioRow(631, 1.1), // near T2
+        makeRatioRow(660, 1.0),
       ];
       const mockSql = vi.fn();
       mockSql.mockResolvedValueOnce([]);
       mockSql.mockResolvedValueOnce(ratioRows);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       // ratio_T2 - ratio_T1 = 1.10 - 0.90 = 0.20
       expect(features.pcr_trend_t1_t2).toBeCloseTo(0.2, 4);
@@ -422,19 +358,15 @@ describe('engineerMonitorFeatures', () => {
     it('does not set pcr_trend_t1_t2 when no readings near T1 or T2', async () => {
       // All readings far from T1=600 and T2=630
       const ratioRows = [
-        makeRatioRow(570, 0.80), // 30 min from T1
-        makeRatioRow(700, 0.90), // 70 min from T2
+        makeRatioRow(570, 0.8), // 30 min from T1
+        makeRatioRow(700, 0.9), // 70 min from T2
       ];
       const mockSql = vi.fn();
       mockSql.mockResolvedValueOnce([]);
       mockSql.mockResolvedValueOnce(ratioRows);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       // findNearest returns null for both → if block not entered
       expect(features.pcr_trend_t1_t2).toBeUndefined();
@@ -443,43 +375,32 @@ describe('engineerMonitorFeatures', () => {
     it('counts pcr spikes where |ratio delta| >= 0.4 from 5-rows-ago', async () => {
       // Need >= 6 rows. Spike when |current - prev[i-5]| >= 0.4
       const ratioRows = [
-        makeRatioRow(570, 0.80),
+        makeRatioRow(570, 0.8),
         makeRatioRow(571, 0.82),
         makeRatioRow(572, 0.81),
         makeRatioRow(573, 0.83),
-        makeRatioRow(574, 0.80),
+        makeRatioRow(574, 0.8),
         makeRatioRow(575, 1.25), // |1.25 - 0.80| = 0.45 >= 0.4 → spike
-        makeRatioRow(576, 1.30), // |1.30 - 0.82| = 0.48 >= 0.4 → spike
+        makeRatioRow(576, 1.3), // |1.30 - 0.82| = 0.48 >= 0.4 → spike
       ];
       const mockSql = vi.fn();
       mockSql.mockResolvedValueOnce([]);
       mockSql.mockResolvedValueOnce(ratioRows);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.pcr_spike_count).toBe(2);
     });
 
     it('returns pcr_spike_count 0 when fewer than 6 rows', async () => {
-      const ratioRows = [
-        makeRatioRow(570, 0.80),
-        makeRatioRow(575, 1.50),
-      ];
+      const ratioRows = [makeRatioRow(570, 0.8), makeRatioRow(575, 1.5)];
       const mockSql = vi.fn();
       mockSql.mockResolvedValueOnce([]);
       mockSql.mockResolvedValueOnce(ratioRows);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features.pcr_spike_count).toBe(0);
     });
@@ -494,11 +415,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce([]);
 
       const features: FeatureRow = { existing_field: 42 };
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       expect(features).toEqual({ existing_field: 42 });
     });
@@ -515,19 +432,19 @@ describe('engineerMonitorFeatures', () => {
         makeIvRow(590, 0.22, 6602),
         makeIvRow(595, 0.26, 6603), // +0.04 vol, +3 SPX → spike
         makeIvRow(630, 0.24, 6605), // T2 reading
-        makeIvRow(870, 0.20, 6610), // crush start
+        makeIvRow(870, 0.2, 6610), // crush start
         makeIvRow(960, 0.14, 6615), // last (close)
       ];
 
       // Build ratio rows: T1=600, T2=630, with spike data
       const ratioRows = [
-        makeRatioRow(570, 0.80), // open
+        makeRatioRow(570, 0.8), // open
         makeRatioRow(575, 0.82),
         makeRatioRow(580, 0.81),
         makeRatioRow(585, 0.83),
-        makeRatioRow(590, 0.80),
-        makeRatioRow(595, 1.30), // |1.30-0.80|=0.50 → spike
-        makeRatioRow(600, 0.90), // near T1
+        makeRatioRow(590, 0.8),
+        makeRatioRow(595, 1.3), // |1.30-0.80|=0.50 → spike
+        makeRatioRow(600, 0.9), // near T1
         makeRatioRow(630, 1.05), // near T2
         makeRatioRow(660, 0.95),
       ];
@@ -537,11 +454,7 @@ describe('engineerMonitorFeatures', () => {
       mockSql.mockResolvedValueOnce(ratioRows);
 
       const features: FeatureRow = {};
-      await engineerMonitorFeatures(
-        mockSql as never,
-        DATE_STR,
-        features,
-      );
+      await engineerMonitorFeatures(mockSql as never, DATE_STR, features);
 
       // IV features
       expect(features.iv_open).toBeCloseTo(0.22, 4);
