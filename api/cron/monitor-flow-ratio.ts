@@ -60,7 +60,12 @@ async function fetchLatestFlowTick(
     },
   );
 
-  return ticks.at(-1) ?? null;
+  // The UW API pre-fills future minute slots with null values.
+  // Find the last tick that actually has data.
+  for (let i = ticks.length - 1; i >= 0; i--) {
+    if (ticks[i]!.net_call_premium != null) return ticks[i]!;
+  }
+  return null;
 }
 
 // ── Store reading ───────────────────────────────────────────
