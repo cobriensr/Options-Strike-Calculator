@@ -1,11 +1,4 @@
-import {
-  describe,
-  it,
-  expect,
-  vi,
-  beforeEach,
-  afterEach,
-} from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useAlertPolling } from '../../hooks/useAlertPolling';
 import type { MarketAlert } from '../../hooks/useAlertPolling';
@@ -292,9 +285,7 @@ describe('useAlertPolling: fetch behavior', () => {
 
     const secondCallUrl = mockFetch.mock.calls.at(-1)?.[0] as string;
     expect(secondCallUrl).toContain('since=');
-    expect(secondCallUrl).toContain(
-      encodeURIComponent('2026-03-24T17:30:00Z'),
-    );
+    expect(secondCallUrl).toContain(encodeURIComponent('2026-03-24T17:30:00Z'));
   });
 });
 
@@ -363,8 +354,8 @@ describe('useAlertPolling: acknowledge', () => {
     });
 
     // Verify POST call
-    const ackCall = mockFetch.mock.calls.find(
-      (c) => String(c[0]).includes('/api/alerts-ack'),
+    const ackCall = mockFetch.mock.calls.find((c) =>
+      String(c[0]).includes('/api/alerts-ack'),
     );
     expect(ackCall).toBeDefined();
 

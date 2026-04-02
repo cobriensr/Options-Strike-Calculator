@@ -105,10 +105,7 @@ describe('GET /api/alerts', () => {
 
     const since = '2026-04-01T15:00:00Z';
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'GET', query: { since } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'GET', query: { since } }), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ alerts: [alertRow] });

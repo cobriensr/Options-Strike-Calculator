@@ -71,20 +71,14 @@ describe('POST /api/alerts-ack', () => {
 
   it('returns 400 when id is a string', async () => {
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: { id: '42' } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: { id: '42' } }), res);
     expect(res._status).toBe(400);
     expect(res._json).toEqual({ error: 'Missing or invalid alert id' });
   });
 
   it('returns 400 when id is null', async () => {
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: { id: null } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: { id: null } }), res);
     expect(res._status).toBe(400);
     expect(res._json).toEqual({ error: 'Missing or invalid alert id' });
   });
@@ -125,10 +119,7 @@ describe('POST /api/alerts-ack', () => {
   it('returns 404 when alert ID does not exist', async () => {
     mockSql.mockResolvedValue([]);
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: { id: 999 } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: { id: 999 } }), res);
     expect(res._status).toBe(404);
     expect(res._json).toEqual({ error: 'Alert not found' });
   });
@@ -136,10 +127,7 @@ describe('POST /api/alerts-ack', () => {
   it('returns 200 with { acknowledged: id } on success', async () => {
     mockSql.mockResolvedValue([{ id: 42 }]);
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: { id: 42 } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: { id: 42 } }), res);
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ acknowledged: 42 });
   });
@@ -147,10 +135,7 @@ describe('POST /api/alerts-ack', () => {
   it('sets Cache-Control: no-store header on success', async () => {
     mockSql.mockResolvedValue([{ id: 7 }]);
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: { id: 7 } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: { id: 7 } }), res);
     expect(res._headers['Cache-Control']).toBe('no-store');
   });
 
@@ -159,10 +144,7 @@ describe('POST /api/alerts-ack', () => {
     mockSql.mockRejectedValue(dbError);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: { id: 1 } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: { id: 1 } }), res);
 
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });
@@ -178,13 +160,8 @@ describe('POST /api/alerts-ack', () => {
     mockSql.mockResolvedValue([{ id: 1 }]);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: { id: 1 } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: { id: 1 } }), res);
 
-    expect(setTransactionName).toHaveBeenCalledWith(
-      'POST /api/alerts-ack',
-    );
+    expect(setTransactionName).toHaveBeenCalledWith('POST /api/alerts-ack');
   });
 });

@@ -43,10 +43,7 @@ vi.mock('../_lib/alert-thresholds.js', () => ({
 
 import handler from '../cron/monitor-flow-ratio.js';
 import { cronGuard, uwFetch } from '../_lib/api-helpers.js';
-import {
-  writeAlertIfNew,
-  checkForCombinedAlert,
-} from '../_lib/alerts.js';
+import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 

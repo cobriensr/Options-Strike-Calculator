@@ -1,11 +1,4 @@
-import {
-  describe,
-  it,
-  expect,
-  vi,
-  beforeEach,
-  afterEach,
-} from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import NotificationPermission from '../../components/NotificationPermission';
@@ -28,12 +21,7 @@ afterEach(() => {
 
 describe('NotificationPermission: rendering conditions', () => {
   it('renders when permission is default', () => {
-    render(
-      <NotificationPermission
-        permission="default"
-        onRequest={vi.fn()}
-      />,
-    );
+    render(<NotificationPermission permission="default" onRequest={vi.fn()} />);
 
     expect(
       screen.getByText(
@@ -44,30 +32,21 @@ describe('NotificationPermission: rendering conditions', () => {
 
   it('does NOT render when permission is granted', () => {
     const { container } = render(
-      <NotificationPermission
-        permission="granted"
-        onRequest={vi.fn()}
-      />,
+      <NotificationPermission permission="granted" onRequest={vi.fn()} />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('does NOT render when permission is denied', () => {
     const { container } = render(
-      <NotificationPermission
-        permission="denied"
-        onRequest={vi.fn()}
-      />,
+      <NotificationPermission permission="denied" onRequest={vi.fn()} />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('does NOT render when permission is unsupported', () => {
     const { container } = render(
-      <NotificationPermission
-        permission="unsupported"
-        onRequest={vi.fn()}
-      />,
+      <NotificationPermission permission="unsupported" onRequest={vi.fn()} />,
     );
     expect(container.innerHTML).toBe('');
   });
@@ -83,10 +62,7 @@ describe('NotificationPermission: Enable button', () => {
     const onRequest = vi.fn().mockResolvedValue(undefined);
 
     render(
-      <NotificationPermission
-        permission="default"
-        onRequest={onRequest}
-      />,
+      <NotificationPermission permission="default" onRequest={onRequest} />,
     );
 
     const enableBtn = screen.getByRole('button', { name: 'Enable' });
@@ -105,10 +81,7 @@ describe('NotificationPermission: dismiss behavior', () => {
     const user = userEvent.setup();
 
     const { container } = render(
-      <NotificationPermission
-        permission="default"
-        onRequest={vi.fn()}
-      />,
+      <NotificationPermission permission="default" onRequest={vi.fn()} />,
     );
 
     // Visible before dismiss
@@ -128,12 +101,7 @@ describe('NotificationPermission: dismiss behavior', () => {
   it('sets localStorage key on dismiss', async () => {
     const user = userEvent.setup();
 
-    render(
-      <NotificationPermission
-        permission="default"
-        onRequest={vi.fn()}
-      />,
-    );
+    render(<NotificationPermission permission="default" onRequest={vi.fn()} />);
 
     const notNowBtn = screen.getByRole('button', { name: 'Not now' });
     await user.click(notNowBtn);
@@ -152,16 +120,10 @@ describe('NotificationPermission: dismiss behavior', () => {
 describe('NotificationPermission: localStorage persistence', () => {
   it('does NOT render when localStorage says recently dismissed', () => {
     // Set a recent dismiss timestamp
-    localStorage.setItem(
-      'notif-prompt-dismissed',
-      String(Date.now()),
-    );
+    localStorage.setItem('notif-prompt-dismissed', String(Date.now()));
 
     const { container } = render(
-      <NotificationPermission
-        permission="default"
-        onRequest={vi.fn()}
-      />,
+      <NotificationPermission permission="default" onRequest={vi.fn()} />,
     );
 
     expect(container.innerHTML).toBe('');
@@ -172,17 +134,9 @@ describe('NotificationPermission: localStorage persistence', () => {
 
     // Set dismiss timestamp to 25 hours ago
     const twentyFiveHoursAgo = Date.now() - 25 * 60 * 60 * 1000;
-    localStorage.setItem(
-      'notif-prompt-dismissed',
-      String(twentyFiveHoursAgo),
-    );
+    localStorage.setItem('notif-prompt-dismissed', String(twentyFiveHoursAgo));
 
-    render(
-      <NotificationPermission
-        permission="default"
-        onRequest={vi.fn()}
-      />,
-    );
+    render(<NotificationPermission permission="default" onRequest={vi.fn()} />);
 
     expect(
       screen.getByText(
@@ -196,16 +150,10 @@ describe('NotificationPermission: localStorage persistence', () => {
 
     // Set dismiss timestamp to 23 hours ago
     const twentyThreeHoursAgo = Date.now() - 23 * 60 * 60 * 1000;
-    localStorage.setItem(
-      'notif-prompt-dismissed',
-      String(twentyThreeHoursAgo),
-    );
+    localStorage.setItem('notif-prompt-dismissed', String(twentyThreeHoursAgo));
 
     const { container } = render(
-      <NotificationPermission
-        permission="default"
-        onRequest={vi.fn()}
-      />,
+      <NotificationPermission permission="default" onRequest={vi.fn()} />,
     );
 
     expect(container.innerHTML).toBe('');
@@ -214,12 +162,7 @@ describe('NotificationPermission: localStorage persistence', () => {
   it('handles corrupt localStorage value gracefully', () => {
     localStorage.setItem('notif-prompt-dismissed', 'not-a-number');
 
-    render(
-      <NotificationPermission
-        permission="default"
-        onRequest={vi.fn()}
-      />,
-    );
+    render(<NotificationPermission permission="default" onRequest={vi.fn()} />);
 
     // NaN arithmetic makes isDismissed() return false, so it renders
     expect(
@@ -236,18 +179,9 @@ describe('NotificationPermission: localStorage persistence', () => {
 
 describe('NotificationPermission: button presence', () => {
   it('renders both Enable and Not now buttons', () => {
-    render(
-      <NotificationPermission
-        permission="default"
-        onRequest={vi.fn()}
-      />,
-    );
+    render(<NotificationPermission permission="default" onRequest={vi.fn()} />);
 
-    expect(
-      screen.getByRole('button', { name: 'Enable' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Not now' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Not now' })).toBeInTheDocument();
   });
 });

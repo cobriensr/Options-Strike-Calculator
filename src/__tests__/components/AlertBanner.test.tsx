@@ -198,9 +198,7 @@ describe('AlertBanner: accessibility', () => {
     const alert = makeAlert();
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
-    expect(
-      screen.getByLabelText('Dismiss alert'),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Dismiss alert')).toBeInTheDocument();
   });
 });
 
@@ -252,9 +250,7 @@ describe('AlertBanner: alert type variants', () => {
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     expect(screen.getByText('Put/Call Ratio Surge')).toBeInTheDocument();
-    expect(
-      screen.getByText('Ratio spiked above 1.5'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Ratio spiked above 1.5')).toBeInTheDocument();
   });
 
   it('renders combined type alert', () => {
@@ -265,9 +261,7 @@ describe('AlertBanner: alert type variants', () => {
     });
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
-    expect(
-      screen.getByText('Combined: IV + Ratio Alert'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Combined: IV + Ratio Alert')).toBeInTheDocument();
     expect(screen.getByText('BULLISH')).toBeInTheDocument();
   });
 });
