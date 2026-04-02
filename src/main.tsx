@@ -47,6 +47,14 @@ Sentry.init({
   tracesSampleRate: 0.2,
   tracePropagationTargets: ['localhost', /^https:\/\/0dte\.vercel\.app\/api/],
   enabled: import.meta.env.PROD,
+  beforeSend(event) {
+    const frames =
+      event.exception?.values?.flatMap(
+        (v) => v.stacktrace?.frames ?? [],
+      ) ?? [];
+    if (frames.some((f) => f.filename?.includes('vercel.live'))) return null;
+    return event;
+  },
 });
 
 const rootEl = document.getElementById('root');
