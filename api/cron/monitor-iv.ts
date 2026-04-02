@@ -62,12 +62,12 @@ async function fetchZeroDteIv(
   const impliedMove = Number.parseFloat(zeroDte.implied_move_perc);
   const percentile = Number.parseFloat(zeroDte.percentile);
 
-  if (isNaN(volatility)) return null;
+  if (Number.isNaN(volatility)) return null;
 
   return {
     volatility,
-    impliedMove: isNaN(impliedMove) ? 0 : impliedMove,
-    percentile: isNaN(percentile) ? 0 : percentile,
+    impliedMove: Number.isNaN(impliedMove) ? 0 : impliedMove,
+    percentile: Number.isNaN(percentile) ? 0 : percentile,
     spxPrice: null, // filled by getLatestSpxPrice
   };
 }
