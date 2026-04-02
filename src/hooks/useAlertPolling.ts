@@ -39,17 +39,17 @@ export interface AlertPollingState {
 
 // ── Audio alert ────────────────────────────────────────────
 
-function playAlertTone(severity: MarketAlert['severity']): void {
+/** Play the alert chime once. */
+function playChimeOnce(severity: MarketAlert['severity']): void {
   try {
     const ctx = new AudioContext();
     const gain = ctx.createGain();
     gain.connect(ctx.destination);
 
-    // Severity → loudness + number of tones
     const volume =
       severity === 'extreme' ? 0.7 : severity === 'critical' ? 0.5 : 0.3;
     const repeats = severity === 'extreme' ? 2 : 1;
-    const notes = [523.25, 659.25, 783.99]; // C5 → E5 → G5 (major triad)
+    const notes = [523.25, 659.25, 783.99]; // C5 → E5 → G5
 
     let offset = 0;
     for (let r = 0; r < repeats; r++) {
@@ -67,13 +67,42 @@ function playAlertTone(severity: MarketAlert['severity']): void {
         osc.stop(ctx.currentTime + offset + 0.15);
         offset += 0.18;
       }
-      offset += 0.1; // gap between repeats
+      offset += 0.1;
     }
 
-    // Close context after tones finish
     setTimeout(() => ctx.close(), (offset + 0.5) * 1000);
   } catch {
-    // Audio not available — silent fallback
+    // Audio not available
+  }
+}
+
+/** Repeat interval per severity (ms between chimes). */
+const CHIME_INTERVAL: Record<MarketAlert['severity'], number> = {
+  warning: 15_000,
+  critical: 10_000,
+  extreme: 5_000,
+};
+
+/** Active chime intervals keyed by alert ID. */
+const activeChimes = new Map<number, ReturnType<typeof setInterval>>();
+
+/** Start a repeating chime for an alert. Stops when stopChime is called. */
+function startChime(alert: MarketAlert): void {
+  if (activeChimes.has(alert.id)) return;
+  playChimeOnce(alert.severity);
+  const interval = setInterval(
+    () => playChimeOnce(alert.severity),
+    CHIME_INTERVAL[alert.severity],
+  );
+  activeChimes.set(alert.id, interval);
+}
+
+/** Stop the repeating chime for an alert. */
+function stopChime(alertId: number): void {
+  const interval = activeChimes.get(alertId);
+  if (interval) {
+    clearInterval(interval);
+    activeChimes.delete(alertId);
   }
 }
 
@@ -145,7 +174,7 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
       // Fire notifications outside state updater (side-effect safe)
       for (const alert of fresh) {
         showBrowserNotification(alert);
-        playAlertTone(alert.severity);
+        startChime(alert);
       }
 
       if (fresh.length > 0) {
@@ -167,8 +196,9 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
     return () => clearInterval(id);
   }, [isOwner, marketOpen, fetchAlerts]);
 
-  // Acknowledge an alert
+  // Acknowledge an alert — stops the repeating chime
   const acknowledge = useCallback(async (id: number) => {
+    stopChime(id);
     try {
       await fetch('/api/alerts-ack', {
         method: 'POST',
