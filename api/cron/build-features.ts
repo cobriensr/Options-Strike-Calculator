@@ -189,6 +189,16 @@ async function buildFeaturesForDate(
     features.is_event_day = s.is_event_day;
   }
 
+  // Fall back to outcomes.day_open if snapshots didn't provide spx_open
+  if (features.spx_open == null) {
+    const fallback = await sql`
+      SELECT day_open FROM outcomes WHERE date = ${dateStr} LIMIT 1
+    `;
+    if (fallback.length > 0 && fallback[0]!.day_open != null) {
+      features.spx_open = num(fallback[0]!.day_open);
+    }
+  }
+
   // Day of week from date string
   const d = new Date(`${dateStr}T12:00:00-05:00`);
   const dow = Number.isNaN(d.getTime()) ? null : d.getDay();
