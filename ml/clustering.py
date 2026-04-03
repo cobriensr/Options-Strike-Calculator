@@ -28,6 +28,7 @@ try:
         silhouette_score,
     )
     from sklearn.mixture import GaussianMixture
+    from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
     from scipy.stats import chi2_contingency
     from statsmodels.stats.proportion import proportion_confint
@@ -155,17 +156,14 @@ def preprocess(df: pd.DataFrame) -> tuple[np.ndarray, list[str], pd.DataFrame]:
     n_cells = len(df_feat) * n_features
     print(f"  Features: {n_features}, Null cells: {n_nulls}/{n_cells} ({n_nulls/n_cells:.1%})")
 
-    # Impute remaining nulls with median
-    imputer = SimpleImputer(strategy="median")
-    X_imputed = imputer.fit_transform(df_feat)
-
-    # Standardize (z-score)
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_imputed)
-
-    # PCA — keep components explaining 85% variance
-    pca = PCA(n_components=0.85, random_state=42)
-    X_pca = pca.fit_transform(X_scaled)
+    # Impute → Standardize → PCA via Pipeline (avoids data leakage)
+    pipeline = Pipeline([
+        ('imputer', SimpleImputer(strategy="median")),
+        ('scaler', StandardScaler()),
+        ('pca', PCA(n_components=0.85, random_state=42)),
+    ])
+    X_pca = pipeline.fit_transform(df_feat)
+    pca = pipeline.named_steps['pca']
 
     n_components = X_pca.shape[1]
     variance_explained = pca.explained_variance_ratio_.sum()
@@ -425,6 +423,33 @@ def permutation_test(X: np.ndarray, k: int, n_permutations: int = 100) -> float:
     return p_value
 
 
+def split_half_validation(X: np.ndarray, k: int, *, random_state: int = 42) -> dict:
+    """Split-half validation: cluster on 50%, evaluate on held-out 50%."""
+    rng = np.random.default_rng(random_state)
+    n = len(X)
+    indices = rng.permutation(n)
+    half = n // 2
+
+    train_idx = indices[:half]
+    test_idx = indices[half:]
+
+    X_train = X[train_idx]
+    X_test = X[test_idx]
+
+    km = KMeans(n_clusters=k, n_init=20, random_state=random_state)
+    train_labels = km.fit_predict(X_train)
+    test_labels = km.predict(X_test)
+
+    train_sil = silhouette_score(X_train, train_labels) if k > 1 else 0.0
+    test_sil = silhouette_score(X_test, test_labels) if k > 1 else 0.0
+
+    return {
+        "train_silhouette": float(train_sil),
+        "holdout_silhouette": float(test_sil),
+        "optimism": float(train_sil - test_sil),
+    }
+
+
 def outcome_association_test(
     df: pd.DataFrame, labels: np.ndarray, _k: int,
 ) -> None:
@@ -630,6 +655,15 @@ def main() -> None:
     if stability < 0.7:
         print("  WARNING: Clusters are fragile. Consider waiting for more data.")
 
+    # Split-half validation
+    print("\nSplit-half validation (cluster on 50%, evaluate on 50%) ...")
+    sh = split_half_validation(X_pca, best_k)
+    print(f"  Train silhouette:   {sh['train_silhouette']:.3f}")
+    print(f"  Holdout silhouette: {sh['holdout_silhouette']:.3f}")
+    print(f"  Optimism gap:       {sh['optimism']:.3f}")
+    if sh["optimism"] > 0.15:
+        print("  WARNING: Large optimism gap — clusters may not generalize well.")
+
     # Permutation test
     print("\nPermutation test (is clustering better than chance?) ...")
     p_value = permutation_test(X_pca, best_k)
@@ -659,6 +693,7 @@ def main() -> None:
     print(f"  Best k: {best_k}")
     print(f"  Silhouette: {results[best_k]['kmeans_sil']:.3f} (K-Means)")
     print(f"  Stability: {stability:.0%}")
+    print(f"  Split-half holdout sil: {sh['holdout_silhouette']:.3f}")
     print(f"  GMM BIC: {results[best_k]['gmm_bic']:.1f}")
     print(f"  Permutation p: {p_value:.3f}")
     print()

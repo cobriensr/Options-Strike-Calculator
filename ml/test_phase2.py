@@ -9,8 +9,10 @@ as the model_factory to avoid XGBoost dependency issues in CI.
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.tree import DecisionTreeClassifier
 
 from phase2_early import (
@@ -18,6 +20,7 @@ from phase2_early import (
     CATEGORICAL_FEATURES,
     STRUCTURE_MAP,
     STRUCTURE_NAMES,
+    aggregate_fold_importances,
     build_model_configs,
     compute_metrics,
     encode_target,
@@ -82,17 +85,42 @@ def encoded_target(sample_df: pd.DataFrame) -> pd.Series:
 @pytest.fixture()
 def prepared_features(
     sample_df: pd.DataFrame,
-) -> tuple[pd.DataFrame, list[str]]:
-    """Feature matrix and feature names from sample_df."""
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """Feature matrix, numeric column names, and categorical column names."""
     return prepare_features(sample_df)
 
 
 def _tree_factory():
-    """Model factory producing a Pipeline with SimpleImputer + DecisionTree."""
+    """Model factory producing a Pipeline with SimpleImputer + DecisionTree.
+
+    Only suitable for numeric-only DataFrames.
+    """
     return make_pipeline(
         SimpleImputer(strategy="median"),
         DecisionTreeClassifier(max_depth=2, random_state=42),
     )
+
+
+def _make_tree_factory(numeric_cols: list[str], categorical_cols: list[str]):
+    """Create a model factory that handles both numeric and categorical columns."""
+    def factory():
+        if categorical_cols:
+            preprocessor = ColumnTransformer(
+                [
+                    ('num', SimpleImputer(strategy='median'), numeric_cols),
+                    ('cat', OneHotEncoder(
+                        handle_unknown='ignore', sparse_output=False,
+                    ), categorical_cols),
+                ],
+                remainder='drop',
+            )
+        else:
+            preprocessor = SimpleImputer(strategy='median')
+        return make_pipeline(
+            preprocessor,
+            DecisionTreeClassifier(max_depth=2, random_state=42),
+        )
+    return factory
 
 
 # ── Constants ───────────────────────────────────────────────────
@@ -143,90 +171,81 @@ class TestConstants:
 class TestPrepareFeatures:
     """Tests for prepare_features(df)."""
 
-    def test_returns_tuple_of_dataframe_and_list(
-        self, prepared_features: tuple[pd.DataFrame, list[str]]
+    def test_returns_tuple_of_dataframe_and_two_lists(
+        self, prepared_features: tuple[pd.DataFrame, list[str], list[str]]
     ):
-        """Return type must be (DataFrame, list[str])."""
-        X, feature_names = prepared_features
+        """Return type must be (DataFrame, list[str], list[str])."""
+        X, numeric_cols, categorical_cols = prepared_features
         assert isinstance(X, pd.DataFrame)
-        assert isinstance(feature_names, list)
+        assert isinstance(numeric_cols, list)
+        assert isinstance(categorical_cols, list)
 
-    def test_feature_names_match_columns(
-        self, prepared_features: tuple[pd.DataFrame, list[str]]
+    def test_column_lists_cover_X_columns(
+        self, prepared_features: tuple[pd.DataFrame, list[str], list[str]]
     ):
-        """feature_names must exactly equal X.columns."""
-        X, feature_names = prepared_features
-        assert feature_names == X.columns.tolist()
+        """numeric_cols + categorical_cols must exactly cover X.columns."""
+        X, numeric_cols, categorical_cols = prepared_features
+        assert set(numeric_cols + categorical_cols) == set(X.columns.tolist())
 
     def test_numeric_columns_present(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         numeric_feature_subset: list[str],
     ):
-        """Available numeric features must appear in the output."""
-        X, _ = prepared_features
+        """Available numeric features must appear in numeric_cols."""
+        X, numeric_cols, _ = prepared_features
         for feat in numeric_feature_subset:
-            assert feat in X.columns, f"Missing numeric feature: {feat}"
+            assert feat in numeric_cols, f"Missing numeric feature: {feat}"
+            assert feat in X.columns, f"Missing numeric feature in X: {feat}"
 
-    def test_one_hot_columns_created_for_categoricals(
-        self, prepared_features: tuple[pd.DataFrame, list[str]]
+    def test_categorical_columns_are_raw_strings(
+        self, prepared_features: tuple[pd.DataFrame, list[str], list[str]]
     ):
-        """One-hot encoded columns must exist for each categorical value."""
-        X, _ = prepared_features
-        # charm_pattern -> prefix "charm" (strips "_pattern")
-        charm_cols = [c for c in X.columns if c.startswith("charm_")]
-        assert len(charm_cols) > 0, "No one-hot columns for charm_pattern"
-
-        # regime_zone -> prefix "regime" (strips "_zone")
-        regime_cols = [c for c in X.columns if c.startswith("regime_")]
-        assert len(regime_cols) > 0, "No one-hot columns for regime_zone"
-
-        # prev_day_direction -> prefix "prev_direction"
-        prev_dir_cols = [c for c in X.columns if c.startswith("prev_direction")]
-        assert (
-            len(prev_dir_cols) > 0
-        ), "No one-hot columns for prev_day_direction"
-
-        # prev_day_range_cat -> prefix "prev_range_cat"
-        prev_range_cols = [
-            c for c in X.columns if c.startswith("prev_range_cat")
-        ]
-        assert (
-            len(prev_range_cols) > 0
-        ), "No one-hot columns for prev_day_range_cat"
+        """Categorical columns must be present in X as string dtype."""
+        X, _, categorical_cols = prepared_features
+        for col in categorical_cols:
+            assert col in X.columns, f"Missing categorical column: {col}"
+            assert not pd.api.types.is_numeric_dtype(X[col]), (
+                f"Column {col} should be string dtype, "
+                f"got {X[col].dtype}"
+            )
 
     def test_output_row_count_matches_input(
         self,
         sample_df: pd.DataFrame,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
     ):
         """Row count must be preserved."""
-        X, _ = prepared_features
+        X, _, _ = prepared_features
         assert len(X) == len(sample_df)
 
     def test_output_has_more_columns_than_numeric_alone(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         numeric_feature_subset: list[str],
     ):
-        """One-hot encoding must add columns beyond the numeric set."""
-        X, _ = prepared_features
+        """Categorical columns add columns beyond the numeric set."""
+        X, _, _ = prepared_features
         assert X.shape[1] > len(numeric_feature_subset)
 
-    def test_all_values_numeric(
-        self, prepared_features: tuple[pd.DataFrame, list[str]]
+    def test_numeric_columns_are_numeric_dtype(
+        self, prepared_features: tuple[pd.DataFrame, list[str], list[str]]
     ):
-        """Every cell in the output must be numeric (int or float)."""
-        X, _ = prepared_features
-        for col in X.columns:
+        """Numeric columns must have numeric dtype; categoricals must be strings."""
+        X, numeric_cols, categorical_cols = prepared_features
+        for col in numeric_cols:
             assert pd.api.types.is_numeric_dtype(
                 X[col]
-            ), f"Column {col} is not numeric"
+            ), f"Numeric column {col} is not numeric"
+        for col in categorical_cols:
+            assert not pd.api.types.is_numeric_dtype(
+                X[col]
+            ), f"Categorical column {col} should not be numeric"
 
     def test_missing_numeric_features_are_silently_skipped(self):
         """
         Columns not present in df are skipped without error.
-        Only present columns appear in X.
+        Only present columns appear in numeric_cols.
         """
         df = pd.DataFrame(
             {
@@ -239,13 +258,13 @@ class TestPrepareFeatures:
             }
         )
         df.index = pd.date_range("2025-01-01", periods=3, freq="B", name="date")
-        X, feature_names = prepare_features(df)
-        assert "vix" in feature_names
+        X, numeric_cols, categorical_cols = prepare_features(df)
+        assert "vix" in numeric_cols
         # A feature not in df must not appear
-        assert "sigma" not in feature_names
+        assert "sigma" not in numeric_cols
 
     def test_no_categorical_columns_in_df(self):
-        """When no categorical columns exist, output contains only numeric cols."""
+        """When no categorical columns exist, categorical_cols is empty."""
         df = pd.DataFrame(
             {
                 "vix": [1.0, 2.0],
@@ -253,8 +272,9 @@ class TestPrepareFeatures:
             }
         )
         df.index = pd.date_range("2025-06-01", periods=2, freq="B", name="date")
-        X, feature_names = prepare_features(df)
-        assert feature_names == ["vix", "vix1d"]
+        X, numeric_cols, categorical_cols = prepare_features(df)
+        assert numeric_cols == ["vix", "vix1d"]
+        assert categorical_cols == []
 
 
 # ── encode_target ───────────────────────────────────────────────
@@ -325,12 +345,13 @@ class TestWalkForward:
 
     def test_returns_dict_with_expected_keys(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """Result dict must have predictions, probabilities, actuals, indices, n_folds."""
-        X, _ = prepared_features
-        result = walk_forward(X, encoded_target, _tree_factory, min_train=20)
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
+        result = walk_forward(X, encoded_target, factory, min_train=20)
         expected_keys = {
             "predictions",
             "probabilities",
@@ -342,45 +363,49 @@ class TestWalkForward:
 
     def test_n_folds_equals_n_minus_min_train(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """n_folds must equal len(X) - min_train."""
-        X, _ = prepared_features
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
         min_train = 20
         result = walk_forward(
-            X, encoded_target, _tree_factory, min_train=min_train
+            X, encoded_target, factory, min_train=min_train
         )
         assert result["n_folds"] == len(X) - min_train
 
     def test_predictions_length(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """predictions array length must equal n_folds."""
-        X, _ = prepared_features
-        result = walk_forward(X, encoded_target, _tree_factory, min_train=20)
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
+        result = walk_forward(X, encoded_target, factory, min_train=20)
         assert len(result["predictions"]) == result["n_folds"]
 
     def test_actuals_length(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """actuals array length must equal n_folds."""
-        X, _ = prepared_features
-        result = walk_forward(X, encoded_target, _tree_factory, min_train=20)
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
+        result = walk_forward(X, encoded_target, factory, min_train=20)
         assert len(result["actuals"]) == result["n_folds"]
 
     def test_probabilities_shape(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """probabilities must be 2D with shape (n_folds, n_classes)."""
-        X, _ = prepared_features
-        result = walk_forward(X, encoded_target, _tree_factory, min_train=20)
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
+        result = walk_forward(X, encoded_target, factory, min_train=20)
         n_classes = encoded_target.nunique()
         assert result["probabilities"].shape == (
             result["n_folds"],
@@ -389,34 +414,37 @@ class TestWalkForward:
 
     def test_indices_length(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """indices list length must equal n_folds."""
-        X, _ = prepared_features
-        result = walk_forward(X, encoded_target, _tree_factory, min_train=20)
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
+        result = walk_forward(X, encoded_target, factory, min_train=20)
         assert len(result["indices"]) == result["n_folds"]
 
     def test_predictions_are_valid_class_labels(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """Every prediction must be a known class label."""
-        X, _ = prepared_features
-        result = walk_forward(X, encoded_target, _tree_factory, min_train=20)
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
+        result = walk_forward(X, encoded_target, factory, min_train=20)
         valid_labels = set(encoded_target.unique())
         for pred in result["predictions"]:
             assert pred in valid_labels, f"Unexpected prediction: {pred}"
 
     def test_probabilities_sum_to_one(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """Each probability row must sum to ~1.0."""
-        X, _ = prepared_features
-        result = walk_forward(X, encoded_target, _tree_factory, min_train=20)
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
+        result = walk_forward(X, encoded_target, factory, min_train=20)
         row_sums = result["probabilities"].sum(axis=1)
         np.testing.assert_allclose(row_sums, 1.0, atol=1e-6)
 
@@ -430,7 +458,7 @@ class TestWalkForward:
 
     def test_expanding_window_train_set_grows(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ):
         """
@@ -439,10 +467,11 @@ class TestWalkForward:
         We confirm this indirectly by checking that indices are
         sequentially increasing and correspond to rows after min_train.
         """
-        X, _ = prepared_features
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
         min_train = 20
         result = walk_forward(
-            X, encoded_target, _tree_factory, min_train=min_train
+            X, encoded_target, factory, min_train=min_train
         )
         expected_indices = X.index[min_train:].tolist()
         assert result["indices"] == expected_indices
@@ -457,12 +486,13 @@ class TestComputeMetrics:
     @pytest.fixture()
     def wf_result(
         self,
-        prepared_features: tuple[pd.DataFrame, list[str]],
+        prepared_features: tuple[pd.DataFrame, list[str], list[str]],
         encoded_target: pd.Series,
     ) -> dict:
         """Walk-forward result for metrics tests."""
-        X, _ = prepared_features
-        return walk_forward(X, encoded_target, _tree_factory, min_train=20)
+        X, numeric_cols, categorical_cols = prepared_features
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
+        return walk_forward(X, encoded_target, factory, min_train=20)
 
     def test_returns_dict(
         self, wf_result: dict, encoded_target: pd.Series
@@ -566,7 +596,7 @@ class TestComputeMetrics:
 
 
 class TestBuildModelConfigs:
-    """Tests for build_model_configs(n_classes, xgb_params)."""
+    """Tests for build_model_configs(n_classes, xgb_params, numeric_cols, categorical_cols)."""
 
     @pytest.fixture()
     def configs(self) -> dict:
@@ -578,7 +608,12 @@ class TestBuildModelConfigs:
             "random_state": 42,
             "verbosity": 0,
         }
-        return build_model_configs(n_classes=3, xgb_params=xgb_params)
+        return build_model_configs(
+            n_classes=3,
+            xgb_params=xgb_params,
+            numeric_cols=["vix", "sigma"],
+            categorical_cols=["charm_pattern"],
+        )
 
     def test_returns_five_models(self, configs: dict):
         """build_model_configs must return exactly 5 model entries."""
@@ -684,7 +719,7 @@ class TestEdgeCases:
             }
         )
         df.index = pd.date_range("2025-01-01", periods=3, freq="B", name="date")
-        X, _ = prepare_features(df)
+        X, _, _ = prepare_features(df)
         assert X["vix"].isna().sum() == 1
         assert X["vix1d"].isna().sum() == 1
 
@@ -693,10 +728,11 @@ class TestEdgeCases:
         Full pipeline: prepare_features -> encode_target -> walk_forward -> compute_metrics.
         Verifies the functions compose correctly end-to-end.
         """
-        X, feature_names = prepare_features(sample_df)
+        X, numeric_cols, categorical_cols = prepare_features(sample_df)
         y = encode_target(sample_df)
+        factory = _make_tree_factory(numeric_cols, categorical_cols)
 
-        result = walk_forward(X, y, _tree_factory, min_train=20)
+        result = walk_forward(X, y, factory, min_train=20)
         metrics = compute_metrics(result, y)
 
         # Sanity: all metric keys present and values reasonable
@@ -824,6 +860,90 @@ class TestTrainFinalModel:
         assert isinstance(importances, pd.Series)
         assert importances.sum() == pytest.approx(1.0, abs=0.01)
         assert set(importances.index) == set(feature_names)
+
+
+# ── aggregate_fold_importances ────────────────────────────────
+
+
+class TestAggregateFoldImportances:
+    """Tests for aggregate_fold_importances(X, y, params, numeric_cols, categorical_cols)."""
+
+    def test_returns_series_with_nonzero_values(self):
+        """Must return a pd.Series with importances that sum to ~1.0."""
+        rng = np.random.default_rng(42)
+        n = 30
+        numeric_cols = ["f1", "f2", "f3"]
+        X = pd.DataFrame(
+            rng.standard_normal((n, len(numeric_cols))),
+            columns=numeric_cols,
+        )
+        y = pd.Series(rng.choice([0, 1, 2], size=n))
+        params = {
+            "objective": "multi:softprob",
+            "max_depth": 2,
+            "n_estimators": 10,
+            "random_state": 42,
+            "verbosity": 0,
+        }
+        result = aggregate_fold_importances(
+            X, y, params, numeric_cols=numeric_cols,
+            categorical_cols=[], min_train=20,
+        )
+        assert isinstance(result, pd.Series)
+        assert len(result) > 0
+        assert result.sum() > 0
+
+    def test_sorted_descending(self):
+        """Returned series must be sorted in descending order."""
+        rng = np.random.default_rng(99)
+        n = 30
+        numeric_cols = ["a", "b", "c", "d"]
+        X = pd.DataFrame(
+            rng.standard_normal((n, len(numeric_cols))),
+            columns=numeric_cols,
+        )
+        y = pd.Series(rng.choice([0, 1], size=n))
+        params = {
+            "objective": "multi:softprob",
+            "max_depth": 2,
+            "n_estimators": 10,
+            "random_state": 42,
+            "verbosity": 0,
+        }
+        result = aggregate_fold_importances(
+            X, y, params, numeric_cols=numeric_cols,
+            categorical_cols=[], min_train=20,
+        )
+        values = result.values
+        for i in range(len(values) - 1):
+            assert values[i] >= values[i + 1]
+
+    def test_with_categorical_columns(self):
+        """Must handle DataFrames with categorical columns."""
+        rng = np.random.default_rng(77)
+        n = 30
+        numeric_cols = ["f1", "f2"]
+        categorical_cols = ["cat1"]
+        data = {
+            "f1": rng.standard_normal(n),
+            "f2": rng.standard_normal(n),
+            "cat1": rng.choice(["a", "b", "c"], size=n),
+        }
+        X = pd.DataFrame(data)
+        y = pd.Series(rng.choice([0, 1, 2], size=n))
+        params = {
+            "objective": "multi:softprob",
+            "max_depth": 2,
+            "n_estimators": 10,
+            "random_state": 42,
+            "verbosity": 0,
+        }
+        result = aggregate_fold_importances(
+            X, y, params, numeric_cols=numeric_cols,
+            categorical_cols=categorical_cols, min_train=20,
+        )
+        assert isinstance(result, pd.Series)
+        assert len(result) > 0
 
 
 # ── print_feature_importance ───────────────────────────────────
@@ -1346,10 +1466,34 @@ def _build_mock_df(n: int = 40) -> pd.DataFrame:
     return df
 
 
-def _mock_train_final_model(X, y, params):
+def _mock_train_final_model(
+    X, y, params, numeric_cols=None, categorical_cols=None
+):
     """Return a fake model and importances without requiring XGBoost."""
+    num_cols = numeric_cols or [
+        c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])
+    ]
+    cat_cols = categorical_cols or [
+        c for c in X.columns if not pd.api.types.is_numeric_dtype(X[c])
+    ]
+    if cat_cols:
+        preprocessor = ColumnTransformer(
+            [
+                ("num", SimpleImputer(strategy="median"), num_cols),
+                (
+                    "cat",
+                    OneHotEncoder(
+                        handle_unknown="ignore", sparse_output=False
+                    ),
+                    cat_cols,
+                ),
+            ],
+            remainder="drop",
+        )
+    else:
+        preprocessor = SimpleImputer(strategy="median")
     model = make_pipeline(
-        SimpleImputer(strategy="median"),
+        preprocessor,
         DecisionTreeClassifier(max_depth=2, random_state=42),
     )
     model.fit(X, y)
@@ -1360,18 +1504,24 @@ def _mock_train_final_model(X, y, params):
     return model, importances
 
 
-def _mock_build_model_configs(n_classes, xgb_params):
+def _mock_build_model_configs(
+    n_classes, xgb_params, numeric_cols, categorical_cols
+):
     """Return only lightweight sklearn models (no XGBoost)."""
+    factory = _make_tree_factory(numeric_cols, categorical_cols)
     return {
-        "DecisionTree": lambda: make_pipeline(
-            SimpleImputer(strategy="median"),
-            DecisionTreeClassifier(max_depth=2, random_state=42),
-        ),
-        "XGBoost": lambda: make_pipeline(
-            SimpleImputer(strategy="median"),
-            DecisionTreeClassifier(max_depth=3, random_state=42),
-        ),
+        "DecisionTree": factory,
+        "XGBoost": factory,
     }
+
+
+def _mock_aggregate_fold_importances(
+    X, y, params, numeric_cols, categorical_cols, min_train=20
+):
+    """Return fake importances without requiring XGBoost."""
+    all_cols = list(X.columns)
+    values = np.ones(len(all_cols)) / len(all_cols)
+    return pd.Series(values, index=all_cols).sort_values(ascending=False)
 
 
 class TestMain:
@@ -1389,6 +1539,11 @@ class TestMain:
         )
         monkeypatch.setattr(
             phase2_early, "build_model_configs", _mock_build_model_configs
+        )
+        monkeypatch.setattr(
+            phase2_early,
+            "aggregate_fold_importances",
+            _mock_aggregate_fold_importances,
         )
         monkeypatch.setattr(
             phase2_early,

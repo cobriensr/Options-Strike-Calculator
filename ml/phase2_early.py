@@ -32,7 +32,8 @@ try:
     from sklearn.tree import DecisionTreeClassifier
     from sklearn.pipeline import make_pipeline
     from sklearn.impute import SimpleImputer
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.preprocessing import StandardScaler, OneHotEncoder
+    from sklearn.compose import ColumnTransformer
 except ImportError:
     print("Missing dependencies. Run:")
     print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn xgboost")
@@ -159,12 +160,13 @@ def load_phase2_data() -> pd.DataFrame:
 
 # ── Feature Preparation ─────────────────────────────────────
 
-def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list[str]]:
     """
     Build the feature matrix from available columns.
 
-    Returns (X_df, feature_names) where X_df has NaN for missing values
-    (XGBoost handles these natively).
+    Returns (X_df, numeric_cols, categorical_cols) where X_df has NaN
+    for missing numeric values (XGBoost handles these natively) and
+    raw categorical strings.
     """
     # Numeric features
     available = [f for f in ALL_NUMERIC_FEATURES if f in df.columns]
@@ -174,18 +176,14 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
     X = df[available].copy().astype(float)
 
-    # One-hot encode categorical columns
+    # Keep categorical columns as raw strings (encoding moves into pipeline)
+    cat_cols_present = []
     for cat_col in CATEGORICAL_FEATURES:
         if cat_col in df.columns:
-            prefix = (cat_col
-                      .replace("_pattern", "")
-                      .replace("_zone", "")
-                      .replace("prev_day_", "prev_"))
-            dummies = pd.get_dummies(df[cat_col], prefix=prefix)
-            X = pd.concat([X, dummies], axis=1)
+            X[cat_col] = df[cat_col].fillna("__missing__").astype(str)
+            cat_cols_present.append(cat_col)
 
-    feature_names = X.columns.tolist()
-    return X, feature_names
+    return X, available, cat_cols_present
 
 
 def encode_target(df: pd.DataFrame) -> pd.Series:
@@ -231,8 +229,10 @@ def walk_forward(
         # Pad probability vector if model hasn't seen all classes
         if len(prob_raw) < n_classes:
             prob = np.zeros(n_classes)
+            # Get classes from the final estimator in the pipeline
+            estimator = model[-1] if hasattr(model, '__getitem__') else model
             model_classes = (
-                model.classes_ if hasattr(model, "classes_")
+                estimator.classes_ if hasattr(estimator, "classes_")
                 else list(range(n_classes))
             )
             for j, cls in enumerate(model_classes):
@@ -308,39 +308,93 @@ def compute_metrics(
 
 # ── Model Configs ────────────────────────────────────────────
 
-def build_model_configs(n_classes: int, xgb_params: dict) -> dict:
+def build_model_configs(
+    n_classes: int,
+    xgb_params: dict,
+    numeric_cols: list[str],
+    categorical_cols: list[str],
+) -> dict:
     """
     Define all models for walk-forward comparison.
 
-    sklearn models are wrapped in Pipelines with median imputation
-    (XGBoost handles NaN natively). Logistic regression also gets
-    StandardScaler since it's sensitive to feature scale.
+    sklearn models use ColumnTransformer to handle numeric (impute + scale)
+    and categorical (one-hot encode) features in a single pipeline.
+    XGBoost handles NaN natively but needs one-hot encoding for categoricals.
     """
+    def _sklearn_preprocessor():
+        """ColumnTransformer for mixed numeric + categorical features."""
+        transformers = [
+            ('num', make_pipeline(
+                SimpleImputer(strategy='median'),
+                StandardScaler(),
+            ), numeric_cols),
+        ]
+        if categorical_cols:
+            transformers.append(
+                ('cat', OneHotEncoder(
+                    handle_unknown='ignore', sparse_output=False,
+                ), categorical_cols),
+            )
+        return ColumnTransformer(transformers, remainder='drop')
+
+    def _impute_only_preprocessor():
+        """ColumnTransformer with imputation only (no scaling)."""
+        transformers = [
+            ('num', SimpleImputer(strategy='median'), numeric_cols),
+        ]
+        if categorical_cols:
+            transformers.append(
+                ('cat', OneHotEncoder(
+                    handle_unknown='ignore', sparse_output=False,
+                ), categorical_cols),
+            )
+        return ColumnTransformer(transformers, remainder='drop')
+
+    def _xgb_preprocessor():
+        """ColumnTransformer for XGBoost (one-hot encode categoricals only)."""
+        transformers = [
+            ('num', 'passthrough', numeric_cols),
+        ]
+        if categorical_cols:
+            transformers.append(
+                ('cat', OneHotEncoder(
+                    handle_unknown='ignore', sparse_output=False,
+                ), categorical_cols),
+            )
+        return ColumnTransformer(transformers, remainder='drop')
+
     return {
         "Logistic Reg (L2)": lambda: make_pipeline(
-            SimpleImputer(strategy="median"),
-            StandardScaler(),
+            _sklearn_preprocessor(),
             LogisticRegression(
                 C=1.0, solver="lbfgs",
                 max_iter=1000, random_state=42,
+                class_weight="balanced",
             ),
         ),
         "Random Forest (15)": lambda: make_pipeline(
-            SimpleImputer(strategy="median"),
+            _impute_only_preprocessor(),
             RandomForestClassifier(
                 n_estimators=15, max_depth=3, random_state=42,
+                class_weight="balanced",
             ),
         ),
         "Naive Bayes": lambda: make_pipeline(
-            SimpleImputer(strategy="median"),
+            _impute_only_preprocessor(),
             GaussianNB(),
         ),
         "Decision Tree (d=2)": lambda: make_pipeline(
-            SimpleImputer(strategy="median"),
-            DecisionTreeClassifier(max_depth=2, random_state=42),
+            _impute_only_preprocessor(),
+            DecisionTreeClassifier(
+                max_depth=2, random_state=42,
+                class_weight="balanced",
+            ),
         ),
-        "XGBoost": lambda: XGBClassifier(
-            num_class=n_classes, **xgb_params,
+        "XGBoost": lambda: make_pipeline(
+            _xgb_preprocessor(),
+            XGBClassifier(
+                num_class=n_classes, **xgb_params,
+            ),
         ),
     }
 
@@ -404,22 +458,101 @@ def train_final_model(
     X: pd.DataFrame,
     y: pd.Series,
     params: dict,
+    numeric_cols: list[str] | None = None,
+    categorical_cols: list[str] | None = None,
 ) -> tuple:
     """Train on all data and return model + feature importances."""
     n_classes = y.nunique()
 
-    model = XGBClassifier(
-        num_class=n_classes,
-        **params,
-    )
-    model.fit(X, y, verbose=False)
+    if numeric_cols is not None:
+        # Build pipeline with preprocessing
+        transformers = [('num', 'passthrough', numeric_cols)]
+        if categorical_cols:
+            transformers.append(
+                ('cat', OneHotEncoder(
+                    handle_unknown='ignore', sparse_output=False,
+                ), categorical_cols),
+            )
+        ct = ColumnTransformer(transformers, remainder='drop')
+        pipe = make_pipeline(
+            ct,
+            XGBClassifier(num_class=n_classes, **params),
+        )
+        pipe.fit(X, y)
 
-    importances = pd.Series(
-        model.feature_importances_,
-        index=X.columns,
-    ).sort_values(ascending=False)
+        try:
+            feat_names = ct.get_feature_names_out()
+        except Exception:
+            feat_names = [
+                f"f{j}" for j in range(len(pipe[-1].feature_importances_))
+            ]
 
-    return model, importances
+        importances = pd.Series(
+            pipe[-1].feature_importances_,
+            index=feat_names,
+        ).sort_values(ascending=False)
+
+        return pipe, importances
+    else:
+        # Legacy: raw numeric-only DataFrame
+        model = XGBClassifier(num_class=n_classes, **params)
+        model.fit(X, y, verbose=False)
+        importances = pd.Series(
+            model.feature_importances_,
+            index=X.columns,
+        ).sort_values(ascending=False)
+        return model, importances
+
+
+def aggregate_fold_importances(
+    X: pd.DataFrame,
+    y: pd.Series,
+    params: dict,
+    numeric_cols: list[str],
+    categorical_cols: list[str],
+    min_train: int = 20,
+) -> pd.Series:
+    """Aggregate XGBoost feature importances across walk-forward folds."""
+    n = len(X)
+    n_classes = y.nunique()
+    all_importances = []
+
+    def _xgb_preprocessor():
+        transformers = [('num', 'passthrough', numeric_cols)]
+        if categorical_cols:
+            transformers.append(
+                ('cat', OneHotEncoder(
+                    handle_unknown='ignore', sparse_output=False,
+                ), categorical_cols),
+            )
+        return ColumnTransformer(transformers, remainder='drop')
+
+    for i in range(min_train, n):
+        X_train = X.iloc[:i]
+        y_train = y.iloc[:i]
+
+        pipe = make_pipeline(
+            _xgb_preprocessor(),
+            XGBClassifier(num_class=n_classes, **params),
+        )
+        pipe.fit(X_train, y_train)
+
+        # Get feature names after one-hot encoding
+        ct = pipe[0]
+        try:
+            feat_names = list(ct.get_feature_names_out())
+        except Exception:
+            feat_names = [
+                f"f{j}"
+                for j in range(len(pipe[-1].feature_importances_))
+            ]
+
+        imp = pd.Series(pipe[-1].feature_importances_, index=feat_names)
+        all_importances.append(imp)
+
+    # Average across all folds
+    combined = pd.DataFrame(all_importances).fillna(0).mean()
+    return combined.sort_values(ascending=False)
 
 
 def print_feature_importance(importances: pd.Series, top_n: int = 15) -> None:
@@ -620,22 +753,25 @@ def main() -> None:
 
     # ── Prepare features ─────────────────────────────────────
     section("FEATURE PREPARATION")
-    X, feature_names = prepare_features(df_labeled)
+    X, numeric_cols, categorical_cols = prepare_features(df_labeled)
+    feature_names = X.columns.tolist()
     y = encode_target(df_labeled)
 
-    # Drop columns that are 100% null (no signal at all)
-    null_pct = X.isnull().mean()
+    # Drop numeric columns that are 100% null (no signal at all)
+    null_pct = X[numeric_cols].isnull().mean()
     fully_null = null_pct[null_pct >= 1.0].index.tolist()
     if fully_null:
         print(f"\n  Dropping {len(fully_null)} fully-null columns: "
               f"{fully_null[:10]}{'...' if len(fully_null) > 10 else ''}")
         X = X.drop(columns=fully_null)
+        numeric_cols = [c for c in numeric_cols if c not in fully_null]
         feature_names = X.columns.tolist()
 
     n_features = len(feature_names)
-    n_nulls = X.isnull().sum().sum()
-    n_cells = len(X) * n_features
-    print(f"\n  Features: {n_features}")
+    n_nulls = X[numeric_cols].isnull().sum().sum()
+    n_cells = len(X) * len(numeric_cols)
+    print(f"\n  Features: {n_features} ({len(numeric_cols)} numeric, "
+          f"{len(categorical_cols)} categorical)")
     print(f"  Null cells: {n_nulls}/{n_cells} "
           f"({n_nulls/n_cells:.1%}) -- XGBoost handles natively")
     print(f"  Samples: {len(X)}")
@@ -661,7 +797,9 @@ def main() -> None:
     min_train = 20
     n_predictions = len(X) - min_train
 
-    models = build_model_configs(n_classes, xgb_params)
+    models = build_model_configs(
+        n_classes, xgb_params, numeric_cols, categorical_cols,
+    )
 
     print(f"\n  Min training window: {min_train} days")
     print(f"  Predictions to make: {n_predictions}")
@@ -686,15 +824,28 @@ def main() -> None:
 
     # ── Feature importance (XGBoost) ─────────────────────────
     section("FEATURE IMPORTANCE (XGBoost)")
-    print("\n  Training final XGBoost on all data ...")
-    model, importances = train_final_model(X, y, xgb_params)
+    print("\n  Aggregating XGBoost importances across walk-forward folds ...")
+    importances = aggregate_fold_importances(
+        X, y, xgb_params, numeric_cols, categorical_cols,
+        min_train=min_train,
+    )
     print_feature_importance(importances, top_n=15)
 
-    # SHAP plot
+    # SHAP plot (requires a single fitted model on all data)
     if args.shap:
         subsection("SHAP Analysis")
+        print("  Training single XGBoost on all data for SHAP ...")
+        shap_pipe, _ = train_final_model(
+            X, y, xgb_params, numeric_cols, categorical_cols,
+        )
         plot_dir = Path(__file__).resolve().parent / "plots"
-        generate_shap_plot(model, X, plot_dir)
+        # Transform X through the preprocessor for SHAP
+        ct = shap_pipe[0]
+        X_transformed = pd.DataFrame(
+            ct.transform(X),
+            columns=list(ct.get_feature_names_out()),
+        )
+        generate_shap_plot(shap_pipe[-1], X_transformed, plot_dir)
 
     # ── Save experiment ──────────────────────────────────────
     section("EXPERIMENT TRACKING")
