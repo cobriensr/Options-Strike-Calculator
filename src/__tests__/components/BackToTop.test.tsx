@@ -19,7 +19,7 @@ beforeEach(() => {
 
   // Mock scrollTo
   scrollToSpy = vi.fn();
-  window.scrollTo = scrollToSpy;
+  window.scrollTo = scrollToSpy as unknown as typeof window.scrollTo;
 
   // Default: top of page, 500px viewport
   Object.defineProperty(window, 'scrollY', {
