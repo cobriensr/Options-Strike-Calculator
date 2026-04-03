@@ -931,3 +931,685 @@ class TestSaveExperiment:
         assert "data" in data
         assert "model_comparison" in data
         assert "best_model" in data
+
+    def test_save_experiment_without_model_comparison(
+        self, tmp_path, monkeypatch
+    ):
+        """When all_model_metrics is None, model_comparison and best_model are absent."""
+        import phase2_early
+
+        monkeypatch.setattr(
+            phase2_early,
+            "__file__",
+            str(tmp_path / "phase2_early.py"),
+        )
+
+        rng = np.random.default_rng(7)
+        n = 10
+        feature_names = ["f1", "f2"]
+        df = pd.DataFrame(
+            rng.standard_normal((n, len(feature_names))),
+            columns=feature_names,
+        )
+        df.index = pd.date_range(
+            "2025-03-01", periods=n, freq="B", name="date"
+        )
+        y = pd.Series(rng.choice([0, 1, 2], size=n))
+        importances = pd.Series([0.6, 0.4], index=feature_names)
+        metrics = {
+            "accuracy": 0.50,
+            "log_loss": 1.0,
+            "per_class_f1": {
+                "CALL CREDIT SPREAD": 0.4,
+                "PUT CREDIT SPREAD": 0.4,
+                "IRON CONDOR": 0.4,
+            },
+            "majority_class": "CALL CREDIT SPREAD",
+            "majority_baseline": 0.45,
+            "prev_day_baseline": 0.30,
+            "walk_forward_folds": 8,
+        }
+        params = {"max_depth": 2, "verbosity": 0}
+
+        save_experiment(
+            metrics,
+            params,
+            importances,
+            df,
+            y,
+            feature_names,
+            all_model_metrics=None,
+        )
+
+        exp_dir = tmp_path / "experiments"
+        json_files = list(exp_dir.glob("*.json"))
+        assert len(json_files) == 1
+
+        import json
+
+        data = json.loads(json_files[0].read_text())
+        assert data["phase"] == "phase2_early"
+        assert data["version"] == "v2"
+        assert "model_comparison" not in data
+        assert "best_model" not in data
+        assert data["data"]["training_days"] == n
+        assert data["data"]["feature_count"] == len(feature_names)
+        assert len(data["data"]["date_range"]) == 2
+        assert "verbosity" not in data["xgboost_params"]
+        assert len(data["feature_importance_top10"]) == 2
+        assert "notes" in data
+        assert data["notes"].startswith("Walk-forward")
+
+    def test_save_experiment_class_distribution_uses_names(
+        self, tmp_path, monkeypatch
+    ):
+        """class_distribution keys must be human-readable structure names."""
+        import phase2_early
+
+        monkeypatch.setattr(
+            phase2_early,
+            "__file__",
+            str(tmp_path / "phase2_early.py"),
+        )
+
+        rng = np.random.default_rng(11)
+        n = 12
+        feature_names = ["f1"]
+        df = pd.DataFrame({"f1": rng.standard_normal(n)})
+        df.index = pd.date_range(
+            "2025-06-01", periods=n, freq="B", name="date"
+        )
+        # 6 zeros (CCS), 4 ones (PCS), 2 twos (IC)
+        y = pd.Series([0] * 6 + [1] * 4 + [2] * 2)
+        importances = pd.Series([1.0], index=feature_names)
+        metrics = {
+            "accuracy": 0.50,
+            "log_loss": 1.0,
+            "per_class_f1": {},
+            "majority_class": "CALL CREDIT SPREAD",
+            "majority_baseline": 0.50,
+            "prev_day_baseline": 0.40,
+            "walk_forward_folds": 5,
+        }
+        params = {"max_depth": 2}
+
+        save_experiment(metrics, params, importances, df, y, feature_names)
+
+        exp_dir = tmp_path / "experiments"
+        json_files = list(exp_dir.glob("*.json"))
+        import json
+
+        data = json.loads(json_files[0].read_text())
+        dist = data["data"]["class_distribution"]
+        assert "CALL CREDIT SPREAD" in dist
+        assert dist["CALL CREDIT SPREAD"] == 6
+        assert dist["PUT CREDIT SPREAD"] == 4
+        assert dist["IRON CONDOR"] == 2
+
+
+# ── walk_forward probability padding ─────────────────────────────
+
+
+class TestWalkForwardProbabilityPadding:
+    """Test walk_forward probability padding when model hasn't seen all classes."""
+
+    def test_probability_padding_when_class_missing_in_early_windows(self):
+        """
+        When class 2 (IC) only appears after row 20, early walk-forward
+        windows won't see it. The probability vector must still be padded
+        to length n_classes=3 and sum to ~1.0.
+        """
+        rng = np.random.default_rng(123)
+        n = 35
+
+        # Build features
+        X = pd.DataFrame({
+            "feat_a": rng.standard_normal(n),
+            "feat_b": rng.standard_normal(n),
+        })
+
+        # Classes 0 and 1 in the first 25 rows, class 2 only from row 25+
+        y_vals = rng.choice([0, 1], size=25).tolist() + [2] * 10
+        y = pd.Series(y_vals)
+
+        # n_classes is 3 (0, 1, 2) but early training windows won't see class 2
+        assert y.nunique() == 3
+
+        result = walk_forward(X, y, _tree_factory, min_train=10)
+
+        # All probability vectors must be length 3
+        assert result["probabilities"].shape[1] == 3
+
+        # Each row must sum to ~1.0 (the padding path fills zeros for unseen classes)
+        row_sums = result["probabilities"].sum(axis=1)
+        np.testing.assert_allclose(row_sums, 1.0, atol=1e-6)
+
+        # n_folds must be n - min_train
+        assert result["n_folds"] == 25
+
+    def test_probability_padding_with_single_class_in_training(self):
+        """
+        When the training window contains only one class, the model produces
+        a 1-element probability. Padding must expand it to n_classes.
+        """
+        rng = np.random.default_rng(77)
+        n = 25
+
+        X = pd.DataFrame({
+            "feat_a": rng.standard_normal(n),
+            "feat_b": rng.standard_normal(n),
+        })
+
+        # First 15 rows: class 0 only. Then classes 1 and 2 appear.
+        y_vals = [0] * 15 + [1] * 5 + [2] * 5
+        y = pd.Series(y_vals)
+
+        result = walk_forward(X, y, _tree_factory, min_train=10)
+
+        # Must have 3 columns even though early windows see only 1 class
+        assert result["probabilities"].shape[1] == 3
+
+        # All rows must sum to ~1.0
+        row_sums = result["probabilities"].sum(axis=1)
+        np.testing.assert_allclose(row_sums, 1.0, atol=1e-6)
+
+
+# ── compute_metrics prev_day baseline and log_loss edge cases ────
+
+
+class TestComputeMetricsPrevDayAndLogLoss:
+    """Tests for edge cases in compute_metrics: prev_day baseline and log_loss ValueError."""
+
+    def test_prev_day_baseline_is_computed_correctly(self):
+        """
+        prev_day_baseline must equal accuracy of predicting yesterday's class.
+        First prediction uses majority class as fallback.
+        """
+        # actuals: [0, 0, 1, 1, 2]
+        # prev_day_preds: [majority=0, 0, 0, 1, 1]  (rolled + first=majority)
+        # matches: [0==0, 0==0, 0==1, 1==1, 1==2] = [T, T, F, T, F] = 3/5 = 0.6
+        actuals = np.array([0, 0, 1, 1, 2])
+        probs = np.array([
+            [0.8, 0.1, 0.1],
+            [0.7, 0.2, 0.1],
+            [0.2, 0.6, 0.2],
+            [0.1, 0.7, 0.2],
+            [0.1, 0.2, 0.7],
+        ])
+        results = {
+            "predictions": actuals.copy(),
+            "probabilities": probs,
+            "actuals": actuals,
+            "indices": list(range(5)),
+            "n_folds": 5,
+        }
+        # y_full majority is 0 (appears 3 times in full series)
+        y_full = pd.Series([0, 0, 0, 1, 1, 2])
+        metrics = compute_metrics(results, y_full)
+
+        assert metrics["prev_day_baseline"] == 0.6
+
+    def test_log_loss_nan_when_value_error_raised(self, monkeypatch):
+        """
+        When log_loss raises ValueError, compute_metrics must return NaN
+        for log_loss instead of crashing.
+        """
+        import phase2_early
+
+        def _raise_value_error(*args, **kwargs):
+            raise ValueError("mocked log_loss failure")
+
+        monkeypatch.setattr(phase2_early, "log_loss", _raise_value_error)
+
+        actuals = np.array([0, 1, 2])
+        probs = np.array([
+            [0.8, 0.1, 0.1],
+            [0.1, 0.8, 0.1],
+            [0.1, 0.1, 0.8],
+        ])
+        results = {
+            "predictions": actuals.copy(),
+            "probabilities": probs,
+            "actuals": actuals,
+            "indices": list(range(3)),
+            "n_folds": 3,
+        }
+        y_full = pd.Series([0, 1, 2])
+        metrics = compute_metrics(results, y_full)
+        assert np.isnan(metrics["log_loss"])
+
+    def test_prev_day_baseline_single_element(self):
+        """
+        With a single prediction, prev_day uses majority class as fallback.
+        """
+        actuals = np.array([1])
+        probs = np.array([[0.2, 0.6, 0.2]])
+        results = {
+            "predictions": np.array([1]),
+            "probabilities": probs,
+            "actuals": actuals,
+            "indices": [0],
+            "n_folds": 1,
+        }
+        # majority of y_full is 1
+        y_full = pd.Series([1, 1, 0])
+        metrics = compute_metrics(results, y_full)
+        # prev_day_preds[0] = majority_class = 1, actuals[0] = 1 => match => 1.0
+        assert metrics["prev_day_baseline"] == 1.0
+
+
+# ── Additional print_model_comparison tests ──────────────────────
+
+
+class TestPrintModelComparisonExtended:
+    """Extended tests for print_model_comparison edge cases."""
+
+    def test_returns_correct_best_when_b_wins(self, capsys):
+        """When ModelB has higher accuracy, it must be returned as best."""
+        all_metrics = _make_all_metrics(acc_a=0.30, acc_b=0.55)
+        best = print_model_comparison(all_metrics)
+        assert best == "ModelB"
+
+    def test_output_contains_model_names(self, capsys):
+        """Both model names must appear in the printed output."""
+        all_metrics = _make_all_metrics()
+        print_model_comparison(all_metrics)
+        captured = capsys.readouterr()
+        assert "ModelA" in captured.out
+        assert "ModelB" in captured.out
+
+    def test_output_contains_best_marker(self, capsys):
+        """The best model row must have the '<-- best' marker."""
+        all_metrics = _make_all_metrics(acc_a=0.70, acc_b=0.40)
+        print_model_comparison(all_metrics)
+        captured = capsys.readouterr()
+        assert "<-- best" in captured.out
+
+    def test_output_contains_f1_abbreviations(self, capsys):
+        """Per-class F1 must show abbreviated class names (CCS, PCS, IC)."""
+        all_metrics = _make_all_metrics()
+        print_model_comparison(all_metrics)
+        captured = capsys.readouterr()
+        assert "CCS=" in captured.out
+        assert "PCS=" in captured.out
+        assert "IC=" in captured.out
+
+    def test_single_model(self, capsys):
+        """print_model_comparison must work with a single model."""
+        metrics = {
+            "Solo": {
+                "accuracy": 0.50,
+                "log_loss": 1.0,
+                "majority_baseline": 0.40,
+                "prev_day_baseline": 0.35,
+                "majority_class": "CALL CREDIT SPREAD",
+                "per_class_f1": {
+                    "CALL CREDIT SPREAD": 0.5,
+                    "PUT CREDIT SPREAD": 0.4,
+                    "IRON CONDOR": 0.6,
+                },
+                "walk_forward_folds": 10,
+            },
+        }
+        best = print_model_comparison(metrics)
+        assert best == "Solo"
+
+    def test_tied_accuracy_returns_first_sorted(self, capsys):
+        """When models tie in accuracy, the first in sorted order is returned."""
+        all_metrics = _make_all_metrics(acc_a=0.55, acc_b=0.55)
+        best = print_model_comparison(all_metrics)
+        # Both have same accuracy; sorted order puts first one as best
+        assert best in ("ModelA", "ModelB")
+
+
+# ── Additional print_feature_importance tests ────────────────────
+
+
+class TestPrintFeatureImportanceExtended:
+    """Extended tests for print_feature_importance."""
+
+    def test_top_n_smaller_than_total(self, capsys):
+        """When top_n=3 and there are 10 features, only 3 appear."""
+        names = [f"feat_{i}" for i in range(10)]
+        values = list(range(10, 0, -1))
+        importances = pd.Series(
+            [v / sum(values) for v in values], index=names
+        )
+
+        print_feature_importance(importances, top_n=3)
+        captured = capsys.readouterr()
+
+        assert "feat_0" in captured.out  # highest
+        assert "feat_1" in captured.out
+        assert "feat_2" in captured.out
+        assert "feat_9" not in captured.out  # lowest, not in top 3
+
+    def test_top_n_larger_than_total(self, capsys):
+        """When top_n > len(importances), all features are printed."""
+        names = ["alpha", "beta"]
+        importances = pd.Series([0.7, 0.3], index=names)
+
+        print_feature_importance(importances, top_n=10)
+        captured = capsys.readouterr()
+
+        assert "alpha" in captured.out
+        assert "beta" in captured.out
+
+    def test_output_contains_hash_bars(self, capsys):
+        """Each feature line must contain '#' chars as a visual bar."""
+        importances = pd.Series(
+            [0.5, 0.3, 0.2], index=["big", "mid", "small"]
+        )
+
+        print_feature_importance(importances, top_n=3)
+        captured = capsys.readouterr()
+
+        assert "#" in captured.out
+
+    def test_output_contains_numbered_ranking(self, capsys):
+        """Features must be numbered starting from 1."""
+        importances = pd.Series([0.6, 0.4], index=["a", "b"])
+
+        print_feature_importance(importances, top_n=2)
+        captured = capsys.readouterr()
+
+        assert " 1." in captured.out
+        assert " 2." in captured.out
+
+
+# ── main() orchestration ─────────────────────────────────────────
+
+from phase2_early import main
+
+
+def _build_mock_df(n: int = 40) -> pd.DataFrame:
+    """
+    Build a DataFrame that satisfies main()'s requirements:
+    - >=10 rows, >=25 with valid labels
+    - vix in (9, 90)
+    - recommended_structure in STRUCTURE_MAP
+    - structure_correct column (non-null for labeled rows)
+    """
+    rng = np.random.default_rng(42)
+    structures = list(STRUCTURE_MAP.keys())
+    data = {
+        "vix": rng.uniform(12, 30, size=n),
+        "vix1d": rng.uniform(10, 25, size=n),
+        "gex_oi_t1": rng.standard_normal(n),
+        "gex_oi_t2": rng.standard_normal(n),
+        "sigma": rng.uniform(5, 15, size=n),
+        "recommended_structure": rng.choice(structures, size=n),
+        "structure_correct": rng.choice([True, False], size=n),
+    }
+    df = pd.DataFrame(data)
+    df.index = pd.date_range("2025-01-01", periods=n, freq="B", name="date")
+    return df
+
+
+def _mock_train_final_model(X, y, params):
+    """Return a fake model and importances without requiring XGBoost."""
+    model = make_pipeline(
+        SimpleImputer(strategy="median"),
+        DecisionTreeClassifier(max_depth=2, random_state=42),
+    )
+    model.fit(X, y)
+    importances = pd.Series(
+        np.ones(len(X.columns)) / len(X.columns),
+        index=X.columns,
+    ).sort_values(ascending=False)
+    return model, importances
+
+
+def _mock_build_model_configs(n_classes, xgb_params):
+    """Return only lightweight sklearn models (no XGBoost)."""
+    return {
+        "DecisionTree": lambda: make_pipeline(
+            SimpleImputer(strategy="median"),
+            DecisionTreeClassifier(max_depth=2, random_state=42),
+        ),
+        "XGBoost": lambda: make_pipeline(
+            SimpleImputer(strategy="median"),
+            DecisionTreeClassifier(max_depth=3, random_state=42),
+        ),
+    }
+
+
+class TestMain:
+    """Tests for main() orchestration — mocked to avoid DB, XGBoost, and file I/O."""
+
+    def _setup_mocks(self, monkeypatch, mock_df, tmp_path):
+        """Common monkeypatch setup for main() tests."""
+        import phase2_early
+
+        monkeypatch.setattr(
+            phase2_early, "load_phase2_data", lambda: mock_df
+        )
+        monkeypatch.setattr(
+            phase2_early, "train_final_model", _mock_train_final_model
+        )
+        monkeypatch.setattr(
+            phase2_early, "build_model_configs", _mock_build_model_configs
+        )
+        monkeypatch.setattr(
+            phase2_early,
+            "__file__",
+            str(tmp_path / "phase2_early.py"),
+        )
+        # Suppress save_experiment file I/O
+        monkeypatch.setattr(
+            phase2_early,
+            "save_experiment",
+            lambda *a, **kw: None,
+        )
+        # No --shap flag
+        monkeypatch.setattr("sys.argv", ["phase2_early.py"])
+
+    def test_main_runs_to_completion(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """main() must run without error when given valid data."""
+        mock_df = _build_mock_df(40)
+        self._setup_mocks(monkeypatch, mock_df, tmp_path)
+
+        main()
+
+        captured = capsys.readouterr()
+        assert "DATA LOADING" in captured.out
+        assert "FEATURE PREPARATION" in captured.out
+        assert "WALK-FORWARD VALIDATION" in captured.out
+        assert "RESULTS" in captured.out
+        assert "VERDICT" in captured.out
+
+    def test_main_early_exit_with_insufficient_labels(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """main() must sys.exit(0) when fewer than 25 labeled days."""
+        # Only 10 labeled rows — below the 25 threshold
+        rng = np.random.default_rng(99)
+        n = 15
+        structures = list(STRUCTURE_MAP.keys())
+        data = {
+            "vix": rng.uniform(12, 30, size=n),
+            "recommended_structure": rng.choice(structures, size=n),
+            "structure_correct": [True] * 10 + [np.nan] * 5,
+        }
+        mock_df = pd.DataFrame(data)
+        mock_df.index = pd.date_range(
+            "2025-01-01", periods=n, freq="B", name="date"
+        )
+
+        import phase2_early
+
+        monkeypatch.setattr(
+            phase2_early, "load_phase2_data", lambda: mock_df
+        )
+        monkeypatch.setattr("sys.argv", ["phase2_early.py"])
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "need at least 25" in captured.out
+
+    def test_main_verdict_not_yet_branch(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """
+        When the best model accuracy <= majority baseline,
+        main() must print the 'NOT YET' verdict.
+        """
+        mock_df = _build_mock_df(40)
+        self._setup_mocks(monkeypatch, mock_df, tmp_path)
+
+        # Force all metrics to have accuracy <= majority_baseline
+        import phase2_early
+
+        original_compute = phase2_early.compute_metrics
+
+        def _force_low_accuracy(results, y_full):
+            m = original_compute(results, y_full)
+            # Set accuracy to be below or equal to majority baseline
+            m["accuracy"] = m["majority_baseline"] - 0.01
+            return m
+
+        monkeypatch.setattr(
+            phase2_early, "compute_metrics", _force_low_accuracy
+        )
+
+        main()
+
+        captured = capsys.readouterr()
+        assert "NOT YET" in captured.out
+
+    def test_main_verdict_marginal_branch(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """
+        When best accuracy > majority but <= majority + 0.05,
+        main() must print the 'MARGINAL' verdict.
+        """
+        mock_df = _build_mock_df(40)
+        self._setup_mocks(monkeypatch, mock_df, tmp_path)
+
+        import phase2_early
+
+        original_compute = phase2_early.compute_metrics
+
+        def _force_marginal_accuracy(results, y_full):
+            m = original_compute(results, y_full)
+            m["accuracy"] = m["majority_baseline"] + 0.03
+            return m
+
+        monkeypatch.setattr(
+            phase2_early, "compute_metrics", _force_marginal_accuracy
+        )
+
+        main()
+
+        captured = capsys.readouterr()
+        assert "MARGINAL" in captured.out
+
+    def test_main_verdict_promising_xgb_leads(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """
+        When best model is XGBoost with accuracy > majority + 0.05,
+        main() must print 'PROMISING' and 'XGBoost leads the pack'.
+        """
+        mock_df = _build_mock_df(40)
+        self._setup_mocks(monkeypatch, mock_df, tmp_path)
+
+        import phase2_early
+
+        original_compute = phase2_early.compute_metrics
+
+        def _force_promising_xgb(results, y_full):
+            m = original_compute(results, y_full)
+            m["accuracy"] = m["majority_baseline"] + 0.10
+            return m
+
+        monkeypatch.setattr(
+            phase2_early, "compute_metrics", _force_promising_xgb
+        )
+
+        # Override print_model_comparison to return "XGBoost"
+        monkeypatch.setattr(
+            phase2_early,
+            "print_model_comparison",
+            lambda metrics: "XGBoost",
+        )
+
+        main()
+
+        captured = capsys.readouterr()
+        assert "PROMISING" in captured.out
+        assert "XGBoost leads the pack" in captured.out
+
+    def test_main_verdict_promising_non_xgb_leads(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """
+        When best model is NOT XGBoost with accuracy > majority + 0.05,
+        main() must print 'PROMISING' and note the simpler model wins.
+        """
+        mock_df = _build_mock_df(40)
+        self._setup_mocks(monkeypatch, mock_df, tmp_path)
+
+        import phase2_early
+
+        original_compute = phase2_early.compute_metrics
+
+        def _force_promising(results, y_full):
+            m = original_compute(results, y_full)
+            m["accuracy"] = m["majority_baseline"] + 0.10
+            return m
+
+        monkeypatch.setattr(
+            phase2_early, "compute_metrics", _force_promising
+        )
+
+        # Override print_model_comparison to return a non-XGBoost model
+        monkeypatch.setattr(
+            phase2_early,
+            "print_model_comparison",
+            lambda metrics: "DecisionTree",
+        )
+
+        main()
+
+        captured = capsys.readouterr()
+        assert "PROMISING" in captured.out
+        assert "outperforms XGBoost" in captured.out
+
+    def test_main_with_fully_null_columns(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """main() must drop fully-null columns and continue."""
+        mock_df = _build_mock_df(40)
+        # Add a fully-null column using a name from ALL_NUMERIC_FEATURES
+        # so prepare_features() actually picks it up
+        mock_df["realized_vol_5d"] = np.nan
+        self._setup_mocks(monkeypatch, mock_df, tmp_path)
+
+        main()
+
+        captured = capsys.readouterr()
+        assert "Dropping" in captured.out
+        assert "fully-null" in captured.out
+
+    def test_main_with_feature_completeness_column(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """When feature_completeness column exists, it filters rows below 0.80."""
+        mock_df = _build_mock_df(50)
+        # Add feature_completeness: first 5 rows below threshold
+        completeness = np.ones(50)
+        completeness[:5] = 0.5
+        mock_df["feature_completeness"] = completeness
+        self._setup_mocks(monkeypatch, mock_df, tmp_path)
+
+        main()
+
+        captured = capsys.readouterr()
+        assert "feature_completeness >= 0.80" in captured.out
