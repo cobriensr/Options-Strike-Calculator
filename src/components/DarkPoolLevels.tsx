@@ -79,10 +79,7 @@ export default memo(function DarkPoolLevels({
 
   const totalLevels = levels.length;
 
-  const badge =
-    totalLevels > 0
-      ? `${filtered.length} of ${totalLevels}`
-      : null;
+  const badge = totalLevels > 0 ? `${filtered.length} of ${totalLevels}` : null;
 
   const headerRight = (
     <div className="flex items-center gap-2">
@@ -128,9 +125,7 @@ export default memo(function DarkPoolLevels({
   if (error) {
     return (
       <SectionBox label="Dark Pool Levels" headerRight={headerRight}>
-        <div className="text-muted text-center font-sans text-xs">
-          {error}
-        </div>
+        <div className="text-muted text-center font-sans text-xs">{error}</div>
       </SectionBox>
     );
   }

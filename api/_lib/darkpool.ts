@@ -309,7 +309,12 @@ export function aggregateDarkPoolLevels(
   const ratio = spyToSpxRatio ?? 10;
   const levels = new Map<
     number,
-    { totalPremium: number; tradeCount: number; totalShares: number; latestTime: string }
+    {
+      totalPremium: number;
+      tradeCount: number;
+      totalShares: number;
+      latestTime: string;
+    }
   >();
 
   for (const trade of trades) {

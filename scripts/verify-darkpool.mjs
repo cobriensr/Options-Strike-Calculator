@@ -187,11 +187,7 @@ async function main() {
       totalShares += t.size;
       if (t.executed_at > latestTime) latestTime = t.executed_at;
 
-      const codes = [
-        t.sale_cond_codes,
-        t.trade_code,
-        t.ext_hour_sold_codes,
-      ]
+      const codes = [t.sale_cond_codes, t.trade_code, t.ext_hour_sold_codes]
         .filter(Boolean)
         .join(', ');
 

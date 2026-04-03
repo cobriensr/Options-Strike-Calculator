@@ -28,10 +28,7 @@ import {
   aggregateDarkPoolLevels,
 } from '../_lib/darkpool.js';
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
@@ -57,10 +54,7 @@ export default async function handler(
     );
 
     if (trades.length === 0) {
-      logger.info(
-        { cursor: cursorTs },
-        'fetch-darkpool: no new trades',
-      );
+      logger.info({ cursor: cursorTs }, 'fetch-darkpool: no new trades');
       return res.status(200).json({
         job: 'fetch-darkpool',
         skipped: true,
@@ -93,7 +87,11 @@ export default async function handler(
     }
 
     logger.info(
-      { levels: levels.length, trades: trades.length, incremental: cursorTs != null },
+      {
+        levels: levels.length,
+        trades: trades.length,
+        incremental: cursorTs != null,
+      },
       'fetch-darkpool: upserted levels',
     );
 

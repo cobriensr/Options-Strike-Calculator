@@ -78,7 +78,9 @@ async function fetchAllTrades(date) {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      console.warn(`  UW API ${res.status} page ${page}: ${text.slice(0, 100)}`);
+      console.warn(
+        `  UW API ${res.status} page ${page}: ${text.slice(0, 100)}`,
+      );
       break;
     }
 
@@ -192,7 +194,9 @@ function fmtPremium(value) {
 async function main() {
   const tradingDays = getTradingDays(days);
 
-  console.log(`Backfilling dark pool levels (SPY → SPX, ratio=${spyToSpxRatio})`);
+  console.log(
+    `Backfilling dark pool levels (SPY → SPX, ratio=${spyToSpxRatio})`,
+  );
   console.log(
     `Days: ${tradingDays.length} (${tradingDays[0]} → ${tradingDays.at(-1)})\n`,
   );

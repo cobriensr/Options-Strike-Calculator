@@ -18,10 +18,7 @@ import { Sentry } from './_lib/sentry.js';
 import { rejectIfNotOwner } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/darkpool-levels');
 

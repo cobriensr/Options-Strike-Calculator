@@ -195,9 +195,7 @@ describe('GET /api/darkpool-levels', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
 
-    expect(setTransactionName).toHaveBeenCalledWith(
-      'GET /api/darkpool-levels',
-    );
+    expect(setTransactionName).toHaveBeenCalledWith('GET /api/darkpool-levels');
   });
 
   it('includes latestTime and updatedAt in response', async () => {

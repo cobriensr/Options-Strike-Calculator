@@ -90,10 +90,7 @@ describe('useDarkPoolLevels: fetching', () => {
   });
 
   it('returns levels from API response', async () => {
-    const levels = [
-      makeLevel(),
-      makeLevel({ spxLevel: 6600 }),
-    ];
+    const levels = [makeLevel(), makeLevel({ spxLevel: 6600 })];
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({ levels, date: '2026-04-02' }),
@@ -312,9 +309,7 @@ describe('useDarkPoolLevels: backtest mode', () => {
       json: async () => ({ levels, date: '2026-03-28' }),
     });
 
-    const { result } = renderHook(() =>
-      useDarkPoolLevels(false, '2026-03-28'),
-    );
+    const { result } = renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
 
     await waitFor(() => expect(result.current.levels).toHaveLength(1));
 

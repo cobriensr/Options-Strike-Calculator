@@ -215,10 +215,7 @@ export async function engineerPhase2Features(
         tradeCount: Number(r.trade_count),
       }));
 
-      const totalPremium = levels.reduce(
-        (s, l) => s + l.totalPremium,
-        0,
-      );
+      const totalPremium = levels.reduce((s, l) => s + l.totalPremium, 0);
 
       features.dp_total_premium = totalPremium;
       features.dp_cluster_count = levels.length;
