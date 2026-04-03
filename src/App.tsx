@@ -530,7 +530,7 @@ export default function StrikeCalculator() {
           <main>
             <div
               id="sec-inputs"
-              className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
+              className="scroll-mt-28 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
             >
               <DateTimeSection
                 chevronUrl={chevronUrl}
@@ -578,7 +578,7 @@ export default function StrikeCalculator() {
 
             <div
               id="sec-settings"
-              className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
+              className="mt-6 scroll-mt-28 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
             >
               <AdvancedSection
                 skewPct={skewPct}
@@ -625,40 +625,39 @@ export default function StrikeCalculator() {
 
             <TradingScheduleSection />
 
-            <div id="sec-risk">
-              <ErrorBoundary label="Risk Calculator">
-                <Suspense fallback={<SkeletonSection lines={5} />}>
-                  <RiskCalculator />
-                </Suspense>
-              </ErrorBoundary>
-            </div>
+            <span id="sec-risk" className="block scroll-mt-28" />
+            <ErrorBoundary label="Risk Calculator">
+              <Suspense fallback={<SkeletonSection lines={5} />}>
+                <RiskCalculator />
+              </Suspense>
+            </ErrorBoundary>
 
-            <div id="sec-regime">
-              <ErrorBoundary label="Market Regime">
-                <MarketRegimeSection
-                  dVix={dVix}
-                  results={results}
-                  errors={errors}
-                  skewPct={skewPct}
-                  selectedDate={vix.selectedDate}
-                  market={market}
-                  onClusterMultChange={setClusterMult}
-                  clusterMult={clusterMult}
-                  historySnapshot={historySnapshot}
-                  historyCandles={historyData.history?.spx.candles}
-                  entryTimeLabel={
-                    historySnapshot
-                      ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
-                      : undefined
-                  }
-                  signals={signals}
-                  chain={chainData.chain}
-                />
-              </ErrorBoundary>
-            </div>
+            <span id="sec-regime" className="block scroll-mt-28" />
+            <ErrorBoundary label="Market Regime">
+              <MarketRegimeSection
+                dVix={dVix}
+                results={results}
+                errors={errors}
+                skewPct={skewPct}
+                selectedDate={vix.selectedDate}
+                market={market}
+                onClusterMultChange={setClusterMult}
+                clusterMult={clusterMult}
+                historySnapshot={historySnapshot}
+                historyCandles={historyData.history?.spx.candles}
+                entryTimeLabel={
+                  historySnapshot
+                    ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
+                    : undefined
+                }
+                signals={signals}
+                chain={chainData.chain}
+              />
+            </ErrorBoundary>
 
             {isOwner && (market.hasData || !!historySnapshot) && (
-              <div id="sec-darkpool">
+              <>
+                <span id="sec-darkpool" className="block scroll-mt-28" />
                 <ErrorBoundary label="Dark Pool Levels">
                   <DarkPoolLevels
                     levels={darkPool.levels}
@@ -667,12 +666,13 @@ export default function StrikeCalculator() {
                     updatedAt={darkPool.updatedAt}
                   />
                 </ErrorBoundary>
-              </div>
+              </>
             )}
 
             {/* Chart Analysis — requires auth session or backtest with results */}
             {(market.hasData || !!historySnapshot) && (
-              <div id="sec-charts">
+              <>
+                <span id="sec-charts" className="block scroll-mt-28" />
                 <ErrorBoundary label="Chart Analysis">
                   <Suspense fallback={<SkeletonSection lines={6} tall />}>
                     <ChartAnalysis
@@ -682,30 +682,29 @@ export default function StrikeCalculator() {
                     />
                   </Suspense>
                 </ErrorBoundary>
-              </div>
+              </>
             )}
 
-            <div id="sec-history">
-              <ErrorBoundary label="Analysis History">
-                <AnalysisHistory refreshKey={historyRefreshKey} />
-              </ErrorBoundary>
-            </div>
+            <span id="sec-history" className="block scroll-mt-28" />
+            <ErrorBoundary label="Analysis History">
+              <AnalysisHistory refreshKey={historyRefreshKey} />
+            </ErrorBoundary>
 
             {/* Paper Dashboard — lazy-loaded */}
-            <div id="sec-positions">
-              <ErrorBoundary label="Paper Dashboard">
-                <Suspense fallback={<SkeletonSection lines={5} tall />}>
-                  <PositionMonitor spotPrice={results?.spot ?? spxVal ?? 0} />
-                </Suspense>
-              </ErrorBoundary>
-            </div>
+            <span id="sec-positions" className="block scroll-mt-28" />
+            <ErrorBoundary label="Paper Dashboard">
+              <Suspense fallback={<SkeletonSection lines={5} tall />}>
+                <PositionMonitor spotPrice={results?.spot ?? spxVal ?? 0} />
+              </Suspense>
+            </ErrorBoundary>
 
             {isOwner && (
-              <div id="sec-bwb">
+              <>
+                <span id="sec-bwb" className="block scroll-mt-28" />
                 <ErrorBoundary label="BWB Calculator">
                   <BWBCalculator selectedDate={vix.selectedDate} />
                 </ErrorBoundary>
-              </div>
+              </>
             )}
 
             <ErrorBoundary label="Results">
