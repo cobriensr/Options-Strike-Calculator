@@ -114,6 +114,17 @@ const NULLABLE_FEATURE_KEYS = new Set([
   'pcr_range',
   'pcr_trend_t1_t2',
   'pcr_spike_count',
+  'oic_net_oi_change',
+  'oic_call_oi_change',
+  'oic_put_oi_change',
+  'oic_oi_change_pcr',
+  'oic_net_premium',
+  'oic_call_premium',
+  'oic_put_premium',
+  'oic_ask_ratio',
+  'oic_multi_leg_pct',
+  'oic_top_strike_dist',
+  'oic_concentration',
 ]);
 
 /** Compute feature completeness as fraction of non-null values. */
@@ -403,7 +414,10 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       opt_vol_pcr, opt_oi_pcr, opt_premium_ratio,
       opt_call_vol_vs_avg30, opt_put_vol_vs_avg30,
       iv_open, iv_max, iv_range, iv_crush_rate, iv_spike_count, iv_at_t2,
-      pcr_open, pcr_max, pcr_min, pcr_range, pcr_trend_t1_t2, pcr_spike_count
+      pcr_open, pcr_max, pcr_min, pcr_range, pcr_trend_t1_t2, pcr_spike_count,
+      oic_net_oi_change, oic_call_oi_change, oic_put_oi_change,
+      oic_oi_change_pcr, oic_net_premium, oic_call_premium, oic_put_premium,
+      oic_ask_ratio, oic_multi_leg_pct, oic_top_strike_dist, oic_concentration
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -456,7 +470,11 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.iv_open}, ${f.iv_max}, ${f.iv_range},
       ${f.iv_crush_rate}, ${f.iv_spike_count}, ${f.iv_at_t2},
       ${f.pcr_open}, ${f.pcr_max}, ${f.pcr_min},
-      ${f.pcr_range}, ${f.pcr_trend_t1_t2}, ${f.pcr_spike_count}
+      ${f.pcr_range}, ${f.pcr_trend_t1_t2}, ${f.pcr_spike_count},
+      ${f.oic_net_oi_change}, ${f.oic_call_oi_change}, ${f.oic_put_oi_change},
+      ${f.oic_oi_change_pcr}, ${f.oic_net_premium}, ${f.oic_call_premium},
+      ${f.oic_put_premium}, ${f.oic_ask_ratio}, ${f.oic_multi_leg_pct},
+      ${f.oic_top_strike_dist}, ${f.oic_concentration}
     )
     ON CONFLICT (date) DO UPDATE SET
       vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
@@ -570,7 +588,18 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       pcr_open = EXCLUDED.pcr_open, pcr_max = EXCLUDED.pcr_max,
       pcr_min = EXCLUDED.pcr_min, pcr_range = EXCLUDED.pcr_range,
       pcr_trend_t1_t2 = EXCLUDED.pcr_trend_t1_t2,
-      pcr_spike_count = EXCLUDED.pcr_spike_count
+      pcr_spike_count = EXCLUDED.pcr_spike_count,
+      oic_net_oi_change = EXCLUDED.oic_net_oi_change,
+      oic_call_oi_change = EXCLUDED.oic_call_oi_change,
+      oic_put_oi_change = EXCLUDED.oic_put_oi_change,
+      oic_oi_change_pcr = EXCLUDED.oic_oi_change_pcr,
+      oic_net_premium = EXCLUDED.oic_net_premium,
+      oic_call_premium = EXCLUDED.oic_call_premium,
+      oic_put_premium = EXCLUDED.oic_put_premium,
+      oic_ask_ratio = EXCLUDED.oic_ask_ratio,
+      oic_multi_leg_pct = EXCLUDED.oic_multi_leg_pct,
+      oic_top_strike_dist = EXCLUDED.oic_top_strike_dist,
+      oic_concentration = EXCLUDED.oic_concentration
   `;
 }
 

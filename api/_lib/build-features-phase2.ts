@@ -343,6 +343,93 @@ export async function engineerPhase2Features(
   } catch (ovErr) {
     logger.warn({ err: ovErr }, 'Options volume feature extraction failed');
   }
+
+  // OI Change features (from oi_changes table — daily OI diffs)
+  try {
+    const oicRows = await sql`
+      SELECT option_symbol, strike, is_call, oi_diff,
+             prev_ask_volume, prev_bid_volume,
+             prev_multi_leg_volume, prev_total_premium
+      FROM oi_changes
+      WHERE date = ${dateStr}
+    `;
+
+    if (oicRows.length > 0) {
+      let callOiChange = 0;
+      let putOiChange = 0;
+      let callPremium = 0;
+      let putPremium = 0;
+      let totalAskVol = 0;
+      let totalBidVol = 0;
+      let totalMultiLeg = 0;
+      const absChanges: { strike: number; absDiff: number }[] = [];
+
+      for (const r of oicRows) {
+        const diff = Number(r.oi_diff) || 0;
+        const premium = Number(r.prev_total_premium) || 0;
+        const askVol = Number(r.prev_ask_volume) || 0;
+        const bidVol = Number(r.prev_bid_volume) || 0;
+        const multiLeg = Number(r.prev_multi_leg_volume) || 0;
+        const strike = Number(r.strike) || 0;
+        const isCall = r.is_call === true;
+
+        if (isCall) {
+          callOiChange += diff;
+          callPremium += premium;
+        } else {
+          putOiChange += diff;
+          putPremium += premium;
+        }
+
+        totalAskVol += askVol;
+        totalBidVol += bidVol;
+        totalMultiLeg += multiLeg;
+        absChanges.push({ strike, absDiff: Math.abs(diff) });
+      }
+
+      features.oic_net_oi_change = callOiChange + putOiChange;
+      features.oic_call_oi_change = callOiChange || null;
+      features.oic_put_oi_change = putOiChange || null;
+      features.oic_oi_change_pcr =
+        callOiChange !== 0
+          ? Math.round((putOiChange / callOiChange) * 10000) / 10000
+          : null;
+      features.oic_net_premium = (callPremium + putPremium) || null;
+      features.oic_call_premium = callPremium || null;
+      features.oic_put_premium = putPremium || null;
+
+      const totalVol = totalAskVol + totalBidVol;
+      features.oic_ask_ratio =
+        totalVol > 0
+          ? Math.round((totalAskVol / totalVol) * 10000) / 10000
+          : null;
+
+      const allVol = totalAskVol + totalBidVol + totalMultiLeg;
+      features.oic_multi_leg_pct =
+        allVol > 0
+          ? Math.round((totalMultiLeg / allVol) * 10000) / 10000
+          : null;
+
+      // Top strike distance from SPX open
+      absChanges.sort((a, b) => b.absDiff - a.absDiff);
+      const spxOpen = features.spx_open as number | undefined;
+      if (absChanges[0] && spxOpen && absChanges[0].strike > 0) {
+        features.oic_top_strike_dist = absChanges[0].strike - spxOpen;
+      }
+
+      // Concentration: top 5 as fraction of total absolute OI change
+      const totalAbsDiff = absChanges.reduce((s, c) => s + c.absDiff, 0);
+      const top5AbsDiff = absChanges
+        .slice(0, 5)
+        .reduce((s, c) => s + c.absDiff, 0);
+      features.oic_concentration =
+        totalAbsDiff > 0
+          ? Math.round((top5AbsDiff / totalAbsDiff) * 10000) / 10000
+          : null;
+    }
+  } catch (oicErr) {
+    logger.warn({ err: oicErr }, 'OI change feature extraction failed');
+  }
 }
 
 // Local num helper (avoids importing full types module just for this)
