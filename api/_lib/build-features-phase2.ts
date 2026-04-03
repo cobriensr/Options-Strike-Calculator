@@ -430,6 +430,57 @@ export async function engineerPhase2Features(
   } catch (oicErr) {
     logger.warn({ err: oicErr }, 'OI change feature extraction failed');
   }
+
+  // Vol surface features (from vol_term_structure + vol_realized)
+  try {
+    // Term structure: compute slope and contango from stored curve
+    const tsRows = await sql`
+      SELECT days, volatility FROM vol_term_structure
+      WHERE date = ${dateStr}
+      ORDER BY days ASC
+    `;
+
+    if (tsRows.length >= 2) {
+      const vols = tsRows.map((r) => ({
+        days: Number(r.days),
+        vol: Number(r.volatility),
+      }));
+
+      // Find 0DTE (days <= 1) and ~30D (closest to 30)
+      const zeroDte = vols.find((v) => v.days <= 1);
+      const thirtyD = vols.reduce((best, v) =>
+        Math.abs(v.days - 30) < Math.abs(best.days - 30) ? v : best,
+      );
+
+      if (zeroDte && thirtyD && thirtyD.days > 1) {
+        const spread = zeroDte.vol - thirtyD.vol;
+        features.iv_ts_spread = Math.round(spread * 10000) / 10000;
+        features.iv_ts_contango = zeroDte.vol < thirtyD.vol;
+        features.iv_ts_slope_0d_30d =
+          thirtyD.vol > 0
+            ? Math.round(((zeroDte.vol - thirtyD.vol) / thirtyD.vol) * 10000) / 10000
+            : null;
+      }
+    }
+
+    // Realized vol + IV rank from vol_realized table
+    const rvRow = await sql`
+      SELECT rv_30d, iv_rv_spread, iv_overpricing_pct, iv_rank
+      FROM vol_realized
+      WHERE date = ${dateStr}
+      LIMIT 1
+    `;
+
+    if (rvRow.length > 0) {
+      const rv = rvRow[0]!;
+      features.uw_rv_30d = num(rv.rv_30d);
+      features.uw_iv_rv_spread = num(rv.iv_rv_spread);
+      features.uw_iv_overpricing_pct = num(rv.iv_overpricing_pct);
+      features.iv_rank = num(rv.iv_rank);
+    }
+  } catch (vsErr) {
+    logger.warn({ err: vsErr }, 'Vol surface feature extraction failed');
+  }
 }
 
 // Local num helper (avoids importing full types module just for this)

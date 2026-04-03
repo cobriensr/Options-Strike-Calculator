@@ -125,6 +125,13 @@ const NULLABLE_FEATURE_KEYS = new Set([
   'oic_multi_leg_pct',
   'oic_top_strike_dist',
   'oic_concentration',
+  'iv_ts_slope_0d_30d',
+  'iv_ts_contango',
+  'iv_ts_spread',
+  'uw_rv_30d',
+  'uw_iv_rv_spread',
+  'uw_iv_overpricing_pct',
+  'iv_rank',
 ]);
 
 /** Compute feature completeness as fraction of non-null values. */
@@ -417,7 +424,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       pcr_open, pcr_max, pcr_min, pcr_range, pcr_trend_t1_t2, pcr_spike_count,
       oic_net_oi_change, oic_call_oi_change, oic_put_oi_change,
       oic_oi_change_pcr, oic_net_premium, oic_call_premium, oic_put_premium,
-      oic_ask_ratio, oic_multi_leg_pct, oic_top_strike_dist, oic_concentration
+      oic_ask_ratio, oic_multi_leg_pct, oic_top_strike_dist, oic_concentration,
+      iv_ts_slope_0d_30d, iv_ts_contango, iv_ts_spread,
+      uw_rv_30d, uw_iv_rv_spread, uw_iv_overpricing_pct, iv_rank
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -474,7 +483,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.oic_net_oi_change}, ${f.oic_call_oi_change}, ${f.oic_put_oi_change},
       ${f.oic_oi_change_pcr}, ${f.oic_net_premium}, ${f.oic_call_premium},
       ${f.oic_put_premium}, ${f.oic_ask_ratio}, ${f.oic_multi_leg_pct},
-      ${f.oic_top_strike_dist}, ${f.oic_concentration}
+      ${f.oic_top_strike_dist}, ${f.oic_concentration},
+      ${f.iv_ts_slope_0d_30d}, ${f.iv_ts_contango}, ${f.iv_ts_spread},
+      ${f.uw_rv_30d}, ${f.uw_iv_rv_spread}, ${f.uw_iv_overpricing_pct}, ${f.iv_rank}
     )
     ON CONFLICT (date) DO UPDATE SET
       vix = EXCLUDED.vix, vix1d = EXCLUDED.vix1d, vix9d = EXCLUDED.vix9d,
@@ -599,7 +610,14 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       oic_ask_ratio = EXCLUDED.oic_ask_ratio,
       oic_multi_leg_pct = EXCLUDED.oic_multi_leg_pct,
       oic_top_strike_dist = EXCLUDED.oic_top_strike_dist,
-      oic_concentration = EXCLUDED.oic_concentration
+      oic_concentration = EXCLUDED.oic_concentration,
+      iv_ts_slope_0d_30d = EXCLUDED.iv_ts_slope_0d_30d,
+      iv_ts_contango = EXCLUDED.iv_ts_contango,
+      iv_ts_spread = EXCLUDED.iv_ts_spread,
+      uw_rv_30d = EXCLUDED.uw_rv_30d,
+      uw_iv_rv_spread = EXCLUDED.uw_iv_rv_spread,
+      uw_iv_overpricing_pct = EXCLUDED.uw_iv_overpricing_pct,
+      iv_rank = EXCLUDED.iv_rank
   `;
 }
 
