@@ -13,6 +13,21 @@ if (import.meta.env.DEV) {
   );
 }
 
+Sentry.init({
+  dsn: import.meta.env.VITE_SENTRY_DSN || undefined,
+  integrations: [Sentry.browserTracingIntegration()],
+  sendDefaultPii: false,
+  tracesSampleRate: 0.2,
+  tracePropagationTargets: ['localhost', /^https:\/\/0dte\.vercel\.app\/api/],
+  enabled: import.meta.env.PROD,
+  beforeSend(event) {
+    const frames =
+      event.exception?.values?.flatMap((v) => v.stacktrace?.frames ?? []) ?? [];
+    if (frames.some((f) => f.filename?.includes('vercel.live'))) return null;
+    return event;
+  },
+});
+
 initBotId({
   protect: [
     { path: '/api/quotes', method: 'GET' },
@@ -39,21 +54,6 @@ initBotId({
     { path: '/api/ml/prediction', method: 'GET' },
     { path: '/api/bwb-anchor', method: 'GET' },
   ],
-});
-
-Sentry.init({
-  dsn: import.meta.env.VITE_SENTRY_DSN || undefined,
-  integrations: [Sentry.browserTracingIntegration()],
-  sendDefaultPii: false,
-  tracesSampleRate: 0.2,
-  tracePropagationTargets: ['localhost', /^https:\/\/0dte\.vercel\.app\/api/],
-  enabled: import.meta.env.PROD,
-  beforeSend(event) {
-    const frames =
-      event.exception?.values?.flatMap((v) => v.stacktrace?.frames ?? []) ?? [];
-    if (frames.some((f) => f.filename?.includes('vercel.live'))) return null;
-    return event;
-  },
 });
 
 const rootEl = document.getElementById('root');
