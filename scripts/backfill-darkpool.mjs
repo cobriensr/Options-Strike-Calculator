@@ -84,6 +84,7 @@ async function fetchDarkPoolBlocks(date) {
   return trades.filter(
     (t) =>
       !t.canceled &&
+      !t.ext_hour_sold_codes &&
       (t.trade_settlement === 'regular' ||
         t.trade_settlement === 'regular_settlement') &&
       t.sale_cond_codes !== 'average_price_trade' &&

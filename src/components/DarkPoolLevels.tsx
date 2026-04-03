@@ -57,7 +57,7 @@ function formatTime(iso: string | null): string {
     return new Date(iso).toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
-      timeZone: 'America/New_York',
+      timeZone: 'America/Chicago',
     });
   } catch {
     return '';
