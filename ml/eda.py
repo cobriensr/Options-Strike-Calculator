@@ -31,6 +31,9 @@ from utils import (
     subsection,
     verdict,
     takeaway,
+    DARK_POOL_FEATURES,
+    OPTIONS_VOLUME_FEATURES,
+    IV_PCR_FEATURES,
 )
 
 
@@ -528,6 +531,176 @@ def flow_analysis(df: pd.DataFrame) -> None:
                      "            the market moves more directionally.")
 
 
+# ── Analysis 7: Dark Pool Signal ────────────────────────────
+
+def dark_pool_analysis(df: pd.DataFrame) -> None:
+    section("7. DARK POOL SIGNAL")
+    print("  Does dark pool activity predict range or settlement direction?\n")
+
+    dp_cols = [c for c in DARK_POOL_FEATURES if c in df.columns]
+    if not dp_cols:
+        print("  No dark pool features available yet")
+        return
+
+    has_dp = df[df["dp_total_premium"].notna()].copy() if "dp_total_premium" in df.columns else df.head(0)
+    if len(has_dp) < 5:
+        print(f"  Only {len(has_dp)} days with dark pool data -- need at least 5")
+        return
+
+    # DP bias vs settlement direction
+    subsection("Dark Pool Bias vs Settlement Direction")
+    if "dp_net_bias" in has_dp.columns and "settlement_direction" in has_dp.columns:
+        has_both = has_dp[["dp_net_bias", "settlement_direction"]].dropna()
+        if len(has_both) >= 5:
+            for bias in sorted(has_both["dp_net_bias"].unique()):
+                subset = has_both[has_both["dp_net_bias"] == bias]
+                up = (subset["settlement_direction"] == "UP").sum()
+                down = (subset["settlement_direction"] == "DOWN").sum()
+                total = len(subset)
+                print(f"  {bias:15s}  n={total:2d}  UP={up}  DOWN={down}")
+
+    # Support/resistance ratio vs range
+    subsection("DP Support/Resistance Ratio vs Range")
+    if "dp_support_resistance_ratio" in has_dp.columns and "day_range_pts" in has_dp.columns:
+        sr = has_dp[["dp_support_resistance_ratio", "day_range_pts"]].dropna()
+        sr = sr.astype(float)
+        if len(sr) >= 5:
+            high_support = sr[sr["dp_support_resistance_ratio"] > 1.0]["day_range_pts"]
+            high_resist = sr[sr["dp_support_resistance_ratio"] <= 1.0]["day_range_pts"]
+            if len(high_support) > 0 and len(high_resist) > 0:
+                print(f"  Support > Resistance (n={len(high_support)}):  {high_support.mean():.0f} pts avg range")
+                print(f"  Resistance >= Support (n={len(high_resist)}):  {high_resist.mean():.0f} pts avg range")
+
+    # DP concentration vs range
+    subsection("DP Concentration vs Range")
+    if "dp_concentration" in has_dp.columns and "day_range_pts" in has_dp.columns:
+        conc = has_dp[["dp_concentration", "day_range_pts"]].dropna().astype(float)
+        if len(conc) >= 5:
+            median_conc = conc["dp_concentration"].median()
+            high_conc = conc[conc["dp_concentration"] > median_conc]["day_range_pts"]
+            low_conc = conc[conc["dp_concentration"] <= median_conc]["day_range_pts"]
+            if len(high_conc) > 0 and len(low_conc) > 0:
+                print(f"  High concentration (n={len(high_conc)}):  {high_conc.mean():.0f} pts avg range")
+                print(f"  Low concentration  (n={len(low_conc)}):  {low_conc.mean():.0f} pts avg range")
+                takeaway("Concentrated dark pool activity may signal institutional conviction "
+                         "about support/resistance levels.")
+
+
+# ── Analysis 8: Options Volume & Premium ────────────────────
+
+def options_volume_analysis(df: pd.DataFrame) -> None:
+    section("8. OPTIONS VOLUME & PREMIUM")
+    print("  Do options flow metrics predict structure or range?\n")
+
+    opt_cols = [c for c in OPTIONS_VOLUME_FEATURES if c in df.columns]
+    if not opt_cols:
+        print("  No options volume features available yet")
+        return
+
+    has_opt = df[df["opt_vol_pcr"].notna()].copy() if "opt_vol_pcr" in df.columns else df.head(0)
+    if len(has_opt) < 5:
+        print(f"  Only {len(has_opt)} days with options volume data -- need at least 5")
+        return
+
+    # PCR vs settlement direction
+    subsection("Put/Call Volume Ratio vs Settlement Direction")
+    if "opt_vol_pcr" in has_opt.columns and "settlement_direction" in has_opt.columns:
+        has_both = has_opt[["opt_vol_pcr", "settlement_direction"]].dropna()
+        has_both["opt_vol_pcr"] = has_both["opt_vol_pcr"].astype(float)
+        if len(has_both) >= 5:
+            high_pcr = has_both[has_both["opt_vol_pcr"] > 1.0]
+            low_pcr = has_both[has_both["opt_vol_pcr"] <= 1.0]
+            if len(high_pcr) > 0:
+                up_pct = (high_pcr["settlement_direction"] == "UP").mean()
+                print(f"  High PCR >1.0 (n={len(high_pcr)}):  {up_pct:.0%} settled UP (contrarian signal?)")
+            if len(low_pcr) > 0:
+                up_pct = (low_pcr["settlement_direction"] == "UP").mean()
+                print(f"  Low PCR <=1.0 (n={len(low_pcr)}):  {up_pct:.0%} settled UP")
+
+    # Bullish vs bearish premium and outcomes
+    subsection("Bullish vs Bearish Premium vs Range")
+    if "opt_bullish_premium" in has_opt.columns and "opt_bearish_premium" in has_opt.columns:
+        prem = has_opt[["opt_bullish_premium", "opt_bearish_premium", "day_range_pts"]].dropna().astype(float)
+        if len(prem) >= 5:
+            prem["bull_bear_ratio"] = prem["opt_bullish_premium"] / prem["opt_bearish_premium"].replace(0, float("nan"))
+            median_ratio = prem["bull_bear_ratio"].median()
+            bull_heavy = prem[prem["bull_bear_ratio"] > median_ratio]["day_range_pts"]
+            bear_heavy = prem[prem["bull_bear_ratio"] <= median_ratio]["day_range_pts"]
+            if len(bull_heavy) > 0 and len(bear_heavy) > 0:
+                print(f"  Bullish-heavy days (n={len(bull_heavy)}):  {bull_heavy.mean():.0f} pts avg range")
+                print(f"  Bearish-heavy days (n={len(bear_heavy)}):  {bear_heavy.mean():.0f} pts avg range")
+
+    # Volume vs 30-day average
+    subsection("Unusual Volume (vs 30-day avg)")
+    if "opt_call_vol_vs_avg30" in has_opt.columns:
+        vol_ratio = has_opt[["opt_call_vol_vs_avg30", "opt_put_vol_vs_avg30", "day_range_pts"]].dropna().astype(float)
+        if len(vol_ratio) >= 5:
+            high_call = vol_ratio[vol_ratio["opt_call_vol_vs_avg30"] > 1.5]["day_range_pts"]
+            normal = vol_ratio[vol_ratio["opt_call_vol_vs_avg30"] <= 1.5]["day_range_pts"]
+            if len(high_call) > 0 and len(normal) > 0:
+                print(f"  High call volume (>1.5x avg, n={len(high_call)}):  {high_call.mean():.0f} pts range")
+                print(f"  Normal call volume (n={len(normal)}):  {normal.mean():.0f} pts range")
+
+
+# ── Analysis 9: IV & PCR Dynamics ───────────────────────────
+
+def iv_pcr_analysis(df: pd.DataFrame) -> None:
+    section("9. IV & PCR DYNAMICS")
+    print("  How do intraday IV and PCR patterns relate to outcomes?\n")
+
+    iv_cols = [c for c in IV_PCR_FEATURES if c in df.columns]
+    if not iv_cols:
+        print("  No IV/PCR features available yet")
+        return
+
+    has_iv = df[df["iv_open"].notna()].copy() if "iv_open" in df.columns else df.head(0)
+    if len(has_iv) < 5:
+        print(f"  Only {len(has_iv)} days with IV monitor data -- need at least 5")
+        return
+
+    # IV crush rate vs structure correctness
+    subsection("IV Crush Rate vs Structure Correctness")
+    if "iv_crush_rate" in has_iv.columns and "structure_correct" in has_iv.columns:
+        has_both = has_iv[["iv_crush_rate", "structure_correct"]].dropna()
+        has_both["iv_crush_rate"] = has_both["iv_crush_rate"].astype(float)
+        if len(has_both) >= 5:
+            correct = has_both[has_both["structure_correct"] == True]["iv_crush_rate"]
+            incorrect = has_both[has_both["structure_correct"] == False]["iv_crush_rate"]
+            if len(correct) > 0:
+                print(f"  Correct days (n={len(correct)}):  IV crush rate {correct.mean():.2f} avg")
+            if len(incorrect) > 0:
+                print(f"  Incorrect days (n={len(incorrect)}):  IV crush rate {incorrect.mean():.2f} avg")
+
+    # IV spike count vs range
+    subsection("IV Spike Count vs Range")
+    if "iv_spike_count" in has_iv.columns and "day_range_pts" in has_iv.columns:
+        spikes = has_iv[["iv_spike_count", "day_range_pts"]].dropna().astype(float)
+        if len(spikes) >= 5:
+            has_spikes = spikes[spikes["iv_spike_count"] > 0]["day_range_pts"]
+            no_spikes = spikes[spikes["iv_spike_count"] == 0]["day_range_pts"]
+            if len(has_spikes) > 0 and len(no_spikes) > 0:
+                print(f"  Days with IV spikes (n={len(has_spikes)}):  {has_spikes.mean():.0f} pts avg range")
+                print(f"  Days without spikes (n={len(no_spikes)}):  {no_spikes.mean():.0f} pts avg range")
+                if has_spikes.mean() > no_spikes.mean() * 1.2:
+                    takeaway("IV spikes are associated with wider ranges. "
+                             "Consider widening strikes when IV spikes early.")
+
+    # PCR trend
+    subsection("PCR Trend (T1 to T2) vs Settlement")
+    if "pcr_trend_t1_t2" in has_iv.columns and "settlement_direction" in has_iv.columns:
+        pcr = has_iv[["pcr_trend_t1_t2", "settlement_direction"]].dropna()
+        pcr["pcr_trend_t1_t2"] = pcr["pcr_trend_t1_t2"].astype(float)
+        if len(pcr) >= 5:
+            rising = pcr[pcr["pcr_trend_t1_t2"] > 0]
+            falling = pcr[pcr["pcr_trend_t1_t2"] <= 0]
+            if len(rising) > 0:
+                up_pct = (rising["settlement_direction"] == "UP").mean()
+                print(f"  Rising PCR (n={len(rising)}):  {up_pct:.0%} settled UP")
+            if len(falling) > 0:
+                up_pct = (falling["settlement_direction"] == "UP").mean()
+                print(f"  Falling PCR (n={len(falling)}):  {up_pct:.0%} settled UP")
+
+
 # ── Key Findings Summary ─────────────────────────────────────
 
 def key_findings(df: pd.DataFrame) -> None:
@@ -666,6 +839,9 @@ def main() -> None:
     feature_importance(df)
     charm_analysis(df)
     flow_analysis(df)
+    dark_pool_analysis(df)
+    options_volume_analysis(df)
+    iv_pcr_analysis(df)
     key_findings(df)
 
 

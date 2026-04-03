@@ -115,7 +115,13 @@ def plot_correlation_heatmap(df: pd.DataFrame) -> None:
         "agg_net_gamma", "charm_slope", "dte0_charm_pct",
         "flow_agreement_t1", "mt_ncp_t1",
         "spx_ncp_t1", "spy_ncp_t1", "qqq_ncp_t1",
-        "spy_etf_ncp_t1", "day_range_pts",
+        "spy_etf_ncp_t1",
+        "dp_total_premium", "dp_support_resistance_ratio",
+        "dp_concentration",
+        "opt_vol_pcr", "opt_premium_ratio",
+        "iv_open", "iv_crush_rate",
+        "max_pain_dist",
+        "day_range_pts",
     ]
     available = [f for f in features if f in df.columns]
     subset = df[available].dropna(axis=0, how="all").astype(float)
@@ -138,19 +144,28 @@ def plot_correlation_heatmap(df: pd.DataFrame) -> None:
         "spy_ncp_t1": "SPY Flow",
         "qqq_ncp_t1": "QQQ Flow",
         "spy_etf_ncp_t1": "SPY ETF",
+        "dp_total_premium": "DP Premium",
+        "dp_support_resistance_ratio": "DP S/R Ratio",
+        "dp_concentration": "DP Conc.",
+        "opt_vol_pcr": "Opt PCR",
+        "opt_premium_ratio": "Prem Ratio",
+        "iv_open": "IV Open",
+        "iv_crush_rate": "IV Crush",
+        "max_pain_dist": "Max Pain Dist",
         "day_range_pts": "Day Range",
     }
 
     corr = subset.corr()
     corr = corr.rename(index=labels, columns=labels)
 
-    fig, ax = plt.subplots(figsize=(12, 10))
+    fig, ax = plt.subplots(figsize=(14, 12))
     mask = np.triu(np.ones_like(corr, dtype=bool))
     sns.heatmap(corr, mask=mask, annot=True, fmt=".2f", cmap="RdBu_r",
                 center=0, vmin=-1, vmax=1, square=True, ax=ax,
-                linewidths=0.5, annot_kws={"size": 9},
+                linewidths=0.5, annot_kws={"size": 8},
                 cbar_kws={"shrink": 0.8})
-    ax.set_title("Feature Correlations", fontsize=14, pad=15)
+    ax.set_title("Feature Correlations (incl. Dark Pool, Options, IV)",
+                 fontsize=14, pad=15)
     save(fig, "correlations.png")
 
 
@@ -638,6 +653,9 @@ def plot_stationarity(df: pd.DataFrame) -> None:
         "gex_oi_t1": ("GEX OI (B)", COLORS["green"]),
         "day_range_pts": ("Day Range (pts)", COLORS["blue"]),
         "flow_agreement_t1": ("Flow Agreement", COLORS["orange"]),
+        "dp_total_premium": ("DP Premium", COLORS["purple"]),
+        "opt_vol_pcr": ("Options PCR", COLORS["cyan"]),
+        "iv_open": ("IV Open", COLORS["pink"]),
     }
 
     available = {k: v for k, v in features.items() if k in df.columns}
@@ -657,6 +675,8 @@ def plot_stationarity(df: pd.DataFrame) -> None:
         vals = df[col].dropna().astype(float)
         if col == "gex_oi_t1":
             vals = vals / 1e9
+        elif col == "dp_total_premium":
+            vals = vals / 1e6
 
         # Raw values
         ax.plot(range(len(vals)), vals.values, color=color, alpha=0.4,

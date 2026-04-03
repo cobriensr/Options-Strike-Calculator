@@ -42,6 +42,10 @@ from utils import (
     VOLATILITY_FEATURES,
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
+    DARK_POOL_FEATURES,
+    OPTIONS_VOLUME_FEATURES,
+    IV_PCR_FEATURES,
+    MAX_PAIN_FEATURES,
 )
 
 
@@ -55,7 +59,7 @@ REGIME_FEATURES = [
 ]
 
 # Categorical features that need one-hot encoding
-CATEGORICAL_FEATURES = ["regime_zone"]
+CATEGORICAL_FEATURES = ["regime_zone", "dp_net_bias"]
 
 CALENDAR_FEATURES = [
     "day_of_week", "is_friday",
@@ -91,7 +95,9 @@ CHARM_PATTERN_COL = "charm_pattern"
 ALL_NUMERIC_FEATURES = (
     VOLATILITY_FEATURES + REGIME_FEATURES + CALENDAR_FEATURES +
     CALCULATOR_FEATURES + FLOW_FEATURES_T1T2 + FLOW_AGGREGATE_T1T2 +
-    GEX_FEATURES_T1T2 + GREEK_FEATURES
+    GEX_FEATURES_T1T2 + GREEK_FEATURES +
+    DARK_POOL_FEATURES + OPTIONS_VOLUME_FEATURES +
+    IV_PCR_FEATURES + MAX_PAIN_FEATURES
 )
 
 
@@ -292,6 +298,35 @@ def characterize_clusters(
             fa = cluster["flow_agreement_t1"].dropna().astype(float)
             if len(fa) > 0:
                 print(f"  Flow Agreement (T1): {fa.mean():.1f} avg")
+
+        # Dark pool profile
+        if "dp_total_premium" in cluster.columns:
+            dp = cluster["dp_total_premium"].dropna().astype(float)
+            if len(dp) > 0:
+                dp_m = dp / 1e6
+                print(f"  Dark Pool Premium: ${dp_m.mean():.1f}M avg")
+        if "dp_support_resistance_ratio" in cluster.columns:
+            sr = cluster["dp_support_resistance_ratio"].dropna().astype(float)
+            if len(sr) > 0:
+                print(f"  DP Support/Resistance: {sr.mean():.2f} avg")
+        if "dp_net_bias" in cluster.columns:
+            bias = cluster["dp_net_bias"].dropna()
+            if len(bias) > 0:
+                dist = bias.value_counts()
+                parts = [f"{v}={c}" for v, c in dist.items()]
+                print(f"  DP Bias: {', '.join(parts)}")
+
+        # Options volume profile
+        if "opt_vol_pcr" in cluster.columns:
+            pcr = cluster["opt_vol_pcr"].dropna().astype(float)
+            if len(pcr) > 0:
+                print(f"  Options PCR: {pcr.mean():.2f} avg")
+
+        # IV profile
+        if "iv_open" in cluster.columns:
+            iv = cluster["iv_open"].dropna().astype(float)
+            if len(iv) > 0:
+                print(f"  IV Open: {iv.mean():.1f} avg")
 
         # Charm pattern distribution
         if "charm_pattern" in cluster.columns:
@@ -527,6 +562,7 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
     summary_features = [
         "vix", "vix1d_vix_ratio", "gex_oi_t1", "flow_agreement_t1",
         "charm_slope", "agg_net_gamma",
+        "dp_support_resistance_ratio", "opt_vol_pcr", "iv_open",
     ]
     available = [f for f in summary_features if f in df_c.columns]
 

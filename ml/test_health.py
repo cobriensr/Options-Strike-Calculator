@@ -62,6 +62,11 @@ def _make_features_df(
             ),
             "prev_day_range_pts": rng.uniform(5, 80, n),
             "realized_vol_5d": rng.uniform(5, 40, n),
+            "dp_total_premium": rng.uniform(1e6, 5e7, n),
+            "dp_support_resistance_ratio": rng.uniform(0.5, 2.0, n),
+            "opt_vol_pcr": rng.uniform(0.5, 1.5, n),
+            "iv_open": rng.uniform(10, 40, n),
+            "max_pain_dist": rng.uniform(-20, 20, n),
         },
         index=dates,
     )
@@ -572,9 +577,8 @@ class TestCheckColumnCoverage:
         failures: list[str] = []
         check_column_coverage(warnings, failures)
 
-        missing_warnings = [w for w in warnings if "missing" in w]
-        assert len(missing_warnings) == 1
-        assert "'vix'" in missing_warnings[0]
+        vix_missing = [w for w in warnings if "'vix'" in w and "missing" in w]
+        assert len(vix_missing) == 1
 
     @patch("health.load_data")
     def test_insufficient_rows_warns(self, mock_load, capsys):

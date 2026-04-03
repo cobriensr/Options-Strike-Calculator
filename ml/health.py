@@ -33,6 +33,11 @@ KEY_FEATURE_COLUMNS = [
     "charm_pattern",
     "prev_day_range_pts",
     "realized_vol_5d",
+    "dp_total_premium",
+    "dp_support_resistance_ratio",
+    "opt_vol_pcr",
+    "iv_open",
+    "max_pain_dist",
 ]
 
 
@@ -268,7 +273,10 @@ def check_column_coverage(warnings: list[str], _failures: list[str]) -> None:
 def check_stationarity(warnings: list[str], _failures: list[str]) -> None:
     section("5. STATIONARITY ALERTS (regime change detection)")
 
-    monitor_cols = ["vix", "gex_oi_t1", "flow_agreement_t1"]
+    monitor_cols = [
+        "vix", "gex_oi_t1", "flow_agreement_t1",
+        "dp_total_premium", "opt_vol_pcr", "iv_open",
+    ]
 
     cols_sql = ", ".join(monitor_cols)
     df_all = load_data(f"""

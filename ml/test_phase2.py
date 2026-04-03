@@ -122,12 +122,13 @@ class TestConstants:
         assert all(isinstance(f, str) for f in ALL_NUMERIC_FEATURES)
 
     def test_categorical_features_has_expected_entries(self):
-        """CATEGORICAL_FEATURES must include the four known categoricals."""
+        """CATEGORICAL_FEATURES must include the five known categoricals."""
         expected = {
             "charm_pattern",
             "regime_zone",
             "prev_day_direction",
             "prev_day_range_cat",
+            "dp_net_bias",
         }
         assert set(CATEGORICAL_FEATURES) == expected
 

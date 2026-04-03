@@ -32,6 +32,34 @@ GREEK_FEATURES_CORE: list[str] = [
     "charm_slope",
 ]
 
+DARK_POOL_FEATURES: list[str] = [
+    "dp_total_premium", "dp_buyer_initiated", "dp_seller_initiated",
+    "dp_cluster_count", "dp_top_cluster_dist",
+    "dp_support_premium", "dp_resistance_premium",
+    "dp_support_resistance_ratio", "dp_concentration",
+]
+
+OPTIONS_VOLUME_FEATURES: list[str] = [
+    "opt_call_volume", "opt_put_volume",
+    "opt_call_oi", "opt_put_oi",
+    "opt_call_premium", "opt_put_premium",
+    "opt_bullish_premium", "opt_bearish_premium",
+    "opt_call_vol_ask", "opt_put_vol_bid",
+    "opt_vol_pcr", "opt_oi_pcr", "opt_premium_ratio",
+    "opt_call_vol_vs_avg30", "opt_put_vol_vs_avg30",
+]
+
+IV_PCR_FEATURES: list[str] = [
+    "iv_open", "iv_max", "iv_range", "iv_crush_rate",
+    "iv_spike_count", "iv_at_t2",
+    "pcr_open", "pcr_max", "pcr_min", "pcr_range",
+    "pcr_trend_t1_t2", "pcr_spike_count",
+]
+
+MAX_PAIN_FEATURES: list[str] = [
+    "max_pain_0dte", "max_pain_dist",
+]
+
 
 # ── Environment & DB ────────────────────────────────────────
 
