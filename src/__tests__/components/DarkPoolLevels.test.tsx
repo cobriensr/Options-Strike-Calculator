@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import DarkPoolLevels from '../../components/DarkPoolLevels';
 import type { DarkPoolLevel } from '../../hooks/useDarkPoolLevels';
 
@@ -102,7 +103,7 @@ describe('DarkPoolLevels: empty state', () => {
     expect(screen.getByText(/no dark pool levels yet/i)).toBeInTheDocument();
   });
 
-  it('shows badge with count even when none above threshold', () => {
+  it('shows badge with zero count when none above threshold', () => {
     const levels = [
       makeLevel({ totalPremium: 1_000_000 }),
       makeLevel({ spxLevel: 6550, totalPremium: 2_000_000 }),
@@ -115,7 +116,8 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText('0 of 2')).toBeInTheDocument();
+    // Both below $5M floor, so 0 of 0 above floor → badge shows "0 of 0"
+    expect(screen.getByText('0 of 0')).toBeInTheDocument();
   });
 });
 
@@ -168,7 +170,7 @@ describe('DarkPoolLevels: rendering levels', () => {
     expect(screen.queryByText('6540')).not.toBeInTheDocument();
   });
 
-  it('shows badge with count', () => {
+  it('shows badge with count of above-floor levels', () => {
     const levels = [
       makeLevel({ spxLevel: 6575, totalPremium: 500_000_000 }),
       makeLevel({ spxLevel: 6540, totalPremium: 1_000_000 }),
@@ -182,7 +184,8 @@ describe('DarkPoolLevels: rendering levels', () => {
       />,
     );
 
-    expect(screen.getByText('1 of 2')).toBeInTheDocument();
+    // 1 above floor, 1 below → badge "1 of 1" (only counts above-floor)
+    expect(screen.getByText('1 of 1')).toBeInTheDocument();
   });
 });
 
@@ -441,5 +444,70 @@ describe('DarkPoolLevels: time display', () => {
     );
     // 19:30 UTC = 2:30 PM CT
     expect(screen.getByText(/2:30/)).toBeInTheDocument();
+  });
+
+  it('shows "Updated" with time when updatedAt is provided', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt="2026-04-02T19:35:00Z"
+      />,
+    );
+    expect(screen.getByText(/Updated/)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// VISIBLE COUNT CONTROL
+// ============================================================
+
+describe('DarkPoolLevels: visible count control', () => {
+  it('renders +/- buttons', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /show fewer/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /show more/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows current visible count', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+      />,
+    );
+    // Default is 15
+    expect(screen.getByText('15')).toBeInTheDocument();
+  });
+
+  it('disables minus button at minimum', async () => {
+    const user = userEvent.setup();
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+      />,
+    );
+    // Click minus twice: 15 → 10 → 5 (min)
+    const minus = screen.getByRole('button', { name: /show fewer/i });
+    await user.click(minus);
+    await user.click(minus);
+    expect(minus).toBeDisabled();
   });
 });

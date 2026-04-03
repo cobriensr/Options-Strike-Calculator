@@ -6,15 +6,18 @@
  * have accumulated, sorted by total premium. Larger premium = stronger
  * institutional support/resistance. Auto-refreshes every 60 seconds.
  *
- * No direction classification — just premium magnitude per strike.
+ * User can adjust how many levels are visible with +/- controls.
  */
 
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../themes';
 import { SectionBox } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
 
-const MAX_VISIBLE = 15;
+const DEFAULT_VISIBLE = 15;
+const MIN_VISIBLE = 5;
+const MAX_VISIBLE = 50;
+const STEP = 5;
 const PREMIUM_FLOOR = 5_000_000; // $5M minimum to display
 
 interface Props {
@@ -51,12 +54,16 @@ export default memo(function DarkPoolLevels({
   error,
   updatedAt,
 }: Props) {
-  const filtered = useMemo(
-    () =>
-      levels
-        .filter((l) => l.totalPremium >= PREMIUM_FLOOR)
-        .slice(0, MAX_VISIBLE),
+  const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
+
+  const aboveFloor = useMemo(
+    () => levels.filter((l) => l.totalPremium >= PREMIUM_FLOOR),
     [levels],
+  );
+
+  const filtered = useMemo(
+    () => aboveFloor.slice(0, visibleCount),
+    [aboveFloor, visibleCount],
   );
 
   const maxPremium = useMemo(
@@ -67,18 +74,52 @@ export default memo(function DarkPoolLevels({
     [filtered],
   );
 
+  const handleLess = useCallback(
+    () => setVisibleCount((v) => Math.max(v - STEP, MIN_VISIBLE)),
+    [],
+  );
+  const handleMore = useCallback(
+    () => setVisibleCount((v) => Math.min(v + STEP, MAX_VISIBLE)),
+    [],
+  );
+
   const totalLevels = levels.length;
 
   const badge =
     totalLevels > 0
-      ? `${filtered.length} of ${totalLevels}`
+      ? `${filtered.length} of ${aboveFloor.length}`
       : null;
 
-  const headerRight = updatedAt ? (
-    <span className="text-muted font-sans text-[10px]">
-      {formatTime(updatedAt)}
-    </span>
-  ) : null;
+  const headerRight = (
+    <div className="flex items-center gap-2">
+      {updatedAt && (
+        <span className="text-muted font-sans text-[10px]">
+          Updated {formatTime(updatedAt)}
+        </span>
+      )}
+      <div className="border-edge flex items-center gap-0.5 rounded border">
+        <button
+          onClick={handleLess}
+          disabled={visibleCount <= MIN_VISIBLE}
+          aria-label="Show fewer levels"
+          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
+        >
+          &minus;
+        </button>
+        <span className="text-secondary min-w-[20px] text-center font-mono text-[10px]">
+          {visibleCount}
+        </span>
+        <button
+          onClick={handleMore}
+          disabled={visibleCount >= MAX_VISIBLE || visibleCount >= aboveFloor.length}
+          aria-label="Show more levels"
+          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
 
   if (loading) {
     return (
