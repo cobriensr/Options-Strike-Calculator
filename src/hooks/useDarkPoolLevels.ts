@@ -1,14 +1,12 @@
 /**
  * useDarkPoolLevels — polls /api/darkpool-levels every 60 seconds.
  *
- * Returns dark pool cluster data for the DarkPoolLevels widget.
+ * Returns dark pool strike levels for the DarkPoolLevels widget.
  * Owner-only — skips polling for public visitors.
  *
  * Behavior:
- *   - Live mode (no selectedDate or selectedDate = today): polls every
- *     60s while marketOpen, stops when market closes.
- *   - Backtest mode (selectedDate in the past): fetches once for that
- *     date, no polling (data is static).
+ *   - Live mode (no selectedDate): polls every 60s while marketOpen.
+ *   - Explicit date (today or past): fetches once (data is in DB).
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -16,18 +14,12 @@ import { POLL_INTERVALS } from '../constants';
 import { useIsOwner } from './useIsOwner';
 
 export interface DarkPoolLevel {
-  spxApprox: number;
-  spyPriceLow: number;
-  spyPriceHigh: number;
+  spxLevel: number;
   totalPremium: number;
   tradeCount: number;
   totalShares: number;
-  buyerInitiated: number;
-  sellerInitiated: number;
-  neutral: number;
   latestTime: string | null;
   updatedAt: string;
-  direction: 'BUY' | 'SELL' | 'MIXED';
 }
 
 export interface UseDarkPoolLevelsReturn {
@@ -99,7 +91,6 @@ export function useDarkPoolLevels(
     }
 
     // Explicit date (today or past): fetch once, no polling.
-    // Data is either backfilled or already stored by the cron.
     if (hasExplicitDate) {
       setLoading(true);
       fetchLevels();

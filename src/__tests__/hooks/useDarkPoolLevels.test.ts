@@ -22,18 +22,12 @@ vi.stubGlobal('fetch', mockFetch);
 
 function makeLevel(overrides: Partial<DarkPoolLevel> = {}): DarkPoolLevel {
   return {
-    spxApprox: 6575,
-    spyPriceLow: 657.0,
-    spyPriceHigh: 658.0,
+    spxLevel: 6575,
     totalPremium: 1_300_000_000,
     tradeCount: 13,
     totalShares: 2_000_000,
-    buyerInitiated: 9,
-    sellerInitiated: 3,
-    neutral: 1,
     latestTime: '2026-04-02T16:30:00Z',
     updatedAt: '2026-04-02T16:35:00Z',
-    direction: 'BUY',
     ...overrides,
   };
 }
@@ -74,7 +68,6 @@ describe('useDarkPoolLevels: initial state', () => {
 
   it('starts in loading state', () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
-    // Before first fetch completes, loading is true
     expect(result.current.loading).toBe(true);
   });
 });
@@ -99,7 +92,7 @@ describe('useDarkPoolLevels: fetching', () => {
   it('returns levels from API response', async () => {
     const levels = [
       makeLevel(),
-      makeLevel({ spxApprox: 6600, direction: 'SELL' }),
+      makeLevel({ spxLevel: 6600 }),
     ];
     mockFetch.mockResolvedValue({
       ok: true,
@@ -110,8 +103,7 @@ describe('useDarkPoolLevels: fetching', () => {
 
     await waitFor(() => expect(result.current.levels).toHaveLength(2));
 
-    expect(result.current.levels[0]!.spxApprox).toBe(6575);
-    expect(result.current.levels[1]!.direction).toBe('SELL');
+    expect(result.current.levels[0]!.spxLevel).toBe(6575);
     expect(result.current.error).toBeNull();
   });
 
@@ -180,7 +172,6 @@ describe('useDarkPoolLevels: gating', () => {
     await act(async () => {});
 
     expect(mockFetch).not.toHaveBeenCalled();
-    expect(vi.mocked(useIsOwner).mock.results.at(-1)?.value).toBe(false);
   });
 
   it('does not fetch when market is closed', async () => {
@@ -280,7 +271,7 @@ describe('useDarkPoolLevels: error handling', () => {
 // ============================================================
 
 describe('useDarkPoolLevels: backtest mode', () => {
-  it('fetches with date param when selectedDate is in the past', async () => {
+  it('fetches with date param when selectedDate provided', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({ levels: [makeLevel()], date: '2026-03-28' }),
@@ -311,12 +302,11 @@ describe('useDarkPoolLevels: backtest mode', () => {
       vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL * 3);
     });
 
-    // No additional fetches — backtest data is static
     expect(mockFetch.mock.calls.length).toBe(initialCalls);
   });
 
   it('returns levels from backtest date', async () => {
-    const levels = [makeLevel({ spxApprox: 6550, direction: 'SELL' })];
+    const levels = [makeLevel({ spxLevel: 6550 })];
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({ levels, date: '2026-03-28' }),
@@ -328,7 +318,7 @@ describe('useDarkPoolLevels: backtest mode', () => {
 
     await waitFor(() => expect(result.current.levels).toHaveLength(1));
 
-    expect(result.current.levels[0]!.spxApprox).toBe(6550);
+    expect(result.current.levels[0]!.spxLevel).toBe(6550);
     expect(result.current.loading).toBe(false);
   });
 

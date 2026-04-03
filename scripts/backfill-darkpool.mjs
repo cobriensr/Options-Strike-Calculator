@@ -92,100 +92,60 @@ async function fetchDarkPoolBlocks(date) {
   );
 }
 
-// ── Cluster trades (mirrors clusterDarkPoolTrades) ──────────
+// ── Aggregate per $1 SPX level (mirrors aggregateDarkPoolLevels) ─
 
-function clusterTrades(trades) {
+function aggregateLevels(trades) {
   if (trades.length === 0) return [];
 
-  // Group into $0.50 price bands
-  const bands = new Map();
+  const levels = new Map();
+
   for (const trade of trades) {
     const price = Number.parseFloat(trade.price);
     if (Number.isNaN(price)) continue;
-    const band = Math.round(price * 2) / 2;
-    if (!bands.has(band)) bands.set(band, []);
-    bands.get(band).push(trade);
-  }
 
-  const clusters = [];
-  for (const [band, bandTrades] of bands) {
-    let totalPremium = 0;
-    let totalShares = 0;
-    let buyerInitiated = 0;
-    let sellerInitiated = 0;
-    let neutral = 0;
-    let latestTime = '';
-    let priceLow = Infinity;
-    let priceHigh = -Infinity;
+    const spxLevel = Math.round(price * spyToSpxRatio);
+    const premium = Number.parseFloat(trade.premium) || 0;
 
-    for (const t of bandTrades) {
-      const price = Number.parseFloat(t.price);
-      const ask = Number.parseFloat(t.nbbo_ask);
-      const bid = Number.parseFloat(t.nbbo_bid);
-      const premium = Number.parseFloat(t.premium);
+    const existing = levels.get(spxLevel) ?? {
+      totalPremium: 0,
+      tradeCount: 0,
+      totalShares: 0,
+      latestTime: '',
+    };
 
-      if (!Number.isNaN(premium)) totalPremium += premium;
-      totalShares += t.size;
-
-      if (price < priceLow) priceLow = price;
-      if (price > priceHigh) priceHigh = price;
-      if (t.executed_at > latestTime) latestTime = t.executed_at;
-
-      if (!Number.isNaN(ask) && !Number.isNaN(bid)) {
-        const mid = (ask + bid) / 2;
-        if (price >= ask - 0.005) {
-          buyerInitiated++;
-        } else if (price <= bid + 0.005) {
-          sellerInitiated++;
-        } else if (price >= mid) {
-          buyerInitiated++;
-        } else {
-          sellerInitiated++;
-        }
-      } else {
-        neutral++;
-      }
+    existing.totalPremium += premium;
+    existing.tradeCount += 1;
+    existing.totalShares += trade.size;
+    if (trade.executed_at > existing.latestTime) {
+      existing.latestTime = trade.executed_at;
     }
 
-    clusters.push({
-      spyPriceLow: priceLow,
-      spyPriceHigh: priceHigh,
-      spxApprox: Math.round(band * spyToSpxRatio),
-      totalPremium,
-      tradeCount: bandTrades.length,
-      totalShares,
-      buyerInitiated,
-      sellerInitiated,
-      neutral,
-      latestTime,
-    });
+    levels.set(spxLevel, existing);
   }
 
-  return clusters.sort((a, b) => b.totalPremium - a.totalPremium);
+  return [...levels.entries()]
+    .map(([spxLevel, data]) => ({ spxLevel, ...data }))
+    .sort((a, b) => b.totalPremium - a.totalPremium);
 }
 
-// ── Store clusters ──────────────────────────────────────────
+// ── Store levels ────────────────────────────────────────────
 
-async function storeClusters(date, clusters) {
-  // Delete existing data for this date (full replace)
+async function storeLevels(date, levels) {
   await sql`DELETE FROM dark_pool_levels WHERE date = ${date}`;
 
   const now = new Date().toISOString();
   let stored = 0;
 
-  for (const c of clusters) {
+  for (const l of levels) {
     try {
       await sql`
         INSERT INTO dark_pool_levels (
-          date, spx_approx, spy_price_low, spy_price_high,
-          total_premium, trade_count, total_shares,
-          buyer_initiated, seller_initiated, neutral,
+          date, spx_approx, total_premium, trade_count, total_shares,
           latest_time, updated_at
         ) VALUES (
-          ${date}, ${c.spxApprox}, ${c.spyPriceLow}, ${c.spyPriceHigh},
-          ${c.totalPremium}, ${c.tradeCount}, ${c.totalShares},
-          ${c.buyerInitiated}, ${c.sellerInitiated}, ${c.neutral},
-          ${c.latestTime || null}, ${now}
+          ${date}, ${l.spxLevel}, ${l.totalPremium},
+          ${l.tradeCount}, ${l.totalShares},
+          ${l.latestTime || null}, ${now}
         )
       `;
       stored++;
@@ -216,7 +176,7 @@ async function main() {
     `Days: ${tradingDays.length} (${tradingDays[0]} → ${tradingDays.at(-1)})\n`,
   );
 
-  const totals = { trades: 0, clusters: 0, stored: 0, skipped: 0 };
+  const totals = { trades: 0, levels: 0, stored: 0, skipped: 0 };
 
   for (const date of tradingDays) {
     // Rate limit — UW API is generous but don't abuse it
@@ -230,26 +190,26 @@ async function main() {
       continue;
     }
 
-    const clusters = clusterTrades(trades);
-    const stored = await storeClusters(date, clusters);
+    const levels = aggregateLevels(trades);
+    const stored = await storeLevels(date, levels);
 
-    const topLevel = clusters[0];
-    const topStr = topLevel
-      ? `top: SPX ~${topLevel.spxApprox} ${fmtPremium(topLevel.totalPremium)}`
+    const top = levels[0];
+    const topStr = top
+      ? `top: SPX ${top.spxLevel} ${fmtPremium(top.totalPremium)}`
       : '';
 
     totals.trades += trades.length;
-    totals.clusters += clusters.length;
+    totals.levels += levels.length;
     totals.stored += stored;
 
     console.log(
-      `  ${date}: ${trades.length} trades → ${clusters.length} clusters (${stored} stored) ${topStr}`,
+      `  ${date}: ${trades.length} trades → ${levels.length} levels (${stored} stored) ${topStr}`,
     );
   }
 
   console.log(`\nDone!`);
   console.log(`  Total trades fetched: ${totals.trades}`);
-  console.log(`  Total clusters: ${totals.clusters}`);
+  console.log(`  Total levels: ${totals.levels}`);
   console.log(`  Stored: ${totals.stored}`);
   console.log(`  Days skipped (no data): ${totals.skipped}`);
 }

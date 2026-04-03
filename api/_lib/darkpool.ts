@@ -201,6 +201,64 @@ export function clusterDarkPoolTrades(
   return clusters.sort((a, b) => b.totalPremium - a.totalPremium);
 }
 
+// ── Per-strike aggregation (dashboard) ─────────────────────
+
+export interface DarkPoolStrikeLevel {
+  spxLevel: number;
+  totalPremium: number;
+  tradeCount: number;
+  totalShares: number;
+  latestTime: string;
+}
+
+/**
+ * Aggregate dark pool trades by $1 SPX strike level.
+ * No direction classification — just premium accumulation per level.
+ * Used by the dashboard cron to show institutional support/resistance.
+ *
+ * @returns Levels sorted by total premium descending
+ */
+export function aggregateDarkPoolLevels(
+  trades: DarkPoolTrade[],
+  spyToSpxRatio?: number,
+): DarkPoolStrikeLevel[] {
+  if (trades.length === 0) return [];
+
+  const ratio = spyToSpxRatio ?? 10;
+  const levels = new Map<
+    number,
+    { totalPremium: number; tradeCount: number; totalShares: number; latestTime: string }
+  >();
+
+  for (const trade of trades) {
+    const price = Number.parseFloat(trade.price);
+    if (Number.isNaN(price)) continue;
+
+    const spxLevel = Math.round(price * ratio);
+    const premium = Number.parseFloat(trade.premium) || 0;
+
+    const existing = levels.get(spxLevel) ?? {
+      totalPremium: 0,
+      tradeCount: 0,
+      totalShares: 0,
+      latestTime: '',
+    };
+
+    existing.totalPremium += premium;
+    existing.tradeCount += 1;
+    existing.totalShares += trade.size;
+    if (trade.executed_at > existing.latestTime) {
+      existing.latestTime = trade.executed_at;
+    }
+
+    levels.set(spxLevel, existing);
+  }
+
+  return [...levels.entries()]
+    .map(([spxLevel, data]) => ({ spxLevel, ...data }))
+    .sort((a, b) => b.totalPremium - a.totalPremium);
+}
+
 // ── Format for Claude ───────────────────────────────────────
 
 /**

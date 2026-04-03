@@ -7,18 +7,12 @@ import type { DarkPoolLevel } from '../../hooks/useDarkPoolLevels';
 
 function makeLevel(overrides: Partial<DarkPoolLevel> = {}): DarkPoolLevel {
   return {
-    spxApprox: 6575,
-    spyPriceLow: 657.0,
-    spyPriceHigh: 658.0,
+    spxLevel: 6575,
     totalPremium: 1_300_000_000,
     tradeCount: 13,
     totalShares: 2_000_000,
-    buyerInitiated: 9,
-    sellerInitiated: 3,
-    neutral: 1,
     latestTime: '2026-04-02T16:30:00Z',
     updatedAt: '2026-04-02T16:35:00Z',
-    direction: 'BUY',
     ...overrides,
   };
 }
@@ -80,7 +74,7 @@ describe('DarkPoolLevels: error state', () => {
 // ============================================================
 
 describe('DarkPoolLevels: empty state', () => {
-  it('shows no clusters message when levels empty', () => {
+  it('shows no levels message when levels empty', () => {
     render(
       <DarkPoolLevels
         levels={[]}
@@ -89,13 +83,13 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no clusters above \$25M/i)).toBeInTheDocument();
+    expect(screen.getByText(/no dark pool levels yet/i)).toBeInTheDocument();
   });
 
-  it('shows no clusters when all levels below threshold', () => {
+  it('shows no levels when all below threshold', () => {
     const levels = [
-      makeLevel({ totalPremium: 10_000_000 }),
-      makeLevel({ spxApprox: 6550, totalPremium: 20_000_000 }),
+      makeLevel({ totalPremium: 1_000_000 }),
+      makeLevel({ spxLevel: 6550, totalPremium: 2_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -105,13 +99,13 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no clusters above \$25M/i)).toBeInTheDocument();
+    expect(screen.getByText(/no dark pool levels yet/i)).toBeInTheDocument();
   });
 
-  it('shows badge with cluster count even when none above threshold', () => {
+  it('shows badge with count even when none above threshold', () => {
     const levels = [
-      makeLevel({ totalPremium: 10_000_000 }),
-      makeLevel({ spxApprox: 6550, totalPremium: 20_000_000 }),
+      makeLevel({ totalPremium: 1_000_000 }),
+      makeLevel({ spxLevel: 6550, totalPremium: 2_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -121,7 +115,6 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    // SectionBox badge renders "0 of 2"
     expect(screen.getByText('0 of 2')).toBeInTheDocument();
   });
 });
@@ -131,17 +124,15 @@ describe('DarkPoolLevels: empty state', () => {
 // ============================================================
 
 describe('DarkPoolLevels: rendering levels', () => {
-  it('renders levels above $100M threshold', () => {
+  it('renders levels above threshold', () => {
     const levels = [
       makeLevel({
-        spxApprox: 6575,
+        spxLevel: 6575,
         totalPremium: 1_300_000_000,
-        direction: 'BUY',
       }),
       makeLevel({
-        spxApprox: 6555,
+        spxLevel: 6555,
         totalPremium: 248_000_000,
-        direction: 'SELL',
       }),
     ];
     render(
@@ -161,8 +152,8 @@ describe('DarkPoolLevels: rendering levels', () => {
 
   it('filters out levels below threshold', () => {
     const levels = [
-      makeLevel({ spxApprox: 6575, totalPremium: 500_000_000 }),
-      makeLevel({ spxApprox: 6540, totalPremium: 10_000_000 }),
+      makeLevel({ spxLevel: 6575, totalPremium: 500_000_000 }),
+      makeLevel({ spxLevel: 6540, totalPremium: 1_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -177,10 +168,10 @@ describe('DarkPoolLevels: rendering levels', () => {
     expect(screen.queryByText('6540')).not.toBeInTheDocument();
   });
 
-  it('shows badge with cluster count', () => {
+  it('shows badge with count', () => {
     const levels = [
-      makeLevel({ spxApprox: 6575, totalPremium: 500_000_000 }),
-      makeLevel({ spxApprox: 6540, totalPremium: 10_000_000 }),
+      makeLevel({ spxLevel: 6575, totalPremium: 500_000_000 }),
+      makeLevel({ spxLevel: 6540, totalPremium: 1_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -191,50 +182,7 @@ describe('DarkPoolLevels: rendering levels', () => {
       />,
     );
 
-    // SectionBox badge: "1 of 2"
     expect(screen.getByText('1 of 2')).toBeInTheDocument();
-  });
-});
-
-// ============================================================
-// DIRECTION COLOR CODING
-// ============================================================
-
-describe('DarkPoolLevels: direction display', () => {
-  it('shows BUY label for buyer-dominated clusters', () => {
-    render(
-      <DarkPoolLevels
-        levels={[makeLevel({ direction: 'BUY' })]}
-        loading={false}
-        error={null}
-        updatedAt={null}
-      />,
-    );
-    expect(screen.getByText('BUY')).toBeInTheDocument();
-  });
-
-  it('shows SELL label for seller-dominated clusters', () => {
-    render(
-      <DarkPoolLevels
-        levels={[makeLevel({ direction: 'SELL' })]}
-        loading={false}
-        error={null}
-        updatedAt={null}
-      />,
-    );
-    expect(screen.getByText('SELL')).toBeInTheDocument();
-  });
-
-  it('shows MIXED label for equal clusters', () => {
-    render(
-      <DarkPoolLevels
-        levels={[makeLevel({ direction: 'MIXED' })]}
-        loading={false}
-        error={null}
-        updatedAt={null}
-      />,
-    );
-    expect(screen.getByText('MIXED')).toBeInTheDocument();
   });
 });
 
@@ -267,20 +215,16 @@ describe('DarkPoolLevels: premium formatting', () => {
     expect(screen.getByText('$373M')).toBeInTheDocument();
   });
 
-  // Note: formatPremium K ($1K-$999K) and raw ($0-$999) branches are
-  // unreachable in this component because the $100M floor filter
-  // guarantees only M and B values display. This is expected.
-
-  it('formats exact $25M threshold', () => {
+  it('formats $5M threshold level', () => {
     render(
       <DarkPoolLevels
-        levels={[makeLevel({ totalPremium: 25_000_000 })]}
+        levels={[makeLevel({ totalPremium: 5_000_000 })]}
         loading={false}
         error={null}
         updatedAt={null}
       />,
     );
-    expect(screen.getByText('$25M')).toBeInTheDocument();
+    expect(screen.getByText('$5M')).toBeInTheDocument();
   });
 });
 
@@ -321,8 +265,8 @@ describe('DarkPoolLevels: block count', () => {
 describe('DarkPoolLevels: premium bar sizing', () => {
   it('renders bar with proportional width', () => {
     const levels = [
-      makeLevel({ spxApprox: 6575, totalPremium: 1_000_000_000 }),
-      makeLevel({ spxApprox: 6555, totalPremium: 500_000_000 }),
+      makeLevel({ spxLevel: 6575, totalPremium: 1_000_000_000 }),
+      makeLevel({ spxLevel: 6555, totalPremium: 500_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -344,8 +288,8 @@ describe('DarkPoolLevels: premium bar sizing', () => {
 
   it('uses minimum 2% bar width', () => {
     const levels = [
-      makeLevel({ spxApprox: 6575, totalPremium: 10_000_000_000 }),
-      makeLevel({ spxApprox: 6555, totalPremium: 25_000_000 }),
+      makeLevel({ spxLevel: 6575, totalPremium: 10_000_000_000 }),
+      makeLevel({ spxLevel: 6555, totalPremium: 5_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -358,7 +302,6 @@ describe('DarkPoolLevels: premium bar sizing', () => {
 
     const barLabels = screen.getAllByLabelText(/premium/);
     const smallBar = barLabels[1] as HTMLElement;
-    // 100M / 10B = 1% → clamped to 2%
     expect(smallBar.style.width).toBe('2%');
   });
 });
@@ -407,7 +350,6 @@ describe('DarkPoolLevels: accessibility', () => {
     );
     expect(screen.getByText('SPX Level')).toBeInTheDocument();
     expect(screen.getByText('Premium')).toBeInTheDocument();
-    expect(screen.getByText('Direction')).toBeInTheDocument();
     expect(screen.getByText('Blocks')).toBeInTheDocument();
     expect(screen.getByText('Time')).toBeInTheDocument();
   });
@@ -415,7 +357,7 @@ describe('DarkPoolLevels: accessibility', () => {
   it('renders rows with role="row"', () => {
     render(
       <DarkPoolLevels
-        levels={[makeLevel(), makeLevel({ spxApprox: 6550 })]}
+        levels={[makeLevel(), makeLevel({ spxLevel: 6550 })]}
         loading={false}
         error={null}
         updatedAt={null}
@@ -436,25 +378,6 @@ describe('DarkPoolLevels: accessibility', () => {
       />,
     );
     expect(screen.getByLabelText('$500M premium')).toBeInTheDocument();
-  });
-});
-
-// ============================================================
-// TIME DISPLAY
-// ============================================================
-
-describe('DarkPoolLevels: time display', () => {
-  it('shows latest trade time for each level', () => {
-    render(
-      <DarkPoolLevels
-        levels={[makeLevel({ latestTime: '2026-04-02T19:30:00Z' })]}
-        loading={false}
-        error={null}
-        updatedAt={null}
-      />,
-    );
-    // 19:30 UTC = 2:30 PM CT
-    expect(screen.getByText(/2:30/)).toBeInTheDocument();
   });
 });
 
@@ -486,11 +409,10 @@ describe('DarkPoolLevels: header', () => {
         updatedAt={null}
       />,
     );
-    // Badge is null when totalClusters is 0
     expect(screen.queryByText(/of/)).not.toBeInTheDocument();
   });
 
-  it('does not show updatedAt time when null', () => {
+  it('shows badge with count', () => {
     render(
       <DarkPoolLevels
         levels={[makeLevel()]}
@@ -499,10 +421,25 @@ describe('DarkPoolLevels: header', () => {
         updatedAt={null}
       />,
     );
-    expect(
-      screen.getByRole('heading', { name: /dark pool levels/i }),
-    ).toBeInTheDocument();
-    // Badge shows count
     expect(screen.getByText('1 of 1')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// TIME DISPLAY
+// ============================================================
+
+describe('DarkPoolLevels: time display', () => {
+  it('shows latest trade time for each level', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel({ latestTime: '2026-04-02T19:30:00Z' })]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+      />,
+    );
+    // 19:30 UTC = 2:30 PM CT
+    expect(screen.getByText(/2:30/)).toBeInTheDocument();
   });
 });

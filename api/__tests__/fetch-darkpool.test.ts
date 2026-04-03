@@ -28,14 +28,14 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 vi.mock('../_lib/darkpool.js', () => ({
   fetchDarkPoolBlocks: vi.fn(),
-  clusterDarkPoolTrades: vi.fn(),
+  aggregateDarkPoolLevels: vi.fn(),
 }));
 
 import handler from '../cron/fetch-darkpool.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import {
   fetchDarkPoolBlocks,
-  clusterDarkPoolTrades,
+  aggregateDarkPoolLevels,
 } from '../_lib/darkpool.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
@@ -49,17 +49,12 @@ function makeCronReq() {
   });
 }
 
-function makeCluster(overrides = {}) {
+function makeLevel(overrides = {}) {
   return {
-    spyPriceLow: 655.0,
-    spyPriceHigh: 655.5,
-    spxApprox: 6550,
+    spxLevel: 6550,
     totalPremium: 250_000_000,
     tradeCount: 5,
     totalShares: 500_000,
-    buyerInitiated: 3,
-    sellerInitiated: 2,
-    neutral: 0,
     latestTime: '2026-04-02T16:00:00Z',
     ...overrides,
   };
@@ -108,8 +103,6 @@ describe('fetch-darkpool cron handler', () => {
     process.env = originalEnv;
   });
 
-  // ── Guard ────────────────────────────────────────────────
-
   it('returns early when cronGuard returns null', async () => {
     vi.mocked(cronGuard).mockReturnValue(null);
     const res = mockResponse();
@@ -118,8 +111,6 @@ describe('fetch-darkpool cron handler', () => {
     expect(vi.mocked(fetchDarkPoolBlocks)).not.toHaveBeenCalled();
     expect(mockSql).not.toHaveBeenCalled();
   });
-
-  // ── No data ──────────────────────────────────────────────
 
   it('returns skipped when no trades returned', async () => {
     vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([]);
@@ -136,9 +127,9 @@ describe('fetch-darkpool cron handler', () => {
     expect(logger.info).toHaveBeenCalled();
   });
 
-  it('returns skipped when trades exist but no clusters produced', async () => {
+  it('returns skipped when trades exist but no levels produced', async () => {
     vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([makeTrade()]);
-    vi.mocked(clusterDarkPoolTrades).mockReturnValue([]);
+    vi.mocked(aggregateDarkPoolLevels).mockReturnValue([]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -147,21 +138,19 @@ describe('fetch-darkpool cron handler', () => {
     expect(res._json).toMatchObject({
       job: 'fetch-darkpool',
       skipped: true,
-      reason: 'no clusters',
+      reason: 'no levels',
     });
   });
 
-  // ── Success ──────────────────────────────────────────────
-
-  it('deletes old rows and inserts new clusters', async () => {
+  it('deletes old rows and inserts new levels', async () => {
     const trades = [makeTrade(), makeTrade({ tracking_id: 2 })];
-    const clusters = [
-      makeCluster({ spxApprox: 6550, totalPremium: 500_000_000 }),
-      makeCluster({ spxApprox: 6575, totalPremium: 200_000_000 }),
+    const levels = [
+      makeLevel({ spxLevel: 6550, totalPremium: 500_000_000 }),
+      makeLevel({ spxLevel: 6575, totalPremium: 200_000_000 }),
     ];
 
     vi.mocked(fetchDarkPoolBlocks).mockResolvedValue(trades);
-    vi.mocked(clusterDarkPoolTrades).mockReturnValue(clusters);
+    vi.mocked(aggregateDarkPoolLevels).mockReturnValue(levels);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -169,7 +158,7 @@ describe('fetch-darkpool cron handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       job: 'fetch-darkpool',
-      clusters: 2,
+      levels: 2,
       trades: 2,
       topPremium: 500_000_000,
     });
@@ -189,59 +178,16 @@ describe('fetch-darkpool cron handler', () => {
     expect(fetchDarkPoolBlocks).toHaveBeenCalledWith('test-uw-key');
   });
 
-  it('passes trades to clusterDarkPoolTrades', async () => {
+  it('passes trades to aggregateDarkPoolLevels', async () => {
     const trades = [makeTrade()];
     vi.mocked(fetchDarkPoolBlocks).mockResolvedValue(trades);
-    vi.mocked(clusterDarkPoolTrades).mockReturnValue([makeCluster()]);
+    vi.mocked(aggregateDarkPoolLevels).mockReturnValue([makeLevel()]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(clusterDarkPoolTrades).toHaveBeenCalledWith(trades);
+    expect(aggregateDarkPoolLevels).toHaveBeenCalledWith(trades);
   });
-
-  it('inserts clusters with correct field values', async () => {
-    const cluster = makeCluster({
-      spxApprox: 6600,
-      spyPriceLow: 660.0,
-      spyPriceHigh: 660.5,
-      totalPremium: 1_500_000_000,
-      tradeCount: 13,
-      totalShares: 2_000_000,
-      buyerInitiated: 9,
-      sellerInitiated: 3,
-      neutral: 1,
-      latestTime: '2026-04-02T18:30:00Z',
-    });
-
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([makeTrade()]);
-    vi.mocked(clusterDarkPoolTrades).mockReturnValue([cluster]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._json).toMatchObject({
-      clusters: 1,
-      topPremium: 1_500_000_000,
-    });
-    // DELETE + 1 INSERT = 2 calls
-    expect(mockSql).toHaveBeenCalledTimes(2);
-  });
-
-  it('handles cluster with null latestTime', async () => {
-    const cluster = makeCluster({ latestTime: '' });
-
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([makeTrade()]);
-    vi.mocked(clusterDarkPoolTrades).mockReturnValue([cluster]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ clusters: 1 });
-  });
-
-  // ── Error handling ───────────────────────────────────────
 
   it('returns 500 and captures exception on fetch error', async () => {
     const err = new Error('UW API timeout');
@@ -259,7 +205,7 @@ describe('fetch-darkpool cron handler', () => {
 
   it('returns 500 on DB write error', async () => {
     vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([makeTrade()]);
-    vi.mocked(clusterDarkPoolTrades).mockReturnValue([makeCluster()]);
+    vi.mocked(aggregateDarkPoolLevels).mockReturnValue([makeLevel()]);
     mockSql.mockRejectedValue(new Error('connection refused'));
 
     const res = mockResponse();

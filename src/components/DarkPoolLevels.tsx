@@ -1,11 +1,12 @@
 /**
- * DarkPoolLevels — compact dashboard widget showing institutional
- * dark pool block trade clusters, auto-refreshed every 60 seconds.
+ * DarkPoolLevels — dashboard widget showing institutional dark pool
+ * strike levels ranked by aggregate premium.
  *
- * Displays SPX levels where large ($5M+) SPY dark pool prints have
- * clustered, filtered to $100M+ aggregate premium. Color-coded by
- * direction: green for buyer-initiated, red for seller-initiated,
- * gray for mixed. Horizontal bars show relative premium magnitude.
+ * Displays SPX price levels where large ($5M+) SPY dark pool blocks
+ * have accumulated, sorted by total premium. Larger premium = stronger
+ * institutional support/resistance. Auto-refreshes every 60 seconds.
+ *
+ * No direction classification — just premium magnitude per strike.
  */
 
 import { memo, useMemo } from 'react';
@@ -13,7 +14,8 @@ import { theme } from '../themes';
 import { SectionBox } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
 
-const PREMIUM_FLOOR = 25_000_000; // $25M minimum to display
+const MAX_VISIBLE = 15;
+const PREMIUM_FLOOR = 5_000_000; // $5M minimum to display
 
 interface Props {
   levels: DarkPoolLevel[];
@@ -21,27 +23,6 @@ interface Props {
   error: string | null;
   updatedAt: string | null;
 }
-
-const DIRECTION_COLORS: Record<
-  DarkPoolLevel['direction'],
-  { bar: string; text: string; label: string }
-> = {
-  BUY: {
-    bar: 'var(--color-success)',
-    text: 'var(--color-success)',
-    label: 'BUY',
-  },
-  SELL: {
-    bar: 'var(--color-danger)',
-    text: 'var(--color-danger)',
-    label: 'SELL',
-  },
-  MIXED: {
-    bar: 'var(--color-muted)',
-    text: 'var(--color-muted)',
-    label: 'MIXED',
-  },
-};
 
 function formatPremium(value: number): string {
   const abs = Math.abs(value);
@@ -71,7 +52,10 @@ export default memo(function DarkPoolLevels({
   updatedAt,
 }: Props) {
   const filtered = useMemo(
-    () => levels.filter((l) => l.totalPremium >= PREMIUM_FLOOR),
+    () =>
+      levels
+        .filter((l) => l.totalPremium >= PREMIUM_FLOOR)
+        .slice(0, MAX_VISIBLE),
     [levels],
   );
 
@@ -83,10 +67,12 @@ export default memo(function DarkPoolLevels({
     [filtered],
   );
 
-  const totalClusters = levels.length;
+  const totalLevels = levels.length;
 
   const badge =
-    totalClusters > 0 ? `${filtered.length} of ${totalClusters}` : null;
+    totalLevels > 0
+      ? `${filtered.length} of ${totalLevels}`
+      : null;
 
   const headerRight = updatedAt ? (
     <span className="text-muted font-sans text-[10px]">
@@ -107,7 +93,9 @@ export default memo(function DarkPoolLevels({
   if (error) {
     return (
       <SectionBox label="Dark Pool Levels" headerRight={headerRight}>
-        <div className="text-muted text-center font-sans text-xs">{error}</div>
+        <div className="text-muted text-center font-sans text-xs">
+          {error}
+        </div>
       </SectionBox>
     );
   }
@@ -120,7 +108,7 @@ export default memo(function DarkPoolLevels({
         headerRight={headerRight}
       >
         <div className="text-muted text-center font-sans text-xs">
-          No clusters above $25M threshold
+          No dark pool levels yet
         </div>
       </SectionBox>
     );
@@ -136,13 +124,12 @@ export default memo(function DarkPoolLevels({
         <div className="sr-only" role="row">
           <span role="columnheader">SPX Level</span>
           <span role="columnheader">Premium</span>
-          <span role="columnheader">Direction</span>
           <span role="columnheader">Blocks</span>
           <span role="columnheader">Time</span>
         </div>
         {filtered.map((level) => (
           <LevelRow
-            key={level.spxApprox}
+            key={level.spxLevel}
             level={level}
             maxPremium={maxPremium}
           />
@@ -159,7 +146,6 @@ function LevelRow({
   level: DarkPoolLevel;
   maxPremium: number;
 }) {
-  const colors = DIRECTION_COLORS[level.direction];
   const barWidth = Math.max((level.totalPremium / maxPremium) * 100, 2);
 
   return (
@@ -170,7 +156,7 @@ function LevelRow({
         className="w-[52px] shrink-0 text-right font-mono text-sm font-bold"
         style={{ color: theme.text }}
       >
-        {level.spxApprox}
+        {level.spxLevel}
       </span>
 
       {/* Premium bar */}
@@ -179,8 +165,8 @@ function LevelRow({
           className="h-[14px] rounded-sm transition-[width] duration-300"
           style={{
             width: `${barWidth}%`,
-            backgroundColor: colors.bar,
-            opacity: 0.7,
+            backgroundColor: theme.accent,
+            opacity: 0.6,
           }}
           aria-label={`${formatPremium(level.totalPremium)} premium`}
         />
@@ -193,15 +179,6 @@ function LevelRow({
         style={{ color: theme.textSecondary }}
       >
         {formatPremium(level.totalPremium)}
-      </span>
-
-      {/* Direction badge */}
-      <span
-        role="cell"
-        className="w-[44px] shrink-0 text-center font-sans text-[10px] font-bold"
-        style={{ color: colors.text }}
-      >
-        {colors.label}
       </span>
 
       {/* Block count */}
