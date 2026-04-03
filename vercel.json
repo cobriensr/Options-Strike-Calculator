@@ -1,7 +1,9 @@
 {
   "git": {
     "deploymentEnabled": {
-      "sidecar/**": false
+      "sidecar/**": false,
+      "ml/**": false,
+      "scripts/**": false
     }
   },
   "crons": [
