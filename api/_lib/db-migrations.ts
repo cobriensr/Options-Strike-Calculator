@@ -795,4 +795,16 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 29,
+    description:
+      'Add dark pool support/resistance ratio and concentration to training_features',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS dp_support_resistance_ratio DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS dp_concentration            DECIMAL(8,4)
+      `,
+    ],
+  },
 ];

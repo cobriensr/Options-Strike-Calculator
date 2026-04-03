@@ -851,115 +851,45 @@ describe('engineerPhase2Features', () => {
   // ── Dark pool ─────────────────────────────────────────────
 
   describe('dark pool', () => {
-    const makeClusters = (
-      overrides?: Partial<{
-        spxApprox: number;
-        totalPremium: number;
-        tradeCount: number;
-        buyerInitiated: number;
-        sellerInitiated: number;
-      }>[],
-    ) =>
-      overrides?.map((o) => ({
-        spxApprox: 5800,
-        totalPremium: 100000,
-        tradeCount: 50,
-        buyerInitiated: 30,
-        sellerInitiated: 20,
-        ...o,
-      })) ?? [];
+    function makeDpRow(overrides = {}) {
+      return {
+        spx_approx: 5800,
+        total_premium: '500000',
+        trade_count: 50,
+        total_shares: 100000,
+        ...overrides,
+      };
+    }
 
-    it('extracts cluster metrics from JSONB', async () => {
-      const features = makeFeatures();
-      const clusters = makeClusters([
-        {
-          spxApprox: 5800,
-          totalPremium: 500000,
-          buyerInitiated: 100,
-          sellerInitiated: 50,
-        },
-        {
-          spxApprox: 5810,
-          totalPremium: 300000,
-          buyerInitiated: 60,
-          sellerInitiated: 40,
-        },
-      ]);
+    it('extracts level metrics from dark_pool_levels', async () => {
+      const features = makeFeatures({ spx_open: 5795 });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([{ spx_price: '5795.50', clusters }]); // dpRows
+      mockSql.mockResolvedValueOnce([
+        makeDpRow({ spx_approx: 5800, total_premium: '500000' }),
+        makeDpRow({ spx_approx: 5810, total_premium: '300000' }),
+      ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
       expect(features.dp_total_premium).toBe(800000);
-      expect(features.dp_buyer_initiated).toBe(160);
-      expect(features.dp_seller_initiated).toBe(90);
       expect(features.dp_cluster_count).toBe(2);
     });
 
-    it('computes dp_net_bias BUYER when buyer > seller * 1.5', async () => {
-      const features = makeFeatures();
-      const clusters = makeClusters([
-        { buyerInitiated: 200, sellerInitiated: 50 },
-      ]);
+    it('computes dp_top_cluster_dist from top level vs spx_open', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([{ spx_price: '5800', clusters }]); // dpRows
-
-      await engineerPhase2Features(mockSql as never, DATE_STR, features);
-
-      expect(features.dp_net_bias).toBe('BUYER');
-    });
-
-    it('computes dp_net_bias SELLER when seller > buyer * 1.5', async () => {
-      const features = makeFeatures();
-      const clusters = makeClusters([
-        { buyerInitiated: 50, sellerInitiated: 200 },
-      ]);
-
-      mockSql.mockResolvedValueOnce([]); // prevDayRows
-      mockSql.mockResolvedValueOnce([]); // settlements
-      mockSql.mockResolvedValueOnce([]); // eventRows
-      mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([{ spx_price: '5800', clusters }]); // dpRows
-
-      await engineerPhase2Features(mockSql as never, DATE_STR, features);
-
-      expect(features.dp_net_bias).toBe('SELLER');
-    });
-
-    it('computes dp_net_bias MIXED when neither side dominates', async () => {
-      const features = makeFeatures();
-      const clusters = makeClusters([
-        { buyerInitiated: 100, sellerInitiated: 90 },
-      ]);
-
-      mockSql.mockResolvedValueOnce([]); // prevDayRows
-      mockSql.mockResolvedValueOnce([]); // settlements
-      mockSql.mockResolvedValueOnce([]); // eventRows
-      mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([{ spx_price: '5800', clusters }]); // dpRows
-
-      await engineerPhase2Features(mockSql as never, DATE_STR, features);
-
-      expect(features.dp_net_bias).toBe('MIXED');
-    });
-
-    it('computes dp_top_cluster_dist from first cluster', async () => {
-      const features = makeFeatures();
-      const clusters = makeClusters([{ spxApprox: 5810 }, { spxApprox: 5790 }]);
-
-      mockSql.mockResolvedValueOnce([]); // prevDayRows
-      mockSql.mockResolvedValueOnce([]); // settlements
-      mockSql.mockResolvedValueOnce([]); // eventRows
-      mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([{ spx_price: '5800', clusters }]); // dpRows
+      mockSql.mockResolvedValueOnce([
+        makeDpRow({ spx_approx: 5810, total_premium: '500000' }),
+        makeDpRow({ spx_approx: 5790, total_premium: '300000' }),
+      ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
@@ -967,54 +897,65 @@ describe('engineerPhase2Features', () => {
       expect(features.dp_top_cluster_dist).toBe(10);
     });
 
-    it('skips dp_top_cluster_dist when spx_price is invalid (0/NaN)', async () => {
-      const features = makeFeatures();
-      const clusters = makeClusters([{ spxApprox: 5810 }]);
+    it('computes dp_support and dp_resistance relative to spx_open', async () => {
+      const features = makeFeatures({ spx_open: 5805 });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([{ spx_price: 'invalid', clusters }]); // dpRows — spx_price parses to NaN → null
+      mockSql.mockResolvedValueOnce([
+        makeDpRow({ spx_approx: 5810, total_premium: '500000' }), // above
+        makeDpRow({ spx_approx: 5800, total_premium: '300000' }), // below
+        makeDpRow({ spx_approx: 5790, total_premium: '200000' }), // below
+      ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
-      // spxPrice = null, so dp_top_cluster_dist is not set
-      expect(features.dp_top_cluster_dist).toBeUndefined();
-      // Other cluster metrics should still work
-      expect(features.dp_cluster_count).toBe(1);
+      expect(features.dp_support_premium).toBe(500000); // 300K + 200K
+      expect(features.dp_resistance_premium).toBe(500000); // 500K
+      expect(features.dp_support_resistance_ratio).toBe(1.0);
     });
 
-    it('computes dp_support_premium and dp_resistance_premium', async () => {
-      const features = makeFeatures();
-      const clusters = makeClusters([
-        {
-          totalPremium: 500000,
-          buyerInitiated: 100,
-          sellerInitiated: 50,
-        }, // buyer > seller → support
-        {
-          totalPremium: 300000,
-          buyerInitiated: 40,
-          sellerInitiated: 80,
-        }, // seller > buyer → resistance
-        {
-          totalPremium: 200000,
-          buyerInitiated: 70,
-          sellerInitiated: 30,
-        }, // buyer > seller → support
-      ]);
+    it('computes dp_concentration as top level / total', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([{ spx_price: '5800', clusters }]); // dpRows
+      mockSql.mockResolvedValueOnce([
+        makeDpRow({ spx_approx: 5800, total_premium: '750000' }),
+        makeDpRow({ spx_approx: 5810, total_premium: '250000' }),
+      ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
-      expect(features.dp_support_premium).toBe(700000); // 500K + 200K
-      expect(features.dp_resistance_premium).toBe(300000);
+      // 750K / 1M = 0.75
+      expect(features.dp_concentration).toBe(0.75);
+    });
+
+    it('skips position features when spx_open is null', async () => {
+      const features = makeFeatures(); // no spx_open
+
+      mockSql.mockResolvedValueOnce([]); // prevDayRows
+      mockSql.mockResolvedValueOnce([]); // settlements
+      mockSql.mockResolvedValueOnce([]); // eventRows
+      mockSql.mockResolvedValueOnce([]); // nextEventRow
+      mockSql.mockResolvedValueOnce([
+        makeDpRow({ spx_approx: 5810, total_premium: '500000' }),
+      ]); // dpRows
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      // Total and count should still work
+      expect(features.dp_total_premium).toBe(500000);
+      expect(features.dp_cluster_count).toBe(1);
+      // Position-dependent features should be undefined
+      expect(features.dp_top_cluster_dist).toBeUndefined();
+      expect(features.dp_support_premium).toBeUndefined();
+      expect(features.dp_resistance_premium).toBeUndefined();
+      expect(features.dp_support_resistance_ratio).toBeUndefined();
     });
 
     it('handles no dark pool data', async () => {
@@ -1025,21 +966,6 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
       mockSql.mockResolvedValueOnce([]); // dpRows (empty)
-
-      await engineerPhase2Features(mockSql as never, DATE_STR, features);
-
-      expect(features.dp_total_premium).toBeUndefined();
-      expect(features.dp_net_bias).toBeUndefined();
-    });
-
-    it('handles null clusters in dp row', async () => {
-      const features = makeFeatures();
-
-      mockSql.mockResolvedValueOnce([]); // prevDayRows
-      mockSql.mockResolvedValueOnce([]); // settlements
-      mockSql.mockResolvedValueOnce([]); // eventRows
-      mockSql.mockResolvedValueOnce([]); // nextEventRow
-      mockSql.mockResolvedValueOnce([{ spx_price: '5800', clusters: null }]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
@@ -1335,19 +1261,13 @@ describe('engineerPhase2Features', () => {
         { expiry: '2026-03-24', max_pain: '5785.00' },
       ]);
 
-      // Query 6: dpRows
+      // Query 6: dpRows (from dark_pool_levels)
       mockSql.mockResolvedValueOnce([
         {
-          spx_price: '5800',
-          clusters: [
-            {
-              spxApprox: 5810,
-              totalPremium: 500000,
-              tradeCount: 100,
-              buyerInitiated: 80,
-              sellerInitiated: 40,
-            },
-          ],
+          spx_approx: 5810,
+          total_premium: '500000',
+          trade_count: 100,
+          total_shares: 50000,
         },
       ]);
 
@@ -1389,7 +1309,7 @@ describe('engineerPhase2Features', () => {
       expect(features.max_pain_0dte).toBe(5785);
       expect(features.max_pain_dist).toBe(-15);
       expect(features.dp_total_premium).toBe(500000);
-      expect(features.dp_net_bias).toBe('BUYER');
+      expect(features.dp_cluster_count).toBe(1);
       expect(features.opt_call_volume).toBe(150000);
       expect(features.opt_vol_pcr).toBeCloseTo(200000 / 150000);
     });

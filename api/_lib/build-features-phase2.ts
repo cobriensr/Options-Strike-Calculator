@@ -199,59 +199,65 @@ export async function engineerPhase2Features(
     logger.warn({ err: mpErr }, 'Max pain feature extraction failed');
   }
 
-  // Dark pool features (from dark_pool_snapshots)
+  // Dark pool features (from dark_pool_levels — full tape, per-$1 SPX)
   try {
     const dpRows = await sql`
-      SELECT spx_price, clusters
-      FROM dark_pool_snapshots
+      SELECT spx_approx, total_premium, trade_count, total_shares
+      FROM dark_pool_levels
       WHERE date = ${dateStr}
-      ORDER BY timestamp DESC
-      LIMIT 1
+      ORDER BY total_premium DESC
     `;
 
-    if (dpRows.length > 0 && dpRows[0]!.clusters) {
-      const clusters = dpRows[0]!.clusters as Array<{
-        spxApprox: number;
-        totalPremium: number;
-        tradeCount: number;
-        buyerInitiated: number;
-        sellerInitiated: number;
-      }>;
-      const spxPrice = Number.parseFloat(String(dpRows[0]!.spx_price)) || null;
+    if (dpRows.length > 0) {
+      const levels = dpRows.map((r) => ({
+        spxLevel: Number(r.spx_approx),
+        totalPremium: Number(r.total_premium),
+        tradeCount: Number(r.trade_count),
+      }));
 
-      features.dp_total_premium = clusters.reduce(
-        (s, c) => s + c.totalPremium,
+      const totalPremium = levels.reduce(
+        (s, l) => s + l.totalPremium,
         0,
       );
-      features.dp_buyer_initiated = clusters.reduce(
-        (s, c) => s + c.buyerInitiated,
-        0,
-      );
-      features.dp_seller_initiated = clusters.reduce(
-        (s, c) => s + c.sellerInitiated,
-        0,
-      );
-      features.dp_cluster_count = clusters.length;
 
-      const totalBuyer = features.dp_buyer_initiated as number;
-      const totalSeller = features.dp_seller_initiated as number;
-      features.dp_net_bias =
-        totalBuyer > totalSeller * 1.5
-          ? 'BUYER'
-          : totalSeller > totalBuyer * 1.5
-            ? 'SELLER'
-            : 'MIXED';
+      features.dp_total_premium = totalPremium;
+      features.dp_cluster_count = levels.length;
 
-      if (clusters.length > 0 && spxPrice != null) {
-        features.dp_top_cluster_dist = clusters[0]!.spxApprox - spxPrice;
+      // Direction columns — not available from full tape (no NBBO comparison).
+      // Left null; old values from dark_pool_snapshots are no longer populated.
+      // features.dp_buyer_initiated = null;
+      // features.dp_seller_initiated = null;
+      // features.dp_net_bias = null;
+
+      const spxPrice = (features.spx_open as number | undefined) ?? null;
+      const topLevel = levels[0]!;
+
+      if (spxPrice != null) {
+        features.dp_top_cluster_dist = topLevel.spxLevel - spxPrice;
+
+        // Support = premium at levels AT or BELOW SPX; resistance = above
+        let support = 0;
+        let resistance = 0;
+        for (const l of levels) {
+          if (l.spxLevel <= spxPrice) {
+            support += l.totalPremium;
+          } else {
+            resistance += l.totalPremium;
+          }
+        }
+        features.dp_support_premium = support;
+        features.dp_resistance_premium = resistance;
+        features.dp_support_resistance_ratio =
+          resistance > 0
+            ? Math.round((support / resistance) * 10000) / 10000
+            : null;
       }
 
-      features.dp_support_premium = clusters
-        .filter((c) => c.buyerInitiated > c.sellerInitiated)
-        .reduce((s, c) => s + c.totalPremium, 0);
-      features.dp_resistance_premium = clusters
-        .filter((c) => c.sellerInitiated > c.buyerInitiated)
-        .reduce((s, c) => s + c.totalPremium, 0);
+      // Concentration: how much of total premium is at the single top level
+      features.dp_concentration =
+        totalPremium > 0
+          ? Math.round((topLevel.totalPremium / totalPremium) * 10000) / 10000
+          : null;
     }
   } catch (dpErr) {
     logger.warn({ err: dpErr }, 'Dark pool feature extraction failed');

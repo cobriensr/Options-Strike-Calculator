@@ -455,6 +455,7 @@ describe('db.ts', () => {
         { id: 26 },
         { id: 27 },
         { id: 28 },
+        { id: 29 },
       ]);
 
       const applied = await migrateDb();
@@ -501,11 +502,12 @@ describe('db.ts', () => {
         '#26: Add IV monitor and flow ratio monitor feature columns to training_features',
         '#27: Create dark_pool_levels table for cron-refreshed dark pool clusters',
         '#28: Add unique constraint on dark_pool_levels(date, spx_approx) for UPSERT',
+        '#29: Add dark pool support/resistance ratio and concentration to training_features',
       ]);
-      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) + 2 (#24: ALTER+INSERT) + 11 (#25: 3 CREATE+7 INDEX+INSERT) + 2 (#26: ALTER+INSERT) + 3 (#27: CREATE+INDEX+INSERT) + 2 (#28: CREATE INDEX+INSERT) = 105
-      expect(mockSql).toHaveBeenCalledTimes(105);
-      // Migrations #15-28 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(14);
+      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) + 2 (#24: ALTER+INSERT) + 11 (#25: 3 CREATE+7 INDEX+INSERT) + 2 (#26: ALTER+INSERT) + 3 (#27: CREATE+INDEX+INSERT) + 2 (#28: CREATE INDEX+INSERT) + 2 (#29: ALTER+INSERT) = 107
+      expect(mockSql).toHaveBeenCalledTimes(107);
+      // Migrations #15-29 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(15);
     });
 
     it('propagates errors from migration SQL', async () => {
