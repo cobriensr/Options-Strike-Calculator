@@ -28,9 +28,11 @@ import {
 
 interface TermStructureRow {
   date: string;
-  days: number | string;
+  dte: number | string;
+  days?: number | string;
   volatility: string;
   implied_move_perc?: string;
+  implied_move?: string;
 }
 
 interface RealizedVolRow {
@@ -41,7 +43,8 @@ interface RealizedVolRow {
 
 interface IvRankRow {
   date: string;
-  iv_rank: string;
+  iv_rank?: string;
+  iv_rank_1y?: string;
 }
 
 // ── Fetch helpers ───────────────────────────────────────────
@@ -83,14 +86,15 @@ async function storeTermStructure(
   let skipped = 0;
 
   for (const row of rows) {
-    const days = Number.parseInt(String(row.days), 10);
+    const days = Number.parseInt(String(row.dte ?? row.days), 10);
     if (Number.isNaN(days)) continue;
 
     const volatility =
       Number.parseFloat(String(row.volatility)) || 0;
-    const impliedMove = row.implied_move_perc
-      ? Number.parseFloat(String(row.implied_move_perc)) || null
-      : null;
+    const impliedMove =
+      Number.parseFloat(
+        String(row.implied_move_perc ?? row.implied_move ?? ''),
+      ) || null;
 
     const result = await sql`
       INSERT INTO vol_term_structure (date, days, volatility, implied_move)
@@ -135,7 +139,9 @@ async function storeRealizedVol(
   const latestIvRank =
     ivRankRows.length > 0 ? ivRankRows.at(-1) : null;
   const ivRank = latestIvRank
-    ? Number.parseFloat(String(latestIvRank.iv_rank)) || null
+    ? Number.parseFloat(
+        String(latestIvRank.iv_rank_1y ?? latestIvRank.iv_rank ?? ''),
+      ) || null
     : null;
 
   await sql`

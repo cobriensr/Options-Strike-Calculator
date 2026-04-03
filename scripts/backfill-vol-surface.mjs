@@ -76,20 +76,21 @@ async function uwFetch(path) {
 async function storeTermStructure(date, rows) {
   let stored = 0;
   for (const row of rows) {
-    const daysVal = Number.parseFloat(row.days);
+    const daysVal = Number.parseInt(String(row.dte ?? row.days), 10);
     const volatility = Number.parseFloat(row.volatility);
-    const impliedMove = Number.parseFloat(row.implied_move_perc) || null;
-    const percentile = Number.parseFloat(row.percentile) || null;
+    const impliedMove = Number.parseFloat(
+      row.implied_move_perc ?? row.implied_move,
+    ) || null;
 
     if (Number.isNaN(daysVal) || Number.isNaN(volatility)) continue;
 
     try {
       await sql`
         INSERT INTO vol_term_structure (
-          date, days, volatility, implied_move, percentile
+          date, days, volatility, implied_move
         ) VALUES (
           ${date}, ${daysVal}, ${volatility},
-          ${impliedMove}, ${percentile}
+          ${impliedMove}
         )
         ON CONFLICT (date, days) DO NOTHING
       `;
@@ -131,8 +132,8 @@ async function storeRealizedVol(date, rvRows, rankRows) {
     ivOverpricingPct = ((iv30d - rv30d) / rv30d) * 100;
   }
 
-  const ivRank = rankRow?.iv_rank != null
-    ? Number.parseFloat(rankRow.iv_rank)
+  const ivRank = (rankRow?.iv_rank_1y ?? rankRow?.iv_rank) != null
+    ? Number.parseFloat(rankRow.iv_rank_1y ?? rankRow.iv_rank)
     : null;
 
   try {
@@ -198,7 +199,7 @@ async function main() {
       if (ok) {
         const iv = rvData?.at(-1)?.implied_volatility;
         const rv = rvData?.at(-1)?.realized_volatility;
-        const rank = rankData?.at(-1)?.iv_rank;
+        const rank = rankData?.at(-1)?.iv_rank_1y ?? rankData?.at(-1)?.iv_rank;
         console.log(
           `  ${date}: RV stored` +
             (iv != null ? ` IV=${(Number(iv) * 100).toFixed(1)}%` : '') +
