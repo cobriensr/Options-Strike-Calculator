@@ -7,11 +7,14 @@ identifies patterns in structured trading data.
 Usage:
     python3 ml/eda.py
 
-Requires: pip install psycopg2-binary pandas scikit-learn scipy statsmodels
+Requires: pip install psycopg2-binary pandas scipy statsmodels
 """
 
+import json
 import sys
 import warnings
+from datetime import datetime, timezone
+from pathlib import Path
 
 try:
     import numpy as np
@@ -21,7 +24,7 @@ try:
     from statsmodels.stats.multitest import multipletests
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn scipy statsmodels")
+    print("  ml/.venv/bin/pip install psycopg2-binary pandas scipy statsmodels")
     sys.exit(1)
 
 from utils import (
@@ -310,9 +313,18 @@ def feature_importance(df: pd.DataFrame) -> None:
     correlations.sort(key=lambda x: abs(x[1]), reverse=True)
 
     # Apply Benjamini-Hochberg FDR correction
+    # Filter out NaN p-values (from constant-input columns) before correction,
+    # then map corrected q-values back; NaN p-values get NaN q-values.
     if len(correlations) > 1:
-        raw_pvals = [c[2] for c in correlations]
-        _, pvals_adj, _, _ = multipletests(raw_pvals, method='fdr_bh')
+        raw_pvals = np.array([c[2] for c in correlations])
+        valid_mask = ~np.isnan(raw_pvals)
+        pvals_adj = np.full(len(raw_pvals), np.nan)
+        if valid_mask.sum() > 1:
+            _, pvals_adj[valid_mask], _, _ = multipletests(
+                raw_pvals[valid_mask], method='fdr_bh'
+            )
+        elif valid_mask.sum() == 1:
+            pvals_adj[valid_mask] = raw_pvals[valid_mask]
         correlations = [
             (col, r, p_raw, n, p_adj)
             for (col, r, p_raw, n), p_adj in zip(correlations, pvals_adj)
@@ -358,8 +370,15 @@ def feature_importance(df: pd.DataFrame) -> None:
     f_scores.sort(key=lambda x: x[1], reverse=True)
 
     if len(f_scores) > 1:
-        raw_pvals = [s[2] for s in f_scores]
-        _, pvals_adj, _, _ = multipletests(raw_pvals, method='fdr_bh')
+        raw_pvals = np.array([s[2] for s in f_scores])
+        valid_mask = ~np.isnan(raw_pvals)
+        pvals_adj = np.full(len(raw_pvals), np.nan)
+        if valid_mask.sum() > 1:
+            _, pvals_adj[valid_mask], _, _ = multipletests(
+                raw_pvals[valid_mask], method='fdr_bh'
+            )
+        elif valid_mask.sum() == 1:
+            pvals_adj[valid_mask] = raw_pvals[valid_mask]
         f_scores = [
             (col, h, p_raw, p_adj)
             for (col, h, p_raw), p_adj in zip(f_scores, pvals_adj)
@@ -806,6 +825,162 @@ def key_findings(df: pd.DataFrame) -> None:
     print()
 
 
+# ── Persistence ─────────────────────────────────────────────
+
+def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
+    """Compute key metrics and write ml/findings.json."""
+
+    n_days = len(df)
+    n_labeled = len(labeled)
+    n_correct = int(labeled["structure_correct"].sum()) if n_labeled > 0 else 0
+
+    # ── Dataset overview ────────────────────────────────────
+    findings: dict = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "dataset": {
+            "total_days": n_days,
+            "labeled_days": n_labeled,
+            "date_range": [
+                f"{df.index.min():%Y-%m-%d}",
+                f"{df.index.max():%Y-%m-%d}",
+            ],
+            "overall_accuracy": round(n_correct / n_labeled, 3) if n_labeled else 0,
+        },
+    }
+
+    # ── Structure accuracy ──────────────────────────────────
+    structure_acc = {}
+    for struct in ["PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "IRON CONDOR"]:
+        subset = labeled[labeled["recommended_structure"] == struct]
+        has_correct = subset[subset["structure_correct"].notna()]
+        if len(has_correct) == 0:
+            continue
+        correct = int(has_correct["structure_correct"].sum())
+        total = len(has_correct)
+        structure_acc[struct] = {
+            "correct": correct,
+            "total": total,
+            "rate": round(correct / total, 3),
+        }
+    findings["structure_accuracy"] = structure_acc
+
+    # ── Confidence calibration ──────────────────────────────
+    conf_cal = {}
+    if "label_confidence" in labeled.columns:
+        for conf in ["HIGH", "MODERATE", "LOW"]:
+            subset = labeled[labeled["label_confidence"] == conf]
+            if len(subset) == 0:
+                continue
+            correct = int(subset["structure_correct"].sum())
+            total = len(subset)
+            conf_cal[conf] = {
+                "correct": correct,
+                "total": total,
+                "rate": round(correct / total, 3),
+            }
+    findings["confidence_calibration"] = conf_cal
+
+    # ── Flow reliability ────────────────────────────────────
+    flow_rel = {}
+    if "settlement_direction" in df.columns:
+        has_flow = df[df["settlement_direction"].notna()]
+        sources = [
+            ("mt_ncp_t1", "Market Tide"),
+            ("spx_ncp_t1", "SPX Net Flow"),
+            ("spy_ncp_t1", "SPY Net Flow"),
+            ("qqq_ncp_t1", "QQQ Net Flow"),
+            ("spy_etf_ncp_t1", "SPY ETF Tide"),
+            ("qqq_etf_ncp_t1", "QQQ ETF Tide"),
+            ("zero_dte_ncp_t1", "0DTE Index"),
+        ]
+        for col, label in sources:
+            if col not in has_flow.columns:
+                continue
+            subset = has_flow[[col, "settlement_direction"]].dropna()
+            if len(subset) < 5:
+                continue
+            ncp = subset[col].astype(float)
+            actual_up = subset["settlement_direction"] == "UP"
+            correct = int(((ncp > 0) == actual_up).sum())
+            total = len(subset)
+            flow_rel[label] = {
+                "correct": correct,
+                "total": total,
+                "rate": round(correct / total, 3),
+            }
+    findings["flow_reliability"] = flow_rel
+
+    # ── Majority baseline ───────────────────────────────────
+    majority = labeled["recommended_structure"].value_counts()
+    if len(majority) > 0:
+        findings["majority_baseline"] = {
+            "structure": majority.index[0],
+            "rate": round(majority.iloc[0] / n_labeled, 3) if n_labeled else 0,
+        }
+    else:
+        findings["majority_baseline"] = {"structure": "", "rate": 0}
+
+    # ── Top correctness predictors ──────────────────────────
+    target = labeled["structure_correct"].astype(float)
+    numeric_cols = labeled.select_dtypes(include=[np.number]).columns
+    exclude = {
+        "feature_completeness", "day_range_pts", "day_range_pct",
+        "settlement", "day_open", "day_high", "day_low", "close_vs_open",
+        "vix_close", "vix1d_close", "structure_correct", "label_completeness",
+        "day_of_week", "is_friday", "is_event_day",
+    }
+    feature_cols = [c for c in numeric_cols if c not in exclude]
+
+    correlations = []
+    for col in feature_cols:
+        vals = labeled[col].dropna().astype(float)
+        if len(vals) < 10:
+            continue
+        common = target.loc[vals.index]
+        if common.std() == 0 or vals.std() == 0:
+            continue
+        r, p = stats.pointbiserialr(common, vals)
+        if not np.isnan(r):
+            correlations.append((col, float(r), float(p)))
+
+    correlations.sort(key=lambda x: abs(x[1]), reverse=True)
+    findings["top_correctness_predictors"] = [
+        {"feature": col, "r": round(r, 3), "p": round(p, 3)}
+        for col, r, p in correlations[:10]
+    ]
+
+    # ── Top range predictors (Kruskal-Wallis H) ─────────────
+    has_range = df[df["range_category"].notna()].copy()
+    f_scores = []
+    if len(has_range) >= 10:
+        categories = has_range["range_category"].unique()
+        for col in feature_cols:
+            groups = []
+            for cat in categories:
+                vals = has_range[has_range["range_category"] == cat][col].dropna().astype(float)
+                if len(vals) >= 2:
+                    groups.append(vals.values)
+            if len(groups) >= 2:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", message="invalid value", category=RuntimeWarning
+                    )
+                    h_stat, p = stats.kruskal(*groups)
+                if not np.isnan(h_stat):
+                    f_scores.append((col, float(h_stat), float(p)))
+
+    f_scores.sort(key=lambda x: x[1], reverse=True)
+    findings["top_range_predictors"] = [
+        {"feature": col, "H": round(h, 2), "p": round(p, 3)}
+        for col, h, p in f_scores[:10]
+    ]
+
+    # ── Write ───────────────────────────────────────────────
+    out_path = Path(__file__).parent / "findings.json"
+    out_path.write_text(json.dumps(findings, indent=2) + "\n")
+    print(f"  Saved: ml/findings.json")
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def main() -> None:
@@ -832,6 +1007,9 @@ def main() -> None:
     options_volume_analysis(df)
     iv_pcr_analysis(df)
     key_findings(df)
+
+    labeled = df[df["structure_correct"].notna()].copy()
+    save_findings(df, labeled)
 
 
 if __name__ == "__main__":

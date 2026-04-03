@@ -1,0 +1,191 @@
+{
+  "generated_at": "2026-04-03T22:17:35+00:00",
+  "dataset": {
+    "total_days": 39,
+    "labeled_days": 36,
+    "date_range": [
+      "2026-02-09",
+      "2026-04-03"
+    ],
+    "overall_accuracy": 0.917
+  },
+  "structure_accuracy": {
+    "PUT CREDIT SPREAD": {
+      "correct": 13,
+      "total": 13,
+      "rate": 1.0
+    },
+    "CALL CREDIT SPREAD": {
+      "correct": 17,
+      "total": 19,
+      "rate": 0.895
+    },
+    "IRON CONDOR": {
+      "correct": 3,
+      "total": 4,
+      "rate": 0.75
+    }
+  },
+  "confidence_calibration": {
+    "HIGH": {
+      "correct": 22,
+      "total": 23,
+      "rate": 0.957
+    },
+    "MODERATE": {
+      "correct": 10,
+      "total": 12,
+      "rate": 0.833
+    },
+    "LOW": {
+      "correct": 1,
+      "total": 1,
+      "rate": 1.0
+    }
+  },
+  "flow_reliability": {
+    "Market Tide": {
+      "correct": 22,
+      "total": 36,
+      "rate": 0.611
+    },
+    "SPX Net Flow": {
+      "correct": 11,
+      "total": 36,
+      "rate": 0.306
+    },
+    "SPY Net Flow": {
+      "correct": 17,
+      "total": 36,
+      "rate": 0.472
+    },
+    "QQQ Net Flow": {
+      "correct": 22,
+      "total": 36,
+      "rate": 0.611
+    },
+    "SPY ETF Tide": {
+      "correct": 19,
+      "total": 32,
+      "rate": 0.594
+    },
+    "QQQ ETF Tide": {
+      "correct": 19,
+      "total": 32,
+      "rate": 0.594
+    },
+    "0DTE Index": {
+      "correct": 14,
+      "total": 28,
+      "rate": 0.5
+    }
+  },
+  "majority_baseline": {
+    "structure": "CALL CREDIT SPREAD",
+    "rate": 0.528
+  },
+  "top_correctness_predictors": [
+    {
+      "feature": "gamma_asymmetry",
+      "r": -0.997,
+      "p": 0.0
+    },
+    {
+      "feature": "spy_ncp_t2",
+      "r": -0.573,
+      "p": 0.0
+    },
+    {
+      "feature": "prev_day_range_pts",
+      "r": -0.441,
+      "p": 0.007
+    },
+    {
+      "feature": "opening_range_pct_consumed",
+      "r": -0.425,
+      "p": 0.011
+    },
+    {
+      "feature": "spy_ncp_t1",
+      "r": -0.385,
+      "p": 0.021
+    },
+    {
+      "feature": "qqq_npp_t1",
+      "r": -0.368,
+      "p": 0.027
+    },
+    {
+      "feature": "dte0_charm_pct",
+      "r": -0.356,
+      "p": 0.039
+    },
+    {
+      "feature": "delta_flow_total_t2",
+      "r": -0.304,
+      "p": 0.109
+    },
+    {
+      "feature": "delta_flow_total_t1",
+      "r": 0.264,
+      "p": 0.166
+    },
+    {
+      "feature": "gex_dir_t2",
+      "r": 0.256,
+      "p": 0.144
+    }
+  ],
+  "top_range_predictors": [
+    {
+      "feature": "gex_dir_t1",
+      "H": 10.67,
+      "p": 0.005
+    },
+    {
+      "feature": "gex_oi_t4",
+      "H": 8.29,
+      "p": 0.016
+    },
+    {
+      "feature": "delta_flow_total_t1",
+      "H": 7.99,
+      "p": 0.018
+    },
+    {
+      "feature": "zero_dte_ncp_t1",
+      "H": 7.65,
+      "p": 0.022
+    },
+    {
+      "feature": "gex_dir_t2",
+      "H": 6.95,
+      "p": 0.031
+    },
+    {
+      "feature": "oic_call_oi_change",
+      "H": 6.43,
+      "p": 0.04
+    },
+    {
+      "feature": "oic_oi_change_pcr",
+      "H": 6.39,
+      "p": 0.041
+    },
+    {
+      "feature": "gex_oi_t2",
+      "H": 6.27,
+      "p": 0.044
+    },
+    {
+      "feature": "oic_call_premium",
+      "H": 5.94,
+      "p": 0.051
+    },
+    {
+      "feature": "gex_oi_t3",
+      "H": 5.78,
+      "p": 0.055
+    }
+  ]
+}

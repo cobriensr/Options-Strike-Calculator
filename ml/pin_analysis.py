@@ -12,23 +12,33 @@ Questions this script answers:
 4. How does gamma asymmetry (above vs below ATM) predict settlement direction?
 
 Usage:
-    python3 ml/pin_analysis.py
+    python3 ml/pin_analysis.py            # Analysis only
+    python3 ml/pin_analysis.py --plot     # Analysis + save plots to ml/plots/
 
-Requires: pip install psycopg2-binary pandas sqlalchemy numpy
+Requires: pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn matplotlib seaborn
 """
 
+import argparse
 import sys
+from pathlib import Path
 
 try:
     import numpy as np
     import pandas as pd
     from sqlalchemy import create_engine, text
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+    from sklearn.pipeline import make_pipeline
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import StandardScaler, LabelEncoder
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas sqlalchemy numpy")
+    print("  ml/.venv/bin/pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn")
     sys.exit(1)
 
 from utils import load_env, section, subsection, takeaway
+
+PLOT_DIR = Path(__file__).resolve().parent / "plots"
 
 
 # ── Time checkpoints (UTC) for analysis ──────────────────────
@@ -1428,6 +1438,97 @@ def analyze_dte_regime() -> None:
             "            Stick with 0 DTE prox-centroid for now."
         )
 
+    # ── Cross-validated sklearn decision tree ──
+    _sklearn_regime_model(results, baseline_acc)
+
+
+def _sklearn_regime_model(
+    results: pd.DataFrame, baseline_acc: float,
+) -> None:
+    """
+    Train a DecisionTreeClassifier (depth=1) with TimeSeriesSplit
+    cross-validation to predict which DTE gamma profile wins.
+
+    This provides out-of-sample accuracy estimates, unlike the manual
+    threshold rules above which evaluate on the same data they're fit on.
+    """
+    subsection("Cross-validated decision tree (out-of-sample)")
+
+    feature_cols = [
+        c for c in [
+            "conc_0dte", "conc_1dte", "spread_0dte", "spread_1dte",
+            "mag_ratio", "peak_disagree", "vix", "agg_net_gamma",
+            "gamma_asymmetry",
+        ]
+        if c in results.columns
+    ]
+
+    if len(feature_cols) < 2:
+        print("  Insufficient features for sklearn model — skipping.")
+        return
+
+    X = results[feature_cols].copy()
+    le = LabelEncoder()
+    y = le.fit_transform(results["winner"])  # 0dte=0, 1dte=1
+
+    n_samples = len(X)
+    if n_samples < 10:
+        print(f"  Only {n_samples} samples — need 10+ for cross-validation.")
+        return
+
+    n_splits = min(3, n_samples // 3)
+    if n_splits < 2:
+        print("  Too few samples for TimeSeriesSplit — skipping.")
+        return
+
+    pipe = make_pipeline(
+        SimpleImputer(strategy="median"),
+        StandardScaler(),
+        DecisionTreeClassifier(
+            max_depth=1, random_state=42, class_weight="balanced",
+        ),
+    )
+
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    scores = cross_val_score(pipe, X, y, cv=tscv, scoring="accuracy")
+
+    cv_mean = scores.mean()
+    cv_std = scores.std()
+    print(f"  Features: {', '.join(feature_cols)}")
+    print(f"  TimeSeriesSplit folds: {n_splits}")
+    print(f"  CV accuracy: {cv_mean:.0%} ± {cv_std:.0%}")
+    print(f"  Baseline:    {baseline_acc:.0%} (always 0 DTE)")
+
+    lift = cv_mean - baseline_acc
+    if lift > 0.05:
+        # Fit on all data to inspect the learned rule
+        pipe.fit(X, y)
+        tree = pipe[-1]
+        if tree.tree_.feature[0] >= 0:
+            feat_idx = tree.tree_.feature[0]
+            feat_name = feature_cols[feat_idx]
+            # Inverse-transform the split threshold back to original scale
+            row = np.zeros((1, len(feature_cols)))
+            row[0, feat_idx] = tree.tree_.threshold[0]
+            threshold = pipe[1].inverse_transform(row)[0][feat_idx]
+            print(f"  Learned split: {feat_name} ≤ {threshold:.4g}")
+
+        takeaway(
+            f"Cross-validated tree adds {lift:+.0%} over baseline.\n"
+            "            This is out-of-sample — more reliable than\n"
+            "            the in-sample threshold rules above."
+        )
+    elif lift > 0.0:
+        takeaway(
+            f"CV tree adds only {lift:+.0%} — marginal.\n"
+            "            More data needed before trusting this model."
+        )
+    else:
+        takeaway(
+            "CV tree does not beat baseline out-of-sample.\n"
+            "            Stick with 0 DTE prox-centroid."
+        )
+
 
 def gamma_concentration(snapshot: pd.DataFrame) -> float:
     """Fraction of total |gamma| in the top 3 strikes."""
@@ -1709,9 +1810,397 @@ def backtest_composite_strategy() -> None:
         )
 
 
+# ── Plotting ──────────────────────────────────────────────────
+
+def generate_plots(df: pd.DataFrame) -> None:
+    """Generate visualization plots from the 0DTE strike data."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    # ── Style (matches visualize.py) ──
+    sns.set_theme(style="darkgrid", palette="muted")
+    plt.rcParams.update({
+        "figure.facecolor": "#1a1a2e",
+        "axes.facecolor": "#16213e",
+        "axes.edgecolor": "#555",
+        "axes.labelcolor": "#ccc",
+        "text.color": "#ccc",
+        "xtick.color": "#aaa",
+        "ytick.color": "#aaa",
+        "grid.color": "#333",
+        "grid.alpha": 0.5,
+        "font.size": 11,
+    })
+
+    COLORS = {
+        "green": "#2ecc71",
+        "red": "#e74c3c",
+        "blue": "#3498db",
+        "orange": "#f39c12",
+        "purple": "#9b59b6",
+        "cyan": "#1abc9c",
+        "pink": "#e91e63",
+        "gray": "#95a5a6",
+    }
+
+    PLOT_DIR.mkdir(exist_ok=True)
+    dates = sorted(df["date"].unique())
+
+    # ── Plot 1: Prox-Centroid vs Settlement Scatter ──────────
+
+    # Recompute per-day prox-centroid predictions at T-30min
+    scatter_rows = []
+    for date in dates:
+        day_data = df[df["date"] == date]
+        settlement = float(day_data["settlement"].iloc[0])
+
+        snapshot = find_nearest_snapshot(day_data, "19:30")
+        if snapshot is None:
+            snapshot = find_nearest_snapshot(day_data, "19:00")
+        if snapshot is None:
+            continue
+
+        profile = compute_gamma_profile(snapshot)
+        if not profile:
+            continue
+
+        prox_pred = profile["prox_centroid"]
+        scatter_rows.append({
+            "prediction_error": prox_pred - settlement,
+            "settlement_dist": settlement - prox_pred,
+        })
+
+    if len(scatter_rows) >= 3:
+        scatter_df = pd.DataFrame(scatter_rows)
+
+        # Compute confidence tiers: need both 0DTE and 1DTE data.
+        # Load 1DTE for confidence tiers.
+        try:
+            df_1dte = load_strike_data('1dte')
+            dates_1 = set(df_1dte["date"].unique())
+        except Exception:
+            df_1dte = pd.DataFrame()
+            dates_1 = set()
+
+        SNAP_CASCADE = ['19:30', '19:00', '20:00', '20:15']
+        conf_rows = []
+        for date in dates:
+            day_data = df[df["date"] == date]
+            settlement = float(day_data["settlement"].iloc[0])
+
+            snap_0 = find_nearest_snapshot(day_data, "19:30")
+            if snap_0 is None:
+                snap_0 = find_nearest_snapshot(day_data, "19:00")
+            if snap_0 is None:
+                continue
+
+            prof_0 = compute_gamma_profile(snap_0)
+            if not prof_0:
+                continue
+
+            prox_pred = prof_0["prox_centroid"]
+            error = prox_pred - settlement
+
+            # Determine confidence tier from centroid disagreement
+            conf = "MEDIUM"  # default when no 1DTE data
+            if date in dates_1 and len(df_1dte) > 0:
+                day_1 = df_1dte[df_1dte["date"] == date]
+                snap_1 = None
+                for cp in SNAP_CASCADE:
+                    snap_1 = find_nearest_snapshot(day_1, cp)
+                    if snap_1 is not None:
+                        break
+                if snap_1 is not None:
+                    prof_1 = compute_gamma_profile(snap_1)
+                    if prof_1:
+                        disagree = abs(
+                            prof_0["prox_centroid"]
+                            - prof_1["prox_centroid"]
+                        )
+                        if disagree <= 10:
+                            conf = "HIGH"
+                        elif disagree <= 20:
+                            conf = "MEDIUM"
+                        else:
+                            conf = "LOW"
+
+            conf_rows.append({
+                "error": error,
+                "confidence": conf,
+            })
+
+        conf_df = pd.DataFrame(conf_rows)
+
+        conf_colors = {
+            "HIGH": COLORS["green"],
+            "MEDIUM": COLORS["orange"],
+            "LOW": COLORS["red"],
+        }
+
+        fig, ax = plt.subplots(figsize=(10, 7))
+
+        for tier in ("HIGH", "MEDIUM", "LOW"):
+            subset = conf_df[conf_df["confidence"] == tier]
+            if len(subset) == 0:
+                continue
+            ax.scatter(
+                subset["error"],
+                subset["error"].abs(),
+                c=conf_colors[tier],
+                label=f"{tier} ({len(subset)})",
+                alpha=0.7,
+                s=50,
+                edgecolors="white",
+                linewidths=0.3,
+            )
+
+        # Reference bands
+        ax.axhspan(0, 10, color=COLORS["green"], alpha=0.08,
+                    label="Within +/-10 pts")
+        ax.axhspan(10, 20, color=COLORS["orange"], alpha=0.06,
+                    label="Within +/-20 pts")
+
+        ax.axvline(0, color="#666", linewidth=0.8, linestyle="--")
+
+        ax.set_xlabel("Prox-Centroid Prediction Error (pts from settlement)")
+        ax.set_ylabel("|Prediction Error| (abs distance)")
+        ax.set_title(
+            "Pin Analysis: Prox-Centroid vs Settlement",
+            fontsize=14, fontweight="bold",
+        )
+        ax.legend(loc="upper right", framealpha=0.8)
+
+        fig.savefig(
+            PLOT_DIR / "pin_settlement.png",
+            dpi=150, bbox_inches="tight",
+        )
+        plt.close(fig)
+        print("  Saved: ml/plots/pin_settlement.png")
+    else:
+        print("  Skipped pin_settlement.png (insufficient data)")
+
+    # ── Plot 2: Time-Decay Curve ─────────────────────────────
+
+    cp_labels = []
+    cp_avg_dists = []
+
+    for cp_name, cp_time in CHECKPOINTS.items():
+        dists = []
+        for date in dates:
+            day_data = df[df["date"] == date]
+            settlement = float(day_data["settlement"].iloc[0])
+            snapshot = find_nearest_snapshot(day_data, cp_time)
+            if snapshot is None:
+                continue
+            profile = compute_gamma_profile(snapshot)
+            if not profile:
+                continue
+            # Use best predictor (prox-centroid) for time decay
+            dists.append(abs(settlement - profile["prox_centroid"]))
+
+        if dists:
+            # Short label from checkpoint name
+            short = cp_name.split("(")[0].strip()
+            cp_labels.append(short)
+            cp_avg_dists.append(np.mean(dists))
+
+    if len(cp_labels) >= 2:
+        fig, ax = plt.subplots(figsize=(9, 6))
+
+        ax.plot(
+            cp_labels, cp_avg_dists,
+            color=COLORS["cyan"], marker="o", markersize=8,
+            linewidth=2.5, markeredgecolor="white", markeredgewidth=1,
+        )
+
+        # Fill area under curve
+        ax.fill_between(
+            cp_labels, cp_avg_dists,
+            alpha=0.15, color=COLORS["cyan"],
+        )
+
+        # Annotate each point
+        for i, (label, val) in enumerate(zip(cp_labels, cp_avg_dists)):
+            ax.annotate(
+                f"{val:.1f}",
+                (label, val),
+                textcoords="offset points",
+                xytext=(0, 12),
+                ha="center",
+                fontsize=10,
+                color=COLORS["cyan"],
+                fontweight="bold",
+            )
+
+        ax.set_xlabel("Time Checkpoint")
+        ax.set_ylabel("Avg Distance to Settlement (pts)")
+        ax.set_title(
+            "Settlement Prediction Improves Near Close",
+            fontsize=14, fontweight="bold",
+        )
+
+        # Rotate x labels if needed
+        plt.xticks(rotation=15, ha="right")
+
+        fig.savefig(
+            PLOT_DIR / "pin_time_decay.png",
+            dpi=150, bbox_inches="tight",
+        )
+        plt.close(fig)
+        print("  Saved: ml/plots/pin_time_decay.png")
+    else:
+        print("  Skipped pin_time_decay.png (insufficient data)")
+
+    # ── Plot 3: Composite Strategy Comparison ────────────────
+
+    # Need both 0DTE and 1DTE data for composite comparison.
+    # Recompute baselines and composite strategy distances.
+    try:
+        df_1dte_comp = load_strike_data('1dte')
+    except Exception:
+        df_1dte_comp = pd.DataFrame()
+
+    if len(df_1dte_comp) > 0 and df_1dte_comp["date"].nunique() >= 3:
+        dates_0 = set(df["date"].unique())
+        dates_1 = set(df_1dte_comp["date"].unique())
+        common_dates = sorted(dates_0 & dates_1)
+
+        if len(common_dates) >= 5:
+            SNAP_CASCADE = ['19:30', '19:00', '20:00', '20:15']
+
+            dists_always_0 = []
+            dists_always_1 = []
+            dists_composite = []
+            composite_w10_list = []
+
+            for date in common_dates:
+                day_0 = df[df["date"] == date]
+                day_1 = df_1dte_comp[df_1dte_comp["date"] == date]
+                settlement = float(day_0["settlement"].iloc[0])
+
+                snap_0, snap_1 = None, None
+                for cp in SNAP_CASCADE:
+                    if snap_0 is None:
+                        snap_0 = find_nearest_snapshot(day_0, cp)
+                    if snap_1 is None:
+                        snap_1 = find_nearest_snapshot(day_1, cp)
+                if snap_0 is None or snap_1 is None:
+                    continue
+
+                prof_0 = compute_gamma_profile(snap_0)
+                prof_1 = compute_gamma_profile(snap_1)
+                if not prof_0 or not prof_1:
+                    continue
+
+                conc = gamma_concentration(snap_0)
+                dist_0 = abs(settlement - prof_0["prox_centroid"])
+                dist_1 = abs(settlement - prof_1["prox_centroid"])
+
+                dists_always_0.append(dist_0)
+                dists_always_1.append(dist_1)
+
+                # Composite: use concentration threshold sweep
+                # (use 0.65 as a reasonable default; the exact best
+                # threshold was computed in backtest but we use a
+                # sensible middle value here)
+                if conc < 0.65:
+                    dists_composite.append(dist_1)
+                    composite_w10_list.append(dist_1 <= 10)
+                else:
+                    dists_composite.append(dist_0)
+                    composite_w10_list.append(dist_0 <= 10)
+
+            if len(dists_always_0) >= 3:
+                strategies = ["Always 0DTE", "Always 1DTE", "Composite\n(conc-gated)"]
+                avgs = [
+                    np.mean(dists_always_0),
+                    np.mean(dists_always_1),
+                    np.mean(dists_composite),
+                ]
+                w10_rates = [
+                    np.mean([d <= 10 for d in dists_always_0]),
+                    np.mean([d <= 10 for d in dists_always_1]),
+                    np.mean(composite_w10_list),
+                ]
+
+                fig, ax = plt.subplots(figsize=(8, 6))
+
+                bar_colors = [
+                    COLORS["blue"],
+                    COLORS["orange"],
+                    COLORS["green"],
+                ]
+
+                bars = ax.bar(
+                    strategies, avgs,
+                    color=bar_colors, edgecolor="white",
+                    linewidth=0.5, width=0.55,
+                )
+
+                # Value labels on bars
+                for bar, avg, w10 in zip(bars, avgs, w10_rates):
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.5,
+                        f"{avg:.1f} pts",
+                        ha="center", va="bottom",
+                        fontsize=12, fontweight="bold",
+                        color="#ccc",
+                    )
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() / 2,
+                        f"+/-10: {w10:.0%}",
+                        ha="center", va="center",
+                        fontsize=10,
+                        color="white",
+                        fontweight="bold",
+                    )
+
+                ax.set_ylabel("Avg Distance to Settlement (pts)\n(lower is better)")
+                ax.set_title(
+                    "0DTE vs 1DTE vs Composite Strategy",
+                    fontsize=14, fontweight="bold",
+                )
+
+                # Add "lower is better" arrow annotation
+                ax.annotate(
+                    "lower is better",
+                    xy=(0.02, 0.95), xycoords="axes fraction",
+                    fontsize=9, color=COLORS["gray"],
+                    fontstyle="italic",
+                )
+
+                fig.savefig(
+                    PLOT_DIR / "pin_composite.png",
+                    dpi=150, bbox_inches="tight",
+                )
+                plt.close(fig)
+                print("  Saved: ml/plots/pin_composite.png")
+            else:
+                print("  Skipped pin_composite.png (insufficient common data)")
+        else:
+            print("  Skipped pin_composite.png (< 5 common dates)")
+    else:
+        print("  Skipped pin_composite.png (insufficient 1DTE data)")
+
+    plt.close("all")
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Settlement Pin Risk Analysis",
+    )
+    parser.add_argument(
+        "--plot", action="store_true",
+        help="Save plots to ml/plots/",
+    )
+    args = parser.parse_args()
+
     print("Loading strike exposure + settlement data ...")
     df = load_strike_data()
 
@@ -1751,6 +2240,11 @@ def main() -> None:
     analyze_dte_comparison()
     analyze_dte_regime()
     backtest_composite_strategy()
+
+    if args.plot:
+        section("GENERATING PLOTS")
+        generate_plots(df)
+
     print()
 
 

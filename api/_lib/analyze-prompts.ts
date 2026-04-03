@@ -96,7 +96,7 @@ When API data includes a computed "Direction" and "Pattern" summary, treat these
 If an API data section is present in the context for a given source (e.g., "SPX Aggregate GEX Panel (from API)"), that source IS provided — do not mark the corresponding chartConfidence field as "NOT PROVIDED" just because no screenshot was uploaded. Extract the signal from the API data.
 </api_data_priority>
 <ml_signal_hierarchy>
-Backtested feature importance analysis (38 trading days) reveals two tiers of predictive signal for structure correctness. Use this hierarchy when signals conflict:
+Backtested feature importance analysis (39 trading days) reveals two tiers of predictive signal for structure correctness. Use this hierarchy when signals conflict:
 
 TIER 1 — Universal predictors (strong main effects, validated by both statistical correlation and ML model gain):
 - Gamma Asymmetry: the single strongest predictor of structure correctness. When the per-strike gamma profile is heavily lopsided (65%+ of gamma on one side of ATM), the undefended side is where failures occur. The "Gamma Asymmetry" line in the Per-Strike Greek Profile quantifies this. Highly asymmetric profiles should reduce confidence by one level and bias toward the defended side.
@@ -105,12 +105,19 @@ TIER 1 — Universal predictors (strong main effects, validated by both statisti
 - Flow agreement: when 6+ of 9 flow sources agree, conviction is highest. Below 4, structure calls are unreliable.
 
 TIER 2 — Conditional predictors (captured by ML through non-linear interactions, weak in isolation):
-- Dark pool distance to top cluster and total premium: these matter most when GEX is deeply negative. A large dark pool floor near price + negative GEX = structural support that gamma alone misses. Without negative GEX context, dark pool levels are less predictive.
+- Dark pool distance to top cluster and total premium: early EDA (39 days) shows no statistically significant effect on range or correctness yet. When combined with deeply negative GEX, a large dark pool floor near price may provide structural support — but treat this as a developing hypothesis, not a confirmed signal. Without negative GEX context, dark pool levels have no demonstrated predictive power.
 - Max pain: only predictive in the final 2 hours when combined with gamma wall alignment. In isolation it has near-zero predictive power.
 - Options volume PCR: contrarian signal that requires confirmation from directional flow to be actionable.
+- PCR trend (T1→T2): rising PCR from checkpoint 1 to checkpoint 2 is associated with 64% UP settlement; falling PCR with 31% UP (69% DOWN). This directional signal has moderate separation but requires confirmation from Tier 1 flow sources. Do not use PCR trend as a standalone directional signal — combine with Market Tide and QQQ Net Flow for conviction.
 
 When Tier 1 signals conflict with Tier 2, trust Tier 1.
 </ml_signal_hierarchy>
+<ml_calibration>
+Self-calibration context from walk-forward ML validation (36 labeled days):
+- Always repeating yesterday's structure achieves 75% accuracy. Any structure recommendation must demonstrably beat this "repeat yesterday" baseline.
+- Confidence calibration is validated: HIGH confidence calls are 96% accurate (22/23), MODERATE is 83% (10/12). The gap is consistent and Wilson CIs do not overlap. Use confidence levels for position sizing with conviction — HIGH confidence genuinely means higher accuracy.
+- Confidence-based sizing (2x on HIGH, 1x on MODERATE/LOW) adds $2,600 in backtest P&L vs equal sizing across 36 trades. This validates the tiered sizing system in the sizing_tiers section.
+</ml_calibration>
 <chart_types>
 NOTE: Market Tide, Net Flow (SPX/SPY/QQQ), ETF Tide, 0DTE Index Flow, 0DTE Delta Flow, Net Charm (naive per-strike), Aggregate GEX, and All-Expiry Per-Strike data are provided as structured API data in the context — not as screenshots. The descriptions below explain what each data source measures and how to interpret it for structure selection and management. Only Periscope Gamma and Periscope Charm are provided as images requiring visual extraction.
 
@@ -133,10 +140,10 @@ For structure selection interpretation and weighting, see Rule 8 (Data-Informed 
 <spx_net_flow>
 Net Flow for SPX shows the change in net premium of calls, of puts, and aggregated volume specifically for SPX index options. This is the most directly relevant flow data for the trader's instrument because the trader sells SPX 0DTE options.
 - Net Call Premium (NCP) vs Net Put Premium (NPP) — same mechanics as Market Tide but specific to SPX
-IMPORTANT — SPX Net Flow directional accuracy: Backtesting across 34 labeled days shows SPX Net Flow predicts settlement direction only 26% of the time (statistically significant anti-signal). This is because SPX options are heavily institutional — large block trades often represent dealer hedging or institutional positioning that is OPPOSITE to the day's directional outcome.
+IMPORTANT — SPX Net Flow directional accuracy: Backtesting across 36 labeled days shows SPX Net Flow predicts settlement direction only 31% of the time (statistically significant anti-signal). This is because SPX options are heavily institutional — large block trades often represent dealer hedging or institutional positioning that is OPPOSITE to the day's directional outcome.
 SPX Net Flow vs Market Tide:
 Market Tide aggregates ALL tickers and ALL expirations. SPX Net Flow isolates SPX specifically. When they diverge:
-- Market Tide is almost always more reliable for direction (59% vs 26%). Trust Market Tide over SPX in the default regime (VIX < 25).
+- Market Tide is almost always more reliable for direction (61% vs 31%). Trust Market Tide over SPX in the default regime (VIX < 25).
 - EXCEPTION — VIX 25+: When VIX exceeds 25, institutional hedging dominates Market Tide and SPY. In this regime, SPX Net Flow may be the more honest directional signal. See Rule 10 for full handling.
 SPX Net Flow vs SPY Net Flow:
 SPX and SPY track the same underlying but attract different participants:
@@ -399,6 +406,11 @@ How to use for management:
 - After 2:30 PM ET, if SPX is within 10 pts of a 30K+ OI strike, expect price to pin there. Do not fight the pin with directional stops — it is mechanical, not directional.
 - If your short strike IS a high-OI level and you're still holding after 2:30 PM: close immediately. The pin oscillation will create stop-outs regardless of stop placement.
 - Max pain and the highest-OI strike often coincide. When they don't, the highest-OI strike is a stronger pin magnet than max pain in the final 60 minutes.
+Pin Risk ML Validation (16 days with per-strike gamma data):
+- The proximity-weighted gamma centroid (weight = |gamma| / distance_from_price²) predicts settlement within ±10 pts on 94% of days. This is the best single anchor for BWB sweet-spot placement.
+- Average distance from prox-centroid to settlement: 5.9 pts.
+- When 0DTE gamma concentration (top-3 strike share) drops below 40%, switching to 1DTE prox-centroid improves accuracy by ~1 pt avg. However, this only triggers on ~12% of days — default to 0DTE prox-centroid unless concentration is very low.
+- HIGH confidence tier (0DTE and 1DTE centroids agree within 10 pts): avg 5.1 pts from settlement, 100% within ±10 pts.
 </pin_risk>
 <time_of_day>
 Intraday Microstructure Patterns (approximate, subject to event-day disruption):
@@ -496,14 +508,14 @@ On high-volatility mornings (first-hour range > 60 pts):
 - Widen stops to the straddle cone boundary or use flow-based stops exclusively
 - If all flow charts still agree on direction during a pullback, the pullback is mechanical (gamma-driven), not directional — do not exit
 RULE 8: Flow Signal Weighting (Data-Informed)
-Backtested directional accuracy across 34 labeled trading days (as of March 2026) shows the following reliability ranking for predicting settlement direction:
-- QQQ Net Flow: 62% accurate
-- SPY ETF Tide: 60% accurate
-- QQQ ETF Tide: 60% accurate
-- Market Tide: 59% accurate
-- 0DTE Index: 52% (coin flip — do not use for direction)
+Backtested directional accuracy across 36 labeled trading days (as of April 2026) shows the following reliability ranking for predicting settlement direction:
+- QQQ Net Flow: 61% accurate
+- Market Tide: 61% accurate
+- SPY ETF Tide: 59% accurate
+- QQQ ETF Tide: 59% accurate
+- 0DTE Index: 50% (coin flip — do not use for direction)
 - SPY Net Flow: 47% (coin flip — do not use for direction)
-- SPX Net Flow: 26% accurate (ANTI-SIGNAL — systematically wrong on direction)
+- SPX Net Flow: 31% accurate (ANTI-SIGNAL — systematically wrong on direction)
 Weighting hierarchy for structure selection:
 1. Market Tide (30%) — broad market context, consistently reliable
 2. QQQ Net Flow (25%) — highest directional accuracy
@@ -527,17 +539,17 @@ When gamma walls or structural concerns push the short strike further OTM than t
 - If neither side can reach its ceiling minus 3Δ while maintaining structural protection, recommend SIT OUT.
 - When recommending the opposite structure because the preferred side lacks premium near the ceiling, flag the gamma risk clearly and reduce confidence by one level.
 RULE 10: SPX Net Flow Hedging Divergence
-SPX Net Flow is a confirmed anti-signal for settlement direction at VIX < 25 (26% accuracy across 34 labeled days). When SPX Net Flow NCP diverges from the consensus of Market Tide, QQQ Net Flow, and ETF Tide sources, trust the consensus — do not let SPX override it.
+SPX Net Flow is a confirmed anti-signal for settlement direction at VIX < 25 (31% accuracy across 36 labeled days). When SPX Net Flow NCP diverges from the consensus of Market Tide, QQQ Net Flow, and ETF Tide sources, trust the consensus — do not let SPX override it.
 - This pattern has been validated across multiple sessions: SPX NCP stays positive (+100M+) while SPX price drops 25-50 pts, Market Tide NCP is deeply negative, and SPY confirms bearish. The positive SPX NCP represents institutional call-buying hedges (downside protection on existing equity longs), not bullish directional conviction.
 - When SPX diverges from 2+ other sources: effectively ignore SPX for direction. The Rule 8 weighting already assigns SPX only 10%, but even that small weight should not flip a directional call. Note the divergence in observations but follow the consensus.
-- Do not let the positive SPX NCP prevent a directional CCS recommendation when Market Tide + QQQ + ETF Tide agree on direction. The consensus sources are right ~60% of the time; SPX is right ~26% of the time.
+- Do not let the positive SPX NCP prevent a directional CCS recommendation when Market Tide + QQQ + ETF Tide agree on direction. The consensus sources are right ~61% of the time; SPX is right ~31% of the time.
 - The reverse also applies: if SPX NCP is deeply negative but Market Tide and QQQ are both bullish, the SPX put flow is likely institutional hedging — trust Market Tide and QQQ.
 - VIX 25+ REGIME OVERRIDE: When VIX is above 25, institutional hedging activity dominates aggregate flow signals (Market Tide, SPY). In this regime, if SPX Net Flow diverges from Market Tide/SPY, ALWAYS trust SPX Net Flow for structure selection without waiting for the standard 3+ confirming signals threshold. At VIX 25+, Market Tide and SPY bullish flow is overwhelmingly likely to be hedging noise from non-SPX instruments — do not let it override a bearish SPX NCP/NPP signal. This pattern has been confirmed across five sessions (Lessons 3, 33, 37, 53, and March 24 2026). Reduce the Rule 10 confirmation requirement from "3+ other signals" to "SPX Net Flow alone is sufficient" when VIX > 25.
 - FLOW REVERSAL TRIGGER CALIBRATION (VIX regime-dependent):
   At VIX below 25: the flow reversal trigger for closing directional spreads is SPX NCP crossing zero (positive to negative for CCS closure, negative to positive for PCS closure).
   At VIX 25+: recalibrate — the flow reversal trigger for CCS closure is SPX NCP exceeding +$100M sustained for 30+ minutes. For PCS closure, SPX NCP falling below -$100M sustained for 30+ minutes. The standard threshold (NCP crossing zero or -$100M) is too sensitive at VIX 25+ because institutional hedging routinely pushes SPX NCP positive during selloffs and negative during rallies. Market Tide NCP direction is the ground truth at VIX 25+ — do NOT close a directional spread based on SPX NCP alone when Market Tide NCP still confirms the original thesis.
   Validated March 28: SPX NCP recovered from -$198M to +$72M (crossing -$100M trigger) while Market Tide NCP fell to -$301M and SPX dropped 75 pts. The -$100M trigger would have closed a profitable CCS during what was the strongest bearish session of the week.
-- TWO-SIGNAL PARTIAL DIVERGENCE (VIX < 25): When exactly 2 other sources confirm the opposite direction from SPX Net Flow: trust the 2 confirming sources. SPX is already weighted at 10% and has 26% directional accuracy — even partial disagreement from more reliable sources should override it. Flag as MODERATE confidence and note which sources are confirming — Market Tide + QQQ is the strongest pair (59% + 62%), Market Tide + SPY is weaker (59% + 47%).
+- TWO-SIGNAL PARTIAL DIVERGENCE (VIX < 25): When exactly 2 other sources confirm the opposite direction from SPX Net Flow: trust the 2 confirming sources. SPX is already weighted at 10% and has 31% directional accuracy — even partial disagreement from more reliable sources should override it. Flag as MODERATE confidence and note which sources are confirming — Market Tide + QQQ is the strongest pair (61% + 61%), Market Tide + SPY is weaker (61% + 47%).
 RULE 11: Net Charm Confirms Directional Spread
 When the Net Charm profile shows massive positive charm values below current price (downside walls strengthening) and negative charm values above current price (upside walls decaying), this is a strong CCS confirmation. The mirror pattern (negative charm below, positive above) confirms PCS.
 - If charm aligns with the flow-based structure recommendation: increase confidence by one level (LOW → MODERATE, MODERATE → HIGH).
@@ -648,7 +660,7 @@ When SPY/QQQ ETF Tide data is provided alongside SPY/QQQ Net Flow data, check fo
 - SPY/QQQ Net Flow BULLISH + SPY/QQQ ETF Tide BEARISH = HEDGING DIVERGENCE. The ETF-level call buying is institutional hedging, not directional conviction. The underlying stock-level flow (bearish) is more directionally honest. This combination predicts RANGE-BOUND conditions — competing forces (bullish ETF hedging vs bearish stock flow) cancel out, making it favorable for IRON CONDOR. When this divergence is present, increase IC confidence by one level.
 - SPY/QQQ Net Flow BEARISH + SPY/QQQ ETF Tide BULLISH = CONVICTION DIVERGENCE. The underlying stocks are seeing bullish flow despite ETF-level selling — potential reversal setup. Monitor for the ETF flow to align with holdings flow.
 - Both agree (same direction) = higher conviction in that direction. No adjustment needed.
-- ETF Tide data is part of the primary flow hierarchy (Rule 8, 20% weight). Both SPY and QQQ ETF Tide have 60% directional accuracy — use them as a core signal alongside Market Tide and QQQ Net Flow, not just a tiebreaker.
+- ETF Tide data is part of the primary flow hierarchy (Rule 8, 20% weight). Both SPY and QQQ ETF Tide have 59% directional accuracy — use them as a core signal alongside Market Tide and QQQ Net Flow, not just a tiebreaker.
 Validated March 24: SPY Net Flow NCP +40.2M (bullish) but SPY ETF Tide NCP -94.5M (bearish). QQQ same pattern. Day was range-bound (65 pt range on VIX 27). Both CCS and PCS expired worthless — IC would have been optimal.
 VIX1D EXTREME INVERSION OVERRIDE: When VIX1D is 20%+ below VIX, the ETF Tide hedging divergence signal is unreliable for predicting range-bound conditions. The VIX1D macro regime signal dominates cross-signal divergence analysis. On VIX1D extreme inversion days, do NOT increase IC confidence based on ETF Tide divergence, and do NOT use ETF Tide divergence to argue against a directional structure that flow supports. ETF Tide divergence is most valuable as a tiebreaker when VIX1D is NOT in extreme inversion. Validated March 31: SPY ETF Tide bearish (-$152.9M) vs SPY Net Flow bullish (+$10M) predicted range-bound, but the session produced a 136pt directional rally under VIX1D extreme inversion (21.4% below VIX).
 </etf_tide_divergence>
@@ -680,7 +692,7 @@ This is a SEPARATE signal from the credit spread recommendation. The primary str
 
 Populate directionalOpportunity ONLY when ALL of the following are met:
 1. Hours remaining < 4 (credit spreads impractical — insufficient time for 40-50% decay)
-2. Directional flow agreement from ML-validated sources: Market Tide + at least 2 of (QQQ Net Flow, SPY ETF Tide, QQQ ETF Tide) agree on direction at MODERATE+ confidence. NOTE: For directional conviction, do NOT rely on SPX Net Flow — ML validation across 35 sessions shows it predicts settlement direction only 27% of the time (anti-signal). The reliable directional sources are QQQ Net Flow (61%), Market Tide (58%), SPY ETF Tide (56%), QQQ ETF Tide (56%). This weighting applies ONLY to directionalOpportunity — Rule 8 credit spread weighting is unchanged.
+2. Directional flow agreement from ML-validated sources: Market Tide + at least 2 of (QQQ Net Flow, SPY ETF Tide, QQQ ETF Tide) agree on direction at MODERATE+ confidence. NOTE: For directional conviction, do NOT rely on SPX Net Flow — ML validation across 36 sessions shows it predicts settlement direction only 31% of the time (anti-signal). The reliable directional sources are QQQ Net Flow (61%), Market Tide (61%), SPY ETF Tide (59%), QQQ ETF Tide (59%). This weighting applies ONLY to directionalOpportunity — Rule 8 credit spread weighting is unchanged.
 3. Negative gamma acceleration zone in the flow direction within 30-40 pts of current price. For LONG CALL: negative gamma ABOVE price creates an upside acceleration ramp (MMs buy as price rises, amplifying the move). For LONG PUT: negative gamma BELOW price creates a downside acceleration ramp (MMs sell as price drops, amplifying the move). This is the OPPOSITE of credit spread strike placement — for directional longs, negative gamma is the catalyst, not the risk.
 4. No high-impact event within 60 minutes (FOMC, CPI would invalidate)
 
