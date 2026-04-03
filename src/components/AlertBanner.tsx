@@ -87,7 +87,7 @@ export default function AlertBanner({
           <div
             key={alert.id}
             role="alert"
-            className={`mx-auto flex max-w-2xl items-start gap-3 rounded-lg border p-3 shadow-lg backdrop-blur-sm${isExtreme ? ' animate-pulse' : ''}`}
+            className={`mx-auto flex max-w-2xl items-start gap-3 rounded-lg border p-3 shadow-lg backdrop-blur-sm${isExtreme ? 'animate-pulse' : ''}`}
             style={sev}
           >
             <div className="min-w-0 flex-1">
