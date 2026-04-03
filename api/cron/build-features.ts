@@ -147,7 +147,10 @@ async function buildFeaturesForDate(
   const sql = getDb();
   const features: FeatureRow = { date: dateStr };
 
-  // 1. Static features from market_snapshots (use earliest entry)
+  // 1. Static features from market_snapshots
+  // Prefer the earliest entry that has spx_open populated (many early/
+  // pre-market snapshots store NaN before cash open). Fall back to the
+  // absolute earliest if no snapshot has spx_open.
   const snapshots = await sql`
     SELECT vix, vix1d, vix9d, vvix, vix1d_vix_ratio, vix_vix9d_ratio,
            regime_zone, cluster_mult, dow_mult_hl, dow_label,
@@ -156,7 +159,8 @@ async function buildFeaturesForDate(
            opening_range_signal, opening_range_pct_consumed, is_event_day
     FROM market_snapshots
     WHERE date = ${dateStr}
-    ORDER BY entry_time ASC
+    ORDER BY (spx_open IS NULL OR spx_open = 'NaN') ASC,
+             entry_time ASC
     LIMIT 1
   `;
 
