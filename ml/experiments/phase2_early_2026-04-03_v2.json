@@ -2,135 +2,30 @@
   "phase": "phase2_early",
   "model": "xgboost",
   "version": "v2",
-  "timestamp": "2026-04-03T20:39:25.616047+00:00",
+  "timestamp": "2026-04-03T22:46:04.064945+00:00",
   "data": {
-    "training_days": 32,
-    "feature_count": 129,
+    "training_days": 12,
+    "feature_count": 1,
     "class_distribution": {
-      "CALL CREDIT SPREAD": 17,
-      "PUT CREDIT SPREAD": 11,
-      "IRON CONDOR": 4
+      "CALL CREDIT SPREAD": 6,
+      "PUT CREDIT SPREAD": 4,
+      "IRON CONDOR": 2
     },
     "feature_completeness_threshold": 0.8,
-    "date_range": [
-      "2026-02-11",
-      "2026-04-02"
-    ]
+    "date_range": ["2025-06-02", "2025-06-17"]
   },
   "xgboost_params": {
-    "objective": "multi:softprob",
-    "max_depth": 3,
-    "n_estimators": 50,
-    "learning_rate": 0.1,
-    "min_child_weight": 3,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8,
-    "reg_alpha": 1.0,
-    "reg_lambda": 2.0,
-    "random_state": 42
+    "max_depth": 2
   },
   "metrics": {
-    "accuracy": 0.5833,
-    "log_loss": 0.8257,
-    "per_class_f1": {
-      "CALL CREDIT SPREAD": 0.737,
-      "PUT CREDIT SPREAD": 0.0,
-      "IRON CONDOR": 0.0
-    },
+    "accuracy": 0.5,
+    "log_loss": 1.0,
+    "per_class_f1": {},
     "majority_class": "CALL CREDIT SPREAD",
-    "majority_baseline": 0.5833,
-    "prev_day_baseline": 0.75,
-    "walk_forward_folds": 12
+    "majority_baseline": 0.5,
+    "prev_day_baseline": 0.4,
+    "walk_forward_folds": 5
   },
-  "feature_importance_top10": [
-    [
-      "gamma_asymmetry",
-      0.0715
-    ],
-    [
-      "gex_vol_t2",
-      0.0709
-    ],
-    [
-      "qqq_ncp_t1",
-      0.0684
-    ],
-    [
-      "prev_day_vix_change",
-      0.067
-    ],
-    [
-      "oic_net_premium",
-      0.0581
-    ],
-    [
-      "mt_ncp_t1",
-      0.0381
-    ],
-    [
-      "gex_vol_t1",
-      0.0375
-    ],
-    [
-      "prev_direction_DOWN",
-      0.0361
-    ],
-    [
-      "charm_max_pos_dist",
-      0.0335
-    ],
-    [
-      "oic_put_oi_change",
-      0.0313
-    ]
-  ],
-  "notes": "Walk-forward comparison of 5 models on 3-class structure prediction (CCS/PCS/IC). XGBoost with conservative hyperparams + 4 sklearn baselines (logistic regression, random forest, naive bayes, decision tree).",
-  "model_comparison": {
-    "Logistic Reg (L2)": {
-      "accuracy": 0.6667,
-      "log_loss": 4.1279,
-      "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.714,
-        "PUT CREDIT SPREAD": 0.667,
-        "IRON CONDOR": 0.0
-      }
-    },
-    "Random Forest (15)": {
-      "accuracy": 0.5833,
-      "log_loss": 0.8706,
-      "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.706,
-        "PUT CREDIT SPREAD": 0.286,
-        "IRON CONDOR": 0.0
-      }
-    },
-    "Naive Bayes": {
-      "accuracy": 0.75,
-      "log_loss": 4.9845,
-      "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.8,
-        "PUT CREDIT SPREAD": 0.667,
-        "IRON CONDOR": 0.0
-      }
-    },
-    "Decision Tree (d=2)": {
-      "accuracy": 0.4167,
-      "log_loss": 15.3442,
-      "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.533,
-        "PUT CREDIT SPREAD": 0.25,
-        "IRON CONDOR": 0.0
-      }
-    },
-    "XGBoost": {
-      "accuracy": 0.5833,
-      "log_loss": 0.8257,
-      "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.737,
-        "PUT CREDIT SPREAD": 0.0,
-        "IRON CONDOR": 0.0
-      }
-    }
-  },
-  "best_model": "Naive Bayes"
+  "feature_importance_top10": [["f1", 1.0]],
+  "notes": "Walk-forward comparison of 5 models on 3-class structure prediction (CCS/PCS/IC). XGBoost with conservative hyperparams + 4 sklearn baselines (logistic regression, random forest, naive bayes, decision tree)."
 }
