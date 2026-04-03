@@ -29,6 +29,7 @@ except ImportError:
 
 from utils import (
     ML_ROOT,
+    get_connection,
     load_data,
     validate_dataframe,
     section,
@@ -979,7 +980,34 @@ def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
     # ── Write ───────────────────────────────────────────────
     out_path = ML_ROOT / "findings.json"
     out_path.write_text(json.dumps(findings, indent=2) + "\n")
-    print(f"  Saved: ml/findings.json")
+    print("  Saved: ml/findings.json")
+
+    _upsert_findings_db(findings)
+
+
+def _upsert_findings_db(findings: dict) -> None:
+    """Upsert findings into ml_findings table for dynamic prompt injection."""
+    import json as _json
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO ml_findings (id, findings, updated_at)
+            VALUES (1, %s, NOW())
+            ON CONFLICT (id) DO UPDATE
+              SET findings = EXCLUDED.findings,
+                  updated_at = NOW()
+            """,
+            (_json.dumps(findings),),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("  Saved: ml_findings table (DB)")
+    except Exception as e:
+        print(f"  Warning: Could not upsert ml_findings to DB: {e}")
+        print("  (findings.json was still saved locally)")
 
 
 # ── Main ─────────────────────────────────────────────────────

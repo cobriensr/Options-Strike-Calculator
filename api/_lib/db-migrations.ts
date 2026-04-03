@@ -838,8 +838,7 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     id: 31,
-    description:
-      'Add OI change feature columns to training_features',
+    description: 'Add OI change feature columns to training_features',
     statements: (sql) => [
       sql`
         ALTER TABLE training_features
@@ -859,8 +858,7 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     id: 32,
-    description:
-      'Create vol_term_structure and vol_realized tables',
+    description: 'Create vol_term_structure and vol_realized tables',
     statements: (sql) => [
       sql`
         CREATE TABLE IF NOT EXISTS vol_term_structure (
@@ -890,8 +888,7 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     id: 33,
-    description:
-      'Add vol surface feature columns to training_features',
+    description: 'Add vol surface feature columns to training_features',
     statements: (sql) => [
       sql`
         ALTER TABLE training_features
@@ -902,6 +899,20 @@ export const MIGRATIONS: Migration[] = [
           ADD COLUMN IF NOT EXISTS uw_iv_rv_spread       DECIMAL(8,4),
           ADD COLUMN IF NOT EXISTS uw_iv_overpricing_pct DECIMAL(8,4),
           ADD COLUMN IF NOT EXISTS iv_rank               DECIMAL(6,2)
+      `,
+    ],
+  },
+  {
+    id: 34,
+    description: 'Create ml_findings table for dynamic ML calibration',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS ml_findings (
+          id          INTEGER PRIMARY KEY DEFAULT 1,
+          findings    JSONB NOT NULL,
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CONSTRAINT  ml_findings_singleton CHECK (id = 1)
+        )
       `,
     ],
   },

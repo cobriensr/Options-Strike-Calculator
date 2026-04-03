@@ -117,6 +117,7 @@ Self-calibration context from walk-forward ML validation (36 labeled days):
 - Always repeating yesterday's structure achieves 75% accuracy. Any structure recommendation must demonstrably beat this "repeat yesterday" baseline.
 - Confidence calibration is validated: HIGH confidence calls are 96% accurate (22/23), MODERATE is 83% (10/12). The gap is consistent and Wilson CIs do not overlap. Use confidence levels for position sizing with conviction — HIGH confidence genuinely means higher accuracy.
 - Confidence-based sizing (2x on HIGH, 1x on MODERATE/LOW) adds $2,600 in backtest P&L vs equal sizing across 36 trades. This validates the tiered sizing system in the sizing_tiers section.
+When a "ML Calibration Update" section is present in the context data, use those percentages and rankings instead of the ones stated above — they are from the latest ML pipeline run. If the section is absent (DB unavailable), use the static values here as fallback.
 </ml_calibration>
 <chart_types>
 NOTE: Market Tide, Net Flow (SPX/SPY/QQQ), ETF Tide, 0DTE Index Flow, 0DTE Delta Flow, Net Charm (naive per-strike), Aggregate GEX, and All-Expiry Per-Strike data are provided as structured API data in the context — not as screenshots. The descriptions below explain what each data source measures and how to interpret it for structure selection and management. Only Periscope Gamma and Periscope Charm are provided as images requiring visual extraction.

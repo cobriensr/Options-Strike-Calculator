@@ -33,10 +33,7 @@ import {
 } from './darkpool.js';
 import type { DarkPoolCluster } from './darkpool.js';
 import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
-import {
-  getOiChangeData,
-  formatOiChangeForClaude,
-} from './db-oi-change.js';
+import { getOiChangeData, formatOiChangeForClaude } from './db-oi-change.js';
 import logger from './logger.js';
 import {
   getActiveLessons,
@@ -98,6 +95,84 @@ export interface AnalysisContextResult {
   lessonsBlock: string;
   /** Clustered dark pool data for persistence (null if unavailable). */
   darkPoolClusters: DarkPoolCluster[] | null;
+}
+
+function formatMlFindingsForClaude(
+  findings: Record<string, unknown>,
+  updatedAt: Date,
+): string {
+  const d = findings.dataset as {
+    total_days: number;
+    labeled_days: number;
+    date_range: string[];
+    overall_accuracy: number;
+  };
+  const conf = findings.confidence_calibration as Record<
+    string,
+    { correct: number; total: number; rate: number }
+  >;
+  const flow = findings.flow_reliability as Record<
+    string,
+    { correct: number; total: number; rate: number }
+  >;
+  const structAcc = findings.structure_accuracy as Record<
+    string,
+    { correct: number; total: number; rate: number }
+  >;
+  const majority = findings.majority_baseline as {
+    structure: string;
+    rate: number;
+  };
+  const topPredictors = (
+    findings.top_correctness_predictors as Array<{
+      feature: string;
+      r: number;
+      p: number;
+    }>
+  )?.slice(0, 5);
+
+  const lines: string[] = [
+    `Latest ML pipeline run: ${updatedAt.toISOString().slice(0, 10)} (${d.total_days} days, ${d.labeled_days} labeled, ${d.date_range[0]} to ${d.date_range[1]})`,
+    `Overall accuracy: ${(d.overall_accuracy * 100).toFixed(1)}%`,
+    '',
+    'Structure accuracy:',
+  ];
+
+  for (const [struct, acc] of Object.entries(structAcc)) {
+    lines.push(
+      `  ${struct}: ${acc.correct}/${acc.total} (${(acc.rate * 100).toFixed(0)}%)`,
+    );
+  }
+
+  lines.push('', 'Confidence calibration:');
+  for (const [level, cal] of Object.entries(conf)) {
+    lines.push(
+      `  ${level}: ${cal.correct}/${cal.total} (${(cal.rate * 100).toFixed(0)}%)`,
+    );
+  }
+
+  lines.push('', 'Flow source accuracy (settlement direction):');
+  for (const [source, rel] of Object.entries(flow)) {
+    lines.push(
+      `  ${source}: ${rel.correct}/${rel.total} (${(rel.rate * 100).toFixed(0)}%)`,
+    );
+  }
+
+  lines.push(
+    '',
+    `Previous-day baseline: always repeat yesterday = ${(majority.rate * 100).toFixed(0)}% (structure: ${majority.structure})`,
+  );
+
+  if (topPredictors?.length) {
+    lines.push('', 'Top correctness predictors:');
+    for (const pred of topPredictors) {
+      const dir =
+        pred.r > 0 ? 'higher = MORE correct' : 'higher = LESS correct';
+      lines.push(`  ${pred.feature}: r=${pred.r.toFixed(3)} (${dir})`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 /**
@@ -197,6 +272,7 @@ export async function buildAnalysisContext(
   let maxPainContext: string | null = null;
   let oiChangeContext: string | null = null;
   let volRealizedContext: string | null = null;
+  let mlCalibrationContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
@@ -346,14 +422,11 @@ export async function buildAnalysisContext(
         rv.iv_overpricing_pct != null
           ? Number(rv.iv_overpricing_pct).toFixed(1)
           : null;
-      const rank =
-        rv.iv_rank != null ? Number(rv.iv_rank).toFixed(0) : null;
+      const rank = rv.iv_rank != null ? Number(rv.iv_rank).toFixed(0) : null;
 
       const lines: string[] = [];
       if (iv30 && rv30) {
-        lines.push(
-          `30D Implied Vol: ${iv30}% | 30D Realized Vol: ${rv30}%`,
-        );
+        lines.push(`30D Implied Vol: ${iv30}% | 30D Realized Vol: ${rv30}%`);
         if (spread) {
           const label =
             Number(spread) > 0 ? 'IV OVERPRICING' : 'IV UNDERPRICING';
@@ -504,6 +577,26 @@ export async function buildAnalysisContext(
     }
   } catch (oicErr) {
     logger.error({ err: oicErr }, 'Failed to fetch OI change data');
+  }
+
+  // ML calibration — latest validated ML findings from EDA pipeline
+  try {
+    const sql = getDb();
+    const mlRows = await sql`
+      SELECT findings, updated_at FROM ml_findings WHERE id = 1
+    `;
+    if (mlRows.length > 0) {
+      const { findings, updated_at } = mlRows[0] as {
+        findings: Record<string, unknown>;
+        updated_at: Date;
+      };
+      mlCalibrationContext = formatMlFindingsForClaude(findings, updated_at);
+    }
+  } catch (mlErr) {
+    logger.warn(
+      { err: mlErr },
+      'ML findings fetch failed — using static prompt values',
+    );
   }
 
   // On-demand 14 DTE directional chain (midday only, not backtests)
@@ -671,6 +764,7 @@ export async function buildAnalysisContext(
   })()}
 - Backtest mode: ${context.isBacktest ? 'YES — using historical data' : 'NO — live'}
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
+${mlCalibrationContext ? `\n## ML Calibration Update (from latest EDA pipeline run)\nWhen these numbers differ from the static values in the system prompt rules, use THESE numbers — they are more recent.\n${mlCalibrationContext}\n` : ''}
 ${unavailableSection}
 ${marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${marketTideContext}\n${marketTideOtmSection}` : ''}
 ${spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. These are the primary flow signal (Rule 8, 50% weight). Trust these values over screenshot estimates.\n\n${spxFlowContext}\n` : ''}
