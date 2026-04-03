@@ -21,10 +21,12 @@ except ImportError:
     print("Missing dependencies. Run:\n  ml/.venv/bin/pip install psycopg2-binary pandas")
     sys.exit(1)
 
+from utils import ML_ROOT
+
 
 def load_env() -> dict[str, str]:
     """Read .env file from repo root into a dict."""
-    env_path = Path(__file__).resolve().parent.parent / ".env"
+    env_path = ML_ROOT.parent / ".env"
     env = {}
     if env_path.exists():
         for line in env_path.read_text().splitlines():

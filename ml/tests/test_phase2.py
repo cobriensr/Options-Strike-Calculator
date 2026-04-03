@@ -987,8 +987,8 @@ class TestSaveExperiment:
 
         monkeypatch.setattr(
             phase2_early,
-            "__file__",
-            str(tmp_path / "phase2_early.py"),
+            "ML_ROOT",
+            tmp_path,
         )
 
         rng = np.random.default_rng(42)
@@ -1060,8 +1060,8 @@ class TestSaveExperiment:
 
         monkeypatch.setattr(
             phase2_early,
-            "__file__",
-            str(tmp_path / "phase2_early.py"),
+            "ML_ROOT",
+            tmp_path,
         )
 
         rng = np.random.default_rng(7)
@@ -1128,8 +1128,8 @@ class TestSaveExperiment:
 
         monkeypatch.setattr(
             phase2_early,
-            "__file__",
-            str(tmp_path / "phase2_early.py"),
+            "ML_ROOT",
+            tmp_path,
         )
 
         rng = np.random.default_rng(11)
@@ -1547,8 +1547,8 @@ class TestMain:
         )
         monkeypatch.setattr(
             phase2_early,
-            "__file__",
-            str(tmp_path / "phase2_early.py"),
+            "ML_ROOT",
+            tmp_path,
         )
         # Suppress save_experiment file I/O
         monkeypatch.setattr(

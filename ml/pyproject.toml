@@ -1,5 +1,5 @@
 [tool.pytest.ini_options]
-testpaths = ["."]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = [
@@ -9,10 +9,10 @@ addopts = [
 ]
 
 [tool.coverage.run]
-source = ["."]
+source = ["src"]
 omit = [
   ".venv/*",
-  "test_*.py",
+  "tests/*",
   "__pycache__/*",
   "experiments/*",
   "plots/*",

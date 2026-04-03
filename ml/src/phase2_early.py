@@ -47,6 +47,7 @@ except ImportError:
     sys.exit(1)
 
 from utils import (
+    ML_ROOT,
     load_data,
     validate_dataframe,
     section,
@@ -685,7 +686,7 @@ def save_experiment(
         experiment["model_comparison"] = comparison
         experiment["best_model"] = best_name
 
-    exp_dir = Path(__file__).resolve().parent / "experiments"
+    exp_dir = ML_ROOT / "experiments"
     exp_dir.mkdir(exist_ok=True)
     date_str = datetime.now().strftime("%Y-%m-%d")
     filename = f"phase2_early_{date_str}_v2.json"
@@ -838,7 +839,7 @@ def main() -> None:
         shap_pipe, _ = train_final_model(
             X, y, xgb_params, numeric_cols, categorical_cols,
         )
-        plot_dir = Path(__file__).resolve().parent / "plots"
+        plot_dir = ML_ROOT / "plots"
         # Transform X through the preprocessor for SHAP
         ct = shap_pipe[0]
         X_transformed = pd.DataFrame(

@@ -28,6 +28,7 @@ except ImportError:
     sys.exit(1)
 
 from utils import (
+    ML_ROOT,
     load_data,
     validate_dataframe,
     section,
@@ -976,7 +977,7 @@ def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
     ]
 
     # ── Write ───────────────────────────────────────────────
-    out_path = Path(__file__).parent / "findings.json"
+    out_path = ML_ROOT / "findings.json"
     out_path.write_text(json.dumps(findings, indent=2) + "\n")
     print(f"  Saved: ml/findings.json")
 

@@ -38,6 +38,7 @@ except ImportError:
     sys.exit(1)
 
 from utils import (
+    ML_ROOT,
     load_data,
     validate_dataframe,
     VOLATILITY_FEATURES,
@@ -542,7 +543,7 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
         print("  matplotlib not available, skipping plots")
         return
 
-    plot_dir = Path(__file__).resolve().parent / "plots"
+    plot_dir = ML_ROOT / "plots"
     plot_dir.mkdir(exist_ok=True)
 
     # PCA scatter (PC1 vs PC2)

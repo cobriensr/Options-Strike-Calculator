@@ -9,6 +9,9 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+
+# Root of the ml/ directory (parent of src/)
+ML_ROOT = Path(__file__).resolve().parent.parent
 import psycopg2
 from sqlalchemy import create_engine
 
@@ -78,7 +81,7 @@ VOL_SURFACE_FEATURES: list[str] = [
 
 def load_env() -> dict[str, str]:
     """Load environment variables from the project root .env file."""
-    env_path = Path(__file__).resolve().parent.parent / ".env"
+    env_path = ML_ROOT.parent / ".env"
     env: dict[str, str] = {}
     if env_path.exists():
         for line in env_path.read_text().splitlines():

@@ -96,11 +96,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("DATABASE_URL=postgres://localhost/test\nAPI_KEY=abc123\n")
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert result["DATABASE_URL"] == "postgres://localhost/test"
@@ -111,11 +107,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("# This is a comment\nFOO=bar\n# Another comment\nBAZ=qux\n")
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert "#" not in str(result.keys())
@@ -129,11 +121,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("FOO=bar\n\n   \n\nBAZ=qux\n")
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert len(result) == 2
@@ -145,11 +133,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text('MY_VAR="hello world"\n')
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert result["MY_VAR"] == "hello world"
@@ -159,11 +143,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("MY_VAR='hello world'\n")
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert result["MY_VAR"] == "hello world"
@@ -173,11 +153,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("DATABASE_URL=postgres://user:pass@host/db?sslmode=require\n")
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert result["DATABASE_URL"] == "postgres://user:pass@host/db?sslmode=require"
@@ -187,11 +163,7 @@ class TestLoadEnv:
         missing_file = tmp_path / ".env"
         assert not missing_file.exists()
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: missing_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert result == {}
@@ -201,11 +173,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("")
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert result == {}
@@ -215,11 +183,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("  MY_KEY  =  my_value  \n")
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert "MY_KEY" in result
@@ -230,11 +194,7 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("EMPTY_VAR=\n")
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert "EMPTY_VAR" in result
@@ -253,11 +213,7 @@ class TestLoadEnv:
             "  SPACED_KEY = spaced_value \n"
         )
 
-        with patch("utils.Path") as mock_path:
-            mock_resolved = MagicMock()
-            mock_resolved.parent.parent.__truediv__ = lambda self, name: env_file
-            mock_path.return_value.resolve.return_value = mock_resolved
-
+        with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
 
         assert len(result) == 4

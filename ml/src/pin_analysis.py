@@ -36,9 +36,9 @@ except ImportError:
     print("  ml/.venv/bin/pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn")
     sys.exit(1)
 
-from utils import load_env, section, subsection, takeaway
+from utils import ML_ROOT, load_env, section, subsection, takeaway
 
-PLOT_DIR = Path(__file__).resolve().parent / "plots"
+PLOT_DIR = ML_ROOT / "plots"
 
 
 # ── Time checkpoints (UTC) for analysis ──────────────────────

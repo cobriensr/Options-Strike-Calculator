@@ -28,9 +28,9 @@ except ImportError:
 
 from statsmodels.stats.proportion import proportion_confint
 
-from utils import load_data, validate_dataframe
+from utils import ML_ROOT, load_data, validate_dataframe
 
-PLOT_DIR = Path(__file__).resolve().parent / "plots"
+PLOT_DIR = ML_ROOT / "plots"
 PLOT_DIR.mkdir(exist_ok=True)
 
 # ── Style ────────────────────────────────────────────────────
@@ -1100,7 +1100,7 @@ def plot_feature_importance_comparison(df: pd.DataFrame) -> None:
 
     # Right: placeholder for XGBoost (read from latest experiment)
     ax = axes[1]
-    exp_dir = Path(__file__).resolve().parent / "experiments"
+    exp_dir = ML_ROOT / "experiments"
     exp_files = sorted(exp_dir.glob("phase2_early_*.json"), reverse=True)
 
     if exp_files:

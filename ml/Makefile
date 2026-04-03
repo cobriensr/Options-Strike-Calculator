@@ -8,31 +8,31 @@ PYTHON := .venv/bin/python
 all: eda cluster visualize ## Run full analysis pipeline
 
 eda: ## Run exploratory data analysis
-	$(PYTHON) eda.py
+	$(PYTHON) src/eda.py
 
 cluster: ## Run clustering analysis with plots
-	$(PYTHON) clustering.py --plot
+	$(PYTHON) src/clustering.py --plot
 
 visualize: ## Generate all visualization plots
-	$(PYTHON) visualize.py
+	$(PYTHON) src/visualize.py
 
 health: ## Check pipeline health (data freshness, completeness)
-	$(PYTHON) health.py
+	$(PYTHON) src/health.py
 
 milestone: ## Check data milestones and suggest next actions
-	$(PYTHON) milestone_check.py
+	$(PYTHON) src/milestone_check.py
 
 backtest: ## Run simplified P&L backtest
-	$(PYTHON) backtest.py
+	$(PYTHON) src/backtest.py
 
 early: ## Run Phase 2 early feasibility experiment
-	$(PYTHON) phase2_early.py
+	$(PYTHON) src/phase2_early.py
 
 early-shap: ## Run Phase 2 early experiment with SHAP plots
-	$(PYTHON) phase2_early.py --shap
+	$(PYTHON) src/phase2_early.py --shap
 
 pin: ## Run settlement pin risk / gamma correlation analysis
-	$(PYTHON) pin_analysis.py
+	$(PYTHON) src/pin_analysis.py
 
 test: ## Run unit tests
 	$(PYTHON) -m pytest -v

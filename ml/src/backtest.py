@@ -27,6 +27,7 @@ except ImportError:
     sys.exit(1)
 
 from utils import (
+    ML_ROOT,
     load_data,
     validate_dataframe,
     section,
@@ -34,7 +35,7 @@ from utils import (
     takeaway,
 )
 
-PLOT_DIR = Path(__file__).resolve().parent / "plots"
+PLOT_DIR = ML_ROOT / "plots"
 PLOT_DIR.mkdir(exist_ok=True)
 
 # ── Style ────────────────────────────────────────────────────
