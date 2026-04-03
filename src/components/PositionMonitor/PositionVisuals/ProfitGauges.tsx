@@ -70,7 +70,7 @@ export default function ProfitGauges({
   };
 
   return (
-    <div className="grid grid-cols-5 gap-3">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
       {gauges.map((g, i) => {
         const pct = g.pct != null ? Math.max(0, Math.min(100, g.pct)) : null;
         const filled = pct != null ? (pct / 100) * arcLen : 0;

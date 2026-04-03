@@ -22,9 +22,11 @@ export default function DeltaStrikesTable({ allDeltas, spot }: Props) {
         >
           <table
             className="w-full border-collapse font-mono text-[13px]"
-            role="table"
-            aria-label="Strike prices by delta"
           >
+            <caption className="sr-only">
+              Strike prices by delta — put strikes on the left, call
+              strikes on the right.
+            </caption>
             <thead>
               <tr className="bg-table-header">
                 <th scope="col" className={mkTh('center')}>
