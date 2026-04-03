@@ -1,11 +1,5 @@
 {
-  "git": {
-    "deploymentEnabled": {
-      "sidecar/**": false,
-      "ml/**": false,
-      "scripts/**": false
-    }
-  },
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ':!sidecar' ':!ml' ':!scripts'",
   "crons": [
     {
       "path": "/api/cron/backup-tables",

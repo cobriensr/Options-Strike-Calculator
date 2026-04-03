@@ -23,7 +23,7 @@ api/              Vercel Serverless Functions
 sidecar/          ES futures WebSocket relay (Railway, NOT Vercel)
   src/            Own package.json, tsconfig.json, Dockerfile
                   Uses `pg` driver (not @neondatabase/serverless)
-                  vercel.json git.ignoredDirectories excludes sidecar/ from Vercel deploys
+                  vercel.json ignoreCommand skips deploys for sidecar/, ml/, scripts/ changes
 
 scripts/          Backfill scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.)
 
@@ -135,7 +135,7 @@ Never edit `.env*` files with Claude. Never commit secrets.
 ## Deployment
 
 - **Platform**: Vercel (Fluid Compute, Node 24)
-- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `git.ignoredDirectories: ["sidecar"]`
+- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, or `scripts/` change
 - **Long-running functions**: `api/analyze.ts` (800s), `api/cron/curate-lessons.ts` (780s), `api/cron/build-features.ts` (300s)
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
 - **Sidecar**: Deployed separately to Railway (own Dockerfile). Env vars (`TRADOVATE_*`, `DATABASE_URL`, Redis) are in Railway, not Vercel.
