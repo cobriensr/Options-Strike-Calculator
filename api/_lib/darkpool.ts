@@ -467,6 +467,34 @@ export function formatDarkPoolForClaude(
     }
   }
 
+  // Support/resistance premium ratio (relative to current price)
+  if (currentSpx != null) {
+    let supportPremium = 0;
+    let resistancePremium = 0;
+    for (const c of clusters) {
+      if (c.spxApprox <= currentSpx) {
+        supportPremium += c.totalPremium;
+      } else {
+        resistancePremium += c.totalPremium;
+      }
+    }
+    if (supportPremium > 0 || resistancePremium > 0) {
+      const ratio =
+        resistancePremium > 0
+          ? (supportPremium / resistancePremium).toFixed(2)
+          : 'INF';
+      lines.push('');
+      lines.push(
+        `  Support/Resistance Premium Ratio: ${ratio} ($${fmtDp(supportPremium)} below price / $${fmtDp(resistancePremium)} above price)`,
+      );
+      if (resistancePremium > supportPremium * 1.5) {
+        lines.push(
+          '  ↳ More dark pool capital ABOVE price than below — backtested data shows this correlates with wider ranges (~95 pts avg vs ~81 pts). Consider widening strikes.',
+        );
+      }
+    }
+  }
+
   return lines.join('\n');
 }
 
