@@ -84,7 +84,9 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no dark pool data yet/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no dark pool levels available/i),
+    ).toBeInTheDocument();
   });
 
   it('shows badge with count when levels exist', () => {

@@ -64,31 +64,34 @@ describe('AlertBanner: alert content', () => {
     expect(screen.getByText('BEARISH')).toBeInTheDocument();
   });
 
-  it('shows BEARISH direction badge', () => {
+  it('shows BEARISH direction badge with danger color', () => {
     const alert = makeAlert({ direction: 'BEARISH' });
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const badge = screen.getByText('BEARISH');
     expect(badge).toBeInTheDocument();
-    expect(badge.className).toContain('bg-red-700');
+    expect(badge).toHaveAttribute('style');
+    expect(badge.style.color).toContain('var(--color-danger)');
   });
 
-  it('shows BULLISH direction badge', () => {
+  it('shows BULLISH direction badge with success color', () => {
     const alert = makeAlert({ direction: 'BULLISH' });
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const badge = screen.getByText('BULLISH');
     expect(badge).toBeInTheDocument();
-    expect(badge.className).toContain('bg-green-700');
+    expect(badge).toHaveAttribute('style');
+    expect(badge.style.color).toContain('var(--color-success)');
   });
 
-  it('shows NEUTRAL direction badge', () => {
+  it('shows NEUTRAL direction badge with muted color', () => {
     const alert = makeAlert({ direction: 'NEUTRAL' });
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const badge = screen.getByText('NEUTRAL');
     expect(badge).toBeInTheDocument();
-    expect(badge.className).toContain('bg-zinc-700');
+    expect(badge).toHaveAttribute('style');
+    expect(badge.style.color).toContain('var(--color-muted)');
   });
 });
 
@@ -212,8 +215,8 @@ describe('AlertBanner: severity styling', () => {
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const alertEl = screen.getByRole('alert');
-    expect(alertEl.className).toContain('border-yellow-600');
-    expect(alertEl.className).toContain('bg-yellow-950');
+    expect(alertEl).toHaveAttribute('style');
+    expect(alertEl.style.color).toContain('var(--color-caution)');
   });
 
   it('applies critical severity styles', () => {
@@ -221,8 +224,8 @@ describe('AlertBanner: severity styling', () => {
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const alertEl = screen.getByRole('alert');
-    expect(alertEl.className).toContain('border-red-600');
-    expect(alertEl.className).toContain('bg-red-950');
+    expect(alertEl).toHaveAttribute('style');
+    expect(alertEl.style.color).toContain('var(--color-danger)');
   });
 
   it('applies extreme severity styles with animate-pulse', () => {
@@ -230,8 +233,8 @@ describe('AlertBanner: severity styling', () => {
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const alertEl = screen.getByRole('alert');
-    expect(alertEl.className).toContain('border-red-500');
-    expect(alertEl.className).toContain('bg-red-900');
+    expect(alertEl).toHaveAttribute('style');
+    expect(alertEl.style.color).toContain('var(--color-danger)');
     expect(alertEl.className).toContain('animate-pulse');
   });
 });
