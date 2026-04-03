@@ -118,7 +118,6 @@ CATEGORICAL_FEATURES = [
     "regime_zone",
     "prev_day_direction",
     "prev_day_range_cat",
-    "dp_net_bias",
 ]
 
 ALL_NUMERIC_FEATURES = (

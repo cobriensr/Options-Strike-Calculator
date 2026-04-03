@@ -33,7 +33,7 @@ GREEK_FEATURES_CORE: list[str] = [
 ]
 
 DARK_POOL_FEATURES: list[str] = [
-    "dp_total_premium", "dp_buyer_initiated", "dp_seller_initiated",
+    "dp_total_premium",
     "dp_cluster_count", "dp_top_cluster_dist",
     "dp_support_premium", "dp_resistance_premium",
     "dp_support_resistance_ratio", "dp_concentration",

@@ -128,7 +128,6 @@ class TestConstants:
             "regime_zone",
             "prev_day_direction",
             "prev_day_range_cat",
-            "dp_net_bias",
         }
         assert set(CATEGORICAL_FEATURES) == expected
 

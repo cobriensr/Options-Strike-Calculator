@@ -548,17 +548,6 @@ def dark_pool_analysis(df: pd.DataFrame) -> None:
         return
 
     # DP bias vs settlement direction
-    subsection("Dark Pool Bias vs Settlement Direction")
-    if "dp_net_bias" in has_dp.columns and "settlement_direction" in has_dp.columns:
-        has_both = has_dp[["dp_net_bias", "settlement_direction"]].dropna()
-        if len(has_both) >= 5:
-            for bias in sorted(has_both["dp_net_bias"].unique()):
-                subset = has_both[has_both["dp_net_bias"] == bias]
-                up = (subset["settlement_direction"] == "UP").sum()
-                down = (subset["settlement_direction"] == "DOWN").sum()
-                total = len(subset)
-                print(f"  {bias:15s}  n={total:2d}  UP={up}  DOWN={down}")
-
     # Support/resistance ratio vs range
     subsection("DP Support/Resistance Ratio vs Range")
     if "dp_support_resistance_ratio" in has_dp.columns and "day_range_pts" in has_dp.columns:

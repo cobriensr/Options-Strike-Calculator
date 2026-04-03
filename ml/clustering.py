@@ -61,7 +61,7 @@ REGIME_FEATURES = [
 ]
 
 # Categorical features that need one-hot encoding
-CATEGORICAL_FEATURES = ["regime_zone", "dp_net_bias"]
+CATEGORICAL_FEATURES = ["regime_zone"]
 
 CALENDAR_FEATURES = [
     "day_of_week", "is_friday",
@@ -312,13 +312,6 @@ def characterize_clusters(
             sr = cluster["dp_support_resistance_ratio"].dropna().astype(float)
             if len(sr) > 0:
                 print(f"  DP Support/Resistance: {sr.mean():.2f} avg")
-        if "dp_net_bias" in cluster.columns:
-            bias = cluster["dp_net_bias"].dropna()
-            if len(bias) > 0:
-                dist = bias.value_counts()
-                parts = [f"{v}={c}" for v, c in dist.items()]
-                print(f"  DP Bias: {', '.join(parts)}")
-
         # Options volume profile
         if "opt_vol_pcr" in cluster.columns:
             pcr = cluster["opt_vol_pcr"].dropna().astype(float)

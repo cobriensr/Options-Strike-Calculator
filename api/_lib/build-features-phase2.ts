@@ -220,12 +220,6 @@ export async function engineerPhase2Features(
       features.dp_total_premium = totalPremium;
       features.dp_cluster_count = levels.length;
 
-      // Direction columns — not available from full tape (no NBBO comparison).
-      // Left null; old values from dark_pool_snapshots are no longer populated.
-      // features.dp_buyer_initiated = null;
-      // features.dp_seller_initiated = null;
-      // features.dp_net_bias = null;
-
       const spxPrice = (features.spx_open as number | undefined) ?? null;
       const topLevel = levels[0]!;
 
