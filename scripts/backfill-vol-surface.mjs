@@ -78,9 +78,8 @@ async function storeTermStructure(date, rows) {
   for (const row of rows) {
     const daysVal = Number.parseInt(String(row.dte ?? row.days), 10);
     const volatility = Number.parseFloat(row.volatility);
-    const impliedMove = Number.parseFloat(
-      row.implied_move_perc ?? row.implied_move,
-    ) || null;
+    const impliedMove =
+      Number.parseFloat(row.implied_move_perc ?? row.implied_move) || null;
 
     if (Number.isNaN(daysVal) || Number.isNaN(volatility)) continue;
 
@@ -96,7 +95,9 @@ async function storeTermStructure(date, rows) {
       `;
       stored++;
     } catch (err) {
-      console.warn(`  TS insert error for ${date} d=${daysVal}: ${err.message}`);
+      console.warn(
+        `  TS insert error for ${date} d=${daysVal}: ${err.message}`,
+      );
     }
   }
   return stored;
@@ -117,12 +118,14 @@ async function storeRealizedVol(date, rvRows, rankRows) {
 
   if (!rvRow && !rankRow) return false;
 
-  const iv30d = rvRow?.implied_volatility != null
-    ? Number.parseFloat(rvRow.implied_volatility)
-    : null;
-  const rv30d = rvRow?.realized_volatility != null
-    ? Number.parseFloat(rvRow.realized_volatility)
-    : null;
+  const iv30d =
+    rvRow?.implied_volatility != null
+      ? Number.parseFloat(rvRow.implied_volatility)
+      : null;
+  const rv30d =
+    rvRow?.realized_volatility != null
+      ? Number.parseFloat(rvRow.realized_volatility)
+      : null;
 
   // Compute derived fields
   let ivRvSpread = null;
@@ -132,9 +135,10 @@ async function storeRealizedVol(date, rvRows, rankRows) {
     ivOverpricingPct = ((iv30d - rv30d) / rv30d) * 100;
   }
 
-  const ivRank = (rankRow?.iv_rank_1y ?? rankRow?.iv_rank) != null
-    ? Number.parseFloat(rankRow.iv_rank_1y ?? rankRow.iv_rank)
-    : null;
+  const ivRank =
+    (rankRow?.iv_rank_1y ?? rankRow?.iv_rank) != null
+      ? Number.parseFloat(rankRow.iv_rank_1y ?? rankRow.iv_rank)
+      : null;
 
   try {
     await sql`
@@ -163,7 +167,9 @@ async function storeRealizedVol(date, rvRows, rankRows) {
 async function main() {
   const tradingDays = getTradingDays(days);
 
-  console.log('Backfilling vol surface data (term structure + realized vol + IV rank)');
+  console.log(
+    'Backfilling vol surface data (term structure + realized vol + IV rank)',
+  );
   console.log(
     `Days: ${tradingDays.length} (${tradingDays[0]} → ${tradingDays.at(-1)})\n`,
   );

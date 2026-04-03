@@ -317,9 +317,7 @@ export default function StrikeCalculator() {
       ...(isOwner && hasMarketOrSnapshot
         ? [{ id: 'sec-darkpool', label: 'Dark Pool' }]
         : []),
-      ...(hasMarketOrSnapshot
-        ? [{ id: 'sec-charts', label: 'Charts' }]
-        : []),
+      ...(hasMarketOrSnapshot ? [{ id: 'sec-charts', label: 'Charts' }] : []),
       { id: 'sec-history', label: 'History' },
       { id: 'sec-positions', label: 'Positions' },
       ...(isOwner ? [{ id: 'sec-bwb', label: 'BWB' }] : []),

@@ -65,10 +65,7 @@ async function fetchOiChange(
   apiKey: string,
   date: string,
 ): Promise<OiChangeRow[]> {
-  return uwFetch<OiChangeRow>(
-    apiKey,
-    `/stock/SPX/oi-change?date=${date}`,
-  );
+  return uwFetch<OiChangeRow>(apiKey, `/stock/SPX/oi-change?date=${date}`);
 }
 
 // ── Store helper ────────────────────────────────────────────
@@ -87,16 +84,12 @@ async function storeOiChanges(
     const parsed = parseOptionSymbol(row.option_symbol);
     const strike = parsed?.strike ?? null;
     const isCall = parsed?.isCall ?? null;
-    const oiDiff =
-      Number.parseInt(String(row.oi_diff_plain), 10) || 0;
+    const oiDiff = Number.parseInt(String(row.oi_diff_plain), 10) || 0;
     const currOi = Number.parseInt(String(row.curr_oi), 10) || 0;
     const lastOi = Number.parseInt(String(row.last_oi), 10) || 0;
-    const avgPrice =
-      Number.parseFloat(String(row.avg_price)) || null;
-    const prevAskVolume =
-      Number.parseInt(String(row.prev_ask_volume), 10) || 0;
-    const prevBidVolume =
-      Number.parseInt(String(row.prev_bid_volume), 10) || 0;
+    const avgPrice = Number.parseFloat(String(row.avg_price)) || null;
+    const prevAskVolume = Number.parseInt(String(row.prev_ask_volume), 10) || 0;
+    const prevBidVolume = Number.parseInt(String(row.prev_bid_volume), 10) || 0;
     const prevMultiLegVolume =
       Number.parseInt(String(row.prev_multi_leg_volume), 10) || 0;
     const prevTotalPremium =
@@ -127,10 +120,7 @@ async function storeOiChanges(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
@@ -153,9 +143,7 @@ export default async function handler(
       });
     }
 
-    const rows = await withRetry(() =>
-      fetchOiChange(apiKey, today),
-    );
+    const rows = await withRetry(() => fetchOiChange(apiKey, today));
     const result = await storeOiChanges(rows, today);
 
     // Data quality check: alert if all oi_diff values are zero

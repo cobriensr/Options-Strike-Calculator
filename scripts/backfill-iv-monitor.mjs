@@ -56,13 +56,10 @@ function getTradingDays(count) {
 // ── Fetch IV for a single date ──────────────────────────────
 
 async function fetchIvForDate(date) {
-  const res = await fetch(
-    `${UW_BASE}/stock/SPX/interpolated-iv?date=${date}`,
-    {
-      headers: { Authorization: `Bearer ${UW_API_KEY}` },
-      signal: AbortSignal.timeout(15_000),
-    },
-  );
+  const res = await fetch(`${UW_BASE}/stock/SPX/interpolated-iv?date=${date}`, {
+    headers: { Authorization: `Bearer ${UW_API_KEY}` },
+    signal: AbortSignal.timeout(15_000),
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');

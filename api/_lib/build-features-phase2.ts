@@ -388,7 +388,7 @@ export async function engineerPhase2Features(
         callOiChange !== 0
           ? Math.round((putOiChange / callOiChange) * 10000) / 10000
           : null;
-      features.oic_net_premium = (callPremium + putPremium) || null;
+      features.oic_net_premium = callPremium + putPremium || null;
       features.oic_call_premium = callPremium || null;
       features.oic_put_premium = putPremium || null;
 
@@ -444,7 +444,8 @@ export async function engineerPhase2Features(
       ORDER BY timestamp ASC
       LIMIT 1
     `;
-    const zeroDteVol = ivMonRow.length > 0 ? num(ivMonRow[0]!.volatility) : null;
+    const zeroDteVol =
+      ivMonRow.length > 0 ? num(ivMonRow[0]!.volatility) : null;
 
     if (tsRows.length >= 1) {
       const vols = tsRows.map((r) => ({
@@ -463,7 +464,8 @@ export async function engineerPhase2Features(
         features.iv_ts_contango = zeroDteVol < thirtyD.vol;
         features.iv_ts_slope_0d_30d =
           thirtyD.vol > 0
-            ? Math.round(((zeroDteVol - thirtyD.vol) / thirtyD.vol) * 10000) / 10000
+            ? Math.round(((zeroDteVol - thirtyD.vol) / thirtyD.vol) * 10000) /
+              10000
             : null;
       }
     }

@@ -79,13 +79,10 @@ function parseOptionSymbol(symbol) {
 // ── Fetch OI change for a date ──────────────────────────────
 
 async function fetchOiChange(date) {
-  const res = await fetch(
-    `${UW_BASE}/stock/SPX/oi-change?date=${date}`,
-    {
-      headers: { Authorization: `Bearer ${UW_API_KEY}` },
-      signal: AbortSignal.timeout(15_000),
-    },
-  );
+  const res = await fetch(`${UW_BASE}/stock/SPX/oi-change?date=${date}`, {
+    headers: { Authorization: `Bearer ${UW_API_KEY}` },
+    signal: AbortSignal.timeout(15_000),
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -168,9 +165,7 @@ async function main() {
     totals.rows += rows.length;
     totals.stored += stored;
 
-    console.log(
-      `  ${date}: ${rows.length} rows → ${stored} stored`,
-    );
+    console.log(`  ${date}: ${rows.length} rows → ${stored} stored`);
   }
 
   console.log('\nDone!');

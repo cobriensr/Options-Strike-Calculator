@@ -30,9 +30,7 @@ export interface OiChangeRow {
  * Get OI change rows for a given date, ordered by absolute OI diff.
  * Returns the top 30 most significant changes.
  */
-export async function getOiChangeData(
-  date: string,
-): Promise<OiChangeRow[]> {
+export async function getOiChangeData(date: string): Promise<OiChangeRow[]> {
   const sql = getDb();
   const rows = await sql`
     SELECT date, option_symbol, strike, is_call,
@@ -120,12 +118,10 @@ export function formatOiChangeForClaude(
   let aggressorNote: string;
   if (totalBidVol > 0 && totalAskVol / totalBidVol > 1.5) {
     aggressorLabel = 'ASK-DOMINATED';
-    aggressorNote =
-      'new positions opened aggressively';
+    aggressorNote = 'new positions opened aggressively';
   } else if (totalAskVol > 0 && totalBidVol / totalAskVol > 1.5) {
     aggressorLabel = 'BID-DOMINATED';
-    aggressorNote =
-      'defensive or closing activity';
+    aggressorNote = 'defensive or closing activity';
   } else {
     aggressorLabel = 'BALANCED';
     aggressorNote = 'no clear aggressor bias';
@@ -139,9 +135,7 @@ export function formatOiChangeForClaude(
 
   // ── Multi-leg percentage ───────────────────────────────
   const multiLegPct =
-    totalVolume > 0
-      ? ((totalMultiLeg / totalVolume) * 100).toFixed(0)
-      : '0';
+    totalVolume > 0 ? ((totalMultiLeg / totalVolume) * 100).toFixed(0) : '0';
   let multiLegNote: string;
   if (Number(multiLegPct) > 50) {
     multiLegNote = 'heavy institutional spread activity';
@@ -150,9 +144,7 @@ export function formatOiChangeForClaude(
   } else {
     multiLegNote = 'mostly directional or single-leg activity';
   }
-  lines.push(
-    `  Multi-leg: ${multiLegPct}% of volume — ${multiLegNote}`,
-  );
+  lines.push(`  Multi-leg: ${multiLegPct}% of volume — ${multiLegNote}`);
 
   // ── Top 10 contracts table ─────────────────────────────
   lines.push('', '  Top Contracts by Absolute OI Change:');
