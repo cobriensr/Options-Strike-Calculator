@@ -101,7 +101,6 @@ async function fetchOiChange(date) {
 
 async function storeOiChanges(date, rows) {
   let stored = 0;
-  const now = new Date().toISOString();
 
   for (const r of rows) {
     const parsed = parseOptionSymbol(r.option_symbol);
@@ -123,12 +122,11 @@ async function storeOiChanges(date, rows) {
         INSERT INTO oi_changes (
           date, option_symbol, strike, is_call, oi_diff,
           prev_ask_volume, prev_bid_volume,
-          prev_multi_leg_volume, prev_total_premium,
-          updated_at
+          prev_multi_leg_volume, prev_total_premium
         ) VALUES (
           ${date}, ${r.option_symbol}, ${parsed.strike}, ${parsed.isCall},
           ${oiDiff}, ${prevAskVol}, ${prevBidVol},
-          ${prevMultiLeg}, ${prevTotalPremium}, ${now}
+          ${prevMultiLeg}, ${prevTotalPremium}
         )
         ON CONFLICT DO NOTHING
       `;
