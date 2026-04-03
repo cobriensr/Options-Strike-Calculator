@@ -273,6 +273,32 @@ export function formatStrikeExposuresForClaude(
     }
   }
 
+  // Gamma asymmetry: how lopsided is gamma above vs below ATM?
+  const gammaAbove = rows
+    .filter((r) => r.strike > price + 5)
+    .reduce((s, r) => s + Math.abs(r.netGamma), 0);
+  const gammaBelow = rows
+    .filter((r) => r.strike < price - 5)
+    .reduce((s, r) => s + Math.abs(r.netGamma), 0);
+  const gammaTotal = gammaAbove + gammaBelow;
+  if (gammaTotal > 0) {
+    const abovePct = (gammaAbove / gammaTotal) * 100;
+    const belowPct = (gammaBelow / gammaTotal) * 100;
+    let asymmetrySignal: string;
+    if (abovePct > 65) {
+      asymmetrySignal =
+        'SKEWED ABOVE — gamma concentrated above price. Upside is well-defended; downside is exposed.';
+    } else if (belowPct > 65) {
+      asymmetrySignal =
+        'SKEWED BELOW — gamma concentrated below price. Downside is well-defended; upside is exposed.';
+    } else {
+      asymmetrySignal = 'BALANCED — roughly equal gamma on both sides.';
+    }
+    lines.push(
+      `  Gamma Asymmetry: ${abovePct.toFixed(0)}% above / ${belowPct.toFixed(0)}% below ATM — ${asymmetrySignal}`,
+    );
+  }
+
   lines.push('', `  Charm Pattern: ${charmPattern}`);
 
   if (charmFloors.length > 0) {

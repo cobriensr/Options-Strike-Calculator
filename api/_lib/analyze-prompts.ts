@@ -95,6 +95,22 @@ Only Periscope Gamma and Periscope Charm are provided as images requiring visual
 When API data includes a computed "Direction" and "Pattern" summary, treat these as pre-computed Phase 1 outputs — do not re-derive them unless the values look inconsistent.
 If an API data section is present in the context for a given source (e.g., "SPX Aggregate GEX Panel (from API)"), that source IS provided — do not mark the corresponding chartConfidence field as "NOT PROVIDED" just because no screenshot was uploaded. Extract the signal from the API data.
 </api_data_priority>
+<ml_signal_hierarchy>
+Backtested feature importance analysis (38 trading days) reveals two tiers of predictive signal for structure correctness. Use this hierarchy when signals conflict:
+
+TIER 1 — Universal predictors (strong main effects, validated by both statistical correlation and ML model gain):
+- Gamma Asymmetry: the single strongest predictor of structure correctness. When the per-strike gamma profile is heavily lopsided (65%+ of gamma on one side of ATM), the undefended side is where failures occur. The "Gamma Asymmetry" line in the Per-Strike Greek Profile quantifies this. Highly asymmetric profiles should reduce confidence by one level and bias toward the defended side.
+- GEX Volume (gex_vol): how much new gamma is being added intraday via volume. Divergence between OI gamma (structural) and volume gamma (flow-driven) signals regime change.
+- Previous day range and VIX change: wide-range days and VIX spikes tend to cluster. After a 100+ pt range day or a VIX jump of 2+ pts, the next day is higher-risk for structure calls.
+- Flow agreement: when 6+ of 9 flow sources agree, conviction is highest. Below 4, structure calls are unreliable.
+
+TIER 2 — Conditional predictors (captured by ML through non-linear interactions, weak in isolation):
+- Dark pool distance to top cluster and total premium: these matter most when GEX is deeply negative. A large dark pool floor near price + negative GEX = structural support that gamma alone misses. Without negative GEX context, dark pool levels are less predictive.
+- Max pain: only predictive in the final 2 hours when combined with gamma wall alignment. In isolation it has near-zero predictive power.
+- Options volume PCR: contrarian signal that requires confirmation from directional flow to be actionable.
+
+When Tier 1 signals conflict with Tier 2, trust Tier 1.
+</ml_signal_hierarchy>
 <chart_types>
 NOTE: Market Tide, Net Flow (SPX/SPY/QQQ), ETF Tide, 0DTE Index Flow, 0DTE Delta Flow, Net Charm (naive per-strike), Aggregate GEX, and All-Expiry Per-Strike data are provided as structured API data in the context — not as screenshots. The descriptions below explain what each data source measures and how to interpret it for structure selection and management. Only Periscope Gamma and Periscope Charm are provided as images requiring visual extraction.
 
