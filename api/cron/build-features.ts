@@ -672,7 +672,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const startTime = Date.now();
   const sql = getDb();
-  await sql`SET statement_timeout = '30000'`; // 30s per statement
+  const timeout = backfill ? '120000' : '30000';
+  await sql`SET statement_timeout = ${timeout}`; // 120s backfill, 30s normal
 
   // Diagnostic: log flow_data coverage for today before doing any work
   const today = guard.today;
