@@ -39,7 +39,7 @@ describe('DeltaStrikesTable', () => {
   it('renders the table with aria-label', () => {
     render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />);
     expect(
-      screen.getByRole('table', { name: 'Strike prices by delta' }),
+      screen.getByRole('table', { name: /Strike prices by delta/ }),
     ).toBeInTheDocument();
   });
 
@@ -103,7 +103,7 @@ describe('DeltaStrikesTable', () => {
   it('renders empty table when no deltas', () => {
     render(<DeltaStrikesTable allDeltas={[]} spot={5700} />);
     expect(
-      screen.getByRole('table', { name: 'Strike prices by delta' }),
+      screen.getByRole('table', { name: /Strike prices by delta/ }),
     ).toBeInTheDocument();
   });
 

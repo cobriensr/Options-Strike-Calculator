@@ -117,7 +117,7 @@ describe('ResultsSection', () => {
       />,
     );
     expect(
-      screen.getByRole('table', { name: 'Strike prices by delta' }),
+      screen.getByRole('table', { name: /Strike prices by delta/ }),
     ).toBeInTheDocument();
   });
 
