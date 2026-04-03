@@ -237,9 +237,7 @@ describe('PositionMonitor', () => {
 
   it('shows empty state prompt before upload', () => {
     render(<PositionMonitor spotPrice={5700} />);
-    expect(
-      screen.getByText('No positions tracked.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('No positions tracked.')).toBeInTheDocument();
   });
 
   it('shows "Upload Statement" button before upload', () => {

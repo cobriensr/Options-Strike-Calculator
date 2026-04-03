@@ -110,9 +110,7 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory />);
 
       await waitFor(() => {
-        expect(
-          screen.getByText(/No analyses saved yet/),
-        ).toBeInTheDocument();
+        expect(screen.getByText(/No analyses saved yet/)).toBeInTheDocument();
       });
     });
 

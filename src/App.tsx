@@ -530,7 +530,7 @@ export default function StrikeCalculator() {
           <main>
             <div
               id="sec-inputs"
-              className="scroll-mt-28 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
+              className="grid scroll-mt-28 grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
             >
               <DateTimeSection
                 chevronUrl={chevronUrl}
@@ -578,7 +578,7 @@ export default function StrikeCalculator() {
 
             <div
               id="sec-settings"
-              className="mt-6 scroll-mt-28 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
+              className="mt-6 grid scroll-mt-28 grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
             >
               <AdvancedSection
                 skewPct={skewPct}
