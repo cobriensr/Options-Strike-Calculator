@@ -60,6 +60,13 @@ MAX_PAIN_FEATURES: list[str] = [
     "max_pain_0dte", "max_pain_dist",
 ]
 
+OI_CHANGE_FEATURES: list[str] = [
+    "oic_net_oi_change", "oic_call_oi_change", "oic_put_oi_change",
+    "oic_oi_change_pcr", "oic_net_premium", "oic_call_premium",
+    "oic_put_premium", "oic_ask_ratio", "oic_multi_leg_pct",
+    "oic_top_strike_dist", "oic_concentration",
+]
+
 
 # ── Environment & DB ────────────────────────────────────────
 

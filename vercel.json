@@ -56,6 +56,10 @@
       "schedule": "25 20,21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-oi-change",
+      "schedule": "30 21 * * 1-5"
+    },
+    {
       "path": "/api/cron/build-features",
       "schedule": "45 20,21 * * 1-5"
     },
