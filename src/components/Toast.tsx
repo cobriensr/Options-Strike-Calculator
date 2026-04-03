@@ -7,15 +7,16 @@
  */
 
 import {
-  createContext,
   memo,
   useCallback,
-  useContext,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
+
+import { ToastContext } from '../hooks/useToast';
 
 type ToastType = 'success' | 'error' | 'info';
 
@@ -25,12 +26,6 @@ interface Toast {
   type: ToastType;
   exiting: boolean;
 }
-
-interface ToastContextValue {
-  show: (message: string, type?: ToastType) => void;
-}
-
-const ToastContext = createContext<ToastContextValue | null>(null);
 
 const MAX_VISIBLE = 3;
 const AUTO_DISMISS_MS = 4_000;
@@ -144,7 +139,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <ToastContext.Provider value={{ show }}>
+    <ToastContext.Provider value={useMemo(() => ({ show }), [show])}>
       {children}
       {createPortal(
         <div className="fixed right-4 bottom-4 z-[70] flex flex-col gap-2">
@@ -158,10 +153,3 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useToast(): ToastContextValue {
-  const ctx = useContext(ToastContext);
-  if (!ctx) {
-    throw new Error('useToast must be used within a ToastProvider');
-  }
-  return ctx;
-}

@@ -7,7 +7,8 @@ import {
   fireEvent,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { ToastProvider, useToast } from '../../components/Toast';
+import { ToastProvider } from '../../components/Toast';
+import { useToast } from '../../hooks/useToast';
 
 // ── Helpers ───────────────────────────────────────────────
 

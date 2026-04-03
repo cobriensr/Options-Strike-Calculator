@@ -42,7 +42,7 @@ import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
-import { useToast } from './components/Toast';
+import { useToast } from './hooks/useToast';
 import SectionNav from './components/SectionNav';
 import type { NavSection } from './components/SectionNav';
 import BackToTop from './components/BackToTop';
@@ -173,7 +173,7 @@ export default function StrikeCalculator() {
     if (!candles || candles.length === 0) return;
     vix.setVixOHLC({
       open: candles[0]!.open,
-      close: candles[candles.length - 1]!.close,
+      close: candles.at(-1)!.close,
       high: Math.max(...candles.map((c) => c.high)),
       low: Math.min(...candles.map((c) => c.low)),
     });
@@ -308,25 +308,23 @@ export default function StrikeCalculator() {
   );
 
   const navSections = useMemo<NavSection[]>(() => {
-    const s: NavSection[] = [
+    const hasMarketOrSnapshot = market.hasData || !!historySnapshot;
+    return [
       { id: 'sec-inputs', label: 'Inputs' },
       { id: 'sec-settings', label: 'Settings' },
       { id: 'sec-risk', label: 'Risk' },
       { id: 'sec-regime', label: 'Regime' },
+      ...(isOwner && hasMarketOrSnapshot
+        ? [{ id: 'sec-darkpool', label: 'Dark Pool' }]
+        : []),
+      ...(hasMarketOrSnapshot
+        ? [{ id: 'sec-charts', label: 'Charts' }]
+        : []),
+      { id: 'sec-history', label: 'History' },
+      { id: 'sec-positions', label: 'Positions' },
+      ...(isOwner ? [{ id: 'sec-bwb', label: 'BWB' }] : []),
+      { id: 'results', label: 'Results' },
     ];
-    if (isOwner && (market.hasData || !!historySnapshot)) {
-      s.push({ id: 'sec-darkpool', label: 'Dark Pool' });
-    }
-    if (market.hasData || !!historySnapshot) {
-      s.push({ id: 'sec-charts', label: 'Charts' });
-    }
-    s.push({ id: 'sec-history', label: 'History' });
-    s.push({ id: 'sec-positions', label: 'Positions' });
-    if (isOwner) {
-      s.push({ id: 'sec-bwb', label: 'BWB' });
-    }
-    s.push({ id: 'results', label: 'Results' });
-    return s;
   }, [isOwner, market.hasData, historySnapshot]);
 
   const analysisContext = useAnalysisContext({
