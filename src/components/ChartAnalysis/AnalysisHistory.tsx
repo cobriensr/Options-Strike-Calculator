@@ -279,11 +279,14 @@ export default function AnalysisHistory({ refreshKey }: Props) {
       <SectionBox label="Analysis History">
         {fetchError && <ErrorMsg>{fetchError}</ErrorMsg>}
         {!fetchError && (
-          <div
-            className="rounded-lg px-3 py-6 text-center font-sans text-[11px]"
-            style={{ color: theme.textMuted }}
-          >
-            No saved analyses yet. Run a chart analysis to get started.
+          <div className="border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-8 text-center">
+            <div className="text-muted mb-1 text-[20px]">{'\u2014'}</div>
+            <p className="text-secondary m-0 font-sans text-[13px]">
+              No analyses saved yet.
+            </p>
+            <p className="text-muted m-0 mt-1 font-sans text-[11px]">
+              Run a chart analysis to see results here.
+            </p>
           </div>
         )}
       </SectionBox>

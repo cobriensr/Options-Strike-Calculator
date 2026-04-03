@@ -209,8 +209,14 @@ export default function PositionMonitor({ spotPrice }: PositionMonitorProps) {
 
       {/* Empty state */}
       {!statement && !error && (
-        <div className="text-muted py-6 text-center font-sans text-sm">
-          Upload a thinkorswim paperMoney account statement CSV to begin.
+        <div className="border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-8 text-center">
+          <div className="text-muted mb-1 text-[20px]">{'\u2014'}</div>
+          <p className="text-secondary m-0 font-sans text-[13px]">
+            No positions tracked.
+          </p>
+          <p className="text-muted m-0 mt-1 font-sans text-[11px]">
+            Positions will appear here when detected in your account.
+          </p>
         </div>
       )}
 

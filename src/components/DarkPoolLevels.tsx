@@ -160,8 +160,14 @@ export default memo(function DarkPoolLevels({
         badge={badge}
         headerRight={headerRight}
       >
-        <div className="text-muted text-center font-sans text-xs">
-          No dark pool data yet
+        <div className="border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-8 text-center">
+          <div className="text-muted mb-1 text-[20px]">{'\u2014'}</div>
+          <p className="text-secondary m-0 font-sans text-[13px]">
+            No dark pool levels available for this session.
+          </p>
+          <p className="text-muted m-0 mt-1 font-sans text-[11px]">
+            Levels appear when large institutional blocks are detected.
+          </p>
         </div>
       </SectionBox>
     );
