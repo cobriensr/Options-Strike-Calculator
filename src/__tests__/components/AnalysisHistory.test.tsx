@@ -110,7 +110,9 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory />);
 
       await waitFor(() => {
-        expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
+        expect(
+          screen.getByText(/No analyses saved yet/),
+        ).toBeInTheDocument();
       });
     });
 
@@ -122,7 +124,9 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory />);
 
       await waitFor(() => {
-        expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
+        expect(
+          screen.getByText(/Failed to load analysis dates/),
+        ).toBeInTheDocument();
       });
     });
   });
@@ -667,7 +671,9 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory />);
 
       await waitFor(() => {
-        expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
+        expect(
+          screen.getByText(/Failed to load analysis dates/),
+        ).toBeInTheDocument();
       });
     });
 
@@ -684,7 +690,9 @@ describe('AnalysisHistory', () => {
       render(<AnalysisHistory />);
 
       await waitFor(() => {
-        expect(screen.getByText(/No saved analyses yet/)).toBeInTheDocument();
+        expect(
+          screen.getByText(/Failed to load analysis dates/),
+        ).toBeInTheDocument();
       });
     });
   });

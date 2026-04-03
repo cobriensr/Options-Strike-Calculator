@@ -238,9 +238,7 @@ describe('PositionMonitor', () => {
   it('shows empty state prompt before upload', () => {
     render(<PositionMonitor spotPrice={5700} />);
     expect(
-      screen.getByText(
-        'Upload a thinkorswim paperMoney account statement CSV to begin.',
-      ),
+      screen.getByText('No positions tracked.'),
     ).toBeInTheDocument();
   });
 
