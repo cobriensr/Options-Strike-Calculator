@@ -27,9 +27,14 @@ sidecar/          ES futures WebSocket relay (Railway, NOT Vercel)
 
 scripts/          Backfill scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.)
 
-ml/               Python scripts (clustering, EDA, visualization)
+ml/               Python ML pipeline (clustering, EDA, classification, visualization)
+  src/            Source modules (utils, clustering, eda, phase2_early, pin_analysis, etc.)
+  tests/          Pytest test files (test_clustering, test_phase2, etc.)
+  docs/           Phase specs and design docs (ROADMAP.md, PHASE-*.md)
   plots/          Generated plots — tracked in git, do NOT gitignore
+  experiments/    JSON experiment results (phase2_early runs)
   .venv/          Python venv — run scripts with `ml/.venv/bin/python`, not system python3
+  conftest.py     Adds ml/src/ to sys.path for test imports
 
 docs/             Design artifacts
   superpowers/    specs/ and plans/ for feature design documents

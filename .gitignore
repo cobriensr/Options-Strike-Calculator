@@ -50,6 +50,8 @@ __snapshots__/
 ml/.venv/
 ml/*.csv
 ml/__pycache__/
+ml/src/__pycache__/
+ml/tests/__pycache__/
 ml/.pytest_cache/
 ml/htmlcov/
 ml/.coverage
