@@ -2,10 +2,10 @@
   "phase": "phase2_early",
   "model": "xgboost",
   "version": "v2",
-  "timestamp": "2026-04-03T16:38:13.976925+00:00",
+  "timestamp": "2026-04-03T20:39:25.616047+00:00",
   "data": {
     "training_days": 32,
-    "feature_count": 110,
+    "feature_count": 129,
     "class_distribution": {
       "CALL CREDIT SPREAD": 17,
       "PUT CREDIT SPREAD": 11,
@@ -31,7 +31,7 @@
   },
   "metrics": {
     "accuracy": 0.5833,
-    "log_loss": 0.826,
+    "log_loss": 0.8257,
     "per_class_f1": {
       "CALL CREDIT SPREAD": 0.737,
       "PUT CREDIT SPREAD": 0.0,
@@ -45,50 +45,50 @@
   "feature_importance_top10": [
     [
       "gamma_asymmetry",
-      0.0876
+      0.0715
     ],
     [
       "gex_vol_t2",
-      0.0775
-    ],
-    [
-      "prev_day_vix_change",
-      0.0752
+      0.0709
     ],
     [
       "qqq_ncp_t1",
-      0.0704
+      0.0684
+    ],
+    [
+      "prev_day_vix_change",
+      0.067
+    ],
+    [
+      "oic_net_premium",
+      0.0581
     ],
     [
       "mt_ncp_t1",
-      0.0456
+      0.0381
     ],
     [
-      "dp_top_cluster_dist",
-      0.0441
-    ],
-    [
-      "spy_etf_ncp_t2",
-      0.042
+      "gex_vol_t1",
+      0.0375
     ],
     [
       "prev_direction_DOWN",
-      0.0403
+      0.0361
     ],
     [
-      "dp_total_premium",
-      0.0384
+      "charm_max_pos_dist",
+      0.0335
     ],
     [
-      "mt_ncp_t2",
-      0.0382
+      "oic_put_oi_change",
+      0.0313
     ]
   ],
   "notes": "Walk-forward comparison of 5 models on 3-class structure prediction (CCS/PCS/IC). XGBoost with conservative hyperparams + 4 sklearn baselines (logistic regression, random forest, naive bayes, decision tree).",
   "model_comparison": {
     "Logistic Reg (L2)": {
       "accuracy": 0.6667,
-      "log_loss": 4.0166,
+      "log_loss": 4.1279,
       "per_class_f1": {
         "CALL CREDIT SPREAD": 0.714,
         "PUT CREDIT SPREAD": 0.667,
@@ -96,17 +96,17 @@
       }
     },
     "Random Forest (15)": {
-      "accuracy": 0.5,
-      "log_loss": 1.0717,
+      "accuracy": 0.5833,
+      "log_loss": 0.8706,
       "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.625,
+        "CALL CREDIT SPREAD": 0.706,
         "PUT CREDIT SPREAD": 0.286,
         "IRON CONDOR": 0.0
       }
     },
     "Naive Bayes": {
       "accuracy": 0.75,
-      "log_loss": 5.7588,
+      "log_loss": 4.9845,
       "per_class_f1": {
         "CALL CREDIT SPREAD": 0.8,
         "PUT CREDIT SPREAD": 0.667,
@@ -114,17 +114,17 @@
       }
     },
     "Decision Tree (d=2)": {
-      "accuracy": 0.3333,
-      "log_loss": 12.6582,
+      "accuracy": 0.4167,
+      "log_loss": 15.3442,
       "per_class_f1": {
-        "CALL CREDIT SPREAD": 0.462,
+        "CALL CREDIT SPREAD": 0.533,
         "PUT CREDIT SPREAD": 0.25,
         "IRON CONDOR": 0.0
       }
     },
     "XGBoost": {
       "accuracy": 0.5833,
-      "log_loss": 0.826,
+      "log_loss": 0.8257,
       "per_class_f1": {
         "CALL CREDIT SPREAD": 0.737,
         "PUT CREDIT SPREAD": 0.0,
