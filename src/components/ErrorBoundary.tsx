@@ -53,49 +53,19 @@ export default class ErrorBoundary extends Component<Props, State> {
 
       // Top-level: full-page fallback
       return (
-        <div
-          style={{
-            maxWidth: 520,
-            margin: '80px auto',
-            padding: 32,
-            fontFamily: 'system-ui, sans-serif',
-            textAlign: 'center',
-          }}
-        >
-          <h1 style={{ fontSize: 20, marginBottom: 8 }}>
-            Something went wrong
-          </h1>
-          <p style={{ color: '#666', fontSize: 14, marginBottom: 20 }}>
+        <div className="mx-auto mt-20 max-w-lg p-8 font-sans text-center">
+          <h1 className="mb-2 text-xl">Something went wrong</h1>
+          <p className="text-secondary mb-5 text-sm">
             An unexpected error occurred. Try refreshing the page.
           </p>
           {this.state.error && (
-            <pre
-              style={{
-                background: '#f5f5f5',
-                padding: 12,
-                borderRadius: 8,
-                fontSize: 12,
-                textAlign: 'left',
-                overflow: 'auto',
-                maxHeight: 120,
-                color: '#c00',
-              }}
-            >
+            <pre className="text-danger bg-surface-alt mb-4 max-h-[120px] overflow-auto rounded-lg p-3 text-left text-xs">
               {this.state.error.message}
             </pre>
           )}
           <button
             onClick={() => globalThis.location.reload()}
-            style={{
-              marginTop: 16,
-              padding: '10px 24px',
-              borderRadius: 8,
-              border: '1.5px solid #ccc',
-              background: '#fff',
-              cursor: 'pointer',
-              fontSize: 14,
-              fontWeight: 600,
-            }}
+            className="bg-surface border-edge-strong cursor-pointer rounded-lg border-[1.5px] px-6 py-2.5 text-sm font-semibold"
           >
             Reload Page
           </button>
