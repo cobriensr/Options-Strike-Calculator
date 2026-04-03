@@ -108,6 +108,82 @@ export async function fetchDarkPoolBlocks(
   }
 }
 
+/**
+ * Fetch ALL SPY dark pool trades for a date by paginating through
+ * the UW API in batches of 500 using the `older_than` cursor.
+ * No premium floor — captures the full tape for accurate level aggregation.
+ * Applies the same quality filters as fetchDarkPoolBlocks.
+ *
+ * @param maxPages - safety limit on pagination (default 100 = 50K trades)
+ */
+export async function fetchAllDarkPoolTrades(
+  apiKey: string,
+  date?: string,
+  maxPages: number = 100,
+): Promise<DarkPoolTrade[]> {
+  const all: DarkPoolTrade[] = [];
+  let olderThan: number | undefined;
+
+  try {
+    for (let page = 0; page < maxPages; page++) {
+      const params = new URLSearchParams({
+        min_premium: '0',
+        limit: '500',
+      });
+      if (date) params.set('date', date);
+      if (olderThan != null) params.set('older_than', String(olderThan));
+
+      const res = await fetch(`${UW_BASE}/darkpool/SPY?${params}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        logger.warn(
+          { status: res.status, body: text.slice(0, 200), page },
+          'Dark pool paginated fetch non-OK',
+        );
+        break;
+      }
+
+      const body = await res.json();
+      const batch: DarkPoolTrade[] = body.data ?? [];
+
+      if (batch.length === 0) break;
+
+      all.push(...batch);
+
+      // Use the oldest trade's timestamp as the cursor for the next page
+      const oldest = batch.at(-1);
+      if (!oldest) break;
+
+      const oldestTs = Math.floor(
+        new Date(oldest.executed_at).getTime() / 1000,
+      );
+      // If cursor didn't advance, we're stuck — stop
+      if (olderThan != null && oldestTs >= olderThan) break;
+      olderThan = oldestTs;
+
+      // Less than 500 means we got the last page
+      if (batch.length < 500) break;
+    }
+  } catch (err) {
+    logger.error({ err, fetched: all.length }, 'Dark pool pagination error');
+  }
+
+  // Apply the same quality filters
+  return all.filter(
+    (t) =>
+      !t.canceled &&
+      !t.ext_hour_sold_codes &&
+      (t.trade_settlement === 'regular' ||
+        t.trade_settlement === 'regular_settlement') &&
+      t.sale_cond_codes !== 'average_price_trade' &&
+      t.trade_code !== 'derivative_priced',
+  );
+}
+
 // ── Clustering ──────────────────────────────────────────────
 
 /**

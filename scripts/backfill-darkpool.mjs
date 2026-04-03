@@ -59,29 +59,50 @@ function getTradingDays(count) {
 
 // ── Fetch dark pool blocks ──────────────────────────────────
 
-async function fetchDarkPoolBlocks(date) {
-  const params = new URLSearchParams({
-    min_premium: '5000000',
-    limit: '500',
-    date,
-  });
+async function fetchAllTrades(date) {
+  const all = [];
+  let olderThan;
 
-  const res = await fetch(`${UW_BASE}/darkpool/SPY?${params}`, {
-    headers: { Authorization: `Bearer ${UW_API_KEY}` },
-    signal: AbortSignal.timeout(15_000),
-  });
+  for (let page = 0; page < 100; page++) {
+    const params = new URLSearchParams({
+      min_premium: '0',
+      limit: '500',
+      date,
+    });
+    if (olderThan != null) params.set('older_than', String(olderThan));
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.warn(`  UW API ${res.status} for ${date}: ${text.slice(0, 100)}`);
-    return [];
+    const res = await fetch(`${UW_BASE}/darkpool/SPY?${params}`, {
+      headers: { Authorization: `Bearer ${UW_API_KEY}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.warn(`  UW API ${res.status} page ${page}: ${text.slice(0, 100)}`);
+      break;
+    }
+
+    const body = await res.json();
+    const batch = body.data ?? [];
+
+    if (batch.length === 0) break;
+    all.push(...batch);
+
+    const oldest = batch.at(-1);
+    if (!oldest) break;
+
+    const oldestTs = Math.floor(new Date(oldest.executed_at).getTime() / 1000);
+    if (olderThan != null && oldestTs >= olderThan) break;
+    olderThan = oldestTs;
+
+    if (batch.length < 500) break;
+
+    // Small delay between pages
+    await new Promise((r) => setTimeout(r, 200));
   }
 
-  const body = await res.json();
-  const trades = body.data ?? [];
-
   // Same filters as darkpool.ts
-  return trades.filter(
+  return all.filter(
     (t) =>
       !t.canceled &&
       !t.ext_hour_sold_codes &&
@@ -182,7 +203,7 @@ async function main() {
     // Rate limit — UW API is generous but don't abuse it
     await new Promise((r) => setTimeout(r, 500));
 
-    const trades = await fetchDarkPoolBlocks(date);
+    const trades = await fetchAllTrades(date);
 
     if (trades.length === 0) {
       console.log(`  ${date}: no trades`);

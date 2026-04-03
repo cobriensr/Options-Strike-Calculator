@@ -18,7 +18,6 @@ const DEFAULT_VISIBLE = 15;
 const MIN_VISIBLE = 5;
 const MAX_VISIBLE = 50;
 const STEP = 5;
-const PREMIUM_FLOOR = 5_000_000; // $5M minimum to display
 
 interface Props {
   levels: DarkPoolLevel[];
@@ -56,14 +55,9 @@ export default memo(function DarkPoolLevels({
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
 
-  const aboveFloor = useMemo(
-    () => levels.filter((l) => l.totalPremium >= PREMIUM_FLOOR),
-    [levels],
-  );
-
   const filtered = useMemo(
-    () => aboveFloor.slice(0, visibleCount),
-    [aboveFloor, visibleCount],
+    () => levels.slice(0, visibleCount),
+    [levels, visibleCount],
   );
 
   const maxPremium = useMemo(
@@ -87,7 +81,7 @@ export default memo(function DarkPoolLevels({
 
   const badge =
     totalLevels > 0
-      ? `${filtered.length} of ${aboveFloor.length}`
+      ? `${filtered.length} of ${totalLevels}`
       : null;
 
   const headerRight = (
@@ -111,7 +105,7 @@ export default memo(function DarkPoolLevels({
         </span>
         <button
           onClick={handleMore}
-          disabled={visibleCount >= MAX_VISIBLE || visibleCount >= aboveFloor.length}
+          disabled={visibleCount >= MAX_VISIBLE || visibleCount >= totalLevels}
           aria-label="Show more levels"
           className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
         >
@@ -149,7 +143,7 @@ export default memo(function DarkPoolLevels({
         headerRight={headerRight}
       >
         <div className="text-muted text-center font-sans text-xs">
-          No dark pool levels yet
+          No dark pool data yet
         </div>
       </SectionBox>
     );

@@ -27,14 +27,14 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 vi.mock('../_lib/darkpool.js', () => ({
-  fetchDarkPoolBlocks: vi.fn(),
+  fetchAllDarkPoolTrades: vi.fn(),
   aggregateDarkPoolLevels: vi.fn(),
 }));
 
 import handler from '../cron/fetch-darkpool.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import {
-  fetchDarkPoolBlocks,
+  fetchAllDarkPoolTrades,
   aggregateDarkPoolLevels,
 } from '../_lib/darkpool.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -108,12 +108,12 @@ describe('fetch-darkpool cron handler', () => {
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(vi.mocked(fetchDarkPoolBlocks)).not.toHaveBeenCalled();
+    expect(vi.mocked(fetchAllDarkPoolTrades)).not.toHaveBeenCalled();
     expect(mockSql).not.toHaveBeenCalled();
   });
 
   it('returns skipped when no trades returned', async () => {
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([]);
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -128,7 +128,7 @@ describe('fetch-darkpool cron handler', () => {
   });
 
   it('returns skipped when trades exist but no levels produced', async () => {
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([makeTrade()]);
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([makeTrade()]);
     vi.mocked(aggregateDarkPoolLevels).mockReturnValue([]);
 
     const res = mockResponse();
@@ -149,7 +149,7 @@ describe('fetch-darkpool cron handler', () => {
       makeLevel({ spxLevel: 6575, totalPremium: 200_000_000 }),
     ];
 
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValue(trades);
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue(trades);
     vi.mocked(aggregateDarkPoolLevels).mockReturnValue(levels);
 
     const res = mockResponse();
@@ -169,18 +169,18 @@ describe('fetch-darkpool cron handler', () => {
     expect(logger.info).toHaveBeenCalled();
   });
 
-  it('passes apiKey to fetchDarkPoolBlocks', async () => {
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([]);
+  it('passes apiKey to fetchAllDarkPoolTrades', async () => {
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(fetchDarkPoolBlocks).toHaveBeenCalledWith('test-uw-key');
+    expect(fetchAllDarkPoolTrades).toHaveBeenCalledWith('test-uw-key');
   });
 
   it('passes trades to aggregateDarkPoolLevels', async () => {
     const trades = [makeTrade()];
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValue(trades);
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue(trades);
     vi.mocked(aggregateDarkPoolLevels).mockReturnValue([makeLevel()]);
 
     const res = mockResponse();
@@ -191,7 +191,7 @@ describe('fetch-darkpool cron handler', () => {
 
   it('returns 500 and captures exception on fetch error', async () => {
     const err = new Error('UW API timeout');
-    vi.mocked(fetchDarkPoolBlocks).mockRejectedValue(err);
+    vi.mocked(fetchAllDarkPoolTrades).mockRejectedValue(err);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -204,7 +204,7 @@ describe('fetch-darkpool cron handler', () => {
   });
 
   it('returns 500 on DB write error', async () => {
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValue([makeTrade()]);
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([makeTrade()]);
     vi.mocked(aggregateDarkPoolLevels).mockReturnValue([makeLevel()]);
     mockSql.mockRejectedValue(new Error('connection refused'));
 

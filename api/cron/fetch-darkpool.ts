@@ -18,7 +18,7 @@ import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronGuard, withRetry } from '../_lib/api-helpers.js';
 import {
-  fetchDarkPoolBlocks,
+  fetchAllDarkPoolTrades,
   aggregateDarkPoolLevels,
 } from '../_lib/darkpool.js';
 
@@ -33,7 +33,7 @@ export default async function handler(
   const startTime = Date.now();
 
   try {
-    const trades = await withRetry(() => fetchDarkPoolBlocks(apiKey));
+    const trades = await withRetry(() => fetchAllDarkPoolTrades(apiKey));
 
     if (trades.length === 0) {
       logger.info('fetch-darkpool: no trades returned');

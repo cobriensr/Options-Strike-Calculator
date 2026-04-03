@@ -84,10 +84,10 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no dark pool levels yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no dark pool data yet/i)).toBeInTheDocument();
   });
 
-  it('shows no levels when all below threshold', () => {
+  it('shows badge with count when levels exist', () => {
     const levels = [
       makeLevel({ totalPremium: 1_000_000 }),
       makeLevel({ spxLevel: 6550, totalPremium: 2_000_000 }),
@@ -100,24 +100,8 @@ describe('DarkPoolLevels: empty state', () => {
         updatedAt={null}
       />,
     );
-    expect(screen.getByText(/no dark pool levels yet/i)).toBeInTheDocument();
-  });
-
-  it('shows badge with zero count when none above threshold', () => {
-    const levels = [
-      makeLevel({ totalPremium: 1_000_000 }),
-      makeLevel({ spxLevel: 6550, totalPremium: 2_000_000 }),
-    ];
-    render(
-      <DarkPoolLevels
-        levels={levels}
-        loading={false}
-        error={null}
-        updatedAt={null}
-      />,
-    );
-    // Both below $5M floor, so 0 of 0 above floor → badge shows "0 of 0"
-    expect(screen.getByText('0 of 0')).toBeInTheDocument();
+    // All levels shown — no premium floor filtering
+    expect(screen.getByText('2 of 2')).toBeInTheDocument();
   });
 });
 
@@ -152,7 +136,8 @@ describe('DarkPoolLevels: rendering levels', () => {
     expect(screen.getByText('$248M')).toBeInTheDocument();
   });
 
-  it('filters out levels below threshold', () => {
+  it('respects visible count limit', () => {
+    // Default visibleCount is 15 — with 2 levels, both show
     const levels = [
       makeLevel({ spxLevel: 6575, totalPremium: 500_000_000 }),
       makeLevel({ spxLevel: 6540, totalPremium: 1_000_000 }),
@@ -167,25 +152,8 @@ describe('DarkPoolLevels: rendering levels', () => {
     );
 
     expect(screen.getByText('6575')).toBeInTheDocument();
-    expect(screen.queryByText('6540')).not.toBeInTheDocument();
-  });
-
-  it('shows badge with count of above-floor levels', () => {
-    const levels = [
-      makeLevel({ spxLevel: 6575, totalPremium: 500_000_000 }),
-      makeLevel({ spxLevel: 6540, totalPremium: 1_000_000 }),
-    ];
-    render(
-      <DarkPoolLevels
-        levels={levels}
-        loading={false}
-        error={null}
-        updatedAt={null}
-      />,
-    );
-
-    // 1 above floor, 1 below → badge "1 of 1" (only counts above-floor)
-    expect(screen.getByText('1 of 1')).toBeInTheDocument();
+    expect(screen.getByText('6540')).toBeInTheDocument();
+    expect(screen.getByText('2 of 2')).toBeInTheDocument();
   });
 });
 
@@ -218,16 +186,16 @@ describe('DarkPoolLevels: premium formatting', () => {
     expect(screen.getByText('$373M')).toBeInTheDocument();
   });
 
-  it('formats $5M threshold level', () => {
+  it('formats thousands with K suffix', () => {
     render(
       <DarkPoolLevels
-        levels={[makeLevel({ totalPremium: 5_000_000 })]}
+        levels={[makeLevel({ totalPremium: 750_000 })]}
         loading={false}
         error={null}
         updatedAt={null}
       />,
     );
-    expect(screen.getByText('$5M')).toBeInTheDocument();
+    expect(screen.getByText('$750K')).toBeInTheDocument();
   });
 });
 
@@ -292,7 +260,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
   it('uses minimum 2% bar width', () => {
     const levels = [
       makeLevel({ spxLevel: 6575, totalPremium: 10_000_000_000 }),
-      makeLevel({ spxLevel: 6555, totalPremium: 5_000_000 }),
+      makeLevel({ spxLevel: 6555, totalPremium: 100_000 }),
     ];
     render(
       <DarkPoolLevels
