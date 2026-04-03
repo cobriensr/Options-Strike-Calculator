@@ -33,6 +33,10 @@ import {
 } from './darkpool.js';
 import type { DarkPoolCluster } from './darkpool.js';
 import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
+import {
+  getOiChangeData,
+  formatOiChangeForClaude,
+} from './db-oi-change.js';
 import logger from './logger.js';
 import {
   getActiveLessons,
@@ -191,6 +195,7 @@ export async function buildAnalysisContext(
   let darkPoolContext: string | null = null;
   let darkPoolClusters: DarkPoolCluster[] | null = null;
   let maxPainContext: string | null = null;
+  let oiChangeContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
@@ -431,6 +436,20 @@ export async function buildAnalysisContext(
     logger.error({ err: mpErr }, 'Failed to fetch max pain data');
   }
 
+  // On-demand OI change data (prior day positioning)
+  try {
+    const oiChangeRows = await getOiChangeData(analysisDate);
+    if (oiChangeRows.length > 0) {
+      const currentSpx = context.spx as number | undefined;
+      oiChangeContext = formatOiChangeForClaude(
+        oiChangeRows,
+        currentSpx ?? undefined,
+      );
+    }
+  } catch (oicErr) {
+    logger.error({ err: oicErr }, 'Failed to fetch OI change data');
+  }
+
   // On-demand 14 DTE directional chain (midday only, not backtests)
   let directionalChainContext: string | null = null;
   if (mode === 'midday' && !context.isBacktest) {
@@ -548,6 +567,7 @@ export async function buildAnalysisContext(
   if (!maxPainContext) unavailable.push('Max Pain');
   if (!ivTermStructureContext) unavailable.push('IV Term Structure');
   if (!overnightGapContext) unavailable.push('Overnight Gap Analysis');
+  if (!oiChangeContext) unavailable.push('OI Change Analysis');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -670,6 +690,7 @@ ${(() => {
   return `\n## IV Skew Metrics (from chain data)\n  ATM IV: ${skew.atmIV.toFixed(1)}%\n  25Δ Put IV: ${skew.put25dIV.toFixed(1)}% (skew: +${skew.putSkew25d.toFixed(1)} vol pts)\n  25Δ Call IV: ${skew.call25dIV.toFixed(1)}% (skew: +${skew.callSkew25d.toFixed(1)} vol pts)\n  Skew Ratio (|put|/|call|): ${skew.skewRatio.toFixed(1)}x\n  Put Skew Signal: ${signal}\n  Skew Ratio Signal: ${ratioSignal}\n`;
 })()}
 ${maxPainContext ? `\n## SPX 0DTE Max Pain (from API)\nMax pain is the strike where total option holder losses are maximized — MMs profit most if SPX settles here. On neutral/low-gamma days, settlement gravitates toward max pain in the final 2 hours. On days with a dominant gamma wall (Rule 6) or deeply negative GEX (cone-lower settlement pattern), the gamma wall or cone boundary overrides max pain. Use max pain as a tiebreaker when gamma and flow signals are ambiguous — if max pain aligns with a gamma wall, that level has the highest settlement probability.\n\n${maxPainContext}\n` : ''}
+${oiChangeContext ? `\n## SPX OI Change Analysis (from API — prior day positioning)\nShows where institutions opened or closed the most positions. Ask-dominated volume indicates aggressive new positioning; bid-dominated suggests defensive or closing activity. High multi-leg percentage (>50%) indicates institutional spread activity rather than directional bets.\n\n${oiChangeContext}\n` : ''}
 ${spxCandlesContext ? `\n## SPX Intraday Price Action (5-min candles)\nReal OHLCV price data for today's session. Use this to assess price structure: is SPX making higher lows (uptrend intact despite flow concerns), compressing into a range (IC-favorable), or printing wide-range bars (elevated volatility)? The session range relative to the straddle cone shows how much of the expected move has been consumed. VWAP acts as an institutional reference price — sustained trading below VWAP on a bearish flow day confirms the thesis, while price reclaiming VWAP on a bearish day is a warning.\n\n${spxCandlesContext}\n` : ''}
 ${directionalChainContext ? `\n${directionalChainContext}\nThis chain data is for the directional opportunity assessment. The trader buys 14 DTE ATM options at 50Δ minimum. Use bid/ask for entry price guidance. Do not vary strike or DTE — the trader sizes the position themselves.\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
