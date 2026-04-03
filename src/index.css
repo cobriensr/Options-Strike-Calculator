@@ -195,6 +195,13 @@ input::placeholder {
 }
 
 /* ============================================================
+   SMOOTH SCROLL — respects reduced motion
+   ============================================================ */
+html {
+  scroll-behavior: smooth;
+}
+
+/* ============================================================
    MICRO-ANIMATIONS
    ============================================================ */
 @keyframes fade-in-up {
@@ -212,7 +219,49 @@ input::placeholder {
   animation: fade-in-up 250ms ease-out both;
 }
 
+@keyframes slide-in-right {
+  from {
+    transform: translateX(calc(100% + 16px));
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slide-out-right {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(calc(100% + 16px));
+    opacity: 0;
+  }
+}
+
+/* Scrollbar-free horizontal overflow (section nav) */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.animate-toast-in {
+  animation: slide-in-right 250ms ease-out both;
+}
+
+.animate-toast-out {
+  animation: slide-out-right 200ms ease-in both;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
   * {
     transition: none !important;
     animation: none !important;

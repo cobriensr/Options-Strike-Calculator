@@ -5,6 +5,7 @@ import { initBotId } from 'botid/client/core';
 import './index.css';
 import StrikeCalculator from './App';
 import ErrorBoundary from './components/ErrorBoundary';
+import { ToastProvider } from './components/Toast';
 
 if (import.meta.env.DEV) {
   import('@vercel/toolbar/vite').then(({ mountVercelToolbar }) =>
@@ -61,7 +62,9 @@ if (!rootEl) throw new Error('Root element not found');
 ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <StrikeCalculator />
+      <ToastProvider>
+        <StrikeCalculator />
+      </ToastProvider>
     </ErrorBoundary>
   </React.StrictMode>,
 );

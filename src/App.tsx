@@ -42,6 +42,11 @@ import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
+import { useToast } from './components/Toast';
+import SectionNav from './components/SectionNav';
+import type { NavSection } from './components/SectionNav';
+import BackToTop from './components/BackToTop';
+import SkeletonSection from './components/SkeletonSection';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 
@@ -54,6 +59,7 @@ const PositionMonitor = lazy(() => import('./components/PositionMonitor'));
 // ============================================================
 export default function StrikeCalculator() {
   // Consolidated UI state (inputs, debounced values, derived ratio)
+  const toast = useToast();
   const isOwner = useIsOwner();
   const state = useAppState();
   const {
@@ -120,9 +126,19 @@ export default function StrikeCalculator() {
   const market = useMarketData();
   const {
     fileInputRef: vixFileInputRef,
-    handleFileUpload: vixHandleFileUpload,
+    handleFileUpload: vixRawUpload,
     ...vix
   } = useVixData(ivMode, timeHour, timeAmPm, timezone, setVixInput);
+
+  const vixHandleFileUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      await vixRawUpload(e);
+      if (e.target.files?.[0]) {
+        toast.show('VIX CSV loaded', 'success');
+      }
+    },
+    [vixRawUpload, toast],
+  );
   const historyData = useHistoryData(vix.selectedDate);
   const vix1dStatic = useVix1dData();
   const chainData = useChainData(
@@ -255,10 +271,10 @@ export default function StrikeCalculator() {
   );
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
-  const handleAnalysisSaved = useCallback(
-    () => setHistoryRefreshKey((k) => k + 1),
-    [],
-  );
+  const handleAnalysisSaved = useCallback(() => {
+    setHistoryRefreshKey((k) => k + 1);
+    toast.show('Analysis saved', 'success');
+  }, [toast]);
 
   const handleVixCsvClick = useCallback(
     () => vixFileInputRef.current?.click(),
@@ -290,6 +306,28 @@ export default function StrikeCalculator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [darkMode, theme.chevronColor],
   );
+
+  const navSections = useMemo<NavSection[]>(() => {
+    const s: NavSection[] = [
+      { id: 'sec-inputs', label: 'Inputs' },
+      { id: 'sec-settings', label: 'Settings' },
+      { id: 'sec-risk', label: 'Risk' },
+      { id: 'sec-regime', label: 'Regime' },
+    ];
+    if (isOwner && (market.hasData || !!historySnapshot)) {
+      s.push({ id: 'sec-darkpool', label: 'Dark Pool' });
+    }
+    if (market.hasData || !!historySnapshot) {
+      s.push({ id: 'sec-charts', label: 'Charts' });
+    }
+    s.push({ id: 'sec-history', label: 'History' });
+    s.push({ id: 'sec-positions', label: 'Positions' });
+    if (isOwner) {
+      s.push({ id: 'sec-bwb', label: 'BWB' });
+    }
+    s.push({ id: 'results', label: 'Results' });
+    return s;
+  }, [isOwner, market.hasData, historySnapshot]);
 
   const analysisContext = useAnalysisContext({
     selectedDate: vix.selectedDate,
@@ -338,16 +376,16 @@ export default function StrikeCalculator() {
               'color-mix(in srgb, var(--color-page) 85%, transparent)',
           }}
         >
-          <div className="mx-auto flex max-w-[660px] items-center justify-between px-5 py-3 lg:max-w-6xl">
+          <div className="mx-auto flex max-w-[660px] items-center justify-between px-5 py-2 sm:py-3 lg:max-w-6xl">
             <div>
-              <div className="text-accent font-sans text-[10px] font-bold tracking-[0.2em] uppercase">
+              <div className="text-accent hidden font-sans text-[10px] font-bold tracking-[0.2em] uppercase sm:block">
                 0DTE Options
               </div>
-              <h1 className="text-primary m-0 font-serif text-[20px] leading-tight font-bold">
+              <h1 className="text-primary m-0 font-serif text-[18px] leading-tight font-bold sm:text-[20px]">
                 Strike Calculator
               </h1>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2">
               {historySnapshot && (
                 <StatusBadge label="BACKTEST" color={theme.backtest} dot />
               )}
@@ -373,12 +411,70 @@ export default function StrikeCalculator() {
                   dot
                 />
               )}
-              {market.needsAuth && (
-                <StatusBadge
-                  label="Re-authenticate"
-                  color={theme.red}
+              {!isOwner && (
+                <a
                   href="/api/auth/init"
-                />
+                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base no-underline transition-all duration-200"
+                  aria-label="Authenticate with Schwab"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <rect
+                      x="3"
+                      y="7"
+                      width="10"
+                      height="8"
+                      rx="1.5"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    />
+                    <path
+                      d="M5.5 7V5a2.5 2.5 0 015 0v2"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  <span className="text-[11px] font-semibold">Sign in</span>
+                </a>
+              )}
+              {market.needsAuth && isOwner && (
+                <a
+                  href="/api/auth/init"
+                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base no-underline transition-all duration-200"
+                  style={{ color: theme.red }}
+                  aria-label="Re-authenticate with Schwab"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <rect
+                      x="3"
+                      y="7"
+                      width="10"
+                      height="8"
+                      rx="1.5"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    />
+                    <path
+                      d="M5.5 7V5a2.5 2.5 0 015 0v2"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  <span className="text-[11px] font-semibold">Re-auth</span>
+                </a>
               )}
               <input
                 ref={vixFileInputRef}
@@ -412,6 +508,8 @@ export default function StrikeCalculator() {
           </div>
         </header>
 
+        <SectionNav sections={navSections} />
+
         {market.hasData && (
           <NotificationPermission
             permission={alertState.notificationPermission}
@@ -430,7 +528,10 @@ export default function StrikeCalculator() {
           </p>
 
           <main>
-            <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
+            <div
+              id="sec-inputs"
+              className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
+            >
               <DateTimeSection
                 chevronUrl={chevronUrl}
                 selectedDate={vix.selectedDate}
@@ -475,7 +576,10 @@ export default function StrikeCalculator() {
               />
             )}
 
-            <div className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
+            <div
+              id="sec-settings"
+              className="mt-6 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
+            >
               <AdvancedSection
                 skewPct={skewPct}
                 onSkewChange={setSkewPct}
@@ -521,91 +625,87 @@ export default function StrikeCalculator() {
 
             <TradingScheduleSection />
 
-            <ErrorBoundary label="Risk Calculator">
-              <Suspense
-                fallback={
-                  <div className="text-muted animate-pulse p-4 text-center text-sm">
-                    Loading...
-                  </div>
-                }
-              >
-                <RiskCalculator />
-              </Suspense>
-            </ErrorBoundary>
-
-            <ErrorBoundary label="Market Regime">
-              <MarketRegimeSection
-                dVix={dVix}
-                results={results}
-                errors={errors}
-                skewPct={skewPct}
-                selectedDate={vix.selectedDate}
-                market={market}
-                onClusterMultChange={setClusterMult}
-                clusterMult={clusterMult}
-                historySnapshot={historySnapshot}
-                historyCandles={historyData.history?.spx.candles}
-                entryTimeLabel={
-                  historySnapshot
-                    ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
-                    : undefined
-                }
-                signals={signals}
-                chain={chainData.chain}
-              />
-            </ErrorBoundary>
-
-            {isOwner && (market.hasData || !!historySnapshot) && (
-              <ErrorBoundary label="Dark Pool Levels">
-                <DarkPoolLevels
-                  levels={darkPool.levels}
-                  loading={darkPool.loading}
-                  error={darkPool.error}
-                  updatedAt={darkPool.updatedAt}
-                />
-              </ErrorBoundary>
-            )}
-
-            {/* Chart Analysis — owner-only (requires auth session or backtest with results) */}
-            {(market.hasData || !!historySnapshot) && (
-              <ErrorBoundary label="Chart Analysis">
-                <Suspense
-                  fallback={
-                    <div className="text-muted animate-pulse p-4 text-center text-sm">
-                      Loading...
-                    </div>
-                  }
-                >
-                  <ChartAnalysis
-                    results={results}
-                    onAnalysisSaved={handleAnalysisSaved}
-                    context={analysisContext}
-                  />
+            <div id="sec-risk">
+              <ErrorBoundary label="Risk Calculator">
+                <Suspense fallback={<SkeletonSection lines={5} />}>
+                  <RiskCalculator />
                 </Suspense>
               </ErrorBoundary>
+            </div>
+
+            <div id="sec-regime">
+              <ErrorBoundary label="Market Regime">
+                <MarketRegimeSection
+                  dVix={dVix}
+                  results={results}
+                  errors={errors}
+                  skewPct={skewPct}
+                  selectedDate={vix.selectedDate}
+                  market={market}
+                  onClusterMultChange={setClusterMult}
+                  clusterMult={clusterMult}
+                  historySnapshot={historySnapshot}
+                  historyCandles={historyData.history?.spx.candles}
+                  entryTimeLabel={
+                    historySnapshot
+                      ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
+                      : undefined
+                  }
+                  signals={signals}
+                  chain={chainData.chain}
+                />
+              </ErrorBoundary>
+            </div>
+
+            {isOwner && (market.hasData || !!historySnapshot) && (
+              <div id="sec-darkpool">
+                <ErrorBoundary label="Dark Pool Levels">
+                  <DarkPoolLevels
+                    levels={darkPool.levels}
+                    loading={darkPool.loading}
+                    error={darkPool.error}
+                    updatedAt={darkPool.updatedAt}
+                  />
+                </ErrorBoundary>
+              </div>
             )}
 
-            <ErrorBoundary label="Analysis History">
-              <AnalysisHistory refreshKey={historyRefreshKey} />
-            </ErrorBoundary>
+            {/* Chart Analysis — requires auth session or backtest with results */}
+            {(market.hasData || !!historySnapshot) && (
+              <div id="sec-charts">
+                <ErrorBoundary label="Chart Analysis">
+                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                    <ChartAnalysis
+                      results={results}
+                      onAnalysisSaved={handleAnalysisSaved}
+                      context={analysisContext}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
+              </div>
+            )}
 
-            {/* Paper Dashboard — owner-only, lazy-loaded */}
-            <ErrorBoundary label="Paper Dashboard">
-              <Suspense
-                fallback={
-                  <div className="text-muted animate-pulse p-4 text-center text-sm">
-                    Loading...
-                  </div>
-                }
-              >
-                <PositionMonitor spotPrice={results?.spot ?? spxVal ?? 0} />
-              </Suspense>
-            </ErrorBoundary>
+            <div id="sec-history">
+              <ErrorBoundary label="Analysis History">
+                <AnalysisHistory refreshKey={historyRefreshKey} />
+              </ErrorBoundary>
+            </div>
+
+            {/* Paper Dashboard — lazy-loaded */}
+            <div id="sec-positions">
+              <ErrorBoundary label="Paper Dashboard">
+                <Suspense fallback={<SkeletonSection lines={5} tall />}>
+                  <PositionMonitor spotPrice={results?.spot ?? spxVal ?? 0} />
+                </Suspense>
+              </ErrorBoundary>
+            </div>
 
             {isOwner && (
-              <ErrorBoundary label="BWB Calculator">
-                <BWBCalculator selectedDate={vix.selectedDate} />
-              </ErrorBoundary>
+              <div id="sec-bwb">
+                <ErrorBoundary label="BWB Calculator">
+                  <BWBCalculator selectedDate={vix.selectedDate} />
+                </ErrorBoundary>
+              </div>
             )}
 
             <ErrorBoundary label="Results">
@@ -625,6 +725,7 @@ export default function StrikeCalculator() {
           </main>
         </div>
       </div>
+      <BackToTop />
       <BacktestDiag
         snapshot={historySnapshot}
         history={historyData}
