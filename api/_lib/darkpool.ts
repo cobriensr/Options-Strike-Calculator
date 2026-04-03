@@ -167,6 +167,9 @@ export async function fetchAllDarkPoolTrades(
 
       // Less than 500 means we got the last page
       if (batch.length < 500) break;
+
+      // Rate limit: UW allows 120 req/60s. 600ms between pages = ~1.7/sec.
+      await new Promise((r) => setTimeout(r, 600));
     }
   } catch (err) {
     logger.error({ err, fetched: all.length }, 'Dark pool pagination error');

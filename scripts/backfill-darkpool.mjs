@@ -97,8 +97,8 @@ async function fetchAllTrades(date) {
 
     if (batch.length < 500) break;
 
-    // Small delay between pages
-    await new Promise((r) => setTimeout(r, 200));
+    // Rate limit: UW allows 120 req/60s = 2/sec. Use 600ms to stay safe.
+    await new Promise((r) => setTimeout(r, 600));
   }
 
   // Same filters as darkpool.ts
@@ -200,8 +200,8 @@ async function main() {
   const totals = { trades: 0, levels: 0, stored: 0, skipped: 0 };
 
   for (const date of tradingDays) {
-    // Rate limit — UW API is generous but don't abuse it
-    await new Promise((r) => setTimeout(r, 500));
+    // Pause between dates to let the rate limit window reset
+    await new Promise((r) => setTimeout(r, 2_000));
 
     const trades = await fetchAllTrades(date);
 
