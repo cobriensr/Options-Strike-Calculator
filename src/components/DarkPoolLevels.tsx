@@ -54,10 +54,22 @@ export default memo(function DarkPoolLevels({
   updatedAt,
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
+  const [sortBy, setSortBy] = useState<'premium' | 'time'>('premium');
+
+  const sorted = useMemo(() => {
+    if (sortBy === 'time') {
+      return [...levels].sort((a, b) => {
+        const tA = a.latestTime ?? '';
+        const tB = b.latestTime ?? '';
+        return tB.localeCompare(tA);
+      });
+    }
+    return levels; // API already returns by premium desc
+  }, [levels, sortBy]);
 
   const filtered = useMemo(
-    () => levels.slice(0, visibleCount),
-    [levels, visibleCount],
+    () => sorted.slice(0, visibleCount),
+    [sorted, visibleCount],
   );
 
   const maxPremium = useMemo(
@@ -76,6 +88,10 @@ export default memo(function DarkPoolLevels({
     () => setVisibleCount((v) => Math.min(v + STEP, MAX_VISIBLE)),
     [],
   );
+  const toggleSort = useCallback(
+    () => setSortBy((s) => (s === 'premium' ? 'time' : 'premium')),
+    [],
+  );
 
   const totalLevels = levels.length;
 
@@ -88,6 +104,13 @@ export default memo(function DarkPoolLevels({
           Updated {formatTime(updatedAt)}
         </span>
       )}
+      <button
+        onClick={toggleSort}
+        aria-label={`Sort by ${sortBy === 'premium' ? 'latest time' : 'premium'}`}
+        className="text-accent hover:text-primary border-edge cursor-pointer rounded border px-1.5 py-0.5 font-sans text-[10px] font-semibold transition-colors"
+      >
+        {sortBy === 'premium' ? 'By Premium' : 'By Latest'}
+      </button>
       <div className="border-edge flex items-center gap-0.5 rounded border">
         <button
           onClick={handleLess}
