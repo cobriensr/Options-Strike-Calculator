@@ -50,6 +50,38 @@ npm run test:e2e     # playwright
 npm run format       # prettier --write
 ```
 
+## Development Workflow (Get It Right)
+
+Every code change follows this implement-verify-review loop. No exceptions. This applies to the main session and all subagents that write code.
+
+### The Loop
+
+**1. Implement** — Write the code. Investigate first, understand existing patterns, then make changes.
+
+**2. Verify** — Run `npm run review`. Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
+
+**3. Self-Review** — Launch a **reviewer subagent** to evaluate the implementation with fresh eyes. The subagent must:
+
+- Run `git diff` to read every changed file
+- Evaluate against: correctness, pattern adherence (CLAUDE.md conventions), code quality, test coverage, side effects
+- Return a verdict: `pass`, `continue`, or `refactor`
+- Write detailed feedback (this is the ONLY bridge to the next iteration if not passing)
+
+**Reviewer subagent verdict meanings:**
+
+- **pass** — Correct and complete. Commit the changes.
+- **continue** — Approach is sound but has fixable issues. Apply the feedback, re-run verify, and re-review. Do NOT start over.
+- **refactor** — Approach is fundamentally wrong. Launch a **refactor subagent** to undo the problematic work (revert, do NOT reimplement), then restart from step 1 with the reviewer's feedback guiding a fresh approach.
+
+**4. Act** — On `pass`: stage and commit. On `continue` or `refactor`: loop back (max 3 total iterations). After 3 iterations, commit what you have and report honestly what's unresolved.
+
+### When to skip the review subagent
+
+- Single-line config changes, typo fixes, or comment edits
+- Changes that only touch `.md` files, `.json` config, or `ml/` Python scripts
+
+Everything else gets the full loop.
+
 ## Key Patterns
 
 ### Backend (api/)
