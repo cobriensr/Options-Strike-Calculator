@@ -196,6 +196,7 @@ export async function buildAnalysisContext(
   let darkPoolClusters: DarkPoolCluster[] | null = null;
   let maxPainContext: string | null = null;
   let oiChangeContext: string | null = null;
+  let volRealizedContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
@@ -320,6 +321,61 @@ export async function buildAnalysisContext(
     }
   } catch (ivErr) {
     logger.error({ err: ivErr }, 'Failed to fetch IV term structure');
+  }
+
+  // Realized vol + IV rank from daily vol_realized table
+  try {
+    const sql = getDb();
+    const rvRows = await sql`
+      SELECT iv_30d, rv_30d, iv_rv_spread, iv_overpricing_pct, iv_rank
+      FROM vol_realized
+      WHERE date = ${analysisDate}
+      LIMIT 1
+    `;
+    if (rvRows.length > 0) {
+      const rv = rvRows[0]!;
+      const iv30 =
+        rv.iv_30d != null ? (Number(rv.iv_30d) * 100).toFixed(1) : null;
+      const rv30 =
+        rv.rv_30d != null ? (Number(rv.rv_30d) * 100).toFixed(1) : null;
+      const spread =
+        rv.iv_rv_spread != null
+          ? (Number(rv.iv_rv_spread) * 100).toFixed(1)
+          : null;
+      const overpricing =
+        rv.iv_overpricing_pct != null
+          ? Number(rv.iv_overpricing_pct).toFixed(1)
+          : null;
+      const rank =
+        rv.iv_rank != null ? Number(rv.iv_rank).toFixed(0) : null;
+
+      const lines: string[] = [];
+      if (iv30 && rv30) {
+        lines.push(
+          `30D Implied Vol: ${iv30}% | 30D Realized Vol: ${rv30}%`,
+        );
+        if (spread) {
+          const label =
+            Number(spread) > 0 ? 'IV OVERPRICING' : 'IV UNDERPRICING';
+          lines.push(`IV-RV Spread: ${spread} vol pts (${label})`);
+        }
+        if (overpricing) {
+          lines.push(
+            `Overpricing: ${overpricing}% — ${Number(overpricing) > 10 ? 'premium is rich, favorable for selling' : Number(overpricing) < -10 ? 'premium is cheap, caution selling' : 'fairly priced'}`,
+          );
+        }
+      }
+      if (rank) {
+        lines.push(
+          `IV Rank (1-year): ${rank}th percentile — ${Number(rank) > 70 ? 'elevated, rich premium' : Number(rank) < 30 ? 'low, cheap premium' : 'mid-range'}`,
+        );
+      }
+      if (lines.length > 0) {
+        volRealizedContext = lines.join('\n  ');
+      }
+    }
+  } catch (rvErr) {
+    logger.error({ err: rvErr }, 'Failed to fetch vol realized data');
   }
 
   // On-demand pre-market data (ES overnight + straddle cone from manual input)
@@ -629,6 +685,7 @@ ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time ser
 ${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
 ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
+${volRealizedContext ? `\n## Realized Vol & IV Rank (from API — daily)\n  ${volRealizedContext}\n` : ''}
 ${overnightGapContext ? `\n## ES Overnight Gap Analysis (from pre-market data)\nThe ES futures overnight session data provides pre-market context for the cash session. Gap fill probability, overnight range consumption, and VWAP positioning help calibrate the opening hour bias. On high gap fill probability days, the first 30 minutes are likely to see a reversal toward the previous close. On low fill probability days, the gap direction extends and aligns with the session trend.\n\n${overnightGapContext}\n` : ''}
 ${
   straddleConeUpper && straddleConeLower && !spxCandlesContext

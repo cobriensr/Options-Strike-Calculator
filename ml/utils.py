@@ -67,6 +67,12 @@ OI_CHANGE_FEATURES: list[str] = [
     "oic_top_strike_dist", "oic_concentration",
 ]
 
+VOL_SURFACE_FEATURES: list[str] = [
+    "iv_ts_slope_0d_30d", "iv_ts_contango", "iv_ts_spread",
+    "uw_rv_30d", "uw_iv_rv_spread", "uw_iv_overpricing_pct",
+    "iv_rank",
+]
+
 
 # ── Environment & DB ────────────────────────────────────────
 

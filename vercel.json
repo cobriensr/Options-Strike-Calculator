@@ -60,6 +60,10 @@
       "schedule": "30 21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-vol-surface",
+      "schedule": "35 21 * * 1-5"
+    },
+    {
       "path": "/api/cron/build-features",
       "schedule": "45 20,21 * * 1-5"
     },
