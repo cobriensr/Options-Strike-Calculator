@@ -807,4 +807,54 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 30,
+    description: 'Create oi_changes table for daily OI change data',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS oi_changes (
+          id                    SERIAL PRIMARY KEY,
+          date                  DATE NOT NULL,
+          option_symbol         TEXT NOT NULL,
+          strike                DECIMAL(10,2),
+          is_call               BOOLEAN,
+          oi_diff               INTEGER,
+          curr_oi               INTEGER,
+          last_oi               INTEGER,
+          avg_price             DECIMAL(10,4),
+          prev_ask_volume       INTEGER,
+          prev_bid_volume       INTEGER,
+          prev_multi_leg_volume INTEGER,
+          prev_total_premium    DECIMAL(14,2),
+          created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(date, option_symbol)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_oi_changes_date
+          ON oi_changes(date)
+      `,
+    ],
+  },
+  {
+    id: 31,
+    description:
+      'Add OI change feature columns to training_features',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS oic_net_oi_change        INTEGER,
+          ADD COLUMN IF NOT EXISTS oic_call_oi_change       INTEGER,
+          ADD COLUMN IF NOT EXISTS oic_put_oi_change        INTEGER,
+          ADD COLUMN IF NOT EXISTS oic_oi_change_pcr        DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS oic_net_premium           DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS oic_call_premium          DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS oic_put_premium           DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS oic_ask_ratio             DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS oic_multi_leg_pct         DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS oic_top_strike_dist       DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS oic_concentration         DECIMAL(8,4)
+      `,
+    ],
+  },
 ];
