@@ -857,4 +857,52 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 32,
+    description:
+      'Create vol_term_structure and vol_realized tables',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS vol_term_structure (
+          id            SERIAL PRIMARY KEY,
+          date          DATE NOT NULL,
+          days          INTEGER NOT NULL,
+          volatility    DECIMAL(8,6) NOT NULL,
+          implied_move  DECIMAL(8,6),
+          created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(date, days)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS idx_vol_ts_date ON vol_term_structure(date)`,
+      sql`
+        CREATE TABLE IF NOT EXISTS vol_realized (
+          id                  SERIAL PRIMARY KEY,
+          date                DATE NOT NULL UNIQUE,
+          iv_30d              DECIMAL(10,6),
+          rv_30d              DECIMAL(10,6),
+          iv_rv_spread        DECIMAL(8,4),
+          iv_overpricing_pct  DECIMAL(8,4),
+          iv_rank             DECIMAL(6,2),
+          created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+    ],
+  },
+  {
+    id: 33,
+    description:
+      'Add vol surface feature columns to training_features',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS iv_ts_slope_0d_30d    DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS iv_ts_contango        BOOLEAN,
+          ADD COLUMN IF NOT EXISTS iv_ts_spread          DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS uw_rv_30d             DECIMAL(10,6),
+          ADD COLUMN IF NOT EXISTS uw_iv_rv_spread       DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS uw_iv_overpricing_pct DECIMAL(8,4),
+          ADD COLUMN IF NOT EXISTS iv_rank               DECIMAL(6,2)
+      `,
+    ],
+  },
 ];
