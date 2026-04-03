@@ -53,7 +53,7 @@ export default class ErrorBoundary extends Component<Props, State> {
 
       // Top-level: full-page fallback
       return (
-        <div className="mx-auto mt-20 max-w-lg p-8 font-sans text-center">
+        <div className="mx-auto mt-20 max-w-lg p-8 text-center font-sans">
           <h1 className="mb-2 text-xl">Something went wrong</h1>
           <p className="text-secondary mb-5 text-sm">
             An unexpected error occurred. Try refreshing the page.

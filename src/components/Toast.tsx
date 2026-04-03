@@ -43,22 +43,19 @@ const TOAST_STYLES: Record<
   success: {
     backgroundColor:
       'color-mix(in srgb, var(--color-success) 12%, var(--color-surface))',
-    borderColor:
-      'color-mix(in srgb, var(--color-success) 25%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--color-success) 25%, transparent)',
     color: 'var(--color-success)',
   },
   error: {
     backgroundColor:
       'color-mix(in srgb, var(--color-danger) 12%, var(--color-surface))',
-    borderColor:
-      'color-mix(in srgb, var(--color-danger) 25%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--color-danger) 25%, transparent)',
     color: 'var(--color-danger)',
   },
   info: {
     backgroundColor:
       'color-mix(in srgb, var(--color-accent) 12%, var(--color-surface))',
-    borderColor:
-      'color-mix(in srgb, var(--color-accent) 25%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--color-accent) 25%, transparent)',
     color: 'var(--color-accent)',
   },
 };

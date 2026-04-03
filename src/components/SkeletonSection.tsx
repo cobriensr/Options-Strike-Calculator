@@ -28,9 +28,7 @@ const SkeletonSection = memo(function SkeletonSection({
       className="border-edge border-t-edge-strong bg-surface mt-6 rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 first:mt-0"
     >
       {/* Header skeleton */}
-      <div
-        className="bg-surface-alt mb-3.5 h-3 w-[120px] animate-pulse rounded-full"
-      />
+      <div className="bg-surface-alt mb-3.5 h-3 w-[120px] animate-pulse rounded-full" />
 
       {/* Content bars */}
       <div className="flex flex-col gap-2.5">
