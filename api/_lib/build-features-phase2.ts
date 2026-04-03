@@ -431,34 +431,45 @@ export async function engineerPhase2Features(
     logger.warn({ err: oicErr }, 'OI change feature extraction failed');
   }
 
-  // Vol surface features (from vol_term_structure + vol_realized)
+  // Vol surface features (from vol_term_structure + vol_realized + iv_monitor)
   try {
-    // Term structure: compute slope and contango from stored curve
+    // Term structure: the /volatility/term-structure endpoint only returns
+    // monthly+ expiries (min DTE ~15). For the 0DTE end we use iv_monitor
+    // (from /interpolated-iv which includes 0DTE). This gives us the full
+    // 0DTE-to-30D slope that defines contango/inversion.
     const tsRows = await sql`
       SELECT days, volatility FROM vol_term_structure
       WHERE date = ${dateStr}
       ORDER BY days ASC
     `;
 
-    if (tsRows.length >= 2) {
+    // Get 0DTE IV from iv_monitor (first reading of the day)
+    const ivMonRow = await sql`
+      SELECT volatility FROM iv_monitor
+      WHERE date = ${dateStr}
+      ORDER BY timestamp ASC
+      LIMIT 1
+    `;
+    const zeroDteVol = ivMonRow.length > 0 ? num(ivMonRow[0]!.volatility) : null;
+
+    if (tsRows.length >= 1) {
       const vols = tsRows.map((r) => ({
         days: Number(r.days),
         vol: Number(r.volatility),
       }));
 
-      // Find 0DTE (days <= 1) and ~30D (closest to 30)
-      const zeroDte = vols.find((v) => v.days <= 1);
+      // Find ~30D point (closest to 30 DTE on the term structure)
       const thirtyD = vols.reduce((best, v) =>
         Math.abs(v.days - 30) < Math.abs(best.days - 30) ? v : best,
       );
 
-      if (zeroDte && thirtyD && thirtyD.days > 1) {
-        const spread = zeroDte.vol - thirtyD.vol;
+      if (zeroDteVol != null && thirtyD) {
+        const spread = zeroDteVol - thirtyD.vol;
         features.iv_ts_spread = Math.round(spread * 10000) / 10000;
-        features.iv_ts_contango = zeroDte.vol < thirtyD.vol;
+        features.iv_ts_contango = zeroDteVol < thirtyD.vol;
         features.iv_ts_slope_0d_30d =
           thirtyD.vol > 0
-            ? Math.round(((zeroDte.vol - thirtyD.vol) / thirtyD.vol) * 10000) / 10000
+            ? Math.round(((zeroDteVol - thirtyD.vol) / thirtyD.vol) * 10000) / 10000
             : null;
       }
     }
