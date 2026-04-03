@@ -784,4 +784,15 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 28,
+    description:
+      'Add unique constraint on dark_pool_levels(date, spx_approx) for UPSERT',
+    statements: (sql) => [
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_dark_pool_levels_date_spx
+          ON dark_pool_levels(date, spx_approx)
+      `,
+    ],
+  },
 ];

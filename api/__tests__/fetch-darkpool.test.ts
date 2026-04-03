@@ -112,7 +112,38 @@ describe('fetch-darkpool cron handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('returns skipped when no trades returned', async () => {
+  it('reads cursor from DB and passes to fetch', async () => {
+    // Cursor query returns a timestamp
+    mockSql.mockResolvedValueOnce([{ cursor_ts: 1743530400 }]);
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(fetchAllDarkPoolTrades).toHaveBeenCalledWith(
+      'test-uw-key',
+      undefined,
+      { newerThan: 1743530400 },
+    );
+  });
+
+  it('passes undefined cursor on first run of the day', async () => {
+    // Cursor query returns null (no data yet)
+    mockSql.mockResolvedValueOnce([{ cursor_ts: null }]);
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(fetchAllDarkPoolTrades).toHaveBeenCalledWith(
+      'test-uw-key',
+      undefined,
+      { newerThan: undefined },
+    );
+  });
+
+  it('returns skipped when no new trades', async () => {
+    mockSql.mockResolvedValueOnce([{ cursor_ts: 1743530400 }]);
     vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([]);
 
     const res = mockResponse();
@@ -122,27 +153,15 @@ describe('fetch-darkpool cron handler', () => {
     expect(res._json).toMatchObject({
       job: 'fetch-darkpool',
       skipped: true,
-      reason: 'no trades',
+      reason: 'no new trades',
     });
     expect(logger.info).toHaveBeenCalled();
   });
 
-  it('returns skipped when trades exist but no levels produced', async () => {
-    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([makeTrade()]);
-    vi.mocked(aggregateDarkPoolLevels).mockReturnValue([]);
+  it('upserts new levels into DB', async () => {
+    // Cursor query
+    mockSql.mockResolvedValueOnce([{ cursor_ts: null }]);
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      job: 'fetch-darkpool',
-      skipped: true,
-      reason: 'no levels',
-    });
-  });
-
-  it('deletes old rows and inserts new levels', async () => {
     const trades = [makeTrade(), makeTrade({ tracking_id: 2 })];
     const levels = [
       makeLevel({ spxLevel: 6550, totalPremium: 500_000_000 }),
@@ -160,25 +179,29 @@ describe('fetch-darkpool cron handler', () => {
       job: 'fetch-darkpool',
       levels: 2,
       trades: 2,
-      topPremium: 500_000_000,
+      incremental: false,
     });
     expect(res._json).toHaveProperty('durationMs');
 
-    // DELETE + 2 INSERTs = 3 SQL calls
+    // 1 cursor read + 2 UPSERTs = 3 SQL calls
     expect(mockSql).toHaveBeenCalledTimes(3);
     expect(logger.info).toHaveBeenCalled();
   });
 
-  it('passes apiKey to fetchAllDarkPoolTrades', async () => {
-    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([]);
+  it('reports incremental=true when cursor exists', async () => {
+    mockSql.mockResolvedValueOnce([{ cursor_ts: 1743530400 }]);
+
+    vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([makeTrade()]);
+    vi.mocked(aggregateDarkPoolLevels).mockReturnValue([makeLevel()]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(fetchAllDarkPoolTrades).toHaveBeenCalledWith('test-uw-key');
+    expect(res._json).toMatchObject({ incremental: true });
   });
 
   it('passes trades to aggregateDarkPoolLevels', async () => {
+    mockSql.mockResolvedValueOnce([{ cursor_ts: null }]);
     const trades = [makeTrade()];
     vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue(trades);
     vi.mocked(aggregateDarkPoolLevels).mockReturnValue([makeLevel()]);
@@ -190,6 +213,7 @@ describe('fetch-darkpool cron handler', () => {
   });
 
   it('returns 500 and captures exception on fetch error', async () => {
+    mockSql.mockResolvedValueOnce([{ cursor_ts: null }]);
     const err = new Error('UW API timeout');
     vi.mocked(fetchAllDarkPoolTrades).mockRejectedValue(err);
 
@@ -204,9 +228,14 @@ describe('fetch-darkpool cron handler', () => {
   });
 
   it('returns 500 on DB write error', async () => {
+    // Cursor read succeeds
+    mockSql.mockResolvedValueOnce([{ cursor_ts: null }]);
+
     vi.mocked(fetchAllDarkPoolTrades).mockResolvedValue([makeTrade()]);
     vi.mocked(aggregateDarkPoolLevels).mockReturnValue([makeLevel()]);
-    mockSql.mockRejectedValue(new Error('connection refused'));
+
+    // UPSERT fails
+    mockSql.mockRejectedValueOnce(new Error('connection refused'));
 
     const res = mockResponse();
     await handler(makeCronReq(), res);

@@ -109,18 +109,20 @@ export async function fetchDarkPoolBlocks(
 }
 
 /**
- * Fetch ALL SPY dark pool trades for a date by paginating through
+ * Fetch SPY dark pool trades for a date by paginating through
  * the UW API in batches of 500 using the `older_than` cursor.
  * No premium floor — captures the full tape for accurate level aggregation.
  * Applies the same quality filters as fetchDarkPoolBlocks.
  *
- * @param maxPages - safety limit on pagination (default 100 = 50K trades)
+ * @param opts.newerThan - Unix timestamp cursor; only fetch trades after this
+ * @param opts.maxPages - safety limit on pagination (default 100 = 50K trades)
  */
 export async function fetchAllDarkPoolTrades(
   apiKey: string,
   date?: string,
-  maxPages: number = 100,
+  opts: { newerThan?: number; maxPages?: number } = {},
 ): Promise<DarkPoolTrade[]> {
+  const { newerThan, maxPages = 100 } = opts;
   const all: DarkPoolTrade[] = [];
   let olderThan: number | undefined;
 
@@ -131,6 +133,7 @@ export async function fetchAllDarkPoolTrades(
         limit: '500',
       });
       if (date) params.set('date', date);
+      if (newerThan != null) params.set('newer_than', String(newerThan));
       if (olderThan != null) params.set('older_than', String(olderThan));
 
       const res = await fetch(`${UW_BASE}/darkpool/SPY?${params}`, {
