@@ -24,8 +24,21 @@ Sentry.init({
     const frames =
       event.exception?.values?.flatMap((v) => v.stacktrace?.frames ?? []) ?? [];
     if (frames.some((f) => f.filename?.includes('vercel.live'))) return null;
+    const messages = event.exception?.values?.map((v) => v.value) ?? [];
+    if (messages.some((m) => m?.includes('KPSDK has already been configured')))
+      return null;
     return event;
   },
+});
+
+// Suppress Kasada SDK "already configured" noise — race condition in botid SDK
+globalThis.addEventListener('unhandledrejection', (e) => {
+  if (
+    e.reason instanceof Error &&
+    e.reason.message.includes('KPSDK has already been configured')
+  ) {
+    e.preventDefault();
+  }
 });
 
 initBotId({

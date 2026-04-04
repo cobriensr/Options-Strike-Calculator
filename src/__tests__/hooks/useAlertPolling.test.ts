@@ -545,3 +545,202 @@ describe('useAlertPolling: interval polling', () => {
     expect(result.current.alerts.length).toBe(50);
   });
 });
+
+// ============================================================
+// AUDIO CHIME (lines 43-97)
+// ============================================================
+
+describe('useAlertPolling: audio chime', () => {
+  /** Create a proper AudioContext class mock that works with `new`. */
+  function makeAudioContextClass(spies: {
+    start?: ReturnType<typeof vi.fn>;
+    stop?: ReturnType<typeof vi.fn>;
+    close?: ReturnType<typeof vi.fn>;
+    connect?: ReturnType<typeof vi.fn>;
+    setValueAtTime?: ReturnType<typeof vi.fn>;
+    expRamp?: ReturnType<typeof vi.fn>;
+  }) {
+    return class MockAudioContext {
+      destination = {};
+      currentTime = 0;
+      createOscillator() {
+        return {
+          type: '',
+          frequency: { value: 0 },
+          connect: spies.connect ?? vi.fn(),
+          start: spies.start ?? vi.fn(),
+          stop: spies.stop ?? vi.fn(),
+        };
+      }
+      createGain() {
+        return {
+          connect: vi.fn(),
+          gain: {
+            setValueAtTime: spies.setValueAtTime ?? vi.fn(),
+            exponentialRampToValueAtTime: spies.expRamp ?? vi.fn(),
+          },
+        };
+      }
+      close = spies.close ?? vi.fn();
+    };
+  }
+
+  it('plays chime with extreme severity (double repeat)', async () => {
+    const start = vi.fn();
+    const stop = vi.fn();
+    const setVal = vi.fn();
+    const expRamp = vi.fn();
+
+    vi.stubGlobal(
+      'AudioContext',
+      makeAudioContextClass({
+        start,
+        stop,
+        setValueAtTime: setVal,
+        expRamp,
+      }),
+    );
+
+    const alert = makeAlert({ id: 99, severity: 'extreme' });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ alerts: [alert] }),
+    });
+
+    renderHook(() => useAlertPolling(true));
+
+    await act(async () => {});
+
+    // extreme severity = 2 repeats × 3 notes = 6 oscillators
+    expect(start).toHaveBeenCalledTimes(6);
+    expect(stop).toHaveBeenCalledTimes(6);
+    expect(setVal).toHaveBeenCalledTimes(6);
+    expect(expRamp).toHaveBeenCalledTimes(6);
+  });
+
+  it('plays chime with warning severity (single repeat)', async () => {
+    const start = vi.fn();
+    const stop = vi.fn();
+
+    vi.stubGlobal('AudioContext', makeAudioContextClass({ start, stop }));
+
+    const alert = makeAlert({ id: 100, severity: 'warning' });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ alerts: [alert] }),
+    });
+
+    renderHook(() => useAlertPolling(true));
+
+    await act(async () => {});
+
+    // warning severity = 1 repeat × 3 notes = 3 oscillators
+    expect(start).toHaveBeenCalledTimes(3);
+    expect(stop).toHaveBeenCalledTimes(3);
+  });
+
+  it('repeats chime on interval for active alerts', async () => {
+    const start = vi.fn();
+
+    vi.stubGlobal('AudioContext', makeAudioContextClass({ start }));
+
+    const alert = makeAlert({ id: 101, severity: 'critical' });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ alerts: [alert] }),
+    });
+
+    renderHook(() => useAlertPolling(true));
+
+    await act(async () => {});
+
+    const initialCalls = start.mock.calls.length;
+
+    // Advance past the critical chime interval (10s)
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    // Should have played the chime again
+    expect(start.mock.calls.length).toBeGreaterThan(initialCalls);
+  });
+
+  it('stops chime on acknowledge', async () => {
+    const start = vi.fn();
+
+    vi.stubGlobal('AudioContext', makeAudioContextClass({ start }));
+
+    const alert = makeAlert({ id: 102, severity: 'extreme' });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ alerts: [alert] }),
+    });
+
+    const { result } = renderHook(() => useAlertPolling(true));
+
+    await waitFor(() => expect(result.current.alerts.length).toBe(1));
+
+    const callsBeforeAck = start.mock.calls.length;
+
+    // Acknowledge the alert — should stop the chime interval
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await act(async () => {
+      await result.current.acknowledge(102);
+    });
+
+    // Advance past several chime intervals
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    // No additional chime plays after acknowledge
+    expect(start.mock.calls.length).toBe(callsBeforeAck);
+  });
+
+  it('handles AudioContext construction failure silently', async () => {
+    vi.stubGlobal(
+      'AudioContext',
+      class FailingAudioContext {
+        constructor() {
+          throw new Error('AudioContext not supported');
+        }
+      },
+    );
+
+    const alert = makeAlert({ id: 103, severity: 'critical' });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ alerts: [alert] }),
+    });
+
+    const { result } = renderHook(() => useAlertPolling(true));
+
+    await waitFor(() => expect(result.current.alerts.length).toBe(1));
+
+    // Alert still added despite audio failure
+    expect(result.current.alerts[0]!.id).toBe(103);
+  });
+
+  it('closes AudioContext after playback finishes', async () => {
+    const close = vi.fn();
+
+    vi.stubGlobal('AudioContext', makeAudioContextClass({ close }));
+
+    const alert = makeAlert({ id: 104, severity: 'warning' });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ alerts: [alert] }),
+    });
+
+    renderHook(() => useAlertPolling(true));
+
+    await act(async () => {});
+
+    // ctx.close() called via setTimeout — advance past the timeout
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+
+    expect(close).toHaveBeenCalled();
+  });
+});

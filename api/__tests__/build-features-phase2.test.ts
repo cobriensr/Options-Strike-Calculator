@@ -1215,6 +1215,444 @@ describe('engineerPhase2Features', () => {
     });
   });
 
+  // ── OI change features ───────────────────────────────────
+
+  describe('OI change features', () => {
+    /**
+     * Set up all preceding SQL mocks (prevDay, settlements, events,
+     * nextEvent, dpRows) so the OI change section runs next.
+     * No UW_API_KEY → skips max pain & options volume fetches.
+     */
+    function prefillForOic() {
+      delete process.env.UW_API_KEY;
+      mockSql.mockResolvedValueOnce([]); // prevDayRows
+      mockSql.mockResolvedValueOnce([]); // settlements
+      mockSql.mockResolvedValueOnce([]); // eventRows
+      mockSql.mockResolvedValueOnce([]); // nextEventRow
+      mockSql.mockResolvedValueOnce([]); // dpRows
+    }
+
+    /** Suffix SQL mocks for vol surface (tsRows, ivMonRow, rvRow). */
+    function suffixVolSurface() {
+      mockSql.mockResolvedValueOnce([]); // tsRows
+      mockSql.mockResolvedValueOnce([]); // ivMonRow
+      mockSql.mockResolvedValueOnce([]); // rvRow
+    }
+
+    it('computes net OI change and call/put splits', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      prefillForOic();
+
+      mockSql.mockResolvedValueOnce([
+        {
+          option_symbol: 'SPX260324C05800',
+          strike: 5800,
+          is_call: true,
+          oi_diff: 1000,
+          prev_ask_volume: 500,
+          prev_bid_volume: 200,
+          prev_multi_leg_volume: 100,
+          prev_total_premium: 150000,
+        },
+        {
+          option_symbol: 'SPX260324P05750',
+          strike: 5750,
+          is_call: false,
+          oi_diff: -600,
+          prev_ask_volume: 300,
+          prev_bid_volume: 400,
+          prev_multi_leg_volume: 50,
+          prev_total_premium: 80000,
+        },
+      ]); // oicRows
+
+      suffixVolSurface();
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.oic_net_oi_change).toBe(400); // 1000 + (-600)
+      expect(features.oic_call_oi_change).toBe(1000);
+      expect(features.oic_put_oi_change).toBe(-600);
+      expect(features.oic_oi_change_pcr).toBeCloseTo(-600 / 1000, 4);
+      expect(features.oic_net_premium).toBe(230000); // 150000 + 80000
+      expect(features.oic_call_premium).toBe(150000);
+      expect(features.oic_put_premium).toBe(80000);
+    });
+
+    it('computes ask ratio and multi-leg percentage', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      prefillForOic();
+
+      mockSql.mockResolvedValueOnce([
+        {
+          option_symbol: 'SPX260324C05800',
+          strike: 5800,
+          is_call: true,
+          oi_diff: 500,
+          prev_ask_volume: 600,
+          prev_bid_volume: 400,
+          prev_multi_leg_volume: 200,
+          prev_total_premium: 100000,
+        },
+      ]); // oicRows
+
+      suffixVolSurface();
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      // totalVol = 600 + 400 = 1000, ask ratio = 600/1000 = 0.6
+      expect(features.oic_ask_ratio).toBeCloseTo(0.6, 4);
+      // allVol = 600 + 400 + 200 = 1200, multi-leg pct = 200/1200
+      expect(features.oic_multi_leg_pct).toBeCloseTo(200 / 1200, 4);
+    });
+
+    it('computes top strike distance from spx_open', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      prefillForOic();
+
+      mockSql.mockResolvedValueOnce([
+        {
+          option_symbol: 'SPX260324C05830',
+          strike: 5830,
+          is_call: true,
+          oi_diff: 2000,
+          prev_ask_volume: 100,
+          prev_bid_volume: 100,
+          prev_multi_leg_volume: 0,
+          prev_total_premium: 50000,
+        },
+        {
+          option_symbol: 'SPX260324P05770',
+          strike: 5770,
+          is_call: false,
+          oi_diff: -500,
+          prev_ask_volume: 100,
+          prev_bid_volume: 100,
+          prev_multi_leg_volume: 0,
+          prev_total_premium: 30000,
+        },
+      ]); // oicRows
+
+      suffixVolSurface();
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      // Top strike by abs diff = 5830 (2000 > 500), dist = 5830 - 5800 = 30
+      expect(features.oic_top_strike_dist).toBe(30);
+    });
+
+    it('computes concentration (top 5 / total abs OI change)', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      prefillForOic();
+
+      // 6 rows: top 5 have abs diffs 600,500,400,300,200 = 2000; 6th = 100
+      // Total = 2100; concentration = 2000/2100
+      const oicRows = [600, 500, 400, 300, 200, 100].map((diff, i) => ({
+        option_symbol: `SPX${5800 + i * 5}C`,
+        strike: 5800 + i * 5,
+        is_call: true,
+        oi_diff: diff,
+        prev_ask_volume: 100,
+        prev_bid_volume: 100,
+        prev_multi_leg_volume: 0,
+        prev_total_premium: 10000,
+      }));
+
+      mockSql.mockResolvedValueOnce(oicRows); // oicRows
+      suffixVolSurface();
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.oic_concentration).toBeCloseTo(2000 / 2100, 4);
+    });
+
+    it('sets null for ratios when call OI change is zero', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      prefillForOic();
+
+      mockSql.mockResolvedValueOnce([
+        {
+          option_symbol: 'SPX260324P05750',
+          strike: 5750,
+          is_call: false,
+          oi_diff: -600,
+          prev_ask_volume: 0,
+          prev_bid_volume: 0,
+          prev_multi_leg_volume: 0,
+          prev_total_premium: 0,
+        },
+      ]); // oicRows — only puts, callOiChange = 0
+
+      suffixVolSurface();
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      // callOiChange = 0 → pcr = null
+      expect(features.oic_oi_change_pcr).toBeNull();
+      // totalVol = 0 → ask ratio = null
+      expect(features.oic_ask_ratio).toBeNull();
+      // allVol = 0 → multi-leg pct = null
+      expect(features.oic_multi_leg_pct).toBeNull();
+    });
+
+    it('handles empty OI change data (no oicRows)', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      prefillForOic();
+      mockSql.mockResolvedValueOnce([]); // oicRows (empty)
+      suffixVolSurface();
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.oic_net_oi_change).toBeUndefined();
+      expect(features.oic_concentration).toBeUndefined();
+    });
+
+    it('handles OI change query failure gracefully', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      prefillForOic();
+      mockSql.mockRejectedValueOnce(new Error('DB error')); // oicRows fails
+      suffixVolSurface();
+
+      await expect(
+        engineerPhase2Features(mockSql as never, DATE_STR, features),
+      ).resolves.toBeUndefined();
+
+      expect(features.oic_net_oi_change).toBeUndefined();
+    });
+
+    it('sets null for concentration when total abs diff is zero', async () => {
+      const features = makeFeatures({ spx_open: 5800 });
+      prefillForOic();
+
+      mockSql.mockResolvedValueOnce([
+        {
+          option_symbol: 'SPX260324C05800',
+          strike: 5800,
+          is_call: true,
+          oi_diff: 0,
+          prev_ask_volume: 100,
+          prev_bid_volume: 100,
+          prev_multi_leg_volume: 0,
+          prev_total_premium: 10000,
+        },
+      ]); // oicRows with zero diff
+
+      suffixVolSurface();
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.oic_concentration).toBeNull();
+    });
+  });
+
+  // ── Vol surface features ────────────────────────────────
+
+  describe('vol surface features', () => {
+    /**
+     * Set up all preceding SQL mocks so we reach the vol surface section.
+     * No UW_API_KEY → skips max pain & options volume.
+     */
+    function prefillForVolSurface() {
+      delete process.env.UW_API_KEY;
+      mockSql.mockResolvedValueOnce([]); // prevDayRows
+      mockSql.mockResolvedValueOnce([]); // settlements
+      mockSql.mockResolvedValueOnce([]); // eventRows
+      mockSql.mockResolvedValueOnce([]); // nextEventRow
+      mockSql.mockResolvedValueOnce([]); // dpRows
+      mockSql.mockResolvedValueOnce([]); // oicRows
+    }
+
+    it('computes iv_ts_spread and iv_ts_contango when contango', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      // tsRows: one point at 30 DTE with vol=25
+      mockSql.mockResolvedValueOnce([{ days: 30, volatility: 25 }]); // tsRows
+
+      // ivMonRow: 0DTE vol = 20 (lower than 30D → contango)
+      mockSql.mockResolvedValueOnce([{ volatility: 20 }]); // ivMonRow
+
+      // rvRow: empty
+      mockSql.mockResolvedValueOnce([]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      // spread = 20 - 25 = -5
+      expect(features.iv_ts_spread).toBeCloseTo(-5, 4);
+      // contango = 0DTE < 30D → true
+      expect(features.iv_ts_contango).toBe(true);
+      // slope = (20 - 25) / 25 = -0.2
+      expect(features.iv_ts_slope_0d_30d).toBeCloseTo(-0.2, 4);
+    });
+
+    it('computes iv_ts_contango=false when inverted (0DTE > 30D)', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockResolvedValueOnce([{ days: 30, volatility: 18 }]); // tsRows
+
+      mockSql.mockResolvedValueOnce([{ volatility: 25 }]); // ivMonRow — 25 > 18 → inverted
+
+      mockSql.mockResolvedValueOnce([]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.iv_ts_spread).toBeCloseTo(7, 4); // 25 - 18
+      expect(features.iv_ts_contango).toBe(false);
+      expect(features.iv_ts_slope_0d_30d).toBeCloseTo(7 / 18, 4);
+    });
+
+    it('finds closest point to 30 DTE from multiple term structure rows', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockResolvedValueOnce([
+        { days: 15, volatility: 22 },
+        { days: 28, volatility: 20 }, // closest to 30
+        { days: 60, volatility: 18 },
+      ]); // tsRows
+
+      mockSql.mockResolvedValueOnce([{ volatility: 24 }]); // ivMonRow — 0DTE vol
+
+      mockSql.mockResolvedValueOnce([]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      // 30D point is the 28-DTE row (vol=20)
+      // spread = 24 - 20 = 4
+      expect(features.iv_ts_spread).toBeCloseTo(4, 4);
+      expect(features.iv_ts_contango).toBe(false);
+    });
+
+    it('skips term structure features when no ivMonRow (zeroDteVol is null)', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockResolvedValueOnce([{ days: 30, volatility: 20 }]); // tsRows
+
+      mockSql.mockResolvedValueOnce([]); // ivMonRow — empty → zeroDteVol = null
+
+      mockSql.mockResolvedValueOnce([]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.iv_ts_spread).toBeUndefined();
+      expect(features.iv_ts_contango).toBeUndefined();
+      expect(features.iv_ts_slope_0d_30d).toBeUndefined();
+    });
+
+    it('skips term structure features when tsRows is empty', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockResolvedValueOnce([]); // tsRows — empty
+
+      mockSql.mockResolvedValueOnce([{ volatility: 24 }]); // ivMonRow
+
+      mockSql.mockResolvedValueOnce([]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.iv_ts_spread).toBeUndefined();
+      expect(features.iv_ts_contango).toBeUndefined();
+    });
+
+    it('sets null for iv_ts_slope_0d_30d when thirtyD vol is 0', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockResolvedValueOnce([{ days: 30, volatility: 0 }]); // tsRows — vol=0
+
+      mockSql.mockResolvedValueOnce([{ volatility: 20 }]); // ivMonRow
+
+      mockSql.mockResolvedValueOnce([]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      // spread and contango should still be set
+      expect(features.iv_ts_spread).toBeCloseTo(20, 4); // 20 - 0
+      expect(features.iv_ts_contango).toBe(false);
+      // slope should be null (thirtyD.vol = 0 → division guard)
+      expect(features.iv_ts_slope_0d_30d).toBeNull();
+    });
+
+    it('populates realized vol fields from vol_realized table', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockResolvedValueOnce([]); // tsRows
+      mockSql.mockResolvedValueOnce([]); // ivMonRow
+
+      mockSql.mockResolvedValueOnce([
+        {
+          rv_30d: '15.2',
+          iv_rv_spread: '4.8',
+          iv_overpricing_pct: '31.5',
+          iv_rank: '55.0',
+        },
+      ]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.uw_rv_30d).toBeCloseTo(15.2);
+      expect(features.uw_iv_rv_spread).toBeCloseTo(4.8);
+      expect(features.uw_iv_overpricing_pct).toBeCloseTo(31.5);
+      expect(features.iv_rank).toBeCloseTo(55.0);
+    });
+
+    it('handles null values in rvRow via num()', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockResolvedValueOnce([]); // tsRows
+      mockSql.mockResolvedValueOnce([]); // ivMonRow
+
+      mockSql.mockResolvedValueOnce([
+        {
+          rv_30d: null,
+          iv_rv_spread: '',
+          iv_overpricing_pct: 'not-a-number',
+          iv_rank: '55.0',
+        },
+      ]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.uw_rv_30d).toBeNull();
+      expect(features.uw_iv_rv_spread).toBeNull();
+      expect(features.uw_iv_overpricing_pct).toBeNull();
+      expect(features.iv_rank).toBeCloseTo(55.0);
+    });
+
+    it('skips rv fields when rvRow is empty', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockResolvedValueOnce([]); // tsRows
+      mockSql.mockResolvedValueOnce([]); // ivMonRow
+      mockSql.mockResolvedValueOnce([]); // rvRow
+
+      await engineerPhase2Features(mockSql as never, DATE_STR, features);
+
+      expect(features.uw_rv_30d).toBeUndefined();
+      expect(features.iv_rank).toBeUndefined();
+    });
+
+    it('handles vol surface query failure gracefully', async () => {
+      const features = makeFeatures();
+      prefillForVolSurface();
+
+      mockSql.mockRejectedValueOnce(new Error('DB error')); // tsRows fails
+
+      await expect(
+        engineerPhase2Features(mockSql as never, DATE_STR, features),
+      ).resolves.toBeUndefined();
+
+      expect(features.iv_ts_spread).toBeUndefined();
+      expect(features.uw_rv_30d).toBeUndefined();
+    });
+  });
+
   // ── Integration: full pipeline ────────────────────────────
 
   describe('integration', () => {

@@ -3,10 +3,7 @@
   "dataset": {
     "total_days": 39,
     "labeled_days": 36,
-    "date_range": [
-      "2026-02-09",
-      "2026-04-03"
-    ],
+    "date_range": ["2026-02-09", "2026-04-03"],
     "overall_accuracy": 0.917
   },
   "structure_accuracy": {
@@ -449,10 +446,7 @@
     "silhouette": 0.108,
     "calinski_harabasz": 4.7,
     "davies_bouldin": 2.727,
-    "cluster_sizes": [
-      23,
-      16
-    ],
+    "cluster_sizes": [23, 16],
     "stability": 0.897,
     "split_half_holdout_sil": 0.08,
     "gmm_bic": 2812.8,

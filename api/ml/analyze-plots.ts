@@ -276,11 +276,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const processPlot = async (blob: (typeof pngBlobs)[0]) => {
       const plotName = plotNameFromPath(blob.pathname);
-      const { analysis } = await analyzePlot(
-        plotName,
-        findings,
-        systemPrompt,
-      );
+      const { analysis } = await analyzePlot(plotName, findings, systemPrompt);
 
       await sql`
         INSERT INTO ml_plot_analyses
@@ -297,7 +293,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       analyzed++;
       res.write(
-        JSON.stringify({ plot: plotName, status: 'done', progress: `${analyzed}/${pngBlobs.length}` }) + '\n',
+        JSON.stringify({
+          plot: plotName,
+          status: 'done',
+          progress: `${analyzed}/${pngBlobs.length}`,
+        }) + '\n',
       );
       return plotName;
     };

@@ -101,6 +101,9 @@ function formatMlFindingsForClaude(
   findings: Record<string, unknown>,
   updatedAt: Date,
 ): string {
+  if (!findings?.dataset) {
+    return `Latest ML pipeline run: ${updatedAt.toISOString().slice(0, 10)} (data unavailable)`;
+  }
   const d = findings.dataset as {
     total_days: number;
     labeled_days: number;
@@ -587,10 +590,12 @@ export async function buildAnalysisContext(
     `;
     if (mlRows.length > 0) {
       const { findings, updated_at } = mlRows[0] as {
-        findings: Record<string, unknown>;
-        updated_at: Date;
+        findings?: Record<string, unknown>;
+        updated_at?: Date;
       };
-      mlCalibrationContext = formatMlFindingsForClaude(findings, updated_at);
+      if (findings && updated_at) {
+        mlCalibrationContext = formatMlFindingsForClaude(findings, updated_at);
+      }
     }
   } catch (mlErr) {
     logger.warn(
