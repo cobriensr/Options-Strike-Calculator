@@ -1,7 +1,7 @@
 # ML Pipeline Runner
 # Usage: cd ml && make all
 
-PYTHON := .venv/bin/python
+PYTHON ?= .venv/bin/python
 
 .PHONY: all eda cluster visualize health milestone backtest early pin test test-cov test-html clean help
 

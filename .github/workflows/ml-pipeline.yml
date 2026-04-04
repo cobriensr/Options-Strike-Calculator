@@ -39,27 +39,16 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Install Node dependencies
         run: npm install @vercel/blob
-
-      - name: Run health check
-        id: health
-        continue-on-error: true
-        run: |
-          cd ml
-          python -m src.health 2>&1 | tee health_output.txt
-          exit_code=${PIPESTATUS[0]}
-          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
-          if [ $exit_code -ne 0 ]; then
-            echo "::warning::Health check exited with code $exit_code — data may be stale"
-          fi
 
       - name: Run full pipeline
         run: cd ml && make all
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PYTHON: python
 
       - name: Upload plots to Vercel Blob
         env:
