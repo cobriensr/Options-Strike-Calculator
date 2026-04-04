@@ -23,6 +23,11 @@ import {
  * Create a 5-min candle at a specific ET time today.
  * hour/minute are in ET (e.g. 9, 30 for 9:30 AM).
  */
+/**
+ * Create a 5-min candle at a specific ET time.
+ * hour/minute are in ET (e.g. 9, 30 for 9:30 AM).
+ * Optional dateStr overrides the date (YYYY-MM-DD); defaults to today.
+ */
 function makeCandle(
   hour: number,
   minute: number,
@@ -30,15 +35,16 @@ function makeCandle(
   high: number,
   low: number,
   close: number,
+  dateStr?: string,
 ) {
-  // Build an ET datetime for today
-  const now = new Date();
-  const todayStr = now.toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
+  const day =
+    dateStr ??
+    new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
   // Create a date in ET
   const etDate = new Date(
-    `${todayStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`,
+    `${day}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`,
   );
   // Convert to approximate UTC by adding ~5h (rough, but adequate for test filtering)
   const utcMs = etDate.getTime() + 5 * 60 * 60 * 1000;
@@ -158,5 +164,83 @@ describe('GET /api/intraday', () => {
     expect(json.today).toBeNull();
     expect(json.openingRange).toBeNull();
     expect(json.candleCount).toBe(0);
+  });
+
+  it('filters to most recent trading day when candles span multiple days', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+
+    const yesterday = new Date(Date.now() - 86400000).toLocaleDateString(
+      'en-CA',
+      { timeZone: 'America/New_York' },
+    );
+    const todayStr = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+
+    // Yesterday's candle should be excluded, today's kept
+    const candles = [
+      makeCandle(9, 30, 5400, 5410, 5395, 5405, yesterday),
+      makeCandle(9, 30, 5500, 5510, 5495, 5505, todayStr),
+      makeCandle(9, 35, 5505, 5515, 5500, 5510, todayStr),
+    ];
+
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: {
+        symbol: '$SPX',
+        empty: false,
+        previousClose: 5490,
+        previousCloseDate: 0,
+        candles,
+      },
+    });
+
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as Record<string, unknown>;
+    // Only today's 2 candles pass the filter, not yesterday's
+    expect(json.candleCount).toBe(2);
+    expect((json.today as { open: number }).open).toBe(5500);
+  });
+
+  it('returns prior session data on holidays/weekends', async () => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(isMarketOpen).mockReturnValue(false);
+
+    // Simulate a holiday: candles are from 2 days ago, none from today
+    const priorDay = new Date(Date.now() - 2 * 86400000).toLocaleDateString(
+      'en-CA',
+      { timeZone: 'America/New_York' },
+    );
+
+    const candles = [
+      makeCandle(9, 30, 5500, 5510, 5495, 5505, priorDay),
+      makeCandle(9, 35, 5505, 5515, 5500, 5510, priorDay),
+      makeCandle(9, 40, 5510, 5520, 5505, 5515, priorDay),
+    ];
+
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: {
+        symbol: '$SPX',
+        empty: false,
+        previousClose: 5490,
+        previousCloseDate: 0,
+        candles,
+      },
+    });
+
+    const res = mockResponse();
+    await handler(mockRequest(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as Record<string, unknown>;
+    // Should return the prior session's candles, not empty
+    expect(json.candleCount).toBe(3);
+    expect(json.today).not.toBeNull();
+    expect(json.marketOpen).toBe(false);
   });
 });

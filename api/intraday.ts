@@ -136,19 +136,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return;
       }
 
-      // Use explicit start/end dates for TODAY's session.
-      // period=1 returns the most recent *completed* day, which during market
-      // hours is yesterday. Instead, fetch a 24h window and filter to today's
-      // ET date to get the current session's candles.
+      // Fetch recent candles and filter to the most recent trading session.
+      // A 24h lookback fails on holidays/weekends because Schwab snaps
+      // epoch timestamps to session boundaries and the snapped end can
+      // precede the snapped start. 5 days covers any holiday combo.
       const now = new Date();
-      const todayET = now.toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
 
-      // Fetch a 24h window. Schwab only returns market-hours candles
-      // (needExtendedHoursData=false). We filter to today's date below
-      // in case the window overlaps yesterday's session.
-      const startMs = now.getTime() - 24 * 60 * 60 * 1000;
+      const startMs = now.getTime() - 5 * 24 * 60 * 60 * 1000;
       const endMs = now.getTime();
 
       const params = new URLSearchParams({
@@ -174,7 +168,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { previousClose } = result.data;
       const marketOpen = isMarketOpen();
 
-      // Filter candles to today's ET date AND regular session hours only.
+      // Find the most recent trading date in the results. On holidays
+      // and weekends this will be the last trading day, not today.
+      let latestETDate = '';
+      for (const c of result.data.candles) {
+        const etDate = new Date(c.datetime).toLocaleDateString('en-CA', {
+          timeZone: 'America/New_York',
+        });
+        if (etDate > latestETDate) latestETDate = etDate;
+      }
+
+      // Filter to that session's regular-hours candles only.
       // $SPX candles can start before 9:30 AM (pre-market indicative values)
       // even with needExtendedHoursData=false. We need the 9:30 AM open to
       // match the actual regular session open shown on TradingView/brokers.
@@ -183,7 +187,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const etDate = d.toLocaleDateString('en-CA', {
           timeZone: 'America/New_York',
         });
-        if (etDate !== todayET) return false;
+        if (etDate !== latestETDate) return false;
 
         // Only keep candles from 9:30 AM onward
         return getETTotalMinutes(d) >= 570; // 9:30 AM = 9*60 + 30 = 570

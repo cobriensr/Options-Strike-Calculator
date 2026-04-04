@@ -213,8 +213,8 @@ export function clusterDarkPoolTrades(
   // Group into $0.50 price bands
   const bands = new Map<number, DarkPoolTrade[]>();
   for (const trade of trades) {
-    const price = parseFloat(trade.price);
-    if (isNaN(price)) continue;
+    const price = Number.parseFloat(trade.price);
+    if (Number.isNaN(price)) continue;
     // Round to nearest $0.50
     const band = Math.round(price * 2) / 2;
     const existing = bands.get(band) ?? [];
@@ -235,12 +235,12 @@ export function clusterDarkPoolTrades(
     let priceHigh = -Infinity;
 
     for (const t of bandTrades) {
-      const price = parseFloat(t.price);
-      const ask = parseFloat(t.nbbo_ask);
-      const bid = parseFloat(t.nbbo_bid);
-      const premium = parseFloat(t.premium);
+      const price = Number.parseFloat(t.price);
+      const ask = Number.parseFloat(t.nbbo_ask);
+      const bid = Number.parseFloat(t.nbbo_bid);
+      const premium = Number.parseFloat(t.premium);
 
-      if (!isNaN(premium)) totalPremium += premium;
+      if (!Number.isNaN(premium)) totalPremium += premium;
       totalShares += t.size;
 
       if (price < priceLow) priceLow = price;
@@ -249,7 +249,7 @@ export function clusterDarkPoolTrades(
       if (t.executed_at > latestTime) latestTime = t.executed_at;
 
       // Classify trade direction by comparing to NBBO
-      if (!isNaN(ask) && !isNaN(bid)) {
+      if (!Number.isNaN(ask) && !Number.isNaN(bid)) {
         const mid = (ask + bid) / 2;
         if (price >= ask - 0.005) {
           buyerInitiated++;

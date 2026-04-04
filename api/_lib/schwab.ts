@@ -15,7 +15,7 @@
  *   UPSTASH_REDIS_REST_TOKEN — Auto-set when Upstash Redis is linked in Vercel
  */
 
-import { randomBytes } from 'crypto';
+import { randomBytes } from 'node:crypto';
 
 import { Redis } from '@upstash/redis';
 import logger from './logger.js';
