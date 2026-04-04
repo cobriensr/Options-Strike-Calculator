@@ -2160,6 +2160,7 @@ def generate_plots(df: pd.DataFrame) -> None:
                     )
 
                 ax.set_ylabel("Avg Distance to Settlement (pts)\n(lower is better)")
+                ax.set_ylim(0, max(avgs) * 1.35)
                 ax.set_title(
                     "0DTE vs 1DTE vs Composite Strategy",
                     fontsize=14, fontweight="bold",

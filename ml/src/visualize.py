@@ -1106,7 +1106,17 @@ def plot_feature_importance_comparison(df: pd.DataFrame) -> None:
     if exp_files:
         import json
         try:
-            exp = json.loads(exp_files[0].read_text())
+            # Pick the experiment with the most features, not just the latest —
+            # recent runs may be data-limited (e.g., CI with partial data)
+            best_exp = None
+            best_feature_count = 0
+            for ef in exp_files:
+                candidate = json.loads(ef.read_text())
+                fc = candidate.get("data", {}).get("feature_count", 0)
+                if fc > best_feature_count:
+                    best_feature_count = fc
+                    best_exp = candidate
+            exp = best_exp or json.loads(exp_files[0].read_text())
             xgb_top = exp.get("feature_importance_top10", [])
             if xgb_top:
                 xgb_features = [f[0] for f in xgb_top]
