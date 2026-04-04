@@ -634,16 +634,33 @@ Key facts:
 </trading_system_context>
 
 <analysis_framework>
-For each plot, answer exactly two questions:
+For each plot, provide exactly 3 sections. Follow the structural rules precisely — they ensure consistency across nightly runs.
 
 1. WHAT DOES THE DATA MEAN?
-Explain what the chart shows and what the patterns, numbers, and relationships mean. Cite specific values from the underlying data. Identify what is statistically significant vs noise. Flag anomalies, regime shifts, or data quality issues. If something is unreliable due to small sample size, say so inline rather than in a separate caveats section. Use the source code to confirm what was plotted — do not guess from the image alone.
+Structure: Lead with the single most important finding in one sentence. Then provide 2-3 paragraphs of supporting analysis. Every paragraph must contain at least one specific number from the underlying data (a percentage, a count, a correlation coefficient, a dollar amount). End with any anomalies or data quality issues found.
+
+Rules:
+- Always state sample sizes inline: "Market Tide at 61.1% (22/36)" not just "Market Tide at 61.1%"
+- Always compare against the relevant baseline: majority class (52.8%), break-even (90%), coin flip (50%)
+- When citing a correlation, state whether it is significant at the dataset's n: at n=36, |r| must exceed ~0.33 for p<0.05
+- Use the source code to confirm what was plotted. Do not describe visual elements you cannot verify against the code.
 
 2. HOW SHOULD I APPLY THIS TO MY TRADING?
-Connect the findings to concrete trading decisions: structure selection (PCS/CCS/IC), confidence calibration (HIGH/MODERATE/LOW), position sizing, strike placement, rule changes, or feature engineering priorities. Be specific — name which features matter, which thresholds to use, which signals to trust or fade. Frame everything in terms of the 9:1 risk/reward reality of 0DTE credit spreads where loss avoidance is paramount.
+Structure: Lead with the highest-priority actionable recommendation. Then provide 2-3 additional recommendations in descending priority. Each recommendation must specify: (a) what to change, (b) the specific threshold or rule, and (c) the expected impact on the 9:1 risk/reward equation.
+
+Rules:
+- Every recommendation must name a concrete action: "set threshold at X", "reduce sizing to Nx", "add feature Y to Tier Z", "remove feature Z from prompt"
+- When recommending a threshold, compute the expected P&L impact: at 9:1 with $200 credit and $1,800 max loss, what does the accuracy at that threshold imply?
+- Distinguish between rules that are statistically validated (p<0.05 or n>20 with clear effect) and hypotheses that need more data
+- Frame sizing recommendations in terms of the existing tiers: 2x for HIGH, 1x for MODERATE, 0x (SIT OUT) for below break-even
 
 3. WHAT SHOULD I WATCH OUT FOR?
-Data quality flags (flat features, missing values, pipeline failures), sample size limitations that make specific findings unreliable, potential data leakage or overfitting artifacts, regime limitations (what market conditions would invalidate these conclusions), and any inconsistencies between this plot and others. Only include genuine concerns — do not pad with generic "more data needed" boilerplate.
+Structure: 1-2 paragraphs only. Lead with the most critical concern (data quality > statistical validity > regime limitation). Do not repeat concerns already stated inline in sections 1 or 2.
+
+Rules:
+- Only include concerns specific to THIS plot — do not repeat universal dataset limitations (n=36, single regime) unless they affect this plot differently than others
+- If a feature appears constant, flat, or suspiciously perfect (r>0.99), explicitly flag it as a pipeline investigation item
+- If the plot's findings contradict another plot's findings, name the contradiction specifically
 </analysis_framework>
 
 <uncertainty_directive>
