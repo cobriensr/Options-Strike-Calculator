@@ -295,49 +295,72 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── 3. Build system prompt (cached across all calls) ──
     const systemPrompt = buildSystemPrompt();
 
-    // ── 4. Process sequentially (cache reads require prior write) ──
+    // ── 4. First plot sequential (writes cache), rest concurrent (read cache) ──
+    // Per Anthropic docs: "send 1 request, await the first streamed token,
+    // then fire the remaining N-1. They'll read the cache the first one wrote."
+    // We await the full first response (simpler) since the cache is definitely
+    // written by then — remaining 20 fire concurrently and all hit cache reads.
     const pipelineDate = new Date().toLocaleDateString('en-CA', {
       timeZone: 'America/New_York',
     });
     const failed: string[] = [];
     let analyzed = 0;
 
-    for (const blob of pngBlobs) {
+    const processPlot = async (blob: (typeof pngBlobs)[0]) => {
       const plotName = plotNameFromPath(blob.pathname);
-      try {
-        const { analysis } = await analyzePlot(
-          plotName,
-          findings,
-          systemPrompt,
-        );
+      const { analysis } = await analyzePlot(
+        plotName,
+        findings,
+        systemPrompt,
+      );
 
-        await sql`
-          INSERT INTO ml_plot_analyses
-            (plot_name, blob_url, analysis, pipeline_date, model, updated_at)
-          VALUES
-            (${plotName}, ${blob.url}, ${JSON.stringify(analysis)}, ${pipelineDate}::date, ${MODEL}, NOW())
-          ON CONFLICT (plot_name) DO UPDATE SET
-            blob_url = EXCLUDED.blob_url,
-            analysis = EXCLUDED.analysis,
-            pipeline_date = EXCLUDED.pipeline_date,
-            model = EXCLUDED.model,
-            updated_at = NOW()
-        `;
+      await sql`
+        INSERT INTO ml_plot_analyses
+          (plot_name, blob_url, analysis, pipeline_date, model, updated_at)
+        VALUES
+          (${plotName}, ${blob.url}, ${JSON.stringify(analysis)}, ${pipelineDate}::date, ${MODEL}, NOW())
+        ON CONFLICT (plot_name) DO UPDATE SET
+          blob_url = EXCLUDED.blob_url,
+          analysis = EXCLUDED.analysis,
+          pipeline_date = EXCLUDED.pipeline_date,
+          model = EXCLUDED.model,
+          updated_at = NOW()
+      `;
 
-        analyzed++;
-        // Progress update — keeps curl alive and shows status
-        res.write(
-          JSON.stringify({ plot: plotName, status: 'done', progress: `${analyzed}/${pngBlobs.length}` }) + '\n',
-        );
-      } catch (err) {
-        const reason =
-          err instanceof Error ? err.message : String(err);
-        failed.push(reason);
-        logger.error({ err }, 'Plot analysis failed');
-        Sentry.captureException(err);
-        res.write(
-          JSON.stringify({ plot: plotName, status: 'failed', error: reason }) + '\n',
-        );
+      analyzed++;
+      res.write(
+        JSON.stringify({ plot: plotName, status: 'done', progress: `${analyzed}/${pngBlobs.length}` }) + '\n',
+      );
+      return plotName;
+    };
+
+    // First plot: sequential — writes the prompt cache
+    const [firstBlob, ...remainingBlobs] = pngBlobs;
+    try {
+      await processPlot(firstBlob!);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      failed.push(reason);
+      logger.error({ err }, 'First plot analysis failed');
+      Sentry.captureException(err);
+    }
+
+    // Remaining plots: all concurrent — read from prompt cache
+    if (remainingBlobs.length > 0) {
+      const results = await Promise.allSettled(
+        remainingBlobs.map((blob) => processPlot(blob)),
+      );
+
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          const reason =
+            result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason);
+          failed.push(reason);
+          logger.error({ err: result.reason }, 'Plot analysis failed');
+          Sentry.captureException(result.reason);
+        }
       }
     }
 
