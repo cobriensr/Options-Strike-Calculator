@@ -31,7 +31,6 @@ const anthropic = new Anthropic({
 });
 
 const MODEL = 'claude-sonnet-4-6';
-const BATCH_SIZE = 3;
 
 /**
  * Strip markdown code fences from Claude response if present.
@@ -279,48 +278,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const failed: string[] = [];
     let analyzed = 0;
 
-    for (let i = 0; i < pngBlobs.length; i += BATCH_SIZE) {
-      const batch = pngBlobs.slice(i, i + BATCH_SIZE);
-      const results = await Promise.allSettled(
-        batch.map(async (blob) => {
-          const plotName = plotNameFromPath(blob.pathname);
+    // Sequential processing — cache requires the first response to begin
+    // streaming before subsequent requests can read from it. Concurrent
+    // requests all write separate cache entries with zero reads.
+    for (const blob of pngBlobs) {
+      const plotName = plotNameFromPath(blob.pathname);
+      try {
+        const { analysis } = await analyzePlot(
+          plotName,
+          findings,
+          systemPrompt,
+        );
 
-          const { analysis } = await analyzePlot(
-            plotName,
-            findings,
-            systemPrompt,
-          );
+        await sql`
+          INSERT INTO ml_plot_analyses
+            (plot_name, blob_url, analysis, pipeline_date, model, updated_at)
+          VALUES
+            (${plotName}, ${blob.url}, ${JSON.stringify(analysis)}, ${pipelineDate}::date, ${MODEL}, NOW())
+          ON CONFLICT (plot_name) DO UPDATE SET
+            blob_url = EXCLUDED.blob_url,
+            analysis = EXCLUDED.analysis,
+            pipeline_date = EXCLUDED.pipeline_date,
+            model = EXCLUDED.model,
+            updated_at = NOW()
+        `;
 
-          // Upsert into ml_plot_analyses
-          await sql`
-            INSERT INTO ml_plot_analyses
-              (plot_name, blob_url, analysis, pipeline_date, model, updated_at)
-            VALUES
-              (${plotName}, ${blob.url}, ${JSON.stringify(analysis)}, ${pipelineDate}::date, ${MODEL}, NOW())
-            ON CONFLICT (plot_name) DO UPDATE SET
-              blob_url = EXCLUDED.blob_url,
-              analysis = EXCLUDED.analysis,
-              pipeline_date = EXCLUDED.pipeline_date,
-              model = EXCLUDED.model,
-              updated_at = NOW()
-          `;
-
-          return plotName;
-        }),
-      );
-
-      for (const result of results) {
-        if (result.status === 'fulfilled') {
-          analyzed++;
-        } else {
-          const reason =
-            result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason);
-          failed.push(reason);
-          logger.error({ err: result.reason }, 'Plot analysis failed');
-          Sentry.captureException(result.reason);
-        }
+        analyzed++;
+      } catch (err) {
+        const reason =
+          err instanceof Error ? err.message : String(err);
+        failed.push(reason);
+        logger.error({ err }, 'Plot analysis failed');
+        Sentry.captureException(err);
       }
     }
 
