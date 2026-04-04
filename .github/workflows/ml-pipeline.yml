@@ -19,6 +19,8 @@ jobs:
     name: Run ML Pipeline
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repository
@@ -86,7 +88,7 @@ jobs:
           VERCEL_URL: ${{ secrets.VERCEL_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          response=$(curl -sf -X POST "$VERCEL_URL/api/ml/analyze-plots" \
+          response=$(curl -sL -X POST "https://$VERCEL_URL/api/ml/analyze-plots" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
             --max-time 600 \
