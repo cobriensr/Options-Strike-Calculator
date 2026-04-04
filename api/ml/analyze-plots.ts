@@ -248,19 +248,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
   }
 
+  // Stream NDJSON progress — keepalive pings prevent Vercel's edge
+  // proxy from killing the idle connection during the 10+ min run.
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('X-Accel-Buffering', 'no');
+  const keepalive = setInterval(() => {
+    try {
+      res.write(JSON.stringify({ ping: true }) + '\n');
+    } catch {
+      // Response already closed
+    }
+  }, 25_000);
+
   try {
     // ── 1. List all blobs under ml-plots/latest/ ──────────
     const { blobs } = await list({ prefix: 'ml-plots/latest/' });
     const pngBlobs = blobs.filter((b) => b.pathname.endsWith('.png'));
 
     if (pngBlobs.length === 0) {
+      clearInterval(keepalive);
       done({ status: 200 });
-      return res.status(200).json({
-        analyzed: 0,
-        failed: [],
-        duration_ms: Date.now() - startTime,
-        message: 'No plots found under ml-plots/latest/',
-      });
+      res.write(
+        JSON.stringify({
+          analyzed: 0,
+          failed: [],
+          duration_ms: Date.now() - startTime,
+          message: 'No plots found under ml-plots/latest/',
+        }) + '\n',
+      );
+      return res.end();
     }
 
     logger.info({ plotCount: pngBlobs.length }, 'Starting plot analysis');
@@ -278,16 +295,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── 3. Build system prompt (cached across all calls) ──
     const systemPrompt = buildSystemPrompt();
 
-    // ── 4. Process in batches of 3 ────────────────────────
+    // ── 4. Process sequentially (cache reads require prior write) ──
     const pipelineDate = new Date().toLocaleDateString('en-CA', {
       timeZone: 'America/New_York',
     });
     const failed: string[] = [];
     let analyzed = 0;
 
-    // Sequential processing — cache requires the first response to begin
-    // streaming before subsequent requests can read from it. Concurrent
-    // requests all write separate cache entries with zero reads.
     for (const blob of pngBlobs) {
       const plotName = plotNameFromPath(blob.pathname);
       try {
@@ -311,15 +325,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `;
 
         analyzed++;
+        // Progress update — keeps curl alive and shows status
+        res.write(
+          JSON.stringify({ plot: plotName, status: 'done', progress: `${analyzed}/${pngBlobs.length}` }) + '\n',
+        );
       } catch (err) {
         const reason =
           err instanceof Error ? err.message : String(err);
         failed.push(reason);
         logger.error({ err }, 'Plot analysis failed');
         Sentry.captureException(err);
+        res.write(
+          JSON.stringify({ plot: plotName, status: 'failed', error: reason }) + '\n',
+        );
       }
     }
 
+    clearInterval(keepalive);
     const durationMs = Date.now() - startTime;
     logger.info(
       { analyzed, failed: failed.length, durationMs },
@@ -327,18 +349,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     done({ status: 200 });
-    return res.status(200).json({
-      analyzed,
-      failed,
-      duration_ms: durationMs,
-    });
+    res.write(
+      JSON.stringify({ analyzed, failed, duration_ms: durationMs }) + '\n',
+    );
+    return res.end();
   } catch (err) {
+    clearInterval(keepalive);
     logger.error({ err }, 'Plot analysis endpoint error');
     Sentry.captureException(err);
     done({ status: 500 });
-    return res.status(500).json({
-      error: 'Plot analysis failed',
-      message: err instanceof Error ? err.message : 'Unknown error',
-    });
+    res.write(
+      JSON.stringify({
+        error: 'Plot analysis failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      }) + '\n',
+    );
+    return res.end();
   }
 }

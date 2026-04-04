@@ -114,6 +114,6 @@ jobs:
           git diff --quiet ml/findings.json || (
             git add ml/findings.json &&
             git commit -m "chore(ml): update pipeline findings [skip ci]" &&
-            git pull --rebase &&
+            git pull --rebase --autostash &&
             git push
           )
