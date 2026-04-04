@@ -28,7 +28,7 @@ except ImportError:
 
 from statsmodels.stats.proportion import proportion_confint
 
-from utils import ML_ROOT, load_data, validate_dataframe
+from utils import ML_ROOT, load_data, validate_dataframe, save_section_findings
 
 PLOT_DIR = ML_ROOT / "plots"
 PLOT_DIR.mkdir(exist_ok=True)
@@ -1177,6 +1177,18 @@ def main() -> None:
     plot_feature_importance_comparison(df)
 
     print("\nAll plots saved to ml/plots/")
+
+    # Save plot manifest as findings
+    import os
+    manifest = []
+    for png in sorted(PLOT_DIR.glob("*.png")):
+        size_kb = os.path.getsize(png) / 1024
+        manifest.append({
+            "name": png.stem,
+            "generated": True,
+            "file_size_kb": round(size_kb, 1),
+        })
+    save_section_findings("plots", {"files": manifest, "count": len(manifest)})
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ PYTHON := .venv/bin/python
 
 .PHONY: all eda cluster visualize health milestone backtest early pin test test-cov test-html clean help
 
-all: eda cluster visualize ## Run full analysis pipeline
+all: health eda cluster visualize early backtest pin ## Run full analysis pipeline
 
 eda: ## Run exploratory data analysis
 	$(PYTHON) src/eda.py

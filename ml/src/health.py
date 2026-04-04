@@ -21,7 +21,15 @@ except ImportError:
     print("  ml/.venv/bin/pip install psycopg2-binary pandas numpy")
     sys.exit(1)
 
-from utils import load_data, get_connection, section, subsection, verdict, takeaway
+from utils import (
+    load_data,
+    get_connection,
+    section,
+    subsection,
+    verdict,
+    takeaway,
+    save_section_findings,
+)
 
 
 # ── Constants ──────────────────────────────────────────────────
@@ -377,6 +385,15 @@ def main() -> None:
     check_column_coverage(warnings, failures)
     check_stationarity(warnings, failures)
     print_summary(warnings, failures)
+
+    # Save findings
+    status = "FAIL" if failures else ("WARN" if warnings else "PASS")
+    save_section_findings("health", {
+        "status": status,
+        "warnings": warnings,
+        "failures": failures,
+        "run_time": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
+    })
 
     if warnings or failures:
         sys.exit(1)

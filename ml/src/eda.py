@@ -10,11 +10,8 @@ Usage:
 Requires: pip install psycopg2-binary pandas scipy statsmodels
 """
 
-import json
 import sys
 import warnings
-from datetime import datetime, timezone
-from pathlib import Path
 
 try:
     import numpy as np
@@ -28,14 +25,13 @@ except ImportError:
     sys.exit(1)
 
 from utils import (
-    ML_ROOT,
-    get_connection,
     load_data,
     validate_dataframe,
     section,
     subsection,
     verdict,
     takeaway,
+    save_section_findings,
     DARK_POOL_FEATURES,
     OPTIONS_VOLUME_FEATURES,
     IV_PCR_FEATURES,
@@ -835,27 +831,16 @@ def key_findings(df: pd.DataFrame) -> None:
 # ── Persistence ─────────────────────────────────────────────
 
 def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
-    """Compute key metrics and write ml/findings.json."""
+    """Compute key metrics and save via shared helper."""
 
     n_days = len(df)
     n_labeled = len(labeled)
     n_correct = int(labeled["structure_correct"].sum()) if n_labeled > 0 else 0
 
-    # ── Dataset overview ────────────────────────────────────
-    findings: dict = {
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "dataset": {
-            "total_days": n_days,
-            "labeled_days": n_labeled,
-            "date_range": [
-                f"{df.index.min():%Y-%m-%d}",
-                f"{df.index.max():%Y-%m-%d}",
-            ],
-            "overall_accuracy": round(n_correct / n_labeled, 3) if n_labeled else 0,
-        },
-    }
+    # ── EDA-specific data ──────────────────────────────────
+    eda_data: dict = {}
 
-    # ── Structure accuracy ──────────────────────────────────
+    # Structure accuracy
     structure_acc = {}
     for struct in ["PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "IRON CONDOR"]:
         subset = labeled[labeled["recommended_structure"] == struct]
@@ -869,9 +854,9 @@ def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
             "total": total,
             "rate": round(correct / total, 3),
         }
-    findings["structure_accuracy"] = structure_acc
+    eda_data["structure_accuracy"] = structure_acc
 
-    # ── Confidence calibration ──────────────────────────────
+    # Confidence calibration
     conf_cal = {}
     if "label_confidence" in labeled.columns:
         for conf in ["HIGH", "MODERATE", "LOW"]:
@@ -885,9 +870,9 @@ def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
                 "total": total,
                 "rate": round(correct / total, 3),
             }
-    findings["confidence_calibration"] = conf_cal
+    eda_data["confidence_calibration"] = conf_cal
 
-    # ── Flow reliability ────────────────────────────────────
+    # Flow reliability
     flow_rel = {}
     if "settlement_direction" in df.columns:
         has_flow = df[df["settlement_direction"].notna()]
@@ -915,19 +900,19 @@ def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
                 "total": total,
                 "rate": round(correct / total, 3),
             }
-    findings["flow_reliability"] = flow_rel
+    eda_data["flow_reliability"] = flow_rel
 
-    # ── Majority baseline ───────────────────────────────────
+    # Majority baseline
     majority = labeled["recommended_structure"].value_counts()
     if len(majority) > 0:
-        findings["majority_baseline"] = {
+        eda_data["majority_baseline"] = {
             "structure": majority.index[0],
             "rate": round(majority.iloc[0] / n_labeled, 3) if n_labeled else 0,
         }
     else:
-        findings["majority_baseline"] = {"structure": "", "rate": 0}
+        eda_data["majority_baseline"] = {"structure": "", "rate": 0}
 
-    # ── Top correctness predictors ──────────────────────────
+    # Top correctness predictors
     target = labeled["structure_correct"].astype(float)
     numeric_cols = labeled.select_dtypes(include=[np.number]).columns
     exclude = {
@@ -956,12 +941,12 @@ def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
             correlations.append((col, float(r), float(p)))
 
     correlations.sort(key=lambda x: abs(x[1]), reverse=True)
-    findings["top_correctness_predictors"] = [
+    eda_data["top_correctness_predictors"] = [
         {"feature": col, "r": round(r, 3), "p": round(p, 3)}
         for col, r, p in correlations[:10]
     ]
 
-    # ── Top range predictors (Kruskal-Wallis H) ─────────────
+    # Top range predictors (Kruskal-Wallis H)
     has_range = df[df["range_category"].notna()].copy()
     f_scores = []
     if len(has_range) >= 10:
@@ -982,42 +967,25 @@ def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
                     f_scores.append((col, float(h_stat), float(p)))
 
     f_scores.sort(key=lambda x: x[1], reverse=True)
-    findings["top_range_predictors"] = [
+    eda_data["top_range_predictors"] = [
         {"feature": col, "H": round(h, 2), "p": round(p, 3)}
         for col, h, p in f_scores[:10]
     ]
 
-    # ── Write ───────────────────────────────────────────────
-    out_path = ML_ROOT / "findings.json"
-    out_path.write_text(json.dumps(findings, indent=2) + "\n")
-    print("  Saved: ml/findings.json")
+    # ── Save dataset metadata as top-level key ─────────────
+    dataset_data = {
+        "total_days": n_days,
+        "labeled_days": n_labeled,
+        "date_range": [
+            f"{df.index.min():%Y-%m-%d}",
+            f"{df.index.max():%Y-%m-%d}",
+        ],
+        "overall_accuracy": round(n_correct / n_labeled, 3) if n_labeled else 0,
+    }
+    save_section_findings("dataset", dataset_data)
 
-    _upsert_findings_db(findings)
-
-
-def _upsert_findings_db(findings: dict) -> None:
-    """Upsert findings into ml_findings table for dynamic prompt injection."""
-    import json as _json
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO ml_findings (id, findings, updated_at)
-            VALUES (1, %s, NOW())
-            ON CONFLICT (id) DO UPDATE
-              SET findings = EXCLUDED.findings,
-                  updated_at = NOW()
-            """,
-            (_json.dumps(findings),),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        print("  Saved: ml_findings table (DB)")
-    except Exception as e:
-        print(f"  Warning: Could not upsert ml_findings to DB: {e}")
-        print("  (findings.json was still saved locally)")
+    # ── Save EDA section ───────────────────────────────────
+    save_section_findings("eda", eda_data)
 
 
 # ── Main ─────────────────────────────────────────────────────

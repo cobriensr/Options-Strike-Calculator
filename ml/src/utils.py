@@ -5,7 +5,9 @@ Provides common data loading, DB connection, validation, and formatting helpers
 used across clustering.py, eda.py, and visualize.py.
 """
 
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -213,3 +215,74 @@ def verdict(confirmed: bool, caveat: str = "") -> str:
 def takeaway(text: str) -> None:
     """Print a takeaway line."""
     print(f"\n  TAKEAWAY: {text}")
+
+
+# ── Findings Persistence ───────────────────────────────────────
+
+
+def _upsert_findings_db(findings: dict) -> None:
+    """Upsert consolidated findings into ml_findings table."""
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO ml_findings (id, findings, updated_at)
+            VALUES (1, %s, NOW())
+            ON CONFLICT (id) DO UPDATE
+              SET findings = EXCLUDED.findings,
+                  updated_at = NOW()
+            """,
+            (json.dumps(findings, default=str),),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("  Saved: ml_findings table (DB)")
+    except Exception as e:
+        print(f"  Warning: Could not upsert ml_findings to DB: {e}")
+        print("  (findings.json was still saved locally)")
+
+
+def save_section_findings(section_name: str, data: dict) -> None:
+    """
+    Write a named section into the consolidated ml/findings.json.
+
+    Read-modify-writes the file so multiple scripts can each contribute
+    their own section without clobbering each other. After writing the
+    file, upserts the full consolidated JSON to the ml_findings DB table.
+    """
+    findings_path = ML_ROOT / "findings.json"
+
+    try:
+        # Load existing findings if present
+        if findings_path.exists():
+            findings = json.loads(findings_path.read_text())
+        else:
+            findings = {}
+
+        # Update the section
+        findings[section_name] = data
+
+        # Update metadata
+        findings["generated_at"] = datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        )
+
+        # Maintain pipeline_sections list
+        sections = findings.get("pipeline_sections", [])
+        if section_name not in sections:
+            sections.append(section_name)
+        findings["pipeline_sections"] = sections
+
+        # Write back
+        findings_path.write_text(
+            json.dumps(findings, indent=2, default=str) + "\n"
+        )
+        print(f"  Saved: ml/findings.json (section: {section_name})")
+
+        # Persist to DB
+        _upsert_findings_db(findings)
+
+    except Exception as e:
+        print(f"  Warning: Could not save findings for '{section_name}': {e}")

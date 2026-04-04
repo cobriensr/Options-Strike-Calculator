@@ -33,6 +33,7 @@ from utils import (
     section,
     subsection,
     takeaway,
+    save_section_findings,
 )
 
 PLOT_DIR = ML_ROOT / "plots"
@@ -491,6 +492,21 @@ def main() -> None:
 
     # Print report
     print_report(df, strategies, metrics)
+
+    # Save findings
+    strategies_data = {}
+    for name, m in metrics.items():
+        strategies_data[name] = {
+            "total_pnl": m.get("total_pnl", 0),
+            "profit_factor": m.get("profit_factor", 0),
+            "win_rate": m.get("win_rate", 0),
+            "max_drawdown": m.get("max_drawdown", 0),
+            "num_trades": m.get("num_trades", 0),
+        }
+    save_section_findings("backtest", {
+        "strategies": strategies_data,
+        "n_labeled_days": len(labeled),
+    })
 
 
 if __name__ == "__main__":

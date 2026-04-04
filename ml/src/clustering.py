@@ -41,6 +41,7 @@ from utils import (
     ML_ROOT,
     load_data,
     validate_dataframe,
+    save_section_findings,
     VOLATILITY_FEATURES,
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
@@ -698,6 +699,47 @@ def main() -> None:
     print(f"  GMM BIC: {results[best_k]['gmm_bic']:.1f}")
     print(f"  Permutation p: {p_value:.3f}")
     print()
+
+    # Save findings
+    best_r = results[best_k]
+    chi2_results = {}
+    df_c = df.copy()
+    df_c["cluster"] = best_labels
+    for outcome_col in ["range_category", "settlement_direction",
+                        "recommended_structure"]:
+        if outcome_col not in df_c.columns:
+            continue
+        has_both = df_c[[outcome_col, "cluster"]].dropna()
+        if len(has_both) < 10:
+            continue
+        ct = pd.crosstab(has_both["cluster"], has_both[outcome_col])
+        if ct.shape[0] < 2 or ct.shape[1] < 2:
+            continue
+        try:
+            chi2_val, p_val, _, _ = chi2_contingency(ct)
+            chi2_results[outcome_col] = {
+                "chi2": round(float(chi2_val), 2),
+                "p": round(float(p_val), 4),
+            }
+        except Exception:
+            continue
+
+    save_section_findings("clustering", {
+        "best_k": best_k,
+        "algorithm": "KMeans",
+        "silhouette": round(float(best_r["kmeans_sil"]), 3),
+        "calinski_harabasz": round(float(best_r["kmeans_ch"]), 1),
+        "davies_bouldin": round(float(best_r["kmeans_db"]), 3),
+        "cluster_sizes": best_r["kmeans_sizes"],
+        "stability": round(float(stability), 3),
+        "split_half_holdout_sil": round(sh["holdout_silhouette"], 3),
+        "gmm_bic": round(float(best_r["gmm_bic"]), 1),
+        "permutation_p": round(float(p_value), 3),
+        "chi_squared": chi2_results,
+        "n_samples": n_samples,
+        "n_pca_components": int(X_pca.shape[1]),
+        "n_features": len(df_feat.columns),
+    })
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ except ImportError:
     print("  ml/.venv/bin/pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn")
     sys.exit(1)
 
-from utils import ML_ROOT, load_env, section, subsection, takeaway
+from utils import ML_ROOT, load_env, section, subsection, takeaway, save_section_findings
 
 PLOT_DIR = ML_ROOT / "plots"
 
@@ -2244,6 +2244,82 @@ def main() -> None:
     if args.plot:
         section("GENERATING PLOTS")
         generate_plots(df)
+
+    # Save findings — compute T-30min predictor accuracy summary
+    dates = sorted(df["date"].unique())
+    predictor_methods = {
+        "peak_gamma": "peak_gamma_strike",
+        "pos_peak": "pos_peak_strike",
+        "pos_centroid": "pos_centroid",
+        "prox_centroid": "prox_centroid",
+        "gamma_centroid": "gamma_centroid",
+    }
+    method_dists: dict[str, list[float]] = {k: [] for k in predictor_methods}
+    for date in dates:
+        day_data = df[df["date"] == date]
+        settlement = float(day_data["settlement"].iloc[0])
+        snapshot = find_nearest_snapshot(day_data, "19:30")
+        if snapshot is None:
+            continue
+        profile = compute_gamma_profile(snapshot)
+        if not profile:
+            continue
+        for method_name, key in predictor_methods.items():
+            method_dists[method_name].append(
+                abs(settlement - profile[key])
+            )
+
+    pin_accuracy: dict[str, dict] = {}
+    for method_name, dists_list in method_dists.items():
+        if dists_list:
+            arr = np.array(dists_list)
+            pin_accuracy[method_name] = {
+                "avg_distance": round(float(arr.mean()), 1),
+                "median_distance": round(float(np.median(arr)), 1),
+                "within_10": round(float((arr <= 10).mean()), 3),
+                "within_20": round(float((arr <= 20).mean()), 3),
+                "n_days": len(dists_list),
+            }
+
+    # Gamma asymmetry correlation with settlement direction
+    asym_corr = None
+    if "settlement_direction" in df.columns:
+        try:
+            from scipy.stats import pointbiserialr
+            day_asymmetries = []
+            day_directions = []
+            for date in dates:
+                day_data = df[df["date"] == date]
+                settlement_dir = day_data["settlement"].iloc[0]
+                day_open = day_data["day_open"].iloc[0]
+                snapshot = find_nearest_snapshot(day_data, "19:30")
+                if snapshot is None:
+                    continue
+                profile = compute_gamma_profile(snapshot)
+                if not profile:
+                    continue
+                asym = (
+                    profile["pos_gamma_above"]
+                    - profile["pos_gamma_below"]
+                )
+                settled_up = float(settlement_dir) > float(day_open)
+                day_asymmetries.append(asym)
+                day_directions.append(1.0 if settled_up else 0.0)
+            if len(day_asymmetries) >= 5:
+                r, p = pointbiserialr(day_directions, day_asymmetries)
+                asym_corr = {
+                    "r": round(float(r), 3),
+                    "p": round(float(p), 3),
+                    "n": len(day_asymmetries),
+                }
+        except Exception:
+            pass
+
+    save_section_findings("pin_analysis", {
+        "pin_accuracy_by_method": pin_accuracy,
+        "asymmetry_correlation": asym_corr,
+        "n_days": len(dates),
+    })
 
     print()
 

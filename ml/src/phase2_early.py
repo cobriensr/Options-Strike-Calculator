@@ -54,6 +54,7 @@ from utils import (
     subsection,
     verdict,
     takeaway,
+    save_section_findings,
     VOLATILITY_FEATURES,
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
@@ -908,6 +909,29 @@ def main() -> None:
             "            data. Keep labeling days and re-run when you\n"
             "            have 60+ labeled samples."
         )
+
+    # Save findings
+    per_model = {}
+    for name, m in all_metrics.items():
+        per_model[name] = {
+            "accuracy": m["accuracy"],
+            "log_loss": m["log_loss"],
+            "per_class_f1": m["per_class_f1"],
+        }
+    top_features = [
+        {"feature": str(feat), "importance": round(float(imp), 4)}
+        for feat, imp in importances.head(15).items()
+    ]
+    save_section_findings("phase2", {
+        "per_model": per_model,
+        "best_model": best_model,
+        "best_accuracy": best_metrics["accuracy"],
+        "majority_baseline": best_metrics["majority_baseline"],
+        "walk_forward_folds": best_metrics["walk_forward_folds"],
+        "top_features": top_features,
+        "n_labeled_days": len(df_labeled),
+        "n_features": n_features,
+    })
 
     print()
 
