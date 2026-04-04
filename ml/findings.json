@@ -1,9 +1,12 @@
 {
-  "generated_at": "2026-04-03T22:17:35+00:00",
+  "generated_at": "2026-04-04T03:52:24+00:00",
   "dataset": {
     "total_days": 39,
     "labeled_days": 36,
-    "date_range": ["2026-02-09", "2026-04-03"],
+    "date_range": [
+      "2026-02-09",
+      "2026-04-03"
+    ],
     "overall_accuracy": 0.917
   },
   "structure_accuracy": {
