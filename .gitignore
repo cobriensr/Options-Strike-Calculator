@@ -43,6 +43,9 @@ __snapshots__/
 .vercel
 .env*.local
 
+# Sonar
+.scannerwork/
+
 # Serena
 .serena/
 
