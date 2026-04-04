@@ -104,22 +104,24 @@ export default function StrikeMap({
   }
   for (let ici = 0; ici < ironCondors.length; ici++) {
     const ic = ironCondors[ici]!;
-    bars.push({
-      id: `ic-p-${ici}-${ic.putSpread.shortLeg.strike}`,
-      shortStrike: ic.putSpread.shortLeg.strike,
-      longStrike: ic.putSpread.longLeg.strike,
-      type: 'IC_PUT',
-      contracts: ic.contracts,
-      breakeven: ic.breakevenLow,
-    });
-    bars.push({
-      id: `ic-c-${ici}-${ic.callSpread.shortLeg.strike}`,
-      shortStrike: ic.callSpread.shortLeg.strike,
-      longStrike: ic.callSpread.longLeg.strike,
-      type: 'IC_CALL',
-      contracts: ic.contracts,
-      breakeven: ic.breakevenHigh,
-    });
+    bars.push(
+      {
+        id: `ic-p-${ici}-${ic.putSpread.shortLeg.strike}`,
+        shortStrike: ic.putSpread.shortLeg.strike,
+        longStrike: ic.putSpread.longLeg.strike,
+        type: 'IC_PUT',
+        contracts: ic.contracts,
+        breakeven: ic.breakevenLow,
+      },
+      {
+        id: `ic-c-${ici}-${ic.callSpread.shortLeg.strike}`,
+        shortStrike: ic.callSpread.shortLeg.strike,
+        longStrike: ic.callSpread.longLeg.strike,
+        type: 'IC_CALL',
+        contracts: ic.contracts,
+        breakeven: ic.breakevenHigh,
+      },
+    );
   }
 
   // Stack bars vertically

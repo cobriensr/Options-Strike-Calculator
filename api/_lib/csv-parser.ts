@@ -99,8 +99,7 @@ export function parseCSVLine(line: string): string[] {
   const fields: string[] = [];
   let current = '';
   let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]!;
+  for (const ch of line) {
     if (ch === '"') {
       inQuotes = !inQuotes;
     } else if (ch === ',' && !inQuotes) {
@@ -410,7 +409,7 @@ function parseStartingBalance(lines: string[]): number | null {
   for (const line of lines) {
     if (line.includes('Cash balance at the start of business day')) {
       const fields = parseCSVLine(line);
-      const val = fields[fields.length - 1];
+      const val = fields.at(-1);
       if (val) {
         const parsed = parseDollarValue(val);
         return Number.isNaN(parsed) ? null : parsed;
@@ -521,8 +520,7 @@ export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
     }
     lines.push('');
   } else {
-    lines.push('=== NO OPEN SPX 0DTE POSITIONS ===');
-    lines.push('');
+    lines.push('=== NO OPEN SPX 0DTE POSITIONS ===', '');
   }
 
   // ── Closed trades today ─────────────────────────────────
@@ -574,8 +572,6 @@ export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
         // Iron condor: only ONE side can be max loss at a time
         lines.push(
           `  Call side max risk: $${callRisk.toLocaleString()} | Put side max risk: $${putRisk.toLocaleString()}`,
-        );
-        lines.push(
           `  Worst-case max risk: $${Math.max(callRisk, putRisk).toLocaleString()} (only one side of an IC can be max loss — calls and puts cannot both be ITM simultaneously)`,
         );
       } else {
@@ -589,8 +585,10 @@ export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
 
   // ── Day P&L context (no account balances) ───────────────
   if (parsed.dayPnl != null) {
-    lines.push(`=== Today's P&L ===`);
-    lines.push(`  Day P&L (SPX): $${parsed.dayPnl.toLocaleString()}`);
+    lines.push(
+      `=== Today's P&L ===`,
+      `  Day P&L (SPX): $${parsed.dayPnl.toLocaleString()}`,
+    );
   }
 
   return lines.join('\n');

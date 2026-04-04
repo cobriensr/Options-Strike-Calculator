@@ -206,8 +206,10 @@ export function formatLessonsBlock(lessons: Lesson[]): string {
 
   lessons.forEach((lesson, index) => {
     const context = buildContextString(lesson);
-    lines.push(`[${index + 1}] ${context}`);
-    lines.push(lesson.text);
+    lines.push(
+      `[${index + 1}] ${context}`,
+      lesson.text,
+    );
     if (lesson.tags.length > 0) {
       lines.push(`Tags: ${lesson.tags.join(', ')}`);
     }

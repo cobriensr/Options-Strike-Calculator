@@ -72,22 +72,22 @@ export function formatIvTermStructureForClaude(
   ];
 
   for (const r of sorted) {
-    const move = (parseFloat(r.implied_move_perc) * 100).toFixed(2);
-    const vol = (parseFloat(r.volatility) * 100).toFixed(1);
-    const pct = parseFloat(r.percentile).toFixed(1);
+    const move = (Number.parseFloat(r.implied_move_perc) * 100).toFixed(2);
+    const vol = (Number.parseFloat(r.volatility) * 100).toFixed(1);
+    const pct = Number.parseFloat(r.percentile).toFixed(1);
     lines.push(`| ${r.days} | ${vol}% | ${move}% | ${pct}th |`);
   }
 
   // σ calibration check: compare 0DTE implied move to calculator σ
   const zeroDte = sorted.find((r) => r.days <= 1);
   if (zeroDte && calculatorSigma) {
-    const apiMove = parseFloat(zeroDte.implied_move_perc) * 100;
-    const calcSigma = parseFloat(calculatorSigma) * 100;
-    if (!isNaN(apiMove) && !isNaN(calcSigma) && apiMove > 0) {
+    const apiMove = Number.parseFloat(zeroDte.implied_move_perc) * 100;
+    const calcSigma = Number.parseFloat(calculatorSigma) * 100;
+    if (!Number.isNaN(apiMove) && !Number.isNaN(calcSigma) && apiMove > 0) {
       const diff = ((calcSigma - apiMove) / apiMove) * 100;
       const direction = diff > 0 ? 'wider' : 'narrower';
-      lines.push('');
       lines.push(
+        '',
         `σ calibration: API 0DTE implied move = ${apiMove.toFixed(2)}%, calculator σ = ${calcSigma.toFixed(2)}% → cone is ${Math.abs(diff).toFixed(0)}% ${direction} than market pricing.`,
       );
     }
@@ -97,9 +97,9 @@ export function formatIvTermStructureForClaude(
   const shortDte = sorted.find((r) => r.days <= 1);
   const longDte = sorted.find((r) => r.days >= 30);
   if (shortDte && longDte) {
-    const shortVol = parseFloat(shortDte.volatility);
-    const longVol = parseFloat(longDte.volatility);
-    if (!isNaN(shortVol) && !isNaN(longVol) && longVol > 0) {
+    const shortVol = Number.parseFloat(shortDte.volatility);
+    const longVol = Number.parseFloat(longDte.volatility);
+    if (!Number.isNaN(shortVol) && !Number.isNaN(longVol) && longVol > 0) {
       const ratio = shortVol / longVol;
       let shape: string;
       if (ratio > 1.5) shape = 'STEEP INVERSION (0DTE IV >> 30D IV)';

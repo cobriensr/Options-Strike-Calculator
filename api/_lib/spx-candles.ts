@@ -66,12 +66,11 @@ export interface SPXCandle {
 export async function fetchSPXCandles(
   apiKey: string,
   date?: string,
-  spyToSpxRatio?: number,
+  spyToSpxRatio = 10,
 ): Promise<{
   candles: SPXCandle[];
   previousClose: number | null;
 }> {
-  const ratio = spyToSpxRatio ?? 10;
 
   try {
     const params = new URLSearchParams();
@@ -111,10 +110,10 @@ export async function fetchSPXCandles(
       .filter((c) => c.market_time === 'r')
       .map(
         (c): SPXCandle => ({
-          open: Number.parseFloat(c.open) * ratio,
-          high: Number.parseFloat(c.high) * ratio,
-          low: Number.parseFloat(c.low) * ratio,
-          close: Number.parseFloat(c.close) * ratio,
+          open: Number.parseFloat(c.open) * spyToSpxRatio,
+          high: Number.parseFloat(c.high) * spyToSpxRatio,
+          low: Number.parseFloat(c.low) * spyToSpxRatio,
+          close: Number.parseFloat(c.close) * spyToSpxRatio,
           volume: c.volume,
           datetime: new Date(c.start_time).getTime(),
         }),
@@ -134,7 +133,7 @@ export async function fetchSPXCandles(
     const prCandles = data.data.filter((c) => c.market_time === 'pr');
     if (prCandles.length > 0) {
       const firstPr = Number.parseFloat(prCandles[0]!.open);
-      if (!Number.isNaN(firstPr)) previousClose = firstPr * ratio;
+      if (!Number.isNaN(firstPr)) previousClose = firstPr * spyToSpxRatio;
     }
 
     return { candles: regularCandles, previousClose };
@@ -176,7 +175,7 @@ export function formatSPXCandlesForClaude(
   const sessionOpen = candles[0]!.open;
   let sessionHigh = -Infinity;
   let sessionLow = Infinity;
-  const sessionClose = candles[candles.length - 1]!.close;
+  const sessionClose = candles.at(-1)!.close;
 
   for (const c of candles) {
     if (c.high > sessionHigh) sessionHigh = c.high;
@@ -184,7 +183,7 @@ export function formatSPXCandlesForClaude(
   }
 
   const sessionRange = sessionHigh - sessionLow;
-  const latestTime = new Date(candles[candles.length - 1]!.datetime);
+  const latestTime = new Date(candles.at(-1)!.datetime);
   const firstTime = new Date(candles[0]!.datetime);
 
   const fmtTime = (d: Date) =>
@@ -270,7 +269,7 @@ export function formatSPXCandlesForClaude(
       (c) => c.high - c.low > avgRange * 2 && c.high - c.low > 5,
     );
     if (wideBars.length > 0) {
-      const latest = wideBars[wideBars.length - 1]!;
+      const latest = wideBars.at(-1)!;
       const barTime = fmtTime(new Date(latest.datetime));
       const barRange = (latest.high - latest.low).toFixed(1);
       const barDir = latest.close > latest.open ? 'bullish' : 'bearish';

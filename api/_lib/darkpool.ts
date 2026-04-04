@@ -203,12 +203,9 @@ export async function fetchAllDarkPoolTrades(
  */
 export function clusterDarkPoolTrades(
   trades: DarkPoolTrade[],
-  spyToSpxRatio?: number,
+  spyToSpxRatio = 10,
 ): DarkPoolCluster[] {
   if (trades.length === 0) return [];
-
-  // Auto-detect SPY/SPX ratio if not provided
-  const ratio = spyToSpxRatio ?? 10;
 
   // Group into $0.50 price bands
   const bands = new Map<number, DarkPoolTrade[]>();
@@ -268,7 +265,7 @@ export function clusterDarkPoolTrades(
     clusters.push({
       spyPriceLow: priceLow,
       spyPriceHigh: priceHigh,
-      spxApprox: Math.round(band * ratio),
+      spxApprox: Math.round(band * spyToSpxRatio),
       totalPremium,
       tradeCount: bandTrades.length,
       totalShares,
@@ -302,11 +299,10 @@ export interface DarkPoolStrikeLevel {
  */
 export function aggregateDarkPoolLevels(
   trades: DarkPoolTrade[],
-  spyToSpxRatio?: number,
+  spyToSpxRatio = 10,
 ): DarkPoolStrikeLevel[] {
   if (trades.length === 0) return [];
 
-  const ratio = spyToSpxRatio ?? 10;
   const levels = new Map<
     number,
     {
@@ -321,7 +317,7 @@ export function aggregateDarkPoolLevels(
     const price = Number.parseFloat(trade.price);
     if (Number.isNaN(price)) continue;
 
-    const spxLevel = Math.round(price * ratio);
+    const spxLevel = Math.round(price * spyToSpxRatio);
     const premium = Number.parseFloat(trade.premium) || 0;
 
     const existing = levels.get(spxLevel) ?? {
@@ -361,12 +357,11 @@ export function aggregateDarkPoolLevels(
 export function formatDarkPoolForClaude(
   trades: DarkPoolTrade[],
   currentSpx?: number,
-  spyToSpxRatio?: number,
+  spyToSpxRatio = 10,
 ): string | null {
   if (trades.length === 0) return null;
 
-  const ratio = spyToSpxRatio ?? 10;
-  const clusters = clusterDarkPoolTrades(trades, ratio);
+  const clusters = clusterDarkPoolTrades(trades, spyToSpxRatio);
 
   if (clusters.length === 0) return null;
 
@@ -399,10 +394,7 @@ export function formatDarkPoolForClaude(
       '  NET BIAS: Mixed — no clear directional bias from dark pool activity.',
     );
   }
-  lines.push('');
-
-  // Top clusters (max 8)
-  lines.push('  Key Institutional Levels (by premium):');
+  lines.push('', '  Key Institutional Levels (by premium):');
   const topClusters = clusters.slice(0, 8);
 
   for (const c of topClusters) {
@@ -479,13 +471,13 @@ export function formatDarkPoolForClaude(
       }
     }
     if (supportPremium > 0 || resistancePremium > 0) {
-      const ratio =
+      const srRatio =
         resistancePremium > 0
           ? (supportPremium / resistancePremium).toFixed(2)
           : 'INF';
-      lines.push('');
       lines.push(
-        `  Support/Resistance Premium Ratio: ${ratio} ($${fmtDp(supportPremium)} below price / $${fmtDp(resistancePremium)} above price)`,
+        '',
+        `  Support/Resistance Premium Ratio: ${srRatio} ($${fmtDp(supportPremium)} below price / $${fmtDp(resistancePremium)} above price)`,
       );
       if (resistancePremium > supportPremium * 1.5) {
         lines.push(

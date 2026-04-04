@@ -49,7 +49,7 @@ export function parseCSVLine(line: string): string[] {
  *  ""         → 0
  */
 export function parseCurrency(value: string): number {
-  if (!value || !value.trim()) return 0;
+  if (!value?.trim()) return 0;
   let cleaned = value.replaceAll(/[$,\s"]/g, '');
 
   // Parenthesized negative: ($150.00) or (150.00)
@@ -71,7 +71,7 @@ export function parseCurrency(value: string): number {
  * Parse percentage: "-0.74%" → -0.0074
  */
 export function parsePercentage(value: string): number {
-  if (!value || !value.trim()) return 0;
+  if (!value?.trim()) return 0;
   let cleaned = value.replaceAll(/[%\s"]/g, '');
 
   // Parenthesized negative: (0.74%)
@@ -168,7 +168,7 @@ export function parseTrdDescription(desc: string): TrdDescription | null {
     : afterParen[5]!;
 
   return {
-    direction: direction as 'SOLD' | 'BOT',
+    direction,
     quantity: Math.abs(Number.parseInt(qtyToken, 10)),
     spreadType,
     symbol,
@@ -176,7 +176,7 @@ export function parseTrdDescription(desc: string): TrdDescription | null {
     expiryLabel,
     expiration: parseTosDate(expDate),
     strikes,
-    optionType: optionType as 'CALL' | 'PUT',
+    optionType,
     fillPrice: Number.parseFloat(priceStr),
   };
 }

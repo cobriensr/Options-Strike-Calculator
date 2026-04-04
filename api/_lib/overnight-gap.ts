@@ -73,11 +73,11 @@ export function formatOvernightForClaude(
   // ── Session summary ─────────────────────────────────────
   const globexRange = gh - gl;
 
-  lines.push('ES Overnight Session (Globex 5:00 PM – 8:30 AM CT):');
   lines.push(
+    'ES Overnight Session (Globex 5:00 PM – 8:30 AM CT):',
     `  High: ${gh.toFixed(2)} | Low: ${gl.toFixed(2)} | Close: ${gc.toFixed(2)}`,
+    `  Range: ${globexRange.toFixed(1)} pts`,
   );
-  lines.push(`  Range: ${globexRange.toFixed(1)} pts`);
   if (gv != null) {
     lines.push(`  VWAP: ${gv.toFixed(2)}`);
   }
@@ -118,12 +118,12 @@ export function formatOvernightForClaude(
   else if (absGap < GAP_THRESHOLDS.LARGE) gapSize = 'LARGE';
   else gapSize = 'EXTREME';
 
-  lines.push('');
-  lines.push('Gap Analysis:');
   lines.push(
+    '',
+    'Gap Analysis:',
     `  Cash Open: ${cashOpen.toFixed(2)} | Prev Close: ${prevClose.toFixed(2)} | Gap: ${gapDir} ${absGap.toFixed(1)} pts (${Math.abs(gapPct).toFixed(2)}%)`,
+    `  Gap Size: ${gapSize}`,
   );
-  lines.push(`  Gap Size: ${gapSize}`);
 
   // Compute percentile rank once for use in position and fill score sections
   const pctRank =
@@ -204,12 +204,12 @@ export function formatOvernightForClaude(
   else if (fillScore > FILL_SCORE.MODERATE_THRESHOLD) fillProb = 'MODERATE';
   else fillProb = 'LOW';
 
-  lines.push('');
-  lines.push(`  Gap Fill Probability: ${fillProb} (score: ${fillScore})`);
-
-  // 5. Implication for 0DTE
-  lines.push('');
-  lines.push('  Implication for 0DTE:');
+  lines.push(
+    '',
+    `  Gap Fill Probability: ${fillProb} (score: ${fillScore})`,
+    '',
+    '  Implication for 0DTE:',
+  );
 
   if (coneUpper != null && coneLower != null) {
     const coneWidth = coneUpper - coneLower;

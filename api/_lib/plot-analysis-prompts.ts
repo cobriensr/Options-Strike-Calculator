@@ -262,7 +262,7 @@ const SRC_STRUCTURE_CONFIDENCE = `def plot_structure_confidence(df: pd.DataFrame
 
     fig.suptitle("Structure & Confidence Performance")`;
 
-const SRC_DAY_OF_WEEK = `def plot_day_of_week(df: pd.DataFrame) -> None:
+const SRC_DAY_OF_WEEK = String.raw`def plot_day_of_week(df: pd.DataFrame) -> None:
     has_range = df[df["day_range_pts"].notna()].copy()
     has_range["dow"] = has_range["day_of_week"].astype(int)
     day_names = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri"}
@@ -276,7 +276,7 @@ const SRC_DAY_OF_WEEK = `def plot_day_of_week(df: pd.DataFrame) -> None:
     sns.swarmplot(data=has_range, x="day_name", y="range",
                   order=order, color="white", ...)
 
-    # Labels: "avg X / med Y\\nn=Z" above each box
+    # Labels: "avg X / med Y\nn=Z" above each box
     ax.set_title("Range by Day of Week")`;
 
 const SRC_STATIONARITY = `def plot_stationarity(df: pd.DataFrame) -> None:
@@ -299,7 +299,7 @@ const SRC_STATIONARITY = `def plot_stationarity(df: pd.DataFrame) -> None:
 
     fig.suptitle("Feature Stationarity Check (Rolling Means)")`;
 
-const SRC_FAILURE_HEATMAP = `def plot_failure_heatmap(df: pd.DataFrame) -> None:
+const SRC_FAILURE_HEATMAP = String.raw`def plot_failure_heatmap(df: pd.DataFrame) -> None:
     # Filter to days with GEX, VIX, and structure_correct
     has_data["gex_b"] = has_data["gex_oi_t1"].astype(float) / 1e9
     has_data["vix_f"] = has_data["vix"].astype(float)
@@ -311,7 +311,7 @@ const SRC_FAILURE_HEATMAP = `def plot_failure_heatmap(df: pd.DataFrame) -> None:
 
     # Compute accuracy rate per GEX x VIX cell
     # Display as imshow heatmap with RdYlGn colormap (0.5 to 1.0)
-    # Cell annotations: "83%\\nn=6" format
+    # Cell annotations: "83%\nn=6" format
     # Dark text on bright cells, light text on dark cells
 
     ax.set_title("Structure Accuracy by GEX x VIX Regime")`;
@@ -334,7 +334,7 @@ const SRC_DARK_POOL_VS_RANGE = `def plot_dark_pool_vs_range(df: pd.DataFrame) ->
 
     fig.suptitle("Dark Pool Institutional Activity and Day Outcomes")`;
 
-const SRC_CONE_CONSUMPTION = `def plot_cone_consumption(df: pd.DataFrame) -> None:
+const SRC_CONE_CONSUMPTION = String.raw`def plot_cone_consumption(df: pd.DataFrame) -> None:
     # Uses "opening_range_pct_consumed" feature
     has_data["cone_pct"] = has_data["opening_range_pct_consumed"]
 
@@ -350,7 +350,7 @@ const SRC_CONE_CONSUMPTION = `def plot_cone_consumption(df: pd.DataFrame) -> Non
     # Right: accuracy by cone consumption bucket
     # Buckets: <30%, 30-50%, 50-65%, >65%
     # Green/Blue/Orange/Red bars
-    # Labels: "83%\\n(n=6)" format
+    # Labels: "83%\n(n=6)" format
 
     fig.suptitle("Does Entering Late in the Cone Hurt Accuracy?")`;
 
@@ -557,7 +557,7 @@ const SRC_PIN_TIME_DECAY = `# Pin time decay plot generation:
 
     ax.set_title("Settlement Prediction Improves Near Close")`;
 
-const SRC_PIN_COMPOSITE = `# Pin composite strategy comparison:
+const SRC_PIN_COMPOSITE = String.raw`# Pin composite strategy comparison:
     # Bar chart comparing 3 strategies
 
     strategies = ["Always 0DTE", "Always 1DTE",
@@ -573,7 +573,7 @@ const SRC_PIN_COMPOSITE = `# Pin composite strategy comparison:
     # Value labels on bars: "{avg:.1f} pts"
     # Inside bars: "+/-10: {w10:.0%}"
 
-    ax.set_ylabel("Avg Distance to Settlement (pts)\\n(lower is better)")
+    ax.set_ylabel("Avg Distance to Settlement (pts)\n(lower is better)")
     ax.set_title("0DTE vs 1DTE vs Composite Strategy")`;
 
 // ── Per-Plot Reference Block Builder ────────────────────────

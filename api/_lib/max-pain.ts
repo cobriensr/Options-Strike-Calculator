@@ -28,7 +28,7 @@ interface MaxPainResponse {
   date: string;
 }
 
-// ── Fetch ───────────────────────────────────────────────────
+// ── Fetch ────────────────────��─────────────────────��────────
 
 /**
  * Fetch max pain for all SPX expirations.
@@ -68,7 +68,7 @@ export async function fetchMaxPain(
   }
 }
 
-// ── Format for Claude ───────────────────────────────────────
+// ── Format for Claude ────���──────────────────────────────────
 
 /**
  * Format max pain data for Claude's context.
@@ -137,11 +137,10 @@ export function formatMaxPainForClaude(
     .slice(0, 3);
 
   if (upcoming.length > 0) {
-    lines.push('');
-    lines.push('  Upcoming expirations:');
+    lines.push('', '  Upcoming expirations:');
     for (const e of upcoming) {
-      const strike = parseFloat(e.max_pain);
-      if (isNaN(strike)) continue;
+      const strike = Number.parseFloat(e.max_pain);
+      if (Number.isNaN(strike)) continue;
       const dist =
         currentSpx != null
           ? ` (${Math.abs(currentSpx - strike).toFixed(0)} pts ${currentSpx > strike ? 'above' : 'below'})`
