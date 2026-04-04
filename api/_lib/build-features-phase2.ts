@@ -195,8 +195,8 @@ export async function engineerPhase2Features(
         }
       }
     }
-  } catch (mpErr) {
-    logger.warn({ err: mpErr }, 'Max pain feature extraction failed');
+  } catch (error_) {
+    logger.warn({ err: error_ }, 'Max pain feature extraction failed');
   }
 
   // Dark pool features (from dark_pool_levels — full tape, per-$1 SPX)
@@ -250,8 +250,8 @@ export async function engineerPhase2Features(
           ? Math.round((topLevel.totalPremium / totalPremium) * 10000) / 10000
           : null;
     }
-  } catch (dpErr) {
-    logger.warn({ err: dpErr }, 'Dark pool feature extraction failed');
+  } catch (error_) {
+    logger.warn({ err: error_ }, 'Dark pool feature extraction failed');
   }
 
   // Options volume & premium (from Unusual Whales API)
@@ -334,8 +334,8 @@ export async function engineerPhase2Features(
         }
       }
     }
-  } catch (ovErr) {
-    logger.warn({ err: ovErr }, 'Options volume feature extraction failed');
+  } catch (error_) {
+    logger.warn({ err: error_ }, 'Options volume feature extraction failed');
   }
 
   // OI Change features (from oi_changes table — daily OI diffs)
@@ -421,8 +421,8 @@ export async function engineerPhase2Features(
           ? Math.round((top5AbsDiff / totalAbsDiff) * 10000) / 10000
           : null;
     }
-  } catch (oicErr) {
-    logger.warn({ err: oicErr }, 'OI change feature extraction failed');
+  } catch (error_) {
+    logger.warn({ err: error_ }, 'OI change feature extraction failed');
   }
 
   // Vol surface features (from vol_term_structure + vol_realized + iv_monitor)
@@ -486,8 +486,8 @@ export async function engineerPhase2Features(
       features.uw_iv_overpricing_pct = num(rv.iv_overpricing_pct);
       features.iv_rank = num(rv.iv_rank);
     }
-  } catch (vsErr) {
-    logger.warn({ err: vsErr }, 'Vol surface feature extraction failed');
+  } catch (error_) {
+    logger.warn({ err: error_ }, 'Vol surface feature extraction failed');
   }
 }
 

@@ -225,16 +225,16 @@ export async function buildAnalysisContext(
       if (posData && posData.summary !== 'No open SPX 0DTE positions.') {
         positionSummary = posData.summary;
       }
-    } catch (posErr) {
-      logger.error({ err: posErr }, 'Failed to fetch positions for analysis');
+    } catch (error_) {
+      logger.error({ err: error_ }, 'Failed to fetch positions for analysis');
     }
   }
   // Always fetch previous recommendation (works for both live and backtest)
   if (mode === 'midday' || mode === 'review') {
     try {
       previousRec = await getPreviousRecommendation(analysisDate, mode);
-    } catch (recErr) {
-      logger.error({ err: recErr }, 'Failed to fetch previous recommendation');
+    } catch (error_) {
+      logger.error({ err: error_ }, 'Failed to fetch previous recommendation');
     }
   }
   // Use DB positions if available, fall back to manually provided currentPosition
@@ -369,8 +369,8 @@ export async function buildAnalysisContext(
       allExpiryStrikeRows,
       strikeRows,
     );
-  } catch (flowErr) {
-    logger.error({ err: flowErr }, 'Failed to fetch flow data for analysis');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch flow data for analysis');
   }
 
   // On-demand IV term structure fetch (not from DB — direct UW API call)
@@ -398,8 +398,8 @@ export async function buildAnalysisContext(
         );
       }
     }
-  } catch (ivErr) {
-    logger.error({ err: ivErr }, 'Failed to fetch IV term structure');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch IV term structure');
   }
 
   // Realized vol + IV rank from daily vol_realized table
@@ -450,8 +450,8 @@ export async function buildAnalysisContext(
         volRealizedContext = lines.join('\n  ');
       }
     }
-  } catch (rvErr) {
-    logger.error({ err: rvErr }, 'Failed to fetch vol realized data');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch vol realized data');
   }
 
   // On-demand pre-market data (ES overnight + straddle cone from manual input)
@@ -487,8 +487,8 @@ export async function buildAnalysisContext(
         });
       }
     }
-  } catch (pmErr) {
-    logger.error({ err: pmErr }, 'Failed to fetch pre-market data');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch pre-market data');
   }
 
   // On-demand SPX candles from UW (fetches SPY, translates via ratio)
@@ -513,8 +513,8 @@ export async function buildAnalysisContext(
           straddleConeLower,
         );
       }
-    } catch (candleErr) {
-      logger.error({ err: candleErr }, 'Failed to fetch SPX candles');
+    } catch (error_) {
+      logger.error({ err: error_ }, 'Failed to fetch SPX candles');
     }
   }
 
@@ -546,8 +546,8 @@ export async function buildAnalysisContext(
         darkPoolContext = formatDarkPoolForClaude(trades, currentSpx, ratio);
       }
     }
-  } catch (dpErr) {
-    logger.error({ err: dpErr }, 'Failed to fetch dark pool data');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch dark pool data');
   }
 
   // On-demand max pain
@@ -564,8 +564,8 @@ export async function buildAnalysisContext(
         );
       }
     }
-  } catch (mpErr) {
-    logger.error({ err: mpErr }, 'Failed to fetch max pain data');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch max pain data');
   }
 
   // On-demand OI change data (prior day positioning)
@@ -578,8 +578,8 @@ export async function buildAnalysisContext(
         currentSpx ?? undefined,
       );
     }
-  } catch (oicErr) {
-    logger.error({ err: oicErr }, 'Failed to fetch OI change data');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch OI change data');
   }
 
   // ML calibration — latest validated ML findings from EDA pipeline
@@ -597,9 +597,9 @@ export async function buildAnalysisContext(
         mlCalibrationContext = formatMlFindingsForClaude(findings, updated_at);
       }
     }
-  } catch (mlErr) {
+  } catch (error_) {
     logger.warn(
-      { err: mlErr },
+      { err: error_ },
       'ML findings fetch failed — using static prompt values',
     );
   }
@@ -695,9 +695,9 @@ export async function buildAnalysisContext(
           );
         }
       }
-    } catch (chainErr) {
+    } catch (error_) {
       logger.error(
-        { err: chainErr },
+        { err: error_ },
         'Failed to fetch 14 DTE chain for directional opportunity',
       );
     }
@@ -867,8 +867,8 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
   try {
     const lessons = await getActiveLessons();
     lessonsBlock = formatLessonsBlock(lessons);
-  } catch (lessonsErr) {
-    logger.error({ err: lessonsErr }, 'Failed to fetch lessons for injection');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch lessons for injection');
   }
 
   try {
@@ -876,8 +876,8 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     if (winRate) {
       winRateContext = `\n## Historical Base Rate (from lessons database)\n${formatWinRateForClaude(winRate, winRateConditions)}\n`;
     }
-  } catch (winRateErr) {
-    logger.error({ err: winRateErr }, 'Failed to fetch historical win rate');
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch historical win rate');
   }
 
   // Append win rate to context (after main contextText, before sending)

@@ -147,17 +147,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let usedModel = 'claude-opus-4-6';
     try {
       data = await streamRequest('claude-opus-4-6', 128000, 'high');
-    } catch (opusErr) {
+    } catch (error_) {
       // Only fall back on availability issues — request errors won't succeed on any model
       if (
-        opusErr instanceof Anthropic.BadRequestError ||
-        opusErr instanceof Anthropic.AuthenticationError ||
-        opusErr instanceof Anthropic.PermissionDeniedError
+        error_ instanceof Anthropic.BadRequestError ||
+        error_ instanceof Anthropic.AuthenticationError ||
+        error_ instanceof Anthropic.PermissionDeniedError
       ) {
-        throw opusErr;
+        throw error_;
       }
       logger.info(
-        { err: opusErr },
+        { err: error_ },
         'Opus unavailable, falling back to Sonnet 4.6',
       );
       metrics.increment('analyze.opus_fallback');
@@ -297,17 +297,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 spxPrice: (context.spx as number) ?? null,
                 clusters: darkPoolClusters,
               });
-            } catch (dpSaveErr) {
+            } catch (error_) {
               logger.error(
-                { err: dpSaveErr },
+                { err: error_ },
                 'dark pool snapshot save failed',
               );
             }
           }
           break;
-        } catch (dbErr) {
+        } catch (error_) {
           logger.error(
-            { err: dbErr, attempt: dbAttempt },
+            { err: error_, attempt: dbAttempt },
             'analyze DB save failed',
           );
           if (dbAttempt < DB_SAVE_ATTEMPTS) {

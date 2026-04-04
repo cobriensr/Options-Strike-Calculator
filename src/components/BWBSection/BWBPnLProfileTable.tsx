@@ -122,7 +122,7 @@ export default function BWBPnLProfileTable({
                     key={r.key}
                     className={groupBg}
                     style={{
-                      borderBottom: !r.isFirst ? borderStyle : undefined,
+                      borderBottom: r.isFirst ? undefined : borderStyle,
                     }}
                   >
                     {r.isFirst && (
@@ -139,9 +139,9 @@ export default function BWBPnLProfileTable({
                       className={`${mkTd()} text-xs font-medium`}
                       style={{
                         color: r.sideColor,
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {r.side}
@@ -149,9 +149,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-right font-medium ${r.credit >= 0 ? 'text-success' : 'text-danger'}`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {'$' + fmtDollar(r.credit * mult)}
@@ -162,9 +162,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-success text-right font-medium`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {'$' + fmtDollar(r.maxProfit * mult)}
@@ -175,9 +175,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-danger text-right font-medium`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {'$' + fmtDollar(r.maxLoss * mult)}
@@ -188,9 +188,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-primary text-right font-medium`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {'$' + fmtDollar(r.maxLoss * mult)}
@@ -198,9 +198,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-accent text-right font-semibold`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {(r.ror * 100).toFixed(1)}%
@@ -208,9 +208,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-right font-semibold`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       <span style={{ color: theme.green }}>
@@ -226,9 +226,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-secondary text-right`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {r.be}
@@ -236,9 +236,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-secondary text-right opacity-75`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {r.spyBe}
@@ -246,9 +246,9 @@ export default function BWBPnLProfileTable({
                     <td
                       className={`${mkTd()} text-accent text-right font-bold`}
                       style={{
-                        borderBottom: !r.isFirst
-                          ? borderStyle
-                          : '1px solid var(--color-edge)',
+                        borderBottom: r.isFirst
+                          ? '1px solid var(--color-edge)'
+                          : borderStyle,
                       }}
                     >
                       {r.sweetSpot}

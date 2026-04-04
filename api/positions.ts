@@ -439,9 +439,9 @@ async function handleCSVUpload(
       });
       saved = true;
       metrics.dbSave('positions', true);
-    } catch (dbErr) {
+    } catch (error_) {
       metrics.dbSave('positions', false);
-      logger.error({ err: dbErr }, 'Failed to save uploaded positions');
+      logger.error({ err: error_ }, 'Failed to save uploaded positions');
     }
 
     return res.status(200).json({
@@ -569,9 +569,9 @@ async function handleSchwabFetch(
       });
       saved = true;
       metrics.dbSave('positions', true);
-    } catch (dbErr) {
+    } catch (error_) {
       metrics.dbSave('positions', false);
-      logger.error({ err: dbErr }, 'Failed to save positions');
+      logger.error({ err: error_ }, 'Failed to save positions');
     }
 
     return res.status(200).json({
