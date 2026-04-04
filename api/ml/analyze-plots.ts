@@ -16,7 +16,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { list } from '@vercel/blob';
+import { list, get } from '@vercel/blob';
 import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
@@ -138,7 +138,6 @@ function getPlotFindings(
  * Analyze a single plot with Claude vision.
  */
 async function analyzePlot(
-  blobUrl: string,
   plotName: string,
   findings: Record<string, unknown> | null,
   systemPrompt: string,
@@ -151,12 +150,13 @@ async function analyzePlot(
     cacheRead: number;
   };
 }> {
-  // Fetch the plot image
-  const imgResponse = await fetch(blobUrl);
-  if (!imgResponse.ok) {
-    throw new Error(`Failed to fetch plot ${plotName}: ${imgResponse.status}`);
+  // Fetch the plot image from private Blob store
+  const blobPath = `ml-plots/latest/${plotName}.png`;
+  const result = await get(blobPath, { access: 'private' });
+  if (!result) {
+    throw new Error(`Blob not found: ${blobPath}`);
   }
-  const ab = await imgResponse.arrayBuffer();
+  const ab = await new Response(result.stream).arrayBuffer();
   const base64String = Buffer.from(ab).toString('base64');
 
   const findingsSlice = getPlotFindings(plotName, findings);
@@ -289,7 +289,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const plotName = plotNameFromPath(blob.pathname);
 
           const { analysis } = await analyzePlot(
-            blob.url,
             plotName,
             findings,
             systemPrompt,

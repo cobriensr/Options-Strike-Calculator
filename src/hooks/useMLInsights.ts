@@ -17,7 +17,7 @@ export interface PlotAnalysis {
 
 export interface MLPlot {
   name: string;
-  blobUrl: string;
+  imageUrl: string;
   analysis: PlotAnalysis | null;
   model: string;
   pipelineDate: string;

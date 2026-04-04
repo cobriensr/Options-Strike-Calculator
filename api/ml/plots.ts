@@ -8,7 +8,7 @@
  *
  * Response shape:
  *   {
- *     plots: Array<{ name, blobUrl, analysis, model, pipelineDate, updatedAt }>,
+ *     plots: Array<{ name, imageUrl, analysis, model, pipelineDate, updatedAt }>,
  *     findings: Record<string, unknown> | null,
  *     pipelineDate: string | null
  *   }
@@ -78,7 +78,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const plots = plotRows.map((r) => ({
       name: r.plot_name,
-      blobUrl: r.blob_url,
+      imageUrl: `/api/ml/plot-image?name=${encodeURIComponent(r.plot_name)}`,
       analysis: r.analysis ?? null,
       model: r.model,
       pipelineDate:

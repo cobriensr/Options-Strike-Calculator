@@ -70,7 +70,7 @@ jobs:
             const blobPath = 'ml-plots/latest/' + file;
 
             const blob = await put(blobPath, fileBuffer, {
-              access: 'public',
+              access: 'private',
               addRandomSuffix: false,
             });
 

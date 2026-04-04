@@ -90,8 +90,8 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
 
   // Mark active plot URL as loaded for lazy-loading
   useEffect(() => {
-    if (activePlot && !loadedUrls.has(activePlot.blobUrl)) {
-      setLoadedUrls((prev) => new Set(prev).add(activePlot.blobUrl));
+    if (activePlot && !loadedUrls.has(activePlot.imageUrl)) {
+      setLoadedUrls((prev) => new Set(prev).add(activePlot.imageUrl));
     }
   }, [activePlot, loadedUrls]);
 
@@ -224,9 +224,9 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
             aria-label={`View ${formatPlotName(activePlot.name)} full size`}
             style={{ backgroundColor: theme.surfaceAlt }}
           >
-            {loadedUrls.has(activePlot.blobUrl) ? (
+            {loadedUrls.has(activePlot.imageUrl) ? (
               <img
-                src={activePlot.blobUrl}
+                src={activePlot.imageUrl}
                 alt={`ML pipeline plot: ${formatPlotName(activePlot.name)}`}
                 className="h-auto w-full"
                 loading="lazy"
@@ -290,7 +290,7 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
             {'\u00D7'} Close
           </button>
           <img
-            src={activePlot.blobUrl}
+            src={activePlot.imageUrl}
             alt={`Full-size ML pipeline plot: ${formatPlotName(activePlot.name)}`}
             className="relative z-[200] max-h-[90vh] max-w-[95vw] rounded-lg object-contain"
           />
