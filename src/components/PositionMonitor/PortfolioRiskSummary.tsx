@@ -152,7 +152,7 @@ export default function PortfolioRiskSummary({
   return (
     <section
       className="grid grid-cols-2 gap-3 md:grid-cols-4"
-            aria-label="Portfolio risk summary"
+      aria-label="Portfolio risk summary"
     >
       {/* 1 — Total Max Loss (adjusted for stop multiplier) */}
       <Card

@@ -171,7 +171,7 @@ export default function TradeLog({
   return (
     <section
       className="flex flex-col gap-2"
-            aria-label="Trade log"
+      aria-label="Trade log"
       data-testid="trade-log"
     >
       {/* Filter buttons */}

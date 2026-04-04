@@ -44,7 +44,7 @@ export default function DataQualityAlerts({
   return (
     <section
       className="flex flex-col gap-2"
-            aria-label="Data quality alerts"
+      aria-label="Data quality alerts"
       data-testid="data-quality-alerts"
     >
       {visible.map((w, i) => (

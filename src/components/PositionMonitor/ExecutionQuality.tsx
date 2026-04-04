@@ -62,7 +62,7 @@ export default function ExecutionQuality({
   return (
     <section
       className="flex flex-col gap-4"
-            aria-label="Execution quality"
+      aria-label="Execution quality"
       data-testid="execution-quality"
     >
       {/* Order Flow Summary */}

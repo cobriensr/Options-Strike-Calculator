@@ -55,7 +55,7 @@ export default function PositionVisuals(props: Readonly<PositionVisualsProps>) {
 
   return (
     <section
-            aria-label="Position visualizations"
+      aria-label="Position visualizations"
       data-testid="position-visuals"
     >
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
