@@ -22,6 +22,13 @@ warnings.filterwarnings(
     module="sklearn.impute",
 )
 
+# Suppress scipy ConstantInputWarning from pointbiserialr/pearsonr.
+# Constant-input columns are expected when features have zero variance
+# over the (still small) labeled dataset.
+from scipy.stats import ConstantInputWarning
+
+warnings.filterwarnings("ignore", category=ConstantInputWarning)
+
 import pandas as pd
 
 # Root of the ml/ directory (parent of src/)
