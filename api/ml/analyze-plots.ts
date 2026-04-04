@@ -185,7 +185,7 @@ async function analyzePlot(
       {
         type: 'text',
         text: systemPrompt,
-        cache_control: { type: 'ephemeral' },
+        cache_control: { type: 'ephemeral', ttl: '1h' },
       },
     ],
     messages: [{ role: 'user', content }],
