@@ -22,7 +22,7 @@ import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
-export const config = { maxDuration: 300 };
+export const config = { maxDuration: 780 };
 
 // Module-level Anthropic singleton — reused across requests
 const anthropic = new Anthropic({
@@ -181,13 +181,8 @@ async function analyzePlot(
     max_tokens: 64000,
     thinking: { type: 'adaptive' },
     output_config: { effort: 'high' },
-    system: [
-      {
-        type: 'text',
-        text: systemPrompt,
-        cache_control: { type: 'ephemeral', ttl: '1h' },
-      },
-    ],
+    cache_control: { type: 'ephemeral' },
+    system: systemPrompt,
     messages: [{ role: 'user', content }],
   } as unknown as Parameters<typeof anthropic.messages.create>[0])) as Anthropic.Message;
 
