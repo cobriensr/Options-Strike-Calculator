@@ -544,11 +544,24 @@ describe('build-features handler', () => {
 
     // Call 13: dark_pool_snapshots
     mockSql.mockResolvedValueOnce([]);
-
-    // Call 14: upsertFeatures INSERT
+    // Call 14: oicRows (oi_changes)
+    mockSql.mockResolvedValueOnce([]);
+    // Call 15: tsRows (vol_term_structure)
+    mockSql.mockResolvedValueOnce([]);
+    // Call 16: ivMonRow (iv_monitor — phase2 vol surface)
+    mockSql.mockResolvedValueOnce([]);
+    // Call 17: rvRow (vol_realized)
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 15: extractLabelsForDate — analyses (no review found)
+    // Call 18: iv_monitor (monitor)
+    mockSql.mockResolvedValueOnce([]);
+    // Call 19: flow_ratio_monitor (monitor)
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 20: upsertFeatures INSERT
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 21: extractLabelsForDate — analyses (no review found)
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -567,8 +580,10 @@ describe('build-features handler', () => {
       errors: 0,
     });
 
-    // 14 original test calls + 2 preamble + 2 monitor queries (iv_monitor + flow_ratio_monitor)
-    expect(mockSql).toHaveBeenCalledTimes(19);
+    // 2 preamble + 1 distinct dates + 7 buildFeatures + 10 phase2 (with vvix,
+    // incl. oicRows/tsRows/ivMonRow/rvRow) + 1 upsert + 1 labels + 1 monitor = 23
+    // (monitor engineerMonitorFeatures makes 2 queries but may short-circuit)
+    expect(mockSql).toHaveBeenCalledTimes(23);
   });
 
   it('extracts labels from review analyses with outcomes', async () => {
@@ -580,14 +595,15 @@ describe('build-features handler', () => {
     // Call 1 (handler): SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
 
-    // Calls 2-10 (buildFeaturesForDate): all empty
-    // (6 original + 3 Phase 2 + 2 monitor; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 12; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-18 (buildFeaturesForDate): all empty
+    // (7 original + fallback + 5 Phase 2 + 4 phase2 new + 2 monitor;
+    //  vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 17; i++) mockSql.mockResolvedValueOnce([]);
 
-    // Call 11: upsertFeatures INSERT
+    // Call 19: upsertFeatures INSERT
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 12 (extractLabelsForDate): SELECT from analyses
+    // Call 20 (extractLabelsForDate): SELECT from analyses
     mockSql.mockResolvedValueOnce([
       {
         id: 42,
@@ -652,13 +668,14 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-10: buildFeaturesForDate queries → empty
-    // (6 original + 3 Phase 2 + 2 monitor; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 12; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 12: upsertFeatures
+    // Calls 2-18: buildFeaturesForDate queries → empty
+    // (7 original + fallback + 5 Phase 2 + 4 phase2 new + 2 monitor;
+    //  vvixHistory skipped when vvix is null)
+    for (let i = 0; i < 17; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 19: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 13: analyses — full_response is already an object (not a string)
+    // Call 20: analyses — full_response is already an object (not a string)
     mockSql.mockResolvedValueOnce([
       {
         id: 99,
@@ -707,13 +724,12 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-10: buildFeaturesForDate queries → empty
-    // (6 original + 3 Phase 2 + 2 monitor; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 12; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 12: upsertFeatures
+    // Calls 2-18: buildFeaturesForDate queries → empty
+    for (let i = 0; i < 17; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 19: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 13: analyses — invalid JSON in full_response
+    // Call 20: analyses — invalid JSON in full_response
     mockSql.mockResolvedValueOnce([{ id: 55, full_response: '{invalid json' }]);
 
     const req = mockRequest({
@@ -755,13 +771,12 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-10: buildFeaturesForDate queries → empty
-    // (6 original + 3 Phase 2 + 2 monitor; vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 12; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 12: upsertFeatures
+    // Calls 2-18: buildFeaturesForDate queries → empty
+    for (let i = 0; i < 17; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 19: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 13: analyses with minimal review
+    // Call 20: analyses with minimal review
     mockSql.mockResolvedValueOnce([
       {
         id: 10,
@@ -810,35 +825,45 @@ describe('build-features handler', () => {
 
     // Call 2 (buildFeaturesForDate): market_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 3: flow_data → empty
+    // Call 3: fallback (outcomes.day_open — spx_open is null)
     mockSql.mockResolvedValueOnce([]);
-    // Call 4: spot_exposures → empty
+    // Call 4: flow_data → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 5: greek_exposure → empty
+    // Call 5: spot_exposures → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 6: strike_exposures (0dte) → empty
+    // Call 6: greek_exposure → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 7: strike_exposures (all-exp) → empty
+    // Call 7: strike_exposures (0dte) → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 8: prev day outcomes → empty
+    // Call 8: strike_exposures (all-exp) → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 9: settlements (realized vol) → empty
+    // Call 9: prev day outcomes → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 10: settlements (realized vol) → empty
     mockSql.mockResolvedValueOnce([]);
     // (vvixHistory skipped — no vvix in snapshot)
-    // Call 10: economic events → return an event so is_opex is set inside event block
+    // Call 11: economic events → return an event so is_opex is set inside event block
     mockSql.mockResolvedValueOnce([
       { event_name: 'OpEx', event_type: 'OTHER', event_time: '09:30' },
     ]);
-    // Call 11: next event → empty
+    // Call 12: next event → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 12: dark_pool_snapshots → empty
+    // Call 13: dark_pool_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 13: iv_monitor → empty
+    // Call 14: oicRows (oi_changes) → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 14: flow_ratio_monitor → empty
+    // Call 15: tsRows (vol_term_structure) → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 16: ivMonRow (iv_monitor — phase2 vol surface) → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 17: rvRow (vol_realized) → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 18: iv_monitor (monitor) → empty
+    mockSql.mockResolvedValueOnce([]);
+    // Call 19: flow_ratio_monitor (monitor) → empty
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 15: upsertFeatures INSERT — capture the features being upserted
+    // Call 20: upsertFeatures INSERT — capture the features being upserted
     let upsertedFeatures: Record<string, unknown> | null = null;
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       // The tagged template literal passes strings as first arg, values as rest
@@ -1093,20 +1118,15 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-9: buildFeaturesForDate → empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 9: economic events → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 10: next event → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 11: iv_monitor → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 12: flow_ratio_monitor → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 13: upsertFeatures
+    // Calls 2-18: buildFeaturesForDate → empty (no vvix → no vvixHistory)
+    // snapshots, fallback, flow, spot, greek, strike0dte, strikeAll,
+    // prevDay, settlements, events, nextEvent, dpRows,
+    // oicRows, tsRows, ivMonRow, rvRow, iv_monitor(mon), flow_ratio(mon)
+    for (let i = 0; i < 18; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 20: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 14: extractLabelsForDate — analyses with review
+    // Call 21: extractLabelsForDate — analyses with review
     mockSql.mockResolvedValueOnce([
       {
         id: 70,
@@ -1117,7 +1137,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 15: outcomes — settlement > open → UP
+    // Call 22: outcomes — settlement > open → UP
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5750,
@@ -1163,20 +1183,12 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-9: buildFeaturesForDate → empty
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 9: economic events → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 10: next event → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 11: iv_monitor → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 12: flow_ratio_monitor → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 13: upsertFeatures
+    // Calls 2-19: buildFeaturesForDate → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 18; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 20: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 14: analyses with review
+    // Call 21: analyses with review
     mockSql.mockResolvedValueOnce([
       {
         id: 71,
@@ -1187,7 +1199,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 15: outcomes — settlement > open → UP
+    // Call 22: outcomes — settlement > open → UP
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5720,
@@ -1198,7 +1210,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 14: flow_data — equal bullish and bearish counts → tie → null direction
+    // Call 23: flow_data — equal bullish and bearish counts → tie → null direction
     // 4 positive, 4 negative, 1 zero (ignored) → tie
     mockSql.mockResolvedValueOnce([
       { timestamp: t2, source: 'market_tide', ncp: '500000' },
@@ -1234,20 +1246,12 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-9: buildFeaturesForDate → empty
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 9: economic events → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 10: next event → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 11: iv_monitor → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 12: flow_ratio_monitor → empty
-    mockSql.mockResolvedValueOnce([]);
-    // Call 13: upsertFeatures
+    // Calls 2-19: buildFeaturesForDate → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 18; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 20: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 14: analyses with review
+    // Call 21: analyses with review
     mockSql.mockResolvedValueOnce([
       {
         id: 72,
@@ -1258,7 +1262,7 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 15: outcomes — settlement > open → UP
+    // Call 22: outcomes — settlement > open → UP
     mockSql.mockResolvedValueOnce([
       {
         settlement: 5730,

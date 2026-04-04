@@ -543,12 +543,17 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
       mockSql.mockResolvedValueOnce([]); // dpRows
+      mockSql.mockResolvedValueOnce([]); // oicRows
+      mockSql.mockResolvedValueOnce([]); // tsRows
+      mockSql.mockResolvedValueOnce([]); // ivMonRow
+      mockSql.mockResolvedValueOnce([]); // rvRow
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
       expect(features.vvix_percentile).toBeUndefined();
-      // 5 SQL calls: prevDay, settlements, eventRows, nextEvent, dpRows (no vvix query)
-      expect(mockSql).toHaveBeenCalledTimes(5);
+      // 9 SQL calls: prevDay, settlements, eventRows, nextEvent, dpRows,
+      // oicRows, tsRows, ivMonRow, rvRow (no vvix query)
+      expect(mockSql).toHaveBeenCalledTimes(9);
     });
 
     it('computes percentile = 1.0 when vvix is highest', async () => {
