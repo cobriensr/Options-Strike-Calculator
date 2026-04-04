@@ -175,15 +175,22 @@ async function analyzePlot(
     },
   ];
 
-  const response = (await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 64000,
-    thinking: { type: 'adaptive' },
-    output_config: { effort: 'high' },
-    cache_control: { type: 'ephemeral' },
-    system: systemPrompt,
-    messages: [{ role: 'user', content }],
-  } as unknown as Parameters<typeof anthropic.messages.create>[0])) as Anthropic.Message;
+  const response = await anthropic.messages
+    .stream({
+      model: MODEL,
+      max_tokens: 64000,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+      system: [
+        {
+          type: 'text' as const,
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ],
+      messages: [{ role: 'user' as const, content }],
+    } as unknown as Parameters<typeof anthropic.messages.stream>[0])
+    .finalMessage();
 
   // Log usage
   const u = response.usage;
