@@ -588,25 +588,27 @@ def generate_shap_plot(
 
     try:
         explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X)
+        explanation = explainer(X)
 
         plot_dir.mkdir(exist_ok=True)
 
-        _, _ax = plt.subplots(1, 1, figsize=(12, 8))
-
-        # For multi-class, shap_values is a list of arrays
-        if isinstance(shap_values, list):
-            # Use the class with the most variance in SHAP values
-            variances = [np.var(sv) for sv in shap_values]
+        # Multi-class: explanation.values is (samples, features, classes)
+        # Pick the class with the most SHAP variance for the beeswarm
+        if explanation.values.ndim == 3:
+            variances = [
+                np.var(explanation.values[:, :, c])
+                for c in range(explanation.values.shape[2])
+            ]
             best_class = int(np.argmax(variances))
             class_name = STRUCTURE_NAMES.get(best_class, str(best_class))
-            shap.summary_plot(
-                shap_values[best_class], X,
-                show=False, max_display=15,
+            # Slice to a 2D Explanation for the chosen class
+            class_explanation = explanation[:, :, best_class]
+            shap.plots.beeswarm(
+                class_explanation, show=False, max_display=15,
             )
             plt.title(f"SHAP Feature Importance ({class_name})")
         else:
-            shap.summary_plot(shap_values, X, show=False, max_display=15)
+            shap.plots.beeswarm(explanation, show=False, max_display=15)
             plt.title("SHAP Feature Importance")
 
         plt.tight_layout()

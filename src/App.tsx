@@ -320,7 +320,7 @@ export default function StrikeCalculator() {
         : []),
       ...(hasMarketOrSnapshot ? [{ id: 'sec-charts', label: 'Charts' }] : []),
       { id: 'sec-history', label: 'History' },
-      { id: 'sec-ml-insights', label: 'ML Insights' },
+      ...(isOwner ? [{ id: 'sec-ml-insights', label: 'ML Insights' }] : []),
       { id: 'sec-positions', label: 'Positions' },
       ...(isOwner ? [{ id: 'sec-bwb', label: 'BWB' }] : []),
       { id: 'results', label: 'Results' },
@@ -688,12 +688,16 @@ export default function StrikeCalculator() {
               <AnalysisHistory refreshKey={historyRefreshKey} />
             </ErrorBoundary>
 
-            <span id="sec-ml-insights" className="block scroll-mt-28" />
-            <ErrorBoundary label="ML Insights">
-              <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                <MLInsights />
-              </Suspense>
-            </ErrorBoundary>
+            {isOwner && (
+              <>
+                <span id="sec-ml-insights" className="block scroll-mt-28" />
+                <ErrorBoundary label="ML Insights">
+                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                    <MLInsights />
+                  </Suspense>
+                </ErrorBoundary>
+              </>
+            )}
 
             {/* Paper Dashboard — lazy-loaded */}
             <span id="sec-positions" className="block scroll-mt-28" />
