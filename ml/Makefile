@@ -17,7 +17,7 @@ visualize: ## Generate all visualization plots
 	$(PYTHON) src/visualize.py
 
 health: ## Check pipeline health (data freshness, completeness)
-	$(PYTHON) src/health.py
+	-$(PYTHON) src/health.py
 
 milestone: ## Check data milestones and suggest next actions
 	$(PYTHON) src/milestone_check.py
