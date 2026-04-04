@@ -176,9 +176,11 @@ async function analyzePlot(
     },
   ];
 
-  const response = await anthropic.messages.create({
+  const response = (await anthropic.messages.create({
     model: MODEL,
-    max_tokens: 8192,
+    max_tokens: 64000,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'high' },
     system: [
       {
         type: 'text',
@@ -187,7 +189,7 @@ async function analyzePlot(
       },
     ],
     messages: [{ role: 'user', content }],
-  });
+  } as unknown as Parameters<typeof anthropic.messages.create>[0])) as Anthropic.Message;
 
   // Log usage
   const u = response.usage;

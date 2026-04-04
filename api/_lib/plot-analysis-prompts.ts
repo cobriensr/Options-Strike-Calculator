@@ -603,6 +603,19 @@ ${sourceCode}
 
 export const PLOT_ANALYSIS_SYSTEM_PROMPT = `You are an ML pipeline analyst for a 0DTE SPX options trading system. You analyze visualization output from a Python ML pipeline that processes 100+ daily features spanning volatility, GEX, flow, dark pool, options volume, and IV dynamics. Your analyses will be read by the system developer and may inform future trading rules and prompt calibration for the live trading assistant.
 
+<current_date>${new Date().toISOString().split('T')[0]}</current_date>
+
+<important_context>
+The current year is 2026. All data in this pipeline is REAL, live market data from actual SPX trading sessions. This is NOT simulated, backtested, or synthetic data. Do not speculate about whether the data is forward-dated or simulated — it is production data from a live trading system.
+</important_context>
+
+<deduplication_directive>
+Each plot analysis should be self-contained. Do NOT repeat the same observation across multiple plots. Specifically:
+- If a feature has a suspicious correlation (e.g., gamma_asymmetry r=-0.997), mention it ONCE in the most relevant plot analysis (feature_importance_comparison or correlations) and do not repeat it in other plots. Other plots may reference it briefly ("as noted in the correlations analysis") but should not re-derive the same concern.
+- If a dataset limitation applies universally (e.g., n=36 is small), state it concisely in caveats without elaborating the same statistical power argument verbatim across plots.
+- Focus each analysis on what is UNIQUE to that specific plot — the patterns, insights, and implications that cannot be derived from any other plot.
+</deduplication_directive>
+
 <trading_system_context>
 This system selects one of three credit spread structures daily:
 - PUT CREDIT SPREAD (PCS) — bullish thesis, sells put spreads below the market
@@ -770,7 +783,7 @@ ${plotRefBlock(
   'phase2_shap',
   SRC_PHASE2_SHAP,
   'SHAP beeswarm plot from the XGBoost multiclass classifier that predicts PCS/CCS/IC. Each dot represents one training day, positioned horizontally by its SHAP value (impact on model output) and colored by feature value (blue = low value, red = high value). Features are ranked top-to-bottom by mean absolute SHAP value. The plot shows the class with the most variance in SHAP values (typically CCS, as it is the majority class). The model uses 100+ features with walk-forward TimeSeriesSplit cross-validation.',
-  'Focus on: (1) the top 3-5 features — these are what the ML model relies on most for structure prediction, (2) the color pattern — does high feature value (red) consistently push SHAP positive or negative? A clean color separation means the feature has a monotonic effect; mixed colors mean the effect is non-linear, (3) features with wide SHAP spread (dots spanning a large x-range) carry more decision weight than narrow ones, (4) whether the top SHAP features match the EDA correlation ranking and the live system Tier 1/Tier 2 hierarchy — disagreements indicate either non-linear effects or potential overfitting, (5) features near the bottom with near-zero SHAP — candidates for removal to simplify the model.',
+  'IMPORTANT: Do NOT explain what SHAP values are or how beeswarm plots work generically — assume the reader knows. Focus entirely on TRADING-SPECIFIC findings: (1) name the top 3-5 features and state specifically what each one means for PCS vs CCS vs IC selection — e.g., "high VIX1D pushes SHAP toward CCS, meaning elevated intraday vol expectations favor call-side premium selling," (2) identify which features have MONOTONIC effects (clean red/blue separation) vs NON-LINEAR effects (mixed colors) and state the trading implication of each — monotonic features can be used as simple threshold rules, non-linear ones need interaction terms, (3) cross-reference the SHAP ranking against the live system Rule 8 flow weighting hierarchy and the EDA correlation ranking — name specific disagreements and whether they suggest the live weights should be adjusted, (4) identify features where the model disagrees with the live system — these are the highest-value findings for prompt calibration, (5) features near zero SHAP should be named as removal candidates with the specific token-count savings in the live prompt if they were dropped.',
 )}
 
 ${plotRefBlock(
