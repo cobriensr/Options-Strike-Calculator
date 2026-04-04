@@ -6,6 +6,7 @@ used across clustering.py, eda.py, and visualize.py.
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,9 +83,9 @@ VOL_SURFACE_FEATURES: list[str] = [
 # ── Environment & DB ────────────────────────────────────────
 
 def load_env() -> dict[str, str]:
-    """Load environment variables from the project root .env file."""
+    """Load environment variables from .env file, falling back to os.environ."""
+    env: dict[str, str] = dict(os.environ)
     env_path = ML_ROOT.parent / ".env"
-    env: dict[str, str] = {}
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             line = line.strip()
