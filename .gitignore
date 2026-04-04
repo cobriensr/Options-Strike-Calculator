@@ -46,6 +46,9 @@ __snapshots__/
 # Sonar
 .scannerwork/
 
+# Playwright
+.playwright-mcp/
+
 # Serena
 .serena/
 
