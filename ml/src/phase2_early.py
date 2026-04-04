@@ -308,6 +308,24 @@ def compute_metrics(
     }
 
 
+# ── Preprocessing Helpers ────────────────────────────────────
+
+def _build_column_transformer(
+    num_step,
+    numeric_cols: list[str],
+    categorical_cols: list[str],
+) -> ColumnTransformer:
+    """Build a ColumnTransformer with the given numeric step + optional OHE."""
+    transformers = [('num', num_step, numeric_cols)]
+    if categorical_cols:
+        transformers.append(
+            ('cat', OneHotEncoder(
+                handle_unknown='ignore', sparse_output=False,
+            ), categorical_cols),
+        )
+    return ColumnTransformer(transformers, remainder='drop')
+
+
 # ── Model Configs ────────────────────────────────────────────
 
 def build_model_configs(
@@ -323,80 +341,46 @@ def build_model_configs(
     and categorical (one-hot encode) features in a single pipeline.
     XGBoost handles NaN natively but needs one-hot encoding for categoricals.
     """
-    def _sklearn_preprocessor():
-        """ColumnTransformer for mixed numeric + categorical features."""
-        transformers = [
-            ('num', make_pipeline(
-                SimpleImputer(strategy='median'),
-                StandardScaler(),
-            ), numeric_cols),
-        ]
-        if categorical_cols:
-            transformers.append(
-                ('cat', OneHotEncoder(
-                    handle_unknown='ignore', sparse_output=False,
-                ), categorical_cols),
-            )
-        return ColumnTransformer(transformers, remainder='drop')
-
-    def _impute_only_preprocessor():
-        """ColumnTransformer with imputation only (no scaling)."""
-        transformers = [
-            ('num', SimpleImputer(strategy='median'), numeric_cols),
-        ]
-        if categorical_cols:
-            transformers.append(
-                ('cat', OneHotEncoder(
-                    handle_unknown='ignore', sparse_output=False,
-                ), categorical_cols),
-            )
-        return ColumnTransformer(transformers, remainder='drop')
-
-    def _xgb_preprocessor():
-        """ColumnTransformer for XGBoost (one-hot encode categoricals only)."""
-        transformers = [
-            ('num', 'passthrough', numeric_cols),
-        ]
-        if categorical_cols:
-            transformers.append(
-                ('cat', OneHotEncoder(
-                    handle_unknown='ignore', sparse_output=False,
-                ), categorical_cols),
-            )
-        return ColumnTransformer(transformers, remainder='drop')
+    def _ct(num_step):
+        return _build_column_transformer(num_step, numeric_cols, categorical_cols)
 
     return {
         "Logistic Reg (L2)": lambda: make_pipeline(
-            _sklearn_preprocessor(),
+            _ct(make_pipeline(SimpleImputer(strategy='median'), StandardScaler(), memory=None)),
             LogisticRegression(
                 C=1.0, solver="lbfgs",
                 max_iter=1000, random_state=42,
                 class_weight="balanced",
             ),
+            memory=None,
         ),
         "Random Forest (15)": lambda: make_pipeline(
-            _impute_only_preprocessor(),
+            _ct(SimpleImputer(strategy='median')),
             RandomForestClassifier(
                 n_estimators=15, max_depth=3, random_state=42,
                 class_weight="balanced",
             ),
+            memory=None,
         ),
         "Naive Bayes": lambda: make_pipeline(
-            _impute_only_preprocessor(),
+            _ct(SimpleImputer(strategy='median')),
             GaussianNB(),
+            memory=None,
         ),
         "Decision Tree (d=2)": lambda: make_pipeline(
-            _impute_only_preprocessor(),
+            _ct(SimpleImputer(strategy='median')),
             DecisionTreeClassifier(
                 max_depth=2, random_state=42,
                 class_weight="balanced",
             ),
+            memory=None,
         ),
         "XGBoost": lambda: make_pipeline(
-            _xgb_preprocessor(),
+            _ct('passthrough'),
             XGBClassifier(
                 num_class=n_classes, **xgb_params,
             ),
+            memory=None,
         ),
     }
 
@@ -467,24 +451,19 @@ def train_final_model(
     n_classes = y.nunique()
 
     if numeric_cols is not None:
-        # Build pipeline with preprocessing
-        transformers = [('num', 'passthrough', numeric_cols)]
-        if categorical_cols:
-            transformers.append(
-                ('cat', OneHotEncoder(
-                    handle_unknown='ignore', sparse_output=False,
-                ), categorical_cols),
-            )
-        ct = ColumnTransformer(transformers, remainder='drop')
+        ct = _build_column_transformer(
+            'passthrough', numeric_cols, categorical_cols or [],
+        )
         pipe = make_pipeline(
             ct,
             XGBClassifier(num_class=n_classes, **params),
+            memory=None,
         )
         pipe.fit(X, y)
 
         try:
             feat_names = ct.get_feature_names_out()
-        except Exception:
+        except (AttributeError, ValueError):
             feat_names = [
                 f"f{j}" for j in range(len(pipe[-1].feature_importances_))
             ]
@@ -519,23 +498,14 @@ def aggregate_fold_importances(
     n_classes = y.nunique()
     all_importances = []
 
-    def _xgb_preprocessor():
-        transformers = [('num', 'passthrough', numeric_cols)]
-        if categorical_cols:
-            transformers.append(
-                ('cat', OneHotEncoder(
-                    handle_unknown='ignore', sparse_output=False,
-                ), categorical_cols),
-            )
-        return ColumnTransformer(transformers, remainder='drop')
-
     for i in range(min_train, n):
         X_train = X.iloc[:i]
         y_train = y.iloc[:i]
 
         pipe = make_pipeline(
-            _xgb_preprocessor(),
+            _build_column_transformer('passthrough', numeric_cols, categorical_cols),
             XGBClassifier(num_class=n_classes, **params),
+            memory=None,
         )
         pipe.fit(X_train, y_train)
 
@@ -543,7 +513,7 @@ def aggregate_fold_importances(
         ct = pipe[0]
         try:
             feat_names = list(ct.get_feature_names_out())
-        except Exception:
+        except (AttributeError, ValueError):
             feat_names = [
                 f"f{j}"
                 for j in range(len(pipe[-1].feature_importances_))

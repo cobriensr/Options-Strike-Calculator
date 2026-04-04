@@ -121,7 +121,8 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("FOO=bar\n\n   \n\nBAZ=qux\n")
 
-        with patch("utils.ML_ROOT", tmp_path / "ml"):
+        with patch("utils.ML_ROOT", tmp_path / "ml"), \
+             patch.dict("os.environ", {}, clear=True):
             result = load_env()
 
         assert len(result) == 2
@@ -158,22 +159,24 @@ class TestLoadEnv:
 
         assert result["DATABASE_URL"] == "postgres://user:pass@host/db?sslmode=require"
 
-    def test_missing_env_file_returns_empty_dict(self, tmp_path):
-        """Should return empty dict when .env file does not exist."""
+    def test_missing_env_file_returns_os_environ(self, tmp_path):
+        """Should return os.environ when .env file does not exist."""
         missing_file = tmp_path / ".env"
         assert not missing_file.exists()
 
-        with patch("utils.ML_ROOT", tmp_path / "ml"):
+        with patch("utils.ML_ROOT", tmp_path / "ml"), \
+             patch.dict("os.environ", {"FROM_ENV": "yes"}, clear=True):
             result = load_env()
 
-        assert result == {}
+        assert result == {"FROM_ENV": "yes"}
 
-    def test_empty_env_file_returns_empty_dict(self, tmp_path):
-        """Should return empty dict when .env file is empty."""
+    def test_empty_env_file_returns_os_environ(self, tmp_path):
+        """Should return os.environ when .env file is empty."""
         env_file = tmp_path / ".env"
         env_file.write_text("")
 
-        with patch("utils.ML_ROOT", tmp_path / "ml"):
+        with patch("utils.ML_ROOT", tmp_path / "ml"), \
+             patch.dict("os.environ", {}, clear=True):
             result = load_env()
 
         assert result == {}
@@ -213,7 +216,8 @@ class TestLoadEnv:
             "  SPACED_KEY = spaced_value \n"
         )
 
-        with patch("utils.ML_ROOT", tmp_path / "ml"):
+        with patch("utils.ML_ROOT", tmp_path / "ml"), \
+             patch.dict("os.environ", {}, clear=True):
             result = load_env()
 
         assert len(result) == 4
