@@ -13,7 +13,7 @@ export default function Collapsible({
   color,
   defaultOpen,
   children,
-}: Props) {
+}: Readonly<Props>) {
   const [open, setOpen] = useState(defaultOpen ?? false);
   return (
     <div className="border-edge overflow-hidden rounded-lg border">

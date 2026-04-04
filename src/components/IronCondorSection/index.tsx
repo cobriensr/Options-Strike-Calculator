@@ -19,7 +19,7 @@ export default function IronCondorSection({
   contracts,
   effectiveRatio,
   skewPct,
-}: Props) {
+}: Readonly<Props>) {
   const [hedgeDeltaIdx, setHedgeDeltaIdx] = useState(0);
 
   const icRows = results.allDeltas

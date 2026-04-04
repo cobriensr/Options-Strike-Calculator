@@ -10,7 +10,7 @@ export default function BulletList({
   icon,
   color,
   defaultColor,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <div className="grid gap-1">
       {items.map((item) => (

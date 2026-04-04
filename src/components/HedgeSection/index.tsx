@@ -29,7 +29,7 @@ export default function HedgeSection({
   icRows,
   hedgeDeltaIdx,
   onHedgeDeltaChange,
-}: Props) {
+}: Readonly<Props>) {
   const [hedgeDelta, setHedgeDelta] = useState<HedgeDelta>(2);
   const [hedgeDte, setHedgeDte] = useState<number>(DEFAULTS.HEDGE_DTE);
   const [showScenarios, setShowScenarios] = useState(false);

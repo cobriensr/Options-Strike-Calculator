@@ -32,6 +32,7 @@ export async function saveAnalysis(
     [key: string]: unknown;
   },
   snapshotId?: number | null,
+  promptHash?: string,
 ) {
   const sql = getDb();
 
@@ -42,7 +43,8 @@ export async function saveAnalysis(
   await sql`
     INSERT INTO analyses (
       snapshot_id, date, entry_time, mode, structure, confidence,
-      suggested_delta, spx, vix, vix1d, hedge, full_response
+      suggested_delta, spx, vix, vix1d, hedge, full_response,
+      prompt_hash
     ) VALUES (
       ${snapshotId ?? null},
       ${date}, ${entryTime}, ${mode},
@@ -50,7 +52,8 @@ export async function saveAnalysis(
       ${analysis.suggestedDelta ?? 0},
       ${context.spx ?? null}, ${context.vix ?? null}, ${context.vix1d ?? null},
       ${analysis.hedge?.recommendation ?? null},
-      ${JSON.stringify(analysis)}
+      ${JSON.stringify(analysis)},
+      ${promptHash ?? null}
     )
   `;
 }
@@ -175,7 +178,9 @@ export async function getPreviousRecommendation(
 
   // Include structure rationale for full context
   if (fullResponse.structureRationale) {
-    lines.push(`Structure rationale: ${String(fullResponse.structureRationale)}`);
+    lines.push(
+      `Structure rationale: ${String(fullResponse.structureRationale)}`,
+    );
   }
 
   // Include key management rules
@@ -183,7 +188,8 @@ export async function getPreviousRecommendation(
     | Record<string, unknown>
     | undefined;
   if (mgmt) {
-    if (mgmt.profitTarget) lines.push(`Profit target: ${String(mgmt.profitTarget)}`);
+    if (mgmt.profitTarget)
+      lines.push(`Profit target: ${String(mgmt.profitTarget)}`);
     if (Array.isArray(mgmt.stopConditions)) {
       lines.push('Stop conditions:');
       for (const stop of mgmt.stopConditions) {
@@ -200,7 +206,8 @@ export async function getPreviousRecommendation(
     lines.push(
       'Entry plan (RECOMMENDED strikes — actual fills are in "Current Open Positions"):',
     );
-    if (plan.maxTotalSize) lines.push(`Max total size: ${String(plan.maxTotalSize)}`);
+    if (plan.maxTotalSize)
+      lines.push(`Max total size: ${String(plan.maxTotalSize)}`);
     const e1 = plan.entry1 as Record<string, unknown> | undefined;
     const e2 = plan.entry2 as Record<string, unknown> | undefined;
     const e3 = plan.entry3 as Record<string, unknown> | undefined;

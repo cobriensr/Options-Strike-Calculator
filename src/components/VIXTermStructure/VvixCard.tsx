@@ -6,7 +6,7 @@ interface Props {
   result: VvixResult;
 }
 
-export default function VvixCard({ result }: Props) {
+export default function VvixCard({ result }: Readonly<Props>) {
   const { value, label, color, advice } = result;
 
   // Bar scale: 60–140 range

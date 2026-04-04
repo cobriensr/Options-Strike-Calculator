@@ -7,7 +7,7 @@ export default function StrikeMap({
   hedges,
   nakedPositions,
   spotPrice: rawSpotPrice,
-}: Omit<PositionVisualsProps, 'trades' | 'portfolioRisk'>) {
+}: Readonly<Omit<PositionVisualsProps, 'trades' | 'portfolioRisk'>>) {
   // Infer spot from position structure when calculator spot is stale
   // (e.g. viewing a past day's CSV while calculator shows today's price)
   const shortPuts: number[] = [];

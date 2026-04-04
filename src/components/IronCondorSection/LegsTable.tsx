@@ -6,7 +6,7 @@ interface Props {
   icRows: IronCondorLegs[];
 }
 
-export default function LegsTable({ icRows }: Props) {
+export default function LegsTable({ icRows }: Readonly<Props>) {
   return (
     <ScrollHint>
       <section

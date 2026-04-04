@@ -31,7 +31,7 @@ export default function BacktestDiag({
   timeMinute,
   timeAmPm,
   timezone,
-}: Props) {
+}: Readonly<Props>) {
   const [collapsed, setCollapsed] = useState(false);
 
   if (!snapshot) return null;

@@ -29,7 +29,7 @@ export default function ResultsSection({
   showBWB,
   bwbNarrowWidth,
   bwbWideMultiplier,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <div id="results" tabIndex={-1} className="mt-6">
       {results ? (

@@ -8,7 +8,7 @@ interface Props {
   spot: number | null;
 }
 
-export default function FineGrainedBars({ vix, spot }: Props) {
+export default function FineGrainedBars({ vix, spot }: Readonly<Props>) {
   const activeVix = vix == null ? -1 : Math.floor(vix);
   const maxP90 = Math.max(...FINE_VIX_STATS.map((s) => s.p90HL));
 

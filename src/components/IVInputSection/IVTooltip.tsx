@@ -4,7 +4,7 @@ interface Props {
   open: boolean;
 }
 
-export default function IVTooltip({ open }: Props) {
+export default function IVTooltip({ open }: Readonly<Props>) {
   if (!open) return null;
 
   return (

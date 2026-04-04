@@ -14,7 +14,7 @@ export default function ParameterSummary({
   sigma,
   T,
   hoursLeft,
-}: Props) {
+}: Readonly<Props>) {
   const items = [
     { label: 'SPY Spot', value: spySpot },
     { label: spxLabel, value: spxValue },

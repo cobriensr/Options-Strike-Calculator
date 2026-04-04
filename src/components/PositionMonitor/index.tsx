@@ -30,7 +30,7 @@ function timeToT(hour: number, minute: number): number | null {
 
 // ── Component ───────────────────────────────────────────
 
-export default function PositionMonitor({ spotPrice }: PositionMonitorProps) {
+export default function PositionMonitor({ spotPrice }: Readonly<PositionMonitorProps>) {
   const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
   // Snapshot spot price at upload time to avoid re-renders from
   // parent prop changes (calculator spot fluctuates on past dates)

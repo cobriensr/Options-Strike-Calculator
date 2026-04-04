@@ -12,7 +12,7 @@ export default function VixUploadSection({
   vixDataSource,
   fileInputRef,
   onFileUpload,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <SectionBox
       label="Historical VIX Data"

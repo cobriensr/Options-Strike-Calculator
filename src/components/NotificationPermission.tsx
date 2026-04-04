@@ -28,7 +28,7 @@ interface NotificationPermissionProps {
 export default function NotificationPermission({
   permission,
   onRequest,
-}: NotificationPermissionProps) {
+}: Readonly<NotificationPermissionProps>) {
   const [dismissed, setDismissed] = useState(isDismissed);
 
   if (permission !== 'default' || dismissed) return null;

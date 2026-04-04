@@ -28,7 +28,7 @@ export default function SpotPriceSection({
   spxDirectActive,
   derivedRatio,
   errors,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <SectionBox label="Spot Price">
       <div className="grid grid-cols-2 gap-2.5">

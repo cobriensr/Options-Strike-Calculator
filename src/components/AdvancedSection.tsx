@@ -53,7 +53,7 @@ export default function AdvancedSection({
   onOHLCFieldChange,
   vixDataLoaded,
   selectedDate,
-}: Props) {
+}: Readonly<Props>) {
   const todayDate = new Date().toLocaleDateString('en-CA', {
     timeZone: 'America/New_York',
   });

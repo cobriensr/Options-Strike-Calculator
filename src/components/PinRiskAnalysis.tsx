@@ -8,7 +8,7 @@ interface Props {
   spot: number;
 }
 
-export default function PinRiskAnalysis({ chain, spot }: Props) {
+export default function PinRiskAnalysis({ chain, spot }: Readonly<Props>) {
   const topStrikes = getTopOIStrikes(chain.puts, chain.calls, spot);
 
   if (topStrikes.length === 0) {

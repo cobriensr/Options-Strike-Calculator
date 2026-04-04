@@ -73,7 +73,7 @@ function formatTime(iso: string): string {
 export default function AlertBanner({
   alerts,
   onAcknowledge,
-}: AlertBannerProps) {
+}: Readonly<AlertBannerProps>) {
   const active = alerts.filter((a) => !a.acknowledged);
   if (active.length === 0) return null;
 

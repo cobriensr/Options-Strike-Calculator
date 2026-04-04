@@ -28,7 +28,7 @@ export default function EntryTimeSection({
   timezone,
   onTimezoneChange,
   errors,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <SectionBox label="Entry Time">
       <div className="grid grid-cols-2 items-end gap-2.5">

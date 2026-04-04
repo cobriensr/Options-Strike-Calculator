@@ -34,7 +34,7 @@ function fmtTime(time: string | null): string {
 
 // ── Main Component ──────────────────────────────────────
 
-export default function ExecutionQuality({ execution }: ExecutionQualityProps) {
+export default function ExecutionQuality({ execution }: Readonly<ExecutionQualityProps>) {
   const {
     fills,
     fillRate,

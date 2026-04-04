@@ -101,7 +101,7 @@ export default function PositionTable({
   hedges,
   nakedPositions,
   spotPrice,
-}: PositionTableProps) {
+}: Readonly<PositionTableProps>) {
   const sorted = sortedSpreads(spreads, spotPrice);
   const hasPositions =
     ironCondors.length > 0 ||

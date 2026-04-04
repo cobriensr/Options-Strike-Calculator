@@ -7,7 +7,7 @@ interface Props {
   callRows: BWBLegs[];
 }
 
-export default function BWBLegsTable({ putRows, callRows }: Props) {
+export default function BWBLegsTable({ putRows, callRows }: Readonly<Props>) {
   return (
     <ScrollHint>
       <section

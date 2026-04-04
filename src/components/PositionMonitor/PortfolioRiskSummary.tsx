@@ -93,7 +93,7 @@ export default function PortfolioRiskSummary({
   hedges,
   stopMultiplier,
   onStopMultiplierChange,
-}: PortfolioRiskSummaryProps) {
+}: Readonly<PortfolioRiskSummaryProps>) {
   const nlv = accountSummary.netLiquidatingValue;
 
   const effectiveMaxLoss =

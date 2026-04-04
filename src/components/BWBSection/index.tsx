@@ -17,7 +17,7 @@ export default function BWBSection({
   wideMultiplier,
   contracts,
   effectiveRatio,
-}: Props) {
+}: Readonly<Props>) {
   const wideWidth = narrowWidth * wideMultiplier;
 
   const validRows = results.allDeltas.filter(

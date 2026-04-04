@@ -19,7 +19,7 @@ const SEVERITY_ICONS: Record<DataQualityWarning['severity'], string> = {
 
 export default function DataQualityAlerts({
   warnings,
-}: DataQualityAlertsProps) {
+}: Readonly<DataQualityAlertsProps>) {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
   if (warnings.length === 0) return null;

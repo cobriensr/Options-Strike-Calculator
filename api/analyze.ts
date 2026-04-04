@@ -13,6 +13,7 @@
  * Environment: ANTHROPIC_API_KEY
  */
 
+import { createHash } from 'node:crypto';
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
@@ -96,6 +97,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const calibration = getCalibrationExample(mode);
   const stableSystemText =
     SYSTEM_PROMPT_PART1 + '\n' + calibration + '\n' + SYSTEM_PROMPT_PART2;
+  const promptHash = createHash('sha256')
+    .update(stableSystemText)
+    .digest('hex')
+    .slice(0, 12);
   const analyzeStart = Date.now();
 
   // Send keepalive pings every 30s to prevent proxy/browser idle disconnects.
@@ -284,6 +289,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             context,
             analysis as Parameters<typeof saveAnalysis>[1],
             snapshotId,
+            promptHash,
           );
           metrics.dbSave('analyses', true);
           saved = true;
@@ -298,10 +304,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 clusters: darkPoolClusters,
               });
             } catch (error_) {
-              logger.error(
-                { err: error_ },
-                'dark pool snapshot save failed',
-              );
+              logger.error({ err: error_ }, 'dark pool snapshot save failed');
             }
           }
           break;

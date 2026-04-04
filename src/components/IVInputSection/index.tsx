@@ -46,7 +46,7 @@ export default function IVInputSection({
   onUseVix1dAsSigma,
   termShape,
   termShapeAdvice,
-}: Props) {
+}: Readonly<Props>) {
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const tooltipRef = useRef<HTMLDivElement>(null);
 

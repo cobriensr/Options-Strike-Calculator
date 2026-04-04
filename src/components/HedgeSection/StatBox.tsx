@@ -5,7 +5,7 @@ interface Props {
   large?: boolean;
 }
 
-export default function StatBox({ label, value, accent, large }: Props) {
+export default function StatBox({ label, value, accent, large }: Readonly<Props>) {
   return (
     <div>
       <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">

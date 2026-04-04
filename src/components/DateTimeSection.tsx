@@ -73,7 +73,7 @@ export default function DateTimeSection({
   timezone,
   onTimezoneChange,
   errors,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <SectionBox label="Date & Time">
       {/* Date picker */}

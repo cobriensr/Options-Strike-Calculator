@@ -35,7 +35,7 @@ export default function PreMarketInput({
   prevClose,
   onSave,
   apiBase = '',
-}: PreMarketInputProps) {
+}: Readonly<PreMarketInputProps>) {
   const [globexHigh, setGlobexHigh] = useState('');
   const [globexLow, setGlobexLow] = useState('');
   const [globexClose, setGlobexClose] = useState('');

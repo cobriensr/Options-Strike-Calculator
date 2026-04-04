@@ -7,7 +7,7 @@ import ProfitGauges from './ProfitGauges';
 
 export type { PositionVisualsProps } from './helpers';
 
-export default function PositionVisuals(props: PositionVisualsProps) {
+export default function PositionVisuals(props: Readonly<PositionVisualsProps>) {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const panels = [

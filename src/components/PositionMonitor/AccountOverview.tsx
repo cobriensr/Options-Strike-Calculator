@@ -44,7 +44,7 @@ export default function AccountOverview({
   accountSummary,
   pnl,
   closedSpreads,
-}: AccountOverviewProps) {
+}: Readonly<AccountOverviewProps>) {
   // Derive top-row values
   const balEntries = cashEntries.filter((e) => e.type === 'BAL');
   const trdEntries = cashEntries.filter((e) => e.type === 'TRD');

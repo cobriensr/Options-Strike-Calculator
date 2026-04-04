@@ -17,7 +17,7 @@ export default function RatioCard({
   label,
   color,
   advice,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <div className="bg-surface border-edge rounded-[10px] border p-3 sm:p-3.5">
       <div className="mb-2 flex items-start justify-between">

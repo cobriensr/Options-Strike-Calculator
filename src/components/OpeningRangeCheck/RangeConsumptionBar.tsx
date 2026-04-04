@@ -11,7 +11,7 @@ export default function RangeConsumptionBar({
   pctOfMedianUsed,
   pctOfP90Used,
   signalColor,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <div className="bg-surface border-edge rounded-[10px] border px-4 py-3.5">
       <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.06em] uppercase">

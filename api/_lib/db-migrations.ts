@@ -933,4 +933,15 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 36,
+    description:
+      'Add prompt_hash column to analyses for prompt version tracking',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE analyses
+          ADD COLUMN IF NOT EXISTS prompt_hash VARCHAR(12)
+      `,
+    ],
+  },
 ];

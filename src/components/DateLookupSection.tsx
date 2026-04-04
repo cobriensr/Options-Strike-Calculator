@@ -20,7 +20,7 @@ export default function DateLookupSection({
   vixOHLCField,
   onOHLCFieldChange,
   liveEvents,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <SectionBox label="Date Lookup">
       <label htmlFor="lookup-date-picker" className="sr-only">

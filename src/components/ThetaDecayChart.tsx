@@ -104,7 +104,7 @@ export default function ThetaDecayChart({
   sigma,
   strikeDistance,
   hoursRemaining,
-}: ThetaDecayChartProps) {
+}: Readonly<ThetaDecayChartProps>) {
   const gradientId = useId();
   const curve = calcThetaCurve(spot, sigma, strikeDistance, 'put');
   if (curve.length === 0) return null;

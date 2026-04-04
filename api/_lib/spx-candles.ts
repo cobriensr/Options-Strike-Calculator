@@ -71,7 +71,6 @@ export async function fetchSPXCandles(
   candles: SPXCandle[];
   previousClose: number | null;
 }> {
-
   try {
     const params = new URLSearchParams();
     if (date) params.set('date', date);

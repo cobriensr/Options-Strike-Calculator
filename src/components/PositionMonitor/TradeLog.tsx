@@ -135,7 +135,7 @@ export default function TradeLog({
   trades,
   cashEntries,
   closedSpreads,
-}: TradeLogProps) {
+}: Readonly<TradeLogProps>) {
   const [filter, setFilter] = useState<Filter>('all');
   const [expandedIdx, setExpandedIdx] = useState<Set<number>>(new Set());
 

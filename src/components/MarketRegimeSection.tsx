@@ -44,7 +44,7 @@ export default function MarketRegimeSection({
   entryTimeLabel,
   signals,
   chain,
-}: Props) {
+}: Readonly<Props>) {
   const [showRegime, setShowRegime] = useState(true);
   const vixNum = dVix ? Number.parseFloat(dVix) : null;
 

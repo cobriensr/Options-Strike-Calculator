@@ -13,7 +13,7 @@ export default function PnLProfileTable({
   icRows,
   contracts,
   effectiveRatio,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <>
       <div className="text-accent mt-4 mb-2.5 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">

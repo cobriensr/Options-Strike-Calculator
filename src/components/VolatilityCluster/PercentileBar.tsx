@@ -17,7 +17,7 @@ export default function PercentileBar({
   thresholds,
   yestRangePct,
   signalColor,
-}: Props) {
+}: Readonly<Props>) {
   const maxRange = thresholds.p90 * 1.5;
   const pos = Math.min(yestRangePct / maxRange, 1) * 100;
 

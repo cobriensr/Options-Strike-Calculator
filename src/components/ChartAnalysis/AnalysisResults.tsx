@@ -22,7 +22,7 @@ export default function AnalysisResults({
   mode,
   onReplaceImage,
   defaultCollapsed = false,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <div className="grid gap-2.5">
       {/* TL;DR SUMMARY CARD (always visible) */}

@@ -8,7 +8,7 @@ interface Props {
   direction: 'crash' | 'rally';
 }
 
-export default function ScenarioTable({ scenarios, spot, direction }: Props) {
+export default function ScenarioTable({ scenarios, spot, direction }: Readonly<Props>) {
   return (
     <section
       className="border-edge overflow-x-auto rounded-[10px] border"
