@@ -253,7 +253,7 @@ function IronCondorRow({
               aria-hidden="true"
             >
               {'\u25B6'}
-            </span>
+            </span>{' '}
             IC
           </span>
         </td>

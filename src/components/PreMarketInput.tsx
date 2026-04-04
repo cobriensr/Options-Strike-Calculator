@@ -200,7 +200,7 @@ export default function PreMarketInput({
       {/* ES Overnight Section */}
       <div className="mb-4">
         <div className="text-tertiary mb-2 flex items-baseline gap-1.5 font-sans text-[11px] font-bold tracking-[0.08em] uppercase">
-          ES Futures Overnight
+          ES Futures Overnight{' '}
           <span className="text-muted text-[10px] font-normal tracking-normal normal-case">
             Globex 5 PM – 8:30 AM CT
           </span>
@@ -208,7 +208,7 @@ export default function PreMarketInput({
         <div className="grid grid-cols-2 gap-2.5">
           <div>
             <label htmlFor="pm-globex-high" className={tinyLbl}>
-              Globex High
+              Globex High{' '}
               <span className="text-danger ml-0.5">*</span>
             </label>
             <input
@@ -223,7 +223,7 @@ export default function PreMarketInput({
           </div>
           <div>
             <label htmlFor="pm-globex-low" className={tinyLbl}>
-              Globex Low
+              Globex Low{' '}
               <span className="text-danger ml-0.5">*</span>
             </label>
             <input
@@ -238,7 +238,7 @@ export default function PreMarketInput({
           </div>
           <div>
             <label htmlFor="pm-globex-close" className={tinyLbl}>
-              Globex Close
+              Globex Close{' '}
               <span className="text-danger ml-0.5">*</span>
             </label>
             <input
@@ -256,7 +256,7 @@ export default function PreMarketInput({
           </div>
           <div>
             <label htmlFor="pm-globex-vwap" className={tinyLbl}>
-              Globex VWAP
+              Globex VWAP{' '}
               <span className="text-muted ml-1 font-normal tracking-normal normal-case">
                 optional
               </span>
@@ -317,7 +317,7 @@ export default function PreMarketInput({
       {/* Straddle Cone Section */}
       <div className="border-edge border-t pt-3.5">
         <div className="text-tertiary mb-2 flex items-baseline gap-1.5 font-sans text-[11px] font-bold tracking-[0.08em] uppercase">
-          Straddle Cone
+          Straddle Cone{' '}
           <span className="text-muted text-[10px] font-normal tracking-normal normal-case">
             from Periscope
           </span>

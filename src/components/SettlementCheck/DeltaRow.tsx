@@ -106,7 +106,7 @@ export default memo(function DeltaRow({
               className="font-sans text-[11px]"
               style={{ color: theme.caution }}
             >
-              Breached intraday, settled safe
+              Breached intraday, settled safe{' '}
               <span
                 className="font-sans text-[10px] font-bold"
                 style={{ color: theme.green }}

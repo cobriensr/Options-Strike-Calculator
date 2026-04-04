@@ -210,26 +210,26 @@ export default function PortfolioRiskSummary({
       {/* 5 — Risk Boundaries */}
       <Card label="Risk Boundaries" sub="Lowest put / Highest call">
         <div className="flex items-baseline gap-2">
-          {lowestPut !== null ? (
+          {lowestPut === null ? (
+            <span className="text-muted font-mono text-base">{'\u2014'}</span>
+          ) : (
             <span className="font-mono text-base font-bold text-red-400">
               {lowestPut}
               <span className="text-muted ml-0.5 text-[10px] font-normal">
-                ({putDist !== null ? formatPct(putDist) : '\u2014'})
+                ({putDist === null ? '\u2014' : formatPct(putDist)})
               </span>
             </span>
-          ) : (
-            <span className="text-muted font-mono text-base">{'\u2014'}</span>
           )}
           <span className="text-muted text-xs">/</span>
-          {highestCall !== null ? (
+          {highestCall === null ? (
+            <span className="text-muted font-mono text-base">{'\u2014'}</span>
+          ) : (
             <span className="font-mono text-base font-bold text-green-400">
               {highestCall}
               <span className="text-muted ml-0.5 text-[10px] font-normal">
-                ({callDist !== null ? formatPct(callDist) : '\u2014'})
+                ({callDist === null ? '\u2014' : formatPct(callDist)})
               </span>
             </span>
-          ) : (
-            <span className="text-muted font-mono text-base">{'\u2014'}</span>
           )}
         </div>
       </Card>
@@ -238,15 +238,15 @@ export default function PortfolioRiskSummary({
       <Card label="Breakeven Range" sub="Net credit adjusted">
         <div className="flex items-baseline gap-2">
           <span className="font-mono text-base font-bold text-red-400">
-            {risk.breakevenLow !== null
-              ? risk.breakevenLow.toFixed(2)
-              : '\u2014'}
+            {risk.breakevenLow === null
+              ? '\u2014'
+              : risk.breakevenLow.toFixed(2)}
           </span>
           <span className="text-muted text-xs">to</span>
           <span className="font-mono text-base font-bold text-green-400">
-            {risk.breakevenHigh !== null
-              ? risk.breakevenHigh.toFixed(2)
-              : '\u2014'}
+            {risk.breakevenHigh === null
+              ? '\u2014'
+              : risk.breakevenHigh.toFixed(2)}
           </span>
         </div>
       </Card>

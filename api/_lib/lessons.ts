@@ -143,7 +143,7 @@ export async function getHistoricalWinRate(conditions: {
     wins,
     winRate: Math.round((wins / total) * 100),
     avgVix:
-      row.avg_vix != null ? Math.round(Number(row.avg_vix) * 10) / 10 : null,
+      row.avg_vix == null ? null : Math.round(Number(row.avg_vix) * 10) / 10,
     structures: (row.structures as string[]) ?? [],
   };
 }
@@ -206,10 +206,7 @@ export function formatLessonsBlock(lessons: Lesson[]): string {
 
   lessons.forEach((lesson, index) => {
     const context = buildContextString(lesson);
-    lines.push(
-      `[${index + 1}] ${context}`,
-      lesson.text,
-    );
+    lines.push(`[${index + 1}] ${context}`, lesson.text);
     if (lesson.tags.length > 0) {
       lines.push(`Tags: ${lesson.tags.join(', ')}`);
     }
@@ -265,22 +262,22 @@ export function buildMarketConditions(
   const review = (fullResponse.review as Record<string, unknown>) ?? {};
 
   return {
-    vix: snapshotRow?.vix != null ? Number(snapshotRow.vix) : null,
-    vix1d: snapshotRow?.vix1d != null ? Number(snapshotRow.vix1d) : null,
-    spx: analysisRow.spx != null ? Number(analysisRow.spx) : null,
+    vix: snapshotRow?.vix == null ? null : Number(snapshotRow.vix),
+    vix1d: snapshotRow?.vix1d == null ? null : Number(snapshotRow.vix1d),
+    spx: analysisRow.spx == null ? null : Number(analysisRow.spx),
     gexRegime:
-      snapshotRow?.regime_zone != null ? String(snapshotRow.regime_zone) : null,
+      snapshotRow?.regime_zone == null ? null : String(snapshotRow.regime_zone),
     structure:
-      analysisRow.structure != null ? String(analysisRow.structure) : null,
+      analysisRow.structure == null ? null : String(analysisRow.structure),
     dayOfWeek:
-      snapshotRow?.dow_label != null ? String(snapshotRow.dow_label) : null,
-    wasCorrect: review.wasCorrect != null ? Boolean(review.wasCorrect) : null,
+      snapshotRow?.dow_label == null ? null : String(snapshotRow.dow_label),
+    wasCorrect: review.wasCorrect == null ? null : Boolean(review.wasCorrect),
     confidence:
-      analysisRow.confidence != null ? String(analysisRow.confidence) : null,
+      analysisRow.confidence == null ? null : String(analysisRow.confidence),
     vixTermShape:
-      snapshotRow?.vix_term_signal != null
-        ? String(snapshotRow.vix_term_signal)
-        : null,
+      snapshotRow?.vix_term_signal == null
+        ? null
+        : String(snapshotRow.vix_term_signal),
   };
 }
 

@@ -119,7 +119,7 @@ export default function BacktestDiag({
           textAlign: 'left',
         }}
       >
-        Backtest Diagnostic
+        Backtest Diagnostic{' '}
         <span
           aria-hidden="true"
           style={{ fontSize: 10, color: 'var(--color-muted)' }}
