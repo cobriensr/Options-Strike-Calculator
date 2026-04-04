@@ -40,11 +40,7 @@ export const PLOT_REFERENCES: Record<string, PlotReference> = {
       'dual-panel colored by charm pattern and structure correctness',
   },
   timeline: {
-    findingsKeys: [
-      'eda',
-      'structure_accuracy',
-      'confidence_calibration',
-    ],
+    findingsKeys: ['eda', 'structure_accuracy', 'confidence_calibration'],
     description:
       '4-panel daily timeline: range bars with structure labels, ' +
       'VIX/VIX1D lines, GEX OI bars, and flow agreement bars ' +
@@ -71,11 +67,7 @@ export const PLOT_REFERENCES: Record<string, PlotReference> = {
       'assess feature stationarity over the dataset window',
   },
   failure_heatmap: {
-    findingsKeys: [
-      'eda',
-      'structure_accuracy',
-      'top_correctness_predictors',
-    ],
+    findingsKeys: ['eda', 'structure_accuracy', 'top_correctness_predictors'],
     description:
       '2D heatmap of structure accuracy by GEX OI regime (x) ' +
       'and VIX regime (y) with cell annotations showing accuracy ' +
@@ -107,10 +99,7 @@ export const PLOT_REFERENCES: Record<string, PlotReference> = {
       'with failure markers and 90% target reference line',
   },
   feature_importance_comparison: {
-    findingsKeys: [
-      'top_correctness_predictors',
-      'phase2',
-    ],
+    findingsKeys: ['top_correctness_predictors', 'phase2'],
     description:
       'Side-by-side: EDA point-biserial correlation ranking vs ' +
       'XGBoost gain ranking for top features, with cyan border ' +

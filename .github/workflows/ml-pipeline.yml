@@ -1,0 +1,124 @@
+name: ML Pipeline
+
+on:
+  schedule:
+    # 01:45 UTC Tue-Sat (covers Mon-Fri trading days)
+    # Runs after build-features cron completes at 01:00 UTC
+    - cron: '45 1 * * 2-6'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ml-pipeline
+  cancel-in-progress: true
+
+jobs:
+  pipeline:
+    name: Run ML Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: ml/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r ml/requirements.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Node dependencies
+        run: npm install @vercel/blob
+
+      - name: Run health check
+        id: health
+        continue-on-error: true
+        run: |
+          cd ml
+          python -m src.health 2>&1 | tee health_output.txt
+          exit_code=${PIPESTATUS[0]}
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ $exit_code -ne 0 ]; then
+            echo "::warning::Health check exited with code $exit_code — data may be stale"
+          fi
+
+      - name: Run full pipeline
+        run: cd ml && make all
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Upload plots to Vercel Blob
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: |
+          node --input-type=module -e "
+          import { put } from '@vercel/blob';
+          import { readdirSync, readFileSync } from 'fs';
+          import { join } from 'path';
+
+          const plotsDir = join(process.cwd(), 'ml', 'plots');
+          const files = readdirSync(plotsDir).filter(f => f.endsWith('.png'));
+
+          console.log('Found ' + files.length + ' plots to upload');
+
+          for (const file of files) {
+            const filePath = join(plotsDir, file);
+            const fileBuffer = readFileSync(filePath);
+            const blobPath = 'ml-plots/latest/' + file;
+
+            const blob = await put(blobPath, fileBuffer, {
+              access: 'public',
+              addRandomSuffix: false,
+            });
+
+            console.log('Uploaded: ' + file + ' -> ' + blob.url);
+          }
+
+          console.log('All plots uploaded successfully');
+          "
+
+      - name: Trigger Claude analysis
+        continue-on-error: true
+        env:
+          VERCEL_URL: ${{ secrets.VERCEL_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          response=$(curl -sf -X POST "$VERCEL_URL/api/ml/analyze-plots" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 600 \
+            -w "\n%{http_code}" 2>&1) || true
+
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Status: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::warning::Claude analysis returned HTTP $http_code — analysis may be incomplete"
+          fi
+
+      - name: Commit findings.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --quiet ml/findings.json || (
+            git add ml/findings.json &&
+            git commit -m "chore(ml): update pipeline findings [skip ci]" &&
+            git push
+          )

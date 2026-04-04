@@ -916,4 +916,21 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 35,
+    description:
+      'Create ml_plot_analyses table for Claude vision plot analysis',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS ml_plot_analyses (
+          plot_name      TEXT PRIMARY KEY,
+          blob_url       TEXT NOT NULL,
+          analysis       JSONB NOT NULL,
+          pipeline_date  DATE NOT NULL,
+          model          TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+          updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+    ],
+  },
 ];

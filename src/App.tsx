@@ -53,6 +53,7 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 const ChartAnalysis = lazy(() => import('./components/ChartAnalysis'));
 const RiskCalculator = lazy(() => import('./components/RiskCalculator'));
 const PositionMonitor = lazy(() => import('./components/PositionMonitor'));
+const MLInsights = lazy(() => import('./components/ml-insights/MLInsights'));
 
 // ============================================================
 // MAIN COMPONENT
@@ -319,6 +320,7 @@ export default function StrikeCalculator() {
         : []),
       ...(hasMarketOrSnapshot ? [{ id: 'sec-charts', label: 'Charts' }] : []),
       { id: 'sec-history', label: 'History' },
+      { id: 'sec-ml-insights', label: 'ML Insights' },
       { id: 'sec-positions', label: 'Positions' },
       ...(isOwner ? [{ id: 'sec-bwb', label: 'BWB' }] : []),
       { id: 'results', label: 'Results' },
@@ -684,6 +686,13 @@ export default function StrikeCalculator() {
             <span id="sec-history" className="block scroll-mt-28" />
             <ErrorBoundary label="Analysis History">
               <AnalysisHistory refreshKey={historyRefreshKey} />
+            </ErrorBoundary>
+
+            <span id="sec-ml-insights" className="block scroll-mt-28" />
+            <ErrorBoundary label="ML Insights">
+              <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                <MLInsights />
+              </Suspense>
             </ErrorBoundary>
 
             {/* Paper Dashboard — lazy-loaded */}

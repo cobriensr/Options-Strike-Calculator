@@ -791,7 +791,7 @@ ${plotRefBlock(
   'pin_composite',
   SRC_PIN_COMPOSITE,
   'Bar chart comparing three pin risk strategies by average distance to settlement: (1) Always use 0DTE gamma (blue), (2) Always use 1DTE gamma (orange), (3) Composite strategy (green) — uses 0DTE gamma when concentration >= 65%, otherwise switches to 1DTE gamma. Hit rates (+/-10 pts) are annotated inside each bar. Lower bars = better prediction accuracy.',
-  'Focus on: (1) whether the composite strategy outperforms both pure strategies — if so, the concentration-gated switching rule adds value, (2) the magnitude of improvement — a 2-3 pt improvement in avg distance is meaningful for BWB placement (20-pt wide wings), (3) whether 1DTE is ever better than 0DTE in aggregate — if so, late-session gamma dynamics are driven by tomorrow\'s expiry more than today\'s, (4) the hit rate comparison — +/-10 pt accuracy is the threshold for reliable BWB center placement, (5) sample size concerns — this comparison requires days with both 0DTE and 1DTE strike data, which may be a subset of the full dataset.',
+  "Focus on: (1) whether the composite strategy outperforms both pure strategies — if so, the concentration-gated switching rule adds value, (2) the magnitude of improvement — a 2-3 pt improvement in avg distance is meaningful for BWB placement (20-pt wide wings), (3) whether 1DTE is ever better than 0DTE in aggregate — if so, late-session gamma dynamics are driven by tomorrow's expiry more than today's, (4) the hit rate comparison — +/-10 pt accuracy is the threshold for reliable BWB center placement, (5) sample size concerns — this comparison requires days with both 0DTE and 1DTE strike data, which may be a subset of the full dataset.",
 )}
 
 <output_format>

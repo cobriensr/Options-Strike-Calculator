@@ -1,12 +1,9 @@
 {
-  "generated_at": "2026-04-04T03:52:24+00:00",
+  "generated_at": "2026-04-04T05:18:43+00:00",
   "dataset": {
     "total_days": 39,
     "labeled_days": 36,
-    "date_range": [
-      "2026-02-09",
-      "2026-04-03"
-    ],
+    "date_range": ["2026-02-09", "2026-04-03"],
     "overall_accuracy": 0.917
   },
   "structure_accuracy": {
@@ -187,5 +184,62 @@
       "H": 5.78,
       "p": 0.055
     }
-  ]
+  ],
+  "health": {
+    "status": "PASS",
+    "warnings": [],
+    "failures": [],
+    "run_time": "2026-04-04 00:18:38"
+  },
+  "pipeline_sections": ["health", "phase2"],
+  "phase2": {
+    "per_model": {
+      "DecisionTree": {
+        "accuracy": 0.28,
+        "log_loss": 6.7493,
+        "per_class_f1": {
+          "CALL CREDIT SPREAD": 0.4,
+          "PUT CREDIT SPREAD": 0.0,
+          "IRON CONDOR": 0.3
+        }
+      },
+      "XGBoost": {
+        "accuracy": 0.28,
+        "log_loss": 6.7493,
+        "per_class_f1": {
+          "CALL CREDIT SPREAD": 0.4,
+          "PUT CREDIT SPREAD": 0.0,
+          "IRON CONDOR": 0.3
+        }
+      }
+    },
+    "best_model": "DecisionTree",
+    "best_accuracy": 0.28,
+    "majority_baseline": 0.44,
+    "walk_forward_folds": 25,
+    "top_features": [
+      {
+        "feature": "vix",
+        "importance": 0.2
+      },
+      {
+        "feature": "vix1d",
+        "importance": 0.2
+      },
+      {
+        "feature": "gex_oi_t1",
+        "importance": 0.2
+      },
+      {
+        "feature": "gex_oi_t2",
+        "importance": 0.2
+      },
+      {
+        "feature": "sigma",
+        "importance": 0.2
+      }
+    ],
+    "n_labeled_days": 45,
+    "n_features": 5
+  }
 }
