@@ -79,7 +79,7 @@ export function useMLInsights(): MLInsightsState {
   }, []);
 
   useEffect(() => {
-    fetchData();
+    void fetchData();
     return () => {
       abortRef.current?.abort();
     };

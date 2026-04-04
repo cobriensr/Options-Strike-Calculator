@@ -70,27 +70,23 @@ export default function PositionMonitor({ spotPrice }: PositionMonitorProps) {
       if (!file) return;
 
       setError(null);
-      const reader = new FileReader();
-
-      reader.onload = () => {
-        try {
-          const text = reader.result as string;
-          setUploadSpot(spotPrice);
-          const parsed = parseStatement(text, spotPrice);
-          setRawStatement(parsed);
-          setCollapsed(false);
-        } catch (err) {
-          const msg =
-            err instanceof Error ? err.message : 'Failed to parse file';
-          setError(msg);
-        }
-      };
-
-      reader.onerror = () => {
-        setError('Failed to read file');
-      };
-
-      reader.readAsText(file);
+      void file.text().then(
+        (text) => {
+          try {
+            setUploadSpot(spotPrice);
+            const parsed = parseStatement(text, spotPrice);
+            setRawStatement(parsed);
+            setCollapsed(false);
+          } catch (err) {
+            const msg =
+              err instanceof Error ? err.message : 'Failed to parse file';
+            setError(msg);
+          }
+        },
+        () => {
+          setError('Failed to read file');
+        },
+      );
       e.target.value = '';
     },
     [spotPrice],

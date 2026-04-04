@@ -62,11 +62,11 @@ export const DEFAULT_SPX_SPY_RATIO = 10;
 /** IV stress model parameters for hedge repricing */
 export const STRESS = {
   /** IV sensitivity to SPX declines (VIX pts per 1% SPX drop) */
-  CRASH_SENSITIVITY: 4.0,
+  CRASH_SENSITIVITY: 4,
   /** IV sensitivity to SPX rallies (VIX pts per 1% SPX rise) */
   RALLY_SENSITIVITY: 1.5,
   /** Maximum stressed sigma multiplier (cap) */
-  MAX_MULT: 3.0,
+  MAX_MULT: 3,
   /** Hedge breakeven target as multiple of spot-to-hedge distance */
   BREAKEVEN_TARGET: 1.5,
 } as const;
@@ -78,7 +78,7 @@ export const DEFAULTS = {
   /** Minimum allowed IV premium multiplier */
   IV_PREMIUM_MIN: 1,
   /** Maximum allowed IV premium multiplier (raised for event days: FOMC, CPI) */
-  IV_PREMIUM_MAX: 2.0,
+  IV_PREMIUM_MAX: 2,
   /** Risk-free rate (negligible for 0DTE) */
   RISK_FREE_RATE: 0,
   /** SPX strike increment for snapping */
@@ -161,7 +161,7 @@ export const SIGNALS = {
 
   /** VIX1D/VIX ratio thresholds for term structure classification */
   VIX1D_RATIO_CALM: 0.75,
-  VIX1D_RATIO_NORMAL: 1.0,
+  VIX1D_RATIO_NORMAL: 1,
   VIX1D_RATIO_ELEVATED: 1.25,
 
   /** VIX9D/VIX ratio thresholds (inverted: higher ratio = calmer) */
@@ -212,9 +212,9 @@ export function getKurtosisFactor(vix?: number): KurtosisPair {
   if (vix == null || vix <= 0) return DEFAULTS.KURTOSIS_FACTOR;
   if (vix < 15) return { crash: 1.8, rally: 1.2 };
   if (vix < 20) return { crash: 2.5, rally: 1.5 };
-  if (vix < 25) return { crash: 3.0, rally: 2.0 };
+  if (vix < 25) return { crash: 3, rally: 2 };
   if (vix < 30) return { crash: 3.5, rally: 2.5 };
-  return { crash: 4.0, rally: 3.0 };
+  return { crash: 4, rally: 3 };
 }
 
 /** Wing width options for iron condor spreads (SPX points) */

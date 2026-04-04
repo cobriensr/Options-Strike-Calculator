@@ -456,6 +456,7 @@ export async function engineerPhase2Features(
       // Find ~30D point (closest to 30 DTE on the term structure)
       const thirtyD = vols.reduce((best, v) =>
         Math.abs(v.days - 30) < Math.abs(best.days - 30) ? v : best,
+        vols[0]!,
       );
 
       if (zeroDteVol != null && thirtyD) {

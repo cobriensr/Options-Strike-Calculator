@@ -32,6 +32,7 @@ export function fmtStrike(v: number): string {
 
 export function fmtTime(t: string): string {
   // "3/27/26 09:30:00" → "09:30" or "09:30:00" → "09:30"
-  const match = t.match(/(\d{1,2}:\d{2})/);
+  const timePattern = /(\d{1,2}:\d{2})/;
+  const match = timePattern.exec(t);
   return match?.[1] ?? t;
 }

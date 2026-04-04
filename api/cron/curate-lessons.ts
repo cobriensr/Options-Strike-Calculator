@@ -199,7 +199,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       reviewIndex++;
       const fullResponse =
         typeof review.full_response === 'string'
-          ? JSON.parse(review.full_response as string)
+          ? JSON.parse(review.full_response)
           : review.full_response;
 
       const reviewData = fullResponse?.review ?? fullResponse ?? {};

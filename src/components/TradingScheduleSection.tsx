@@ -102,7 +102,7 @@ export default memo(function TradingScheduleSection() {
 
           return (
             <div
-              key={i}
+              key={phase.title}
               className="rounded-lg border-t-[3px] px-3.5 py-3 transition-all duration-200"
               style={{
                 borderTopColor: past ? tint(phase.color, '50') : phase.color,

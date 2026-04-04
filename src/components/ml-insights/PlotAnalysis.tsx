@@ -47,7 +47,7 @@ const PlotAnalysis = memo(function PlotAnalysis({ analysis, plotName }: Props) {
         style={{ backgroundColor: tint(theme.surfaceAlt, '80') }}
       >
         <div className="text-muted font-sans text-[11px] italic">
-          Analysis pending for {plotName.replace(/_/g, ' ')}
+          Analysis pending for {plotName.replaceAll('_', ' ')}
         </div>
       </div>
     );

@@ -28,14 +28,10 @@ import {
 } from './_lib/api-helpers.js';
 import { savePositions, getDb, type PositionLeg } from './_lib/db.js';
 import logger from './_lib/logger.js';
-import {
-  parseFullCSV,
-  buildFullSummary,
-  parseTosExpiration,
-} from './_lib/csv-parser.js';
+import { parseFullCSV, buildFullSummary } from './_lib/csv-parser.js';
 
 // Re-export for any external consumers
-export { parseTosExpiration };
+export { parseTosExpiration } from './_lib/csv-parser.js';
 
 // ============================================================
 // TYPES for Schwab Trader API responses
@@ -156,7 +152,7 @@ function groupIntoSpreads(legs: PositionLeg[]): Spread[] {
         const type =
           short.putCall === 'CALL' ? 'CALL CREDIT SPREAD' : 'PUT CREDIT SPREAD';
         paired.push({
-          type: type as 'CALL CREDIT SPREAD' | 'PUT CREDIT SPREAD',
+          type,
           shortLeg: short,
           longLeg: long,
           credit: Math.round(credit * 100) / 100,

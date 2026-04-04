@@ -8,7 +8,7 @@
  * It runs entirely in the browser — no server dependencies.
  */
 
-import type { DailyStatement, IronCondor, Spread } from './types';
+import type { DailyStatement } from './types';
 import { round2 } from '../../utils/formatting';
 import { parseShortDate } from './statement-parser/value-parsers';
 import {
@@ -144,7 +144,7 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
       for (let i = 0; i < grouped.spreads.length; i++) {
         const sp = grouped.spreads[i]!;
         const est = estimateSpreadPnl(sp.creditReceived);
-        (grouped.spreads as Spread[])[i] = {
+        grouped.spreads[i] = {
           ...sp,
           ...est,
         };
@@ -153,7 +153,7 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
         const ic = grouped.ironCondors[i]!;
         const putEst = estimateSpreadPnl(ic.putSpread.creditReceived);
         const callEst = estimateSpreadPnl(ic.callSpread.creditReceived);
-        (grouped.ironCondors as IronCondor[])[i] = {
+        grouped.ironCondors[i] = {
           ...ic,
           putSpread: { ...ic.putSpread, ...putEst },
           callSpread: { ...ic.callSpread, ...callEst },

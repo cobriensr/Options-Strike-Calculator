@@ -74,7 +74,7 @@ export default function DeltaStrikesTable({ allDeltas, spot }: Props) {
             <tbody>
               {allDeltas.map((row, i) => {
                 if ('error' in row) return null;
-                const r = row as DeltaRow;
+                const r = row;
                 return (
                   <tr
                     key={r.delta}

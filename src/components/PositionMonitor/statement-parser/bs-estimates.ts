@@ -14,7 +14,8 @@ import { computePortfolioRisk } from './portfolio-risk';
  * minutes since midnight for time comparison.
  */
 function timeToMinutes(t: string): number {
-  const match = t.match(/(\d{1,2}):(\d{2})/);
+  const timePattern = /(\d{1,2}):(\d{2})/;
+  const match = timePattern.exec(t);
   if (!match) return 0;
   return Number.parseInt(match[1]!, 10) * 60 + Number.parseInt(match[2]!, 10);
 }

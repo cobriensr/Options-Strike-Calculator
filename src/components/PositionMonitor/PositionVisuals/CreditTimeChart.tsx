@@ -21,7 +21,8 @@ export default function CreditTimeChart({
 
   // Parse times to minutes since midnight for positioning
   const parseMin = (t: string): number => {
-    const match = t.match(/(\d{1,2}):(\d{2})/);
+    const timePattern = /(\d{1,2}):(\d{2})/;
+    const match = timePattern.exec(t);
     if (!match) return 0;
     return Number.parseInt(match[1]!, 10) * 60 + Number.parseInt(match[2]!, 10);
   };

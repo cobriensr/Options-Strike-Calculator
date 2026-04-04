@@ -70,7 +70,7 @@ function computeCharmCentroid(strikes: StrikeExposureRow[]): number {
   for (const s of strikes) {
     const dist = Math.max(Math.abs(s.strike - price), 1);
     const absGamma = Math.abs(s.netGamma);
-    const charmBoost = s.netCharm > 0 ? 1.5 : 1.0;
+    const charmBoost = s.netCharm > 0 ? 1.5 : 1;
     const charmProxWeight = (absGamma * charmBoost) / (dist * dist);
     charmWeightedSum += s.strike * charmProxWeight;
     charmTotalWeight += charmProxWeight;

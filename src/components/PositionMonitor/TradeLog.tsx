@@ -104,8 +104,8 @@ function matchClosedSpread(
     const closeTimeMatch = fmtTime(cs.closeTime) === fmtTime(trade.execTime);
     if (!closeTimeMatch) continue;
 
-    const strikes = trade.legs.map((l) => l.strike);
-    if (strikes.includes(cs.shortStrike) || strikes.includes(cs.longStrike)) {
+    const strikes = new Set(trade.legs.map((l) => l.strike));
+    if (strikes.has(cs.shortStrike) || strikes.has(cs.longStrike)) {
       return cs;
     }
   }

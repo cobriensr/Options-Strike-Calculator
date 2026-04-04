@@ -70,7 +70,8 @@ async function pruneOldBackups(currentDate: string): Promise<string[]> {
 
   for (const blob of blobs) {
     // Extract date from path: backups/2026-03-21/table.jsonl → 2026-03-21
-    const match = blob.pathname.match(/^backups\/(\d{4}-\d{2}-\d{2})\//);
+    const datePattern = /^backups\/(\d{4}-\d{2}-\d{2})\//;
+    const match = datePattern.exec(blob.pathname);
     if (!match) continue;
 
     const blobDate = new Date(match[1]!);

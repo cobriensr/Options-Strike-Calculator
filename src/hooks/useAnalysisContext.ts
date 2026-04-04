@@ -11,10 +11,8 @@ import { getTopOIStrikes } from '../utils/pin-risk';
 import type { AnalysisContext } from '../components/ChartAnalysis';
 import type { CalculationResults } from '../types';
 import type { ComputedSignals } from './useComputedSignals';
-import type { ChainResponse } from '../types/api';
-import type { EventItem } from '../types/api';
+import type { ChainResponse, EventItem } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
-
 export interface UseAnalysisContextParams {
   selectedDate: string;
   timeHour: string;

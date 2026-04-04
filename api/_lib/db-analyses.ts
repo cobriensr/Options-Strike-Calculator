@@ -156,7 +156,7 @@ export async function getPreviousRecommendation(
   const row = rows[0]!;
   const fullResponse = (
     typeof row.full_response === 'string'
-      ? JSON.parse(row.full_response as string)
+      ? JSON.parse(row.full_response)
       : row.full_response
   ) as Record<string, unknown>;
 

@@ -30,21 +30,21 @@ export interface SectionBounds {
  * Returns a map of section name → line index ranges.
  */
 export function findSections(lines: string[]): Map<string, SectionBounds> {
-  const sectionNames = [
+  const sectionNames = new Set([
     'Cash Balance',
     'Account Order History',
     'Account Trade History',
     'Options',
     'Profits and Losses',
     'Account Summary',
-  ];
+  ]);
 
   const sections = new Map<string, SectionBounds>();
   const sectionIndices: Array<{ name: string; idx: number }> = [];
 
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i]!.trim();
-    if (sectionNames.includes(trimmed)) {
+    if (sectionNames.has(trimmed)) {
       sectionIndices.push({ name: trimmed, idx: i });
     }
   }
@@ -215,7 +215,7 @@ export function parseOrderHistory(
         currentOrder.legs.push({
           side: side === 'BUY' ? 'BUY' : 'SELL',
           qty: Math.abs(qty),
-          posEffect: parsedPosEffect as 'TO OPEN' | 'TO CLOSE',
+          posEffect: parsedPosEffect,
           symbol,
           exp: exp ? parseTosDate(exp) : '',
           strike,
@@ -323,7 +323,7 @@ export function parseTradeHistory(
         currentTrade.legs.push({
           side: side === 'BUY' ? 'BUY' : 'SELL',
           qty: Math.abs(qty),
-          posEffect: parsedPosEffect as 'TO OPEN' | 'TO CLOSE',
+          posEffect: parsedPosEffect,
           symbol,
           exp: exp ? parseTosDate(exp) : '',
           strike,
@@ -415,11 +415,11 @@ export function parseOptions(
       optionCode,
       exp: parseTosDate(exp),
       strike,
-      type: type as 'CALL' | 'PUT',
+      type,
       qty: signedQty,
       tradePrice: Number.isNaN(tradePrice) ? 0 : tradePrice,
       mark: mark !== null && !Number.isNaN(mark) ? mark : null,
-      markValue: markValue !== null ? markValue : null,
+      markValue: markValue ?? null,
     });
   }
 

@@ -82,12 +82,12 @@ export default function PreMarketInput({
     setSaving(true);
 
     const data: PreMarketData = {
-      globexHigh: globexHigh ? parseFloat(globexHigh) : null,
-      globexLow: globexLow ? parseFloat(globexLow) : null,
-      globexClose: globexClose ? parseFloat(globexClose) : null,
-      globexVwap: globexVwap ? parseFloat(globexVwap) : null,
-      straddleConeUpper: coneUpper ? parseFloat(coneUpper) : null,
-      straddleConeLower: coneLower ? parseFloat(coneLower) : null,
+      globexHigh: globexHigh ? Number.parseFloat(globexHigh) : null,
+      globexLow: globexLow ? Number.parseFloat(globexLow) : null,
+      globexClose: globexClose ? Number.parseFloat(globexClose) : null,
+      globexVwap: globexVwap ? Number.parseFloat(globexVwap) : null,
+      straddleConeUpper: coneUpper ? Number.parseFloat(coneUpper) : null,
+      straddleConeLower: coneLower ? Number.parseFloat(coneLower) : null,
       savedAt: new Date().toISOString(),
     };
 
@@ -151,7 +151,7 @@ export default function PreMarketInput({
 
   // Live gap preview: ES Globex Close vs previous SPX close
   const gapPreview = useMemo(() => {
-    const gc = parseFloat(globexClose);
+    const gc = Number.parseFloat(globexClose);
     const pc = prevClose ?? spxPrice;
     if (Number.isNaN(gc) || !pc) return null;
     const diff = gc - pc;
@@ -163,12 +163,12 @@ export default function PreMarketInput({
 
   // Overnight range with optional cone context
   const overnightRange = useMemo(() => {
-    const h = parseFloat(globexHigh);
-    const l = parseFloat(globexLow);
+    const h = Number.parseFloat(globexHigh);
+    const l = Number.parseFloat(globexLow);
     if (Number.isNaN(h) || Number.isNaN(l) || h <= l) return null;
     const range = h - l;
-    const cu = parseFloat(coneUpper);
-    const cl = parseFloat(coneLower);
+    const cu = Number.parseFloat(coneUpper);
+    const cl = Number.parseFloat(coneLower);
     if (!Number.isNaN(cu) && !Number.isNaN(cl) && cu > cl) {
       const coneWidth = cu - cl;
       const pct = ((range / coneWidth) * 100).toFixed(0);

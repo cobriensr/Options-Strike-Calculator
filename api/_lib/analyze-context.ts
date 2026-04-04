@@ -836,7 +836,7 @@ ${(() => {
   else if (skew.putSkew25d > 4) signal = 'NORMAL — standard risk premium.';
   else signal = 'FLAT — unusually low hedging demand. Supports IC.';
   let ratioSignal = '';
-  if (skew.skewRatio > 2.0)
+  if (skew.skewRatio > 2)
     ratioSignal =
       'Strong put-over-call risk premium — market expects any large move to the downside.';
   else if (skew.skewRatio < 1.2)

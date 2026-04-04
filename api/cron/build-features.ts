@@ -262,7 +262,7 @@ async function extractLabelsForDate(
   try {
     resp =
       typeof row.full_response === 'string'
-        ? JSON.parse(row.full_response as string)
+        ? JSON.parse(row.full_response)
         : row.full_response;
   } catch {
     logger.warn({ date: dateStr }, 'Failed to parse review full_response');

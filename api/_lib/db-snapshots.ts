@@ -209,11 +209,12 @@ export async function saveSnapshot(
  * since midnight for chronological sorting.
  */
 function parseEntryTimeMinutes(t: string): number {
-  const m = t.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
-  if (!m) return NaN;
-  let h = parseInt(m[1]!, 10);
-  const min = parseInt(m[2]!, 10);
-  if (h < 1 || h > 12 || min < 0 || min > 59) return NaN;
+  const timePattern = /^(\d+):(\d+)\s*(AM|PM)$/i;
+  const m = timePattern.exec(t);
+  if (!m) return Number.NaN;
+  let h = Number.parseInt(m[1]!, 10);
+  const min = Number.parseInt(m[2]!, 10);
+  if (h < 1 || h > 12 || min < 0 || min > 59) return Number.NaN;
   const isPm = m[3]!.toUpperCase() === 'PM';
   if (isPm && h !== 12) h += 12;
   else if (!isPm && h === 12) h = 0;
@@ -249,7 +250,7 @@ export async function getVixOhlcFromSnapshots(date: string): Promise<{
       t: parseEntryTimeMinutes((r as { entry_time: string }).entry_time),
       vix: Number((r as { vix: string }).vix),
     }))
-    .filter((r) => !isNaN(r.t) && !isNaN(r.vix))
+    .filter((r) => !Number.isNaN(r.t) && !Number.isNaN(r.vix))
     .sort((a, b) => a.t - b.t);
 
   if (sorted.length === 0) return null;
@@ -257,7 +258,7 @@ export async function getVixOhlcFromSnapshots(date: string): Promise<{
   const viixes = sorted.map((r) => r.vix);
   return {
     open: sorted[0]!.vix,
-    close: sorted[sorted.length - 1]!.vix,
+    close: sorted.at(-1)!.vix,
     high: Math.max(...viixes),
     low: Math.min(...viixes),
     count: sorted.length,

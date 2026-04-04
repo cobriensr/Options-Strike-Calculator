@@ -70,7 +70,7 @@ function classifyVolume(
     const ratio = totalVolume / avg20d;
     let cls: string;
     if (ratio < 0.6) cls = 'LIGHT';
-    else if (ratio < 1.0) cls = 'NORMAL';
+    else if (ratio < 1) cls = 'NORMAL';
     else if (ratio < 1.5) cls = 'ELEVATED';
     else cls = 'HEAVY';
     return { volRatio: ratio, volClass: cls };
@@ -103,7 +103,7 @@ function computeFillScore(
   else if (absGap >= 40) score -= 20;
 
   if (volRatio < 0.6) score += 25;
-  else if (volRatio < 1.0) score += 10;
+  else if (volRatio < 1) score += 10;
   else if (volRatio < 1.5) score -= 10;
   else score -= 25;
 

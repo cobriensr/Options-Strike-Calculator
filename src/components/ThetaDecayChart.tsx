@@ -59,16 +59,14 @@ function calcEntryWindow(
   for (let i = 0; i < curve.length; i++) {
     if (curve[i]!.thetaPerHour >= mean) {
       if (runStart === -1) runStart = i;
-    } else {
-      if (runStart !== -1) {
-        const len = i - runStart;
-        if (len > bestLen) {
-          bestLen = len;
-          bestStart = runStart;
-          bestEnd = i - 1;
-        }
-        runStart = -1;
+    } else if (runStart !== -1) {
+      const len = i - runStart;
+      if (len > bestLen) {
+        bestLen = len;
+        bestStart = runStart;
+        bestEnd = i - 1;
       }
+      runStart = -1;
     }
   }
   if (runStart !== -1) {
