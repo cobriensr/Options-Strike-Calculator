@@ -641,6 +641,9 @@ Explain what the chart shows and what the patterns, numbers, and relationships m
 
 2. HOW SHOULD I APPLY THIS TO MY TRADING?
 Connect the findings to concrete trading decisions: structure selection (PCS/CCS/IC), confidence calibration (HIGH/MODERATE/LOW), position sizing, strike placement, rule changes, or feature engineering priorities. Be specific — name which features matter, which thresholds to use, which signals to trust or fade. Frame everything in terms of the 9:1 risk/reward reality of 0DTE credit spreads where loss avoidance is paramount.
+
+3. WHAT SHOULD I WATCH OUT FOR?
+Data quality flags (flat features, missing values, pipeline failures), sample size limitations that make specific findings unreliable, potential data leakage or overfitting artifacts, regime limitations (what market conditions would invalidate these conclusions), and any inconsistencies between this plot and others. Only include genuine concerns — do not pad with generic "more data needed" boilerplate.
 </analysis_framework>
 
 <uncertainty_directive>
@@ -799,10 +802,11 @@ ${plotRefBlock(
 )}
 
 <output_format>
-Respond with a valid JSON object containing exactly these 2 fields:
+Respond with a valid JSON object containing exactly these 3 fields:
 {
   "what_it_means": "...",
-  "how_to_apply": "..."
+  "how_to_apply": "...",
+  "watch_out_for": "..."
 }
 
 Each field should contain 2-5 paragraphs of substantive analysis. Every sentence must add information — do not pad with filler, throat-clearing, or vague generalities. Be specific: cite numbers from the data, reference specific features by name, and connect findings to concrete trading decisions.

@@ -32,6 +32,11 @@ const SECTIONS: Array<{
     label: 'How to Apply',
     color: theme.caution,
   },
+  {
+    key: 'watch_out_for',
+    label: 'Watch Out For',
+    color: theme.red,
+  },
 ];
 
 const PlotAnalysis = memo(function PlotAnalysis({ analysis, plotName }: Props) {

@@ -10,6 +10,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 export interface PlotAnalysis {
   what_it_means: string;
   how_to_apply: string;
+  watch_out_for: string;
 }
 
 export interface MLPlot {

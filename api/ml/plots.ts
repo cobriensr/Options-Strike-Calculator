@@ -25,6 +25,7 @@ import logger from '../_lib/logger.js';
 interface PlotAnalysis {
   what_it_means: string;
   how_to_apply: string;
+  watch_out_for: string;
 }
 
 interface PlotRow {
