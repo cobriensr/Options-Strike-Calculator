@@ -634,22 +634,13 @@ Key facts:
 </trading_system_context>
 
 <analysis_framework>
-For each plot, provide exactly 5 sections of analysis:
+For each plot, answer exactly two questions:
 
-1. VISUALIZATION DESCRIPTION
-What type of plot this is (scatter, heatmap, bar chart, line chart, etc). What the axes represent. What colors, shapes, or sizes encode. How to read the layout. Reference the source code to confirm visual encodings — do not guess from the image alone.
+1. WHAT DOES THE DATA MEAN?
+Explain what the chart shows and what the patterns, numbers, and relationships mean. Cite specific values from the underlying data. Identify what is statistically significant vs noise. Flag anomalies, regime shifts, or data quality issues. If something is unreliable due to small sample size, say so inline rather than in a separate caveats section. Use the source code to confirm what was plotted — do not guess from the image alone.
 
-2. DATA INPUTS
-What tables and features feed this visualization. Any preprocessing (scaling, PCA, imputation, filtering). Sample size and date range. Reference the source code for exact data loading and transformation steps.
-
-3. STATISTICAL INTERPRETATION
-What patterns are visible. Statistical significance where applicable (confidence intervals, p-values, effect sizes). Anomalies, outliers, or regime shifts. Compare visual patterns to the underlying numerical data provided in the user message — flag any discrepancies between the image and the data.
-
-4. TRADING SYSTEM IMPLICATIONS
-How these findings relate to structure selection (PCS/CCS/IC), confidence calibration (HIGH/MODERATE/LOW), rule validation, or feature engineering. Be specific about which trading decisions this data should influence. Connect findings to the confidence tiers and the 9:1 risk/reward framework. Identify actionable insights vs interesting-but-not-yet-actionable observations.
-
-5. CAVEATS & LIMITATIONS
-Sample size concerns (39 days is small — most statistical tests need 50+ for reliable power). Potential confounders. What would change these conclusions if the dataset doubled. Multiple comparison issues if relevant. Survivorship bias if applicable. Be explicit about what you cannot determine from the data shown.
+2. HOW SHOULD I APPLY THIS TO MY TRADING?
+Connect the findings to concrete trading decisions: structure selection (PCS/CCS/IC), confidence calibration (HIGH/MODERATE/LOW), position sizing, strike placement, rule changes, or feature engineering priorities. Be specific — name which features matter, which thresholds to use, which signals to trust or fade. Frame everything in terms of the 9:1 risk/reward reality of 0DTE credit spreads where loss avoidance is paramount.
 </analysis_framework>
 
 <uncertainty_directive>
@@ -808,16 +799,13 @@ ${plotRefBlock(
 )}
 
 <output_format>
-Respond with a valid JSON object containing exactly these 5 fields:
+Respond with a valid JSON object containing exactly these 2 fields:
 {
-  "visualization": "...",
-  "data_inputs": "...",
-  "interpretation": "...",
-  "implications": "...",
-  "caveats": "..."
+  "what_it_means": "...",
+  "how_to_apply": "..."
 }
 
-Each field should contain 2-4 paragraphs of substantive analysis. Every sentence must add information — do not pad with filler, throat-clearing, or vague generalities. Be specific: cite numbers from the data, reference specific features by name, and connect findings to concrete trading decisions.
+Each field should contain 2-5 paragraphs of substantive analysis. Every sentence must add information — do not pad with filler, throat-clearing, or vague generalities. Be specific: cite numbers from the data, reference specific features by name, and connect findings to concrete trading decisions.
 
 Do NOT wrap the JSON in markdown code fences. Return raw JSON only.
 </output_format>`;

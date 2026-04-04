@@ -1,7 +1,9 @@
 /**
- * PlotAnalysis — Renders the 5-section analysis text for the active plot.
+ * PlotAnalysis — Renders the 2-section analysis text for the active plot.
  *
- * Each section has a labeled header and whitespace-pre-wrap text.
+ * Section 1: What does the data mean?
+ * Section 2: How should I apply this to my trading?
+ *
  * Shows "Analysis pending" if analysis is null.
  */
 
@@ -20,15 +22,16 @@ const SECTIONS: Array<{
   label: string;
   color: string;
 }> = [
-  { key: 'visualization', label: 'Visualization', color: theme.accent },
-  { key: 'data_inputs', label: 'Data Inputs', color: theme.textTertiary },
   {
-    key: 'interpretation',
-    label: 'Interpretation',
-    color: theme.chartPurple,
+    key: 'what_it_means',
+    label: 'What the Data Means',
+    color: theme.accent,
   },
-  { key: 'implications', label: 'Implications', color: theme.caution },
-  { key: 'caveats', label: 'Caveats', color: theme.red },
+  {
+    key: 'how_to_apply',
+    label: 'How to Apply',
+    color: theme.caution,
+  },
 ];
 
 const PlotAnalysis = memo(function PlotAnalysis({ analysis, plotName }: Props) {

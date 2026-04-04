@@ -23,11 +23,8 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
 interface PlotAnalysis {
-  visualization: string;
-  data_inputs: string;
-  interpretation: string;
-  implications: string;
-  caveats: string;
+  what_it_means: string;
+  how_to_apply: string;
 }
 
 interface PlotRow {

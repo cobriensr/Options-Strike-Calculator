@@ -8,11 +8,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 export interface PlotAnalysis {
-  visualization: string;
-  data_inputs: string;
-  interpretation: string;
-  implications: string;
-  caveats: string;
+  what_it_means: string;
+  how_to_apply: string;
 }
 
 export interface MLPlot {
