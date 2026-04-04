@@ -200,7 +200,7 @@ describe('MLInsights: content', () => {
     render(<MLInsights />);
     // PlotCarousel renders the section with aria-label
     expect(
-      screen.getByRole('region', { name: /ml plot carousel/i }),
+      screen.getByRole('toolbar', { name: /ml plot carousel/i }),
     ).toBeInTheDocument();
   });
 

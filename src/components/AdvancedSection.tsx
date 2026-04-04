@@ -144,7 +144,7 @@ export default function AdvancedSection({
           </div>
           <div
             className="flex flex-wrap gap-1.5"
-            role="radiogroup"
+            role="group"
             aria-label="Iron condor wing width"
           >
             {WING_OPTIONS.map((w) => (
@@ -236,7 +236,7 @@ export default function AdvancedSection({
               </fieldset>
               <fieldset className="m-0 mt-3 border-none p-0">
                 <legend className="sr-only">VIX value to use</legend>
-                <div className="flex flex-wrap gap-1.5" role="radiogroup">
+                <div className="flex flex-wrap gap-1.5" role="group">
                   {(['smart', 'open', 'high', 'low', 'close'] as const).map(
                     (f) => (
                       <Chip
@@ -278,7 +278,7 @@ export default function AdvancedSection({
           </div>
           <div
             className="flex flex-wrap gap-1.5"
-            role="radiogroup"
+            role="group"
             aria-label="BWB narrow wing width"
           >
             {BWB_NARROW_OPTIONS.map((w) => (
@@ -309,7 +309,7 @@ export default function AdvancedSection({
             </div>
             <div
               className="flex flex-wrap gap-1.5"
-              role="radiogroup"
+              role="group"
               aria-label="BWB wide wing multiplier"
             >
               {BWB_WIDE_MULTIPLIERS.map((m) => (

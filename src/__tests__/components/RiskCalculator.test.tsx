@@ -89,7 +89,7 @@ describe('RiskCalculator: rendering', () => {
     render(<RiskCalculator />);
     expect(screen.getByLabelText(/credit received/i)).toBeInTheDocument();
     expect(
-      screen.getByRole('radiogroup', { name: /wing width/i }),
+      screen.getByRole('group', { name: /wing width/i }),
     ).toBeInTheDocument();
   });
 });
@@ -112,7 +112,7 @@ describe('RiskCalculator: mode switching', () => {
 
     expect(screen.queryByLabelText(/credit received/i)).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('radiogroup', { name: /wing width/i }),
+      screen.queryByRole('group', { name: /wing width/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -136,7 +136,7 @@ describe('RiskCalculator: mode switching', () => {
 
     expect(screen.getByLabelText(/credit received/i)).toBeInTheDocument();
     expect(
-      screen.getByRole('radiogroup', { name: /wing width/i }),
+      screen.getByRole('group', { name: /wing width/i }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText(/premium paid/i)).not.toBeInTheDocument();
   });
@@ -213,7 +213,7 @@ describe('RiskCalculator: contracts stepper', () => {
 describe('RiskCalculator: wing width chips', () => {
   it('renders all wing width options', () => {
     render(<RiskCalculator />);
-    const wingGroup = screen.getByRole('radiogroup', {
+    const wingGroup = screen.getByRole('group', {
       name: /wing width/i,
     });
     const buttons = wingGroup.querySelectorAll('button');
@@ -225,7 +225,7 @@ describe('RiskCalculator: wing width chips', () => {
 
   it('selects a different wing width when clicked', () => {
     render(<RiskCalculator />);
-    const wingGroup = screen.getByRole('radiogroup', {
+    const wingGroup = screen.getByRole('group', {
       name: /wing width/i,
     });
     const buttons = wingGroup.querySelectorAll('button');

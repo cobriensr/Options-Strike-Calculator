@@ -161,7 +161,7 @@ export default function VIXRangeAnalysis({ vix, spot }: Props) {
 
       <div
         className="mb-3 flex gap-1.5"
-        role="radiogroup"
+        role="group"
         aria-label="Survival mode"
       >
         <Chip

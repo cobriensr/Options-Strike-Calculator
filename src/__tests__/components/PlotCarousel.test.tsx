@@ -55,7 +55,7 @@ describe('PlotCarousel: rendering', () => {
   it('renders carousel section with accessible label', () => {
     render(<PlotCarousel plots={makeGroupPlots()} />);
     expect(
-      screen.getByRole('region', { name: /ml plot carousel/i }),
+      screen.getByRole('toolbar', { name: /ml plot carousel/i }),
     ).toBeInTheDocument();
   });
 
@@ -215,7 +215,7 @@ describe('PlotCarousel: keyboard navigation', () => {
   it('ArrowRight advances to next plot', () => {
     render(<PlotCarousel plots={makeGroupPlots()} />);
 
-    const section = screen.getByRole('region', {
+    const section = screen.getByRole('toolbar', {
       name: /ml plot carousel/i,
     });
 
@@ -230,7 +230,7 @@ describe('PlotCarousel: keyboard navigation', () => {
   it('ArrowLeft goes to previous plot', () => {
     render(<PlotCarousel plots={makeGroupPlots()} />);
 
-    const section = screen.getByRole('region', {
+    const section = screen.getByRole('toolbar', {
       name: /ml plot carousel/i,
     });
 
@@ -247,7 +247,7 @@ describe('PlotCarousel: keyboard navigation', () => {
   it('ArrowRight wraps to first plot from last', () => {
     render(<PlotCarousel plots={makeGroupPlots()} />);
 
-    const section = screen.getByRole('region', {
+    const section = screen.getByRole('toolbar', {
       name: /ml plot carousel/i,
     });
 
@@ -264,7 +264,7 @@ describe('PlotCarousel: keyboard navigation', () => {
   it('ArrowLeft wraps to last plot from first', () => {
     render(<PlotCarousel plots={makeGroupPlots()} />);
 
-    const section = screen.getByRole('region', {
+    const section = screen.getByRole('toolbar', {
       name: /ml plot carousel/i,
     });
 
@@ -352,7 +352,7 @@ describe('PlotCarousel: lightbox', () => {
     );
 
     // Press Escape on the section element
-    const section = screen.getByRole('region', {
+    const section = screen.getByRole('toolbar', {
       name: /ml plot carousel/i,
     });
     fireEvent.keyDown(section, { key: 'Escape' });

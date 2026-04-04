@@ -74,7 +74,7 @@ export default function IVInputSection({
       headerRight={
         <fieldset className="m-0 border-none p-0">
           <legend className="sr-only">IV input mode</legend>
-          <div className="flex gap-1" role="radiogroup">
+          <div className="flex gap-1" role="group">
             {(
               [
                 { key: IV_MODES.VIX, label: 'VIX' },

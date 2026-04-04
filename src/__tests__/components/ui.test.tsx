@@ -48,28 +48,28 @@ describe('Chip', () => {
   it('renders label and handles click', async () => {
     const onClick = vi.fn();
     render(<Chip active={false} onClick={onClick} label="Option A" />);
-    const chip = screen.getByRole('radio', { name: 'Option A' });
-    expect(chip).toHaveAttribute('aria-checked', 'false');
+    const chip = screen.getByRole('button', { name: 'Option A' });
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
     await userEvent.click(chip);
     expect(onClick).toHaveBeenCalledOnce();
   });
 
   it('shows active state', () => {
     render(<Chip active={true} onClick={() => {}} label="Option B" />);
-    const chip = screen.getByRole('radio', { name: 'Option B' });
-    expect(chip).toHaveAttribute('aria-checked', 'true');
+    const chip = screen.getByRole('button', { name: 'Option B' });
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
     expect(chip.className).toContain('border-chip-active-border');
   });
 
   it('shows inactive state', () => {
     render(<Chip active={false} onClick={() => {}} label="Option C" />);
-    const chip = screen.getByRole('radio', { name: 'Option C' });
+    const chip = screen.getByRole('button', { name: 'Option C' });
     expect(chip.className).toContain('border-chip-border');
   });
 
   it('renders with type="button"', () => {
     render(<Chip active={false} onClick={() => {}} label="Test" />);
-    expect(screen.getByRole('radio', { name: 'Test' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Test' })).toHaveAttribute(
       'type',
       'button',
     );

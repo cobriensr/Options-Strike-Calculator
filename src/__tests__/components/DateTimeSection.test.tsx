@@ -157,30 +157,30 @@ describe('DateTimeSection', () => {
   describe('AM/PM toggle', () => {
     it('renders AM and PM chips', () => {
       renderSection();
-      expect(screen.getByRole('radio', { name: 'AM' })).toBeInTheDocument();
-      expect(screen.getByRole('radio', { name: 'PM' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'AM' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'PM' })).toBeInTheDocument();
     });
 
     it('shows AM chip as active when timeAmPm=AM', () => {
       renderSection({ timeAmPm: 'AM' });
-      expect(screen.getByRole('radio', { name: 'AM' })).toHaveAttribute(
-        'aria-checked',
+      expect(screen.getByRole('button', { name: 'AM' })).toHaveAttribute(
+        'aria-pressed',
         'true',
       );
-      expect(screen.getByRole('radio', { name: 'PM' })).toHaveAttribute(
-        'aria-checked',
+      expect(screen.getByRole('button', { name: 'PM' })).toHaveAttribute(
+        'aria-pressed',
         'false',
       );
     });
 
     it('shows PM chip as active when timeAmPm=PM', () => {
       renderSection({ timeAmPm: 'PM' });
-      expect(screen.getByRole('radio', { name: 'PM' })).toHaveAttribute(
-        'aria-checked',
+      expect(screen.getByRole('button', { name: 'PM' })).toHaveAttribute(
+        'aria-pressed',
         'true',
       );
-      expect(screen.getByRole('radio', { name: 'AM' })).toHaveAttribute(
-        'aria-checked',
+      expect(screen.getByRole('button', { name: 'AM' })).toHaveAttribute(
+        'aria-pressed',
         'false',
       );
     });
@@ -188,7 +188,7 @@ describe('DateTimeSection', () => {
     it('calls onAmPmChange when AM/PM chip clicked', async () => {
       const user = userEvent.setup();
       const props = renderSection({ timeAmPm: 'AM' });
-      await user.click(screen.getByRole('radio', { name: 'PM' }));
+      await user.click(screen.getByRole('button', { name: 'PM' }));
       expect(props.onAmPmChange).toHaveBeenCalledWith('PM');
     });
 
@@ -203,30 +203,30 @@ describe('DateTimeSection', () => {
   describe('timezone toggle', () => {
     it('renders ET and CT chips', () => {
       renderSection();
-      expect(screen.getByRole('radio', { name: 'ET' })).toBeInTheDocument();
-      expect(screen.getByRole('radio', { name: 'CT' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'ET' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'CT' })).toBeInTheDocument();
     });
 
     it('shows ET chip active when timezone=ET', () => {
       renderSection({ timezone: 'ET' });
-      expect(screen.getByRole('radio', { name: 'ET' })).toHaveAttribute(
-        'aria-checked',
+      expect(screen.getByRole('button', { name: 'ET' })).toHaveAttribute(
+        'aria-pressed',
         'true',
       );
-      expect(screen.getByRole('radio', { name: 'CT' })).toHaveAttribute(
-        'aria-checked',
+      expect(screen.getByRole('button', { name: 'CT' })).toHaveAttribute(
+        'aria-pressed',
         'false',
       );
     });
 
     it('shows CT chip active when timezone=CT', () => {
       renderSection({ timezone: 'CT' });
-      expect(screen.getByRole('radio', { name: 'CT' })).toHaveAttribute(
-        'aria-checked',
+      expect(screen.getByRole('button', { name: 'CT' })).toHaveAttribute(
+        'aria-pressed',
         'true',
       );
-      expect(screen.getByRole('radio', { name: 'ET' })).toHaveAttribute(
-        'aria-checked',
+      expect(screen.getByRole('button', { name: 'ET' })).toHaveAttribute(
+        'aria-pressed',
         'false',
       );
     });
@@ -234,7 +234,7 @@ describe('DateTimeSection', () => {
     it('calls onTimezoneChange when timezone chip clicked', async () => {
       const user = userEvent.setup();
       const props = renderSection({ timezone: 'ET' });
-      await user.click(screen.getByRole('radio', { name: 'CT' }));
+      await user.click(screen.getByRole('button', { name: 'CT' }));
       expect(props.onTimezoneChange).toHaveBeenCalledWith('CT');
     });
 

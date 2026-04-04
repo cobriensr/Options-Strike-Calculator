@@ -138,7 +138,7 @@ describe('IronCondorSection', () => {
 
     // The chip container is the parent of the label
     const chipContainer = icDeltaLabel.parentElement!;
-    const chips = chipContainer.querySelectorAll('[role="radio"]');
+    const chips = chipContainer.querySelectorAll('button[aria-pressed]');
     expect(chips).toHaveLength(3);
     expect(chips[0]).toHaveTextContent(/5/);
     expect(chips[1]).toHaveTextContent(/10/);
@@ -159,16 +159,16 @@ describe('IronCondorSection', () => {
     // Scope to IC Delta chip container
     const icLabel = screen.getByText(/^IC \u0394$/);
     const chipContainer = icLabel.parentElement!;
-    const chips = chipContainer.querySelectorAll('[role="radio"]');
+    const chips = chipContainer.querySelectorAll('button[aria-pressed]');
     expect(chips).toHaveLength(3);
     // First chip is selected by default
-    expect(chips[0]!).toHaveAttribute('aria-checked', 'true');
-    expect(chips[1]!).toHaveAttribute('aria-checked', 'false');
+    expect(chips[0]!).toHaveAttribute('aria-pressed', 'true');
+    expect(chips[1]!).toHaveAttribute('aria-pressed', 'false');
 
     // Click second chip
     await user.click(chips[1]!);
-    expect(chips[1]!).toHaveAttribute('aria-checked', 'true');
-    expect(chips[0]!).toHaveAttribute('aria-checked', 'false');
+    expect(chips[1]!).toHaveAttribute('aria-pressed', 'true');
+    expect(chips[0]!).toHaveAttribute('aria-pressed', 'false');
   });
 
   // ============================================================
@@ -353,16 +353,16 @@ describe('IronCondorSection', () => {
     // IC Delta chip container
     const icLabel = screen.getByText(/^IC \u0394$/);
     const chipContainer = icLabel.parentElement!;
-    const chips = chipContainer.querySelectorAll('[role="radio"]');
+    const chips = chipContainer.querySelectorAll('button[aria-pressed]');
     expect(chips).toHaveLength(2);
 
     // Default: first chip selected
-    expect(chips[0]!).toHaveAttribute('aria-checked', 'true');
+    expect(chips[0]!).toHaveAttribute('aria-pressed', 'true');
 
     // Click second chip (delta=15)
     await user.click(chips[1]!);
-    expect(chips[1]!).toHaveAttribute('aria-checked', 'true');
-    expect(chips[0]!).toHaveAttribute('aria-checked', 'false');
+    expect(chips[1]!).toHaveAttribute('aria-pressed', 'true');
+    expect(chips[0]!).toHaveAttribute('aria-pressed', 'false');
 
     // Hedge section still visible after switching
     expect(

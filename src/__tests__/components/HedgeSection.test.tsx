@@ -85,19 +85,19 @@ describe('HedgeSection', () => {
 
   it('shows hedge delta buttons', () => {
     renderHedge();
-    expect(screen.getByRole('radio', { name: '1\u0394' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: '2\u0394' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: '3\u0394' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: '5\u0394' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '1\u0394' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '2\u0394' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '3\u0394' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '5\u0394' })).toBeInTheDocument();
   });
 
   it('defaults to 2\u0394 selected', () => {
     renderHedge();
-    const btn2 = screen.getByRole('radio', { name: '2\u0394' });
-    expect(btn2).toHaveAttribute('aria-checked', 'true');
+    const btn2 = screen.getByRole('button', { name: '2\u0394' });
+    expect(btn2).toHaveAttribute('aria-pressed', 'true');
 
-    const btn1 = screen.getByRole('radio', { name: '1\u0394' });
-    expect(btn1).toHaveAttribute('aria-checked', 'false');
+    const btn1 = screen.getByRole('button', { name: '1\u0394' });
+    expect(btn1).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('shows put hedge section', () => {
@@ -153,13 +153,13 @@ describe('HedgeSection', () => {
     const user = userEvent.setup();
     renderHedge();
 
-    const btn5 = screen.getByRole('radio', { name: '5\u0394' });
-    expect(btn5).toHaveAttribute('aria-checked', 'false');
+    const btn5 = screen.getByRole('button', { name: '5\u0394' });
+    expect(btn5).toHaveAttribute('aria-pressed', 'false');
 
     await user.click(btn5);
-    expect(btn5).toHaveAttribute('aria-checked', 'true');
+    expect(btn5).toHaveAttribute('aria-pressed', 'true');
 
-    const btn2 = screen.getByRole('radio', { name: '2\u0394' });
-    expect(btn2).toHaveAttribute('aria-checked', 'false');
+    const btn2 = screen.getByRole('button', { name: '2\u0394' });
+    expect(btn2).toHaveAttribute('aria-pressed', 'false');
   });
 });

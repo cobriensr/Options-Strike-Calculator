@@ -104,7 +104,7 @@ describe('AdvancedSection', () => {
     expect(screen.getByText('Wing Width (SPX pts)')).toBeInTheDocument();
     for (const w of [5, 10, 15, 20, 25, 30, 50]) {
       expect(
-        screen.getByRole('radio', { name: String(w) }),
+        screen.getByRole('button', { name: String(w) }),
       ).toBeInTheDocument();
     }
   });
@@ -117,7 +117,7 @@ describe('AdvancedSection', () => {
         {...defaultProps({ showIC: true, onWingWidthChange })}
       />,
     );
-    await user.click(screen.getByRole('radio', { name: '25' }));
+    await user.click(screen.getByRole('button', { name: '25' }));
     expect(onWingWidthChange).toHaveBeenCalledWith(25);
   });
 
@@ -233,14 +233,14 @@ describe('AdvancedSection', () => {
   // WING WIDTH CHIP ACTIVE STATE
   // ============================================================
 
-  it('marks the active wing width chip as aria-checked', () => {
+  it('marks the active wing width chip as aria-pressed', () => {
     render(
       <AdvancedSection {...defaultProps({ showIC: true, wingWidth: 20 })} />,
     );
-    const chip20 = screen.getByRole('radio', { name: '20' });
-    expect(chip20).toHaveAttribute('aria-checked', 'true');
-    const chip10 = screen.getByRole('radio', { name: '10' });
-    expect(chip10).toHaveAttribute('aria-checked', 'false');
+    const chip20 = screen.getByRole('button', { name: '20' });
+    expect(chip20).toHaveAttribute('aria-pressed', 'true');
+    const chip10 = screen.getByRole('button', { name: '10' });
+    expect(chip10).toHaveAttribute('aria-pressed', 'false');
   });
 
   // ============================================================
@@ -668,11 +668,11 @@ describe('AdvancedSection', () => {
         })}
       />,
     );
-    expect(screen.getByRole('radio', { name: 'Auto' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Open' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'High' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Low' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Close' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Auto' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'High' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Low' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
   });
 
   it('does not show field selector chips when vixOHLC is null', () => {
@@ -687,7 +687,7 @@ describe('AdvancedSection', () => {
       />,
     );
     expect(
-      screen.queryByRole('radio', { name: 'Auto' }),
+      screen.queryByRole('button', { name: 'Auto' }),
     ).not.toBeInTheDocument();
   });
 
@@ -703,12 +703,12 @@ describe('AdvancedSection', () => {
         })}
       />,
     );
-    expect(screen.getByRole('radio', { name: 'Auto' })).toHaveAttribute(
-      'aria-checked',
+    expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute(
+      'aria-pressed',
       'true',
     );
-    expect(screen.getByRole('radio', { name: 'Open' })).toHaveAttribute(
-      'aria-checked',
+    expect(screen.getByRole('button', { name: 'Open' })).toHaveAttribute(
+      'aria-pressed',
       'false',
     );
   });
@@ -728,7 +728,7 @@ describe('AdvancedSection', () => {
         })}
       />,
     );
-    await user.click(screen.getByRole('radio', { name: 'High' }));
+    await user.click(screen.getByRole('button', { name: 'High' }));
     expect(onOHLCFieldChange).toHaveBeenCalledWith('high');
   });
 

@@ -77,7 +77,7 @@ export default function RiskCalculator() {
           <div
             id="rc-mode"
             className="flex gap-1"
-            role="radiogroup"
+            role="group"
             aria-label="Trade mode"
           >
             {(['sell', 'buy'] as const).map((m) => (
@@ -226,7 +226,7 @@ export default function RiskCalculator() {
             <div
               id="rc-wing"
               className="flex flex-wrap gap-1.5"
-              role="radiogroup"
+              role="group"
               aria-label="Wing width"
             >
               {WING_OPTIONS.filter((w) => w !== 50).map((w) => (

@@ -53,7 +53,7 @@ export default function DateLookupSection({
           </fieldset>
           <fieldset className="m-0 mt-3 border-none p-0">
             <legend className="sr-only">VIX value to use</legend>
-            <div className="flex flex-wrap gap-1.5" role="radiogroup">
+            <div className="flex flex-wrap gap-1.5" role="group">
               {(['smart', 'open', 'high', 'low', 'close'] as const).map((f) => (
                 <Chip
                   key={f}

@@ -10,10 +10,10 @@ import {
 
 // Helper: get the settle/intraday chip buttons by role (avoids matching description paragraphs)
 function getSettleChip() {
-  return screen.getByRole('radio', { name: /settlement/i });
+  return screen.getByRole('button', { name: /settlement/i });
 }
 function getIntradayChip() {
-  return screen.getByRole('radio', { name: /intraday/i });
+  return screen.getByRole('button', { name: /intraday/i });
 }
 
 // ============================================================
@@ -173,7 +173,7 @@ describe('VIXRangeAnalysis: survival heatmap', () => {
 
   it('defaults to settlement mode', () => {
     render(<VIXRangeAnalysis vix={null} spot={null} />);
-    expect(getSettleChip()).toHaveAttribute('aria-checked', 'true');
+    expect(getSettleChip()).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('shows settlement survival values by default', () => {
@@ -201,7 +201,7 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
     render(<VIXRangeAnalysis vix={null} spot={null} />);
 
     await user.click(getIntradayChip());
-    expect(getIntradayChip()).toHaveAttribute('aria-checked', 'true');
+    expect(getIntradayChip()).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('shows intraday survival values after switching', async () => {
@@ -233,7 +233,7 @@ describe('VIXRangeAnalysis: survival mode toggle', () => {
 
     await user.click(getIntradayChip());
     await user.click(getSettleChip());
-    expect(getSettleChip()).toHaveAttribute('aria-checked', 'true');
+    expect(getSettleChip()).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('table aria-label updates with mode', async () => {
@@ -498,7 +498,7 @@ describe('VIXRangeAnalysis: edge cases', () => {
     await user.click(screen.getByText(/show.*point-by-point/i));
 
     // Intraday should still be active
-    expect(getIntradayChip()).toHaveAttribute('aria-checked', 'true');
+    expect(getIntradayChip()).toHaveAttribute('aria-pressed', 'true');
 
     // Fine-grained should be visible
     expect(
@@ -514,14 +514,14 @@ describe('VIXRangeAnalysis: edge cases', () => {
 });
 
 // ============================================================
-// ACCESSIBILITY: radiogroup
+// ACCESSIBILITY: group
 // ============================================================
 describe('VIXRangeAnalysis: accessibility', () => {
-  it('survival mode chips are inside a radiogroup', () => {
+  it('survival mode chips are inside a group', () => {
     render(<VIXRangeAnalysis vix={20} spot={6800} />);
-    const group = screen.getByRole('radiogroup', { name: /survival mode/i });
+    const group = screen.getByRole('group', { name: /survival mode/i });
     expect(group).toBeInTheDocument();
-    expect(within(group).getAllByRole('radio').length).toBeGreaterThanOrEqual(
+    expect(within(group).getAllByRole('button').length).toBeGreaterThanOrEqual(
       2,
     );
   });
