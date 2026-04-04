@@ -85,7 +85,7 @@ const ToastItem = memo(function ToastItem({
   );
 });
 
-export function ToastProvider({ children }: { children: ReactNode }) {
+export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const counterRef = useRef(0);
   const timersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(

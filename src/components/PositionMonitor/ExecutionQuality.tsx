@@ -34,7 +34,9 @@ function fmtTime(time: string | null): string {
 
 // ── Main Component ──────────────────────────────────────
 
-export default function ExecutionQuality({ execution }: Readonly<ExecutionQualityProps>) {
+export default function ExecutionQuality({
+  execution,
+}: Readonly<ExecutionQualityProps>) {
   const {
     fills,
     fillRate,
@@ -228,10 +230,10 @@ export default function ExecutionQuality({ execution }: Readonly<ExecutionQualit
 function Card({
   label,
   children,
-}: {
+}: Readonly<{
   label: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <div className="bg-surface-alt border-edge rounded-lg border p-4">
       <div className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">
@@ -247,10 +249,10 @@ function Card({
 function Stat({
   label,
   children,
-}: {
+}: Readonly<{
   label: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <div>
       <div className="text-muted font-sans text-xs">{label}</div>

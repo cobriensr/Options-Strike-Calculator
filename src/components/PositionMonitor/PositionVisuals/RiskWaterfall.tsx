@@ -5,11 +5,11 @@ export default function RiskWaterfall({
   spreads,
   ironCondors,
   hedges,
-}: {
+}: Readonly<{
   spreads: readonly Spread[];
   ironCondors: readonly IronCondor[];
   hedges: readonly HedgePosition[];
-}) {
+}>) {
   // Build segments: each spread/IC contributes, hedges subtract
   type Segment = {
     label: string;

@@ -3,9 +3,9 @@ import { fmtTime } from './helpers';
 
 export default function CreditTimeChart({
   trades,
-}: {
+}: Readonly<{
   trades: readonly ExecutedTrade[];
-}) {
+}>) {
   // Filter to TO OPEN trades with positive net credits
   const openTrades = trades.filter(
     (t) => t.legs.some((l) => l.posEffect === 'TO OPEN') && t.netPrice > 0,

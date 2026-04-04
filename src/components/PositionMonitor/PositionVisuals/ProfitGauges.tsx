@@ -4,10 +4,10 @@ import { fmtK, fmtStrike } from './helpers';
 export default function ProfitGauges({
   spreads,
   ironCondors,
-}: {
+}: Readonly<{
   spreads: readonly Spread[];
   ironCondors: readonly IronCondor[];
-}) {
+}>) {
   type GaugeData = {
     label: string;
     pct: number | null;

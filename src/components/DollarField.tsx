@@ -5,14 +5,14 @@ export default function DollarField({
   onChange,
   placeholder,
   wide,
-}: {
+}: Readonly<{
   id: string;
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder: string;
   wide?: boolean;
-}) {
+}>) {
   return (
     <div>
       <label

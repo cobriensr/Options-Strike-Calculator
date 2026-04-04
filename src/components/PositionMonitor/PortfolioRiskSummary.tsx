@@ -332,11 +332,11 @@ function Card({
   label,
   sub,
   children,
-}: {
+}: Readonly<{
   label: string;
   sub?: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <div className="bg-surface-alt border-edge rounded-lg border p-4">
       <div className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">

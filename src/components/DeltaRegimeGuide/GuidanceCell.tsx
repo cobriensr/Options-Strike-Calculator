@@ -5,7 +5,12 @@ interface Props {
   color: string;
 }
 
-export default function GuidanceCell({ label, delta, desc, color }: Readonly<Props>) {
+export default function GuidanceCell({
+  label,
+  delta,
+  desc,
+  color,
+}: Readonly<Props>) {
   return (
     <div className="text-center">
       <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">

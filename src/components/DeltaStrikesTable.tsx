@@ -8,7 +8,10 @@ interface Props {
   spot: number;
 }
 
-export default function DeltaStrikesTable({ allDeltas, spot }: Readonly<Props>) {
+export default function DeltaStrikesTable({
+  allDeltas,
+  spot,
+}: Readonly<Props>) {
   // Get IV acceleration mult from first non-error row
   const firstRow = allDeltas.find((r) => !('error' in r));
   const ivAccelMult =

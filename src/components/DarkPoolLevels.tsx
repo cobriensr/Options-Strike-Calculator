@@ -201,10 +201,10 @@ export default memo(function DarkPoolLevels({
 function LevelRow({
   level,
   maxPremium,
-}: {
+}: Readonly<{
   level: DarkPoolLevel;
   maxPremium: number;
-}) {
+}>) {
   const barWidth = Math.max((level.totalPremium / maxPremium) * 100, 2);
 
   return (

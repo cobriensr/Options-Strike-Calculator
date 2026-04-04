@@ -269,11 +269,11 @@ function Card({
   label,
   sub,
   children,
-}: {
+}: Readonly<{
   label: string;
   sub?: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <div className="bg-surface-alt border-edge rounded-lg border p-4">
       <div className="text-tertiary font-sans text-xs font-bold tracking-wider uppercase">
@@ -290,10 +290,10 @@ function Card({
 function Stat({
   label,
   children,
-}: {
+}: Readonly<{
   label: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <div>
       <div className="text-muted font-sans text-xs">{label}</div>

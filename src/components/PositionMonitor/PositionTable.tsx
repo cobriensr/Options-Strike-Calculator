@@ -206,11 +206,11 @@ function IronCondorRow({
   ic,
   spotPrice,
   index,
-}: {
+}: Readonly<{
   ic: IronCondor;
   spotPrice: number;
   index: number;
-}) {
+}>) {
   const [expanded, setExpanded] = useState(false);
   const alt = index % 2 === 1;
   const bg = alt ? 'bg-table-alt' : 'bg-surface';
@@ -303,11 +303,11 @@ function WingRow({
   label,
   spread,
   spotPrice,
-}: {
+}: Readonly<{
   label: string;
   spread: Spread;
   spotPrice: number;
-}) {
+}>) {
   return (
     <tr className="bg-surface-alt/50">
       <td className={`${TD_LEFT} pl-8 text-xs`}>
@@ -345,11 +345,11 @@ function SpreadRow({
   spread,
   spotPrice,
   rowIndex,
-}: {
+}: Readonly<{
   spread: Spread;
   spotPrice: number;
   rowIndex: number;
-}) {
+}>) {
   const alt = rowIndex % 2 === 1;
   const bg = alt ? 'bg-table-alt' : 'bg-surface';
 
@@ -393,10 +393,10 @@ function SpreadRow({
 function HedgeRows({
   hedges,
   startIndex,
-}: {
+}: Readonly<{
   hedges: readonly HedgePosition[];
   startIndex: number;
-}) {
+}>) {
   return (
     <>
       {hedges.map((h, i) => {
@@ -444,10 +444,10 @@ function HedgeRows({
 function NakedRows({
   naked,
   startIndex,
-}: {
+}: Readonly<{
   naked: readonly NakedPosition[];
   startIndex: number;
-}) {
+}>) {
   return (
     <>
       {naked.map((n, i) => {
@@ -485,7 +485,7 @@ function NakedRows({
 
 // ── % Max Progress Bar ────────────────────────────────────
 
-function PctMaxBar({ pct }: { pct: number | null }) {
+function PctMaxBar({ pct }: Readonly<{ pct: number | null }>) {
   if (pct === null) return <span className="text-muted">{'\u2014'}</span>;
 
   const clamped = Math.min(Math.max(pct, 0), 100);

@@ -72,7 +72,7 @@ export const Chip = memo(function Chip({
 });
 
 /** Wrapper that shows a right-edge fade when content overflows horizontally */
-export function ScrollHint({ children }: { children: ReactNode }) {
+export function ScrollHint({ children }: Readonly<{ children: ReactNode }>) {
   const ref = useRef<HTMLDivElement>(null);
   const [canScroll, setCanScroll] = useState(false);
 

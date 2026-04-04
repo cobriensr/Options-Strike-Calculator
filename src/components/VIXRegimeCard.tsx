@@ -127,12 +127,12 @@ function MiniStat({
   value,
   sub,
   color,
-}: {
+}: Readonly<{
   label: string;
   value: string;
   sub: string;
   color: string;
-}) {
+}>) {
   return (
     <div>
       <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.06em] uppercase">

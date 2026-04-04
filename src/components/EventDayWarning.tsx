@@ -106,14 +106,14 @@ export default function EventDayWarning({ selectedDate, liveEvents }: Props) {
 
 function EventRow({
   event,
-}: {
+}: Readonly<{
   event: {
     event: string;
     description: string;
     time: string;
     severity: 'high' | 'medium';
   };
-}) {
+}>) {
   const tagColor = event.severity === 'high' ? theme.red : theme.caution;
 
   return (

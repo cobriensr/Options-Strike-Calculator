@@ -273,7 +273,7 @@ function TradeRow({
   isExpanded,
   bg,
   onToggle,
-}: {
+}: Readonly<{
   trade: ExecutedTrade;
   index: number;
   action: { text: string; isOpen: boolean };
@@ -282,7 +282,7 @@ function TradeRow({
   isExpanded: boolean;
   bg: string;
   onToggle: (idx: number) => void;
-}) {
+}>) {
   const fees = cash ? Math.abs(cash.commissions) + Math.abs(cash.miscFees) : 0;
   const handleClick = useCallback(() => onToggle(index), [onToggle, index]);
 

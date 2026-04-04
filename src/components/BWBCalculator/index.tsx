@@ -17,7 +17,9 @@ interface BWBCalculatorProps {
   selectedDate?: string;
 }
 
-export default function BWBCalculator({ selectedDate }: Readonly<BWBCalculatorProps>) {
+export default function BWBCalculator({
+  selectedDate,
+}: Readonly<BWBCalculatorProps>) {
   const [side, setSide] = useState<BWBSide>('calls');
   const [lowStrike, setLowStrike] = useState('');
   const [midStrike, setMidStrike] = useState('');

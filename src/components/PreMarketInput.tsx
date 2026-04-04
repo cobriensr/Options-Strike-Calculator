@@ -208,8 +208,7 @@ export default function PreMarketInput({
         <div className="grid grid-cols-2 gap-2.5">
           <div>
             <label htmlFor="pm-globex-high" className={tinyLbl}>
-              Globex High{' '}
-              <span className="text-danger ml-0.5">*</span>
+              Globex High <span className="text-danger ml-0.5">*</span>
             </label>
             <input
               id="pm-globex-high"
@@ -223,8 +222,7 @@ export default function PreMarketInput({
           </div>
           <div>
             <label htmlFor="pm-globex-low" className={tinyLbl}>
-              Globex Low{' '}
-              <span className="text-danger ml-0.5">*</span>
+              Globex Low <span className="text-danger ml-0.5">*</span>
             </label>
             <input
               id="pm-globex-low"
@@ -238,8 +236,7 @@ export default function PreMarketInput({
           </div>
           <div>
             <label htmlFor="pm-globex-close" className={tinyLbl}>
-              Globex Close{' '}
-              <span className="text-danger ml-0.5">*</span>
+              Globex Close <span className="text-danger ml-0.5">*</span>
             </label>
             <input
               id="pm-globex-close"
