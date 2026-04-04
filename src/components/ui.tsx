@@ -56,8 +56,7 @@ export const Chip = memo(function Chip({
     <button
       type="button"
       onClick={onClick}
-      role="radio"
-      aria-checked={active}
+      aria-pressed={active}
       aria-label={label}
       className={
         'cursor-pointer rounded-full border-[1.5px] px-3.5 py-1.5 font-mono text-[13px] font-medium transition-all duration-100 ' +

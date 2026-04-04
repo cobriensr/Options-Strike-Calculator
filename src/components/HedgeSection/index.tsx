@@ -69,8 +69,7 @@ export default function HedgeSection({
                 <button
                   key={row.delta}
                   onClick={() => onHedgeDeltaChange(idx)}
-                  role="radio"
-                  aria-checked={hedgeDeltaIdx === idx}
+                  aria-pressed={hedgeDeltaIdx === idx}
                   className={
                     'cursor-pointer rounded-full border-[1.5px] px-2.5 py-0.5 font-mono text-xs font-medium transition-all duration-100 ' +
                     (hedgeDeltaIdx === idx
@@ -92,8 +91,7 @@ export default function HedgeSection({
               <button
                 key={d}
                 onClick={() => setHedgeDelta(d)}
-                role="radio"
-                aria-checked={hedgeDelta === d}
+                aria-pressed={hedgeDelta === d}
                 className={
                   'cursor-pointer rounded-full border-[1.5px] px-2.5 py-0.5 font-mono text-xs font-medium transition-all duration-100 ' +
                   (hedgeDelta === d
@@ -114,8 +112,7 @@ export default function HedgeSection({
               <button
                 key={d}
                 onClick={() => setHedgeDte(d)}
-                role="radio"
-                aria-checked={hedgeDte === d}
+                aria-pressed={hedgeDte === d}
                 className={
                   'cursor-pointer rounded-full border-[1.5px] px-2.5 py-0.5 font-mono text-xs font-medium transition-all duration-100 ' +
                   (hedgeDte === d

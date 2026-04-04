@@ -63,8 +63,7 @@ const ToastItem = memo(function ToastItem({
   onDismiss: (id: number) => void;
 }) {
   return (
-    <div
-      role="status"
+    <output
       aria-live="polite"
       className={`flex items-center gap-2.5 rounded-lg border px-4 py-3 font-sans text-[13px] font-medium shadow-[var(--shadow-card)] backdrop-blur-sm ${
         toast.exiting ? 'animate-toast-out' : 'animate-toast-in'
@@ -81,7 +80,7 @@ const ToastItem = memo(function ToastItem({
       >
         &#x2715;
       </button>
-    </div>
+    </output>
   );
 });
 

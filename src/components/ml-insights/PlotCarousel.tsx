@@ -146,6 +146,7 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
 
   return (
     <section
+      role="toolbar"
       onKeyDown={handleKeyDown}
       tabIndex={0}
       aria-label="ML plot carousel"

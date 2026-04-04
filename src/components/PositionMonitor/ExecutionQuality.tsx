@@ -60,10 +60,9 @@ export default function ExecutionQuality({
       : fills.length + rejectedOrders + canceledOrders;
 
   return (
-    <div
+    <section
       className="flex flex-col gap-4"
-      role="region"
-      aria-label="Execution quality"
+            aria-label="Execution quality"
       data-testid="execution-quality"
     >
       {/* Order Flow Summary */}
@@ -221,7 +220,7 @@ export default function ExecutionQuality({
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 

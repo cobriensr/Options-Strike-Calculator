@@ -54,9 +54,8 @@ export default function PositionVisuals(props: Readonly<PositionVisualsProps>) {
   ] as const;
 
   return (
-    <div
-      role="region"
-      aria-label="Position visualizations"
+    <section
+            aria-label="Position visualizations"
       data-testid="position-visuals"
     >
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -95,6 +94,6 @@ export default function PositionVisuals(props: Readonly<PositionVisualsProps>) {
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }

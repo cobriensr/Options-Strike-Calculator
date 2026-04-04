@@ -98,9 +98,8 @@ export default function AccountOverview({
     grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
   return (
-    <div
+    <section
       className="flex flex-col gap-4"
-      role="region"
       aria-label="Account overview"
       data-testid="account-overview"
     >
@@ -259,7 +258,7 @@ export default function AccountOverview({
           </div>
         </div>
       )}
-    </div>
+    </section>
   );
 }
 

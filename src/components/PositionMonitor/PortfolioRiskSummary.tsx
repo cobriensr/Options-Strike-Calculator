@@ -150,10 +150,9 @@ export default function PortfolioRiskSummary({
   const sideBreakdownSub = 'Net risk by side' + hedgeSuffix;
 
   return (
-    <div
+    <section
       className="grid grid-cols-2 gap-3 md:grid-cols-4"
-      role="region"
-      aria-label="Portfolio risk summary"
+            aria-label="Portfolio risk summary"
     >
       {/* 1 — Total Max Loss (adjusted for stop multiplier) */}
       <Card
@@ -322,7 +321,7 @@ export default function PortfolioRiskSummary({
           ))}
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
