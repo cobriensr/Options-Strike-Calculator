@@ -8,8 +8,19 @@ used across clustering.py, eda.py, and visualize.py.
 import json
 import os
 import sys
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Suppress sklearn SimpleImputer warning for columns with all-NaN values.
+# These columns (e.g., iv_crush_rate, iv_at_t2) are legitimately sparse in
+# early pipeline stages and get dropped or filled downstream.
+warnings.filterwarnings(
+    "ignore",
+    message="Skipping features without any observed values",
+    category=UserWarning,
+    module="sklearn.impute",
+)
 
 import pandas as pd
 
