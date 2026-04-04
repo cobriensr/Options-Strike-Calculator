@@ -21,6 +21,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { PLOT_ANALYSIS_SYSTEM_PROMPT } from '../_lib/plot-analysis-prompts.js';
 
 export const config = { maxDuration: 780 };
 
@@ -52,40 +53,7 @@ function plotNameFromPath(pathname: string): string {
   return filename.replace(/\.png$/i, '');
 }
 
-/**
- * Build the system prompt for plot analysis.
- * This is a static prompt cached across all 21 calls per run.
- */
-function buildSystemPrompt(): string {
-  return [
-    'You are an ML pipeline analyst for a 0DTE SPX options trading system.',
-    'You analyze visualization output from a Python ML pipeline that',
-    'processes 100+ daily features spanning volatility, GEX, flow, dark',
-    'pool, options volume, and IV dynamics.',
-    '',
-    'For each plot, provide analysis in these 5 sections:',
-    '',
-    '1. VISUALIZATION: What type of plot, axes, encodings, layout.',
-    '2. DATA INPUTS: Tables, features, preprocessing, sample size.',
-    '3. INTERPRETATION: Patterns, significance, anomalies, regime shifts.',
-    '4. IMPLICATIONS: Trading system impact — structure selection,',
-    '   confidence calibration, feature engineering.',
-    '5. CAVEATS: Sample size concerns, confounders, limitations.',
-    '',
-    'If you cannot read a label or determine an encoding, say so explicitly.',
-    'Every sentence should add information — no filler.',
-    '',
-    'Respond with a JSON object:',
-    '{',
-    '  "visualization": "...",',
-    '  "data_inputs": "...",',
-    '  "interpretation": "...",',
-    '  "implications": "...",',
-    '  "caveats": "..."',
-    '}',
-    'Each field should be 2-4 paragraphs of substantive analysis.',
-  ].join('\n');
-}
+// No inline prompt — uses the full system prompt from plot-analysis-prompts.ts
 
 /**
  * Extract the relevant findings slice for a given plot name.
@@ -293,7 +261,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         : null;
 
     // ── 3. Build system prompt (cached across all calls) ──
-    const systemPrompt = buildSystemPrompt();
+    const systemPrompt = PLOT_ANALYSIS_SYSTEM_PROMPT;
 
     // ── 4. First plot sequential (writes cache), rest concurrent (read cache) ──
     // Per Anthropic docs: "send 1 request, await the first streamed token,
