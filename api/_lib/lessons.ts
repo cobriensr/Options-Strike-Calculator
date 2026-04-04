@@ -236,8 +236,8 @@ function buildContextString(lesson: Lesson): string {
 
   if (lesson.sourceDate) parts.push(lesson.sourceDate);
   if (mc.structure != null) parts.push(String(mc.structure));
-  if (mc.vix != null) parts.push(`VIX:${mc.vix}`);
-  if (mc.gexRegime != null) parts.push(`GEX:${mc.gexRegime}`);
+  if (mc.vix != null) parts.push(`VIX:${String(mc.vix)}`);
+  if (mc.gexRegime != null) parts.push(`GEX:${String(mc.gexRegime)}`);
   if (mc.dayOfWeek != null) parts.push(String(mc.dayOfWeek));
   if (mc.wasCorrect != null)
     parts.push(`correct:${mc.wasCorrect ? 'yes' : 'no'}`);

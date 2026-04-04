@@ -170,12 +170,12 @@ export async function getPreviousRecommendation(
 
   // Include the reasoning
   if (fullResponse.reasoning) {
-    lines.push(`Reasoning: ${fullResponse.reasoning}`);
+    lines.push(`Reasoning: ${String(fullResponse.reasoning)}`);
   }
 
   // Include structure rationale for full context
   if (fullResponse.structureRationale) {
-    lines.push(`Structure rationale: ${fullResponse.structureRationale}`);
+    lines.push(`Structure rationale: ${String(fullResponse.structureRationale)}`);
   }
 
   // Include key management rules
@@ -183,7 +183,7 @@ export async function getPreviousRecommendation(
     | Record<string, unknown>
     | undefined;
   if (mgmt) {
-    if (mgmt.profitTarget) lines.push(`Profit target: ${mgmt.profitTarget}`);
+    if (mgmt.profitTarget) lines.push(`Profit target: ${String(mgmt.profitTarget)}`);
     if (Array.isArray(mgmt.stopConditions)) {
       lines.push('Stop conditions:');
       for (const stop of mgmt.stopConditions) {
@@ -191,7 +191,7 @@ export async function getPreviousRecommendation(
       }
     }
     if (mgmt.flowReversalSignal)
-      lines.push(`Flow reversal signal: ${mgmt.flowReversalSignal}`);
+      lines.push(`Flow reversal signal: ${String(mgmt.flowReversalSignal)}`);
   }
 
   // Include entry plan status
@@ -200,16 +200,16 @@ export async function getPreviousRecommendation(
     lines.push(
       'Entry plan (RECOMMENDED strikes — actual fills are in "Current Open Positions"):',
     );
-    if (plan.maxTotalSize) lines.push(`Max total size: ${plan.maxTotalSize}`);
+    if (plan.maxTotalSize) lines.push(`Max total size: ${String(plan.maxTotalSize)}`);
     const e1 = plan.entry1 as Record<string, unknown> | undefined;
     const e2 = plan.entry2 as Record<string, unknown> | undefined;
     const e3 = plan.entry3 as Record<string, unknown> | undefined;
     if (e1?.sizePercent)
       lines.push(
-        `Entry 1 (recommended): ${e1.structure} ${e1.delta}Δ at ${e1.sizePercent}% — ${e1.note ?? ''}`,
+        `Entry 1 (recommended): ${String(e1.structure)} ${String(e1.delta)}Δ at ${String(e1.sizePercent)}% — ${String(e1.note ?? '')}`,
       );
-    if (e2?.condition) lines.push(`Entry 2 condition: ${e2.condition}`);
-    if (e3?.condition) lines.push(`Entry 3 condition: ${e3.condition}`);
+    if (e2?.condition) lines.push(`Entry 2 condition: ${String(e2.condition)}`);
+    if (e3?.condition) lines.push(`Entry 3 condition: ${String(e3.condition)}`);
   }
 
   // Include observations (top 3 for context)
@@ -226,9 +226,9 @@ export async function getPreviousRecommendation(
     | undefined;
   if (strikes) {
     if (strikes.putStrikeNote)
-      lines.push(`Put strike guidance: ${strikes.putStrikeNote}`);
+      lines.push(`Put strike guidance: ${String(strikes.putStrikeNote)}`);
     if (strikes.callStrikeNote)
-      lines.push(`Call strike guidance: ${strikes.callStrikeNote}`);
+      lines.push(`Call strike guidance: ${String(strikes.callStrikeNote)}`);
   }
 
   return lines.join('\n');

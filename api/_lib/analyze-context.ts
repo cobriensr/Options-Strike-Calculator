@@ -731,33 +731,33 @@ export async function buildAnalysisContext(
   const contextText = `
 ## Analysis Mode: ${mode === 'review' ? 'END-OF-DAY REVIEW' : mode === 'midday' ? 'MID-DAY RE-ANALYSIS' : 'PRE-TRADE ENTRY'}
 ## Current Calculator Context
-- Date: ${context.selectedDate ?? 'today'}
-- Entry time: ${context.entryTime ?? 'N/A'} (analyze charts ONLY up to this time — ignore any data after it)
-- SPX: ${context.spx ?? 'N/A'}
-- SPY: ${context.spy ?? 'N/A'}
-- VIX: ${context.vix ?? 'N/A'}
-- VIX1D: ${context.vix1d ?? 'N/A'}
-- VIX9D: ${context.vix9d ?? 'N/A'}
-- VVIX: ${context.vvix ?? 'N/A'}
-- σ (IV): ${context.sigma ?? 'N/A'} (source: ${context.sigmaSource ?? 'unknown'})
-- T (time to expiry): ${context.T ?? 'N/A'}
-- Hours remaining: ${context.hoursRemaining ?? 'N/A'}
-- Delta Guide ceiling (IC): ${context.deltaCeiling ?? 'N/A'}Δ
-- Put spread ceiling: ${context.putSpreadCeiling ?? 'N/A'}Δ
-- Call spread ceiling: ${context.callSpreadCeiling ?? 'N/A'}Δ
-- VIX regime zone: ${context.regimeZone ?? 'N/A'}
-- Clustering multiplier: ${context.clusterMult ?? 'N/A'}
+- Date: ${String(context.selectedDate ?? 'today')}
+- Entry time: ${String(context.entryTime ?? 'N/A')} (analyze charts ONLY up to this time — ignore any data after it)
+- SPX: ${String(context.spx ?? 'N/A')}
+- SPY: ${String(context.spy ?? 'N/A')}
+- VIX: ${String(context.vix ?? 'N/A')}
+- VIX1D: ${String(context.vix1d ?? 'N/A')}
+- VIX9D: ${String(context.vix9d ?? 'N/A')}
+- VVIX: ${String(context.vvix ?? 'N/A')}
+- σ (IV): ${String(context.sigma ?? 'N/A')} (source: ${String(context.sigmaSource ?? 'unknown')})
+- T (time to expiry): ${String(context.T ?? 'N/A')}
+- Hours remaining: ${String(context.hoursRemaining ?? 'N/A')}
+- Delta Guide ceiling (IC): ${String(context.deltaCeiling ?? 'N/A')}Δ
+- Put spread ceiling: ${String(context.putSpreadCeiling ?? 'N/A')}Δ
+- Call spread ceiling: ${String(context.callSpreadCeiling ?? 'N/A')}Δ
+- VIX regime zone: ${String(context.regimeZone ?? 'N/A')}
+- Clustering multiplier: ${String(context.clusterMult ?? 'N/A')}
 - Clustering put-side multiplier: ${numOrUndef(context.clusterPutMult)?.toFixed(3) ?? 'N/A'}
 - Clustering call-side multiplier: ${numOrUndef(context.clusterCallMult)?.toFixed(3) ?? 'N/A'}
-- Day of week: ${context.dowLabel ?? 'N/A'}
-- Opening range signal: ${context.openingRangeSignal ?? 'N/A'}
+- Day of week: ${String(context.dowLabel ?? 'N/A')}
+- Opening range signal: ${String(context.openingRangeSignal ?? 'N/A')}
 - Opening range available: ${context.openingRangeAvailable ? 'YES (30-min data complete)' : 'NO (entry before 10:00 AM ET — range not yet established)'}
 - Opening range high: ${numOrUndef(context.openingRangeHigh)?.toFixed(2) ?? 'N/A'}
 - Opening range low: ${numOrUndef(context.openingRangeLow)?.toFixed(2) ?? 'N/A'}
 - Opening range % of median consumed: ${numOrUndef(context.openingRangePctConsumed) != null ? `${numOrUndef(context.openingRangePctConsumed)!.toFixed(0)}%` : 'N/A'}
-- VIX term structure signal: ${context.vixTermSignal ?? 'N/A'}
-- RV/IV ratio: ${context.rvIvRatio ?? 'N/A'}
-- Overnight gap: ${context.overnightGap ?? 'N/A'}
+- VIX term structure signal: ${String(context.vixTermSignal ?? 'N/A')}
+- RV/IV ratio: ${String(context.rvIvRatio ?? 'N/A')}
+- Overnight gap: ${String(context.overnightGap ?? 'N/A')}
 - Scheduled events: ${(() => {
     const events = context.events as
       | Array<{ event: string; time: string; severity: string }>
@@ -851,7 +851,7 @@ ${spxCandlesContext ? `\n## SPX Intraday Price Action (5-min candles)\nReal OHLC
 ${directionalChainContext ? `\n${directionalChainContext}\nThis chain data is for the directional opportunity assessment. The trader buys 14 DTE ATM options at 50Δ minimum. Use bid/ask for entry price guidance. Do not vary strike or DTE — the trader sizes the position themselves.\n` : ''}
 ${positionContext ? `\n## Current Open Positions (live from Schwab)\nThese are the trader's ACTUAL open SPX 0DTE positions right now. Reference these specific strikes in your analysis — do not estimate or guess strike placement.\n\n${positionContext}\n` : ''}
 ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTANT: This is what YOU recommended earlier today. Be consistent with this analysis unless conditions have materially changed. If you are changing your recommendation, explicitly state WHAT changed and WHY.\n⚠️ STRIKE OVERRIDE: Any strike prices or position descriptions in this section are from the prior recommendation — they describe what the trader was ADVISED to enter, not necessarily what was filled at those exact strikes. If "Current Open Positions" is provided above, those Schwab-verified strikes are ground truth and OVERRIDE any strike estimates here. Use ONLY the actual positions for all cushion, risk, and management calculations.\n\n${previousContext}\n` : ''}
-IMPORTANT: The trader is evaluating at ${context.entryTime ?? 'the specified time'}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
+IMPORTANT: The trader is evaluating at ${String(context.entryTime ?? 'the specified time')}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
 Provide your complete analysis as JSON. Mode is "${mode}".`;
 
   // Fetch active lessons and historical win rate in parallel
