@@ -74,6 +74,7 @@ jobs:
             const blob = await put(blobPath, fileBuffer, {
               access: 'private',
               addRandomSuffix: false,
+              allowOverwrite: true,
             });
 
             console.log('Uploaded: ' + file + ' -> ' + blob.url);
