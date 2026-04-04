@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-04T06:59:14+00:00",
+  "generated_at": "2026-04-04T07:45:43+00:00",
   "dataset": {
     "total_days": 39,
     "labeled_days": 36,
@@ -200,7 +200,7 @@
       "Outcomes: no rows found",
       "Day Labels: no rows found"
     ],
-    "run_time": "2026-04-04 06:58:27"
+    "run_time": "2026-04-04 07:45:05"
   },
   "pipeline_sections": [
     "health",
@@ -592,7 +592,7 @@
       {
         "name": "feature_importance_comparison",
         "generated": true,
-        "file_size_kb": 135.9
+        "file_size_kb": 178.9
       },
       {
         "name": "flow_reliability",
