@@ -70,7 +70,7 @@ export default function PositionMonitor({ spotPrice }: PositionMonitorProps) {
       if (!file) return;
 
       setError(null);
-      void file.text().then(
+      file.text().then(
         (text) => {
           try {
             setUploadSpot(spotPrice);
