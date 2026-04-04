@@ -309,7 +309,12 @@ def feature_importance(df: pd.DataFrame) -> None:
         common = target.loc[vals.index]
         if common.std() == 0 or vals.std() == 0:
             continue
-        r, p = stats.pointbiserialr(common, vals)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="An input array is constant",
+                category=stats.ConstantInputWarning,
+            )
+            r, p = stats.pointbiserialr(common, vals)
         correlations.append((col, r, p, len(vals)))
 
     correlations.sort(key=lambda x: abs(x[1]), reverse=True)
@@ -941,7 +946,12 @@ def save_findings(df: pd.DataFrame, labeled: pd.DataFrame) -> None:
         common = target.loc[vals.index]
         if common.std() == 0 or vals.std() == 0:
             continue
-        r, p = stats.pointbiserialr(common, vals)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="An input array is constant",
+                category=stats.ConstantInputWarning,
+            )
+            r, p = stats.pointbiserialr(common, vals)
         if not np.isnan(r):
             correlations.append((col, float(r), float(p)))
 
