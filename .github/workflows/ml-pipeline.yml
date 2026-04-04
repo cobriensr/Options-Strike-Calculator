@@ -88,10 +88,12 @@ jobs:
         env:
           VERCEL_URL: ${{ secrets.VERCEL_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          VERCEL_BYPASS_SECRET: ${{ secrets.VERCEL_BYPASS_SECRET }}
         run: |
           response=$(curl -sL -X POST "https://$VERCEL_URL/api/ml/analyze-plots" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
+            -H "x-vercel-protection-bypass: $VERCEL_BYPASS_SECRET" \
             --max-time 600 \
             -w "\n%{http_code}" 2>&1) || true
 
