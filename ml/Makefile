@@ -34,9 +34,9 @@ early-shap: ## Run Phase 2 early experiment with SHAP plots
 pin: ## Run settlement pin risk / gamma correlation analysis
 	$(PYTHON) src/pin_analysis.py
 
-lint: ## Check code quality (ruff lint + format check)
-	$(PYTHON) -m ruff check src/ tests/
-	$(PYTHON) -m ruff format --check src/ tests/
+lint: ## Check and auto-fix code quality (ruff lint + format)
+	$(PYTHON) -m ruff check --fix src/ tests/
+	$(PYTHON) -m ruff format src/ tests/
 
 format: ## Auto-fix formatting and lint issues
 	$(PYTHON) -m ruff check --fix src/ tests/

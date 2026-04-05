@@ -138,62 +138,67 @@ VOL_SURFACE_FEATURES: list[str] = [
 # ── Futures Feature Groups ────────────────────────────────
 
 ES_FEATURES: list[str] = [
-    "es_momentum_t1",        # ES 1H return at T1 checkpoint (%)
-    "es_momentum_t2",        # ES 1H return at T2 checkpoint (%)
-    "es_spx_basis_t1",       # ES - SPX fair value at T1 (pts)
-    "es_volume_ratio_t1",    # ES volume / 20-day avg at T1
-    "es_overnight_range",    # Globex high - low (pts)
-    "es_overnight_gap",      # Cash open - Globex close (pts)
-    "es_gap_fill_pct_t1",    # How much of the gap filled by T1
+    "es_momentum_t1",  # ES 1H return at T1 checkpoint (%)
+    "es_momentum_t2",  # ES 1H return at T2 checkpoint (%)
+    "es_spx_basis_t1",  # ES - SPX fair value at T1 (pts)
+    "es_volume_ratio_t1",  # ES volume / 20-day avg at T1
+    "es_overnight_range",  # Globex high - low (pts)
+    "es_overnight_gap",  # Cash open - Globex close (pts)
+    "es_gap_fill_pct_t1",  # How much of the gap filled by T1
     "es_vwap_deviation_t1",  # ES price - overnight VWAP at T1 (pts)
 ]
 
 NQ_FEATURES: list[str] = [
-    "nq_momentum_t1",        # NQ 1H return at T1 (%)
-    "nq_es_ratio_t1",        # NQ/ES ratio at T1 (tech strength)
-    "nq_es_ratio_change",    # NQ/ES ratio change from prior day close
+    "nq_momentum_t1",  # NQ 1H return at T1 (%)
+    "nq_es_ratio_t1",  # NQ/ES ratio at T1 (tech strength)
+    "nq_es_ratio_change",  # NQ/ES ratio change from prior day close
     "nq_qqq_divergence_t1",  # sign(NQ momentum) vs sign(QQQ NCP) (1/-1)
 ]
 
 VX_FEATURES: list[str] = [
-    "vx_front_price",         # VXM front month close/last
-    "vx_term_spread",         # VXM front - VXM second (pts)
-    "vx_term_slope_pct",      # (front - back) / back as percentage
-    "vx_contango_signal",     # 1 = contango, -1 = backwardation
-    "vx_basis",               # VXM front - spot VIX (futures premium)
+    "vx_front_price",  # VXM front month close/last
+    "vx_term_spread",  # VXM front - VXM second (pts)
+    "vx_term_slope_pct",  # (front - back) / back as percentage
+    "vx_contango_signal",  # 1 = contango, -1 = backwardation
+    "vx_basis",  # VXM front - spot VIX (futures premium)
 ]
 
 ZN_FEATURES: list[str] = [
-    "zn_momentum_t1",         # ZN 1H return at T1 (%)
-    "zn_daily_change",        # Prior day ZN change (%)
+    "zn_momentum_t1",  # ZN 1H return at T1 (%)
+    "zn_daily_change",  # Prior day ZN change (%)
     "spx_zn_correlation_5d",  # 5-day rolling correlation SPX vs ZN
 ]
 
 RTY_FEATURES: list[str] = [
-    "rty_momentum_t1",        # RTY 1H return at T1 (%)
-    "rty_es_divergence_t1",   # sign(RTY) vs sign(ES) agreement (1/-1)
+    "rty_momentum_t1",  # RTY 1H return at T1 (%)
+    "rty_es_divergence_t1",  # sign(RTY) vs sign(ES) agreement (1/-1)
 ]
 
 CL_FEATURES: list[str] = [
     "cl_overnight_change_pct",  # % change from prior settlement to Globex close
     "cl_intraday_momentum_t1",  # % change from open to T1
-    "cl_es_correlation_5d",     # 5-day rolling correlation CL vs ES
+    "cl_es_correlation_5d",  # 5-day rolling correlation CL vs ES
 ]
 
 ES_OPTIONS_FEATURES: list[str] = [
-    "es_put_oi_concentration",    # OI at largest put strike / total put OI
-    "es_call_oi_concentration",   # OI at largest call strike / total call OI
-    "es_options_max_pain_dist",   # Distance from ES to max pain strike (pts)
-    "es_spx_gamma_agreement",     # ES and SPX gamma walls agree? (0-1 score)
-    "es_put_buy_aggressor_pct",   # % of ES put vol from buy aggressors
+    "es_put_oi_concentration",  # OI at largest put strike / total put OI
+    "es_call_oi_concentration",  # OI at largest call strike / total call OI
+    "es_options_max_pain_dist",  # Distance from ES to max pain strike (pts)
+    "es_spx_gamma_agreement",  # ES and SPX gamma walls agree? (0-1 score)
+    "es_put_buy_aggressor_pct",  # % of ES put vol from buy aggressors
     "es_call_buy_aggressor_pct",  # % of ES call vol from buy aggressors
-    "es_options_net_delta",       # Sum of exchange delta x OI at ATM strikes
-    "es_atm_iv",                  # Exchange-computed IV at nearest ATM strike
+    "es_options_net_delta",  # Sum of exchange delta x OI at ATM strikes
+    "es_atm_iv",  # Exchange-computed IV at nearest ATM strike
 ]
 
 FUTURES_FEATURES: list[str] = (
-    ES_FEATURES + NQ_FEATURES + VX_FEATURES + ZN_FEATURES
-    + RTY_FEATURES + CL_FEATURES + ES_OPTIONS_FEATURES
+    ES_FEATURES
+    + NQ_FEATURES
+    + VX_FEATURES
+    + ZN_FEATURES
+    + RTY_FEATURES
+    + CL_FEATURES
+    + ES_OPTIONS_FEATURES
 )
 
 
