@@ -284,9 +284,18 @@ def takeaway(text: str) -> None:
 
 
 def _upsert_findings_db(findings: dict) -> None:
-    """Upsert consolidated findings into ml_findings table."""
+    """Upsert consolidated findings into ml_findings table.
+
+    Skips gracefully when DATABASE_URL is unavailable (CI, local dev
+    without .env). The JSON file is the primary artifact; DB is optional.
+    """
+    env = load_env()
+    database_url = env.get("DATABASE_URL", "")
+    if not database_url:
+        return  # No DB configured — skip silently, JSON file is enough
+
     try:
-        conn = get_connection()
+        conn = psycopg2.connect(database_url, sslmode="require", connect_timeout=10)
         cur = conn.cursor()
         cur.execute(
             """
