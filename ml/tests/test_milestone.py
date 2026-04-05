@@ -576,7 +576,7 @@ class TestCountData:
         assert result["complete_days"] == 35
         assert result["first_date"] == date(2025, 12, 1)
         assert result["last_date"] == date(2026, 3, 15)
-        assert result["recent_completeness"] == 0.88
+        assert result["recent_completeness"] == pytest.approx(0.88)
         assert "wide_ic" in result["class_counts"]
         assert "bwb" in result["class_counts"]
         assert "sit_out" in result["class_counts"]

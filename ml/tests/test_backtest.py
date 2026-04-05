@@ -493,7 +493,7 @@ class TestComputeMetrics:
         m = compute_metrics(trades)
 
         assert m["total_pnl"] == 1000
-        assert m["win_rate"] == 1.0
+        assert m["win_rate"] == pytest.approx(1.0)
         assert m["num_trades"] == 5
         assert m["avg_win"] == 200
         assert m["avg_loss"] == 0
@@ -526,7 +526,7 @@ class TestComputeMetrics:
         m = compute_metrics(trades)
 
         assert m["total_pnl"] == -5400
-        assert m["win_rate"] == 0.0
+        assert m["win_rate"] == pytest.approx(0.0)
         assert m["num_trades"] == 3
         assert m["avg_loss"] == -1800
         assert m["avg_win"] == 0
@@ -534,7 +534,7 @@ class TestComputeMetrics:
         # Actually: gross_wins = 0, so profit_factor = 0 / abs(losses) = 0
         # Wait -- the code does: gross_wins / gross_losses if gross_losses > 0
         # gross_wins = 0, so 0 / gross_losses = 0
-        assert m["profit_factor"] == 0.0
+        assert m["profit_factor"] == pytest.approx(0.0)
 
     def test_mixed_win_rate(self):
         """8 wins and 2 losses -> 80% win rate."""
@@ -696,7 +696,7 @@ class TestComputeMetrics:
         m = compute_metrics(trades)
 
         assert m["total_pnl"] == 200
-        assert m["win_rate"] == 1.0
+        assert m["win_rate"] == pytest.approx(1.0)
         assert m["num_trades"] == 1
         assert m["avg_win"] == 200
         assert m["avg_loss"] == 0
@@ -719,7 +719,7 @@ class TestComputeMetrics:
         m = compute_metrics(trades)
 
         assert m["total_pnl"] == -1800
-        assert m["win_rate"] == 0.0
+        assert m["win_rate"] == pytest.approx(0.0)
         assert m["num_trades"] == 1
         assert m["avg_loss"] == -1800
         assert m["avg_win"] == 0
@@ -907,7 +907,7 @@ class TestFindMaxDrawdownPeriod:
         ]
         df = make_df(records)
         trades = simulate_strategy(df, name="test")
-        peak, trough = find_max_drawdown_period(trades)
+        _, trough = find_max_drawdown_period(trades)
 
         # First drawdown: 200 -> -1600, dd=-1800
         # After recovery: cumulative reaches 200 + (-1800) + 10*200 = 400
