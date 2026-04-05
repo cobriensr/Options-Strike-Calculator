@@ -944,4 +944,15 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 37,
+    description:
+      'Add analysis_embedding vector(2000) column for historical analysis retrieval',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE analyses
+          ADD COLUMN IF NOT EXISTS analysis_embedding vector(2000)
+      `,
+    ],
+  },
 ];
