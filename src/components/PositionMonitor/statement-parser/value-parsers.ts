@@ -26,7 +26,8 @@ export function parseCSVLine(line: string): string[] {
   let inQuotes = false;
 
   for (let i = 0; i < line.length; i++) {
-    const ch = line[i]!;
+    const ch = line[i];
+    if (ch === undefined) continue;
     if (ch === '"') {
       inQuotes = !inQuotes;
     } else if (ch === ',' && !inQuotes) {
@@ -55,7 +56,7 @@ export function parseCurrency(value: string): number {
   // Parenthesized negative: ($150.00) or (150.00)
   const parenMatch = /^\((.+)\)$/.exec(cleaned);
   if (parenMatch) {
-    cleaned = parenMatch[1]!;
+    cleaned = parenMatch[1] ?? cleaned;
     const parsed = Number.parseFloat(cleaned);
     return Number.isNaN(parsed) ? 0 : -parsed;
   }
@@ -77,7 +78,7 @@ export function parsePercentage(value: string): number {
   // Parenthesized negative: (0.74%)
   const parenMatch = /^\((.+)\)$/.exec(cleaned);
   if (parenMatch) {
-    cleaned = parenMatch[1]!;
+    cleaned = parenMatch[1] ?? cleaned;
     const parsed = Number.parseFloat(cleaned);
     return Number.isNaN(parsed) ? 0 : -parsed / 100;
   }
@@ -94,11 +95,12 @@ export function parseTosDate(dateStr: string): string {
   if (parts.length !== 3) return dateStr;
 
   const [day, month, year] = parts;
-  const mm = MONTH_MAP[month!.toUpperCase()];
+  if (!day || !month || !year) return dateStr;
+  const mm = MONTH_MAP[month.toUpperCase()];
   if (!mm) return dateStr;
 
-  const yyyy = year!.length === 2 ? `20${year}` : year!;
-  return `${yyyy}-${mm}-${day!.padStart(2, '0')}`;
+  const yyyy = year.length === 2 ? `20${year}` : year;
+  return `${yyyy}-${mm}-${day.padStart(2, '0')}`;
 }
 
 /**
@@ -109,9 +111,10 @@ export function parseShortDate(dateStr: string): string {
   if (parts.length !== 3) return dateStr;
 
   const [month, day, year] = parts;
-  const yyyy = year!.length === 2 ? `20${year}` : year!;
-  const mm = month!.padStart(2, '0');
-  const dd = day!.padStart(2, '0');
+  if (!month || !day || !year) return dateStr;
+  const yyyy = year.length === 2 ? `20${year}` : year;
+  const mm = month.padStart(2, '0');
+  const dd = day.padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
@@ -136,13 +139,17 @@ export function parseTrdDescription(desc: string): TrdDescription | null {
   const tokens = cleaned.split(/\s+/);
   if (tokens.length < 10) return null;
 
-  const direction = tokens[0]!.toUpperCase();
-  if (direction !== 'SOLD' && direction !== 'BOT') return null;
+  const direction = tokens[0];
+  const qtyToken = tokens[1];
+  const spreadType = tokens[2];
+  const symbol = tokens[3];
+  const multiplierStr = tokens[4];
+  if (!direction || !qtyToken || !spreadType || !symbol || !multiplierStr) {
+    return null;
+  }
 
-  const qtyToken = tokens[1]!;
-  const spreadType = tokens[2]!;
-  const symbol = tokens[3]!;
-  const multiplierStr = tokens[4]!;
+  const dirUpper = direction.toUpperCase();
+  if (dirUpper !== 'SOLD' && dirUpper !== 'BOT') return null;
 
   // Find parenthesized expiry label
   const joinedRest = tokens.slice(5).join(' ');
@@ -158,17 +165,33 @@ export function parseTrdDescription(desc: string): TrdDescription | null {
   // afterParen: [day, month, year, strikes, CALL|PUT, @price]
   if (afterParen.length < 6) return null;
 
-  const expDate = `${afterParen[0]} ${afterParen[1]} ${afterParen[2]}`;
-  const strikes = afterParen[3]!;
-  const optionType = afterParen[4]!.toUpperCase();
+  const apDay = afterParen[0];
+  const apMonth = afterParen[1];
+  const apYear = afterParen[2];
+  const strikes = afterParen[3];
+  const optionTypeRaw = afterParen[4];
+  const priceToken = afterParen[5];
+  if (
+    !apDay ||
+    !apMonth ||
+    !apYear ||
+    !strikes ||
+    !optionTypeRaw ||
+    !priceToken
+  ) {
+    return null;
+  }
+
+  const expDate = `${apDay} ${apMonth} ${apYear}`;
+  const optionType = optionTypeRaw.toUpperCase();
   if (optionType !== 'CALL' && optionType !== 'PUT') return null;
 
-  const priceStr = afterParen[5]!.startsWith('@')
-    ? afterParen[5]!.slice(1)
-    : afterParen[5]!;
+  const priceStr = priceToken.startsWith('@')
+    ? priceToken.slice(1)
+    : priceToken;
 
   return {
-    direction,
+    direction: dirUpper,
     quantity: Math.abs(Number.parseInt(qtyToken, 10)),
     spreadType,
     symbol,

@@ -91,8 +91,10 @@ export function computeExecutionQuality(
       const tb = new Date(b.execTime).getTime();
       return ta - tb;
     });
-    firstTradeTime = sorted[0]!.execTime;
-    lastTradeTime = sorted.at(-1)!.execTime;
+    const first = sorted[0];
+    const last = sorted.at(-1);
+    if (first) firstTradeTime = first.execTime;
+    if (last) lastTradeTime = last.execTime;
   }
 
   let tradingSessionMinutes: number | null = null;

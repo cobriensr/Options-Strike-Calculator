@@ -246,7 +246,8 @@ export function groupIntoSpreads(
   const tradeCCS: TradeSpread[] = [];
 
   for (let ti = 0; ti < openTrades.length; ti++) {
-    const trade = openTrades[ti]!;
+    const trade = openTrades[ti];
+    if (!trade) continue;
     const openLegs = trade.legs.filter((l) => l.posEffect === 'TO OPEN');
     if (openLegs.length !== 2) continue;
 
@@ -307,11 +308,13 @@ export function groupIntoSpreads(
 
   for (let p = 0; p < tradePCS.length; p++) {
     if (usedPCS.has(p)) continue;
-    const pcs = tradePCS[p]!;
+    const pcs = tradePCS[p];
+    if (!pcs) continue;
 
     for (let c = 0; c < tradeCCS.length; c++) {
       if (usedCCS.has(c)) continue;
-      const ccs = tradeCCS[c]!;
+      const ccs = tradeCCS[c];
+      if (!ccs) continue;
 
       const qtyMatch = pcs.spread.contracts === ccs.spread.contracts;
 
@@ -360,10 +363,12 @@ export function groupIntoSpreads(
 
   // Remaining unpaired verticals
   for (let p = 0; p < tradePCS.length; p++) {
-    if (!usedPCS.has(p)) allSpreads.push(tradePCS[p]!.spread);
+    const pcs = tradePCS[p];
+    if (!usedPCS.has(p) && pcs) allSpreads.push(pcs.spread);
   }
   for (let c = 0; c < tradeCCS.length; c++) {
-    if (!usedCCS.has(c)) allSpreads.push(tradeCCS[c]!.spread);
+    const ccs = tradeCCS[c];
+    if (!usedCCS.has(c) && ccs) allSpreads.push(ccs.spread);
   }
 
   // ─ Step 3: Check for true hedges in Options section ────

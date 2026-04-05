@@ -43,16 +43,20 @@ export function findSections(lines: string[]): Map<string, SectionBounds> {
   const sectionIndices: Array<{ name: string; idx: number }> = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i]!.trim();
+    const raw = lines[i];
+    if (!raw) continue;
+    const trimmed = raw.trim();
     if (sectionNames.has(trimmed)) {
       sectionIndices.push({ name: trimmed, idx: i });
     }
   }
 
   for (let s = 0; s < sectionIndices.length; s++) {
-    const { name, idx } = sectionIndices[s]!;
-    const nextIdx =
-      s + 1 < sectionIndices.length ? sectionIndices[s + 1]!.idx : lines.length;
+    const entry = sectionIndices[s];
+    if (!entry) continue;
+    const { name, idx } = entry;
+    const nextEntry = sectionIndices[s + 1];
+    const nextIdx = nextEntry ? nextEntry.idx : lines.length;
 
     // Data starts after the section title line (idx + 1)
     // so parsers can find the column header row themselves
@@ -77,7 +81,8 @@ export function parseCashBalance(
   // Find the column header row
   let headerIdx = -1;
   for (let i = bounds.dataStart; i < bounds.dataEnd; i++) {
-    if (lines[i]!.includes('DATE') && lines[i]!.includes('BALANCE')) {
+    const raw = lines[i];
+    if (raw && raw.includes('DATE') && raw.includes('BALANCE')) {
       headerIdx = i;
       break;
     }
@@ -85,7 +90,9 @@ export function parseCashBalance(
   if (headerIdx < 0) return entries;
 
   for (let i = headerIdx + 1; i < bounds.dataEnd; i++) {
-    const line = lines[i]!.trim();
+    const raw = lines[i];
+    if (!raw) break;
+    const line = raw.trim();
     if (!line) break;
 
     const fields = parseCSVLine(line);
@@ -97,18 +104,18 @@ export function parseCashBalance(
     // Clean ref number — strip ="..." wrapper
     let refNumber = fields[3] ?? '';
     const refMatch = /^="?(\d+)"?$/.exec(refNumber);
-    if (refMatch) refNumber = refMatch[1]!;
+    if (refMatch?.[1]) refNumber = refMatch[1];
 
     entries.push({
-      date: parseShortDate(fields[0]!),
-      time: fields[1]!,
+      date: parseShortDate(fields[0] ?? ''),
+      time: fields[1] ?? '',
       type: typeStr as CashEntry['type'],
       refNumber: refNumber || null,
-      description: fields[4]!,
-      miscFees: parseCurrency(fields[5]!),
-      commissions: parseCurrency(fields[6]!),
-      amount: parseCurrency(fields[7]!),
-      balance: parseCurrency(fields[8]!),
+      description: fields[4] ?? '',
+      miscFees: parseCurrency(fields[5] ?? ''),
+      commissions: parseCurrency(fields[6] ?? ''),
+      amount: parseCurrency(fields[7] ?? ''),
+      balance: parseCurrency(fields[8] ?? ''),
     });
   }
 
@@ -124,7 +131,8 @@ export function parseOrderHistory(
   // Find header row
   let headerIdx = -1;
   for (let i = bounds.dataStart; i < bounds.dataEnd; i++) {
-    if (lines[i]!.includes('Time Placed') && lines[i]!.includes('Status')) {
+    const raw = lines[i];
+    if (raw && raw.includes('Time Placed') && raw.includes('Status')) {
       headerIdx = i;
       break;
     }
@@ -145,7 +153,9 @@ export function parseOrderHistory(
   } | null = null;
 
   for (let i = headerIdx + 1; i < bounds.dataEnd; i++) {
-    const line = lines[i]!.trim();
+    const raw = lines[i];
+    if (!raw) break;
+    const line = raw.trim();
     if (!line) break;
 
     const fields = parseCSVLine(line);
@@ -245,7 +255,8 @@ export function parseTradeHistory(
   // Find header row
   let headerIdx = -1;
   for (let i = bounds.dataStart; i < bounds.dataEnd; i++) {
-    if (lines[i]!.includes('Exec Time') && lines[i]!.includes('Strike')) {
+    const raw = lines[i];
+    if (raw && raw.includes('Exec Time') && raw.includes('Strike')) {
       headerIdx = i;
       break;
     }
@@ -261,7 +272,8 @@ export function parseTradeHistory(
   } | null = null;
 
   for (let i = headerIdx + 1; i < bounds.dataEnd; i++) {
-    const line = lines[i]!;
+    const line = lines[i];
+    if (!line) continue;
     const trimmed = line.trim();
     if (!trimmed) continue;
     // Trade history lines start with comma
@@ -356,10 +368,12 @@ export function parseOptions(
   // Find header row
   let headerIdx = -1;
   for (let i = bounds.dataStart; i < bounds.dataEnd; i++) {
+    const raw = lines[i];
     if (
-      lines[i]!.includes('Symbol') &&
-      lines[i]!.includes('Option Code') &&
-      lines[i]!.includes('Strike')
+      raw &&
+      raw.includes('Symbol') &&
+      raw.includes('Option Code') &&
+      raw.includes('Strike')
     ) {
       headerIdx = i;
       break;
@@ -367,7 +381,9 @@ export function parseOptions(
   }
   if (headerIdx < 0) return { legs, hasMark };
 
-  const headerFields = parseCSVLine(lines[headerIdx]!);
+  const headerLine = lines[headerIdx];
+  if (!headerLine) return { legs, hasMark };
+  const headerFields = parseCSVLine(headerLine);
   const markIdx = headerFields.findIndex((f) => f.toLowerCase() === 'mark');
   const markValueIdx = headerFields.findIndex(
     (f) => f.toLowerCase() === 'mark value',
@@ -375,7 +391,9 @@ export function parseOptions(
   hasMark = markIdx >= 0 || markValueIdx >= 0;
 
   for (let i = headerIdx + 1; i < bounds.dataEnd; i++) {
-    const line = lines[i]!.trim();
+    const raw = lines[i];
+    if (!raw) break;
+    const line = raw.trim();
     if (!line || line.startsWith(',OVERALL')) break;
 
     const fields = parseCSVLine(line);
@@ -401,14 +419,13 @@ export function parseOptions(
     // Preserve sign from the original quantity string
     const signedQty = qtyStr.startsWith('-') ? -Math.abs(qty) : Math.abs(qty);
 
-    const mark =
-      markIdx >= 0 && fields[markIdx]
-        ? Number.parseFloat(fields[markIdx]!)
-        : null;
-    const markValue =
-      markValueIdx >= 0 && fields[markValueIdx]
-        ? parseCurrency(fields[markValueIdx]!)
-        : null;
+    const markField = markIdx >= 0 ? fields[markIdx] : undefined;
+    const mark = markField ? Number.parseFloat(markField) : null;
+    const markValueField =
+      markValueIdx >= 0 ? fields[markValueIdx] : undefined;
+    const markValue = markValueField
+      ? parseCurrency(markValueField)
+      : null;
 
     legs.push({
       symbol,
@@ -433,10 +450,12 @@ export function parsePnL(lines: string[], bounds: SectionBounds): PnLSummary {
   // Find header row
   let headerIdx = -1;
   for (let i = bounds.dataStart; i < bounds.dataEnd; i++) {
+    const raw = lines[i];
     if (
-      lines[i]!.includes('Symbol') &&
-      lines[i]!.includes('P/L Open') &&
-      lines[i]!.includes('P/L Day')
+      raw &&
+      raw.includes('Symbol') &&
+      raw.includes('P/L Open') &&
+      raw.includes('P/L Day')
     ) {
       headerIdx = i;
       break;
@@ -445,7 +464,9 @@ export function parsePnL(lines: string[], bounds: SectionBounds): PnLSummary {
   if (headerIdx < 0) return { entries, totals };
 
   for (let i = headerIdx + 1; i < bounds.dataEnd; i++) {
-    const line = lines[i]!.trim();
+    const raw = lines[i];
+    if (!raw) break;
+    const line = raw.trim();
     if (!line) break;
 
     const fields = parseCSVLine(line);
@@ -457,13 +478,13 @@ export function parsePnL(lines: string[], bounds: SectionBounds): PnLSummary {
     const entry: PnLEntry = {
       symbol,
       description,
-      plOpen: parseCurrency(fields[2]!),
-      plPct: parsePercentage(fields[3]!),
-      plDay: parseCurrency(fields[4]!),
-      plYtd: parseCurrency(fields[5]!),
-      plDiff: parseCurrency(fields[6]!),
-      marginReq: parseCurrency(fields[7]!),
-      markValue: parseCurrency(fields[8]!),
+      plOpen: parseCurrency(fields[2] ?? ''),
+      plPct: parsePercentage(fields[3] ?? ''),
+      plDay: parseCurrency(fields[4] ?? ''),
+      plYtd: parseCurrency(fields[5] ?? ''),
+      plDiff: parseCurrency(fields[6] ?? ''),
+      marginReq: parseCurrency(fields[7] ?? ''),
+      markValue: parseCurrency(fields[8] ?? ''),
     };
 
     if (description === 'OVERALL TOTALS') {
@@ -483,14 +504,16 @@ export function parseAccountSummarySection(
   const summary: Record<string, number> = {};
 
   for (let i = bounds.dataStart; i < bounds.dataEnd; i++) {
-    const line = lines[i]!.trim();
+    const raw = lines[i];
+    if (!raw) break;
+    const line = raw.trim();
     if (!line) break;
 
     const fields = parseCSVLine(line);
     if (fields.length < 2) continue;
 
     const key = (fields[0] ?? '').trim();
-    const value = parseCurrency(fields[1]!);
+    const value = parseCurrency(fields[1] ?? '');
     summary[key] = value;
   }
 
