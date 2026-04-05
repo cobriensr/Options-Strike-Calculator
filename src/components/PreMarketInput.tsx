@@ -45,6 +45,7 @@ export default function PreMarketInput({
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [autoFilled, setAutoFilled] = useState(false);
   const [error, setError] = useState('');
 
   // Load existing data for this date
@@ -68,6 +69,12 @@ export default function PreMarketInput({
           if (d.straddleConeLower != null)
             setConeLower(String(d.straddleConeLower));
           if (d.savedAt) setSaved(true);
+          if (
+            (json.data as Record<string, unknown>).autoFilled ===
+            true
+          ) {
+            setAutoFilled(true);
+          }
         }
       } catch {
         // Non-fatal — first use or aborted
@@ -161,6 +168,12 @@ export default function PreMarketInput({
     };
   }, [globexClose, prevClose, spxPrice]);
 
+  // Input styling: accent tint on border when auto-filled by cron
+  const esInputCls = autoFilled
+    ? inputCls +
+      ' border-[color:var(--color-accent)] border-opacity-40'
+    : inputCls;
+
   // Overnight range with optional cone context
   const overnightRange = useMemo(() => {
     const h = Number.parseFloat(globexHigh);
@@ -180,7 +193,13 @@ export default function PreMarketInput({
   return (
     <SectionBox
       label="Pre-Market"
-      badge={saved ? '\u2713 Saved' : null}
+      badge={
+        autoFilled
+          ? 'Auto-filled \u2713'
+          : saved
+            ? '\u2713 Saved'
+            : null
+      }
       headerRight={
         <button
           type="button"
@@ -217,7 +236,7 @@ export default function PreMarketInput({
               placeholder="6555.25"
               value={globexHigh}
               onChange={(e) => setGlobexHigh(e.target.value)}
-              className={inputCls}
+              className={esInputCls}
             />
           </div>
           <div>
@@ -231,7 +250,7 @@ export default function PreMarketInput({
               placeholder="6520.50"
               value={globexLow}
               onChange={(e) => setGlobexLow(e.target.value)}
-              className={inputCls}
+              className={esInputCls}
             />
           </div>
           <div>
@@ -245,7 +264,7 @@ export default function PreMarketInput({
               placeholder="6548.00"
               value={globexClose}
               onChange={(e) => setGlobexClose(e.target.value)}
-              className={inputCls}
+              className={esInputCls}
             />
             <span className="text-muted mt-0.5 block text-[10px]">
               Last price at 8:30 AM CT
@@ -265,7 +284,7 @@ export default function PreMarketInput({
               placeholder="6536.80"
               value={globexVwap}
               onChange={(e) => setGlobexVwap(e.target.value)}
-              className={inputCls}
+              className={esInputCls}
             />
           </div>
         </div>
