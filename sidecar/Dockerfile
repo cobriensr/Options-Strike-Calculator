@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Install build dependencies for psycopg2
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    apt-get install -y --no-install-recommends gcc libc-dev libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
@@ -33,6 +33,6 @@ USER sidecar
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD curl -f http://localhost:8080/health || exit 1
+  CMD curl -sf http://localhost:8080/health || exit 1
 
-CMD ["python", "src/main.py"]
+CMD ["python", "-m", "src.main"]
