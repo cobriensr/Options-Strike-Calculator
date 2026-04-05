@@ -36,20 +36,23 @@ interface FuturesGridProps {
   readonly esSpxBasis: number | null;
 }
 
-function formatChange(pct: number): string {
+function formatChange(pct: number | null): string {
+  if (pct == null) return '—';
   const sign = pct >= 0 ? '+' : '';
   return `${sign}${pct.toFixed(2)}%`;
 }
 
-function changeColor(pct: number): string {
+function changeColor(pct: number | null): string {
+  if (pct == null) return theme.textMuted;
   if (pct > 0) return theme.green;
   if (pct < 0) return theme.red;
   return theme.textMuted;
 }
 
 function volumeLabel(
-  ratio: number,
-): { text: string; color: string } {
+  ratio: number | null,
+): { text: string; color: string } | null {
+  if (ratio == null) return null;
   if (ratio >= 2)
     return { text: 'HEAVY', color: theme.red };
   if (ratio >= 1.5)
@@ -106,7 +109,7 @@ const FuturesGrid = memo(function FuturesGrid({
                   {label}
                 </span>
               </span>
-              {s.volumeRatio > 0 && (
+              {vol && s.volumeRatio != null && (
                 <span
                   className="rounded-full px-1.5 py-px font-sans text-[9px] font-bold"
                   style={{

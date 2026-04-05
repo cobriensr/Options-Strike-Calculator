@@ -225,7 +225,7 @@ def get_recent_bars(
                 SELECT ts, open, high, low, close, volume
                 FROM futures_bars
                 WHERE symbol = %s
-                  AND ts >= NOW() - INTERVAL '%s minutes'
+                  AND ts >= NOW() - make_interval(mins => %s)
                 ORDER BY ts ASC
                 """,
                 (symbol, minutes),

@@ -50,11 +50,8 @@ VXM_FRONT = "VXM.FUT"   # Front month
 VXM_SECOND = "VXM.FUT.1"  # Second month (for term structure)
 
 # Datasets by exchange
-DATASET_CME = "GLBX.MDP3"  # CME, CBOT, NYMEX all under GLBX.MDP3
-DATASET_CFE = "IFEU.IMPACT"  # CFE for VIX futures -- fallback to GLBX if needed
-
-# Actually, Databento uses GLBX.MDP3 for CME Group (CME, CBOT, NYMEX, COMEX)
-# and XCBF.PITCH for CBOE Futures Exchange (VX/VXM).
+DATASET_CME = "GLBX.MDP3"  # CME, CBOT, NYMEX, COMEX all under GLBX.MDP3
+# CBOE Futures Exchange (VX/VXM) uses XCBF.PITCH
 # Verify at runtime; start with GLBX.MDP3 for all CME products.
 # For VXM on CFE, use XCBF.PITCH dataset.
 

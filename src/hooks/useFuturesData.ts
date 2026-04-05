@@ -12,9 +12,9 @@ import { getErrorMessage } from '../utils/error';
 export interface FuturesSnapshot {
   symbol: string;
   price: number;
-  change1hPct: number;
-  changeDayPct: number;
-  volumeRatio: number;
+  change1hPct: number | null;
+  changeDayPct: number | null;
+  volumeRatio: number | null;
 }
 
 export type VxTermStructure =

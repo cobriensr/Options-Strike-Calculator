@@ -84,7 +84,7 @@ const VixTermStructure = memo(function VixTermStructure({
           <div className="text-primary font-mono text-[13px] font-semibold">
             {front ? front.price.toFixed(2) : 'N/A'}
           </div>
-          {front && (
+          {front?.changeDayPct != null && (
             <div
               className="mt-0.5 font-mono text-[10px]"
               style={{
@@ -108,7 +108,7 @@ const VixTermStructure = memo(function VixTermStructure({
           <div className="text-primary font-mono text-[13px] font-semibold">
             {back ? back.price.toFixed(2) : 'N/A'}
           </div>
-          {back && (
+          {back?.changeDayPct != null && (
             <div
               className="mt-0.5 font-mono text-[10px]"
               style={{
