@@ -30,14 +30,8 @@ jobs:
       - name: Security audit
         run: npm audit --audit-level=critical
 
-      - name: Typecheck & Lint
-        run: npm run lint
-
-      - name: Format Check
-        run: npx prettier --check .
-
-      - name: Unit Tests
-        run: npx vitest run --coverage
+      - name: Review (tsc + eslint + prettier + vitest)
+        run: npm run review
 
       - name: Build
         run: npm run build
