@@ -624,10 +624,7 @@ export async function buildAnalysisContext(
       currentSpx,
     );
   } catch (error_) {
-    logger.debug(
-      { err: error_ },
-      'Futures context fetch failed — skipping',
-    );
+    logger.debug({ err: error_ }, 'Futures context fetch failed — skipping');
   }
 
   // On-demand 14 DTE directional chain (midday only, not backtests)

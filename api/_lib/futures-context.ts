@@ -106,10 +106,7 @@ export async function formatFuturesForClaude(
       ORDER BY symbol, ts DESC
     `) as unknown as FuturesSnapshot[];
   } catch (err) {
-    logger.debug(
-      { err },
-      'futures_snapshots table not available — skipping',
-    );
+    logger.debug({ err }, 'futures_snapshots table not available — skipping');
     return null;
   }
 
@@ -179,19 +176,14 @@ export async function formatFuturesForClaude(
       `  Current: ${fmtPrice(num(nq.price))} | 1H: ${fmtPct(num(nq.change_1h_pct))} | Day: ${fmtPct(num(nq.change_day_pct))}`,
     ];
     if (derived.nqEsRatio != null) {
-      lines.push(
-        `  NQ/ES Ratio: ${derived.nqEsRatio.toFixed(3)}`,
-      );
+      lines.push(`  NQ/ES Ratio: ${derived.nqEsRatio.toFixed(3)}`);
     }
     // Divergence check: compare NQ and ES day direction
     const esDay = num(bySymbol.get('ES')?.change_day_pct ?? null);
     const nqDay = num(nq.change_day_pct);
     if (esDay != null && nqDay != null) {
-      const aligned =
-        (esDay >= 0 && nqDay >= 0) || (esDay < 0 && nqDay < 0);
-      lines.push(
-        `  NQ-ES Direction: ${aligned ? 'ALIGNED' : 'DIVERGING'}`,
-      );
+      const aligned = (esDay >= 0 && nqDay >= 0) || (esDay < 0 && nqDay < 0);
+      lines.push(`  NQ-ES Direction: ${aligned ? 'ALIGNED' : 'DIVERGING'}`);
     }
     sections.push(lines.join('\n'));
   }
@@ -247,9 +239,7 @@ export async function formatFuturesForClaude(
           `  Signal: Broad liquidation \u2014 bonds and equities selling. Snapback reversal possible.`,
         );
       } else if (Math.abs(znDay) < 0.1) {
-        lines.push(
-          `  Signal: ZN flat \u2014 equity move is not macro-driven.`,
-        );
+        lines.push(`  Signal: ZN flat \u2014 equity move is not macro-driven.`);
       }
     }
     sections.push(lines.join('\n'));
@@ -265,8 +255,7 @@ export async function formatFuturesForClaude(
     const rtyDay = num(rty.change_day_pct);
     const esDay = num(bySymbol.get('ES')?.change_day_pct ?? null);
     if (rtyDay != null && esDay != null) {
-      const aligned =
-        (rtyDay >= 0 && esDay >= 0) || (rtyDay < 0 && esDay < 0);
+      const aligned = (rtyDay >= 0 && esDay >= 0) || (rtyDay < 0 && esDay < 0);
       lines.push(
         `  RTY-ES Breadth: ${aligned ? 'ALIGNED (broad move)' : 'DIVERGING (narrow/fragile)'}`,
       );
@@ -298,12 +287,8 @@ export async function formatFuturesForClaude(
 
   // ES Options section
   if (esOptionsRows.length > 0) {
-    const putRows = esOptionsRows.filter(
-      (r) => r.option_type === 'P',
-    );
-    const callRows = esOptionsRows.filter(
-      (r) => r.option_type === 'C',
-    );
+    const putRows = esOptionsRows.filter((r) => r.option_type === 'P');
+    const callRows = esOptionsRows.filter((r) => r.option_type === 'C');
     const lines = [`ES Options Institutional Activity:`];
     if (putRows.length > 0) {
       const topPut = putRows[0]!;

@@ -96,8 +96,8 @@ export default function FuturesPanel() {
               No futures data yet
             </div>
             <div className="text-muted font-sans text-[10px]">
-              Futures snapshots will appear here once the sidecar
-              is streaming data and the snapshot cron has run.
+              Futures snapshots will appear here once the sidecar is streaming
+              data and the snapshot cron has run.
             </div>
           </div>
         )}
@@ -110,10 +110,7 @@ export default function FuturesPanel() {
               vxTermSpread={vxTermSpread}
               vxTermStructure={vxTermStructure}
             />
-            <FuturesGrid
-              snapshots={snapshots}
-              esSpxBasis={esSpxBasis}
-            />
+            <FuturesGrid snapshots={snapshots} esSpxBasis={esSpxBasis} />
           </div>
         )}
       </div>

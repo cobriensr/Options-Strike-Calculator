@@ -17,10 +17,7 @@ export interface FuturesSnapshot {
   volumeRatio: number | null;
 }
 
-export type VxTermStructure =
-  | 'CONTANGO'
-  | 'FLAT'
-  | 'BACKWARDATION';
+export type VxTermStructure = 'CONTANGO' | 'FLAT' | 'BACKWARDATION';
 
 export interface FuturesSnapshotResponse {
   snapshots: FuturesSnapshot[];
@@ -43,9 +40,7 @@ export interface FuturesDataState {
 
 export function useFuturesData(): FuturesDataState {
   const [snapshots, setSnapshots] = useState<FuturesSnapshot[]>([]);
-  const [vxTermSpread, setVxTermSpread] = useState<number | null>(
-    null,
-  );
+  const [vxTermSpread, setVxTermSpread] = useState<number | null>(null);
   const [vxTermStructure, setVxTermStructure] =
     useState<VxTermStructure | null>(null);
   const [esSpxBasis, setEsSpxBasis] = useState<number | null>(null);
@@ -68,9 +63,7 @@ export function useFuturesData(): FuturesDataState {
       });
 
       if (!res.ok) {
-        throw new Error(
-          `Failed to fetch futures data (HTTP ${res.status})`,
-        );
+        throw new Error(`Failed to fetch futures data (HTTP ${res.status})`);
       }
 
       const data: FuturesSnapshotResponse = await res.json();
@@ -80,10 +73,7 @@ export function useFuturesData(): FuturesDataState {
       setEsSpxBasis(data.esSpxBasis ?? null);
       setUpdatedAt(data.updatedAt ?? null);
     } catch (err) {
-      if (
-        err instanceof DOMException &&
-        err.name === 'AbortError'
-      ) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
         return;
       }
       setError(getErrorMessage(err));

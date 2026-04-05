@@ -53,10 +53,8 @@ function volumeLabel(
   ratio: number | null,
 ): { text: string; color: string } | null {
   if (ratio == null) return null;
-  if (ratio >= 2)
-    return { text: 'HEAVY', color: theme.red };
-  if (ratio >= 1.5)
-    return { text: 'ELEVATED', color: theme.caution };
+  if (ratio >= 2) return { text: 'HEAVY', color: theme.red };
+  if (ratio >= 1.5) return { text: 'ELEVATED', color: theme.caution };
   return { text: 'NORMAL', color: theme.textMuted };
 }
 
@@ -85,10 +83,8 @@ const FuturesGrid = memo(function FuturesGrid({
     >
       {snapshots.map((s) => {
         const vol = volumeLabel(s.volumeRatio);
-        const label =
-          SYMBOL_LABELS[s.symbol] ?? `/${s.symbol}`;
-        const name =
-          SYMBOL_NAMES[s.symbol] ?? s.symbol;
+        const label = SYMBOL_LABELS[s.symbol] ?? `/${s.symbol}`;
+        const name = SYMBOL_NAMES[s.symbol] ?? s.symbol;
 
         return (
           <div
@@ -102,10 +98,7 @@ const FuturesGrid = memo(function FuturesGrid({
             {/* Symbol header */}
             <div className="mb-1.5 flex items-baseline justify-between">
               <span className="font-sans text-[11px] font-bold tracking-wide">
-                <span
-                  className="text-accent"
-                  aria-label={`${label} ${name}`}
-                >
+                <span className="text-accent" aria-label={`${label} ${name}`}>
                   {label}
                 </span>
               </span>
@@ -124,7 +117,7 @@ const FuturesGrid = memo(function FuturesGrid({
             </div>
 
             {/* Price */}
-            <div className="text-primary mb-1 font-mono text-[14px] font-semibold leading-tight">
+            <div className="text-primary mb-1 font-mono text-[14px] leading-tight font-semibold">
               {formatPrice(s.symbol, s.price)}
             </div>
 
@@ -147,9 +140,7 @@ const FuturesGrid = memo(function FuturesGrid({
             </div>
 
             {/* Subtext */}
-            <div className="text-muted mt-0.5 font-sans text-[9px]">
-              {name}
-            </div>
+            <div className="text-muted mt-0.5 font-sans text-[9px]">{name}</div>
 
             {/* ES-SPX basis annotation */}
             {s.symbol === 'ES' && esSpxBasis != null && (

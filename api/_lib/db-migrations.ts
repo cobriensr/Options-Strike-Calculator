@@ -992,8 +992,7 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     id: 42,
-    description:
-      'Create futures_bars table and migrate es_bars data',
+    description: 'Create futures_bars table and migrate es_bars data',
     statements: (sql) => [
       sql`
         CREATE TABLE IF NOT EXISTS futures_bars (
@@ -1097,8 +1096,7 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     id: 46,
-    description:
-      'Create alert_config table with default alert thresholds',
+    description: 'Create alert_config table with default alert thresholds',
     statements: (sql) => [
       sql`
         CREATE TABLE IF NOT EXISTS alert_config (

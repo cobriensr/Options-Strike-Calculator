@@ -69,10 +69,7 @@ export default function PreMarketInput({
           if (d.straddleConeLower != null)
             setConeLower(String(d.straddleConeLower));
           if (d.savedAt) setSaved(true);
-          if (
-            (json.data as Record<string, unknown>).autoFilled ===
-            true
-          ) {
+          if ((json.data as Record<string, unknown>).autoFilled === true) {
             setAutoFilled(true);
           }
         }
@@ -170,8 +167,7 @@ export default function PreMarketInput({
 
   // Input styling: accent tint on border when auto-filled by cron
   const esInputCls = autoFilled
-    ? inputCls +
-      ' border-[color:var(--color-accent)] border-opacity-40'
+    ? inputCls + ' border-[color:var(--color-accent)] border-opacity-40'
     : inputCls;
 
   // Overnight range with optional cone context
@@ -193,13 +189,7 @@ export default function PreMarketInput({
   return (
     <SectionBox
       label="Pre-Market"
-      badge={
-        autoFilled
-          ? 'Auto-filled \u2713'
-          : saved
-            ? '\u2713 Saved'
-            : null
-      }
+      badge={autoFilled ? 'Auto-filled \u2713' : saved ? '\u2713 Saved' : null}
       headerRight={
         <button
           type="button"

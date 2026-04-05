@@ -21,9 +21,7 @@ interface VixTermStructureProps {
   readonly vxTermStructure: VxTermStructureType | null;
 }
 
-function structureColor(
-  structure: VxTermStructureType | null,
-): string {
+function structureColor(structure: VxTermStructureType | null): string {
   switch (structure) {
     case 'CONTANGO':
       return theme.green;
@@ -88,10 +86,7 @@ const VixTermStructure = memo(function VixTermStructure({
             <div
               className="mt-0.5 font-mono text-[10px]"
               style={{
-                color:
-                  front.changeDayPct >= 0
-                    ? theme.green
-                    : theme.red,
+                color: front.changeDayPct >= 0 ? theme.green : theme.red,
               }}
             >
               {front.changeDayPct >= 0 ? '+' : ''}
@@ -112,10 +107,7 @@ const VixTermStructure = memo(function VixTermStructure({
             <div
               className="mt-0.5 font-mono text-[10px]"
               style={{
-                color:
-                  back.changeDayPct >= 0
-                    ? theme.green
-                    : theme.red,
+                color: back.changeDayPct >= 0 ? theme.green : theme.red,
               }}
             >
               {back.changeDayPct >= 0 ? '+' : ''}

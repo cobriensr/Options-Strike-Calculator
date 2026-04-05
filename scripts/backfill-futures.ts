@@ -91,9 +91,7 @@ function formatDate(d: Date): string {
  * Generate month-boundary date ranges covering the lookback window.
  * Pulls data in 1-month chunks to stay within API limits.
  */
-function getMonthChunks(
-  days: number,
-): Array<{ start: string; end: string }> {
+function getMonthChunks(days: number): Array<{ start: string; end: string }> {
   const chunks: Array<{ start: string; end: string }> = [];
   const now = new Date();
   const end = new Date(now);
@@ -108,8 +106,7 @@ function getMonthChunks(
     chunkStart.setMonth(chunkStart.getMonth() - 1);
     chunkStart.setDate(chunkStart.getDate() + 1);
 
-    const effectiveStart =
-      chunkStart < earliest ? earliest : chunkStart;
+    const effectiveStart = chunkStart < earliest ? earliest : chunkStart;
 
     chunks.push({
       start: formatDate(effectiveStart),
@@ -180,8 +177,7 @@ async function fetchBars(
 
   // [Databento] Confirm dataset name — CME futures use 'GLBX.MDP3'
   // VXM may use 'XCFE.TC' (CFE exchange)
-  const dataset =
-    symbol === 'VXM' ? 'XCFE.TC' : 'GLBX.MDP3';
+  const dataset = symbol === 'VXM' ? 'XCFE.TC' : 'GLBX.MDP3';
 
   const body = {
     dataset,
@@ -198,18 +194,15 @@ async function fetchBars(
   const encodedKey = Buffer.from(`:${apiKey}`).toString('base64');
   const authHeader = `Basic ${encodedKey}`;
 
-  const res = await fetch(
-    `${DATABENTO_BASE}/timeseries.get_range`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: authHeader,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+  const res = await fetch(`${DATABENTO_BASE}/timeseries.get_range`, {
+    method: 'POST',
+    headers: {
+      Authorization: authHeader,
+      'Content-Type': 'application/json',
     },
-  );
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -263,8 +256,9 @@ async function insertBars(
 
   for (let i = 0; i < bars.length; i += BATCH_SIZE) {
     const batch = bars.slice(i, i + BATCH_SIZE);
-    const promises = batch.map((bar) =>
-      sql`
+    const promises = batch.map(
+      (bar) =>
+        sql`
         INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
         VALUES (
           ${symbol},
@@ -321,8 +315,7 @@ async function main() {
       const count = await insertBars(sql, symbol, bars);
       symbolTotal += count;
       console.log(
-        `  ${chunk.start} → ${chunk.end}: ` +
-          `${count} bars inserted`,
+        `  ${chunk.start} → ${chunk.end}: ` + `${count} bars inserted`,
       );
 
       // Small delay between chunks to be respectful of rate limits
