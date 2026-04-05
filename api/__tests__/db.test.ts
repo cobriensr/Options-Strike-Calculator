@@ -464,6 +464,7 @@ describe('db.ts', () => {
         { id: 35 },
         { id: 36 },
         { id: 37 },
+        { id: 38 },
       ]);
 
       const applied = await migrateDb();
@@ -519,11 +520,12 @@ describe('db.ts', () => {
         '#35: Create ml_plot_analyses table for Claude vision plot analysis',
         '#36: Add prompt_hash column to analyses for prompt version tracking',
         '#37: Add analysis_embedding vector(2000) column for historical analysis retrieval',
+        '#38: Add HNSW index on analysis_embedding for cosine similarity search',
       ]);
-      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) + 2 (#24: ALTER+INSERT) + 11 (#25: 3 CREATE+7 INDEX+INSERT) + 2 (#26: ALTER+INSERT) + 3 (#27: CREATE+INDEX+INSERT) + 2 (#28: CREATE INDEX+INSERT) + 2 (#29: ALTER+INSERT) + 3 (#30: CREATE+INDEX+INSERT) + 2 (#31: ALTER+INSERT) + 4 (#32: CREATE+INDEX+CREATE+INSERT) + 2 (#33: ALTER+INSERT) + 2 (#34: CREATE+INSERT) + 2 (#35: CREATE+INSERT) + 2 (#36: ALTER+INSERT) + 2 (#37: ALTER+INSERT) = 126
-      expect(mockSql).toHaveBeenCalledTimes(126);
-      // Migrations #15-37 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(23);
+      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) + 2 (#24: ALTER+INSERT) + 11 (#25: 3 CREATE+7 INDEX+INSERT) + 2 (#26: ALTER+INSERT) + 3 (#27: CREATE+INDEX+INSERT) + 2 (#28: CREATE INDEX+INSERT) + 2 (#29: ALTER+INSERT) + 3 (#30: CREATE+INDEX+INSERT) + 2 (#31: ALTER+INSERT) + 4 (#32: CREATE+INDEX+CREATE+INSERT) + 2 (#33: ALTER+INSERT) + 2 (#34: CREATE+INSERT) + 2 (#35: CREATE+INSERT) + 2 (#36: ALTER+INSERT) + 2 (#37: ALTER+INSERT) + 2 (#38: CREATE INDEX+INSERT) = 128
+      expect(mockSql).toHaveBeenCalledTimes(128);
+      // Migrations #15-38 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(24);
     });
 
     it('propagates errors from migration SQL', async () => {

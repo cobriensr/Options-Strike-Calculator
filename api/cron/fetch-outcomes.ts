@@ -31,6 +31,7 @@ import {
   getETDayOfWeek,
   getETDateStr,
 } from '../../src/utils/timezone.js';
+import { buildAnalysisSummary, generateEmbedding } from '../_lib/embeddings.js';
 
 // ── Time window check ──────────────────────────────────────
 
@@ -168,6 +169,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       vix1dClose,
     });
 
+    // Re-embed analyses from today with outcome data (fire-and-forget).
+    // This upgrades the pre-trade embedding to include settlement + correctness,
+    // making future retrieval richer when this day appears as a historical analog.
+    void enrichAnalysisEmbeddings(dateStr, settlement);
+
     // Data quality check: alert if settlement is null
     const qcRows = await getDb()`
       SELECT settlement FROM outcomes WHERE date = ${dateStr}
@@ -211,6 +217,73 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     Sentry.captureException(err);
     logger.error({ err }, 'fetch-outcomes error');
     return res.status(500).json({ error: 'Internal error' });
+  }
+}
+
+// ── Outcome enrichment ─────────────────────────────────────
+
+/**
+ * Re-embed analyses from a given date to include settlement + correctness.
+ * Fetches the analysis rows with snapshot context, rebuilds the summary
+ * with outcome data, generates a new embedding, and overwrites the old one.
+ */
+async function enrichAnalysisEmbeddings(
+  dateStr: string,
+  settlement: number,
+): Promise<void> {
+  try {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT a.id, a.mode, a.entry_time, a.structure, a.confidence,
+             a.suggested_delta, a.spx, a.vix, a.vix1d, a.hedge,
+             (a.full_response->'review'->>'wasCorrect')::boolean AS was_correct,
+             ms.vix_term_signal, ms.regime_zone, ms.dow_label
+      FROM analyses a
+      LEFT JOIN market_snapshots ms ON ms.id = a.snapshot_id
+      WHERE a.date = ${dateStr}
+    `;
+
+    for (const row of rows) {
+      const summary = buildAnalysisSummary({
+        date: dateStr,
+        mode: row.mode as string,
+        vix: row.vix == null ? null : Number(row.vix),
+        vix1d: row.vix1d == null ? null : Number(row.vix1d),
+        spx: row.spx == null ? null : Number(row.spx),
+        structure: row.structure as string,
+        confidence: row.confidence as string,
+        suggestedDelta:
+          row.suggested_delta == null ? null : Number(row.suggested_delta),
+        hedge: (row.hedge as string) ?? null,
+        vixTermShape: (row.vix_term_signal as string) ?? null,
+        gexRegime: (row.regime_zone as string) ?? null,
+        dayOfWeek: (row.dow_label as string) ?? null,
+        settlement,
+        wasCorrect: row.was_correct == null ? null : Boolean(row.was_correct),
+      });
+
+      const embedding = await generateEmbedding(summary);
+      if (embedding) {
+        const vectorLiteral = `[${embedding.join(',')}]`;
+        await sql`
+          UPDATE analyses
+          SET analysis_embedding = ${vectorLiteral}::vector
+          WHERE id = ${row.id as number}
+        `;
+      }
+    }
+
+    if (rows.length > 0) {
+      logger.info(
+        { date: dateStr, count: rows.length },
+        'fetch-outcomes: enriched analysis embeddings with settlement',
+      );
+    }
+  } catch (error_) {
+    logger.error(
+      { err: error_ },
+      'fetch-outcomes: analysis embedding enrichment failed',
+    );
   }
 }
 

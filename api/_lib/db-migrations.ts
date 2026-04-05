@@ -955,4 +955,15 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 38,
+    description:
+      'Add HNSW index on analysis_embedding for cosine similarity search',
+    statements: (sql) => [
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_analyses_embedding_hnsw
+          ON analyses USING hnsw (analysis_embedding vector_cosine_ops)
+      `,
+    ],
+  },
 ];

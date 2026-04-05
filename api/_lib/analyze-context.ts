@@ -41,6 +41,12 @@ import {
   getHistoricalWinRate,
   formatWinRateForClaude,
 } from './lessons.js';
+import {
+  buildAnalysisSummary,
+  generateEmbedding,
+  findSimilarAnalyses,
+  formatSimilarAnalysesBlock,
+} from './embeddings.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import type { IvTermRow } from '../iv-term-structure.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
@@ -93,6 +99,8 @@ export interface AnalysisContextResult {
   mode: string;
   /** Active lessons block for system prompt injection. */
   lessonsBlock: string;
+  /** Similar past analyses block for system prompt injection. */
+  similarAnalysesBlock: string;
   /** Clustered dark pool data for persistence (null if unavailable). */
   darkPoolClusters: DarkPoolCluster[] | null;
 }
@@ -854,8 +862,9 @@ ${previousContext ? `\n## Previous Recommendation (from earlier today)\nIMPORTAN
 IMPORTANT: The trader is evaluating at ${String(context.entryTime ?? 'the specified time')}. Charts may show the full trading day — ONLY analyze data visible up to the entry time. Everything after does not exist yet.
 Provide your complete analysis as JSON. Mode is "${mode}".`;
 
-  // Fetch active lessons and historical win rate in parallel
+  // Fetch active lessons, historical win rate, and similar analyses
   let lessonsBlock = '';
+  let similarAnalysesBlock = '';
   let winRateContext = '';
   const winRateConditions = {
     vix: context.vix != null ? Number(context.vix) : undefined,
@@ -880,9 +889,46 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     logger.error({ err: error_ }, 'Failed to fetch historical win rate');
   }
 
+  // Retrieve similar past analyses by embedding similarity (entry mode only)
+  if (mode === 'entry') {
+    try {
+      const todaySummary = buildAnalysisSummary({
+        date: analysisDate,
+        mode,
+        vix: context.vix != null ? Number(context.vix) : null,
+        vix1d: context.vix1d != null ? Number(context.vix1d) : null,
+        spx: context.spx != null ? Number(context.spx) : null,
+        structure: 'unknown',
+        confidence: 'unknown',
+        suggestedDelta: null,
+        hedge: null,
+        vixTermShape: (context.vixTermSignal as string) ?? null,
+        gexRegime: (context.regimeZone as string) ?? null,
+        dayOfWeek: (context.dowLabel as string) ?? null,
+      });
+      const queryEmbedding = await generateEmbedding(todaySummary);
+      if (queryEmbedding) {
+        const similar = await findSimilarAnalyses(
+          queryEmbedding,
+          analysisDate,
+          3,
+        );
+        similarAnalysesBlock = formatSimilarAnalysesBlock(similar);
+      }
+    } catch (error_) {
+      logger.error({ err: error_ }, 'Failed to fetch similar analyses');
+    }
+  }
+
   // Append win rate to context (after main contextText, before sending)
   const finalContextText = contextText + winRateContext;
   content.push({ type: 'text', text: finalContextText });
 
-  return { content, mode, lessonsBlock, darkPoolClusters };
+  return {
+    content,
+    mode,
+    lessonsBlock,
+    similarAnalysesBlock,
+    darkPoolClusters,
+  };
 }

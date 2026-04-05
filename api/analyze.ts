@@ -36,6 +36,11 @@ import {
 } from './_lib/analyze-prompts.js';
 import { getCalibrationExample } from './_lib/analyze-calibration.js';
 import { buildAnalysisContext } from './_lib/analyze-context.js';
+import {
+  buildAnalysisSummary,
+  generateEmbedding,
+  saveAnalysisEmbedding,
+} from './_lib/embeddings.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -87,8 +92,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { images, context } = parsed.data;
 
   // Build analysis context (fetches flow, GEX, candles, dark pool, etc.)
-  const { content, mode, lessonsBlock, darkPoolClusters } =
-    await buildAnalysisContext(images, context);
+  const {
+    content,
+    mode,
+    lessonsBlock,
+    similarAnalysesBlock,
+    darkPoolClusters,
+  } = await buildAnalysisContext(images, context);
 
   // Stable system prompt (cached 1h) — lessons appended outside cache boundary
   // Calibration example is mode-specific (entry/midday/review) so each mode
@@ -140,9 +150,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               text: stableSystemText,
               cache_control: { type: 'ephemeral', ttl: '1h' },
             },
-            // Lessons change more frequently — kept outside cache boundary
+            // Lessons and similar analyses change frequently — kept outside cache boundary
             ...(lessonsBlock
               ? [{ type: 'text' as const, text: lessonsBlock }]
+              : []),
+            ...(similarAnalysesBlock
+              ? [{ type: 'text' as const, text: similarAnalysesBlock }]
               : []),
           ],
           messages: [{ role: 'user' as const, content }],
@@ -306,6 +319,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             } catch (error_) {
               logger.error({ err: error_ }, 'dark pool snapshot save failed');
             }
+          }
+          // Embed the analysis for historical retrieval (~500ms).
+          // Awaited to ensure completion before Vercel kills the runtime.
+          // Failures are logged but don't affect the response.
+          try {
+            const summary = buildAnalysisSummary({
+              date,
+              mode,
+              vix: context.vix != null ? Number(context.vix) : null,
+              vix1d:
+                context.vix1d != null ? Number(context.vix1d) : null,
+              spx: context.spx != null ? Number(context.spx) : null,
+              structure: analysis!.structure,
+              confidence: analysis!.confidence,
+              suggestedDelta: analysis!.suggestedDelta ?? null,
+              hedge: analysis!.hedge?.recommendation ?? null,
+              vixTermShape:
+                (context.vixTermSignal as string) ?? null,
+              gexRegime: (context.regimeZone as string) ?? null,
+              dayOfWeek: (context.dowLabel as string) ?? null,
+            });
+            const embedding = await generateEmbedding(summary);
+            if (embedding) {
+              await saveAnalysisEmbedding(
+                date,
+                entryTime,
+                mode,
+                embedding,
+              );
+            }
+          } catch (error_) {
+            logger.error(
+              { err: error_ },
+              'analysis embedding generation failed',
+            );
           }
           break;
         } catch (error_) {
