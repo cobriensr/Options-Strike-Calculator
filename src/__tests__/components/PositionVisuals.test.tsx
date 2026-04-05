@@ -283,9 +283,7 @@ describe('PositionVisuals', () => {
 
   it('renders strike map SVG with aria-label', () => {
     render(<PositionVisuals {...defaultProps()} />);
-    expect(
-      screen.getByLabelText('Strike position map'),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Strike position map')).toBeInTheDocument();
   });
 
   it('shows spot price label in strike map', () => {
@@ -384,9 +382,7 @@ describe('PositionVisuals', () => {
 
   it('renders risk waterfall SVG with aria-label', () => {
     render(<PositionVisuals {...defaultProps()} />);
-    expect(
-      screen.getByLabelText('Risk waterfall'),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Risk waterfall')).toBeInTheDocument();
   });
 
   it('renders empty risk waterfall when no positions', () => {
