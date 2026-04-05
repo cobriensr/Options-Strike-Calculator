@@ -1,5 +1,5 @@
 {
-  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ':!sidecar' ':!ml' ':!scripts' ':!*.md'",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ':!sidecar' ':!ml' ':!docs' ':!scripts' ':!*.md'",
   "crons": [
     {
       "path": "/api/cron/backup-tables",
