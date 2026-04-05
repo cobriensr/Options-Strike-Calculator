@@ -88,6 +88,18 @@
     {
       "path": "/api/cron/fetch-darkpool",
       "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/auto-prefill-premarket",
+      "schedule": "30 13 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-futures-snapshot",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-es-options-eod",
+      "schedule": "0 22 * * 1-5"
     }
   ],
   "functions": {
