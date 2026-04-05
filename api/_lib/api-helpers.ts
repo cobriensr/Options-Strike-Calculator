@@ -98,6 +98,7 @@ export function isOwner(req: VercelRequest): boolean {
 
   const cookies = parseCookies(req);
   const cookieVal = cookies[OWNER_COOKIE] ?? '';
+  if (!cookieVal) return false;
   const a = Buffer.from(cookieVal);
   const b = Buffer.from(secret);
   return a.length === b.length && timingSafeEqual(a, b);

@@ -16,6 +16,7 @@ vi.mock('../_lib/schwab.js', () => ({
 vi.mock('../_lib/api-helpers.js', () => ({
   OWNER_COOKIE: 'sc-owner',
   OWNER_COOKIE_MAX_AGE: 604800,
+  rejectIfRateLimited: vi.fn().mockResolvedValue(false),
 }));
 
 import handler from '../auth/callback.js';

@@ -12,13 +12,28 @@
 import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { storeInitialTokens, redis } from '../_lib/schwab.js';
-import { OWNER_COOKIE, OWNER_COOKIE_MAX_AGE } from '../_lib/api-helpers.js';
+import {
+  OWNER_COOKIE,
+  OWNER_COOKIE_MAX_AGE,
+  rejectIfRateLimited,
+} from '../_lib/api-helpers.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/auth/callback');
     const done = metrics.request('/api/auth/callback');
     try {
+      const rateLimited = await rejectIfRateLimited(
+        req,
+        res,
+        'auth-callback',
+        5,
+      );
+      if (rateLimited) {
+        done({ status: 429 });
+        return;
+      }
+
       const code = req.query.code;
       if (!code || typeof code !== 'string') {
         done({ status: 400 });
@@ -97,19 +112,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // The cookie is already set via Set-Cookie header above.
       done({ status: 200 });
       res.setHeader('Content-Type', 'text/html');
+      const safeUrl = encodeURI(appUrl);
       res.status(200).send(`
     <!DOCTYPE html>
     <html>
     <head>
       <title>Auth Complete</title>
-      <meta http-equiv="refresh" content="3;url=${appUrl}" />
+      <meta http-equiv="refresh" content="3;url=${safeUrl}" />
     </head>
     <body style="font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0a0a0a; color: #e5e5e5;">
       <div style="text-align: center;">
         <h1 style="color: #22c55e;">&#x2713; Authenticated</h1>
         <p>Schwab tokens stored. Session valid for 7 days.</p>
         <p>Redirecting to calculator in 3 seconds&hellip;</p>
-        <p style="color: #888; font-size: 14px;"><a href="${appUrl}" style="color: #60a5fa;">Click here</a> if not redirected.</p>
+        <p style="color: #888; font-size: 14px;"><a href="${safeUrl}" style="color: #60a5fa;">Click here</a> if not redirected.</p>
       </div>
     </body>
     </html>
