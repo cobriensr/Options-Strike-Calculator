@@ -172,7 +172,7 @@ describe('GET /api/events', () => {
       .split('T')[0]!;
 
     const mockFetch = vi.fn().mockImplementation((url: string) => {
-      if (url.includes('finnhub.io')) {
+      if (url.startsWith('https://finnhub.io/')) {
         return Promise.resolve({
           ok: true,
           json: () =>
@@ -252,7 +252,7 @@ describe('GET /api/events', () => {
     process.env.FINNHUB_API_KEY = 'finnhub-key';
 
     const mockFetch = vi.fn().mockImplementation((url: string) => {
-      if (url.includes('finnhub.io')) {
+      if (url.startsWith('https://finnhub.io/')) {
         return Promise.resolve({ ok: false, status: 500 });
       }
       return Promise.resolve({
@@ -347,7 +347,7 @@ describe('GET /api/events', () => {
     process.env.FINNHUB_API_KEY = 'finnhub-key';
 
     const mockFetch = vi.fn().mockImplementation((url: string) => {
-      if (url.includes('finnhub.io')) {
+      if (url.startsWith('https://finnhub.io/')) {
         return Promise.reject(new Error('Network timeout'));
       }
       return Promise.resolve({
