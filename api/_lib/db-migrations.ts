@@ -990,4 +990,136 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE INDEX IF NOT EXISTS idx_flow_ratio_date_ts ON flow_ratio_monitor(date, timestamp DESC)`,
     ],
   },
+  {
+    id: 42,
+    description:
+      'Create futures_bars table and migrate es_bars data',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_bars (
+          id      BIGSERIAL PRIMARY KEY,
+          symbol  TEXT NOT NULL,
+          ts      TIMESTAMPTZ NOT NULL,
+          open    NUMERIC(12,4) NOT NULL,
+          high    NUMERIC(12,4) NOT NULL,
+          low     NUMERIC(12,4) NOT NULL,
+          close   NUMERIC(12,4) NOT NULL,
+          volume  BIGINT NOT NULL DEFAULT 0,
+          UNIQUE(symbol, ts)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_futures_bars_symbol_ts
+          ON futures_bars (symbol, ts DESC)
+      `,
+      sql`
+        INSERT INTO futures_bars
+          (symbol, ts, open, high, low, close, volume)
+        SELECT
+          'ES', ts, open, high, low, close, COALESCE(volume, 0)
+        FROM es_bars
+        ON CONFLICT DO NOTHING
+      `,
+    ],
+  },
+  {
+    id: 43,
+    description:
+      'Create futures_options_trades table for tick-level ES option trades',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_options_trades (
+          id          BIGSERIAL PRIMARY KEY,
+          underlying  TEXT NOT NULL,
+          expiry      DATE NOT NULL,
+          strike      NUMERIC(10,2) NOT NULL,
+          option_type CHAR(1) NOT NULL,
+          ts          TIMESTAMPTZ NOT NULL,
+          price       NUMERIC(10,4) NOT NULL,
+          size        INT NOT NULL,
+          side        CHAR(1) NOT NULL,
+          trade_date  DATE NOT NULL
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_fot_strike_ts
+          ON futures_options_trades (underlying, strike, ts DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_fot_trade_date
+          ON futures_options_trades (trade_date)
+      `,
+    ],
+  },
+  {
+    id: 44,
+    description:
+      'Create futures_options_daily table for EOD statistics with exchange Greeks',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_options_daily (
+          id            BIGSERIAL PRIMARY KEY,
+          underlying    TEXT NOT NULL,
+          trade_date    DATE NOT NULL,
+          expiry        DATE NOT NULL,
+          strike        NUMERIC(10,2) NOT NULL,
+          option_type   CHAR(1) NOT NULL,
+          open_interest BIGINT,
+          volume        BIGINT,
+          settlement    NUMERIC(10,4),
+          implied_vol   NUMERIC(8,6),
+          delta         NUMERIC(8,6),
+          is_final      BOOLEAN DEFAULT false,
+          UNIQUE(underlying, trade_date, expiry, strike, option_type)
+        )
+      `,
+    ],
+  },
+  {
+    id: 45,
+    description:
+      'Create futures_snapshots table for computed intraday futures context',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_snapshots (
+          id              SERIAL PRIMARY KEY,
+          trade_date      DATE NOT NULL,
+          ts              TIMESTAMPTZ NOT NULL,
+          symbol          TEXT NOT NULL,
+          price           NUMERIC(12,4) NOT NULL,
+          change_1h_pct   NUMERIC(8,4),
+          change_day_pct  NUMERIC(8,4),
+          volume_ratio    NUMERIC(8,4),
+          UNIQUE(symbol, ts)
+        )
+      `,
+    ],
+  },
+  {
+    id: 46,
+    description:
+      'Create alert_config table with default alert thresholds',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS alert_config (
+          id               SERIAL PRIMARY KEY,
+          alert_type       TEXT NOT NULL UNIQUE,
+          enabled          BOOLEAN NOT NULL DEFAULT true,
+          params           JSONB NOT NULL,
+          cooldown_minutes INT NOT NULL DEFAULT 30,
+          updated_at       TIMESTAMPTZ DEFAULT NOW()
+        )
+      `,
+      sql`
+        INSERT INTO alert_config (alert_type, params) VALUES
+          ('es_momentum', '{"pts_threshold": 30, "window_minutes": 10, "volume_multiple": 2.0}'),
+          ('vx_backwardation', '{"spread_threshold": 0}'),
+          ('es_nq_divergence', '{"divergence_pct": 0.5, "window_minutes": 30}'),
+          ('zn_flight_safety', '{"zn_move_pts": 0.5, "es_move_pts": -20, "window_minutes": 30}'),
+          ('cl_spike', '{"change_pct": 2.0, "window_minutes": 60}'),
+          ('es_options_volume', '{"volume_multiple": 5.0, "window_minutes": 15}')
+        ON CONFLICT (alert_type) DO NOTHING
+      `,
+    ],
+  },
 ];
