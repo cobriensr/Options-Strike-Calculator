@@ -20,7 +20,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.4",
+    "@eslint/js": "^10.0.1",
     "@types/pg": "^8.11.0",
     "@types/ws": "^8.18.0",
     "eslint": "^9.30.1",
