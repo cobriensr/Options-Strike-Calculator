@@ -328,26 +328,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               date,
               mode,
               vix: context.vix != null ? Number(context.vix) : null,
-              vix1d:
-                context.vix1d != null ? Number(context.vix1d) : null,
+              vix1d: context.vix1d != null ? Number(context.vix1d) : null,
               spx: context.spx != null ? Number(context.spx) : null,
               structure: analysis!.structure,
               confidence: analysis!.confidence,
               suggestedDelta: analysis!.suggestedDelta ?? null,
               hedge: analysis!.hedge?.recommendation ?? null,
-              vixTermShape:
-                (context.vixTermSignal as string) ?? null,
+              vixTermShape: (context.vixTermSignal as string) ?? null,
               gexRegime: (context.regimeZone as string) ?? null,
               dayOfWeek: (context.dowLabel as string) ?? null,
             });
             const embedding = await generateEmbedding(summary);
             if (embedding) {
-              await saveAnalysisEmbedding(
-                date,
-                entryTime,
-                mode,
-                embedding,
-              );
+              await saveAnalysisEmbedding(date, entryTime, mode, embedding);
             }
           } catch (error_) {
             logger.error(
