@@ -203,7 +203,7 @@ describe('GET /api/system-status', () => {
         [{ ts: null }], // dark_pool_levels — no data
         [{ ts: null }], // training_features — no data
         [{ ts: null }], // outcomes — no data
-        [],             // ml_findings — no rows
+        [], // ml_findings — no rows
       ],
     });
 
@@ -238,7 +238,9 @@ describe('GET /api/system-status', () => {
     mockPing.mockResolvedValueOnce('PONG');
     mockGetAccessToken.mockResolvedValueOnce({ token: 'tok_123' });
     // Freshness queries throw (tables don't exist yet)
-    mockDbFn.mockRejectedValueOnce(new Error('relation "flow_data" does not exist'));
+    mockDbFn.mockRejectedValueOnce(
+      new Error('relation "flow_data" does not exist'),
+    );
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
