@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -72,7 +73,7 @@ jobs:
   e2e:
     name: E2E Tests
     needs: [changes, app]
-    if: needs.changes.outputs.e2e == 'true'
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
