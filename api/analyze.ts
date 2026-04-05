@@ -29,6 +29,7 @@ import {
   type AnalysisResponse,
 } from './_lib/validation.js';
 import logger from './_lib/logger.js';
+import { requireEnv } from './_lib/env.js';
 import {
   type EffortLevel,
   SYSTEM_PROMPT_PART1,
@@ -69,7 +70,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 429 });
     return;
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
+  try {
+    requireEnv('ANTHROPIC_API_KEY');
+  } catch {
     done({ status: 500, error: 'missing_api_key' });
     return res.status(500).json({ error: 'Server configuration error' });
   }

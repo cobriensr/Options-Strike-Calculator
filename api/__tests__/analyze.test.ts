@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { _resetEnvCache } from '../_lib/env.js';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -224,6 +225,7 @@ function makeSDKResponse(analysis: Record<string, unknown>) {
 describe('POST /api/analyze', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    _resetEnvCache();
     mockStream.mockReset().mockReturnValue({ finalMessage: mockFinalMessage });
     mockFinalMessage.mockReset();
     process.env.ANTHROPIC_API_KEY = 'test-key';

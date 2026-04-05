@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { Redis } from '@upstash/redis';
 import logger from './logger.js';
 import { metrics } from './sentry.js';
+import { requireEnvGroup } from './env.js';
 
 // ============================================================
 // REDIS CLIENT
@@ -35,14 +36,13 @@ import { metrics } from './sentry.js';
  * Exported so api-helpers.ts can use it for rate limiting.
  */
 function createRedis(): Redis {
-  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token =
-    process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) {
+  try {
+    const { url, token } = requireEnvGroup('redis');
+    return new Redis({ url, token });
+  } catch {
     logger.warn('Redis not configured — operations will fail at runtime');
-    return new Redis({ url: url ?? '', token: token ?? '' });
+    return new Redis({ url: '', token: '' });
   }
-  return new Redis({ url, token });
 }
 
 export const redis = createRedis();
@@ -85,10 +85,11 @@ const BUFFER_MS = 60_000; // Refresh 1 minute before expiry
 // ============================================================
 
 function getCredentials(): { clientId: string; clientSecret: string } | null {
-  const clientId = process.env.SCHWAB_CLIENT_ID;
-  const clientSecret = process.env.SCHWAB_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return null;
-  return { clientId, clientSecret };
+  try {
+    return requireEnvGroup('schwab');
+  } catch {
+    return null;
+  }
 }
 
 function basicAuthHeader(clientId: string, clientSecret: string): string {

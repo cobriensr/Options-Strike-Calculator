@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { _resetEnvCache } from '../_lib/env.js';
 
 // Use vi.hoisted so these are available when vi.mock factory runs (hoisted above imports)
 const { mockRedisGet, mockRedisSet, mockRedisDel } = vi.hoisted(() => ({
@@ -38,6 +39,7 @@ describe('schwab', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    _resetEnvCache();
     vi.restoreAllMocks();
     mockRedisGet.mockReset();
     mockRedisSet.mockReset();

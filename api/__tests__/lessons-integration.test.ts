@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { _resetEnvCache } from '../_lib/env.js';
 import { mockRequest, mockResponse } from './helpers';
 
 // ============================================================
@@ -328,6 +329,7 @@ const SAMPLE_ANALYSIS = {
 describe('Lessons learned integration: cron → DB → analyze', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetEnvCache();
     mockSql.mockReset().mockImplementation(async () => []);
     mockTransaction.mockReset().mockResolvedValue(undefined);
     mockSql.transaction = mockTransaction;

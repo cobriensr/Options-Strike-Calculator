@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { _resetEnvCache } from '../_lib/env.js';
 import { mockRequest, mockResponse } from './helpers';
 
 // Mock schwab module before importing api-helpers
@@ -54,6 +55,7 @@ describe('api-helpers', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    _resetEnvCache();
     vi.restoreAllMocks();
   });
 
