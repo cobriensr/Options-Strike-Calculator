@@ -11,8 +11,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Detect which paths changed so downstream jobs can skip when irrelevant
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      ml: ${{ steps.filter.outputs.ml }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'src/**'
+              - 'api/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig.json'
+              - 'vite.config.ts'
+              - 'eslint.config.ts'
+              - 'vitest.config.ts'
+            ml:
+              - 'ml/**'
+            e2e:
+              - 'src/**'
+              - 'api/**'
+              - 'e2e/**'
+              - 'playwright.config.ts'
+
   app:
     name: App Quality Gate
+    needs: [changes]
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -38,7 +71,8 @@ jobs:
 
   e2e:
     name: E2E Tests
-    needs: [app]
+    needs: [changes, app]
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -69,6 +103,8 @@ jobs:
 
   ml:
     name: ML Quality Gate
+    needs: [changes]
+    if: needs.changes.outputs.ml == 'true'
     runs-on: ubuntu-latest
     env:
       PYTHON: python
