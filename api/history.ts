@@ -217,15 +217,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/history');
     const done = metrics.request('/api/history');
     try {
-      if (rejectIfNotOwner(req, res)) {
-        done({ status: 401 });
-        return;
-      }
-
       const botCheck = await checkBot(req);
       if (botCheck.isBot) {
         done({ status: 403 });
         res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      if (rejectIfNotOwner(req, res)) {
+        done({ status: 401 });
         return;
       }
 

@@ -85,14 +85,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/quotes');
     const done = metrics.request('/api/quotes');
     try {
-      // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwner(req, res)) return done({ status: 401 });
-
       const botCheck = await checkBot(req);
       if (botCheck.isBot) {
         done({ status: 403 });
         return res.status(403).json({ error: 'Access denied' });
       }
+
+      // Owner-only: public visitors get 401, frontend falls back to manual input
+      if (rejectIfNotOwner(req, res)) return done({ status: 401 });
       const result = await schwabFetch<SchwabQuotesResponse>(
         `/quotes?symbols=${encodeURIComponent(SYMBOLS)}&fields=quote`,
       );
