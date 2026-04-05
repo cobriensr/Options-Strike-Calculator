@@ -103,15 +103,17 @@ class DatabentoClient:
             exception_callback=self._on_error,
         )
 
-        # Subscribe to futures OHLCV-1m
+        # Subscribe to futures OHLCV-1m (CME Group only — single dataset per session)
         self._subscribe_futures_ohlcv()
 
-        # Subscribe to VXM on CFE
-        self._subscribe_vxm()
+        # NOTE: VXM (XCBF.PITCH) requires a separate Live session because
+        # Databento only allows one dataset per connection. Skipping VXM
+        # subscription for now — will add a second client in a follow-up.
+        # self._subscribe_vxm()
 
-        # Subscribe to ES options trades (after getting initial ES price)
-        # This happens after we receive the first ES bar
-        self._options_subscription_pending = True
+        # ES options trades subscription deferred until basic futures bars are verified
+        # TODO: Enable after confirming OHLCV-1m flow is stable
+        self._options_subscription_pending = False
 
         # Start streaming (non-blocking with callbacks)
         self._client.start()
