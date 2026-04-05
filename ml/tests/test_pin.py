@@ -128,7 +128,7 @@ class TestComputeGammaProfile:
         result = compute_gamma_profile(df)
         # All negative; pos_peak should fall back to peak_gamma_strike
         assert result["pos_peak_strike"] == result["peak_gamma_strike"]
-        assert result["pos_peak_mag"] == 0.0
+        assert result["pos_peak_mag"] == pytest.approx(0.0)
 
     def test_neg_peak_fallback_when_no_negative_gamma(self):
         """When all net_gamma >= 0, neg_peak defaults to the abs peak strike."""
@@ -139,7 +139,7 @@ class TestComputeGammaProfile:
         )
         result = compute_gamma_profile(df)
         assert result["neg_peak_strike"] == result["peak_gamma_strike"]
-        assert result["neg_peak_mag"] == 0.0
+        assert result["neg_peak_mag"] == pytest.approx(0.0)
 
     def test_gamma_centroid_is_weighted_average(self):
         """gamma_centroid should be the abs-gamma-weighted average of strikes."""
@@ -312,10 +312,10 @@ class TestComputeGammaProfile:
             price=5800.0,
         )
         result = compute_gamma_profile(df)
-        assert result["peak_gamma_strike"] == 5800.0
-        assert result["gamma_centroid"] == 5800.0
-        assert result["pos_centroid"] == 5800.0
-        assert result["prox_centroid"] == 5800.0
+        assert result["peak_gamma_strike"] == pytest.approx(5800.0)
+        assert result["gamma_centroid"] == pytest.approx(5800.0)
+        assert result["pos_centroid"] == pytest.approx(5800.0)
+        assert result["prox_centroid"] == pytest.approx(5800.0)
         # net_gamma = 20 (positive), so all positive gamma is at-or-below price
         assert result["pos_gamma_above"] == pytest.approx(0.0)
         assert result["pos_gamma_below"] == pytest.approx(20.0)
@@ -561,7 +561,7 @@ class TestComputeOiPin:
             put_oi=[300],
         )
         result = compute_oi_pin(df)
-        assert result["oi_pin_strike"] == 5800.0
+        assert result["oi_pin_strike"] == pytest.approx(5800.0)
         assert result["oi_pin_total"] == 800
         assert result["oi_centroid"] == pytest.approx(5800.0)
         assert result["oi_concentration"] == pytest.approx(1.0)
@@ -575,7 +575,7 @@ class TestComputeOiPin:
         )
         result = compute_oi_pin(df)
         # idxmax returns first occurrence
-        assert result["oi_pin_strike"] == 5790.0
+        assert result["oi_pin_strike"] == pytest.approx(5790.0)
 
 
 # ── High-level analysis functions ────────────────────────────
@@ -1259,7 +1259,7 @@ class TestGammaConcentration:
             put_gamma_oi=[0, 0, 0],
         )
         result = gamma_concentration(df)
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_negative_gamma_uses_absolute_values(self):
         """Negative gamma should be counted by absolute value."""

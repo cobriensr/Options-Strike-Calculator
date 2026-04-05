@@ -7,3 +7,8 @@ dist
 vitest.config.ts
 test-ws.mjs
 src/__tests__
+__pycache__
+*.pyc
+*.pyo
+.mypy_cache
+.pytest_cache

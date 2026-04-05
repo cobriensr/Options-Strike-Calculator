@@ -197,18 +197,25 @@ class TestBusinessDaysBetween:
 
 
 class TestCheckFreshness:
-    """Tests for check_freshness with mocked load_data."""
+    """Tests for check_freshness with mocked get_connection."""
+
+    def _mock_cursor(self, rows):
+        """Create a mock connection whose cursor returns rows in sequence."""
+        mock_cur = MagicMock()
+        mock_cur.fetchone = MagicMock(side_effect=rows)
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+        return mock_conn
 
     @patch("health.most_recent_business_day")
-    @patch("health.load_data")
-    def test_fresh_data_no_warnings(self, mock_load, mock_bday, capsys):
+    @patch("health.get_connection")
+    def test_fresh_data_no_warnings(self, mock_get_conn, mock_bday, capsys):
         """When all tables have today's data, no warnings or failures."""
         target = datetime(2026, 3, 30)
         mock_bday.return_value = target
-
-        # Each table returns a row dated today
-        fresh_df = _make_date_df([target])
-        mock_load.return_value = fresh_df
+        mock_get_conn.return_value = self._mock_cursor(
+            [(target,), (target,), (target,)]
+        )
 
         warnings: list[str] = []
         failures: list[str] = []
@@ -218,65 +225,65 @@ class TestCheckFreshness:
         assert len(failures) == 0
 
     @patch("health.most_recent_business_day")
-    @patch("health.load_data")
-    def test_stale_data_produces_warning(self, mock_load, mock_bday, capsys):
+    @patch("health.get_connection")
+    def test_stale_data_produces_warning(self, mock_get_conn, mock_bday, capsys):
         """When a table is >1 business day old, a warning should be added."""
         target = datetime(2026, 3, 30)  # Monday
         mock_bday.return_value = target
-
-        # Data is from the prior Wednesday (3+ business days stale)
-        stale_df = _make_date_df([datetime(2026, 3, 25)])
-        mock_load.return_value = stale_df
+        stale = datetime(2026, 3, 25)
+        mock_get_conn.return_value = self._mock_cursor(
+            [(stale,), (stale,), (stale,)]
+        )
 
         warnings: list[str] = []
         failures: list[str] = []
         check_freshness(warnings, failures)
 
-        assert len(warnings) == 3  # one per table
+        assert len(warnings) == 3
         assert all("stale" in w for w in warnings)
 
     @patch("health.most_recent_business_day")
-    @patch("health.load_data")
-    def test_empty_table_produces_failure(self, mock_load, mock_bday, capsys):
+    @patch("health.get_connection")
+    def test_empty_table_produces_failure(self, mock_get_conn, mock_bday, capsys):
         """An empty table should produce a failure."""
         mock_bday.return_value = datetime(2026, 3, 30)
-
-        empty_df = pd.DataFrame(columns=["date"]).set_index(
-            pd.DatetimeIndex([], name="date")
-        )
-        mock_load.return_value = empty_df
-
-        warnings: list[str] = []
-        failures: list[str] = []
-        check_freshness(warnings, failures)
-
-        assert len(failures) == 3  # one per table
-        assert all("no rows" in f for f in failures)
-
-    @patch("health.most_recent_business_day")
-    @patch("health.load_data")
-    def test_query_failure_produces_failure(self, mock_load, mock_bday, capsys):
-        """When load_data raises SystemExit, a failure should be recorded."""
-        mock_bday.return_value = datetime(2026, 3, 30)
-        mock_load.side_effect = SystemExit(1)
+        mock_get_conn.return_value = self._mock_cursor([None, None, None])
 
         warnings: list[str] = []
         failures: list[str] = []
         check_freshness(warnings, failures)
 
         assert len(failures) == 3
-        assert all("missing" in f or "failed" in f for f in failures)
+        assert all("no rows" in f for f in failures)
 
     @patch("health.most_recent_business_day")
-    @patch("health.load_data")
-    def test_one_day_gap_is_within_threshold(self, mock_load, mock_bday, capsys):
+    @patch("health.get_connection")
+    def test_query_failure_produces_failure(self, mock_get_conn, mock_bday, capsys):
+        """When the query raises an exception, a failure should be recorded."""
+        mock_bday.return_value = datetime(2026, 3, 30)
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.execute.side_effect = Exception("connection refused")
+        mock_conn.cursor.return_value = mock_cur
+        mock_get_conn.return_value = mock_conn
+
+        warnings: list[str] = []
+        failures: list[str] = []
+        check_freshness(warnings, failures)
+
+        assert len(failures) == 3
+        assert all("failed" in f for f in failures)
+
+    @patch("health.most_recent_business_day")
+    @patch("health.get_connection")
+    def test_one_day_gap_is_within_threshold(self, mock_get_conn, mock_bday, capsys):
         """A 1 business day gap should be within the max_gap=1 threshold."""
         target = datetime(2026, 3, 31)  # Tuesday
         mock_bday.return_value = target
-
-        # Data from Monday (1 business day gap)
-        yesterday_df = _make_date_df([datetime(2026, 3, 30)])
-        mock_load.return_value = yesterday_df
+        yesterday = datetime(2026, 3, 30)
+        mock_get_conn.return_value = self._mock_cursor(
+            [(yesterday,), (yesterday,), (yesterday,)]
+        )
 
         warnings: list[str] = []
         failures: list[str] = []
@@ -286,18 +293,16 @@ class TestCheckFreshness:
         assert len(failures) == 0
 
     @patch("health.most_recent_business_day")
-    @patch("health.load_data")
-    def test_date_object_index(self, mock_load, mock_bday, capsys):
-        """Should handle date objects (not Timestamps) in the index."""
+    @patch("health.get_connection")
+    def test_date_object_index(self, mock_get_conn, mock_bday, capsys):
+        """Should handle date objects (not datetime) from the cursor."""
         from datetime import date
 
         target = datetime(2026, 3, 30)
         mock_bday.return_value = target
-
-        # Create DataFrame with date objects instead of Timestamps
-        df = pd.DataFrame({"val": [1]}, index=[date(2026, 3, 30)])
-        df.index.name = "date"
-        mock_load.return_value = df
+        mock_get_conn.return_value = self._mock_cursor(
+            [(date(2026, 3, 30),), (date(2026, 3, 30),), (date(2026, 3, 30),)]
+        )
 
         warnings: list[str] = []
         failures: list[str] = []

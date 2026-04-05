@@ -14,13 +14,6 @@ Requires: pip install psycopg2-binary pandas numpy
 import sys
 from datetime import datetime, timedelta
 
-try:
-    import pandas as pd
-except ImportError:
-    print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas numpy")
-    sys.exit(1)
-
 from utils import (
     get_connection,
     load_data,
@@ -93,38 +86,44 @@ def check_freshness(warnings: list[str], failures: list[str]) -> None:
         ("day_labels", "Day Labels", 1),
     ]
 
-    for table, label, max_gap in tables:
-        subsection(label)
-        try:
-            df = load_data(f"SELECT date FROM {table} ORDER BY date DESC LIMIT 1")
-        except SystemExit:
-            msg = f"{label}: table missing or query failed"
-            failures.append(msg)
-            print(f"  FAIL: {msg}")
-            continue
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        for table, label, max_gap in tables:
+            subsection(label)
+            try:
+                cur.execute(f"SELECT date FROM {table} ORDER BY date DESC LIMIT 1")
+                row = cur.fetchone()
+            except Exception as e:
+                msg = f"{label}: table missing or query failed ({e})"
+                failures.append(msg)
+                print(f"  FAIL: {msg}")
+                continue
 
-        if df.empty:
-            msg = f"{label}: no rows found"
-            failures.append(msg)
-            print(f"  FAIL: {msg}")
-            continue
+            if row is None:
+                msg = f"{label}: no rows found"
+                failures.append(msg)
+                print(f"  FAIL: {msg}")
+                continue
 
-        latest = df.index[0]
-        if isinstance(latest, pd.Timestamp):
-            latest_dt = latest.to_pydatetime().replace(tzinfo=None)
-        else:
-            latest_dt = datetime.combine(latest, datetime.min.time())
+            latest = row[0]
+            if isinstance(latest, datetime):
+                latest_dt = latest.replace(tzinfo=None)
+            else:
+                latest_dt = datetime.combine(latest, datetime.min.time())
 
-        gap = business_days_between(latest_dt, target)
-        print(f"  Latest row: {latest_dt:%Y-%m-%d}")
-        print(f"  Business days since last update: {gap}")
+            gap = business_days_between(latest_dt, target)
+            print(f"  Latest row: {latest_dt:%Y-%m-%d}")
+            print(f"  Business days since last update: {gap}")
 
-        if gap > max_gap:
-            msg = f"{label}: {gap} business days stale (max {max_gap})"
-            warnings.append(msg)
-            print(f"  WARN: {msg}")
-        else:
-            print(verdict(True, "data is current"))
+            if gap > max_gap:
+                msg = f"{label}: {gap} business days stale (max {max_gap})"
+                warnings.append(msg)
+                print(f"  WARN: {msg}")
+            else:
+                print(verdict(True, "data is current"))
+    finally:
+        conn.close()
 
 
 # ── Check 2: Feature Completeness Trend ────────────────────────

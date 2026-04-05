@@ -205,7 +205,8 @@ def preprocess(df: pd.DataFrame) -> tuple[np.ndarray, list[str], pd.DataFrame]:
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
             ("pca", PCA(n_components=0.85, random_state=42)),
-        ]
+        ],
+        memory=None,
     )
     X_pca = pipeline.fit_transform(df_feat)
     pca = pipeline.named_steps["pca"]

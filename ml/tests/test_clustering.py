@@ -183,7 +183,7 @@ def test_preprocess_drops_sparse_columns():
     # Make a column mostly null
     col = ALL_NUMERIC_FEATURES[0]
     df.loc[df.index[:20], col] = np.nan  # 20/30 = 67% null
-    X_pca, _, df_feat = preprocess(df)
+    _, _, df_feat = preprocess(df)
     assert col not in df_feat.columns, "Sparse column should be dropped"
 
 

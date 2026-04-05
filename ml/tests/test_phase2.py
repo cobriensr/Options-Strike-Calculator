@@ -93,6 +93,7 @@ def _tree_factory():
     return make_pipeline(
         SimpleImputer(strategy="median"),
         DecisionTreeClassifier(max_depth=2, random_state=42),
+        memory=None,
     )
 
 
@@ -120,6 +121,7 @@ def _make_tree_factory(numeric_cols: list[str], categorical_cols: list[str]):
         return make_pipeline(
             preprocessor,
             DecisionTreeClassifier(max_depth=2, random_state=42),
+            memory=None,
         )
 
     return factory
@@ -182,7 +184,7 @@ class TestPrepareFeatures:
         assert isinstance(numeric_cols, list)
         assert isinstance(categorical_cols, list)
 
-    def test_column_lists_cover_X_columns(
+    def test_column_lists_cover_x_columns(
         self, prepared_features: tuple[pd.DataFrame, list[str], list[str]]
     ):
         """numeric_cols + categorical_cols must exactly cover X.columns."""
@@ -259,7 +261,7 @@ class TestPrepareFeatures:
             }
         )
         df.index = pd.date_range("2025-01-01", periods=3, freq="B", name="date")
-        X, numeric_cols, categorical_cols = prepare_features(df)
+        _, numeric_cols, _ = prepare_features(df)
         assert "vix" in numeric_cols
         # A feature not in df must not appear
         assert "sigma" not in numeric_cols
@@ -273,7 +275,7 @@ class TestPrepareFeatures:
             }
         )
         df.index = pd.date_range("2025-06-01", periods=2, freq="B", name="date")
-        X, numeric_cols, categorical_cols = prepare_features(df)
+        _, numeric_cols, categorical_cols = prepare_features(df)
         assert numeric_cols == ["vix", "vix1d"]
         assert categorical_cols == []
 
@@ -578,7 +580,7 @@ class TestComputeMetrics:
         }
         y_full = pd.Series([0, 1, 2, 0, 1, 0, 1, 2])
         metrics = compute_metrics(results, y_full)
-        assert metrics["accuracy"] == 1.0
+        assert metrics["accuracy"] == pytest.approx(1.0)
 
 
 # ── build_model_configs ─────────────────────────────────────────
@@ -749,7 +751,7 @@ class TestEdgeCases:
         }
         y_full = pd.Series([0, 0, 0, 0, 0, 1, 2])
         metrics = compute_metrics(results, y_full)
-        assert metrics["accuracy"] == 0.8
+        assert metrics["accuracy"] == pytest.approx(0.8)
         assert metrics["majority_class"] == "CALL CREDIT SPREAD"
 
 
@@ -1256,7 +1258,7 @@ class TestComputeMetricsPrevDayAndLogLoss:
         y_full = pd.Series([0, 0, 0, 1, 1, 2])
         metrics = compute_metrics(results, y_full)
 
-        assert metrics["prev_day_baseline"] == 0.6
+        assert metrics["prev_day_baseline"] == pytest.approx(0.6)
 
     def test_log_loss_nan_when_value_error_raised(self, monkeypatch):
         """
@@ -1306,7 +1308,7 @@ class TestComputeMetricsPrevDayAndLogLoss:
         y_full = pd.Series([1, 1, 0])
         metrics = compute_metrics(results, y_full)
         # prev_day_preds[0] = majority_class = 1, actuals[0] = 1 => match => 1.0
-        assert metrics["prev_day_baseline"] == 1.0
+        assert metrics["prev_day_baseline"] == pytest.approx(1.0)
 
 
 # ── Additional print_model_comparison tests ──────────────────────
@@ -1478,6 +1480,7 @@ def _mock_train_final_model(X, y, params, numeric_cols=None, categorical_cols=No
     model = make_pipeline(
         preprocessor,
         DecisionTreeClassifier(max_depth=2, random_state=42),
+        memory=None,
     )
     model.fit(X, y)
     importances = pd.Series(

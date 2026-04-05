@@ -202,8 +202,8 @@ class TestFetchData:
         params = call_kwargs.kwargs.get("params") or call_kwargs[1].get("params")
         assert params["after"] == "2026-03-01"
         assert params["before"] == "2026-03-31"
-        assert params["min_feature"] == 0.8
-        assert params["min_label"] == 0.3
+        assert params["min_feature"] == pytest.approx(0.8)
+        assert params["min_label"] == pytest.approx(0.3)
 
     @patch("explore.psycopg2.connect")
     def test_fetch_data_closes_conn_on_error(self, mock_connect):
@@ -239,5 +239,5 @@ class TestFetchData:
         params = call_kwargs.kwargs.get("params") or call_kwargs[1].get("params")
         assert params["after"] is None
         assert params["before"] is None
-        assert params["min_feature"] == 0.0
-        assert params["min_label"] == 0.0
+        assert params["min_feature"] == pytest.approx(0.0)
+        assert params["min_label"] == pytest.approx(0.0)

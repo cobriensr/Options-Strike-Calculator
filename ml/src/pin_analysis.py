@@ -1537,6 +1537,7 @@ def _sklearn_regime_model(
             random_state=42,
             class_weight="balanced",
         ),
+        memory=None,
     )
 
     tscv = TimeSeriesSplit(n_splits=n_splits)
