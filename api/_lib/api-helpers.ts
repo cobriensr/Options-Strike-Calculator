@@ -18,6 +18,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 export type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string; status: number; code?: string };
+import type { ZodSafeParseResult, ZodSafeParseError } from 'zod';
 import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
 import { MARKET_MINUTES, TIMEOUTS, UW_BASE } from './constants.js';
@@ -152,6 +153,74 @@ export function sendError(
     error: message,
     ...(code && { code }),
   });
+}
+
+// ============================================================
+// COMBINED GUARDS
+// ============================================================
+
+/**
+ * Guard an owner-only endpoint against bots and non-owners.
+ * Combines checkBot + rejectIfNotOwner into a single call.
+ *
+ * Returns `true` if the request was rejected (response already sent),
+ * `false` if it passed both checks.
+ *
+ * Usage:
+ * ```ts
+ * const rejected = await guardOwnerEndpoint(req, res, done);
+ * if (rejected) return;
+ * ```
+ */
+export async function guardOwnerEndpoint(
+  req: VercelRequest,
+  res: VercelResponse,
+  done: (opts: { status: number }) => void,
+): Promise<boolean> {
+  const botCheck = await checkBot(req);
+  if (botCheck.isBot) {
+    done({ status: 403 });
+    res.status(403).json({ error: 'Access denied' });
+    return true;
+  }
+  const ownerCheck = rejectIfNotOwner(req, res);
+  if (ownerCheck) {
+    done({ status: 401 });
+    return true;
+  }
+  return false;
+}
+
+// ============================================================
+// VALIDATION HELPERS
+// ============================================================
+
+/**
+ * Send a 400 response if a Zod safeParse failed.
+ * Returns `true` if the parse failed (response already sent),
+ * `false` if it succeeded.
+ *
+ * Usage:
+ * ```ts
+ * const parsed = schema.safeParse(req.body);
+ * if (respondIfInvalid(parsed, res, done)) return;
+ * // parsed.data is now available
+ * ```
+ */
+export function respondIfInvalid<T>(
+  parsed: ZodSafeParseResult<T>,
+  res: VercelResponse,
+  done?: (opts: { status: number }) => void,
+): parsed is ZodSafeParseError<T> {
+  if (!parsed.success) {
+    const firstError = parsed.error.issues[0];
+    done?.({ status: 400 });
+    res.status(400).json({
+      error: firstError?.message ?? 'Invalid request body',
+    });
+    return true;
+  }
+  return false;
 }
 
 // ============================================================

@@ -920,7 +920,7 @@ describe('ChartAnalysis', () => {
       await clickAnalyzeAndConfirm(user);
       await act(() => vi.advanceTimersByTimeAsync(5000));
       await waitFor(() => {
-        expect(screen.getByText('Analysis failed')).toBeInTheDocument();
+        expect(screen.getByText('string')).toBeInTheDocument();
       });
       vi.useRealTimers();
     });

@@ -13,6 +13,7 @@ import type {
   HistoryCandle,
   SymbolDayData,
 } from '../types/api';
+import { getErrorMessage } from '../utils/error';
 import { getETTotalMinutes } from '../utils/timezone';
 import { getMarketCloseHourET } from '../data/marketHours';
 
@@ -101,7 +102,7 @@ async function fetchHistory(
     if (err instanceof DOMException && err.name === 'AbortError') {
       return { error: 'AbortError' };
     }
-    return { error: err instanceof Error ? err.message : 'Network error' };
+    return { error: getErrorMessage(err) };
   }
 }
 

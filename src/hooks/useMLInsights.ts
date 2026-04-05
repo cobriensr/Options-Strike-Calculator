@@ -6,6 +6,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { getErrorMessage } from '../utils/error';
 
 export interface PlotAnalysis {
   what_it_means: string;
@@ -70,9 +71,7 @@ export function useMLInsights(): MLInsightsState {
       setPipelineDate(data.pipelineDate ?? null);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
-      setError(
-        err instanceof Error ? err.message : 'Failed to fetch ML insights',
-      );
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }

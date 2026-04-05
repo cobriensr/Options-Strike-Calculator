@@ -1,8 +1,70 @@
+import type React from 'react';
 import { useState } from 'react';
 
 type Mode = 'sell' | 'buy';
 
-export function useRiskCalculator() {
+export interface UseRiskCalculatorReturn {
+  // State values
+  mode: Mode;
+  balance: string;
+  wing: number;
+  contracts: number;
+  creditInput: string;
+  premiumInput: string;
+  targetExitInput: string;
+  deltaInput: string;
+  popInput: string;
+  stopMultiple: number | null;
+  buyStopPct: number | null;
+  portfolioCap: number;
+
+  // State setters
+  setMode: React.Dispatch<React.SetStateAction<Mode>>;
+  setBalance: React.Dispatch<React.SetStateAction<string>>;
+  setWing: React.Dispatch<React.SetStateAction<number>>;
+  setContracts: React.Dispatch<React.SetStateAction<number>>;
+  setCreditInput: React.Dispatch<React.SetStateAction<string>>;
+  setPremiumInput: React.Dispatch<React.SetStateAction<string>>;
+  setTargetExitInput: React.Dispatch<React.SetStateAction<string>>;
+  setDeltaInput: React.Dispatch<React.SetStateAction<string>>;
+  setPopInput: React.Dispatch<React.SetStateAction<string>>;
+  setStopMultiple: React.Dispatch<React.SetStateAction<number | null>>;
+  setBuyStopPct: React.Dispatch<React.SetStateAction<number | null>>;
+  setPortfolioCap: React.Dispatch<React.SetStateAction<number>>;
+
+  // Derived values
+  bal: number;
+  delta: number;
+  hasDelta: boolean;
+  credit: number;
+  creditPerContract: number;
+  grossLossPerContract: number;
+  netLossPerContract: number;
+  hasCredit: boolean;
+  hasStop: boolean;
+  stopLossPerContract: number;
+  premium: number;
+  premiumPerContract: number;
+  hasBuyStop: boolean;
+  buyStopLossPerContract: number;
+  lossPerContract: number;
+  totalLoss: number;
+  lossPct: number;
+  bpPerContract: number;
+  totalBp: number;
+  targetExit: number;
+  hasTarget: boolean;
+  buyProfitPerContract: number;
+  maxProfit: number;
+  rrRatio: number;
+  maxPositions: number;
+  pop: number;
+  hasPop: boolean;
+  evPerContract: number;
+  creditPct: number;
+}
+
+export function useRiskCalculator(): UseRiskCalculatorReturn {
   const [mode, setMode] = useState<Mode>('sell');
   const [balance, setBalance] = useState('');
   const [wing, setWing] = useState(10);

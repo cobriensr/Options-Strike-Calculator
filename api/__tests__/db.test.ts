@@ -465,6 +465,9 @@ describe('db.ts', () => {
         { id: 36 },
         { id: 37 },
         { id: 38 },
+        { id: 39 },
+        { id: 40 },
+        { id: 41 },
       ]);
 
       const applied = await migrateDb();
@@ -521,11 +524,14 @@ describe('db.ts', () => {
         '#36: Add prompt_hash column to analyses for prompt version tracking',
         '#37: Add analysis_embedding vector(2000) column for historical analysis retrieval',
         '#38: Add HNSW index on analysis_embedding for cosine similarity search',
+        '#39: Add composite index on iv_monitor(date, timestamp DESC) for time-windowed IV queries',
+        '#40: Add composite index on flow_data(date, source, timestamp DESC) for ordered flow queries',
+        '#41: Add composite index on flow_ratio_monitor(date, timestamp DESC) for time-windowed ratio queries',
       ]);
-      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) + 2 (#24: ALTER+INSERT) + 11 (#25: 3 CREATE+7 INDEX+INSERT) + 2 (#26: ALTER+INSERT) + 3 (#27: CREATE+INDEX+INSERT) + 2 (#28: CREATE INDEX+INSERT) + 2 (#29: ALTER+INSERT) + 3 (#30: CREATE+INDEX+INSERT) + 2 (#31: ALTER+INSERT) + 4 (#32: CREATE+INDEX+CREATE+INSERT) + 2 (#33: ALTER+INSERT) + 2 (#34: CREATE+INSERT) + 2 (#35: CREATE+INSERT) + 2 (#36: ALTER+INSERT) + 2 (#37: ALTER+INSERT) + 2 (#38: CREATE INDEX+INSERT) = 128
-      expect(mockSql).toHaveBeenCalledTimes(128);
-      // Migrations #15-38 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(24);
+      // 49 (migrations #1-14 via legacy run()) + 24 (#15-18) + 2 (#19) + 3 (#20: CREATE+INDEX+INSERT) + 2 (#21: ALTER+INSERT) + 2 (#22: ALTER+INSERT) + 3 (#23: CREATE+INDEX+INSERT) + 2 (#24: ALTER+INSERT) + 11 (#25: 3 CREATE+7 INDEX+INSERT) + 2 (#26: ALTER+INSERT) + 3 (#27: CREATE+INDEX+INSERT) + 2 (#28: CREATE INDEX+INSERT) + 2 (#29: ALTER+INSERT) + 3 (#30: CREATE+INDEX+INSERT) + 2 (#31: ALTER+INSERT) + 4 (#32: CREATE+INDEX+CREATE+INSERT) + 2 (#33: ALTER+INSERT) + 2 (#34: CREATE+INSERT) + 2 (#35: CREATE+INSERT) + 2 (#36: ALTER+INSERT) + 2 (#37: ALTER+INSERT) + 2 (#38: CREATE INDEX+INSERT) + 2 (#39: CREATE INDEX+INSERT) + 2 (#40: CREATE INDEX+INSERT) + 2 (#41: CREATE INDEX+INSERT) = 134
+      expect(mockSql).toHaveBeenCalledTimes(134);
+      // Migrations #15-41 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(27);
     });
 
     it('propagates errors from migration SQL', async () => {

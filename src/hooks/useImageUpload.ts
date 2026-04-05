@@ -1,8 +1,23 @@
+import type React from 'react';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { UploadedImage } from '../components/ChartAnalysis/types';
 import { CHART_LABELS } from '../components/ChartAnalysis/types';
 
-export function useImageUpload() {
+export interface UseImageUploadReturn {
+  images: UploadedImage[];
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  replaceInputRef: React.RefObject<HTMLInputElement | null>;
+  addImage: (file: File) => void;
+  removeImage: (id: string) => void;
+  clearAllImages: () => void;
+  updateLabel: (id: string, label: string) => void;
+  replaceImage: (index: number) => void;
+  handleReplaceFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  handleDrop: (e: React.DragEvent) => void;
+  handleFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}
+
+export function useImageUpload(): UseImageUploadReturn {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);

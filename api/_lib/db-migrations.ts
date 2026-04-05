@@ -966,4 +966,28 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 39,
+    description:
+      'Add composite index on iv_monitor(date, timestamp DESC) for time-windowed IV queries',
+    statements: (sql) => [
+      sql`CREATE INDEX IF NOT EXISTS idx_iv_monitor_date_ts ON iv_monitor(date, timestamp DESC)`,
+    ],
+  },
+  {
+    id: 40,
+    description:
+      'Add composite index on flow_data(date, source, timestamp DESC) for ordered flow queries',
+    statements: (sql) => [
+      sql`CREATE INDEX IF NOT EXISTS idx_flow_data_date_source_ts_desc ON flow_data(date, source, timestamp DESC)`,
+    ],
+  },
+  {
+    id: 41,
+    description:
+      'Add composite index on flow_ratio_monitor(date, timestamp DESC) for time-windowed ratio queries',
+    statements: (sql) => [
+      sql`CREATE INDEX IF NOT EXISTS idx_flow_ratio_date_ts ON flow_ratio_monitor(date, timestamp DESC)`,
+    ],
+  },
 ];

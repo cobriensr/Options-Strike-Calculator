@@ -4,10 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn(),
   schwabTraderFetch: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -26,7 +25,10 @@ vi.mock('../_lib/logger.js', () => ({
 
 import handler from '../positions.js';
 import { parseFullCSV, parseTosExpiration } from '../_lib/csv-parser.js';
-import { rejectIfNotOwner, rejectIfRateLimited } from '../_lib/api-helpers.js';
+import {
+  guardOwnerEndpoint,
+  rejectIfRateLimited,
+} from '../_lib/api-helpers.js';
 import { savePositions } from '../_lib/db.js';
 
 // ── Sample CSV matching the real paperMoney export format ─────────
@@ -321,13 +323,13 @@ describe('POST /api/positions (CSV upload)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(undefined as never);
     vi.mocked(savePositions).mockResolvedValue(1);
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

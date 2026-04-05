@@ -17,6 +17,7 @@ import {
   rejectIfRateLimited,
   checkBot,
   setCacheHeaders,
+  respondIfInvalid,
 } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
@@ -59,11 +60,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // POST
   try {
     const parsed = preMarketBodySchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: parsed.error.issues[0]?.message ?? 'Invalid request body',
-      });
-    }
+    if (respondIfInvalid(parsed, res)) return;
     const { date, ...data } = parsed.data;
 
     if (data.globexHigh >= data.globexLow === false) {

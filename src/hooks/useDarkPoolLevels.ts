@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
+import { getErrorMessage } from '../utils/error';
 import { useIsOwner } from './useIsOwner';
 
 export interface DarkPoolLevel {
@@ -70,8 +71,8 @@ export function useDarkPoolLevels(
       if (data.levels.length > 0) {
         setUpdatedAt(data.levels[0]!.updatedAt);
       }
-    } catch {
-      if (mountedRef.current) setError('Network error');
+    } catch (err) {
+      if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
       if (mountedRef.current) setLoading(false);
     }

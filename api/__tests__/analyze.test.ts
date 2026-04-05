@@ -4,9 +4,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  respondIfInvalid: vi
+    .fn()
+    .mockImplementation(
+      (
+        parsed: { success: boolean; error?: { issues: { message: string }[] } },
+        res: { status: (n: number) => { json: (o: unknown) => void } },
+      ) => {
+        if (!parsed.success) {
+          const msg =
+            parsed.error?.issues[0]?.message ?? 'Invalid request body';
+          res.status(400).json({ error: msg });
+          return true;
+        }
+        return false;
+      },
+    ),
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -114,9 +129,9 @@ const MockErrors = (globalThis as Record<string, unknown>).__MockErrors as {
   AuthenticationError: new (message?: string) => Error;
 };
 import {
-  rejectIfNotOwner,
+  guardOwnerEndpoint,
   rejectIfRateLimited,
-  checkBot,
+  respondIfInvalid,
 } from '../_lib/api-helpers.js';
 import {
   getActiveLessons,
@@ -213,8 +228,16 @@ describe('POST /api/analyze', () => {
     mockFinalMessage.mockReset();
     process.env.ANTHROPIC_API_KEY = 'test-key';
     // Restore module mock defaults that restoreAllMocks may strip
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+    vi.mocked(respondIfInvalid).mockImplementation((parsed, res) => {
+      if (!parsed.success) {
+        const msg = parsed.error?.issues[0]?.message ?? 'Invalid request body';
+        res.status(400).json({ error: msg });
+        return true;
+      }
+      return false;
+    });
     vi.mocked(getHistoricalWinRate).mockResolvedValue(null);
     vi.mocked(formatWinRateForClaude).mockReturnValue('');
     // Silence expected console.error/log from error-path tests
@@ -231,7 +254,7 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });
@@ -242,7 +265,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns 500 when ANTHROPIC_API_KEY is missing', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     delete process.env.ANTHROPIC_API_KEY;
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
@@ -254,8 +276,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns 400 when no images provided', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-
     const req = mockRequest({ method: 'POST', body: makeBody({ images: [] }) });
     const res = mockResponse();
     await handler(req, res);
@@ -265,8 +285,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns 400 when more than 2 images', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-
     const images = Array.from({ length: 3 }, () => ({
       data: 'base64',
       mediaType: 'image/png',
@@ -280,7 +298,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns parsed analysis on success', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
@@ -300,7 +317,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('sends correct model and params to Anthropic SDK', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody();
@@ -322,7 +338,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('handles multiple images', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const images = [
@@ -340,7 +355,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns error in NDJSON when Anthropic API returns 429', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     // Must throw on both Opus and Sonnet attempts to reach the outer catch
     const err = new MockErrors.RateLimitError('Rate limited');
     mockFinalMessage.mockRejectedValue(err);
@@ -354,7 +368,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns stream corruption error when Claude response is not valid JSON', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: 'Not valid JSON response' }],
       usage: { input_tokens: 100, output_tokens: 50 },
@@ -372,7 +385,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('parses structured output JSON directly', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     // Structured outputs return clean JSON (no markdown fences)
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: JSON.stringify(SAMPLE_ANALYSIS) }],
@@ -391,7 +403,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns 500 when SDK throws a network error', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockStream.mockImplementation(() => {
       throw new Error('Network failure');
     });
@@ -404,7 +415,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns generic message for non-Error throws', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockStream.mockImplementation(() => {
       throw 'something weird'; // NOSONAR: intentionally testing non-Error throw handling
     });
@@ -417,7 +427,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('includes midday mode text in context', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -439,7 +448,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('includes review mode text and previous recommendation in context', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -461,7 +469,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('filters out thinking blocks from response', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue({
       content: [
         { type: 'thinking', thinking: 'internal reasoning...' },
@@ -482,7 +489,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('uses image labels when provided', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const images = [
@@ -500,7 +506,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('populates all context fields in the request', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const ctx = {
@@ -545,8 +550,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns 400 when an image exceeds 5MB', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-
     const oversized = 'x'.repeat(5 * 1024 * 1024 + 1);
     const images = [{ data: oversized, mediaType: 'image/png' }];
     const req = mockRequest({ method: 'POST', body: makeBody({ images }) });
@@ -560,7 +563,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns correct client message for Anthropic 401', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     // AuthenticationError is non-retryable — re-thrown immediately from Opus, no Sonnet fallback
     mockFinalMessage.mockRejectedValue(
       new MockErrors.AuthenticationError('Invalid API key'),
@@ -576,7 +578,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns correct client message for Anthropic 500', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     // APIError 500 triggers Sonnet fallback — must fail on both to reach outer catch
     const err = new MockErrors.APIError(500, 'Internal server error');
     mockFinalMessage.mockRejectedValue(err);
@@ -591,7 +592,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('still returns analysis when DB save fails', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     // Make DB throw
@@ -612,7 +612,7 @@ describe('POST /api/analyze', () => {
 
   it('retries DB save and succeeds on second attempt', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const { saveAnalysis } = await import('../_lib/db.js');
@@ -633,7 +633,7 @@ describe('POST /api/analyze', () => {
 
   it('exhausts all DB save retries and still returns analysis', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const { saveAnalysis } = await import('../_lib/db.js');
@@ -658,8 +658,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('falls back to Sonnet when Opus fails with server error', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-
     // SDK retries are internal (maxRetries: 3). When mockFinalMessage rejects,
     // it means Opus is exhausted — code falls back to Sonnet immediately.
     // Must be an APIError (not BadRequest/Auth/Permission) to trigger fallback.
@@ -682,8 +680,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns 500 when both Opus and Sonnet fail', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-
     const serverErr = new MockErrors.APIError(529, 'overloaded');
     mockFinalMessage
       .mockRejectedValueOnce(serverErr)
@@ -701,7 +697,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('handles response with only thinking blocks (no text)', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'thinking', thinking: 'internal only...' }],
       usage: { input_tokens: 100, output_tokens: 50 },
@@ -718,7 +713,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('injects lessons_learned block as separate system block', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const fakeLessons = [
@@ -753,7 +747,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('omits lessons block when no lessons exist', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getActiveLessons).mockResolvedValueOnce([]);
@@ -772,7 +765,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('continues analysis when flow data fetch throws', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     // Make one of the flow data functions throw
@@ -793,7 +785,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('continues analysis when lessons fetch throws', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getActiveLessons).mockRejectedValueOnce(
@@ -818,7 +809,10 @@ describe('POST /api/analyze', () => {
   // ── Bot check ─────────────────────────────────────────────
 
   it('returns 403 when bot check detects a bot', async () => {
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -831,7 +825,6 @@ describe('POST /api/analyze', () => {
   // ── Rate limiting ─────────────────────────────────────────
 
   it('returns early when rate limited', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(rejectIfRateLimited).mockImplementation(async (_req, res) => {
       res.status(429).json({ error: 'Rate limited' });
       return true;
@@ -847,7 +840,6 @@ describe('POST /api/analyze', () => {
   // ── Position and previous rec auto-fetch ──────────────────
 
   it('includes DB positions in context when available', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getLatestPositions).mockResolvedValueOnce({
@@ -876,7 +868,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('skips positions with default "No open" summary', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getLatestPositions).mockResolvedValueOnce({
@@ -904,7 +895,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('continues when position fetch throws', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getLatestPositions).mockRejectedValueOnce(
@@ -919,7 +909,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('auto-fetches previous recommendation in midday mode', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getPreviousRecommendation).mockResolvedValueOnce(
@@ -941,7 +930,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('continues when previous recommendation fetch throws', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getPreviousRecommendation).mockRejectedValueOnce(
@@ -961,7 +949,6 @@ describe('POST /api/analyze', () => {
   // ── Flow/context data interpolation ───────────────────────
 
   it('includes all flow data contexts when formatters return strings', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     // Make all format functions return non-null strings
@@ -1017,7 +1004,6 @@ describe('POST /api/analyze', () => {
   // ── Events, backtest, dataNote context fields ─────────────
 
   it('formats scheduled events in context', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1041,7 +1027,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('includes backtest mode indicator in context', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
     vi.mocked(getLatestPositions).mockClear();
 
@@ -1065,7 +1050,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('includes data note warning in context', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1088,7 +1072,6 @@ describe('POST /api/analyze', () => {
   // ── Truncated JSON returns null (structured outputs prevent this in practice) ──
 
   it('returns stream corruption error for truncated JSON', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     // Truncated JSON — structured outputs prevents this, but if max_tokens
     // is hit the response may be incomplete
     const truncated = '{"structure":"IRON CONDOR","confidence":"HIGH"';
@@ -1111,7 +1094,6 @@ describe('POST /api/analyze', () => {
   // ── Snapshot ID lookup ────────────────────────────────────
 
   it('passes snapshot ID to saveAnalysis when snapshot exists', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     // Mock getDb to return a function that returns rows with a snapshot ID
@@ -1139,8 +1121,6 @@ describe('POST /api/analyze', () => {
   // ── Opus stream throws (not finalMessage) ────────────────
 
   it('falls back to Sonnet when Opus stream() itself throws 529', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-
     // First stream() call throws (overloaded), second returns normally
     const overloaded = new MockErrors.APIError(529, 'overloaded');
     mockStream
@@ -1165,7 +1145,6 @@ describe('POST /api/analyze', () => {
   // ── Review mode skips position fetch ──────────────────────
 
   it('does not fetch positions in review mode', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
     vi.mocked(getLatestPositions).mockClear();
 
@@ -1186,7 +1165,6 @@ describe('POST /api/analyze', () => {
   // ── Opening range context fields ──────────────────────────
 
   it('includes opening range available YES when true', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1202,7 +1180,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('includes opening range available NO when false', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1220,7 +1197,6 @@ describe('POST /api/analyze', () => {
   // ── Model refusal handling ──────────────────────────────
 
   it('returns 422 when Claude refuses the request', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: 'I cannot assist with that.' }],
       usage: { input_tokens: 100, output_tokens: 10 },
@@ -1240,7 +1216,6 @@ describe('POST /api/analyze', () => {
   // ── Markdown code fence stripping ──────────────────────
 
   it('strips markdown code fences from Claude response', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const fenced = '```json\n' + JSON.stringify(SAMPLE_ANALYSIS) + '\n```';
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: fenced }],
@@ -1260,7 +1235,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('strips code fences without language tag', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const fenced = '```\n' + JSON.stringify(SAMPLE_ANALYSIS) + '\n```';
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: fenced }],
@@ -1282,7 +1256,6 @@ describe('POST /api/analyze', () => {
   // ── OI Concentration formatting ────────────────────────────
 
   it('includes OI concentration section when topOIStrikes provided', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1329,7 +1302,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('omits OI concentration when topOIStrikes is empty', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1349,7 +1321,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('formats OI under 1000 without K suffix', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1382,7 +1353,6 @@ describe('POST /api/analyze', () => {
   // ── IV Skew Metrics formatting ─────────────────────────────
 
   it('includes IV skew section with STEEP signal', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1413,7 +1383,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('includes IV skew section with NORMAL signal', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1440,7 +1409,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('includes IV skew section with FLAT signal and symmetric ratio', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const body = makeBody({
@@ -1468,7 +1436,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('omits IV skew section when skewMetrics not provided', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
@@ -1483,7 +1450,6 @@ describe('POST /api/analyze', () => {
   // ── Historical win rate context injection ──────────────────
 
   it('includes win rate context when getHistoricalWinRate returns data', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getHistoricalWinRate).mockResolvedValueOnce({
@@ -1516,7 +1482,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('omits win rate context when getHistoricalWinRate returns null', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
     vi.mocked(getHistoricalWinRate).mockResolvedValueOnce(null);
 
@@ -1531,7 +1496,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('continues analysis when getHistoricalWinRate throws', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
     vi.mocked(getHistoricalWinRate).mockRejectedValueOnce(
       new Error('DB error fetching win rate'),
@@ -1548,7 +1512,6 @@ describe('POST /api/analyze', () => {
   });
 
   it('passes correct conditions to getHistoricalWinRate', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
     vi.mocked(getHistoricalWinRate).mockResolvedValueOnce(null);
 

@@ -145,7 +145,7 @@ describe('useVix1dData', () => {
     expect(result.current.dayCount).toBe(0);
     expect(warnSpy).toHaveBeenCalledWith(
       'Failed to load VIX1D daily data:',
-      expect.any(Error),
+      'HTTP 401',
     );
   });
 
@@ -170,7 +170,7 @@ describe('useVix1dData', () => {
     expect(result.current.dayCount).toBe(0);
     expect(warnSpy).toHaveBeenCalledWith(
       'Failed to load VIX1D daily data:',
-      expect.any(TypeError),
+      'Failed to fetch',
     );
   });
 

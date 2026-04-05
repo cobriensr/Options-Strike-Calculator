@@ -8,6 +8,22 @@ vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
   setCacheHeaders: vi.fn(),
+  respondIfInvalid: vi
+    .fn()
+    .mockImplementation(
+      (
+        parsed: { success: boolean; error?: { issues: { message: string }[] } },
+        res: { status: (n: number) => { json: (o: unknown) => void } },
+      ) => {
+        if (!parsed.success) {
+          const msg =
+            parsed.error?.issues[0]?.message ?? 'Invalid request body';
+          res.status(400).json({ error: msg });
+          return true;
+        }
+        return false;
+      },
+    ),
 }));
 
 const mockDbFn = vi.fn();

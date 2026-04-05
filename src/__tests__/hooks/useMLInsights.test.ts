@@ -150,7 +150,7 @@ describe('useMLInsights: error handling', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.error).toBe('Failed to fetch ML insights');
+    expect(result.current.error).toBe('string error');
   });
 
   it('ignores AbortError', async () => {

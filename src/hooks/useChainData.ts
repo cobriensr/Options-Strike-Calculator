@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import type { ChainResponse } from '../types/api';
+import { getErrorMessage } from '../utils/error';
 
 export interface UseChainDataReturn {
   chain: ChainResponse | null;
@@ -26,7 +27,7 @@ async function fetchChain(): Promise<FetchChainResult> {
   } catch (err) {
     return {
       data: null,
-      networkError: err instanceof Error ? err.message : 'Network error',
+      networkError: getErrorMessage(err),
     };
   }
 }

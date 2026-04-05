@@ -15,6 +15,7 @@
  */
 
 import { useState, useCallback, useRef } from 'react';
+import { getErrorMessage } from '../utils/error';
 
 interface Vix1dEntry {
   o: number;
@@ -53,8 +54,8 @@ export function useVix1dData(): UseVix1dDataReturn {
         setData(json);
         setLoaded(true);
       })
-      .catch((err) => {
-        console.warn('Failed to load VIX1D daily data:', err);
+      .catch((err: unknown) => {
+        console.warn('Failed to load VIX1D daily data:', getErrorMessage(err));
         fetchStarted.current = false; // allow retry on failure
       });
   }, []);

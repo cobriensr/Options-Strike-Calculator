@@ -225,7 +225,7 @@ describe('useHistoryData: basic behavior', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.error).toBe('Network error');
+    expect(result.current.error).toBe('unknown');
   });
 
   it('handles error response with no JSON body', async () => {

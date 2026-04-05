@@ -26,10 +26,8 @@ export default function BWBResults({
 }: Readonly<BWBResultsProps>) {
   const mult = 100 * contracts;
   const sideLabel = side === 'calls' ? 'Call' : 'Put';
-  const safeSideLabel =
-    side === 'calls' ? 'Below ' + low : 'Above ' + high;
-  const riskSideLabel =
-    side === 'calls' ? 'Above ' + high : 'Below ' + low;
+  const safeSideLabel = side === 'calls' ? 'Below ' + low : 'Above ' + high;
+  const riskSideLabel = side === 'calls' ? 'Above ' + high : 'Below ' + low;
 
   return (
     <>
@@ -72,7 +70,7 @@ export default function BWBResults({
 
         <div className="border-edge mt-2 grid grid-cols-2 gap-2 border-t pt-2">
           <div>
-            <div className="text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]">
+            <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
               Narrow wing
             </div>
             <div className="text-primary font-mono text-sm">
@@ -80,7 +78,7 @@ export default function BWBResults({
             </div>
           </div>
           <div>
-            <div className="text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]">
+            <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
               Wide wing
             </div>
             <div className="text-primary font-mono text-sm">
@@ -93,7 +91,7 @@ export default function BWBResults({
       {/* Key Numbers */}
       <div className="mt-4 grid grid-cols-2 gap-2">
         <div className="bg-surface-alt rounded-lg p-3">
-          <div className="text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]">
+          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
             Max Profit
           </div>
           <div className="text-success font-mono text-[17px] font-bold">
@@ -104,7 +102,7 @@ export default function BWBResults({
           </div>
         </div>
         <div className="bg-surface-alt rounded-lg p-3">
-          <div className="text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]">
+          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
             Max Loss {side === 'calls' ? '\u2191' : '\u2193'}
           </div>
           <div className="text-danger font-mono text-[17px] font-bold">
@@ -115,7 +113,7 @@ export default function BWBResults({
           </div>
         </div>
         <div className="bg-surface-alt rounded-lg p-3">
-          <div className="text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]">
+          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
             {net >= 0 ? 'Safe side' : 'Safe loss'}{' '}
             {side === 'calls' ? '\u2193' : '\u2191'}
           </div>
@@ -132,7 +130,7 @@ export default function BWBResults({
           </div>
         </div>
         <div className="bg-surface-alt rounded-lg p-3">
-          <div className="text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]">
+          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
             Breakevens
           </div>
           <div className="text-accent font-mono text-[15px] font-bold">

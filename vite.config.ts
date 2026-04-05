@@ -134,6 +134,7 @@ export default defineConfig({
           sentry: ['@sentry/react'],
           export: ['xlsx'],
           analytics: ['@vercel/analytics', '@vercel/speed-insights'],
+          'vix-data': ['./src/data/vixRangeStats'],
         },
       },
     },

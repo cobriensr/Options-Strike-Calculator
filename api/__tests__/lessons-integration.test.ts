@@ -75,9 +75,27 @@ vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
     await importOriginal<typeof import('../_lib/api-helpers.js')>();
   return {
     ...actual,
+    guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
     rejectIfNotOwner: vi.fn().mockReturnValue(false),
     rejectIfRateLimited: vi.fn().mockResolvedValue(false),
     checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+    respondIfInvalid: vi.fn().mockImplementation(
+      (
+        parsed: {
+          success: boolean;
+          error?: { issues: { message: string }[] };
+        },
+        res: { status: (n: number) => { json: (o: unknown) => void } },
+      ) => {
+        if (!parsed.success) {
+          const msg =
+            parsed.error?.issues[0]?.message ?? 'Invalid request body';
+          res.status(400).json({ error: msg });
+          return true;
+        }
+        return false;
+      },
+    ),
   };
 });
 

@@ -4,10 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn(),
   schwabTraderFetch: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -17,7 +16,7 @@ vi.mock('../_lib/db.js', () => ({
 
 import handler from '../positions.js';
 import {
-  rejectIfNotOwner,
+  guardOwnerEndpoint,
   rejectIfRateLimited,
   schwabTraderFetch,
 } from '../_lib/api-helpers.js';
@@ -28,7 +27,7 @@ describe('GET /api/positions', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
     vi.mocked(getDb).mockReturnValue(mockSql as never);
     mockSql.mockResolvedValue([]);
@@ -45,7 +44,7 @@ describe('GET /api/positions', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

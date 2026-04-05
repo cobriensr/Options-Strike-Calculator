@@ -18,6 +18,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
+import { getErrorMessage } from '../utils/error';
 import { useIsOwner } from './useIsOwner';
 import type {
   QuotesResponse,
@@ -93,7 +94,7 @@ async function fetchJson<T>(
       return { error: 'Request timed out', status: 0 };
     }
     return {
-      error: err instanceof Error ? err.message : 'Network error',
+      error: getErrorMessage(err),
       status: 0,
     };
   }

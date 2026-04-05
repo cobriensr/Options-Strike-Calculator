@@ -4,9 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  respondIfInvalid: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -14,13 +14,19 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import handler from '../snapshot.js';
-import { rejectIfNotOwner, rejectIfRateLimited } from '../_lib/api-helpers.js';
+import {
+  guardOwnerEndpoint,
+  rejectIfRateLimited,
+  respondIfInvalid,
+} from '../_lib/api-helpers.js';
 import { saveSnapshot } from '../_lib/db.js';
 
 describe('POST /api/snapshot', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+    vi.mocked(respondIfInvalid).mockReturnValue(false);
   });
 
   it('returns 405 for non-POST methods', async () => {
@@ -31,7 +37,7 @@ describe('POST /api/snapshot', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });
@@ -41,7 +47,6 @@ describe('POST /api/snapshot', () => {
   });
 
   it('returns early when rate limited', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(rejectIfRateLimited).mockImplementation(async (_req, res) => {
       res.status(429).json({ error: 'Rate limited' });
       return true;
@@ -52,7 +57,13 @@ describe('POST /api/snapshot', () => {
   });
 
   it('returns 400 when date is missing', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(respondIfInvalid).mockImplementation((parsed, res) => {
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message });
+        return true;
+      }
+      return false;
+    });
     const res = mockResponse();
     await handler(
       mockRequest({ method: 'POST', body: { entryTime: '09:35' } }),
@@ -63,7 +74,13 @@ describe('POST /api/snapshot', () => {
   });
 
   it('returns 400 when entryTime is missing', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(respondIfInvalid).mockImplementation((parsed, res) => {
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message });
+        return true;
+      }
+      return false;
+    });
     const res = mockResponse();
     await handler(
       mockRequest({ method: 'POST', body: { date: '2026-03-10' } }),
@@ -74,7 +91,6 @@ describe('POST /api/snapshot', () => {
   });
 
   it('saves snapshot and returns id', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(saveSnapshot).mockResolvedValue(123);
 
     const res = mockResponse();
@@ -95,7 +111,6 @@ describe('POST /api/snapshot', () => {
   });
 
   it('returns saved:false when saveSnapshot returns null', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(saveSnapshot).mockResolvedValue(null);
 
     const res = mockResponse();
@@ -112,7 +127,6 @@ describe('POST /api/snapshot', () => {
   });
 
   it('returns 200 with saved:false on database error', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(saveSnapshot).mockRejectedValue(new Error('DB error'));
 
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

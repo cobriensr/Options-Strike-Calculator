@@ -12,9 +12,9 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  rejectIfNotOwner,
   rejectIfRateLimited,
-  checkBot,
+  guardOwnerEndpoint,
+  respondIfInvalid,
 } from './_lib/api-helpers.js';
 import { saveSnapshot } from './_lib/db.js';
 import { snapshotBodySchema } from './_lib/validation.js';
@@ -28,17 +28,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'POST only' });
   }
 
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    done({ status: 403 });
-    return res.status(403).json({ error: 'Access denied' });
-  }
-
-  const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) {
-    done({ status: 401 });
-    return ownerCheck;
-  }
+  const rejected = await guardOwnerEndpoint(req, res, done);
+  if (rejected) return;
 
   // Rate limit: max 30 snapshots per minute (generous for normal use)
   const rateLimited = await rejectIfRateLimited(req, res, 'snapshot', 30);
@@ -49,13 +40,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const parsed = snapshotBodySchema.safeParse(req.body);
-    if (!parsed.success) {
-      const firstError = parsed.error.issues[0];
-      done({ status: 400 });
-      return res.status(400).json({
-        error: firstError?.message ?? 'Invalid request body',
-      });
-    }
+    if (respondIfInvalid(parsed, res, done)) return;
 
     const id = await saveSnapshot(parsed.data);
 

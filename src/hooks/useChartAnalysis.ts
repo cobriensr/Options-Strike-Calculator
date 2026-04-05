@@ -8,6 +8,19 @@ import type {
 } from '../components/ChartAnalysis/types';
 import { THINKING_MESSAGES } from '../constants';
 import { buildPreviousRecommendation } from '../utils/analysis';
+import { getErrorMessage } from '../utils/error';
+
+export interface UseChartAnalysisReturn {
+  analysis: AnalysisResult | null;
+  rawResponse: string | null;
+  loading: boolean;
+  error: string | null;
+  elapsed: number;
+  analyze: () => Promise<void>;
+  cancelAnalysis: () => void;
+  lastAnalysis: AnalysisResult | null;
+  THINKING_MESSAGES: typeof THINKING_MESSAGES;
+}
 
 async function compressImage(
   file: File,
@@ -32,7 +45,7 @@ export function useChartAnalysis(opts: {
   hasCSVPositions?: boolean;
   onAnalysisSaved?: () => void;
   onModeCompleted?: (mode: AnalysisMode) => void;
-}) {
+}): UseChartAnalysisReturn {
   const {
     images,
     context,
@@ -263,13 +276,11 @@ export function useChartAnalysis(opts: {
               `Analysis timed out after ${MAX_ATTEMPTS} attempts. Try fewer images or simpler charts.`,
             );
         } else {
-          setError(
-            lastError instanceof Error ? lastError.message : 'Analysis failed',
-          );
+          setError(getErrorMessage(lastError));
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Analysis failed');
+      setError(getErrorMessage(err));
     } finally {
       abortRef.current = null;
       setLoading(false);
