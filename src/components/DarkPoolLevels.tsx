@@ -179,21 +179,25 @@ export default memo(function DarkPoolLevels({
       badge={badge}
       headerRight={headerRight}
     >
-      <div role="table" aria-label="Dark pool levels">
-        <div className="sr-only" role="row">
-          <span role="columnheader">SPX Level</span>
-          <span role="columnheader">Premium</span>
-          <span role="columnheader">Blocks</span>
-          <span role="columnheader">Time</span>
-        </div>
-        {filtered.map((level) => (
-          <LevelRow
-            key={level.spxLevel}
-            level={level}
-            maxPremium={maxPremium}
-          />
-        ))}
-      </div>
+      <table className="w-full border-collapse" aria-label="Dark pool levels">
+        <thead className="sr-only">
+          <tr>
+            <th>SPX Level</th>
+            <th>Premium</th>
+            <th>Blocks</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((level) => (
+            <LevelRow
+              key={level.spxLevel}
+              level={level}
+              maxPremium={maxPremium}
+            />
+          ))}
+        </tbody>
+      </table>
     </SectionBox>
   );
 });
@@ -208,18 +212,17 @@ function LevelRow({
   const barWidth = Math.max((level.totalPremium / maxPremium) * 100, 2);
 
   return (
-    <div role="row" className="flex items-center gap-2 py-1.5">
+    <tr className="flex items-center gap-2 py-1.5">
       {/* SPX Level */}
-      <span
-        role="cell"
+      <td
         className="w-[52px] shrink-0 text-right font-mono text-sm font-bold"
         style={{ color: theme.text }}
       >
         {level.spxLevel}
-      </span>
+      </td>
 
       {/* Premium bar */}
-      <div role="cell" className="min-w-0 flex-1">
+      <td className="min-w-0 flex-1">
         <div
           className="h-[14px] rounded-sm transition-[width] duration-300"
           style={{
@@ -229,32 +232,25 @@ function LevelRow({
           }}
           aria-label={`${formatPremium(level.totalPremium)} premium`}
         />
-      </div>
+      </td>
 
       {/* Premium value */}
-      <span
-        role="cell"
+      <td
         className="w-[56px] shrink-0 text-right font-mono text-xs font-semibold"
         style={{ color: theme.textSecondary }}
       >
         {formatPremium(level.totalPremium)}
-      </span>
+      </td>
 
       {/* Block count */}
-      <span
-        role="cell"
-        className="text-muted w-[52px] shrink-0 text-right font-sans text-[10px]"
-      >
+      <td className="text-muted w-[52px] shrink-0 text-right font-sans text-[10px]">
         {level.tradeCount} block{level.tradeCount !== 1 ? 's' : ''}
-      </span>
+      </td>
 
       {/* Latest trade time */}
-      <span
-        role="cell"
-        className="text-muted w-[52px] shrink-0 text-right font-mono text-[10px]"
-      >
+      <td className="text-muted w-[52px] shrink-0 text-right font-mono text-[10px]">
         {formatTime(level.latestTime)}
-      </span>
-    </div>
+      </td>
+    </tr>
   );
 }

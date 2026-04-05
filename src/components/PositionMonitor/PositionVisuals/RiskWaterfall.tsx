@@ -69,7 +69,6 @@ export default function RiskWaterfall({
     <svg
       viewBox={`0 0 ${W} ${totalH}`}
       className="h-auto w-full"
-      role="img"
       aria-label="Risk waterfall"
     >
       {segments.map((seg, i) => {

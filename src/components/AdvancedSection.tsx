@@ -142,9 +142,8 @@ export default function AdvancedSection({
               {wingWidth}
             </span>
           </div>
-          <div
-            className="flex flex-wrap gap-1.5"
-            role="group"
+          <fieldset
+            className="m-0 flex flex-wrap gap-1.5 border-0 p-0"
             aria-label="Iron condor wing width"
           >
             {WING_OPTIONS.map((w) => (
@@ -155,7 +154,7 @@ export default function AdvancedSection({
                 label={String(w)}
               />
             ))}
-          </div>
+          </fieldset>
           <p className="text-muted mt-1.5 mb-0 text-[11px] italic">
             Distance from short strike to long (protective) strike on each side.
           </p>
@@ -236,7 +235,7 @@ export default function AdvancedSection({
               </fieldset>
               <fieldset className="m-0 mt-3 border-none p-0">
                 <legend className="sr-only">VIX value to use</legend>
-                <div className="flex flex-wrap gap-1.5" role="group">
+                <div className="flex flex-wrap gap-1.5">
                   {(['smart', 'open', 'high', 'low', 'close'] as const).map(
                     (f) => (
                       <Chip
@@ -276,9 +275,8 @@ export default function AdvancedSection({
               {bwbNarrowWidth}
             </span>
           </div>
-          <div
-            className="flex flex-wrap gap-1.5"
-            role="group"
+          <fieldset
+            className="m-0 flex flex-wrap gap-1.5 border-0 p-0"
             aria-label="BWB narrow wing width"
           >
             {BWB_NARROW_OPTIONS.map((w) => (
@@ -289,7 +287,7 @@ export default function AdvancedSection({
                 label={String(w)}
               />
             ))}
-          </div>
+          </fieldset>
           <p className="text-muted mt-1.5 mb-0 text-[11px] italic">
             Distance from short strike to the near long (credit side).
           </p>
@@ -307,9 +305,8 @@ export default function AdvancedSection({
                 {bwbNarrowWidth * bwbWideMultiplier}pt wide
               </span>
             </div>
-            <div
-              className="flex flex-wrap gap-1.5"
-              role="group"
+            <fieldset
+              className="m-0 flex flex-wrap gap-1.5 border-0 p-0"
               aria-label="BWB wide wing multiplier"
             >
               {BWB_WIDE_MULTIPLIERS.map((m) => (
@@ -320,7 +317,7 @@ export default function AdvancedSection({
                   label={m + 'x'}
                 />
               ))}
-            </div>
+            </fieldset>
             <p className="text-muted mt-1.5 mb-0 text-[11px] italic">
               Wide wing = narrow {'\u00D7'} multiplier. Higher = more risk but
               more credit.

@@ -156,7 +156,6 @@ export default function ThetaDecayChart({
         <svg
           viewBox={'0 0 ' + VIEW_W + ' ' + VIEW_H}
           className="h-[60px] w-full"
-          role="img"
           aria-label="Theta decay curve showing premium remaining over time"
         >
           <defs>

@@ -145,7 +145,7 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
   }
 
   return (
-    <section
+    <div
       role="toolbar"
       onKeyDown={handleKeyDown}
       tabIndex={0}
@@ -297,7 +297,7 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
           />
         </div>
       )}
-    </section>
+    </div>
   );
 });
 

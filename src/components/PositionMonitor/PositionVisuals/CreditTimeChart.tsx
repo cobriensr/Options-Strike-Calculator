@@ -64,7 +64,6 @@ export default function CreditTimeChart({
     <svg
       viewBox={`0 0 ${W} ${H}`}
       className="h-auto w-full"
-      role="img"
       aria-label="Credit received vs entry time"
     >
       {/* Grid lines with Y-axis labels */}

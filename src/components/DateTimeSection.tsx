@@ -137,7 +137,7 @@ export default function DateTimeSection({
           </div>
           <fieldset className="m-0 border-none p-0">
             <legend className="sr-only">AM or PM</legend>
-            <div className="flex gap-1" role="group">
+            <div className="flex gap-1">
               {(['AM', 'PM'] as const).map((ap) => (
                 <Chip
                   key={ap}
@@ -150,7 +150,7 @@ export default function DateTimeSection({
           </fieldset>
           <fieldset className="m-0 border-none p-0">
             <legend className="sr-only">Timezone</legend>
-            <div className="flex gap-1" role="group">
+            <div className="flex gap-1">
               {(['ET', 'CT'] as const).map((tz) => (
                 <Chip
                   key={tz}

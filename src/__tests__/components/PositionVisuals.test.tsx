@@ -284,7 +284,7 @@ describe('PositionVisuals', () => {
   it('renders strike map SVG with aria-label', () => {
     render(<PositionVisuals {...defaultProps()} />);
     expect(
-      screen.getByRole('img', { name: 'Strike position map' }),
+      screen.getByLabelText('Strike position map'),
     ).toBeInTheDocument();
   });
 
@@ -385,7 +385,7 @@ describe('PositionVisuals', () => {
   it('renders risk waterfall SVG with aria-label', () => {
     render(<PositionVisuals {...defaultProps()} />);
     expect(
-      screen.getByRole('img', { name: 'Risk waterfall' }),
+      screen.getByLabelText('Risk waterfall'),
     ).toBeInTheDocument();
   });
 
@@ -427,7 +427,7 @@ describe('PositionVisuals', () => {
   it('renders credit vs time SVG with aria-label', () => {
     render(<PositionVisuals {...defaultProps()} />);
     expect(
-      screen.getByRole('img', { name: 'Credit received vs entry time' }),
+      screen.getByLabelText('Credit received vs entry time'),
     ).toBeInTheDocument();
   });
 

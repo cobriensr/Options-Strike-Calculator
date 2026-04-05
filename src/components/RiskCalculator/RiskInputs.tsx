@@ -100,10 +100,9 @@ export default function RiskInputs({
           >
             Mode
           </label>
-          <div
+          <fieldset
             id="rc-mode"
-            className="flex gap-1"
-            role="group"
+            className="m-0 flex gap-1 border-0 p-0"
             aria-label="Trade mode"
           >
             {(['sell', 'buy'] as const).map((m) => (
@@ -118,7 +117,7 @@ export default function RiskInputs({
                 {m === 'sell' ? 'Sell' : 'Buy'}
               </button>
             ))}
-          </div>
+          </fieldset>
         </div>
         <DollarField
           id="rc-balance"
@@ -249,10 +248,9 @@ export default function RiskInputs({
             >
               Wing Width (pts)
             </label>
-            <div
+            <fieldset
               id="rc-wing"
-              className="flex flex-wrap gap-1.5"
-              role="group"
+              className="m-0 flex flex-wrap gap-1.5 border-0 p-0"
               aria-label="Wing width"
             >
               {WING_OPTIONS.filter((w) => w !== 50).map((w) => (
@@ -263,7 +261,7 @@ export default function RiskInputs({
                   label={String(w)}
                 />
               ))}
-            </div>
+            </fieldset>
           </div>
         )}
       </div>

@@ -135,7 +135,6 @@ export default function StrikeMap({
     <svg
       viewBox={`0 0 ${W} ${totalH}`}
       className="h-auto w-full"
-      role="img"
       aria-label="Strike position map"
     >
       {/* Spot price label + vertical line */}

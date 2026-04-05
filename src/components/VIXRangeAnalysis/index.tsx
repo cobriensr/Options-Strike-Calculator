@@ -159,9 +159,8 @@ export default function VIXRangeAnalysis({ vix, spot }: Props) {
         Iron Condor Survival Rate
       </div>
 
-      <div
-        className="mb-3 flex gap-1.5"
-        role="group"
+      <fieldset
+        className="m-0 mb-3 flex gap-1.5 border-0 p-0"
         aria-label="Survival mode"
       >
         <Chip
@@ -174,7 +173,7 @@ export default function VIXRangeAnalysis({ vix, spot }: Props) {
           onClick={() => setSurvMode('intraday')}
           label="Intraday (H-L)"
         />
-      </div>
+      </fieldset>
 
       <section
         className="border-edge overflow-x-auto rounded-[10px] border"
