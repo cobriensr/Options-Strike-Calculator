@@ -96,13 +96,20 @@ let _validated: z.infer<typeof envSchema> | null = null;
 
 /**
  * Parse and validate process.env against the combined schema.
- * Cached after first call. Since every field is optional in the
- * schema, this parse never throws — it just strips unknown keys
- * and coerces known ones.
+ * Cached after first call. Uses safeParse so empty strings
+ * (common in CI) don't crash the module — they're treated as
+ * missing. Strips unknown keys and coerces known ones.
  */
 function getValidatedEnv(): z.infer<typeof envSchema> {
   if (!_validated) {
-    _validated = envSchema.parse(process.env);
+    // Strip empty strings before parsing — some CI/deploy systems
+    // set unset vars to '' rather than leaving them undefined.
+    const cleaned: Record<string, string | undefined> = {};
+    for (const key of Object.keys(envSchema.shape)) {
+      const val = process.env[key];
+      cleaned[key] = val === '' ? undefined : val;
+    }
+    _validated = envSchema.parse(cleaned);
   }
   return _validated;
 }
