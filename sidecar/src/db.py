@@ -26,11 +26,14 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     if _pool is None or _pool.closed:
         from config import settings
 
+        # Strip options from DSN — Neon's pooler rejects startup
+        # parameters like statement_timeout. Set timeout per-query instead.
+        dsn = settings.database_url.split("?")[0]
         _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1,
             maxconn=5,
-            dsn=settings.database_url,
-            options="-c statement_timeout=30000",
+            dsn=dsn,
+            sslmode="require",
         )
         log.info("Database pool created")
     return _pool
