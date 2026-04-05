@@ -152,6 +152,33 @@ export interface AnalysisResult {
   }>;
 }
 
+// ── History-specific types ──────────────────────────────────
+
+export interface DateEntry {
+  date: string;
+  total: number;
+  entries: number;
+  middays: number;
+  reviews: number;
+}
+
+export interface AnalysisEntry {
+  id: number;
+  entryTime: string;
+  mode: AnalysisMode;
+  structure: string;
+  confidence: string;
+  suggestedDelta: number;
+  spx: number | null;
+  vix: number | null;
+  vix1d: number | null;
+  hedge: string | null;
+  analysis: AnalysisResult;
+  createdAt: string;
+}
+
+export type ModeFilter = 'all' | 'entry' | 'midday' | 'review';
+
 export const CHART_LABELS = [
   'Periscope (Gamma)',
   'Periscope Charm (SPX)',

@@ -1,46 +1,20 @@
 /**
  * AnalysisHistory — Browse past Claude chart analyses.
  *
- * Top-level mode filter → Date picker → Entry Time picker → Mode tabs
- * All options are driven by what's in the database.
- * All result sections default to collapsed.
+ * Orchestrator: manages state, data fetching, and derived values.
+ * Delegates all UI rendering to AnalysisHistoryPicker.
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { theme } from '../../themes';
-import type { AnalysisMode, AnalysisResult } from './types';
-import { MODE_LABELS } from './types';
-import { ErrorMsg, SectionBox } from '../ui';
-import { tint } from '../../utils/ui-utils';
-import AnalysisResultsView from './AnalysisResults';
+import type {
+  AnalysisEntry,
+  AnalysisMode,
+  DateEntry,
+  ModeFilter,
+} from './types';
+import { SectionBox } from '../ui';
 import { useIsOwner } from '../../hooks/useIsOwner';
-
-// ── Types ──────────────────────────────────────────────────
-
-interface DateEntry {
-  date: string;
-  total: number;
-  entries: number;
-  middays: number;
-  reviews: number;
-}
-
-interface AnalysisEntry {
-  id: number;
-  entryTime: string;
-  mode: AnalysisMode;
-  structure: string;
-  confidence: string;
-  suggestedDelta: number;
-  spx: number | null;
-  vix: number | null;
-  vix1d: number | null;
-  hedge: string | null;
-  analysis: AnalysisResult;
-  createdAt: string;
-}
-
-type ModeFilter = 'all' | 'entry' | 'midday' | 'review';
+import AnalysisHistoryPicker from './AnalysisHistoryPicker';
 
 // ── Component ──────────────────────────────────────────────
 
@@ -214,10 +188,8 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   useEffect(() => {
     if (availableModes.length > 0 && !selectedMode) {
       if (modeFilter !== 'all') {
-        // If filtering by mode, auto-select that mode
         setSelectedMode(modeFilter as AnalysisMode);
       } else {
-        // Prefer entry → midday → review
         const preferred: AnalysisMode[] = ['entry', 'midday', 'review'];
         const first = preferred.find((m) => availableModes.includes(m));
         setSelectedMode(first ?? availableModes[0]!);
@@ -233,51 +205,19 @@ export default function AnalysisHistory({ refreshKey }: Props) {
     setSelectedRunIndex(0);
   }, []);
 
-  // ── No-op for image replace ────────────────────────────
-
-  const noopReplace = useCallback(() => {}, []);
-
   // Owner gating — only render for authenticated owner (or local dev)
   // Placed after hooks to satisfy Rules of Hooks
   const isOwner = useIsOwner();
   if (!isOwner) return null;
-
-  // ── Helpers ────────────────────────────────────────────
-
-  const modeColor = (m: string) => {
-    if (m === 'entry') return theme.accent;
-    if (m === 'midday') return theme.caution;
-    return '#A78BFA';
-  };
-
-  const formatDateLabel = (d: string) => {
-    try {
-      const [year, month, day] = d.split('-').map(Number);
-      const date = new Date(year!, month! - 1, day!);
-      return date.toLocaleDateString('en-US', {
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
-    } catch {
-      return d;
-    }
-  };
-
-  const dateCount = (d: DateEntry) => {
-    if (modeFilter === 'entry') return d.entries;
-    if (modeFilter === 'midday') return d.middays;
-    if (modeFilter === 'review') return d.reviews;
-    return d.total;
-  };
 
   // ── Render ─────────────────────────────────────────────
 
   if (allDates.length === 0) {
     return (
       <SectionBox label="Analysis History">
-        {fetchError && <ErrorMsg>{fetchError}</ErrorMsg>}
+        {fetchError && (
+          <div className="text-danger text-[11px]">{fetchError}</div>
+        )}
         {!fetchError && (
           <div className="border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-8 text-center">
             <div className="text-muted mb-1 text-[20px]">{'\u2014'}</div>
@@ -295,265 +235,26 @@ export default function AnalysisHistory({ refreshKey }: Props) {
 
   return (
     <SectionBox label="Analysis History">
-      {/* ── Mode filter tabs ──────────────────────────────── */}
-      <div className="mb-4 flex gap-1.5">
-        {(
-          [
-            ['all', 'All'],
-            ['entry', 'Pre-Trade'],
-            ['midday', 'Mid-Day'],
-            ['review', 'Review'],
-          ] as const
-        ).map(([key, label]) => {
-          const active = modeFilter === key;
-          const color =
-            key === 'all'
-              ? theme.text
-              : key === 'entry'
-                ? theme.accent
-                : key === 'midday'
-                  ? theme.caution
-                  : '#A78BFA';
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setModeFilter(key)}
-              className="cursor-pointer rounded-full px-3 py-1.5 font-mono text-[10px] font-semibold transition-all duration-100"
-              style={{
-                backgroundColor: active ? tint(color, '15') : 'transparent',
-                color: active ? color : theme.textMuted,
-                border: `1.5px solid ${active ? color + '40' : theme.border}`,
-              }}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
-
-      {fetchError && <ErrorMsg>{fetchError}</ErrorMsg>}
-
-      {/* ── Picker row ────────────────────────────────────── */}
-      <div className="mb-4 flex flex-wrap items-end gap-3">
-        {/* Date picker */}
-        <div className="min-w-[180px] flex-1">
-          <label
-            htmlFor="analysis-date-picker"
-            className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
-          >
-            Date
-          </label>
-          <select
-            id="analysis-date-picker"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] transition-[border-color] duration-150 outline-none"
-            style={{ color: theme.text }}
-          >
-            <option value="">Select a date...</option>
-            {filteredDates.map((d) => {
-              const count = dateCount(d);
-              return (
-                <option key={d.date} value={d.date}>
-                  {formatDateLabel(d.date)} ({count})
-                </option>
-              );
-            })}
-          </select>
-        </div>
-
-        {/* Time picker */}
-        {selectedDate && availableTimes.length > 0 && (
-          <div className="min-w-[140px]">
-            <label
-              htmlFor="analysis-time-picker"
-              className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
-            >
-              Entry Time
-            </label>
-            <select
-              id="analysis-time-picker"
-              value={selectedTime}
-              onChange={(e) => handleTimeChange(e.target.value)}
-              className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] transition-[border-color] duration-150 outline-none"
-              style={{ color: theme.text }}
-            >
-              {availableTimes.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* Mode tabs — only show when filter is 'all' and multiple modes available */}
-        {selectedTime && availableModes.length > 1 && (
-          <fieldset className="m-0 border-0 p-0">
-            <legend className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase">
-              Type
-            </legend>
-            <div className="flex gap-1">
-              {(['entry', 'midday', 'review'] as AnalysisMode[]).map((m) => {
-                const available = availableModes.includes(m);
-                const active = selectedMode === m;
-                if (!available) return null;
-                return (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => {
-                      setSelectedMode(m);
-                      setSelectedRunIndex(0);
-                    }}
-                    className="cursor-pointer rounded-md px-3 py-2 font-mono text-[10px] font-semibold transition-all duration-100"
-                    style={{
-                      backgroundColor: active
-                        ? tint(modeColor(m), '18')
-                        : 'transparent',
-                      color: active ? modeColor(m) : theme.textMuted,
-                      border: `1.5px solid ${active ? modeColor(m) + '40' : theme.border}`,
-                    }}
-                  >
-                    {MODE_LABELS[m].label}
-                  </button>
-                );
-              })}
-            </div>
-          </fieldset>
-        )}
-        {/* Run picker — only when multiple analyses share (time, mode) */}
-        {runsAtTimeMode.length > 1 && (
-          <fieldset className="m-0 border-0 p-0">
-            <legend className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase">
-              Run
-            </legend>
-            <div className="flex gap-1">
-              {runsAtTimeMode.map((run, i) => {
-                const active = selectedRunIndex === i;
-                const color = modeColor(run.mode);
-                return (
-                  <button
-                    key={run.id}
-                    type="button"
-                    onClick={() => setSelectedRunIndex(i)}
-                    className="cursor-pointer rounded-md px-3 py-2 font-mono text-[10px] font-semibold transition-all duration-100"
-                    style={{
-                      backgroundColor: active
-                        ? tint(color, '18')
-                        : 'transparent',
-                      color: active ? color : theme.textMuted,
-                      border: `1.5px solid ${active ? color + '40' : theme.border}`,
-                    }}
-                  >
-                    {i + 1}
-                  </button>
-                );
-              })}
-            </div>
-          </fieldset>
-        )}
-      </div>
-
-      {/* ── Loading ───────────────────────────────────────── */}
-      {loading && (
-        <div
-          className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
-          style={{ color: theme.textMuted }}
-        >
-          Loading...
-        </div>
-      )}
-
-      {/* ── Summary bar + results ─────────────────────────── */}
-      {selectedAnalysis && !loading && (
-        <>
-          <div
-            className="mb-3 flex items-center justify-between rounded-lg px-3 py-2"
-            style={{
-              backgroundColor: tint(modeColor(selectedAnalysis.mode), '08'),
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <span
-                className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
-                style={{
-                  backgroundColor: tint(modeColor(selectedAnalysis.mode), '15'),
-                  color: modeColor(selectedAnalysis.mode),
-                }}
-              >
-                {MODE_LABELS[selectedAnalysis.mode].label}
-              </span>
-              <span
-                className="font-mono text-[12px] font-bold"
-                style={{
-                  color:
-                    selectedAnalysis.structure === 'IRON CONDOR'
-                      ? theme.accent
-                      : selectedAnalysis.structure === 'PUT CREDIT SPREAD'
-                        ? theme.red
-                        : selectedAnalysis.structure === 'CALL CREDIT SPREAD'
-                          ? theme.green
-                          : theme.caution,
-                }}
-              >
-                {selectedAnalysis.structure}
-              </span>
-              <span
-                className="font-mono text-[10px] font-semibold"
-                style={{
-                  color:
-                    selectedAnalysis.confidence === 'HIGH'
-                      ? theme.green
-                      : selectedAnalysis.confidence === 'MODERATE'
-                        ? theme.caution
-                        : theme.red,
-                }}
-              >
-                {selectedAnalysis.confidence}
-              </span>
-              <span className="text-muted font-mono text-[10px]">
-                {selectedAnalysis.suggestedDelta}
-                {'\u0394'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              {!!selectedAnalysis.spx && (
-                <span className="text-muted font-mono text-[10px]">
-                  SPX {Number(selectedAnalysis.spx).toFixed(0)}
-                </span>
-              )}
-              {!!selectedAnalysis.vix && (
-                <span className="text-muted font-mono text-[10px]">
-                  VIX {Number(selectedAnalysis.vix).toFixed(1)}
-                </span>
-              )}
-            </div>
-          </div>
-
-          <AnalysisResultsView
-            analysis={selectedAnalysis.analysis}
-            mode={selectedAnalysis.mode}
-            onReplaceImage={noopReplace}
-            defaultCollapsed
-          />
-        </>
-      )}
-
-      {/* ── Empty state ───────────────────────────────────── */}
-      {selectedDate && !loading && filteredAnalyses.length === 0 && (
-        <div
-          className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
-          style={{ color: theme.textMuted }}
-        >
-          No{' '}
-          {modeFilter === 'all'
-            ? ''
-            : MODE_LABELS[modeFilter as AnalysisMode].label + ' '}
-          analyses found for this date.
-        </div>
-      )}
+      <AnalysisHistoryPicker
+        modeFilter={modeFilter}
+        onModeFilterChange={setModeFilter}
+        fetchError={fetchError}
+        filteredDates={filteredDates}
+        selectedDate={selectedDate}
+        onDateChange={setSelectedDate}
+        availableTimes={availableTimes}
+        selectedTime={selectedTime}
+        onTimeChange={handleTimeChange}
+        availableModes={availableModes}
+        selectedMode={selectedMode}
+        onModeChange={setSelectedMode}
+        runsAtTimeMode={runsAtTimeMode}
+        selectedRunIndex={selectedRunIndex}
+        onRunIndexChange={setSelectedRunIndex}
+        selectedAnalysis={selectedAnalysis}
+        loading={loading}
+        filteredAnalysesCount={filteredAnalyses.length}
+      />
     </SectionBox>
   );
 }
