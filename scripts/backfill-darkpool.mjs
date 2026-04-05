@@ -9,8 +9,10 @@
  *
  * Usage:
  *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-darkpool.mjs
- *   node scripts/backfill-darkpool.mjs 10       # 10 days (default 30)
- *   node scripts/backfill-darkpool.mjs 5 10     # 5 days, ratio=10
+ *   node scripts/backfill-darkpool.mjs 10           # 10 days (default 30)
+ *   node scripts/backfill-darkpool.mjs 5 10         # 5 days, ratio=10
+ *   node scripts/backfill-darkpool.mjs --dry-run    # fetch + aggregate, skip DB writes
+ *   node scripts/backfill-darkpool.mjs 10 --dry-run
  */
 
 import { neon } from '@neondatabase/serverless';
@@ -32,9 +34,20 @@ const UW_BASE = 'https://api.unusualwhales.com/api';
 
 // ── Parse args ──────────────────────────────────────────────
 
-const args = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
+const dryRun = rawArgs.includes('--dry-run');
+const args = rawArgs.filter((a) => !a.startsWith('--'));
 const days = Number.parseInt(args[0] ?? '30', 10);
 const spyToSpxRatio = Number.parseFloat(args[1] ?? '10');
+
+if (Number.isNaN(days) || days < 1 || days > 365) {
+  console.error(`Invalid days: ${args[0]} (must be 1-365)`);
+  process.exit(1);
+}
+if (Number.isNaN(spyToSpxRatio) || spyToSpxRatio < 1) {
+  console.error(`Invalid ratio: ${args[1]} (must be >= 1)`);
+  process.exit(1);
+}
 
 // ── Generate last N trading days ────────────────────────────
 
@@ -195,7 +208,7 @@ async function main() {
   const tradingDays = getTradingDays(days);
 
   console.log(
-    `Backfilling dark pool levels (SPY → SPX, ratio=${spyToSpxRatio})`,
+    `Backfilling dark pool levels (SPY → SPX, ratio=${spyToSpxRatio})${dryRun ? ' [DRY RUN]' : ''}`,
   );
   console.log(
     `Days: ${tradingDays.length} (${tradingDays[0]} → ${tradingDays.at(-1)})\n`,
@@ -216,7 +229,7 @@ async function main() {
     }
 
     const levels = aggregateLevels(trades);
-    const stored = await storeLevels(date, levels);
+    const stored = dryRun ? 0 : await storeLevels(date, levels);
 
     const top = levels[0];
     const topStr = top
@@ -227,8 +240,9 @@ async function main() {
     totals.levels += levels.length;
     totals.stored += stored;
 
+    const suffix = dryRun ? '[dry run — skipped DB]' : `(${stored} stored)`;
     console.log(
-      `  ${date}: ${trades.length} trades → ${levels.length} levels (${stored} stored) ${topStr}`,
+      `  ${date}: ${trades.length} trades → ${levels.length} levels ${suffix} ${topStr}`,
     );
   }
 

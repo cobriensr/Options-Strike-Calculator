@@ -70,21 +70,6 @@ function getStaticVix1d(date: string, hourET: number): number | null {
 // BLACK-SCHOLES HELPERS
 // ============================================================
 
-function normalCDF(x: number): number {
-  const a1 = 0.254829592,
-    a2 = -0.284496736,
-    a3 = 1.421413741;
-  const a4 = -1.453152027,
-    a5 = 1.061405429,
-    p = 0.3275911;
-  const sign = x < 0 ? -1 : 1;
-  const t = 1 / (1 + p * Math.abs(x));
-  const y =
-    1 -
-    ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp((-x * x) / 2);
-  return 0.5 * (1 + sign * y);
-}
-
 function normalInv(p: number): number {
   if (p <= 0) return -Infinity;
   if (p >= 1) return Infinity;
@@ -157,7 +142,7 @@ const ANNUAL_HOURS = 6.5 * 252;
 
 function parseTimeToMinutes(timeStr: string): number {
   // Handle "9:30 AM", "12:00 PM", "3:55 PM" etc.
-  const match = /(\d+):(\d+)\s*(AM|PM)?/i.exec(timeStr);
+  const match = /(\d{1,2}):(\d{2}) ?(AM|PM)?/i.exec(timeStr);
   if (!match) return -1;
   let h = Number(match[1]);
   const m = Number(match[2]);

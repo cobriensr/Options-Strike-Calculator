@@ -107,7 +107,7 @@ async function storeTicks(date, ticks) {
         ON CONFLICT (date, timestamp) DO NOTHING
       `;
       stored++;
-    } catch (err) {
+    } catch {
       // Skip duplicates silently
     }
   }
