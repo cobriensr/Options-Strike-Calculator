@@ -95,8 +95,8 @@ async function main() {
   const modeFilter = allModes ? '' : "AND a.mode = 'entry'";
   const embeddingFilter = force ? '' : 'AND a.analysis_embedding IS NULL';
 
-  const rows = await sql.unsafe(`
-    SELECT
+  const rows = await sql.query(
+    `SELECT
       a.id,
       TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
       a.mode,
@@ -108,13 +108,10 @@ async function main() {
       a.vix1d,
       a.hedge,
       a.entry_time,
-      -- Snapshot context (may be NULL if no snapshot linked)
       ms.vix_term_signal,
       ms.regime_zone,
       ms.dow_label,
-      -- Outcome (may be NULL if no outcome yet)
       o.settlement,
-      -- wasCorrect from review in full_response
       (a.full_response->'review'->>'wasCorrect')::boolean AS was_correct
     FROM analyses a
     LEFT JOIN market_snapshots ms ON ms.id = a.snapshot_id
@@ -122,8 +119,8 @@ async function main() {
     WHERE 1=1
       ${modeFilter}
       ${embeddingFilter}
-    ORDER BY a.date ASC, a.created_at ASC
-  `);
+    ORDER BY a.date ASC, a.created_at ASC`,
+  );
 
   console.log(`Found ${rows.length} analyses to process\n`);
 
@@ -155,7 +152,7 @@ async function main() {
       }
 
       const vectorLiteral = `[${embedding.join(',')}]`;
-      await sql.unsafe(
+      await sql.query(
         `UPDATE analyses
          SET analysis_embedding = $1::vector
          WHERE id = $2`,
