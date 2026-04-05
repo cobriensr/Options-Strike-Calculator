@@ -24,6 +24,8 @@ jobs:
       e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -54,6 +56,8 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - uses: actions/setup-node@v6
         with:
@@ -81,6 +85,8 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - uses: actions/setup-node@v6
         with:
@@ -113,6 +119,8 @@ jobs:
       PYTHON: python
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - uses: actions/setup-python@v6
         with:
