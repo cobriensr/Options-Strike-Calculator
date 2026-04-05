@@ -6,9 +6,10 @@
  */
 
 import pino from 'pino';
+import { optionalEnv } from './env.js';
 
 const logger = pino({
-  level: process.env.LOG_LEVEL ?? 'info',
+  level: optionalEnv('LOG_LEVEL') ?? 'info',
   // Vercel captures stdout as structured logs — no transport needed
   formatters: {
     level: (label) => ({ level: label }),

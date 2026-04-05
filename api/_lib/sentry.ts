@@ -6,9 +6,10 @@
  */
 
 import * as Sentry from '@sentry/node';
+import { optionalEnv } from './env.js';
 
 Sentry.init({
-  dsn: process.env.SENTRY_DSN,
+  dsn: optionalEnv('SENTRY_DSN'),
   environment: process.env.VERCEL_ENV ?? 'development',
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.25 : 1,
   enabled: process.env.VERCEL_ENV === 'production',
