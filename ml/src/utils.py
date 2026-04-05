@@ -9,7 +9,7 @@ import json
 import os
 import sys
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Suppress sklearn SimpleImputer warning for columns with all-NaN values.
@@ -36,69 +36,108 @@ ML_ROOT = Path(__file__).resolve().parent.parent
 import psycopg2
 from sqlalchemy import create_engine
 
-
 # ── Feature Groups (shared across scripts) ─────────────────
 # Canonical lists used by clustering.py, phase2_early.py, etc.
 # Scripts may extend these with their own additions.
 
 VOLATILITY_FEATURES: list[str] = [
-    "vix", "vix1d", "vix1d_vix_ratio", "vix_vix9d_ratio",
+    "vix",
+    "vix1d",
+    "vix1d_vix_ratio",
+    "vix_vix9d_ratio",
 ]
 
 GEX_FEATURES_T1T2: list[str] = [
-    "gex_oi_t1", "gex_oi_t2",
-    "gex_vol_t1", "gex_vol_t2",
-    "gex_dir_t1", "gex_dir_t2",
+    "gex_oi_t1",
+    "gex_oi_t2",
+    "gex_vol_t1",
+    "gex_vol_t2",
+    "gex_dir_t1",
+    "gex_dir_t2",
 ]
 
 GREEK_FEATURES_CORE: list[str] = [
-    "agg_net_gamma", "dte0_net_charm", "dte0_charm_pct",
+    "agg_net_gamma",
+    "dte0_net_charm",
+    "dte0_charm_pct",
     "charm_slope",
 ]
 
 DARK_POOL_FEATURES: list[str] = [
     "dp_total_premium",
-    "dp_cluster_count", "dp_top_cluster_dist",
-    "dp_support_premium", "dp_resistance_premium",
-    "dp_support_resistance_ratio", "dp_concentration",
+    "dp_cluster_count",
+    "dp_top_cluster_dist",
+    "dp_support_premium",
+    "dp_resistance_premium",
+    "dp_support_resistance_ratio",
+    "dp_concentration",
 ]
 
 OPTIONS_VOLUME_FEATURES: list[str] = [
-    "opt_call_volume", "opt_put_volume",
-    "opt_call_oi", "opt_put_oi",
-    "opt_call_premium", "opt_put_premium",
-    "opt_bullish_premium", "opt_bearish_premium",
-    "opt_call_vol_ask", "opt_put_vol_bid",
-    "opt_vol_pcr", "opt_oi_pcr", "opt_premium_ratio",
-    "opt_call_vol_vs_avg30", "opt_put_vol_vs_avg30",
+    "opt_call_volume",
+    "opt_put_volume",
+    "opt_call_oi",
+    "opt_put_oi",
+    "opt_call_premium",
+    "opt_put_premium",
+    "opt_bullish_premium",
+    "opt_bearish_premium",
+    "opt_call_vol_ask",
+    "opt_put_vol_bid",
+    "opt_vol_pcr",
+    "opt_oi_pcr",
+    "opt_premium_ratio",
+    "opt_call_vol_vs_avg30",
+    "opt_put_vol_vs_avg30",
 ]
 
 IV_PCR_FEATURES: list[str] = [
-    "iv_open", "iv_max", "iv_range", "iv_crush_rate",
-    "iv_spike_count", "iv_at_t2",
-    "pcr_open", "pcr_max", "pcr_min", "pcr_range",
-    "pcr_trend_t1_t2", "pcr_spike_count",
+    "iv_open",
+    "iv_max",
+    "iv_range",
+    "iv_crush_rate",
+    "iv_spike_count",
+    "iv_at_t2",
+    "pcr_open",
+    "pcr_max",
+    "pcr_min",
+    "pcr_range",
+    "pcr_trend_t1_t2",
+    "pcr_spike_count",
 ]
 
 MAX_PAIN_FEATURES: list[str] = [
-    "max_pain_0dte", "max_pain_dist",
+    "max_pain_0dte",
+    "max_pain_dist",
 ]
 
 OI_CHANGE_FEATURES: list[str] = [
-    "oic_net_oi_change", "oic_call_oi_change", "oic_put_oi_change",
-    "oic_oi_change_pcr", "oic_net_premium", "oic_call_premium",
-    "oic_put_premium", "oic_ask_ratio", "oic_multi_leg_pct",
-    "oic_top_strike_dist", "oic_concentration",
+    "oic_net_oi_change",
+    "oic_call_oi_change",
+    "oic_put_oi_change",
+    "oic_oi_change_pcr",
+    "oic_net_premium",
+    "oic_call_premium",
+    "oic_put_premium",
+    "oic_ask_ratio",
+    "oic_multi_leg_pct",
+    "oic_top_strike_dist",
+    "oic_concentration",
 ]
 
 VOL_SURFACE_FEATURES: list[str] = [
-    "iv_ts_slope_0d_30d", "iv_ts_contango", "iv_ts_spread",
-    "uw_rv_30d", "uw_iv_rv_spread", "uw_iv_overpricing_pct",
+    "iv_ts_slope_0d_30d",
+    "iv_ts_contango",
+    "iv_ts_spread",
+    "uw_rv_30d",
+    "uw_iv_rv_spread",
+    "uw_iv_overpricing_pct",
     "iv_rank",
 ]
 
 
 # ── Environment & DB ────────────────────────────────────────
+
 
 def load_env() -> dict[str, str]:
     """Load environment variables from .env file, falling back to os.environ."""
@@ -123,8 +162,7 @@ def get_connection() -> psycopg2.extensions.connection:
         sys.exit(1)
 
     try:
-        conn = psycopg2.connect(database_url, sslmode="require",
-                                connect_timeout=10)
+        conn = psycopg2.connect(database_url, sslmode="require", connect_timeout=10)
     except psycopg2.OperationalError as e:
         print(f"Error: Could not connect to database: {e}")
         print("  Check DATABASE_URL in .env and network connectivity.")
@@ -152,6 +190,7 @@ def load_data(query: str) -> pd.DataFrame:
 
 
 # ── Data Validation ─────────────────────────────────────────
+
 
 def validate_dataframe(
     df: pd.DataFrame,
@@ -195,8 +234,10 @@ def validate_dataframe(
                 continue
             out_of_range = ((vals < lo) | (vals > hi)).sum()
             if out_of_range > 0:
-                print(f"  Warning: {out_of_range} values in '{col}' "
-                      f"outside expected range [{lo}, {hi}]")
+                print(
+                    f"  Warning: {out_of_range} values in '{col}' "
+                    f"outside expected range [{lo}, {hi}]"
+                )
 
     # Duplicate index check
     dupes = df.index.duplicated().sum()
@@ -207,17 +248,20 @@ def validate_dataframe(
     null_pct = df.isnull().mean()
     high_null = null_pct[null_pct > 0.5]
     if len(high_null) > 0:
-        print(f"  Warning: {len(high_null)} columns are >50% null: "
-              f"{high_null.index.tolist()[:10]}")
+        print(
+            f"  Warning: {len(high_null)} columns are >50% null: "
+            f"{high_null.index.tolist()[:10]}"
+        )
 
 
 # ── Formatting Helpers ──────────────────────────────────────
 
+
 def section(title: str) -> None:
     """Print a section header."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  {title}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
 
 def subsection(title: str) -> None:
@@ -284,9 +328,7 @@ def save_section_findings(section_name: str, data: dict) -> None:
         findings[section_name] = data
 
         # Update metadata
-        findings["generated_at"] = datetime.now(timezone.utc).isoformat(
-            timespec="seconds"
-        )
+        findings["generated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
 
         # Maintain pipeline_sections list
         sections = findings.get("pipeline_sections", [])
@@ -295,9 +337,7 @@ def save_section_findings(section_name: str, data: dict) -> None:
         findings["pipeline_sections"] = sections
 
         # Write back
-        findings_path.write_text(
-            json.dumps(findings, indent=2, default=str) + "\n"
-        )
+        findings_path.write_text(json.dumps(findings, indent=2, default=str) + "\n")
         print(f"  Saved: ml/findings.json (section: {section_name})")
 
         # Persist to DB

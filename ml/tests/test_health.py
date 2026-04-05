@@ -8,7 +8,7 @@ Run:
     cd ml && .venv/bin/python -m pytest test_health.py -v
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -17,16 +17,15 @@ import pytest
 
 import health
 from health import (
-    most_recent_business_day,
     business_days_between,
-    check_freshness,
-    check_completeness,
-    check_labels,
     check_column_coverage,
+    check_completeness,
+    check_freshness,
+    check_labels,
     check_stationarity,
+    most_recent_business_day,
     print_summary,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -57,9 +56,7 @@ def _make_features_df(
             "vix": rng.uniform(12, 30, n),
             "gex_oi_t1": rng.uniform(-5e10, 5e10, n),
             "flow_agreement_t1": rng.uniform(-1, 1, n),
-            "charm_pattern": rng.choice(
-                ["all_negative", "all_positive", "mixed"], n
-            ),
+            "charm_pattern": rng.choice(["all_negative", "all_positive", "mixed"], n),
             "prev_day_range_pts": rng.uniform(5, 80, n),
             "realized_vol_5d": rng.uniform(5, 40, n),
             "dp_total_premium": rng.uniform(1e6, 5e7, n),
@@ -168,13 +165,13 @@ class TestBusinessDaysBetween:
     def test_full_week(self):
         """Monday to Friday of the same week: 4 business days."""
         d1 = datetime(2026, 3, 30)  # Monday
-        d2 = datetime(2026, 4, 3)   # Friday
+        d2 = datetime(2026, 4, 3)  # Friday
         assert business_days_between(d1, d2) == 4
 
     def test_two_weeks(self):
         """Monday to Monday (next week): 5 business days."""
         d1 = datetime(2026, 3, 30)  # Monday
-        d2 = datetime(2026, 4, 6)   # Monday (next week)
+        d2 = datetime(2026, 4, 6)  # Monday (next week)
         assert business_days_between(d1, d2) == 5
 
     def test_swapped_order(self):
@@ -662,9 +659,7 @@ class TestCheckStationarity:
         df = self._make_stationary_df(100)
         overall_mean = df["vix"].mean()
         overall_std = df["vix"].std()
-        df.iloc[-10:, df.columns.get_loc("vix")] = (
-            overall_mean + 10 * overall_std
-        )
+        df.iloc[-10:, df.columns.get_loc("vix")] = overall_mean + 10 * overall_std
         mock_load.return_value = df
 
         warnings: list[str] = []
@@ -681,9 +676,7 @@ class TestCheckStationarity:
         df = self._make_stationary_df(100)
         overall_mean = df["vix"].mean()
         overall_std = df["vix"].std()
-        df.iloc[-10:, df.columns.get_loc("vix")] = (
-            overall_mean - 10 * overall_std
-        )
+        df.iloc[-10:, df.columns.get_loc("vix")] = overall_mean - 10 * overall_std
         mock_load.return_value = df
 
         warnings: list[str] = []
@@ -727,9 +720,7 @@ class TestCheckStationarity:
         df = self._make_stationary_df(100)
         overall_mean = df["vix"].mean()
         overall_std = df["vix"].std()
-        df.iloc[-10:, df.columns.get_loc("vix")] = (
-            overall_mean + 10 * overall_std
-        )
+        df.iloc[-10:, df.columns.get_loc("vix")] = overall_mean + 10 * overall_std
         mock_load.return_value = df
 
         check_stationarity([], [])
@@ -861,6 +852,7 @@ class TestMain:
         capsys,
     ):
         """main() should sys.exit(1) when warnings are present."""
+
         # Simulate a check that adds a warning
         def add_warning(warnings, failures):
             warnings.append("test warning")
@@ -888,6 +880,7 @@ class TestMain:
         capsys,
     ):
         """main() should sys.exit(1) when failures are present."""
+
         def add_failure(warnings, failures):
             failures.append("test failure")
 

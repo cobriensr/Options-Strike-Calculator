@@ -20,23 +20,31 @@ Requires: pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn matpl
 
 import argparse
 import sys
-from pathlib import Path
 
 try:
     import numpy as np
     import pandas as pd
-    from sqlalchemy import create_engine, text
-    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.impute import SimpleImputer
     from sklearn.model_selection import TimeSeriesSplit, cross_val_score
     from sklearn.pipeline import make_pipeline
-    from sklearn.impute import SimpleImputer
-    from sklearn.preprocessing import StandardScaler, LabelEncoder
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
+    from sklearn.tree import DecisionTreeClassifier
+    from sqlalchemy import create_engine, text
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn")
+    print(
+        "  ml/.venv/bin/pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn"
+    )
     sys.exit(1)
 
-from utils import ML_ROOT, load_env, section, subsection, takeaway, save_section_findings
+from utils import (
+    ML_ROOT,
+    load_env,
+    save_section_findings,
+    section,
+    subsection,
+    takeaway,
+)
 
 PLOT_DIR = ML_ROOT / "plots"
 
@@ -58,7 +66,8 @@ HIT_THRESHOLDS = [5, 10, 15, 20, 30]
 
 # ── Data Loading ─────────────────────────────────────────────
 
-def load_strike_data(dte_filter: str = '0dte') -> pd.DataFrame:
+
+def load_strike_data(dte_filter: str = "0dte") -> pd.DataFrame:
     """Load strike exposures with settlement outcomes.
 
     Args:
@@ -72,14 +81,10 @@ def load_strike_data(dte_filter: str = '0dte') -> pd.DataFrame:
         sys.exit(1)
 
     expiry_clauses = {
-        '0dte': 'se.expiry = se.date',
-        '1dte': (
-            'se.expiry > se.date '
-            "AND se.expiry <= se.date + INTERVAL '3 days'"
-        ),
-        'combined': (
-            'se.expiry >= se.date '
-            "AND se.expiry <= se.date + INTERVAL '3 days'"
+        "0dte": "se.expiry = se.date",
+        "1dte": ("se.expiry > se.date AND se.expiry <= se.date + INTERVAL '3 days'"),
+        "combined": (
+            "se.expiry >= se.date AND se.expiry <= se.date + INTERVAL '3 days'"
         ),
     }
     where = expiry_clauses.get(dte_filter)
@@ -91,7 +96,8 @@ def load_strike_data(dte_filter: str = '0dte') -> pd.DataFrame:
 
     engine = create_engine(database_url)
     try:
-        df = pd.read_sql_query(text(f"""
+        df = pd.read_sql_query(
+            text(f"""
             SELECT
                 se.date, se.timestamp, se.strike, se.price,
                 se.call_gamma_oi, se.put_gamma_oi,
@@ -101,7 +107,9 @@ def load_strike_data(dte_filter: str = '0dte') -> pd.DataFrame:
             JOIN outcomes o ON o.date = se.date
             WHERE {where}
             ORDER BY se.date, se.timestamp, se.strike
-        """), engine)
+        """),
+            engine,
+        )
     finally:
         engine.dispose()
 
@@ -111,6 +119,7 @@ def load_strike_data(dte_filter: str = '0dte') -> pd.DataFrame:
 
 
 # ── Gamma Profile Analysis ───────────────────────────────────
+
 
 def compute_gamma_profile(snapshot: pd.DataFrame) -> dict:
     """
@@ -168,9 +177,7 @@ def compute_gamma_profile(snapshot: pd.DataFrame) -> dict:
     # Positive-gamma-only centroid (pinning centroid)
     if len(pos_gamma) > 0:
         pos_weights = pos_gamma["net_gamma"]
-        pos_centroid = (
-            (pos_gamma["strike"] * pos_weights).sum() / pos_weights.sum()
-        )
+        pos_centroid = (pos_gamma["strike"] * pos_weights).sum() / pos_weights.sum()
     else:
         pos_centroid = centroid
 
@@ -182,7 +189,8 @@ def compute_gamma_profile(snapshot: pd.DataFrame) -> dict:
     prox_total = df["prox_weight"].sum()
     prox_centroid = (
         (df["strike"].astype(float) * df["prox_weight"]).sum() / prox_total
-        if prox_total > 0 else centroid
+        if prox_total > 0
+        else centroid
     )
 
     # Gamma above/below current price
@@ -237,6 +245,7 @@ def find_nearest_snapshot(
 
 # ── Main Analysis ────────────────────────────────────────────
 
+
 def analyze_settlement_gravity(df: pd.DataFrame) -> None:
     """Core analysis: does settlement gravitate toward gamma concentration?"""
     section("1. SETTLEMENT vs GAMMA PREDICTORS")
@@ -264,16 +273,18 @@ def analyze_settlement_gravity(df: pd.DataFrame) -> None:
             if not profile:
                 continue
 
-            rows.append({
-                "date": date,
-                "settlement": settlement,
-                "pos_peak_dist": abs(settlement - profile["pos_peak_strike"]),
-                "neg_peak_dist": abs(settlement - profile["neg_peak_strike"]),
-                "abs_peak_dist": abs(settlement - profile["peak_gamma_strike"]),
-                "centroid_dist": abs(settlement - profile["gamma_centroid"]),
-                "pos_centroid_dist": abs(settlement - profile["pos_centroid"]),
-                "prox_centroid_dist": abs(settlement - profile["prox_centroid"]),
-            })
+            rows.append(
+                {
+                    "date": date,
+                    "settlement": settlement,
+                    "pos_peak_dist": abs(settlement - profile["pos_peak_strike"]),
+                    "neg_peak_dist": abs(settlement - profile["neg_peak_strike"]),
+                    "abs_peak_dist": abs(settlement - profile["peak_gamma_strike"]),
+                    "centroid_dist": abs(settlement - profile["gamma_centroid"]),
+                    "pos_centroid_dist": abs(settlement - profile["pos_centroid"]),
+                    "prox_centroid_dist": abs(settlement - profile["prox_centroid"]),
+                }
+            )
 
         if not rows:
             print("  No data available at this checkpoint")
@@ -290,10 +301,11 @@ def analyze_settlement_gravity(df: pd.DataFrame) -> None:
             ("Prox-wt centroid", "prox_centroid_dist"),
         ]
 
-        print(f"  {'Predictor':<22s} {'Avg':>7s} {'Med':>7s} "
-              f"{'±10':>5s} {'±20':>5s} {'±30':>5s}")
-        print(f"  {'─' * 22} {'─' * 7} {'─' * 7} "
-              f"{'─' * 5} {'─' * 5} {'─' * 5}")
+        print(
+            f"  {'Predictor':<22s} {'Avg':>7s} {'Med':>7s} "
+            f"{'±10':>5s} {'±20':>5s} {'±30':>5s}"
+        )
+        print(f"  {'─' * 22} {'─' * 7} {'─' * 7} {'─' * 5} {'─' * 5} {'─' * 5}")
 
         best_name = ""
         best_avg = float("inf")
@@ -308,8 +320,10 @@ def analyze_settlement_gravity(df: pd.DataFrame) -> None:
             if avg < best_avg:
                 best_avg = avg
                 best_name = name
-            print(f"  {name:<22s} {avg:>6.1f} {med:>6.1f} "
-                  f"{w10:>4.0%} {w20:>4.0%} {w30:>4.0%}")
+            print(
+                f"  {name:<22s} {avg:>6.1f} {med:>6.1f} "
+                f"{w10:>4.0%} {w20:>4.0%} {w30:>4.0%}"
+            )
 
         print(f"\n  Best: {best_name} ({best_avg:.1f} pts avg)")
 
@@ -348,13 +362,17 @@ def analyze_time_improvement(df: pd.DataFrame) -> None:
         print("  No data available")
         return
 
-    print(f"  {'Checkpoint':<25s} {'Avg Dist':>9s} {'Med Dist':>9s} "
-          f"{'±10 pts':>8s} {'±20 pts':>8s} {'n':>4s}")
+    print(
+        f"  {'Checkpoint':<25s} {'Avg Dist':>9s} {'Med Dist':>9s} "
+        f"{'±10 pts':>8s} {'±20 pts':>8s} {'n':>4s}"
+    )
     print(f"  {'─' * 25} {'─' * 9} {'─' * 9} {'─' * 8} {'─' * 8} {'─' * 4}")
 
     for cp_name, r in results.items():
-        print(f"  {cp_name:<25s} {r['avg']:>8.1f} {r['median']:>8.1f} "
-              f"{r['within_10']:>7.0%} {r['within_20']:>7.0%} {r['n']:>4d}")
+        print(
+            f"  {cp_name:<25s} {r['avg']:>8.1f} {r['median']:>8.1f} "
+            f"{r['within_10']:>7.0%} {r['within_20']:>7.0%} {r['n']:>4d}"
+        )
 
     # Check if accuracy improves over time
     checkpoints = list(results.keys())
@@ -402,14 +420,16 @@ def analyze_directional_bias(df: pd.DataFrame) -> None:
         settled_up = settlement > day_open
         more_gamma_above = profile["pos_gamma_above"] > profile["pos_gamma_below"]
 
-        rows.append({
-            "date": date,
-            "settled_up": settled_up,
-            "more_gamma_above": more_gamma_above,
-            "gamma_above": profile["pos_gamma_above"],
-            "gamma_below": profile["pos_gamma_below"],
-            "settlement_vs_open": settlement - day_open,
-        })
+        rows.append(
+            {
+                "date": date,
+                "settled_up": settled_up,
+                "more_gamma_above": more_gamma_above,
+                "gamma_above": profile["pos_gamma_above"],
+                "gamma_below": profile["pos_gamma_below"],
+                "settlement_vs_open": settlement - day_open,
+            }
+        )
 
     if not rows:
         print("  No data available")
@@ -420,8 +440,10 @@ def analyze_directional_bias(df: pd.DataFrame) -> None:
 
     # Does gamma asymmetry predict direction?
     correct = (results["more_gamma_above"] == results["settled_up"]).sum()
-    print(f"  Gamma asymmetry predicts settlement direction: "
-          f"{correct}/{n} ({correct / n:.0%})")
+    print(
+        f"  Gamma asymmetry predicts settlement direction: "
+        f"{correct}/{n} ({correct / n:.0%})"
+    )
 
     # Break down
     above_heavy = results[results["more_gamma_above"]]
@@ -429,12 +451,16 @@ def analyze_directional_bias(df: pd.DataFrame) -> None:
 
     if len(above_heavy) > 0:
         up_pct = above_heavy["settled_up"].mean()
-        print(f"  When more gamma ABOVE ATM (n={len(above_heavy)}): "
-              f"settled UP {up_pct:.0%}")
+        print(
+            f"  When more gamma ABOVE ATM (n={len(above_heavy)}): "
+            f"settled UP {up_pct:.0%}"
+        )
     if len(below_heavy) > 0:
         up_pct = below_heavy["settled_up"].mean()
-        print(f"  When more gamma BELOW ATM (n={len(below_heavy)}): "
-              f"settled UP {up_pct:.0%}")
+        print(
+            f"  When more gamma BELOW ATM (n={len(below_heavy)}): "
+            f"settled UP {up_pct:.0%}"
+        )
 
     if correct / n > 0.55:
         takeaway(
@@ -466,19 +492,25 @@ def load_oi_per_strike() -> pd.DataFrame:
     engine = create_engine(database_url)
     try:
         # Check if table exists first
-        check = pd.read_sql_query(text(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-            "WHERE table_name = 'oi_per_strike')"
-        ), engine)
+        check = pd.read_sql_query(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'oi_per_strike')"
+            ),
+            engine,
+        )
         if not check.iloc[0, 0]:
             return pd.DataFrame()
 
-        df = pd.read_sql_query(text("""
+        df = pd.read_sql_query(
+            text("""
             SELECT date, strike, call_oi, put_oi,
                    COALESCE(call_oi, 0) + COALESCE(put_oi, 0) AS total_oi
             FROM oi_per_strike
             ORDER BY date, strike
-        """), engine)
+        """),
+            engine,
+        )
     except Exception:
         return pd.DataFrame()
     finally:
@@ -519,9 +551,7 @@ def compute_oi_pin(oi_day: pd.DataFrame) -> dict:
     # OI-weighted centroid
     weights = df["total_oi"]
     total_weight = weights.sum()
-    centroid = float(
-        (df["strike"].astype(float) * weights).sum() / total_weight
-    )
+    centroid = float((df["strike"].astype(float) * weights).sum() / total_weight)
 
     # Put/call ratio
     total_calls = df["call_oi"].fillna(0).sum()
@@ -550,12 +580,15 @@ def load_max_pain() -> pd.DataFrame:
 
     engine = create_engine(database_url)
     try:
-        df = pd.read_sql_query(text("""
+        df = pd.read_sql_query(
+            text("""
             SELECT date, max_pain_0dte, max_pain_dist, spx_open
             FROM training_features
             WHERE max_pain_0dte IS NOT NULL
             ORDER BY date
-        """), engine)
+        """),
+            engine,
+        )
     except Exception:
         return pd.DataFrame()
     finally:
@@ -661,15 +694,16 @@ def analyze_all_predictors(
         print("  No predictor data available.")
         return
 
-    print(f"  {'Predictor':<22s} {'Avg':>7s} {'Med':>7s} "
-          f"{'±10':>5s} {'±20':>5s} {'±30':>5s} {'n':>4s}")
-    print(f"  {'─' * 22} {'─' * 7} {'─' * 7} "
-          f"{'─' * 5} {'─' * 5} {'─' * 5} {'─' * 4}")
+    print(
+        f"  {'Predictor':<22s} {'Avg':>7s} {'Med':>7s} "
+        f"{'±10':>5s} {'±20':>5s} {'±30':>5s} {'n':>4s}"
+    )
+    print(f"  {'─' * 22} {'─' * 7} {'─' * 7} {'─' * 5} {'─' * 5} {'─' * 5} {'─' * 4}")
 
     best_name = ""
     best_avg = float("inf")
 
-    for name, (col, dists) in predictors.items():
+    for name, (_col, dists) in predictors.items():
         valid = dists.dropna()
         if len(valid) == 0:
             continue
@@ -681,8 +715,10 @@ def analyze_all_predictors(
         if avg < best_avg:
             best_avg = avg
             best_name = name
-        print(f"  {name:<22s} {avg:>6.1f} {med:>6.1f} "
-              f"{w10:>4.0%} {w20:>4.0%} {w30:>4.0%} {len(valid):>4d}")
+        print(
+            f"  {name:<22s} {avg:>6.1f} {med:>6.1f} "
+            f"{w10:>4.0%} {w20:>4.0%} {w30:>4.0%} {len(valid):>4d}"
+        )
 
     print(f"\n  Best: {best_name} ({best_avg:.1f} pts avg)")
 
@@ -719,10 +755,14 @@ def analyze_per_day_detail(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
     dates = sorted(df["date"].unique())[-10:]
     mp_dates = set(max_pain_df["date"].values) if len(max_pain_df) > 0 else set()
 
-    print(f"  {'Date':<12s} {'Settle':>8s} {'+γ Peak':>8s} {'Dist':>6s} "
-          f"{'-γ Peak':>8s} {'Dist':>6s} {'MaxPain':>8s} {'Dist':>6s}")
-    print(f"  {'─' * 12} {'─' * 8} {'─' * 8} {'─' * 6} "
-          f"{'─' * 8} {'─' * 6} {'─' * 8} {'─' * 6}")
+    print(
+        f"  {'Date':<12s} {'Settle':>8s} {'+γ Peak':>8s} {'Dist':>6s} "
+        f"{'-γ Peak':>8s} {'Dist':>6s} {'MaxPain':>8s} {'Dist':>6s}"
+    )
+    print(
+        f"  {'─' * 12} {'─' * 8} {'─' * 8} {'─' * 6} "
+        f"{'─' * 8} {'─' * 6} {'─' * 8} {'─' * 6}"
+    )
 
     for date in dates:
         day_data = df[df["date"] == date]
@@ -754,9 +794,11 @@ def analyze_per_day_detail(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
             mp_dist_str = f"{abs(settlement - mp_val):>.1f}"
 
         date_str = pd.Timestamp(date).strftime("%Y-%m-%d")
-        print(f"  {date_str:<12s} {settlement:>8.1f} {pos_peak:>8.0f} "
-              f"{pp_dist:>5.1f} {neg_peak:>8.0f} {np_dist:>5.1f} "
-              f"{mp_str:>8s} {mp_dist_str:>6s}")
+        print(
+            f"  {date_str:<12s} {settlement:>8.1f} {pos_peak:>8.0f} "
+            f"{pp_dist:>5.1f} {neg_peak:>8.0f} {np_dist:>5.1f} "
+            f"{mp_str:>8s} {mp_dist_str:>6s}"
+        )
 
 
 def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
@@ -846,8 +888,10 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
         print("    weight = |gamma| / distance_from_price²")
         print("    centroid = sum(strike * weight) / sum(weight)")
     else:
-        print("  Insufficient data. Accumulate more trading days with "
-              "dense intraday strike coverage.")
+        print(
+            "  Insufficient data. Accumulate more trading days with "
+            "dense intraday strike coverage."
+        )
 
 
 def analyze_dte_comparison() -> None:
@@ -857,7 +901,7 @@ def analyze_dte_comparison() -> None:
 
     # Load all three datasets
     datasets: dict[str, pd.DataFrame] = {}
-    for mode in ('0dte', '1dte', 'combined'):
+    for mode in ("0dte", "1dte", "combined"):
         print(f"  Loading {mode} strike data ...")
         d = load_strike_data(mode)
         n = d["date"].nunique() if len(d) > 0 else 0
@@ -865,26 +909,21 @@ def analyze_dte_comparison() -> None:
         datasets[mode] = d
 
     # Check 1 DTE data availability
-    if len(datasets['1dte']) == 0:
+    if len(datasets["1dte"]) == 0:
         print("\n  No 1 DTE data yet — skipping comparison.")
         print("  Once strike_exposures has rows with expiry > date,")
         print("  re-run this script to see the comparison.")
         return
 
-    n_1dte = datasets['1dte']["date"].nunique()
+    n_1dte = datasets["1dte"]["date"].nunique()
     if n_1dte < 3:
         print(f"\n  Only {n_1dte} days with 1 DTE data — need at least 3.")
         print("  Accumulate more data, then re-run.")
         return
 
     # Find common dates across all three datasets
-    date_sets = {
-        mode: set(d["date"].unique())
-        for mode, d in datasets.items()
-    }
-    common_dates = sorted(
-        date_sets['0dte'] & date_sets['1dte'] & date_sets['combined']
-    )
+    date_sets = {mode: set(d["date"].unique()) for mode, d in datasets.items()}
+    common_dates = sorted(date_sets["0dte"] & date_sets["1dte"] & date_sets["combined"])
 
     if len(common_dates) < 3:
         print(f"\n  Only {len(common_dates)} common dates across all 3 modes")
@@ -895,7 +934,7 @@ def analyze_dte_comparison() -> None:
 
     # Checkpoints to try, in preference order.
     # Backfill data only has ~20:10 UTC, so we cascade through checkpoints.
-    COMPARE_CHECKPOINTS = ['19:30', '19:00', '20:00', '20:15']
+    COMPARE_CHECKPOINTS = ["19:30", "19:00", "20:00", "20:15"]
 
     predictor_defs = [
         ("Prox-wt centroid", "prox_centroid"),
@@ -906,21 +945,21 @@ def analyze_dte_comparison() -> None:
     # Collect distances: {mode: {predictor_name: [dists]}}
     mode_results: dict[str, dict[str, list[float]]] = {
         mode: {name: [] for name, _ in predictor_defs}
-        for mode in ('0dte', '1dte', 'combined')
+        for mode in ("0dte", "1dte", "combined")
     }
     # Per-day winner tracking
     day_winners: list[dict] = []
 
     for date in common_dates:
         # Get settlement from 0dte data (same outcome for all modes)
-        day_0dte = datasets['0dte'][datasets['0dte']['date'] == date]
-        settlement = float(day_0dte['settlement'].iloc[0])
+        day_0dte = datasets["0dte"][datasets["0dte"]["date"] == date]
+        settlement = float(day_0dte["settlement"].iloc[0])
 
         day_best_mode = None
-        day_best_dist = float('inf')
+        day_best_dist = float("inf")
 
-        for mode in ('0dte', '1dte', 'combined'):
-            day_data = datasets[mode][datasets[mode]['date'] == date]
+        for mode in ("0dte", "1dte", "combined"):
+            day_data = datasets[mode][datasets[mode]["date"] == date]
             snapshot = None
             for cp in COMPARE_CHECKPOINTS:
                 snapshot = find_nearest_snapshot(day_data, cp)
@@ -938,33 +977,39 @@ def analyze_dte_comparison() -> None:
                 mode_results[mode][name].append(dist)
 
             # Track per-day winner using prox-centroid
-            prox_dist = abs(settlement - profile['prox_centroid'])
+            prox_dist = abs(settlement - profile["prox_centroid"])
             if prox_dist < day_best_dist:
                 day_best_dist = prox_dist
                 day_best_mode = mode
 
         if day_best_mode:
-            day_winners.append({
-                'date': date,
-                'winner': day_best_mode,
-                'dist': day_best_dist,
-            })
+            day_winners.append(
+                {
+                    "date": date,
+                    "winner": day_best_mode,
+                    "dist": day_best_dist,
+                }
+            )
 
     # ── Comparison table ──
     subsection("Comparison: Avg distance to settlement (T-30min)")
 
-    header_modes = ['0 DTE', '1 DTE', 'Combined']
-    mode_keys = ['0dte', '1dte', 'combined']
+    header_modes = ["0 DTE", "1 DTE", "Combined"]
+    mode_keys = ["0dte", "1dte", "combined"]
 
     for pred_name, _ in predictor_defs:
         print(f"\n  {pred_name}:")
-        print(f"  {'DTE Mode':<12s} {'Avg':>7s} {'Med':>7s} "
-              f"{'+-10':>5s} {'+-20':>5s} {'n':>4s}")
-        print(f"  {'---' * 4:<12s} {'---':>7s} {'---':>7s} "
-              f"{'---':>5s} {'---':>5s} {'---':>4s}")
+        print(
+            f"  {'DTE Mode':<12s} {'Avg':>7s} {'Med':>7s} "
+            f"{'+-10':>5s} {'+-20':>5s} {'n':>4s}"
+        )
+        print(
+            f"  {'---' * 4:<12s} {'---':>7s} {'---':>7s} "
+            f"{'---':>5s} {'---':>5s} {'---':>4s}"
+        )
 
-        best_mode_name = ''
-        best_avg = float('inf')
+        best_mode_name = ""
+        best_avg = float("inf")
 
         for mode_key, mode_label in zip(mode_keys, header_modes):
             dists = mode_results[mode_key][pred_name]
@@ -980,8 +1025,10 @@ def analyze_dte_comparison() -> None:
             if avg < best_avg:
                 best_avg = avg
                 best_mode_name = mode_label
-            print(f"  {mode_label:<12s} {avg:>6.1f} {med:>6.1f} "
-                  f"{w10:>4.0%} {w20:>4.0%} {n:>4d}")
+            print(
+                f"  {mode_label:<12s} {avg:>6.1f} {med:>6.1f} "
+                f"{w10:>4.0%} {w20:>4.0%} {n:>4d}"
+            )
 
         if best_mode_name:
             print(f"  Best: {best_mode_name} ({best_avg:.1f} pts avg)")
@@ -989,9 +1036,9 @@ def analyze_dte_comparison() -> None:
     # ── Per-day winner breakdown ──
     subsection("Per-day winner (prox-weighted centroid)")
 
-    winner_counts = {'0dte': 0, '1dte': 0, 'combined': 0}
+    winner_counts = {"0dte": 0, "1dte": 0, "combined": 0}
     for w in day_winners:
-        winner_counts[w['winner']] += 1
+        winner_counts[w["winner"]] += 1
 
     total = len(day_winners)
     for mode_key, mode_label in zip(mode_keys, header_modes):
@@ -1003,7 +1050,7 @@ def analyze_dte_comparison() -> None:
     # Determine overall best mode by prox-centroid avg
     mode_avgs = {}
     for mode_key, mode_label in zip(mode_keys, header_modes):
-        dists = mode_results[mode_key]['Prox-wt centroid']
+        dists = mode_results[mode_key]["Prox-wt centroid"]
         if dists:
             mode_avgs[mode_label] = np.mean(dists)
 
@@ -1033,29 +1080,32 @@ def analyze_dte_regime() -> None:
     print("  Identifying features that predict which gamma profile to trust\n")
 
     # Load both datasets
-    df_0dte = load_strike_data('0dte')
-    df_1dte = load_strike_data('1dte')
+    df_0dte = load_strike_data("0dte")
+    df_1dte = load_strike_data("1dte")
 
     if len(df_1dte) == 0 or df_1dte["date"].nunique() < 3:
         print("  Insufficient 1 DTE data — skipping regime analysis.")
         return
 
     # Snapshot cascade (backfill has 20:10 UTC, cron has 19:30)
-    SNAP_CASCADE = ['19:30', '19:00', '20:00', '20:15']
+    SNAP_CASCADE = ["19:30", "19:00", "20:00", "20:15"]
 
     # Load training_features for VIX and regime context
     env = load_env()
     database_url = env.get("DATABASE_URL", "")
     engine = create_engine(database_url)
     try:
-        tf = pd.read_sql_query(text("""
+        tf = pd.read_sql_query(
+            text("""
             SELECT date, vix, vix1d, agg_net_gamma, gamma_asymmetry,
                    dte0_net_charm, regime_zone, is_friday, is_opex,
                    gex_oi_t1, gex_oi_t2
             FROM training_features
             WHERE vix IS NOT NULL
             ORDER BY date
-        """), engine)
+        """),
+            engine,
+        )
     finally:
         engine.dispose()
     tf["date"] = pd.to_datetime(tf["date"])
@@ -1102,12 +1152,8 @@ def analyze_dte_regime() -> None:
         # 1. Gamma concentration: what fraction of total |gamma| is in top 3
         def gamma_concentration(snap: pd.DataFrame) -> float:
             s = snap.copy()
-            s["call_gamma_oi"] = pd.to_numeric(
-                s["call_gamma_oi"], errors="coerce"
-            )
-            s["put_gamma_oi"] = pd.to_numeric(
-                s["put_gamma_oi"], errors="coerce"
-            )
+            s["call_gamma_oi"] = pd.to_numeric(s["call_gamma_oi"], errors="coerce")
+            s["put_gamma_oi"] = pd.to_numeric(s["put_gamma_oi"], errors="coerce")
             s["abs_g"] = (
                 s["call_gamma_oi"].fillna(0) + s["put_gamma_oi"].fillna(0)
             ).abs()
@@ -1120,15 +1166,9 @@ def analyze_dte_regime() -> None:
         # 2. Gamma spread: std dev of net gamma across strikes
         def gamma_spread(snap: pd.DataFrame) -> float:
             s = snap.copy()
-            s["call_gamma_oi"] = pd.to_numeric(
-                s["call_gamma_oi"], errors="coerce"
-            )
-            s["put_gamma_oi"] = pd.to_numeric(
-                s["put_gamma_oi"], errors="coerce"
-            )
-            s["net_g"] = (
-                s["call_gamma_oi"].fillna(0) + s["put_gamma_oi"].fillna(0)
-            )
+            s["call_gamma_oi"] = pd.to_numeric(s["call_gamma_oi"], errors="coerce")
+            s["put_gamma_oi"] = pd.to_numeric(s["put_gamma_oi"], errors="coerce")
+            s["net_g"] = s["call_gamma_oi"].fillna(0) + s["put_gamma_oi"].fillna(0)
             return float(s["net_g"].std()) if len(s) > 1 else 0.0
 
         conc_0 = gamma_concentration(snap_0)
@@ -1142,13 +1182,13 @@ def analyze_dte_regime() -> None:
         mag_ratio = mag_1 / mag_0 if mag_0 > 0 else 0.0
 
         # 4. Peak agreement: distance between 0 DTE and 1 DTE prox centroids
-        peak_disagreement = abs(
-            prof_0["prox_centroid"] - prof_1["prox_centroid"]
-        )
+        peak_disagreement = abs(prof_0["prox_centroid"] - prof_1["prox_centroid"])
 
         # 5. Net gamma sign for 0 DTE (positive = pinning, negative = accel)
-        net_g_0 = float(snap_0["call_gamma_oi"].astype(float).sum()
-                        + snap_0["put_gamma_oi"].astype(float).sum())
+        net_g_0 = float(
+            snap_0["call_gamma_oi"].astype(float).sum()
+            + snap_0["put_gamma_oi"].astype(float).sum()
+        )
         net_g_sign_0 = "positive" if net_g_0 > 0 else "negative"
 
         row = {
@@ -1169,24 +1209,28 @@ def analyze_dte_regime() -> None:
         # Add training_features if available
         if date in tf_dates:
             tf_row = tf[tf["date"] == date].iloc[0]
-            row["vix"] = float(tf_row["vix"]) if pd.notna(
-                tf_row["vix"]
-            ) else np.nan
-            row["agg_net_gamma"] = float(
-                tf_row["agg_net_gamma"]
-            ) if pd.notna(tf_row["agg_net_gamma"]) else np.nan
-            row["gamma_asymmetry"] = float(
-                tf_row["gamma_asymmetry"]
-            ) if pd.notna(tf_row["gamma_asymmetry"]) else np.nan
-            row["regime_zone"] = str(tf_row["regime_zone"]) if pd.notna(
-                tf_row["regime_zone"]
-            ) else "unknown"
-            row["is_friday"] = bool(tf_row["is_friday"]) if pd.notna(
-                tf_row["is_friday"]
-            ) else False
-            row["is_opex"] = bool(tf_row["is_opex"]) if pd.notna(
-                tf_row["is_opex"]
-            ) else False
+            row["vix"] = float(tf_row["vix"]) if pd.notna(tf_row["vix"]) else np.nan
+            row["agg_net_gamma"] = (
+                float(tf_row["agg_net_gamma"])
+                if pd.notna(tf_row["agg_net_gamma"])
+                else np.nan
+            )
+            row["gamma_asymmetry"] = (
+                float(tf_row["gamma_asymmetry"])
+                if pd.notna(tf_row["gamma_asymmetry"])
+                else np.nan
+            )
+            row["regime_zone"] = (
+                str(tf_row["regime_zone"])
+                if pd.notna(tf_row["regime_zone"])
+                else "unknown"
+            )
+            row["is_friday"] = (
+                bool(tf_row["is_friday"]) if pd.notna(tf_row["is_friday"]) else False
+            )
+            row["is_opex"] = (
+                bool(tf_row["is_opex"]) if pd.notna(tf_row["is_opex"]) else False
+            )
         else:
             row["vix"] = np.nan
             row["agg_net_gamma"] = np.nan
@@ -1206,8 +1250,9 @@ def analyze_dte_regime() -> None:
     wins_1 = results[results["winner"] == "1dte"]
     n = len(results)
 
-    print(f"  {len(wins_0)} days 0 DTE won, {len(wins_1)} days 1 DTE won "
-          f"(out of {n})\n")
+    print(
+        f"  {len(wins_0)} days 0 DTE won, {len(wins_1)} days 1 DTE won (out of {n})\n"
+    )
 
     if len(wins_1) == 0:
         print("  1 DTE never won — no regime to analyze yet.")
@@ -1217,25 +1262,21 @@ def analyze_dte_regime() -> None:
     subsection("Feature comparison: 0 DTE wins vs 1 DTE wins")
 
     numeric_features = [
-        ("0 DTE γ concentration", "conc_0dte",
-         "Top-3 strike share of total |gamma|"),
-        ("1 DTE γ concentration", "conc_1dte",
-         "Top-3 strike share of total |gamma|"),
-        ("0 DTE γ spread (std)", "spread_0dte",
-         "Dispersion of gamma across strikes"),
-        ("1 DTE / 0 DTE peak ratio", "mag_ratio",
-         "Relative strength of 1 DTE peak"),
-        ("Peak disagreement (pts)", "peak_disagree",
-         "Distance between 0 DTE and 1 DTE centroids"),
+        ("0 DTE γ concentration", "conc_0dte", "Top-3 strike share of total |gamma|"),
+        ("1 DTE γ concentration", "conc_1dte", "Top-3 strike share of total |gamma|"),
+        ("0 DTE γ spread (std)", "spread_0dte", "Dispersion of gamma across strikes"),
+        ("1 DTE / 0 DTE peak ratio", "mag_ratio", "Relative strength of 1 DTE peak"),
+        (
+            "Peak disagreement (pts)",
+            "peak_disagree",
+            "Distance between 0 DTE and 1 DTE centroids",
+        ),
         ("VIX", "vix", "Implied volatility level"),
-        ("Agg net gamma", "agg_net_gamma",
-         "Market-wide net gamma (Rule 16)"),
-        ("Gamma asymmetry", "gamma_asymmetry",
-         "Above-vs-below ATM gamma skew"),
+        ("Agg net gamma", "agg_net_gamma", "Market-wide net gamma (Rule 16)"),
+        ("Gamma asymmetry", "gamma_asymmetry", "Above-vs-below ATM gamma skew"),
     ]
 
-    print(f"  {'Feature':<28s} {'0DTE wins':>11s} {'1DTE wins':>11s} "
-          f"{'Signal?':>8s}")
+    print(f"  {'Feature':<28s} {'0DTE wins':>11s} {'1DTE wins':>11s} {'Signal?':>8s}")
     print(f"  {'─' * 28} {'─' * 11} {'─' * 11} {'─' * 8}")
 
     signals = []
@@ -1269,8 +1310,7 @@ def analyze_dte_regime() -> None:
 
         fmt_0 = f"{m0:.4g}" if abs(m0) < 1e6 else f"{m0:.2e}"
         fmt_1 = f"{m1:.4g}" if abs(m1) < 1e6 else f"{m1:.2e}"
-        print(f"  {label:<28s} {fmt_0:>11s} {fmt_1:>11s} "
-              f"{sig:>8s}")
+        print(f"  {label:<28s} {fmt_0:>11s} {fmt_1:>11s} {sig:>8s}")
 
         if sig:
             direction = "higher" if m1 > m0 else "lower"
@@ -1286,8 +1326,7 @@ def analyze_dte_regime() -> None:
             continue
         w1 = (subset["winner"] == "1dte").sum()
         pct = w1 / len(subset) if len(subset) > 0 else 0
-        print(f"  Net gamma {sign}: 1 DTE won "
-              f"{w1}/{len(subset)} ({pct:.0%})")
+        print(f"  Net gamma {sign}: 1 DTE won {w1}/{len(subset)} ({pct:.0%})")
 
     # Regime zone
     print()
@@ -1297,8 +1336,7 @@ def analyze_dte_regime() -> None:
             continue
         w1 = (subset["winner"] == "1dte").sum()
         pct = w1 / len(subset) if len(subset) > 0 else 0
-        print(f"  Regime '{zone}': 1 DTE won "
-              f"{w1}/{len(subset)} ({pct:.0%})")
+        print(f"  Regime '{zone}': 1 DTE won {w1}/{len(subset)} ({pct:.0%})")
 
     # Friday / OPEX
     for label, col in [("Friday", "is_friday"), ("OPEX", "is_opex")]:
@@ -1311,17 +1349,20 @@ def analyze_dte_regime() -> None:
         if len(no) > 0:
             w1_no = (no["winner"] == "1dte").sum()
             pct_no = w1_no / len(no)
-            print(f"  Non-{label}: 1 DTE won "
-                  f"{w1_no}/{len(no)} ({pct_no:.0%})")
+            print(f"  Non-{label}: 1 DTE won {w1_no}/{len(no)} ({pct_no:.0%})")
 
     # ── Per-day detail ──
     subsection("Per-day detail")
-    print(f"  {'Date':<12s} {'Winner':>7s} {'0DTE':>6s} {'1DTE':>6s} "
-          f"{'Margin':>7s} {'Conc0':>6s} {'Conc1':>6s} "
-          f"{'MagR':>6s} {'Disagr':>7s} {'VIX':>5s}")
-    print(f"  {'─' * 12} {'─' * 7} {'─' * 6} {'─' * 6} "
-          f"{'─' * 7} {'─' * 6} {'─' * 6} "
-          f"{'─' * 6} {'─' * 7} {'─' * 5}")
+    print(
+        f"  {'Date':<12s} {'Winner':>7s} {'0DTE':>6s} {'1DTE':>6s} "
+        f"{'Margin':>7s} {'Conc0':>6s} {'Conc1':>6s} "
+        f"{'MagR':>6s} {'Disagr':>7s} {'VIX':>5s}"
+    )
+    print(
+        f"  {'─' * 12} {'─' * 7} {'─' * 6} {'─' * 6} "
+        f"{'─' * 7} {'─' * 6} {'─' * 6} "
+        f"{'─' * 6} {'─' * 7} {'─' * 5}"
+    )
 
     for _, r in results.iterrows():
         date_str = pd.Timestamp(r["date"]).strftime("%Y-%m-%d")
@@ -1341,8 +1382,7 @@ def analyze_dte_regime() -> None:
     if signals:
         print("  Detected signals:")
         for label, direction, strength, desc in signals:
-            print(f"    {strength.upper()}: {label} is {direction} "
-                  f"when 1 DTE wins")
+            print(f"    {strength.upper()}: {label} is {direction} when 1 DTE wins")
             print(f"           ({desc})")
         print()
 
@@ -1443,7 +1483,8 @@ def analyze_dte_regime() -> None:
 
 
 def _sklearn_regime_model(
-    results: pd.DataFrame, baseline_acc: float,
+    results: pd.DataFrame,
+    baseline_acc: float,
 ) -> None:
     """
     Train a DecisionTreeClassifier (depth=1) with TimeSeriesSplit
@@ -1455,9 +1496,16 @@ def _sklearn_regime_model(
     subsection("Cross-validated decision tree (out-of-sample)")
 
     feature_cols = [
-        c for c in [
-            "conc_0dte", "conc_1dte", "spread_0dte", "spread_1dte",
-            "mag_ratio", "peak_disagree", "vix", "agg_net_gamma",
+        c
+        for c in [
+            "conc_0dte",
+            "conc_1dte",
+            "spread_0dte",
+            "spread_1dte",
+            "mag_ratio",
+            "peak_disagree",
+            "vix",
+            "agg_net_gamma",
             "gamma_asymmetry",
         ]
         if c in results.columns
@@ -1485,7 +1533,9 @@ def _sklearn_regime_model(
         SimpleImputer(strategy="median"),
         StandardScaler(),
         DecisionTreeClassifier(
-            max_depth=1, random_state=42, class_weight="balanced",
+            max_depth=1,
+            random_state=42,
+            class_weight="balanced",
         ),
     )
 
@@ -1535,9 +1585,7 @@ def gamma_concentration(snapshot: pd.DataFrame) -> float:
     s = snapshot.copy()
     s["call_gamma_oi"] = pd.to_numeric(s["call_gamma_oi"], errors="coerce")
     s["put_gamma_oi"] = pd.to_numeric(s["put_gamma_oi"], errors="coerce")
-    s["abs_g"] = (
-        s["call_gamma_oi"].fillna(0) + s["put_gamma_oi"].fillna(0)
-    ).abs()
+    s["abs_g"] = (s["call_gamma_oi"].fillna(0) + s["put_gamma_oi"].fillna(0)).abs()
     total = s["abs_g"].sum()
     if total == 0:
         return 0.0
@@ -1562,14 +1610,14 @@ def backtest_composite_strategy() -> None:
     section("8. COMPOSITE STRATEGY BACKTEST")
     print("  Concentration-gated 0 DTE / 1 DTE switching strategy\n")
 
-    df_0dte = load_strike_data('0dte')
-    df_1dte = load_strike_data('1dte')
+    df_0dte = load_strike_data("0dte")
+    df_1dte = load_strike_data("1dte")
 
     if len(df_1dte) == 0 or df_1dte["date"].nunique() < 3:
         print("  Insufficient 1 DTE data — skipping backtest.")
         return
 
-    SNAP_CASCADE = ['19:30', '19:00', '20:00', '20:15']
+    SNAP_CASCADE = ["19:30", "19:00", "20:00", "20:15"]
 
     dates_0 = set(df_0dte["date"].unique())
     dates_1 = set(df_1dte["date"].unique())
@@ -1613,23 +1661,24 @@ def backtest_composite_strategy() -> None:
         wall_1dte_near_0dte = prof_1["pos_peak_strike"]
         # If the 1 DTE prox centroid is closer to the 0 DTE centroid
         # than the 1 DTE pos peak, use the centroid instead
-        if (abs(centroid_1 - centroid_0)
-                < abs(prof_1["pos_peak_strike"] - centroid_0)):
+        if abs(centroid_1 - centroid_0) < abs(prof_1["pos_peak_strike"] - centroid_0):
             wall_1dte_near_0dte = centroid_1
         dist_1_anchored = abs(settlement - wall_1dte_near_0dte)
 
-        day_profiles.append({
-            "date": date,
-            "settlement": settlement,
-            "conc_0dte": conc,
-            "centroid_0dte": centroid_0,
-            "centroid_1dte": centroid_1,
-            "disagreement": disagreement,
-            "dist_0dte": dist_0,
-            "dist_1dte": dist_1,
-            "dist_1dte_anchored": dist_1_anchored,
-            "actual_winner": "1dte" if dist_1 < dist_0 else "0dte",
-        })
+        day_profiles.append(
+            {
+                "date": date,
+                "settlement": settlement,
+                "conc_0dte": conc,
+                "centroid_0dte": centroid_0,
+                "centroid_1dte": centroid_1,
+                "disagreement": disagreement,
+                "dist_0dte": dist_0,
+                "dist_1dte": dist_1,
+                "dist_1dte_anchored": dist_1_anchored,
+                "actual_winner": "1dte" if dist_1 < dist_0 else "0dte",
+            }
+        )
 
     if len(day_profiles) < 5:
         print(f"  Only {len(day_profiles)} usable days — need 5+.")
@@ -1646,19 +1695,24 @@ def backtest_composite_strategy() -> None:
     baseline_0_w10 = (results["dist_0dte"] <= 10).mean()
     baseline_1_w10 = (results["dist_1dte"] <= 10).mean()
 
-    print(f"  Always 0 DTE prox-centroid:  "
-          f"avg {baseline_0:.1f} pts, {baseline_0_w10:.0%} within ±10")
-    print(f"  Always 1 DTE prox-centroid:  "
-          f"avg {baseline_1:.1f} pts, {baseline_1_w10:.0%} within ±10")
+    print(
+        f"  Always 0 DTE prox-centroid:  "
+        f"avg {baseline_0:.1f} pts, {baseline_0_w10:.0%} within ±10"
+    )
+    print(
+        f"  Always 1 DTE prox-centroid:  "
+        f"avg {baseline_1:.1f} pts, {baseline_1_w10:.0%} within ±10"
+    )
 
     # ── Sweep concentration thresholds ──
     subsection("Concentration threshold sweep")
     print("  Strategy: if 0 DTE conc < threshold, use 1 DTE; else 0 DTE\n")
 
-    print(f"  {'Threshold':>10s} {'Avg Dist':>9s} {'±10':>5s} {'±20':>5s} "
-          f"{'Switch%':>8s} {'vs Base':>8s}")
-    print(f"  {'─' * 10} {'─' * 9} {'─' * 5} {'─' * 5} "
-          f"{'─' * 8} {'─' * 8}")
+    print(
+        f"  {'Threshold':>10s} {'Avg Dist':>9s} {'±10':>5s} {'±20':>5s} "
+        f"{'Switch%':>8s} {'vs Base':>8s}"
+    )
+    print(f"  {'─' * 10} {'─' * 9} {'─' * 5} {'─' * 5} {'─' * 8} {'─' * 8}")
 
     best_thresh = 0.0
     best_avg = baseline_0  # must beat always-0-DTE
@@ -1685,11 +1739,12 @@ def backtest_composite_strategy() -> None:
             best_avg = avg
             best_thresh = thresh
 
-        print(f"  {thresh:>9.0%} {avg:>8.1f} {w10:>4.0%} {w20:>4.0%} "
-              f"{switch_pct:>7.0%} {delta:>+7.1f}{marker}")
+        print(
+            f"  {thresh:>9.0%} {avg:>8.1f} {w10:>4.0%} {w20:>4.0%} "
+            f"{switch_pct:>7.0%} {delta:>+7.1f}{marker}"
+        )
 
-    print(f"\n  Best threshold: {best_thresh:.0%} "
-          f"(avg {best_avg:.1f} pts)")
+    print(f"\n  Best threshold: {best_thresh:.0%} (avg {best_avg:.1f} pts)")
 
     # ── Run best strategy with confidence tiers ──
     subsection(f"Strategy detail (threshold = {best_thresh:.0%})")
@@ -1700,12 +1755,16 @@ def backtest_composite_strategy() -> None:
         ("LOW — strong disagreement", float("inf")),
     ]
 
-    print(f"  {'Date':<12s} {'Settle':>7s} {'Conc':>6s} {'Regime':>8s} "
-          f"{'Anchor':>8s} {'Dist':>6s} {'0DTE':>6s} {'1DTE':>6s} "
-          f"{'Conf':>6s} {'Better?':>8s}")
-    print(f"  {'─' * 12} {'─' * 7} {'─' * 6} {'─' * 8} "
-          f"{'─' * 8} {'─' * 6} {'─' * 6} {'─' * 6} "
-          f"{'─' * 6} {'─' * 8}")
+    print(
+        f"  {'Date':<12s} {'Settle':>7s} {'Conc':>6s} {'Regime':>8s} "
+        f"{'Anchor':>8s} {'Dist':>6s} {'0DTE':>6s} {'1DTE':>6s} "
+        f"{'Conf':>6s} {'Better?':>8s}"
+    )
+    print(
+        f"  {'─' * 12} {'─' * 7} {'─' * 6} {'─' * 8} "
+        f"{'─' * 8} {'─' * 6} {'─' * 6} {'─' * 6} "
+        f"{'─' * 6} {'─' * 8}"
+    )
 
     strat_dists = []
     confidence_results = {"HIGH": [], "MEDIUM": [], "LOW": []}
@@ -1739,11 +1798,13 @@ def backtest_composite_strategy() -> None:
         same = abs(dist - r["dist_0dte"]) < 0.01
         marker = "✓" if better else ("=" if same else "✗")
 
-        print(f"  {date_str:<12s} {r['settlement']:>7.1f} "
-              f"{conc:>5.0%} {regime:>8s} "
-              f"{anchor:>7.0f} {dist:>5.1f} "
-              f"{r['dist_0dte']:>5.1f} {r['dist_1dte']:>5.1f} "
-              f"{conf:>6s} {marker:>8s}")
+        print(
+            f"  {date_str:<12s} {r['settlement']:>7.1f} "
+            f"{conc:>5.0%} {regime:>8s} "
+            f"{anchor:>7.0f} {dist:>5.1f} "
+            f"{r['dist_0dte']:>5.1f} {r['dist_1dte']:>5.1f} "
+            f"{conf:>6s} {marker:>8s}"
+        )
 
     # ── Summary ──
     subsection("Strategy summary")
@@ -1753,35 +1814,39 @@ def backtest_composite_strategy() -> None:
     strat_w10 = (strat_arr <= 10).mean()
     strat_w20 = (strat_arr <= 20).mean()
     improvement = baseline_0 - strat_avg
-    beat_count = sum(
-        1 for s, b in zip(strat_dists, results["dist_0dte"])
-        if s < b
-    )
+    beat_count = sum(1 for s, b in zip(strat_dists, results["dist_0dte"]) if s < b)
 
     print(f"  {'Strategy':<28s} {'Avg':>7s} {'±10':>5s} {'±20':>5s}")
     print(f"  {'─' * 28} {'─' * 7} {'─' * 5} {'─' * 5}")
-    print(f"  {'Always 0 DTE':<28s} {baseline_0:>6.1f} "
-          f"{baseline_0_w10:>4.0%} "
-          f"{(results['dist_0dte'] <= 20).mean():>4.0%}")
-    print(f"  {'Always 1 DTE':<28s} {baseline_1:>6.1f} "
-          f"{baseline_1_w10:>4.0%} "
-          f"{(results['dist_1dte'] <= 20).mean():>4.0%}")
-    print(f"  {'Composite (conc-gated)':<28s} {strat_avg:>6.1f} "
-          f"{strat_w10:>4.0%} {strat_w20:>4.0%}")
+    print(
+        f"  {'Always 0 DTE':<28s} {baseline_0:>6.1f} "
+        f"{baseline_0_w10:>4.0%} "
+        f"{(results['dist_0dte'] <= 20).mean():>4.0%}"
+    )
+    print(
+        f"  {'Always 1 DTE':<28s} {baseline_1:>6.1f} "
+        f"{baseline_1_w10:>4.0%} "
+        f"{(results['dist_1dte'] <= 20).mean():>4.0%}"
+    )
+    print(
+        f"  {'Composite (conc-gated)':<28s} {strat_avg:>6.1f} "
+        f"{strat_w10:>4.0%} {strat_w20:>4.0%}"
+    )
 
     print(f"\n  Improvement over baseline: {improvement:+.1f} pts avg")
-    print(f"  Beat baseline on {beat_count}/{n} days "
-          f"({beat_count / n:.0%})")
+    print(f"  Beat baseline on {beat_count}/{n} days ({beat_count / n:.0%})")
 
     # Confidence tier breakdown
-    print(f"\n  Confidence tier accuracy:")
+    print("\n  Confidence tier accuracy:")
     for tier in ("HIGH", "MEDIUM", "LOW"):
         tier_dists = confidence_results[tier]
         if tier_dists:
             tier_avg = np.mean(tier_dists)
             tier_w10 = sum(1 for d in tier_dists if d <= 10) / len(tier_dists)
-            print(f"    {tier:<8s}  n={len(tier_dists):<3d}  "
-                  f"avg {tier_avg:.1f} pts, {tier_w10:.0%} within ±10")
+            print(
+                f"    {tier:<8s}  n={len(tier_dists):<3d}  "
+                f"avg {tier_avg:.1f} pts, {tier_w10:.0%} within ±10"
+            )
         else:
             print(f"    {tier:<8s}  n=0")
 
@@ -1812,27 +1877,31 @@ def backtest_composite_strategy() -> None:
 
 # ── Plotting ──────────────────────────────────────────────────
 
+
 def generate_plots(df: pd.DataFrame) -> None:
     """Generate visualization plots from the 0DTE strike data."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import seaborn as sns
 
     # ── Style (matches visualize.py) ──
     sns.set_theme(style="darkgrid", palette="muted")
-    plt.rcParams.update({
-        "figure.facecolor": "#1a1a2e",
-        "axes.facecolor": "#16213e",
-        "axes.edgecolor": "#555",
-        "axes.labelcolor": "#ccc",
-        "text.color": "#ccc",
-        "xtick.color": "#aaa",
-        "ytick.color": "#aaa",
-        "grid.color": "#333",
-        "grid.alpha": 0.5,
-        "font.size": 11,
-    })
+    plt.rcParams.update(
+        {
+            "figure.facecolor": "#1a1a2e",
+            "axes.facecolor": "#16213e",
+            "axes.edgecolor": "#555",
+            "axes.labelcolor": "#ccc",
+            "text.color": "#ccc",
+            "xtick.color": "#aaa",
+            "ytick.color": "#aaa",
+            "grid.color": "#333",
+            "grid.alpha": 0.5,
+            "font.size": 11,
+        }
+    )
 
     COLORS = {
         "green": "#2ecc71",
@@ -1867,24 +1936,26 @@ def generate_plots(df: pd.DataFrame) -> None:
             continue
 
         prox_pred = profile["prox_centroid"]
-        scatter_rows.append({
-            "prediction_error": prox_pred - settlement,
-            "settlement_dist": settlement - prox_pred,
-        })
+        scatter_rows.append(
+            {
+                "prediction_error": prox_pred - settlement,
+                "settlement_dist": settlement - prox_pred,
+            }
+        )
 
     if len(scatter_rows) >= 3:
-        scatter_df = pd.DataFrame(scatter_rows)
+        pd.DataFrame(scatter_rows)
 
         # Compute confidence tiers: need both 0DTE and 1DTE data.
         # Load 1DTE for confidence tiers.
         try:
-            df_1dte = load_strike_data('1dte')
+            df_1dte = load_strike_data("1dte")
             dates_1 = set(df_1dte["date"].unique())
         except Exception:
             df_1dte = pd.DataFrame()
             dates_1 = set()
 
-        SNAP_CASCADE = ['19:30', '19:00', '20:00', '20:15']
+        SNAP_CASCADE = ["19:30", "19:00", "20:00", "20:15"]
         conf_rows = []
         for date in dates:
             day_data = df[df["date"] == date]
@@ -1916,8 +1987,7 @@ def generate_plots(df: pd.DataFrame) -> None:
                     prof_1 = compute_gamma_profile(snap_1)
                     if prof_1:
                         disagree = abs(
-                            prof_0["prox_centroid"]
-                            - prof_1["prox_centroid"]
+                            prof_0["prox_centroid"] - prof_1["prox_centroid"]
                         )
                         if disagree <= 10:
                             conf = "HIGH"
@@ -1926,10 +1996,12 @@ def generate_plots(df: pd.DataFrame) -> None:
                         else:
                             conf = "LOW"
 
-            conf_rows.append({
-                "error": error,
-                "confidence": conf,
-            })
+            conf_rows.append(
+                {
+                    "error": error,
+                    "confidence": conf,
+                }
+            )
 
         conf_df = pd.DataFrame(conf_rows)
 
@@ -1957,10 +2029,8 @@ def generate_plots(df: pd.DataFrame) -> None:
             )
 
         # Reference bands
-        ax.axhspan(0, 10, color=COLORS["green"], alpha=0.08,
-                    label="Within +/-10 pts")
-        ax.axhspan(10, 20, color=COLORS["orange"], alpha=0.06,
-                    label="Within +/-20 pts")
+        ax.axhspan(0, 10, color=COLORS["green"], alpha=0.08, label="Within +/-10 pts")
+        ax.axhspan(10, 20, color=COLORS["orange"], alpha=0.06, label="Within +/-20 pts")
 
         ax.axvline(0, color="#666", linewidth=0.8, linestyle="--")
 
@@ -1968,13 +2038,15 @@ def generate_plots(df: pd.DataFrame) -> None:
         ax.set_ylabel("|Prediction Error| (abs distance)")
         ax.set_title(
             "Pin Analysis: Prox-Centroid vs Settlement",
-            fontsize=14, fontweight="bold",
+            fontsize=14,
+            fontweight="bold",
         )
         ax.legend(loc="upper right", framealpha=0.8)
 
         fig.savefig(
             PLOT_DIR / "pin_settlement.png",
-            dpi=150, bbox_inches="tight",
+            dpi=150,
+            bbox_inches="tight",
         )
         plt.close(fig)
         print("  Saved: ml/plots/pin_settlement.png")
@@ -2010,19 +2082,26 @@ def generate_plots(df: pd.DataFrame) -> None:
         fig, ax = plt.subplots(figsize=(9, 6))
 
         ax.plot(
-            cp_labels, cp_avg_dists,
-            color=COLORS["cyan"], marker="o", markersize=8,
-            linewidth=2.5, markeredgecolor="white", markeredgewidth=1,
+            cp_labels,
+            cp_avg_dists,
+            color=COLORS["cyan"],
+            marker="o",
+            markersize=8,
+            linewidth=2.5,
+            markeredgecolor="white",
+            markeredgewidth=1,
         )
 
         # Fill area under curve
         ax.fill_between(
-            cp_labels, cp_avg_dists,
-            alpha=0.15, color=COLORS["cyan"],
+            cp_labels,
+            cp_avg_dists,
+            alpha=0.15,
+            color=COLORS["cyan"],
         )
 
         # Annotate each point
-        for i, (label, val) in enumerate(zip(cp_labels, cp_avg_dists)):
+        for _i, (label, val) in enumerate(zip(cp_labels, cp_avg_dists)):
             ax.annotate(
                 f"{val:.1f}",
                 (label, val),
@@ -2038,7 +2117,8 @@ def generate_plots(df: pd.DataFrame) -> None:
         ax.set_ylabel("Avg Distance to Settlement (pts)")
         ax.set_title(
             "Settlement Prediction Improves Near Close",
-            fontsize=14, fontweight="bold",
+            fontsize=14,
+            fontweight="bold",
         )
 
         # Rotate x labels if needed
@@ -2046,7 +2126,8 @@ def generate_plots(df: pd.DataFrame) -> None:
 
         fig.savefig(
             PLOT_DIR / "pin_time_decay.png",
-            dpi=150, bbox_inches="tight",
+            dpi=150,
+            bbox_inches="tight",
         )
         plt.close(fig)
         print("  Saved: ml/plots/pin_time_decay.png")
@@ -2058,7 +2139,7 @@ def generate_plots(df: pd.DataFrame) -> None:
     # Need both 0DTE and 1DTE data for composite comparison.
     # Recompute baselines and composite strategy distances.
     try:
-        df_1dte_comp = load_strike_data('1dte')
+        df_1dte_comp = load_strike_data("1dte")
     except Exception:
         df_1dte_comp = pd.DataFrame()
 
@@ -2068,7 +2149,7 @@ def generate_plots(df: pd.DataFrame) -> None:
         common_dates = sorted(dates_0 & dates_1)
 
         if len(common_dates) >= 5:
-            SNAP_CASCADE = ['19:30', '19:00', '20:00', '20:15']
+            SNAP_CASCADE = ["19:30", "19:00", "20:00", "20:15"]
 
             dists_always_0 = []
             dists_always_1 = []
@@ -2134,9 +2215,12 @@ def generate_plots(df: pd.DataFrame) -> None:
                 ]
 
                 bars = ax.bar(
-                    strategies, avgs,
-                    color=bar_colors, edgecolor="white",
-                    linewidth=0.5, width=0.55,
+                    strategies,
+                    avgs,
+                    color=bar_colors,
+                    edgecolor="white",
+                    linewidth=0.5,
+                    width=0.55,
                 )
 
                 # Value labels on bars
@@ -2145,15 +2229,18 @@ def generate_plots(df: pd.DataFrame) -> None:
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.5,
                         f"{avg:.1f} pts",
-                        ha="center", va="bottom",
-                        fontsize=12, fontweight="bold",
+                        ha="center",
+                        va="bottom",
+                        fontsize=12,
+                        fontweight="bold",
                         color="#ccc",
                     )
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() / 2,
                         f"+/-10: {w10:.0%}",
-                        ha="center", va="center",
+                        ha="center",
+                        va="center",
                         fontsize=10,
                         color="white",
                         fontweight="bold",
@@ -2163,20 +2250,24 @@ def generate_plots(df: pd.DataFrame) -> None:
                 ax.set_ylim(0, max(avgs) * 1.35)
                 ax.set_title(
                     "0DTE vs 1DTE vs Composite Strategy",
-                    fontsize=14, fontweight="bold",
+                    fontsize=14,
+                    fontweight="bold",
                 )
 
                 # Add "lower is better" arrow annotation
                 ax.annotate(
                     "lower is better",
-                    xy=(0.02, 0.95), xycoords="axes fraction",
-                    fontsize=9, color=COLORS["gray"],
+                    xy=(0.02, 0.95),
+                    xycoords="axes fraction",
+                    fontsize=9,
+                    color=COLORS["gray"],
                     fontstyle="italic",
                 )
 
                 fig.savefig(
                     PLOT_DIR / "pin_composite.png",
-                    dpi=150, bbox_inches="tight",
+                    dpi=150,
+                    bbox_inches="tight",
                 )
                 plt.close(fig)
                 print("  Saved: ml/plots/pin_composite.png")
@@ -2192,12 +2283,14 @@ def generate_plots(df: pd.DataFrame) -> None:
 
 # ── Main ─────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Settlement Pin Risk Analysis",
     )
     parser.add_argument(
-        "--plot", action="store_true",
+        "--plot",
+        action="store_true",
         help="Save plots to ml/plots/",
     )
     args = parser.parse_args()
@@ -2220,15 +2313,13 @@ def main() -> None:
     if mp_count > 0:
         print(f"  {mp_count} days with max pain data")
     else:
-        print("  No max pain data yet (run build-features?backfill=true "
-              "after deploy)")
+        print("  No max pain data yet (run build-features?backfill=true after deploy)")
 
     print("Loading OI per-strike data ...")
     oi_df = load_oi_per_strike()
     oi_count = oi_df["date"].nunique() if len(oi_df) > 0 else 0
     if oi_count > 0:
-        print(f"  {oi_count} days with per-strike OI "
-              f"({len(oi_df):,} total rows)")
+        print(f"  {oi_count} days with per-strike OI ({len(oi_df):,} total rows)")
     else:
         print("  No OI data yet (run backfill-oi-per-strike.mjs after deploy)")
 
@@ -2266,9 +2357,7 @@ def main() -> None:
         if not profile:
             continue
         for method_name, key in predictor_methods.items():
-            method_dists[method_name].append(
-                abs(settlement - profile[key])
-            )
+            method_dists[method_name].append(abs(settlement - profile[key]))
 
     pin_accuracy: dict[str, dict] = {}
     for method_name, dists_list in method_dists.items():
@@ -2287,6 +2376,7 @@ def main() -> None:
     if "settlement_direction" in df.columns:
         try:
             from scipy.stats import pointbiserialr
+
             day_asymmetries = []
             day_directions = []
             for date in dates:
@@ -2299,10 +2389,7 @@ def main() -> None:
                 profile = compute_gamma_profile(snapshot)
                 if not profile:
                     continue
-                asym = (
-                    profile["pos_gamma_above"]
-                    - profile["pos_gamma_below"]
-                )
+                asym = profile["pos_gamma_above"] - profile["pos_gamma_below"]
                 settled_up = float(settlement_dir) > float(day_open)
                 day_asymmetries.append(asym)
                 day_directions.append(1.0 if settled_up else 0.0)
@@ -2316,11 +2403,14 @@ def main() -> None:
         except Exception:
             pass
 
-    save_section_findings("pin_analysis", {
-        "pin_accuracy_by_method": pin_accuracy,
-        "asymmetry_correlation": asym_corr,
-        "n_days": len(dates),
-    })
+    save_section_findings(
+        "pin_analysis",
+        {
+            "pin_accuracy_by_method": pin_accuracy,
+            "asymmetry_correlation": asym_corr,
+            "n_days": len(dates),
+        },
+    )
 
     print()
 

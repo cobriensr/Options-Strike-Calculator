@@ -22,15 +22,14 @@ except ImportError:
     sys.exit(1)
 
 from utils import (
-    load_data,
     get_connection,
+    load_data,
+    save_section_findings,
     section,
     subsection,
-    verdict,
     takeaway,
-    save_section_findings,
+    verdict,
 )
-
 
 # ── Constants ──────────────────────────────────────────────────
 
@@ -50,6 +49,7 @@ KEY_FEATURE_COLUMNS = [
 
 
 # ── Helpers ────────────────────────────────────────────────────
+
 
 def most_recent_business_day() -> datetime:
     """Return the most recent business day (Mon-Fri) as of today."""
@@ -79,6 +79,7 @@ def business_days_between(d1: datetime, d2: datetime) -> int:
 
 
 # ── Check 1: Data Freshness ────────────────────────────────────
+
 
 def check_freshness(warnings: list[str], failures: list[str]) -> None:
     section("1. DATA FRESHNESS")
@@ -128,6 +129,7 @@ def check_freshness(warnings: list[str], failures: list[str]) -> None:
 
 # ── Check 2: Feature Completeness Trend ────────────────────────
 
+
 def check_completeness(warnings: list[str], _failures: list[str]) -> None:
     section("2. FEATURE COMPLETENESS TREND")
 
@@ -155,8 +157,10 @@ def check_completeness(warnings: list[str], _failures: list[str]) -> None:
     # Check for any day below 0.90
     low_days = completeness[completeness < 0.90]
     if len(low_days) > 0:
-        msg = (f"Feature completeness below 90% on "
-               f"{len(low_days)} of last {len(completeness)} days")
+        msg = (
+            f"Feature completeness below 90% on "
+            f"{len(low_days)} of last {len(completeness)} days"
+        )
         warnings.append(msg)
         print(f"\n  WARN: {msg}")
 
@@ -168,8 +172,10 @@ def check_completeness(warnings: list[str], _failures: list[str]) -> None:
         print(f"  Last  5-day avg: {last_5:.2%}")
         if last_5 < prior_5:
             diff = prior_5 - last_5
-            msg = (f"Completeness trending down: "
-                   f"{last_5:.2%} vs {prior_5:.2%} (delta {diff:.2%})")
+            msg = (
+                f"Completeness trending down: "
+                f"{last_5:.2%} vs {prior_5:.2%} (delta {diff:.2%})"
+            )
             warnings.append(msg)
             print(f"  WARN: {msg}")
         else:
@@ -179,6 +185,7 @@ def check_completeness(warnings: list[str], _failures: list[str]) -> None:
 
 
 # ── Check 3: Label Extraction Health ───────────────────────────
+
 
 def check_labels(warnings: list[str], failures: list[str]) -> None:
     section("3. LABEL EXTRACTION HEALTH")
@@ -226,11 +233,15 @@ def check_labels(warnings: list[str], failures: list[str]) -> None:
     print(f"  Total days with features: {total_features}")
     print(f"  Total days with labels:   {total_labels}")
     print(f"  Overall label coverage:   {overall_pct:.0%}")
-    print(f"\n  Recent 5 days: {recent_labels}/{recent_features} labeled ({recent_pct:.0%})")
+    print(
+        f"\n  Recent 5 days: {recent_labels}/{recent_features} labeled ({recent_pct:.0%})"
+    )
 
     if recent_pct < overall_pct and recent_features > 0:
-        msg = (f"Recent label coverage ({recent_pct:.0%}) is lower "
-               f"than overall ({overall_pct:.0%})")
+        msg = (
+            f"Recent label coverage ({recent_pct:.0%}) is lower "
+            f"than overall ({overall_pct:.0%})"
+        )
         warnings.append(msg)
         print(f"  WARN: {msg}")
     else:
@@ -238,6 +249,7 @@ def check_labels(warnings: list[str], failures: list[str]) -> None:
 
 
 # ── Check 4: Column Coverage ──────────────────────────────────
+
 
 def check_column_coverage(warnings: list[str], _failures: list[str]) -> None:
     section("4. COLUMN COVERAGE (key features, last 10 days)")
@@ -278,12 +290,17 @@ def check_column_coverage(warnings: list[str], _failures: list[str]) -> None:
 
 # ── Check 5: Stationarity Alerts ──────────────────────────────
 
+
 def check_stationarity(warnings: list[str], _failures: list[str]) -> None:
     section("5. STATIONARITY ALERTS (regime change detection)")
 
     monitor_cols = [
-        "vix", "gex_oi_t1", "flow_agreement_t1",
-        "dp_total_premium", "opt_vol_pcr", "iv_open",
+        "vix",
+        "gex_oi_t1",
+        "flow_agreement_t1",
+        "dp_total_premium",
+        "opt_vol_pcr",
+        "iv_open",
     ]
 
     cols_sql = ", ".join(monitor_cols)
@@ -326,17 +343,22 @@ def check_stationarity(warnings: list[str], _failures: list[str]) -> None:
         flag = ""
         if abs(z_score) > 2:
             direction = "above" if z_score > 0 else "below"
-            msg = (f"'{col}' regime shift: recent mean {recent_mean:.2f} "
-                   f"is {abs(z_score):.1f} SD {direction} overall mean "
-                   f"{overall_mean:.2f}")
+            msg = (
+                f"'{col}' regime shift: recent mean {recent_mean:.2f} "
+                f"is {abs(z_score):.1f} SD {direction} overall mean "
+                f"{overall_mean:.2f}"
+            )
             warnings.append(msg)
             flag = " << REGIME SHIFT"
 
-        print(f"  {col:25s}  overall {overall_mean:>8.2f} (SD {overall_std:.2f})"
-              f"  recent {recent_mean:>8.2f}  z={z_score:+.1f}{flag}")
+        print(
+            f"  {col:25s}  overall {overall_mean:>8.2f} (SD {overall_std:.2f})"
+            f"  recent {recent_mean:>8.2f}  z={z_score:+.1f}{flag}"
+        )
 
 
 # ── Check 6: Summary ──────────────────────────────────────────
+
 
 def print_summary(warnings: list[str], failures: list[str]) -> None:
     section("SUMMARY")
@@ -372,6 +394,7 @@ def print_summary(warnings: list[str], failures: list[str]) -> None:
 
 # ── Main ───────────────────────────────────────────────────────
 
+
 def main() -> None:
     print("Pipeline Health Monitor")
     print(f"  Run time: {datetime.now():%Y-%m-%d %H:%M:%S}")
@@ -388,12 +411,15 @@ def main() -> None:
 
     # Save findings
     status = "FAIL" if failures else ("WARN" if warnings else "PASS")
-    save_section_findings("health", {
-        "status": status,
-        "warnings": warnings,
-        "failures": failures,
-        "run_time": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
-    })
+    save_section_findings(
+        "health",
+        {
+            "status": status,
+            "warnings": warnings,
+            "failures": failures,
+            "run_time": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
+        },
+    )
 
     if warnings or failures:
         sys.exit(1)

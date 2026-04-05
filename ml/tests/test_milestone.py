@@ -28,7 +28,6 @@ from milestone_check import (
     print_quality,
 )
 
-
 # ── Helpers ──────────────────────────────────────────────────
 
 
@@ -53,7 +52,9 @@ def _make_data(
         "complete_days": complete_days,
         "first_date": first_date,
         "last_date": last_date,
-        "class_counts": class_counts if class_counts is not None else {
+        "class_counts": class_counts
+        if class_counts is not None
+        else {
             "wide_ic": 15,
             "bwb": 10,
             "sit_out": 5,
@@ -124,9 +125,7 @@ class TestAddBusinessDays:
         start = datetime(2026, 1, 1)
         for n in range(1, 100):
             result = add_business_days(start, n)
-            assert result.weekday() < 5, (
-                f"n={n} landed on weekday {result.weekday()}"
-            )
+            assert result.weekday() < 5, f"n={n} landed on weekday {result.weekday()}"
 
 
 # ── business_days_between ────────────────────────────────────
@@ -298,12 +297,8 @@ class TestPrintMilestones:
 
     def test_class_milestone_ic_met(self, capsys):
         """IC class milestone shows checkmark when met."""
-        ic_threshold = next(
-            t for key, t, _ in CLASS_MILESTONES if key == "ic"
-        )
-        data = _make_data(
-            labeled_days=999, ic_days=ic_threshold, sit_out_days=5
-        )
+        ic_threshold = next(t for key, t, _ in CLASS_MILESTONES if key == "ic")
+        data = _make_data(labeled_days=999, ic_days=ic_threshold, sit_out_days=5)
         print_milestones(data)
         out = capsys.readouterr().out
         assert "IC" in out
@@ -558,12 +553,12 @@ class TestCountData:
         # 6. class_dist (fetchall)
         # 7. recent_completeness
         mock_cursor.fetchone.side_effect = [
-            (42,),                                       # total_days
-            (date(2025, 12, 1), date(2026, 3, 15)),     # date range
-            (30,),                                       # labeled_days
-            (25,),                                       # outcome_days
-            (35,),                                       # complete_days
-            (0.88,),                                     # recent_completeness
+            (42,),  # total_days
+            (date(2025, 12, 1), date(2026, 3, 15)),  # date range
+            (30,),  # labeled_days
+            (25,),  # outcome_days
+            (35,),  # complete_days
+            (0.88,),  # recent_completeness
         ]
         mock_cursor.fetchall.return_value = [
             ("wide_ic", 15),

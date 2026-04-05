@@ -12,13 +12,14 @@ Reads DATABASE_URL from .env in the repo root.
 
 import argparse
 import sys
-from pathlib import Path
 
 try:
     import pandas as pd
     import psycopg2
 except ImportError:
-    print("Missing dependencies. Run:\n  ml/.venv/bin/pip install psycopg2-binary pandas")
+    print(
+        "Missing dependencies. Run:\n  ml/.venv/bin/pip install psycopg2-binary pandas"
+    )
     sys.exit(1)
 
 from utils import ML_ROOT
@@ -91,20 +92,24 @@ def fetch_data(
 
 def print_summary(df: pd.DataFrame) -> None:
     """Print a summary of the dataset."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  ML Training Data: {len(df)} days, {len(df.columns)} columns")
     print(f"  Date range: {df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     # Feature completeness
     if "feature_completeness" in df.columns:
         fc = df["feature_completeness"].astype(float)
-        print(f"Feature completeness: {fc.mean():.1%} avg, {fc.min():.1%} min, {fc.max():.1%} max")
+        print(
+            f"Feature completeness: {fc.mean():.1%} avg, {fc.min():.1%} min, {fc.max():.1%} max"
+        )
 
     # Label coverage
     if "structure_correct" in df.columns:
         labeled = df["structure_correct"].notna().sum()
-        print(f"Labels: {labeled}/{len(df)} days have review labels ({labeled/len(df):.0%})")
+        print(
+            f"Labels: {labeled}/{len(df)} days have review labels ({labeled / len(df):.0%})"
+        )
 
     if "charm_diverged" in df.columns:
         charm_labeled = df["charm_diverged"].notna().sum()
@@ -113,15 +118,20 @@ def print_summary(df: pd.DataFrame) -> None:
     # Outcomes coverage
     if "settlement" in df.columns:
         outcomes = df["settlement"].notna().sum()
-        print(f"Outcomes: {outcomes}/{len(df)} days ({outcomes/len(df):.0%})")
+        print(f"Outcomes: {outcomes}/{len(df)} days ({outcomes / len(df):.0%})")
 
     # Key feature distributions
     print("\n--- Key Features ---")
     numeric_features = [
-        "vix", "vix1d", "vix1d_vix_ratio",
-        "gex_oi_t1", "gex_oi_t4",
-        "flow_agreement_t1", "flow_agreement_t4",
-        "gamma_asymmetry", "charm_slope",
+        "vix",
+        "vix1d",
+        "vix1d_vix_ratio",
+        "gex_oi_t1",
+        "gex_oi_t4",
+        "flow_agreement_t1",
+        "flow_agreement_t4",
+        "gamma_asymmetry",
+        "charm_slope",
     ]
     present = [f for f in numeric_features if f in df.columns]
     if present:
@@ -142,11 +152,23 @@ def print_summary(df: pd.DataFrame) -> None:
 
     # Correlation highlights
     if "settlement" in df.columns and "vix" in df.columns:
-        range_cols = [c for c in ["day_range_pts", "vix", "vix1d", "vix1d_vix_ratio",
-                                    "gex_oi_t1", "gamma_asymmetry"] if c in df.columns]
+        range_cols = [
+            c
+            for c in [
+                "day_range_pts",
+                "vix",
+                "vix1d",
+                "vix1d_vix_ratio",
+                "gex_oi_t1",
+                "gamma_asymmetry",
+            ]
+            if c in df.columns
+        ]
         if len(range_cols) > 1 and "day_range_pts" in df.columns:
             print("\n--- Correlations with Day Range ---")
-            corr = df[range_cols].astype(float).corrwith(df["day_range_pts"].astype(float))
+            corr = (
+                df[range_cols].astype(float).corrwith(df["day_range_pts"].astype(float))
+            )
             for col, val in corr.items():
                 if col != "day_range_pts" and pd.notna(val):
                     print(f"  {col:25s} {val:+.3f}")
@@ -158,8 +180,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Explore ML training data")
     parser.add_argument("--after", default=None, help="Only days after YYYY-MM-DD")
     parser.add_argument("--before", default=None, help="Only days before YYYY-MM-DD")
-    parser.add_argument("--min-features", type=float, default=0.0, help="Min feature completeness")
-    parser.add_argument("--min-labels", type=float, default=0.0, help="Min label completeness")
+    parser.add_argument(
+        "--min-features", type=float, default=0.0, help="Min feature completeness"
+    )
+    parser.add_argument(
+        "--min-labels", type=float, default=0.0, help="Min label completeness"
+    )
     parser.add_argument("--csv", default=None, help="Save to CSV file")
     args = parser.parse_args()
 

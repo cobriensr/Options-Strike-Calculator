@@ -16,7 +16,6 @@ import pytest
 
 from pin_analysis import compute_gamma_profile, compute_oi_pin, find_nearest_snapshot
 
-
 # ── Helpers ───────────────────────────────────────────────────
 
 
@@ -61,9 +60,7 @@ class TestComputeGammaProfile:
 
     def test_empty_dataframe_returns_empty_dict(self):
         """An empty snapshot must return {}."""
-        df = pd.DataFrame(
-            columns=["strike", "price", "call_gamma_oi", "put_gamma_oi"]
-        )
+        df = pd.DataFrame(columns=["strike", "price", "call_gamma_oi", "put_gamma_oi"])
         assert compute_gamma_profile(df) == {}
 
     def test_all_zero_gamma_returns_empty_dict(self):
@@ -650,8 +647,14 @@ class TestAnalyzeSettlementGravity:
         df = _make_strike_df(n_days=5, n_strikes=5)
         analyze_settlement_gravity(df)
         captured = capsys.readouterr()
-        for pred in ["Pos γ peak", "Neg γ peak", "Abs γ peak",
-                     "All-γ centroid", "Pos-γ centroid", "Prox-wt centroid"]:
+        for pred in [
+            "Pos γ peak",
+            "Neg γ peak",
+            "Abs γ peak",
+            "All-γ centroid",
+            "Pos-γ centroid",
+            "Prox-wt centroid",
+        ]:
             assert pred in captured.out, f"Missing predictor: {pred}"
 
     def test_prints_best_label(self, capsys):
@@ -675,16 +678,18 @@ class TestAnalyzeSettlementGravity:
         date = pd.Timestamp("2026-03-01").date()
         ts = pd.Timestamp("2026-03-01 16:00", tz="UTC")
         for strike in [5790, 5800, 5810]:
-            rows.append({
-                "date": date,
-                "timestamp": ts,
-                "strike": strike,
-                "price": 5800,
-                "call_gamma_oi": 10.0,
-                "put_gamma_oi": -5.0,
-                "settlement": 5800,
-                "day_open": 5795,
-            })
+            rows.append(
+                {
+                    "date": date,
+                    "timestamp": ts,
+                    "strike": strike,
+                    "price": 5800,
+                    "call_gamma_oi": 10.0,
+                    "put_gamma_oi": -5.0,
+                    "settlement": 5800,
+                    "day_open": 5795,
+                }
+            )
         df = pd.DataFrame(rows)
         analyze_settlement_gravity(df)
         captured = capsys.readouterr()
@@ -724,16 +729,18 @@ class TestAnalyzeTimeImprovement:
         date = pd.Timestamp("2026-03-01").date()
         ts = pd.Timestamp("2026-03-01 14:00", tz="UTC")
         for strike in [5790, 5800, 5810]:
-            rows.append({
-                "date": date,
-                "timestamp": ts,
-                "strike": strike,
-                "price": 5800,
-                "call_gamma_oi": 10.0,
-                "put_gamma_oi": -5.0,
-                "settlement": 5800,
-                "day_open": 5795,
-            })
+            rows.append(
+                {
+                    "date": date,
+                    "timestamp": ts,
+                    "strike": strike,
+                    "price": 5800,
+                    "call_gamma_oi": 10.0,
+                    "put_gamma_oi": -5.0,
+                    "settlement": 5800,
+                    "day_open": 5795,
+                }
+            )
         df = pd.DataFrame(rows)
         analyze_time_improvement(df)
         captured = capsys.readouterr()
@@ -745,16 +752,18 @@ class TestAnalyzeTimeImprovement:
         date = pd.Timestamp("2026-03-01").date()
         ts = pd.Timestamp("2026-03-01 19:30", tz="UTC")
         for strike in [5790, 5800, 5810]:
-            rows.append({
-                "date": date,
-                "timestamp": ts,
-                "strike": strike,
-                "price": 5800,
-                "call_gamma_oi": 10.0,
-                "put_gamma_oi": -5.0,
-                "settlement": 5800,
-                "day_open": 5795,
-            })
+            rows.append(
+                {
+                    "date": date,
+                    "timestamp": ts,
+                    "strike": strike,
+                    "price": 5800,
+                    "call_gamma_oi": 10.0,
+                    "put_gamma_oi": -5.0,
+                    "settlement": 5800,
+                    "day_open": 5795,
+                }
+            )
         df = pd.DataFrame(rows)
         analyze_time_improvement(df)
         captured = capsys.readouterr()
@@ -784,8 +793,7 @@ class TestAnalyzeDirectionalBias:
         analyze_directional_bias(df)
         captured = capsys.readouterr()
         # At least one of these substrings should appear
-        assert ("gamma ABOVE ATM" in captured.out
-                or "gamma BELOW ATM" in captured.out)
+        assert "gamma ABOVE ATM" in captured.out or "gamma BELOW ATM" in captured.out
 
     def test_prints_takeaway(self, capsys):
         """A TAKEAWAY should always be printed with valid data."""
@@ -800,16 +808,18 @@ class TestAnalyzeDirectionalBias:
         date = pd.Timestamp("2026-03-01").date()
         ts = pd.Timestamp("2026-03-01 14:00", tz="UTC")
         for strike in [5790, 5800, 5810]:
-            rows.append({
-                "date": date,
-                "timestamp": ts,
-                "strike": strike,
-                "price": 5800,
-                "call_gamma_oi": 10.0,
-                "put_gamma_oi": -5.0,
-                "settlement": 5800,
-                "day_open": 5795,
-            })
+            rows.append(
+                {
+                    "date": date,
+                    "timestamp": ts,
+                    "strike": strike,
+                    "price": 5800,
+                    "call_gamma_oi": 10.0,
+                    "put_gamma_oi": -5.0,
+                    "settlement": 5800,
+                    "day_open": 5795,
+                }
+            )
         df = pd.DataFrame(rows)
         analyze_directional_bias(df)
         captured = capsys.readouterr()
@@ -820,28 +830,32 @@ class TestAnalyzeDirectionalBias:
         # Build data where more_gamma_above == settled_up always
         rows = []
         for day_offset in range(10):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             # settlement > day_open => settled_up = True
             settlement = 5810.0
             day_open = 5790.0
-            ts = pd.Timestamp(f"2026-03-{1+day_offset:02d} 18:00", tz="UTC")
+            ts = pd.Timestamp(f"2026-03-{1 + day_offset:02d} 18:00", tz="UTC")
             # More positive gamma above price => more_gamma_above = True
             # Price = 5800, strikes above: 5810, 5820 (high call gamma)
             for strike, cg, pg in [
-                (5780, 1.0, -1.0), (5790, 2.0, -1.0), (5800, 3.0, -1.0),
-                (5810, 30.0, 0.0), (5820, 25.0, 0.0),
+                (5780, 1.0, -1.0),
+                (5790, 2.0, -1.0),
+                (5800, 3.0, -1.0),
+                (5810, 30.0, 0.0),
+                (5820, 25.0, 0.0),
             ]:
-                rows.append({
-                    "date": date,
-                    "timestamp": ts,
-                    "strike": strike,
-                    "price": 5800,
-                    "call_gamma_oi": cg,
-                    "put_gamma_oi": pg,
-                    "settlement": settlement,
-                    "day_open": day_open,
-                })
+                rows.append(
+                    {
+                        "date": date,
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": 5800,
+                        "call_gamma_oi": cg,
+                        "put_gamma_oi": pg,
+                        "settlement": settlement,
+                        "day_open": day_open,
+                    }
+                )
         df = pd.DataFrame(rows)
         analyze_directional_bias(df)
         captured = capsys.readouterr()
@@ -851,28 +865,32 @@ class TestAnalyzeDirectionalBias:
         """When gamma asymmetry anti-predicts direction, takeaway says so."""
         rows = []
         for day_offset in range(10):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             # settlement < day_open => settled_up = False
             settlement = 5790.0
             day_open = 5810.0
-            ts = pd.Timestamp(f"2026-03-{1+day_offset:02d} 18:00", tz="UTC")
+            ts = pd.Timestamp(f"2026-03-{1 + day_offset:02d} 18:00", tz="UTC")
             # More positive gamma above price => more_gamma_above = True
             # But settled DOWN, so anti-correlation
             for strike, cg, pg in [
-                (5780, 1.0, -1.0), (5790, 2.0, -1.0), (5800, 3.0, -1.0),
-                (5810, 30.0, 0.0), (5820, 25.0, 0.0),
+                (5780, 1.0, -1.0),
+                (5790, 2.0, -1.0),
+                (5800, 3.0, -1.0),
+                (5810, 30.0, 0.0),
+                (5820, 25.0, 0.0),
             ]:
-                rows.append({
-                    "date": date,
-                    "timestamp": ts,
-                    "strike": strike,
-                    "price": 5800,
-                    "call_gamma_oi": cg,
-                    "put_gamma_oi": pg,
-                    "settlement": settlement,
-                    "day_open": day_open,
-                })
+                rows.append(
+                    {
+                        "date": date,
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": 5800,
+                        "call_gamma_oi": cg,
+                        "put_gamma_oi": pg,
+                        "settlement": settlement,
+                        "day_open": day_open,
+                    }
+                )
         df = pd.DataFrame(rows)
         analyze_directional_bias(df)
         captured = capsys.readouterr()
@@ -891,12 +909,14 @@ def _make_max_pain_df(dates: list, strikes: list[float] | None = None):
         strikes = [5800.0] * len(dates)
     rows = []
     for date, mp in zip(dates, strikes):
-        rows.append({
-            "date": date,
-            "max_pain_0dte": mp,
-            "max_pain_dist": abs(5800 - mp),
-            "spx_open": 5795.0,
-        })
+        rows.append(
+            {
+                "date": date,
+                "max_pain_0dte": mp,
+                "max_pain_dist": abs(5800 - mp),
+                "spx_open": 5795.0,
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -905,13 +925,15 @@ def _make_oi_df(dates: list):
     rows = []
     for date in dates:
         for strike in [5780, 5790, 5800, 5810, 5820]:
-            rows.append({
-                "date": date,
-                "strike": float(strike),
-                "call_oi": 500.0,
-                "put_oi": 300.0,
-                "total_oi": 800.0,
-            })
+            rows.append(
+                {
+                    "date": date,
+                    "strike": float(strike),
+                    "call_oi": 500.0,
+                    "put_oi": 300.0,
+                    "total_oi": 800.0,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -989,16 +1011,18 @@ class TestAnalyzeAllPredictors:
         date = pd.Timestamp("2026-03-01").date()
         ts = pd.Timestamp("2026-03-01 14:00", tz="UTC")
         for strike in [5790, 5800, 5810]:
-            rows.append({
-                "date": date,
-                "timestamp": ts,
-                "strike": strike,
-                "price": 5800,
-                "call_gamma_oi": 10.0,
-                "put_gamma_oi": -5.0,
-                "settlement": 5800,
-                "day_open": 5795,
-            })
+            rows.append(
+                {
+                    "date": date,
+                    "timestamp": ts,
+                    "strike": strike,
+                    "price": 5800,
+                    "call_gamma_oi": 10.0,
+                    "put_gamma_oi": -5.0,
+                    "settlement": 5800,
+                    "day_open": 5795,
+                }
+            )
         df = pd.DataFrame(rows)
         analyze_all_predictors(df, pd.DataFrame(), pd.DataFrame())
         captured = capsys.readouterr()
@@ -1012,8 +1036,13 @@ class TestAnalyzeAllPredictors:
         oi_df = _make_oi_df(dates)
         analyze_all_predictors(df, max_pain_df, oi_df)
         captured = capsys.readouterr()
-        for pred in ["Pos γ Peak", "Abs γ Peak", "All-γ Centroid",
-                     "Pos-γ Centroid", "Prox-wt Centroid"]:
+        for pred in [
+            "Pos γ Peak",
+            "Abs γ Peak",
+            "All-γ Centroid",
+            "Pos-γ Centroid",
+            "Prox-wt Centroid",
+        ]:
             assert pred in captured.out, f"Missing predictor: {pred}"
 
 
@@ -1051,6 +1080,7 @@ class TestAnalyzePerDayDetail:
         captured = capsys.readouterr()
         # Count date lines in output (YYYY-MM-DD pattern)
         import re
+
         date_lines = re.findall(r"\d{4}-\d{2}-\d{2}", captured.out)
         # There should be at most 10 unique dates printed
         assert len(set(date_lines)) <= 10
@@ -1071,8 +1101,8 @@ class TestAnalyzePerDayDetail:
         # The dash character should appear for missing max pain values
         lines = captured.out.split("\n")
         # Check that some data lines contain the em-dash
-        data_lines = [l for l in lines if "2026-03" in l]
-        assert any("—" in l for l in data_lines)
+        data_lines = [line for line in lines if "2026-03" in line]
+        assert any("—" in line for line in data_lines)
 
 
 # ── key_findings ────────────────────────────────────────────
@@ -1152,16 +1182,18 @@ class TestKeyFindings:
         date = pd.Timestamp("2026-03-01").date()
         ts = pd.Timestamp("2026-03-01 14:00", tz="UTC")
         for strike in [5790, 5800, 5810]:
-            rows.append({
-                "date": date,
-                "timestamp": ts,
-                "strike": strike,
-                "price": 5800,
-                "call_gamma_oi": 10.0,
-                "put_gamma_oi": -5.0,
-                "settlement": 5800,
-                "day_open": 5795,
-            })
+            rows.append(
+                {
+                    "date": date,
+                    "timestamp": ts,
+                    "strike": strike,
+                    "price": 5800,
+                    "call_gamma_oi": 10.0,
+                    "put_gamma_oi": -5.0,
+                    "settlement": 5800,
+                    "day_open": 5795,
+                }
+            )
         df = pd.DataFrame(rows)
         key_findings(df, pd.DataFrame())
         captured = capsys.readouterr()
@@ -1275,12 +1307,14 @@ class TestGammaConcentration:
 
     def test_string_values_coerced(self):
         """String gamma values should be coerced via pd.to_numeric."""
-        df = pd.DataFrame({
-            "strike": [5790, 5800, 5810],
-            "price": [5800, 5800, 5800],
-            "call_gamma_oi": ["bad", "20", "10"],
-            "put_gamma_oi": ["0", "0", "0"],
-        })
+        df = pd.DataFrame(
+            {
+                "strike": [5790, 5800, 5810],
+                "price": [5800, 5800, 5800],
+                "call_gamma_oi": ["bad", "20", "10"],
+                "put_gamma_oi": ["0", "0", "0"],
+            }
+        )
         result = gamma_concentration(df)
         # "bad" becomes NaN -> 0; abs_g: [0, 20, 10], top3 = 30, total = 30
         assert result == pytest.approx(1.0)
@@ -1320,9 +1354,9 @@ class TestGammaConcentration:
 # ── DB loading functions (mocked) ───────────────────────────
 
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from pin_analysis import load_strike_data, load_oi_per_strike, load_max_pain
+from pin_analysis import load_max_pain, load_oi_per_strike, load_strike_data
 
 
 class TestLoadStrikeData:
@@ -1344,28 +1378,28 @@ class TestLoadStrikeData:
 
     @patch("pin_analysis.create_engine")
     @patch("pin_analysis.load_env")
-    def test_returns_dataframe_with_correct_columns(
-        self, mock_env, mock_engine
-    ):
+    def test_returns_dataframe_with_correct_columns(self, mock_env, mock_engine):
         """Should return a DataFrame with expected columns."""
         mock_env.return_value = {"DATABASE_URL": "postgresql://fake"}
 
         # Create a mock engine that returns a known DataFrame
-        fake_df = pd.DataFrame({
-            "date": ["2026-03-01", "2026-03-01"],
-            "timestamp": [
-                "2026-03-01 16:00:00+00:00",
-                "2026-03-01 16:00:00+00:00",
-            ],
-            "strike": [5800.0, 5810.0],
-            "price": [5800.0, 5800.0],
-            "call_gamma_oi": [10.0, 20.0],
-            "put_gamma_oi": [-5.0, -3.0],
-            "call_delta_oi": [50.0, 60.0],
-            "put_delta_oi": [-40.0, -30.0],
-            "settlement": [5805.0, 5805.0],
-            "day_open": [5795.0, 5795.0],
-        })
+        fake_df = pd.DataFrame(
+            {
+                "date": ["2026-03-01", "2026-03-01"],
+                "timestamp": [
+                    "2026-03-01 16:00:00+00:00",
+                    "2026-03-01 16:00:00+00:00",
+                ],
+                "strike": [5800.0, 5810.0],
+                "price": [5800.0, 5800.0],
+                "call_gamma_oi": [10.0, 20.0],
+                "put_gamma_oi": [-5.0, -3.0],
+                "call_delta_oi": [50.0, 60.0],
+                "put_delta_oi": [-40.0, -30.0],
+                "settlement": [5805.0, 5805.0],
+                "day_open": [5795.0, 5795.0],
+            }
+        )
 
         engine_instance = MagicMock()
         mock_engine.return_value = engine_instance
@@ -1446,12 +1480,14 @@ class TestLoadMaxPain:
         engine_instance = MagicMock()
         mock_engine.return_value = engine_instance
 
-        fake_df = pd.DataFrame({
-            "date": ["2026-03-01", "2026-03-02"],
-            "max_pain_0dte": [5800.0, 5810.0],
-            "max_pain_dist": [5.0, 3.0],
-            "spx_open": [5795.0, 5807.0],
-        })
+        fake_df = pd.DataFrame(
+            {
+                "date": ["2026-03-01", "2026-03-02"],
+                "max_pain_0dte": [5800.0, 5810.0],
+                "max_pain_dist": [5.0, 3.0],
+                "spx_open": [5795.0, 5807.0],
+            }
+        )
 
         with patch("pin_analysis.pd.read_sql_query", return_value=fake_df):
             result = load_max_pain()
@@ -1515,13 +1551,15 @@ class TestLoadOiPerStrikeSuccess:
         # First call: EXISTS check returns True
         check_df = pd.DataFrame({0: [True]})
         # Second call: actual data
-        data_df = pd.DataFrame({
-            "date": ["2026-03-01", "2026-03-01"],
-            "strike": [5800.0, 5810.0],
-            "call_oi": [500.0, 300.0],
-            "put_oi": [200.0, 400.0],
-            "total_oi": [700.0, 700.0],
-        })
+        data_df = pd.DataFrame(
+            {
+                "date": ["2026-03-01", "2026-03-01"],
+                "strike": [5800.0, 5810.0],
+                "call_oi": [500.0, 300.0],
+                "put_oi": [200.0, 400.0],
+                "total_oi": [700.0, 700.0],
+            }
+        )
 
         with patch(
             "pin_analysis.pd.read_sql_query",
@@ -1566,9 +1604,8 @@ class TestAnalyzeDirectionalBiasNonPredictive:
         # Half days: more_gamma_above AND settled_down (wrong)
         rows = []
         for day_offset in range(20):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
-            ts_str = f"2026-03-{1+day_offset:02d}" if day_offset < 9 else f"2026-03-{1+day_offset:02d}"
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
+            # date string not needed — date object used directly below
             # Alternate: correct on even days, wrong on odd days
             if day_offset % 2 == 0:
                 settlement = 5810.0  # settled up
@@ -1579,19 +1616,24 @@ class TestAnalyzeDirectionalBiasNonPredictive:
             ts = pd.Timestamp(f"{date} 18:00", tz="UTC")
             # Always more gamma above (above 5800)
             for strike, cg, pg in [
-                (5780, 1.0, -1.0), (5790, 2.0, -1.0), (5800, 3.0, -1.0),
-                (5810, 30.0, 0.0), (5820, 25.0, 0.0),
+                (5780, 1.0, -1.0),
+                (5790, 2.0, -1.0),
+                (5800, 3.0, -1.0),
+                (5810, 30.0, 0.0),
+                (5820, 25.0, 0.0),
             ]:
-                rows.append({
-                    "date": date,
-                    "timestamp": ts,
-                    "strike": strike,
-                    "price": 5800,
-                    "call_gamma_oi": cg,
-                    "put_gamma_oi": pg,
-                    "settlement": settlement,
-                    "day_open": day_open,
-                })
+                rows.append(
+                    {
+                        "date": date,
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": 5800,
+                        "call_gamma_oi": cg,
+                        "put_gamma_oi": pg,
+                        "settlement": settlement,
+                        "day_open": day_open,
+                    }
+                )
         df = pd.DataFrame(rows)
         analyze_directional_bias(df)
         captured = capsys.readouterr()
@@ -1605,21 +1647,22 @@ class TestAnalyzeSettlementGravityEmptyProfile:
         """When a snapshot exists but has zero gamma, skip that day."""
         rows = []
         for day_offset in range(3):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             for hour_min in ["16:00", "18:00", "19:00", "19:30", "20:00"]:
                 ts = pd.Timestamp(f"{date} {hour_min}", tz="UTC")
                 for strike in [5790, 5800, 5810]:
-                    rows.append({
-                        "date": date,
-                        "timestamp": ts,
-                        "strike": strike,
-                        "price": 5800,
-                        "call_gamma_oi": 0.0,
-                        "put_gamma_oi": 0.0,
-                        "settlement": 5800,
-                        "day_open": 5795,
-                    })
+                    rows.append(
+                        {
+                            "date": date,
+                            "timestamp": ts,
+                            "strike": strike,
+                            "price": 5800,
+                            "call_gamma_oi": 0.0,
+                            "put_gamma_oi": 0.0,
+                            "settlement": 5800,
+                            "day_open": 5795,
+                        }
+                    )
         df = pd.DataFrame(rows)
         analyze_settlement_gravity(df)
         captured = capsys.readouterr()
@@ -1634,21 +1677,22 @@ class TestAnalyzeTimeImprovementEmptyProfile:
         """When all snapshots have zero gamma, print no data."""
         rows = []
         for day_offset in range(3):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             for hour_min in ["16:00", "18:00", "19:00", "19:30", "20:00"]:
                 ts = pd.Timestamp(f"{date} {hour_min}", tz="UTC")
                 for strike in [5790, 5800, 5810]:
-                    rows.append({
-                        "date": date,
-                        "timestamp": ts,
-                        "strike": strike,
-                        "price": 5800,
-                        "call_gamma_oi": 0.0,
-                        "put_gamma_oi": 0.0,
-                        "settlement": 5800,
-                        "day_open": 5795,
-                    })
+                    rows.append(
+                        {
+                            "date": date,
+                            "timestamp": ts,
+                            "strike": strike,
+                            "price": 5800,
+                            "call_gamma_oi": 0.0,
+                            "put_gamma_oi": 0.0,
+                            "settlement": 5800,
+                            "day_open": 5795,
+                        }
+                    )
         df = pd.DataFrame(rows)
         analyze_time_improvement(df)
         captured = capsys.readouterr()
@@ -1662,20 +1706,21 @@ class TestAnalyzeDirectionalBiasEmptyProfile:
         """When all snapshots have zero gamma, print no data."""
         rows = []
         for day_offset in range(3):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             ts = pd.Timestamp(f"{date} 18:00", tz="UTC")
             for strike in [5790, 5800, 5810]:
-                rows.append({
-                    "date": date,
-                    "timestamp": ts,
-                    "strike": strike,
-                    "price": 5800,
-                    "call_gamma_oi": 0.0,
-                    "put_gamma_oi": 0.0,
-                    "settlement": 5800,
-                    "day_open": 5795,
-                })
+                rows.append(
+                    {
+                        "date": date,
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": 5800,
+                        "call_gamma_oi": 0.0,
+                        "put_gamma_oi": 0.0,
+                        "settlement": 5800,
+                        "day_open": 5795,
+                    }
+                )
         df = pd.DataFrame(rows)
         analyze_directional_bias(df)
         captured = capsys.readouterr()
@@ -1689,21 +1734,22 @@ class TestAnalyzeAllPredictorsEmptyProfile:
         """When all snapshots have zero gamma, print no-days message."""
         rows = []
         for day_offset in range(3):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             for hour_min in ["19:00", "19:30"]:
                 ts = pd.Timestamp(f"{date} {hour_min}", tz="UTC")
                 for strike in [5790, 5800, 5810]:
-                    rows.append({
-                        "date": date,
-                        "timestamp": ts,
-                        "strike": strike,
-                        "price": 5800,
-                        "call_gamma_oi": 0.0,
-                        "put_gamma_oi": 0.0,
-                        "settlement": 5800,
-                        "day_open": 5795,
-                    })
+                    rows.append(
+                        {
+                            "date": date,
+                            "timestamp": ts,
+                            "strike": strike,
+                            "price": 5800,
+                            "call_gamma_oi": 0.0,
+                            "put_gamma_oi": 0.0,
+                            "settlement": 5800,
+                            "day_open": 5795,
+                        }
+                    )
         df = pd.DataFrame(rows)
         analyze_all_predictors(df, pd.DataFrame(), pd.DataFrame())
         captured = capsys.readouterr()
@@ -1717,13 +1763,15 @@ class TestAnalyzeAllPredictorsEmptyProfile:
         oi_rows = []
         for date in dates:
             for strike in [5780, 5790, 5800, 5810, 5820]:
-                oi_rows.append({
-                    "date": date,
-                    "strike": float(strike),
-                    "call_oi": 0.0,
-                    "put_oi": 0.0,
-                    "total_oi": 0.0,
-                })
+                oi_rows.append(
+                    {
+                        "date": date,
+                        "strike": float(strike),
+                        "call_oi": 0.0,
+                        "put_oi": 0.0,
+                        "total_oi": 0.0,
+                    }
+                )
         oi_df = pd.DataFrame(oi_rows)
         analyze_all_predictors(df, pd.DataFrame(), oi_df)
         captured = capsys.readouterr()
@@ -1737,21 +1785,22 @@ class TestAnalyzePerDayDetailFallback:
         """When no 20:00 snapshot, should fall back to 19:30."""
         rows = []
         for day_offset in range(3):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             # Only provide 19:30 timestamp, not 20:00
             ts = pd.Timestamp(f"{date} 19:30", tz="UTC")
             for strike in [5790, 5800, 5810]:
-                rows.append({
-                    "date": date,
-                    "timestamp": ts,
-                    "strike": strike,
-                    "price": 5800,
-                    "call_gamma_oi": 10.0,
-                    "put_gamma_oi": -5.0,
-                    "settlement": 5800,
-                    "day_open": 5795,
-                })
+                rows.append(
+                    {
+                        "date": date,
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": 5800,
+                        "call_gamma_oi": 10.0,
+                        "put_gamma_oi": -5.0,
+                        "settlement": 5800,
+                        "day_open": 5795,
+                    }
+                )
         df = pd.DataFrame(rows)
         analyze_per_day_detail(df, pd.DataFrame())
         captured = capsys.readouterr()
@@ -1763,26 +1812,28 @@ class TestAnalyzePerDayDetailFallback:
         """When no snapshot near 20:00 or 19:30, skip the day."""
         rows = []
         for day_offset in range(3):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             ts = pd.Timestamp(f"{date} 14:00", tz="UTC")
             for strike in [5790, 5800, 5810]:
-                rows.append({
-                    "date": date,
-                    "timestamp": ts,
-                    "strike": strike,
-                    "price": 5800,
-                    "call_gamma_oi": 10.0,
-                    "put_gamma_oi": -5.0,
-                    "settlement": 5800,
-                    "day_open": 5795,
-                })
+                rows.append(
+                    {
+                        "date": date,
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": 5800,
+                        "call_gamma_oi": 10.0,
+                        "put_gamma_oi": -5.0,
+                        "settlement": 5800,
+                        "day_open": 5795,
+                    }
+                )
         df = pd.DataFrame(rows)
         analyze_per_day_detail(df, pd.DataFrame())
         captured = capsys.readouterr()
         assert "RECENT DAY DETAIL" in captured.out
         # No date lines in output since all days skipped
         import re
+
         date_lines = re.findall(r"2026-03-\d{2}\s+\d{4}", captured.out)
         assert len(date_lines) == 0
 
@@ -1790,20 +1841,21 @@ class TestAnalyzePerDayDetailFallback:
         """When snapshot has zero gamma, skip the day."""
         rows = []
         for day_offset in range(3):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             ts = pd.Timestamp(f"{date} 20:00", tz="UTC")
             for strike in [5790, 5800, 5810]:
-                rows.append({
-                    "date": date,
-                    "timestamp": ts,
-                    "strike": strike,
-                    "price": 5800,
-                    "call_gamma_oi": 0.0,
-                    "put_gamma_oi": 0.0,
-                    "settlement": 5800,
-                    "day_open": 5795,
-                })
+                rows.append(
+                    {
+                        "date": date,
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": 5800,
+                        "call_gamma_oi": 0.0,
+                        "put_gamma_oi": 0.0,
+                        "settlement": 5800,
+                        "day_open": 5795,
+                    }
+                )
         df = pd.DataFrame(rows)
         analyze_per_day_detail(df, pd.DataFrame())
         captured = capsys.readouterr()
@@ -1817,20 +1869,21 @@ class TestKeyFindingsEmptyProfile:
         """When all snapshots have zero gamma at T-30min."""
         rows = []
         for day_offset in range(3):
-            date = (pd.Timestamp("2026-03-01")
-                    + pd.Timedelta(days=day_offset)).date()
+            date = (pd.Timestamp("2026-03-01") + pd.Timedelta(days=day_offset)).date()
             ts = pd.Timestamp(f"{date} 19:30", tz="UTC")
             for strike in [5790, 5800, 5810]:
-                rows.append({
-                    "date": date,
-                    "timestamp": ts,
-                    "strike": strike,
-                    "price": 5800,
-                    "call_gamma_oi": 0.0,
-                    "put_gamma_oi": 0.0,
-                    "settlement": 5800,
-                    "day_open": 5795,
-                })
+                rows.append(
+                    {
+                        "date": date,
+                        "timestamp": ts,
+                        "strike": strike,
+                        "price": 5800,
+                        "call_gamma_oi": 0.0,
+                        "put_gamma_oi": 0.0,
+                        "settlement": 5800,
+                        "day_open": 5795,
+                    }
+                )
         df = pd.DataFrame(rows)
         key_findings(df, pd.DataFrame())
         captured = capsys.readouterr()

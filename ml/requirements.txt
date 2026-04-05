@@ -31,3 +31,4 @@ threadpoolctl==3.6.0
 urllib3==2.6.3
 xgboost>=2.1
 pytest-cov>=6.0
+ruff>=0.11

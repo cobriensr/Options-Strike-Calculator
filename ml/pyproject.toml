@@ -1,3 +1,26 @@
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes (undefined names, unused imports)
+    "I",    # isort (import sorting)
+    "UP",   # pyupgrade (modernize syntax to 3.13)
+    "B",    # flake8-bugbear (common bug patterns)
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+    "E402",  # import order — tests import after conftest path setup; utils after warnings
+    "E712",  # == True/False — correct idiom for pandas boolean Series masking
+    "B905",  # zip() strict= — noisy for matplotlib/numpy zips of known-equal length
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

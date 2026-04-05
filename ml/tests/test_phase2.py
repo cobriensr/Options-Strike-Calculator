@@ -28,7 +28,6 @@ from phase2_early import (
     walk_forward,
 )
 
-
 # ── Fixtures ────────────────────────────────────────────────────
 
 
@@ -58,14 +57,10 @@ def sample_df(numeric_feature_subset: list[str]) -> pd.DataFrame:
         data[feat] = rng.standard_normal(n)
 
     # Categorical columns
-    data["charm_pattern"] = rng.choice(
-        ["pos_dom", "neg_dom", "mixed"], size=n
-    )
+    data["charm_pattern"] = rng.choice(["pos_dom", "neg_dom", "mixed"], size=n)
     data["regime_zone"] = rng.choice(["call", "put", "neutral"], size=n)
     data["prev_day_direction"] = rng.choice(["up", "down", "flat"], size=n)
-    data["prev_day_range_cat"] = rng.choice(
-        ["narrow", "average", "wide"], size=n
-    )
+    data["prev_day_range_cat"] = rng.choice(["narrow", "average", "wide"], size=n)
 
     # Target
     structures = list(STRUCTURE_MAP.keys())
@@ -103,23 +98,30 @@ def _tree_factory():
 
 def _make_tree_factory(numeric_cols: list[str], categorical_cols: list[str]):
     """Create a model factory that handles both numeric and categorical columns."""
+
     def factory():
         if categorical_cols:
             preprocessor = ColumnTransformer(
                 [
-                    ('num', SimpleImputer(strategy='median'), numeric_cols),
-                    ('cat', OneHotEncoder(
-                        handle_unknown='ignore', sparse_output=False,
-                    ), categorical_cols),
+                    ("num", SimpleImputer(strategy="median"), numeric_cols),
+                    (
+                        "cat",
+                        OneHotEncoder(
+                            handle_unknown="ignore",
+                            sparse_output=False,
+                        ),
+                        categorical_cols,
+                    ),
                 ],
-                remainder='drop',
+                remainder="drop",
             )
         else:
-            preprocessor = SimpleImputer(strategy='median')
+            preprocessor = SimpleImputer(strategy="median")
         return make_pipeline(
             preprocessor,
             DecisionTreeClassifier(max_depth=2, random_state=42),
         )
+
     return factory
 
 
@@ -206,8 +208,7 @@ class TestPrepareFeatures:
         for col in categorical_cols:
             assert col in X.columns, f"Missing categorical column: {col}"
             assert not pd.api.types.is_numeric_dtype(X[col]), (
-                f"Column {col} should be string dtype, "
-                f"got {X[col].dtype}"
+                f"Column {col} should be string dtype, got {X[col].dtype}"
             )
 
     def test_output_row_count_matches_input(
@@ -234,13 +235,13 @@ class TestPrepareFeatures:
         """Numeric columns must have numeric dtype; categoricals must be strings."""
         X, numeric_cols, categorical_cols = prepared_features
         for col in numeric_cols:
-            assert pd.api.types.is_numeric_dtype(
-                X[col]
-            ), f"Numeric column {col} is not numeric"
+            assert pd.api.types.is_numeric_dtype(X[col]), (
+                f"Numeric column {col} is not numeric"
+            )
         for col in categorical_cols:
-            assert not pd.api.types.is_numeric_dtype(
-                X[col]
-            ), f"Categorical column {col} should not be numeric"
+            assert not pd.api.types.is_numeric_dtype(X[col]), (
+                f"Categorical column {col} should not be numeric"
+            )
 
     def test_missing_numeric_features_are_silently_skipped(self):
         """
@@ -329,9 +330,7 @@ class TestEncodeTarget:
         result = encode_target(sample_df)
         assert len(result) == len(sample_df)
 
-    def test_values_in_expected_set(
-        self, encoded_target: pd.Series
-    ):
+    def test_values_in_expected_set(self, encoded_target: pd.Series):
         """All encoded values must be in {0, 1, 2}."""
         unique_vals = set(encoded_target.dropna().unique())
         assert unique_vals.issubset({0, 1, 2})
@@ -370,9 +369,7 @@ class TestWalkForward:
         X, numeric_cols, categorical_cols = prepared_features
         factory = _make_tree_factory(numeric_cols, categorical_cols)
         min_train = 20
-        result = walk_forward(
-            X, encoded_target, factory, min_train=min_train
-        )
+        result = walk_forward(X, encoded_target, factory, min_train=min_train)
         assert result["n_folds"] == len(X) - min_train
 
     def test_predictions_length(
@@ -470,9 +467,7 @@ class TestWalkForward:
         X, numeric_cols, categorical_cols = prepared_features
         factory = _make_tree_factory(numeric_cols, categorical_cols)
         min_train = 20
-        result = walk_forward(
-            X, encoded_target, factory, min_train=min_train
-        )
+        result = walk_forward(X, encoded_target, factory, min_train=min_train)
         expected_indices = X.index[min_train:].tolist()
         assert result["indices"] == expected_indices
 
@@ -494,16 +489,12 @@ class TestComputeMetrics:
         factory = _make_tree_factory(numeric_cols, categorical_cols)
         return walk_forward(X, encoded_target, factory, min_train=20)
 
-    def test_returns_dict(
-        self, wf_result: dict, encoded_target: pd.Series
-    ):
+    def test_returns_dict(self, wf_result: dict, encoded_target: pd.Series):
         """compute_metrics must return a dict."""
         metrics = compute_metrics(wf_result, encoded_target)
         assert isinstance(metrics, dict)
 
-    def test_has_expected_keys(
-        self, wf_result: dict, encoded_target: pd.Series
-    ):
+    def test_has_expected_keys(self, wf_result: dict, encoded_target: pd.Series):
         """Result dict must contain all expected metric keys."""
         metrics = compute_metrics(wf_result, encoded_target)
         expected_keys = {
@@ -538,9 +529,7 @@ class TestComputeMetrics:
         metrics = compute_metrics(wf_result, encoded_target)
         assert 0.0 <= metrics["prev_day_baseline"] <= 1.0
 
-    def test_log_loss_is_non_negative(
-        self, wf_result: dict, encoded_target: pd.Series
-    ):
+    def test_log_loss_is_non_negative(self, wf_result: dict, encoded_target: pd.Series):
         """Log loss must be >= 0 (or NaN)."""
         metrics = compute_metrics(wf_result, encoded_target)
         ll = metrics["log_loss"]
@@ -635,9 +624,7 @@ class TestBuildModelConfigs:
         }
         assert set(configs.keys()) == expected_names
 
-    def test_sklearn_models_have_fit_predict_predict_proba(
-        self, configs: dict
-    ):
+    def test_sklearn_models_have_fit_predict_predict_proba(self, configs: dict):
         """
         Each non-XGBoost factory must produce an object with
         fit, predict, and predict_proba methods.
@@ -652,13 +639,9 @@ class TestBuildModelConfigs:
             model = configs[name]()
             assert hasattr(model, "fit"), f"{name} missing fit()"
             assert hasattr(model, "predict"), f"{name} missing predict()"
-            assert hasattr(
-                model, "predict_proba"
-            ), f"{name} missing predict_proba()"
+            assert hasattr(model, "predict_proba"), f"{name} missing predict_proba()"
 
-    def test_xgboost_factory_returns_model_with_fit_predict(
-        self, configs: dict
-    ):
+    def test_xgboost_factory_returns_model_with_fit_predict(self, configs: dict):
         """XGBoost factory must produce a model with fit, predict, predict_proba."""
         model = configs["XGBoost"]()
         assert hasattr(model, "fit")
@@ -748,13 +731,15 @@ class TestEdgeCases:
         """
         actuals = np.array([0, 0, 0, 0, 0])
         preds = np.array([0, 0, 1, 0, 0])
-        probs = np.array([
-            [0.9, 0.05, 0.05],
-            [0.8, 0.1, 0.1],
-            [0.3, 0.5, 0.2],
-            [0.7, 0.2, 0.1],
-            [0.85, 0.1, 0.05],
-        ])
+        probs = np.array(
+            [
+                [0.9, 0.05, 0.05],
+                [0.8, 0.1, 0.1],
+                [0.3, 0.5, 0.2],
+                [0.7, 0.2, 0.1],
+                [0.85, 0.1, 0.05],
+            ]
+        )
         results = {
             "predictions": preds,
             "probabilities": probs,
@@ -772,8 +757,8 @@ class TestEdgeCases:
 
 
 from phase2_early import (
-    print_model_comparison,
     print_feature_importance,
+    print_model_comparison,
     save_experiment,
     train_final_model,
 )
@@ -886,8 +871,12 @@ class TestAggregateFoldImportances:
             "verbosity": 0,
         }
         result = aggregate_fold_importances(
-            X, y, params, numeric_cols=numeric_cols,
-            categorical_cols=[], min_train=20,
+            X,
+            y,
+            params,
+            numeric_cols=numeric_cols,
+            categorical_cols=[],
+            min_train=20,
         )
         assert isinstance(result, pd.Series)
         assert len(result) > 0
@@ -911,8 +900,12 @@ class TestAggregateFoldImportances:
             "verbosity": 0,
         }
         result = aggregate_fold_importances(
-            X, y, params, numeric_cols=numeric_cols,
-            categorical_cols=[], min_train=20,
+            X,
+            y,
+            params,
+            numeric_cols=numeric_cols,
+            categorical_cols=[],
+            min_train=20,
         )
         values = result.values
         for i in range(len(values) - 1):
@@ -939,8 +932,12 @@ class TestAggregateFoldImportances:
             "verbosity": 0,
         }
         result = aggregate_fold_importances(
-            X, y, params, numeric_cols=numeric_cols,
-            categorical_cols=categorical_cols, min_train=20,
+            X,
+            y,
+            params,
+            numeric_cols=numeric_cols,
+            categorical_cols=categorical_cols,
+            min_train=20,
         )
         assert isinstance(result, pd.Series)
         assert len(result) > 0
@@ -958,9 +955,7 @@ class TestPrintFeatureImportance:
         names = [f"feature_{i}" for i in range(20)]
         values = rng.random(20)
         values = values / values.sum()
-        importances = pd.Series(values, index=names).sort_values(
-            ascending=False
-        )
+        importances = pd.Series(values, index=names).sort_values(ascending=False)
 
         print_feature_importance(importances, top_n=15)
         captured = capsys.readouterr()
@@ -998,13 +993,9 @@ class TestSaveExperiment:
             rng.standard_normal((n, len(feature_names))),
             columns=feature_names,
         )
-        df.index = pd.date_range(
-            "2025-01-01", periods=n, freq="B", name="date"
-        )
+        df.index = pd.date_range("2025-01-01", periods=n, freq="B", name="date")
         y = pd.Series(rng.choice([0, 1, 2], size=n))
-        importances = pd.Series(
-            [0.5, 0.3, 0.2], index=feature_names
-        )
+        importances = pd.Series([0.5, 0.3, 0.2], index=feature_names)
         metrics = {
             "accuracy": 0.55,
             "log_loss": 0.9,
@@ -1052,9 +1043,7 @@ class TestSaveExperiment:
         assert "model_comparison" in data
         assert "best_model" in data
 
-    def test_save_experiment_without_model_comparison(
-        self, tmp_path, monkeypatch
-    ):
+    def test_save_experiment_without_model_comparison(self, tmp_path, monkeypatch):
         """When all_model_metrics is None, model_comparison and best_model are absent."""
         import phase2_early
 
@@ -1071,9 +1060,7 @@ class TestSaveExperiment:
             rng.standard_normal((n, len(feature_names))),
             columns=feature_names,
         )
-        df.index = pd.date_range(
-            "2025-03-01", periods=n, freq="B", name="date"
-        )
+        df.index = pd.date_range("2025-03-01", periods=n, freq="B", name="date")
         y = pd.Series(rng.choice([0, 1, 2], size=n))
         importances = pd.Series([0.6, 0.4], index=feature_names)
         metrics = {
@@ -1120,9 +1107,7 @@ class TestSaveExperiment:
         assert "notes" in data
         assert data["notes"].startswith("Walk-forward")
 
-    def test_save_experiment_class_distribution_uses_names(
-        self, tmp_path, monkeypatch
-    ):
+    def test_save_experiment_class_distribution_uses_names(self, tmp_path, monkeypatch):
         """class_distribution keys must be human-readable structure names."""
         import phase2_early
 
@@ -1136,9 +1121,7 @@ class TestSaveExperiment:
         n = 12
         feature_names = ["f1"]
         df = pd.DataFrame({"f1": rng.standard_normal(n)})
-        df.index = pd.date_range(
-            "2025-06-01", periods=n, freq="B", name="date"
-        )
+        df.index = pd.date_range("2025-06-01", periods=n, freq="B", name="date")
         # 6 zeros (CCS), 4 ones (PCS), 2 twos (IC)
         y = pd.Series([0] * 6 + [1] * 4 + [2] * 2)
         importances = pd.Series([1.0], index=feature_names)
@@ -1183,10 +1166,12 @@ class TestWalkForwardProbabilityPadding:
         n = 35
 
         # Build features
-        X = pd.DataFrame({
-            "feat_a": rng.standard_normal(n),
-            "feat_b": rng.standard_normal(n),
-        })
+        X = pd.DataFrame(
+            {
+                "feat_a": rng.standard_normal(n),
+                "feat_b": rng.standard_normal(n),
+            }
+        )
 
         # Classes 0 and 1 in the first 25 rows, class 2 only from row 25+
         y_vals = rng.choice([0, 1], size=25).tolist() + [2] * 10
@@ -1215,10 +1200,12 @@ class TestWalkForwardProbabilityPadding:
         rng = np.random.default_rng(77)
         n = 25
 
-        X = pd.DataFrame({
-            "feat_a": rng.standard_normal(n),
-            "feat_b": rng.standard_normal(n),
-        })
+        X = pd.DataFrame(
+            {
+                "feat_a": rng.standard_normal(n),
+                "feat_b": rng.standard_normal(n),
+            }
+        )
 
         # First 15 rows: class 0 only. Then classes 1 and 2 appear.
         y_vals = [0] * 15 + [1] * 5 + [2] * 5
@@ -1249,13 +1236,15 @@ class TestComputeMetricsPrevDayAndLogLoss:
         # prev_day_preds: [majority=0, 0, 0, 1, 1]  (rolled + first=majority)
         # matches: [0==0, 0==0, 0==1, 1==1, 1==2] = [T, T, F, T, F] = 3/5 = 0.6
         actuals = np.array([0, 0, 1, 1, 2])
-        probs = np.array([
-            [0.8, 0.1, 0.1],
-            [0.7, 0.2, 0.1],
-            [0.2, 0.6, 0.2],
-            [0.1, 0.7, 0.2],
-            [0.1, 0.2, 0.7],
-        ])
+        probs = np.array(
+            [
+                [0.8, 0.1, 0.1],
+                [0.7, 0.2, 0.1],
+                [0.2, 0.6, 0.2],
+                [0.1, 0.7, 0.2],
+                [0.1, 0.2, 0.7],
+            ]
+        )
         results = {
             "predictions": actuals.copy(),
             "probabilities": probs,
@@ -1282,11 +1271,13 @@ class TestComputeMetricsPrevDayAndLogLoss:
         monkeypatch.setattr(phase2_early, "log_loss", _raise_value_error)
 
         actuals = np.array([0, 1, 2])
-        probs = np.array([
-            [0.8, 0.1, 0.1],
-            [0.1, 0.8, 0.1],
-            [0.1, 0.1, 0.8],
-        ])
+        probs = np.array(
+            [
+                [0.8, 0.1, 0.1],
+                [0.1, 0.8, 0.1],
+                [0.1, 0.1, 0.8],
+            ]
+        )
         results = {
             "predictions": actuals.copy(),
             "probabilities": probs,
@@ -1392,9 +1383,7 @@ class TestPrintFeatureImportanceExtended:
         """When top_n=3 and there are 10 features, only 3 appear."""
         names = [f"feat_{i}" for i in range(10)]
         values = list(range(10, 0, -1))
-        importances = pd.Series(
-            [v / sum(values) for v in values], index=names
-        )
+        importances = pd.Series([v / sum(values) for v in values], index=names)
 
         print_feature_importance(importances, top_n=3)
         captured = capsys.readouterr()
@@ -1417,9 +1406,7 @@ class TestPrintFeatureImportanceExtended:
 
     def test_output_contains_hash_bars(self, capsys):
         """Each feature line must contain '#' chars as a visual bar."""
-        importances = pd.Series(
-            [0.5, 0.3, 0.2], index=["big", "mid", "small"]
-        )
+        importances = pd.Series([0.5, 0.3, 0.2], index=["big", "mid", "small"])
 
         print_feature_importance(importances, top_n=3)
         captured = capsys.readouterr()
@@ -1466,9 +1453,7 @@ def _build_mock_df(n: int = 40) -> pd.DataFrame:
     return df
 
 
-def _mock_train_final_model(
-    X, y, params, numeric_cols=None, categorical_cols=None
-):
+def _mock_train_final_model(X, y, params, numeric_cols=None, categorical_cols=None):
     """Return a fake model and importances without requiring XGBoost."""
     num_cols = numeric_cols or [
         c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])
@@ -1482,9 +1467,7 @@ def _mock_train_final_model(
                 ("num", SimpleImputer(strategy="median"), num_cols),
                 (
                     "cat",
-                    OneHotEncoder(
-                        handle_unknown="ignore", sparse_output=False
-                    ),
+                    OneHotEncoder(handle_unknown="ignore", sparse_output=False),
                     cat_cols,
                 ),
             ],
@@ -1504,9 +1487,7 @@ def _mock_train_final_model(
     return model, importances
 
 
-def _mock_build_model_configs(
-    n_classes, xgb_params, numeric_cols, categorical_cols
-):
+def _mock_build_model_configs(n_classes, xgb_params, numeric_cols, categorical_cols):
     """Return only lightweight sklearn models (no XGBoost)."""
     factory = _make_tree_factory(numeric_cols, categorical_cols)
     return {
@@ -1531,12 +1512,8 @@ class TestMain:
         """Common monkeypatch setup for main() tests."""
         import phase2_early
 
-        monkeypatch.setattr(
-            phase2_early, "load_phase2_data", lambda: mock_df
-        )
-        monkeypatch.setattr(
-            phase2_early, "train_final_model", _mock_train_final_model
-        )
+        monkeypatch.setattr(phase2_early, "load_phase2_data", lambda: mock_df)
+        monkeypatch.setattr(phase2_early, "train_final_model", _mock_train_final_model)
         monkeypatch.setattr(
             phase2_early, "build_model_configs", _mock_build_model_configs
         )
@@ -1559,9 +1536,7 @@ class TestMain:
         # No --shap flag
         monkeypatch.setattr("sys.argv", ["phase2_early.py"])
 
-    def test_main_runs_to_completion(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_main_runs_to_completion(self, monkeypatch, capsys, tmp_path):
         """main() must run without error when given valid data."""
         mock_df = _build_mock_df(40)
         self._setup_mocks(monkeypatch, mock_df, tmp_path)
@@ -1589,15 +1564,11 @@ class TestMain:
             "structure_correct": [True] * 10 + [np.nan] * 5,
         }
         mock_df = pd.DataFrame(data)
-        mock_df.index = pd.date_range(
-            "2025-01-01", periods=n, freq="B", name="date"
-        )
+        mock_df.index = pd.date_range("2025-01-01", periods=n, freq="B", name="date")
 
         import phase2_early
 
-        monkeypatch.setattr(
-            phase2_early, "load_phase2_data", lambda: mock_df
-        )
+        monkeypatch.setattr(phase2_early, "load_phase2_data", lambda: mock_df)
         monkeypatch.setattr("sys.argv", ["phase2_early.py"])
 
         with pytest.raises(SystemExit) as exc_info:
@@ -1607,9 +1578,7 @@ class TestMain:
         captured = capsys.readouterr()
         assert "need at least 25" in captured.out
 
-    def test_main_verdict_not_yet_branch(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_main_verdict_not_yet_branch(self, monkeypatch, capsys, tmp_path):
         """
         When the best model accuracy <= majority baseline,
         main() must print the 'NOT YET' verdict.
@@ -1628,18 +1597,14 @@ class TestMain:
             m["accuracy"] = m["majority_baseline"] - 0.01
             return m
 
-        monkeypatch.setattr(
-            phase2_early, "compute_metrics", _force_low_accuracy
-        )
+        monkeypatch.setattr(phase2_early, "compute_metrics", _force_low_accuracy)
 
         main()
 
         captured = capsys.readouterr()
         assert "NOT YET" in captured.out
 
-    def test_main_verdict_marginal_branch(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_main_verdict_marginal_branch(self, monkeypatch, capsys, tmp_path):
         """
         When best accuracy > majority but <= majority + 0.05,
         main() must print the 'MARGINAL' verdict.
@@ -1656,18 +1621,14 @@ class TestMain:
             m["accuracy"] = m["majority_baseline"] + 0.03
             return m
 
-        monkeypatch.setattr(
-            phase2_early, "compute_metrics", _force_marginal_accuracy
-        )
+        monkeypatch.setattr(phase2_early, "compute_metrics", _force_marginal_accuracy)
 
         main()
 
         captured = capsys.readouterr()
         assert "MARGINAL" in captured.out
 
-    def test_main_verdict_promising_xgb_leads(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_main_verdict_promising_xgb_leads(self, monkeypatch, capsys, tmp_path):
         """
         When best model is XGBoost with accuracy > majority + 0.05,
         main() must print 'PROMISING' and 'XGBoost leads the pack'.
@@ -1684,9 +1645,7 @@ class TestMain:
             m["accuracy"] = m["majority_baseline"] + 0.10
             return m
 
-        monkeypatch.setattr(
-            phase2_early, "compute_metrics", _force_promising_xgb
-        )
+        monkeypatch.setattr(phase2_early, "compute_metrics", _force_promising_xgb)
 
         # Override print_model_comparison to return "XGBoost"
         monkeypatch.setattr(
@@ -1701,9 +1660,7 @@ class TestMain:
         assert "PROMISING" in captured.out
         assert "XGBoost leads the pack" in captured.out
 
-    def test_main_verdict_promising_non_xgb_leads(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_main_verdict_promising_non_xgb_leads(self, monkeypatch, capsys, tmp_path):
         """
         When best model is NOT XGBoost with accuracy > majority + 0.05,
         main() must print 'PROMISING' and note the simpler model wins.
@@ -1720,9 +1677,7 @@ class TestMain:
             m["accuracy"] = m["majority_baseline"] + 0.10
             return m
 
-        monkeypatch.setattr(
-            phase2_early, "compute_metrics", _force_promising
-        )
+        monkeypatch.setattr(phase2_early, "compute_metrics", _force_promising)
 
         # Override print_model_comparison to return a non-XGBoost model
         monkeypatch.setattr(
@@ -1737,9 +1692,7 @@ class TestMain:
         assert "PROMISING" in captured.out
         assert "outperforms XGBoost" in captured.out
 
-    def test_main_with_fully_null_columns(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_main_with_fully_null_columns(self, monkeypatch, capsys, tmp_path):
         """main() must drop fully-null columns and continue."""
         mock_df = _build_mock_df(40)
         # Add a fully-null column using a name from ALL_NUMERIC_FEATURES
@@ -1753,9 +1706,7 @@ class TestMain:
         assert "Dropping" in captured.out
         assert "fully-null" in captured.out
 
-    def test_main_with_feature_completeness_column(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_main_with_feature_completeness_column(self, monkeypatch, capsys, tmp_path):
         """When feature_completeness column exists, it filters rows below 0.80."""
         mock_df = _build_mock_df(50)
         # Add feature_completeness: first 5 rows below threshold

@@ -9,8 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from utils import validate_dataframe, section, subsection, verdict, takeaway
-
+from utils import section, subsection, takeaway, validate_dataframe, verdict
 
 # ── validate_dataframe tests ────────────────────────────────
 
@@ -124,11 +123,10 @@ def test_takeaway_prints(capsys):
 
 # Import after utils to ensure path resolution works
 from clustering import (
+    ALL_NUMERIC_FEATURES,
+    CHARM_PATTERN_COL,
     preprocess,
     run_clustering,
-    ALL_NUMERIC_FEATURES,
-    CATEGORICAL_FEATURES,
-    CHARM_PATTERN_COL,
 )
 
 
@@ -143,7 +141,13 @@ def _make_clustering_df(n: int = 30) -> pd.DataFrame:
         data[feat] = rng.standard_normal(n)
 
     # Add charm_pattern categorical
-    patterns = ["all_negative", "all_positive", "mixed", "pcs_confirming", "ccs_confirming"]
+    patterns = [
+        "all_negative",
+        "all_positive",
+        "mixed",
+        "pcs_confirming",
+        "ccs_confirming",
+    ]
     data[CHARM_PATTERN_COL] = rng.choice(patterns, n)
 
     # Add regime_zone categorical
@@ -216,7 +220,7 @@ def test_run_clustering_metrics_are_numeric():
     X = rng.standard_normal((30, 5))
     results = run_clustering(X, range(2, 4))
 
-    for k, row in results.items():
+    for _k, row in results.items():
         assert np.isfinite(row["kmeans_sil"])
         assert np.isfinite(row["kmeans_ch"])
         assert np.isfinite(row["kmeans_db"])
@@ -228,11 +232,11 @@ def test_run_clustering_metrics_are_numeric():
 # ── Additional clustering function tests ──────────────────────
 
 from clustering import (
-    print_results,
     characterize_clusters,
-    stability_check,
-    permutation_test,
     outcome_association_test,
+    permutation_test,
+    print_results,
+    stability_check,
 )
 
 
@@ -304,9 +308,7 @@ def test_characterize_clusters_prints_profiles(capsys):
             "vix1d_vix_ratio": rng.uniform(0.8, 1.2, n),
             "gex_oi_t1": rng.uniform(-50e9, 50e9, n),
             "flow_agreement_t1": rng.uniform(-1, 1, n),
-            "charm_pattern": rng.choice(
-                ["all_negative", "all_positive", "mixed"], n
-            ),
+            "charm_pattern": rng.choice(["all_negative", "all_positive", "mixed"], n),
             "day_of_week": [d.weekday() for d in dates],
             "range_category": rng.choice(["narrow", "normal", "wide"], n),
             "recommended_structure": rng.choice(["IC", "PCS", "CCS"], n),
@@ -366,9 +368,7 @@ def test_outcome_association_prints(capsys):
     labels = np.array([0] * 10 + [1] * 10 + [2] * 10)
     df = pd.DataFrame(
         {
-            "range_category": rng.choice(
-                ["narrow", "normal", "wide"], n
-            ),
+            "range_category": rng.choice(["narrow", "normal", "wide"], n),
             "settlement_direction": rng.choice(["up", "down", "flat"], n),
             "recommended_structure": rng.choice(["IC", "PCS", "CCS"], n),
             "structure_correct": rng.choice([0, 1], n).astype(float),

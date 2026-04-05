@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-
 # ── Helpers ───────────────────────────────────────────────────
 
 
@@ -23,9 +22,7 @@ def _make_explore_df(n: int = 10) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "feature_completeness": rng.uniform(0.7, 1.0, n),
-            "settlement": rng.choice(
-                [5700.0, 5720.0, 5750.0, np.nan], n
-            ),
+            "settlement": rng.choice([5700.0, 5720.0, 5750.0, np.nan], n),
             "day_range_pts": rng.uniform(15, 80, n),
             "vix": rng.uniform(14, 28, n),
             "vix1d": rng.uniform(12, 30, n),
@@ -74,12 +71,8 @@ class TestPrintSummary:
         df["recommended_structure"] = rng.choice(
             ["PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "IRON CONDOR"], 10
         )
-        df["charm_pattern"] = rng.choice(
-            ["all_negative", "all_positive", "mixed"], 10
-        )
-        df["range_category"] = rng.choice(
-            ["NARROW", "NORMAL", "WIDE", "EXTREME"], 10
-        )
+        df["charm_pattern"] = rng.choice(["all_negative", "all_positive", "mixed"], 10)
+        df["range_category"] = rng.choice(["NARROW", "NORMAL", "WIDE", "EXTREME"], 10)
 
         print_summary(df)
 
@@ -191,9 +184,7 @@ class TestFetchData:
         from explore import fetch_data
 
         dates = pd.to_datetime(["2026-03-10"])
-        mock_df = pd.DataFrame(
-            {"date": dates, "feature_completeness": [1.0]}
-        )
+        mock_df = pd.DataFrame({"date": dates, "feature_completeness": [1.0]})
         mock_conn = MagicMock()
         mock_connect.return_value = mock_conn
 
@@ -237,9 +228,7 @@ class TestFetchData:
         from explore import fetch_data
 
         dates = pd.to_datetime(["2026-03-10"])
-        mock_df = pd.DataFrame(
-            {"date": dates, "feature_completeness": [1.0]}
-        )
+        mock_df = pd.DataFrame({"date": dates, "feature_completeness": [1.0]})
         mock_conn = MagicMock()
         mock_connect.return_value = mock_conn
 

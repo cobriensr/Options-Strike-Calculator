@@ -15,25 +15,25 @@ Optional: pip install shap (for SHAP feature importance plots)
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 try:
     import numpy as np
     import pandas as pd
+    from sklearn.compose import ColumnTransformer
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import (
         accuracy_score,
         f1_score,
         log_loss,
     )
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.ensemble import RandomForestClassifier
     from sklearn.naive_bayes import GaussianNB
-    from sklearn.tree import DecisionTreeClassifier
     from sklearn.pipeline import make_pipeline
-    from sklearn.impute import SimpleImputer
-    from sklearn.preprocessing import StandardScaler, OneHotEncoder
-    from sklearn.compose import ColumnTransformer
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+    from sklearn.tree import DecisionTreeClassifier
 except ImportError:
     print("Missing dependencies. Run:")
     print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn xgboost")
@@ -47,25 +47,24 @@ except ImportError:
     sys.exit(1)
 
 from utils import (
-    ML_ROOT,
-    load_data,
-    validate_dataframe,
-    section,
-    subsection,
-    verdict,
-    takeaway,
-    save_section_findings,
-    VOLATILITY_FEATURES,
+    DARK_POOL_FEATURES,
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
-    DARK_POOL_FEATURES,
-    OPTIONS_VOLUME_FEATURES,
     IV_PCR_FEATURES,
     MAX_PAIN_FEATURES,
+    ML_ROOT,
     OI_CHANGE_FEATURES,
+    OPTIONS_VOLUME_FEATURES,
     VOL_SURFACE_FEATURES,
+    VOLATILITY_FEATURES,
+    load_data,
+    save_section_findings,
+    section,
+    subsection,
+    takeaway,
+    validate_dataframe,
+    verdict,
 )
-
 
 # ── Feature Groups ───────────────────────────────────────────
 
@@ -74,45 +73,69 @@ from utils import (
 GREEK_FEATURES = GREEK_FEATURES_CORE
 
 FLOW_FEATURES_T1T2 = [
-    "mt_ncp_t1", "mt_npp_t1",
-    "spx_ncp_t1", "spy_ncp_t1", "qqq_ncp_t1",
-    "spy_etf_ncp_t1", "qqq_etf_ncp_t1",
+    "mt_ncp_t1",
+    "mt_npp_t1",
+    "spx_ncp_t1",
+    "spy_ncp_t1",
+    "qqq_ncp_t1",
+    "spy_etf_ncp_t1",
+    "qqq_etf_ncp_t1",
     "zero_dte_ncp_t1",
-    "delta_flow_total_t1", "delta_flow_dir_t1",
+    "delta_flow_total_t1",
+    "delta_flow_dir_t1",
     # T2 variants
-    "mt_ncp_t2", "mt_npp_t2",
-    "spx_ncp_t2", "spy_ncp_t2", "qqq_ncp_t2",
-    "spy_etf_ncp_t2", "qqq_etf_ncp_t2",
+    "mt_ncp_t2",
+    "mt_npp_t2",
+    "spx_ncp_t2",
+    "spy_ncp_t2",
+    "qqq_ncp_t2",
+    "spy_etf_ncp_t2",
+    "qqq_etf_ncp_t2",
     "zero_dte_ncp_t2",
-    "delta_flow_total_t2", "delta_flow_dir_t2",
+    "delta_flow_total_t2",
+    "delta_flow_dir_t2",
 ]
 
 FLOW_AGGREGATE = [
-    "flow_agreement_t1", "flow_agreement_t2",
+    "flow_agreement_t1",
+    "flow_agreement_t2",
     "etf_tide_divergence_t1",
     "ncp_npp_gap_spx_t1",
 ]
 
 PER_STRIKE_FEATURES = [
-    "gamma_wall_above_dist", "gamma_wall_below_dist",
-    "neg_gamma_nearest_dist", "gamma_asymmetry",
-    "charm_max_pos_dist", "charm_max_neg_dist",
+    "gamma_wall_above_dist",
+    "gamma_wall_below_dist",
+    "neg_gamma_nearest_dist",
+    "gamma_asymmetry",
+    "charm_max_pos_dist",
+    "charm_max_neg_dist",
 ]
 
 CALCULATOR_FEATURES = [
-    "ic_ceiling", "put_spread_ceiling", "call_spread_ceiling",
+    "ic_ceiling",
+    "put_spread_ceiling",
+    "call_spread_ceiling",
     "sigma",
 ]
 
 CALENDAR_FEATURES = [
-    "day_of_week", "is_friday", "is_event_day",
+    "day_of_week",
+    "is_friday",
+    "is_event_day",
 ]
 
 PHASE2_FEATURES = [
-    "prev_day_range_pts", "prev_day_vix_change",
-    "realized_vol_5d", "realized_vol_10d",
-    "rv_iv_ratio", "vix_term_slope", "vvix_percentile",
-    "is_fomc", "is_opex", "days_to_next_event",
+    "prev_day_range_pts",
+    "prev_day_vix_change",
+    "realized_vol_5d",
+    "realized_vol_10d",
+    "rv_iv_ratio",
+    "vix_term_slope",
+    "vvix_percentile",
+    "is_fomc",
+    "is_opex",
+    "days_to_next_event",
 ]
 
 # Categorical features that need one-hot encoding
@@ -124,12 +147,21 @@ CATEGORICAL_FEATURES = [
 ]
 
 ALL_NUMERIC_FEATURES = (
-    VOLATILITY_FEATURES + GEX_FEATURES_T1T2 + FLOW_FEATURES_T1T2 +
-    FLOW_AGGREGATE + GREEK_FEATURES + PER_STRIKE_FEATURES +
-    CALCULATOR_FEATURES + CALENDAR_FEATURES + PHASE2_FEATURES +
-    DARK_POOL_FEATURES + OPTIONS_VOLUME_FEATURES +
-    IV_PCR_FEATURES + MAX_PAIN_FEATURES +
-    OI_CHANGE_FEATURES + VOL_SURFACE_FEATURES
+    VOLATILITY_FEATURES
+    + GEX_FEATURES_T1T2
+    + FLOW_FEATURES_T1T2
+    + FLOW_AGGREGATE
+    + GREEK_FEATURES
+    + PER_STRIKE_FEATURES
+    + CALCULATOR_FEATURES
+    + CALENDAR_FEATURES
+    + PHASE2_FEATURES
+    + DARK_POOL_FEATURES
+    + OPTIONS_VOLUME_FEATURES
+    + IV_PCR_FEATURES
+    + MAX_PAIN_FEATURES
+    + OI_CHANGE_FEATURES
+    + VOL_SURFACE_FEATURES
 )
 
 # Structure label mapping
@@ -143,6 +175,7 @@ STRUCTURE_NAMES = {v: k for k, v in STRUCTURE_MAP.items()}
 
 
 # ── Data Loading ─────────────────────────────────────────────
+
 
 def load_phase2_data() -> pd.DataFrame:
     """Load training features + outcomes + labels from Neon."""
@@ -161,6 +194,7 @@ def load_phase2_data() -> pd.DataFrame:
 
 
 # ── Feature Preparation ─────────────────────────────────────
+
 
 def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list[str]]:
     """
@@ -194,6 +228,7 @@ def encode_target(df: pd.DataFrame) -> pd.Series:
 
 
 # ── Walk-Forward Validation ──────────────────────────────────
+
 
 def walk_forward(
     X: pd.DataFrame,
@@ -232,9 +267,10 @@ def walk_forward(
         if len(prob_raw) < n_classes:
             prob = np.zeros(n_classes)
             # Get classes from the final estimator in the pipeline
-            estimator = model[-1] if hasattr(model, '__getitem__') else model
+            estimator = model[-1] if hasattr(model, "__getitem__") else model
             model_classes = (
-                estimator.classes_ if hasattr(estimator, "classes_")
+                estimator.classes_
+                if hasattr(estimator, "classes_")
                 else list(range(n_classes))
             )
             for j, cls in enumerate(model_classes):
@@ -258,6 +294,7 @@ def walk_forward(
 
 # ── Metrics ──────────────────────────────────────────────────
 
+
 def compute_metrics(
     results: dict,
     y_full: pd.Series,
@@ -278,9 +315,9 @@ def compute_metrics(
         ll = float("nan")
 
     # Per-class F1
-    f1_per_class = f1_score(actuals, preds, average=None,
-                            labels=list(range(n_classes)),
-                            zero_division=0)
+    f1_per_class = f1_score(
+        actuals, preds, average=None, labels=list(range(n_classes)), zero_division=0
+    )
     f1_dict = {}
     for cls_id in range(n_classes):
         name = STRUCTURE_NAMES.get(cls_id, str(cls_id))
@@ -310,23 +347,30 @@ def compute_metrics(
 
 # ── Preprocessing Helpers ────────────────────────────────────
 
+
 def _build_column_transformer(
     num_step,
     numeric_cols: list[str],
     categorical_cols: list[str],
 ) -> ColumnTransformer:
     """Build a ColumnTransformer with the given numeric step + optional OHE."""
-    transformers = [('num', num_step, numeric_cols)]
+    transformers = [("num", num_step, numeric_cols)]
     if categorical_cols:
         transformers.append(
-            ('cat', OneHotEncoder(
-                handle_unknown='ignore', sparse_output=False,
-            ), categorical_cols),
+            (
+                "cat",
+                OneHotEncoder(
+                    handle_unknown="ignore",
+                    sparse_output=False,
+                ),
+                categorical_cols,
+            ),
         )
-    return ColumnTransformer(transformers, remainder='drop')
+    return ColumnTransformer(transformers, remainder="drop")
 
 
 # ── Model Configs ────────────────────────────────────────────
+
 
 def build_model_configs(
     n_classes: int,
@@ -341,44 +385,55 @@ def build_model_configs(
     and categorical (one-hot encode) features in a single pipeline.
     XGBoost handles NaN natively but needs one-hot encoding for categoricals.
     """
+
     def _ct(num_step):
         return _build_column_transformer(num_step, numeric_cols, categorical_cols)
 
     return {
         "Logistic Reg (L2)": lambda: make_pipeline(
-            _ct(make_pipeline(SimpleImputer(strategy='median'), StandardScaler(), memory=None)),
+            _ct(
+                make_pipeline(
+                    SimpleImputer(strategy="median"), StandardScaler(), memory=None
+                )
+            ),
             LogisticRegression(
-                C=1.0, solver="lbfgs",
-                max_iter=1000, random_state=42,
+                C=1.0,
+                solver="lbfgs",
+                max_iter=1000,
+                random_state=42,
                 class_weight="balanced",
             ),
             memory=None,
         ),
         "Random Forest (15)": lambda: make_pipeline(
-            _ct(SimpleImputer(strategy='median')),
+            _ct(SimpleImputer(strategy="median")),
             RandomForestClassifier(
-                n_estimators=15, max_depth=3, random_state=42,
+                n_estimators=15,
+                max_depth=3,
+                random_state=42,
                 class_weight="balanced",
             ),
             memory=None,
         ),
         "Naive Bayes": lambda: make_pipeline(
-            _ct(SimpleImputer(strategy='median')),
+            _ct(SimpleImputer(strategy="median")),
             GaussianNB(),
             memory=None,
         ),
         "Decision Tree (d=2)": lambda: make_pipeline(
-            _ct(SimpleImputer(strategy='median')),
+            _ct(SimpleImputer(strategy="median")),
             DecisionTreeClassifier(
-                max_depth=2, random_state=42,
+                max_depth=2,
+                random_state=42,
                 class_weight="balanced",
             ),
             memory=None,
         ),
         "XGBoost": lambda: make_pipeline(
-            _ct('passthrough'),
+            _ct("passthrough"),
             XGBClassifier(
-                num_class=n_classes, **xgb_params,
+                num_class=n_classes,
+                **xgb_params,
             ),
             memory=None,
         ),
@@ -392,10 +447,8 @@ def print_model_comparison(
     subsection("Model Comparison")
 
     # Header
-    print(f"  {'Model':<22s} {'Acc':>7s} {'Lift':>7s} "
-          f"{'LogLoss':>8s}  Per-Class F1")
-    print(f"  {'─' * 22} {'─' * 7} {'─' * 7} "
-          f"{'─' * 8}  {'─' * 30}")
+    print(f"  {'Model':<22s} {'Acc':>7s} {'Lift':>7s} {'LogLoss':>8s}  Per-Class F1")
+    print(f"  {'─' * 22} {'─' * 7} {'─' * 7} {'─' * 8}  {'─' * 30}")
 
     # Baselines (grab from any model's metrics)
     first = next(iter(all_metrics.values()))
@@ -403,15 +456,18 @@ def print_model_comparison(
     prev_day_acc = first["prev_day_baseline"]
     prev_lift = prev_day_acc - majority_acc
 
-    print(f"  {'Majority Baseline':<22s} {majority_acc:>6.1%} "
-          f"{'—':>7s}  {'—':>8s}  (always predict "
-          f"{first['majority_class']})")
-    print(f"  {'Previous-Day':<22s} {prev_day_acc:>6.1%} "
-          f"{prev_lift:>+6.1%}  {'—':>8s}  "
-          f"(repeat yesterday)")
+    print(
+        f"  {'Majority Baseline':<22s} {majority_acc:>6.1%} "
+        f"{'—':>7s}  {'—':>8s}  (always predict "
+        f"{first['majority_class']})"
+    )
+    print(
+        f"  {'Previous-Day':<22s} {prev_day_acc:>6.1%} "
+        f"{prev_lift:>+6.1%}  {'—':>8s}  "
+        f"(repeat yesterday)"
+    )
 
-    print(f"  {'─' * 22} {'─' * 7} {'─' * 7} "
-          f"{'─' * 8}  {'─' * 30}")
+    print(f"  {'─' * 22} {'─' * 7} {'─' * 7} {'─' * 8}  {'─' * 30}")
 
     # Models sorted by accuracy descending
     sorted_models = sorted(
@@ -425,20 +481,25 @@ def print_model_comparison(
         lift = m["accuracy"] - majority_acc
         f1_parts = []
         for struct, val in m["per_class_f1"].items():
-            short = {"CALL CREDIT SPREAD": "CCS",
-                     "PUT CREDIT SPREAD": "PCS",
-                     "IRON CONDOR": "IC"}.get(struct, struct[:3])
+            short = {
+                "CALL CREDIT SPREAD": "CCS",
+                "PUT CREDIT SPREAD": "PCS",
+                "IRON CONDOR": "IC",
+            }.get(struct, struct[:3])
             f1_parts.append(f"{short}={val:.2f}")
         f1_str = "  ".join(f1_parts)
         marker = "  <-- best" if name == best_name else ""
-        print(f"  {name:<22s} {m['accuracy']:>6.1%} "
-              f"{lift:>+6.1%}  {m['log_loss']:>7.4f}  "
-              f"{f1_str}{marker}")
+        print(
+            f"  {name:<22s} {m['accuracy']:>6.1%} "
+            f"{lift:>+6.1%}  {m['log_loss']:>7.4f}  "
+            f"{f1_str}{marker}"
+        )
 
     return best_name
 
 
 # ── Feature Importance ───────────────────────────────────────
+
 
 def train_final_model(
     X: pd.DataFrame,
@@ -452,7 +513,9 @@ def train_final_model(
 
     if numeric_cols is not None:
         ct = _build_column_transformer(
-            'passthrough', numeric_cols, categorical_cols or [],
+            "passthrough",
+            numeric_cols,
+            categorical_cols or [],
         )
         pipe = make_pipeline(
             ct,
@@ -464,9 +527,7 @@ def train_final_model(
         try:
             feat_names = ct.get_feature_names_out()
         except (AttributeError, ValueError):
-            feat_names = [
-                f"f{j}" for j in range(len(pipe[-1].feature_importances_))
-            ]
+            feat_names = [f"f{j}" for j in range(len(pipe[-1].feature_importances_))]
 
         importances = pd.Series(
             pipe[-1].feature_importances_,
@@ -503,7 +564,7 @@ def aggregate_fold_importances(
         y_train = y.iloc[:i]
 
         pipe = make_pipeline(
-            _build_column_transformer('passthrough', numeric_cols, categorical_cols),
+            _build_column_transformer("passthrough", numeric_cols, categorical_cols),
             XGBClassifier(num_class=n_classes, **params),
             memory=None,
         )
@@ -514,10 +575,7 @@ def aggregate_fold_importances(
         try:
             feat_names = list(ct.get_feature_names_out())
         except (AttributeError, ValueError):
-            feat_names = [
-                f"f{j}"
-                for j in range(len(pipe[-1].feature_importances_))
-            ]
+            feat_names = [f"f{j}" for j in range(len(pipe[-1].feature_importances_))]
 
         imp = pd.Series(pipe[-1].feature_importances_, index=feat_names)
         all_importances.append(imp)
@@ -532,7 +590,7 @@ def print_feature_importance(importances: pd.Series, top_n: int = 15) -> None:
     subsection(f"Top {top_n} Features (XGBoost gain)")
     for i, (feat, imp) in enumerate(importances.head(top_n).items()):
         bar = "#" * int(imp * 100)
-        print(f"  {i+1:2d}. {feat:35s}  {imp:.4f}  {bar}")
+        print(f"  {i + 1:2d}. {feat:35s}  {imp:.4f}  {bar}")
 
 
 def generate_shap_plot(
@@ -550,6 +608,7 @@ def generate_shap_plot(
 
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -574,7 +633,9 @@ def generate_shap_plot(
             # Slice to a 2D Explanation for the chosen class
             class_explanation = explanation[:, :, best_class]
             shap.plots.beeswarm(
-                class_explanation, show=False, max_display=15,
+                class_explanation,
+                show=False,
+                max_display=15,
             )
             plt.title(f"SHAP Feature Importance ({class_name})")
         else:
@@ -594,6 +655,7 @@ def generate_shap_plot(
 
 # ── Experiment Saving ────────────────────────────────────────
 
+
 def save_experiment(
     metrics: dict,
     params: dict,
@@ -607,20 +669,18 @@ def save_experiment(
     """Save experiment results to ml/experiments/."""
     class_dist = y.value_counts().to_dict()
     class_dist_named = {
-        STRUCTURE_NAMES.get(k, str(k)): int(v)
-        for k, v in class_dist.items()
+        STRUCTURE_NAMES.get(k, str(k)): int(v) for k, v in class_dist.items()
     }
 
     top10 = [
-        [str(feat), round(float(imp), 4)]
-        for feat, imp in importances.head(10).items()
+        [str(feat), round(float(imp), 4)] for feat, imp in importances.head(10).items()
     ]
 
     experiment = {
         "phase": "phase2_early",
         "model": "xgboost",
         "version": "v2",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "data": {
             "training_days": int(len(y)),
             "feature_count": len(feature_names),
@@ -631,8 +691,7 @@ def save_experiment(
                 df.index.max().strftime("%Y-%m-%d"),
             ],
         },
-        "xgboost_params": {k: v for k, v in params.items()
-                           if k != "verbosity"},
+        "xgboost_params": {k: v for k, v in params.items() if k != "verbosity"},
         "metrics": metrics,
         "feature_importance_top10": top10,
         "notes": (
@@ -670,12 +729,14 @@ def save_experiment(
 
 # ── Main ─────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Phase 2 Early: Structure Classification Feasibility",
     )
     parser.add_argument(
-        "--shap", action="store_true",
+        "--shap",
+        action="store_true",
         help="Generate SHAP beeswarm plot (requires shap package)",
     )
     args = parser.parse_args()
@@ -684,8 +745,10 @@ def main() -> None:
     section("DATA LOADING")
     print("\n  Loading training features + outcomes + labels ...")
     df = load_phase2_data()
-    print(f"  {len(df)} days loaded "
-          f"({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})")
+    print(
+        f"  {len(df)} days loaded "
+        f"({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})"
+    )
 
     validate_dataframe(
         df,
@@ -714,8 +777,10 @@ def main() -> None:
     print(f"  {len(df_labeled)} days with valid structure labels (3-class)")
 
     if len(df_labeled) < 25:
-        print(f"\n  Only {len(df_labeled)} labeled days -- need at least 25 "
-              "for walk-forward with min_train=20.")
+        print(
+            f"\n  Only {len(df_labeled)} labeled days -- need at least 25 "
+            "for walk-forward with min_train=20."
+        )
         print("  Wait for more labeled data before running this experiment.")
         sys.exit(0)
 
@@ -723,7 +788,7 @@ def main() -> None:
     dist = df_labeled["recommended_structure"].value_counts()
     print("\n  Class distribution:")
     for struct, count in dist.items():
-        print(f"    {struct:25s}  {count:3d}  ({count/len(df_labeled):.0%})")
+        print(f"    {struct:25s}  {count:3d}  ({count / len(df_labeled):.0%})")
 
     # ── Prepare features ─────────────────────────────────────
     section("FEATURE PREPARATION")
@@ -735,8 +800,10 @@ def main() -> None:
     null_pct = X[numeric_cols].isnull().mean()
     fully_null = null_pct[null_pct >= 1.0].index.tolist()
     if fully_null:
-        print(f"\n  Dropping {len(fully_null)} fully-null columns: "
-              f"{fully_null[:10]}{'...' if len(fully_null) > 10 else ''}")
+        print(
+            f"\n  Dropping {len(fully_null)} fully-null columns: "
+            f"{fully_null[:10]}{'...' if len(fully_null) > 10 else ''}"
+        )
         X = X.drop(columns=fully_null)
         numeric_cols = [c for c in numeric_cols if c not in fully_null]
         feature_names = X.columns.tolist()
@@ -744,10 +811,14 @@ def main() -> None:
     n_features = len(feature_names)
     n_nulls = X[numeric_cols].isnull().sum().sum()
     n_cells = len(X) * len(numeric_cols)
-    print(f"\n  Features: {n_features} ({len(numeric_cols)} numeric, "
-          f"{len(categorical_cols)} categorical)")
-    print(f"  Null cells: {n_nulls}/{n_cells} "
-          f"({n_nulls/n_cells:.1%}) -- XGBoost handles natively")
+    print(
+        f"\n  Features: {n_features} ({len(numeric_cols)} numeric, "
+        f"{len(categorical_cols)} categorical)"
+    )
+    print(
+        f"  Null cells: {n_nulls}/{n_cells} "
+        f"({n_nulls / n_cells:.1%}) -- XGBoost handles natively"
+    )
     print(f"  Samples: {len(X)}")
 
     # ── Walk-forward validation ──────────────────────────────
@@ -772,7 +843,10 @@ def main() -> None:
     n_predictions = len(X) - min_train
 
     models = build_model_configs(
-        n_classes, xgb_params, numeric_cols, categorical_cols,
+        n_classes,
+        xgb_params,
+        numeric_cols,
+        categorical_cols,
     )
 
     print(f"\n  Min training window: {min_train} days")
@@ -793,14 +867,17 @@ def main() -> None:
 
     # Random baseline for log loss context
     random_ll = -np.log(1.0 / n_classes)
-    print(f"\n  Random log loss baseline: {random_ll:.4f} "
-          f"(uniform {n_classes}-class)")
+    print(f"\n  Random log loss baseline: {random_ll:.4f} (uniform {n_classes}-class)")
 
     # ── Feature importance (XGBoost) ─────────────────────────
     section("FEATURE IMPORTANCE (XGBoost)")
     print("\n  Aggregating XGBoost importances across walk-forward folds ...")
     importances = aggregate_fold_importances(
-        X, y, xgb_params, numeric_cols, categorical_cols,
+        X,
+        y,
+        xgb_params,
+        numeric_cols,
+        categorical_cols,
         min_train=min_train,
     )
     print_feature_importance(importances, top_n=15)
@@ -810,7 +887,11 @@ def main() -> None:
         subsection("SHAP Analysis")
         print("  Training single XGBoost on all data for SHAP ...")
         shap_pipe, _ = train_final_model(
-            X, y, xgb_params, numeric_cols, categorical_cols,
+            X,
+            y,
+            xgb_params,
+            numeric_cols,
+            categorical_cols,
         )
         plot_dir = ML_ROOT / "plots"
         # Transform X through the preprocessor for SHAP
@@ -824,8 +905,12 @@ def main() -> None:
     # ── Save experiment ──────────────────────────────────────
     section("EXPERIMENT TRACKING")
     save_experiment(
-        all_metrics["XGBoost"], xgb_params, importances,
-        df_labeled, y, feature_names,
+        all_metrics["XGBoost"],
+        xgb_params,
+        importances,
+        df_labeled,
+        y,
+        feature_names,
         all_model_metrics=all_metrics,
     )
 
@@ -843,10 +928,10 @@ def main() -> None:
     if best_acc > majority_acc + 0.05:
         tag = verdict(True)
         print(f"\n  {tag}")
-        print(f"  PROMISING -- {best_model} shows signal "
-              "beyond majority class.")
-        print(f"  Best: {best_acc:.1%} vs baseline "
-              f"{majority_acc:.1%} ({lift:+.1%} lift)")
+        print(f"  PROMISING -- {best_model} shows signal beyond majority class.")
+        print(
+            f"  Best: {best_acc:.1%} vs baseline {majority_acc:.1%} ({lift:+.1%} lift)"
+        )
         if best_model != "XGBoost":
             print(f"  XGBoost: {xgb_acc:.1%} ({xgb_lift:+.1%} lift)")
             takeaway(
@@ -864,8 +949,9 @@ def main() -> None:
         tag = verdict(False, "marginal signal")
         print(f"\n  {tag}")
         print(f"  MARGINAL -- {best_model} shows weak signal.")
-        print(f"  Best: {best_acc:.1%} vs baseline "
-              f"{majority_acc:.1%} ({lift:+.1%} lift)")
+        print(
+            f"  Best: {best_acc:.1%} vs baseline {majority_acc:.1%} ({lift:+.1%} lift)"
+        )
         takeaway(
             "Models slightly beat majority class but the edge is\n"
             "            thin. Wait for more labeled days and revisit."
@@ -874,8 +960,7 @@ def main() -> None:
         tag = verdict(False)
         print(f"\n  {tag}")
         print("  NOT YET -- no model beats majority class.")
-        print(f"  Best: {best_acc:.1%} vs baseline "
-              f"{majority_acc:.1%} ({lift:+.1%})")
+        print(f"  Best: {best_acc:.1%} vs baseline {majority_acc:.1%} ({lift:+.1%})")
         takeaway(
             "Not enough signal in current features or not enough\n"
             "            data. Keep labeling days and re-run when you\n"
@@ -894,16 +979,19 @@ def main() -> None:
         {"feature": str(feat), "importance": round(float(imp), 4)}
         for feat, imp in importances.head(15).items()
     ]
-    save_section_findings("phase2", {
-        "per_model": per_model,
-        "best_model": best_model,
-        "best_accuracy": best_metrics["accuracy"],
-        "majority_baseline": best_metrics["majority_baseline"],
-        "walk_forward_folds": best_metrics["walk_forward_folds"],
-        "top_features": top_features,
-        "n_labeled_days": len(df_labeled),
-        "n_features": n_features,
-    })
+    save_section_findings(
+        "phase2",
+        {
+            "per_model": per_model,
+            "best_model": best_model,
+            "best_accuracy": best_metrics["accuracy"],
+            "majority_baseline": best_metrics["majority_baseline"],
+            "walk_forward_folds": best_metrics["walk_forward_folds"],
+            "top_features": top_features,
+            "n_labeled_days": len(df_labeled),
+            "n_features": n_features,
+        },
+    )
 
     print()
 

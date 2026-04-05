@@ -11,13 +11,13 @@ Requires: pip install psycopg2-binary pandas matplotlib seaborn
 """
 
 import sys
-from pathlib import Path
 
 try:
     import matplotlib
+
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
     import seaborn as sns
@@ -28,7 +28,7 @@ except ImportError:
 
 from statsmodels.stats.proportion import proportion_confint
 
-from utils import ML_ROOT, load_data, validate_dataframe, save_section_findings
+from utils import ML_ROOT, load_data, save_section_findings, validate_dataframe
 
 PLOT_DIR = ML_ROOT / "plots"
 PLOT_DIR.mkdir(exist_ok=True)
@@ -36,18 +36,20 @@ PLOT_DIR.mkdir(exist_ok=True)
 # ── Style ────────────────────────────────────────────────────
 
 sns.set_theme(style="darkgrid", palette="muted")
-plt.rcParams.update({
-    "figure.facecolor": "#1a1a2e",
-    "axes.facecolor": "#16213e",
-    "axes.edgecolor": "#555",
-    "axes.labelcolor": "#ccc",
-    "text.color": "#ccc",
-    "xtick.color": "#aaa",
-    "ytick.color": "#aaa",
-    "grid.color": "#333",
-    "grid.alpha": 0.5,
-    "font.size": 11,
-})
+plt.rcParams.update(
+    {
+        "figure.facecolor": "#1a1a2e",
+        "axes.facecolor": "#16213e",
+        "axes.edgecolor": "#555",
+        "axes.labelcolor": "#ccc",
+        "text.color": "#ccc",
+        "xtick.color": "#aaa",
+        "ytick.color": "#aaa",
+        "grid.color": "#333",
+        "grid.alpha": 0.5,
+        "font.size": 11,
+    }
+)
 
 COLORS = {
     "green": "#2ecc71",
@@ -84,6 +86,7 @@ RANGE_COLORS = {
 
 # ── Data Loading ─────────────────────────────────────────────
 
+
 def load_data_viz() -> pd.DataFrame:
     return load_data("""
         SELECT f.*, o.settlement, o.day_open, o.day_high, o.day_low,
@@ -108,18 +111,31 @@ def save(fig: plt.Figure, name: str) -> None:
 
 # ── Plot 1: Feature Correlation Heatmap ──────────────────────
 
+
 def plot_correlation_heatmap(df: pd.DataFrame) -> None:
     features = [
-        "vix", "vix1d", "vix1d_vix_ratio",
-        "gex_oi_t1", "gex_dir_t1", "gex_vol_t1",
-        "agg_net_gamma", "charm_slope", "dte0_charm_pct",
-        "flow_agreement_t1", "mt_ncp_t1",
-        "spx_ncp_t1", "spy_ncp_t1", "qqq_ncp_t1",
+        "vix",
+        "vix1d",
+        "vix1d_vix_ratio",
+        "gex_oi_t1",
+        "gex_dir_t1",
+        "gex_vol_t1",
+        "agg_net_gamma",
+        "charm_slope",
+        "dte0_charm_pct",
+        "flow_agreement_t1",
+        "mt_ncp_t1",
+        "spx_ncp_t1",
+        "spy_ncp_t1",
+        "qqq_ncp_t1",
         "spy_etf_ncp_t1",
-        "dp_total_premium", "dp_support_resistance_ratio",
+        "dp_total_premium",
+        "dp_support_resistance_ratio",
         "dp_concentration",
-        "opt_vol_pcr", "opt_premium_ratio",
-        "iv_open", "iv_crush_rate",
+        "opt_vol_pcr",
+        "opt_premium_ratio",
+        "iv_open",
+        "iv_crush_rate",
         "max_pain_dist",
         "day_range_pts",
     ]
@@ -160,16 +176,29 @@ def plot_correlation_heatmap(df: pd.DataFrame) -> None:
 
     fig, ax = plt.subplots(figsize=(14, 12))
     mask = np.triu(np.ones_like(corr, dtype=bool))
-    sns.heatmap(corr, mask=mask, annot=True, fmt=".2f", cmap="RdBu_r",
-                center=0, vmin=-1, vmax=1, square=True, ax=ax,
-                linewidths=0.5, annot_kws={"size": 8},
-                cbar_kws={"shrink": 0.8})
-    ax.set_title("Feature Correlations (incl. Dark Pool, Options, IV)",
-                 fontsize=14, pad=15)
+    sns.heatmap(
+        corr,
+        mask=mask,
+        annot=True,
+        fmt=".2f",
+        cmap="RdBu_r",
+        center=0,
+        vmin=-1,
+        vmax=1,
+        square=True,
+        ax=ax,
+        linewidths=0.5,
+        annot_kws={"size": 8},
+        cbar_kws={"shrink": 0.8},
+    )
+    ax.set_title(
+        "Feature Correlations (incl. Dark Pool, Options, IV)", fontsize=14, pad=15
+    )
     save(fig, "correlations.png")
 
 
 # ── Plot 2: Range by Regime ──────────────────────────────────
+
 
 def plot_range_by_regime(df: pd.DataFrame) -> None:
     has_range = df[df["day_range_pts"].notna()].copy()
@@ -181,21 +210,45 @@ def plot_range_by_regime(df: pd.DataFrame) -> None:
     def _add_n_labels(ax, data, col, categories):
         for i, cat in enumerate(categories):
             n = len(data[data[col] == cat])
-            ax.text(i, ax.get_ylim()[0] + 2, f"n={n}",
-                    ha="center", fontsize=8, color="#aaa")
+            ax.text(
+                i, ax.get_ylim()[0] + 2, f"n={n}", ha="center", fontsize=8, color="#aaa"
+            )
 
     # By charm pattern
     ax = axes[0]
     charm_data = has_range[has_range["charm_pattern"].notna()]
     if len(charm_data) > 0:
-        order = ["all_negative", "mixed", "ccs_confirming", "pcs_confirming", "all_positive"]
+        order = [
+            "all_negative",
+            "mixed",
+            "ccs_confirming",
+            "pcs_confirming",
+            "all_positive",
+        ]
         order = [o for o in order if o in charm_data["charm_pattern"].values]
         palette = [CHARM_COLORS.get(o, COLORS["gray"]) for o in order]
-        sns.boxplot(data=charm_data, x="charm_pattern", y="day_range_pts",
-                    order=order, hue="charm_pattern", hue_order=order,
-                    palette=palette, ax=ax, width=0.6, legend=False)
-        sns.swarmplot(data=charm_data, x="charm_pattern", y="day_range_pts",
-                      order=order, color="white", size=5, alpha=0.6, ax=ax)
+        sns.boxplot(
+            data=charm_data,
+            x="charm_pattern",
+            y="day_range_pts",
+            order=order,
+            hue="charm_pattern",
+            hue_order=order,
+            palette=palette,
+            ax=ax,
+            width=0.6,
+            legend=False,
+        )
+        sns.swarmplot(
+            data=charm_data,
+            x="charm_pattern",
+            y="day_range_pts",
+            order=order,
+            color="white",
+            size=5,
+            alpha=0.6,
+            ax=ax,
+        )
         _add_n_labels(ax, charm_data, "charm_pattern", order)
         ax.set_xlabel("")
         ax.set_ylabel("Day Range (pts)")
@@ -210,16 +263,39 @@ def plot_range_by_regime(df: pd.DataFrame) -> None:
         has_vix["VIX Regime"] = pd.cut(
             has_vix["vix_f"],
             bins=[0, 18, 22, 26, 50],
-            labels=["<18\n(Low)", "18-22\n(Normal)", "22-26\n(Elevated)", ">26\n(High)"],
+            labels=[
+                "<18\n(Low)",
+                "18-22\n(Normal)",
+                "22-26\n(Elevated)",
+                ">26\n(High)",
+            ],
         )
         palette = [COLORS["green"], COLORS["blue"], COLORS["orange"], COLORS["red"]]
-        sns.boxplot(data=has_vix, x="VIX Regime", y="day_range_pts",
-                    hue="VIX Regime", palette=palette, ax=ax,
-                    width=0.6, legend=False)
-        sns.swarmplot(data=has_vix, x="VIX Regime", y="day_range_pts",
-                      color="white", size=5, alpha=0.6, ax=ax)
-        _add_n_labels(ax, has_vix, "VIX Regime",
-                      ["<18\n(Low)", "18-22\n(Normal)", "22-26\n(Elevated)", ">26\n(High)"])
+        sns.boxplot(
+            data=has_vix,
+            x="VIX Regime",
+            y="day_range_pts",
+            hue="VIX Regime",
+            palette=palette,
+            ax=ax,
+            width=0.6,
+            legend=False,
+        )
+        sns.swarmplot(
+            data=has_vix,
+            x="VIX Regime",
+            y="day_range_pts",
+            color="white",
+            size=5,
+            alpha=0.6,
+            ax=ax,
+        )
+        _add_n_labels(
+            ax,
+            has_vix,
+            "VIX Regime",
+            ["<18\n(Low)", "18-22\n(Normal)", "22-26\n(Elevated)", ">26\n(High)"],
+        )
         ax.set_xlabel("")
         ax.set_ylabel("")
         ax.set_title("Range by VIX Regime")
@@ -235,13 +311,31 @@ def plot_range_by_regime(df: pd.DataFrame) -> None:
             labels=["Deep Neg\n(<-50B)", "Mild Neg\n(-50 to 0)", "Positive\n(>0)"],
         )
         palette = [COLORS["red"], COLORS["orange"], COLORS["green"]]
-        sns.boxplot(data=has_gex, x="GEX Regime", y="day_range_pts",
-                    hue="GEX Regime", palette=palette, ax=ax,
-                    width=0.6, legend=False)
-        sns.swarmplot(data=has_gex, x="GEX Regime", y="day_range_pts",
-                      color="white", size=5, alpha=0.6, ax=ax)
-        _add_n_labels(ax, has_gex, "GEX Regime",
-                      ["Deep Neg\n(<-50B)", "Mild Neg\n(-50 to 0)", "Positive\n(>0)"])
+        sns.boxplot(
+            data=has_gex,
+            x="GEX Regime",
+            y="day_range_pts",
+            hue="GEX Regime",
+            palette=palette,
+            ax=ax,
+            width=0.6,
+            legend=False,
+        )
+        sns.swarmplot(
+            data=has_gex,
+            x="GEX Regime",
+            y="day_range_pts",
+            color="white",
+            size=5,
+            alpha=0.6,
+            ax=ax,
+        )
+        _add_n_labels(
+            ax,
+            has_gex,
+            "GEX Regime",
+            ["Deep Neg\n(<-50B)", "Mild Neg\n(-50 to 0)", "Positive\n(>0)"],
+        )
         ax.set_xlabel("")
         ax.set_ylabel("")
         ax.set_title("Range by GEX Regime")
@@ -252,6 +346,7 @@ def plot_range_by_regime(df: pd.DataFrame) -> None:
 
 
 # ── Plot 3: Flow Source Reliability ──────────────────────────
+
 
 def plot_flow_reliability(df: pd.DataFrame) -> None:
     has_flow = df[df["settlement_direction"].notna()].copy()
@@ -299,9 +394,9 @@ def plot_flow_reliability(df: pd.DataFrame) -> None:
 
     ci_errors = []
     sig_markers = []
-    for label, acc, n in results:
+    for _label, acc, n in results:
         correct_count = int(round(acc * n))
-        lo, hi = proportion_confint(correct_count, n, method='wilson')
+        lo, hi = proportion_confint(correct_count, n, method="wilson")
         ci_errors.append([acc - lo, hi - acc])
         # Significant if CI doesn't contain 0.50
         if hi < 0.50:
@@ -312,8 +407,16 @@ def plot_flow_reliability(df: pd.DataFrame) -> None:
             sig_markers.append("")
 
     xerr = [[e[0] for e in ci_errors], [e[1] for e in ci_errors]]
-    bars = ax.barh(labels, accuracies, color=colors, height=0.6, edgecolor="#333",
-                   xerr=xerr, capsize=4, error_kw={"color": "#aaa", "linewidth": 1})
+    bars = ax.barh(
+        labels,
+        accuracies,
+        color=colors,
+        height=0.6,
+        edgecolor="#333",
+        xerr=xerr,
+        capsize=4,
+        error_kw={"color": "#aaa", "linewidth": 1},
+    )
 
     # Add 50% reference line
     ax.axvline(x=0.5, color="#fff", linestyle="--", alpha=0.5, linewidth=1)
@@ -323,13 +426,22 @@ def plot_flow_reliability(df: pd.DataFrame) -> None:
     for bar, acc, n, sig in zip(bars, accuracies, counts, sig_markers):
         x = bar.get_width()
         label_text = f" {acc:.0%} (n={n}){sig}"
-        ax.text(x + 0.02, bar.get_y() + bar.get_height() / 2,
-                label_text, va="center", fontsize=10, color="#eee")
+        ax.text(
+            x + 0.02,
+            bar.get_y() + bar.get_height() / 2,
+            label_text,
+            va="center",
+            fontsize=10,
+            color="#eee",
+        )
 
     ax.set_xlim(0, 0.85)
     ax.set_xlabel("Direction Prediction Accuracy")
-    ax.set_title("Flow Source Reliability: Which Sources Predict Settlement Direction?",
-                 fontsize=13, pad=15)
+    ax.set_title(
+        "Flow Source Reliability: Which Sources Predict Settlement Direction?",
+        fontsize=13,
+        pad=15,
+    )
 
     # Legend
     patches = [
@@ -348,7 +460,10 @@ def plot_flow_reliability(df: pd.DataFrame) -> None:
     if anti_names:
         footer_parts.append(f"Fade: {', '.join(anti_names)}")
     if footer_parts:
-        footer = "  |  ".join(footer_parts) + "  |  * = statistically significant (CI excludes 50%)"
+        footer = (
+            "  |  ".join(footer_parts)
+            + "  |  * = statistically significant (CI excludes 50%)"
+        )
         fig.text(0.5, -0.04, footer, ha="center", fontsize=8, color="#888")
 
     fig.tight_layout()
@@ -357,8 +472,11 @@ def plot_flow_reliability(df: pd.DataFrame) -> None:
 
 # ── Plot 4: GEX vs Range Scatter ─────────────────────────────
 
+
 def plot_gex_vs_range(df: pd.DataFrame) -> None:
-    subset = df[["gex_oi_t1", "day_range_pts", "charm_pattern", "structure_correct"]].dropna()
+    subset = df[
+        ["gex_oi_t1", "day_range_pts", "charm_pattern", "structure_correct"]
+    ].dropna()
     if len(subset) < 5:
         return
 
@@ -373,9 +491,16 @@ def plot_gex_vs_range(df: pd.DataFrame) -> None:
     for pattern in sorted(subset["charm_pattern"].unique()):
         mask = subset["charm_pattern"] == pattern
         color = CHARM_COLORS.get(pattern, COLORS["gray"])
-        ax.scatter(subset.loc[mask, "gex_b"], subset.loc[mask, "range"],
-                   c=color, label=pattern, s=70, alpha=0.8,
-                   edgecolors="white", linewidth=0.5)
+        ax.scatter(
+            subset.loc[mask, "gex_b"],
+            subset.loc[mask, "range"],
+            c=color,
+            label=pattern,
+            s=70,
+            alpha=0.8,
+            edgecolors="white",
+            linewidth=0.5,
+        )
     ax.axvline(x=0, color="#555", linestyle="--", alpha=0.5)
     ax.set_xlabel("GEX OI at T1 (billions)")
     ax.set_ylabel("Day Range (pts)")
@@ -386,12 +511,27 @@ def plot_gex_vs_range(df: pd.DataFrame) -> None:
     ax = axes[1]
     correct = subset[subset["structure_correct"] == True]
     incorrect = subset[subset["structure_correct"] == False]
-    ax.scatter(correct["gex_b"], correct["range"],
-               c=COLORS["green"], label="Correct", s=70, alpha=0.8,
-               edgecolors="white", linewidth=0.5)
-    ax.scatter(incorrect["gex_b"], incorrect["range"],
-               c=COLORS["red"], label="Incorrect", s=120, alpha=0.9,
-               edgecolors="white", linewidth=1, marker="X")
+    ax.scatter(
+        correct["gex_b"],
+        correct["range"],
+        c=COLORS["green"],
+        label="Correct",
+        s=70,
+        alpha=0.8,
+        edgecolors="white",
+        linewidth=0.5,
+    )
+    ax.scatter(
+        incorrect["gex_b"],
+        incorrect["range"],
+        c=COLORS["red"],
+        label="Incorrect",
+        s=120,
+        alpha=0.9,
+        edgecolors="white",
+        linewidth=1,
+        marker="X",
+    )
     ax.axvline(x=0, color="#555", linestyle="--", alpha=0.5)
     ax.set_xlabel("GEX OI at T1 (billions)")
     ax.set_ylabel("")
@@ -404,6 +544,7 @@ def plot_gex_vs_range(df: pd.DataFrame) -> None:
 
 
 # ── Plot 5: Daily Timeline ──────────────────────────────────
+
 
 def plot_timeline(df: pd.DataFrame) -> None:
     has_data = df[df["day_range_pts"].notna()].copy()
@@ -426,8 +567,13 @@ def plot_timeline(df: pd.DataFrame) -> None:
             range_colors.append(COLORS["blue"])
 
     ax.bar(x, has_data["range"], color=range_colors, width=0.7, edgecolor="#333")
-    ax.axhline(y=has_data["range"].mean(), color=COLORS["cyan"], linestyle="--",
-               alpha=0.5, label=f'Avg {has_data["range"].mean():.0f} pts')
+    ax.axhline(
+        y=has_data["range"].mean(),
+        color=COLORS["cyan"],
+        linestyle="--",
+        alpha=0.5,
+        label=f"Avg {has_data['range'].mean():.0f} pts",
+    )
     ax.set_ylabel("Day Range (pts)")
     ax.set_title("Daily Overview", fontsize=13)
     ax.legend(fontsize=9)
@@ -436,34 +582,73 @@ def plot_timeline(df: pd.DataFrame) -> None:
     for i, (_, row) in enumerate(has_data.iterrows()):
         struct = row.get("recommended_structure", "")
         if pd.notna(struct) and isinstance(struct, str):
-            short = {"PUT CREDIT SPREAD": "PCS", "CALL CREDIT SPREAD": "CCS",
-                     "IRON CONDOR": "IC"}.get(struct, "")
+            short = {
+                "PUT CREDIT SPREAD": "PCS",
+                "CALL CREDIT SPREAD": "CCS",
+                "IRON CONDOR": "IC",
+            }.get(struct, "")
             if short:
-                label_color = COLORS["red"] if row.get("structure_correct") == False else "#888"
-                ax.text(i, 3, short, ha="center", va="bottom",
-                        fontsize=6, color=label_color, rotation=90, alpha=0.7)
+                label_color = (
+                    COLORS["red"] if row.get("structure_correct") == False else "#888"
+                )
+                ax.text(
+                    i,
+                    3,
+                    short,
+                    ha="center",
+                    va="bottom",
+                    fontsize=6,
+                    color=label_color,
+                    rotation=90,
+                    alpha=0.7,
+                )
 
     # Add failure markers and shade failure columns across all panels
     for i, (_, row) in enumerate(has_data.iterrows()):
         if row.get("structure_correct") == False:
-            ax.annotate("MISS", (i, row["range"]), ha="center", va="bottom",
-                        fontsize=8, color=COLORS["red"], fontweight="bold")
+            ax.annotate(
+                "MISS",
+                (i, row["range"]),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                color=COLORS["red"],
+                fontweight="bold",
+            )
             # Shade this day across all panels
             for panel in axes:
-                panel.axvspan(i - 0.4, i + 0.4, color=COLORS["red"],
-                              alpha=0.08, zorder=0)
+                panel.axvspan(
+                    i - 0.4, i + 0.4, color=COLORS["red"], alpha=0.08, zorder=0
+                )
 
     # Panel 2: VIX and VIX1D
     ax = axes[1]
     if "vix" in has_data.columns:
         vix = has_data["vix"].astype(float)
-        ax.plot(x, vix, color=COLORS["red"], linewidth=1.5, label="VIX", marker="o", markersize=4)
+        ax.plot(
+            x,
+            vix,
+            color=COLORS["red"],
+            linewidth=1.5,
+            label="VIX",
+            marker="o",
+            markersize=4,
+        )
     if "vix1d" in has_data.columns:
         vix1d = has_data["vix1d"].dropna().astype(float)
         vix1d_x = [i for i, d in enumerate(dates) if d in vix1d.index]
-        ax.plot(vix1d_x, vix1d.values, color=COLORS["cyan"], linewidth=1.5,
-                label="VIX1D", marker="s", markersize=4)
-    ax.axhline(y=22, color=COLORS["orange"], linestyle=":", alpha=0.4, label="Caution (22)")
+        ax.plot(
+            vix1d_x,
+            vix1d.values,
+            color=COLORS["cyan"],
+            linewidth=1.5,
+            label="VIX1D",
+            marker="s",
+            markersize=4,
+        )
+    ax.axhline(
+        y=22, color=COLORS["orange"], linestyle=":", alpha=0.4, label="Caution (22)"
+    )
     ax.axhline(y=26, color=COLORS["red"], linestyle=":", alpha=0.4, label="Stop (26)")
     ax.set_ylabel("Level")
     ax.legend(fontsize=8, ncol=4)
@@ -476,7 +661,13 @@ def plot_timeline(df: pd.DataFrame) -> None:
         gex_colors = [COLORS["green"] if v > 0 else COLORS["red"] for v in gex.values]
         ax.bar(gex_x, gex.values, color=gex_colors, width=0.7, edgecolor="#333")
         ax.axhline(y=0, color="#555", linewidth=0.5)
-        ax.axhline(y=-50, color=COLORS["red"], linestyle=":", alpha=0.4, label="Deep Neg (-50B)")
+        ax.axhline(
+            y=-50,
+            color=COLORS["red"],
+            linestyle=":",
+            alpha=0.4,
+            label="Deep Neg (-50B)",
+        )
     ax.set_ylabel("GEX OI (B)")
     ax.legend(fontsize=8)
 
@@ -484,8 +675,10 @@ def plot_timeline(df: pd.DataFrame) -> None:
     ax = axes[3]
     if "flow_agreement_t1" in has_data.columns:
         fa = has_data["flow_agreement_t1"].astype(float)
-        fa_colors = [COLORS["green"] if v >= 6 else COLORS["blue"] if v >= 4 else COLORS["red"]
-                     for v in fa.values]
+        fa_colors = [
+            COLORS["green"] if v >= 6 else COLORS["blue"] if v >= 4 else COLORS["red"]
+            for v in fa.values
+        ]
         ax.bar(x, fa, color=fa_colors, width=0.7, edgecolor="#333")
         ax.axhline(y=4, color=COLORS["orange"], linestyle=":", alpha=0.4)
     ax.set_ylabel("Agreement\n(of 9)")
@@ -493,16 +686,28 @@ def plot_timeline(df: pd.DataFrame) -> None:
 
     # X-axis labels
     ax.set_xticks(x)
-    ax.set_xticklabels([d.strftime("%m/%d") for d in dates], rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(
+        [d.strftime("%m/%d") for d in dates], rotation=45, ha="right", fontsize=8
+    )
 
     # Summary footer
     n_days = len(has_data)
-    n_correct = has_data["structure_correct"].sum() if "structure_correct" in has_data.columns else 0
-    n_labeled = has_data["structure_correct"].notna().sum() if "structure_correct" in has_data.columns else 0
+    n_correct = (
+        has_data["structure_correct"].sum()
+        if "structure_correct" in has_data.columns
+        else 0
+    )
+    n_labeled = (
+        has_data["structure_correct"].notna().sum()
+        if "structure_correct" in has_data.columns
+        else 0
+    )
     avg_range = has_data["range"].mean()
-    footer = (f"{n_days} days  |  {int(n_correct)}/{n_labeled} correct  |  "
-              f"avg range {avg_range:.0f} pts  |  "
-              f"red shading = structure miss")
+    footer = (
+        f"{n_days} days  |  {int(n_correct)}/{n_labeled} correct  |  "
+        f"avg range {avg_range:.0f} pts  |  "
+        f"red shading = structure miss"
+    )
     fig.text(0.5, -0.02, footer, ha="center", fontsize=9, color="#888")
 
     fig.tight_layout()
@@ -510,6 +715,7 @@ def plot_timeline(df: pd.DataFrame) -> None:
 
 
 # ── Plot 6: Confidence & Structure ───────────────────────────
+
 
 def plot_structure_confidence(df: pd.DataFrame) -> None:
     labeled = df[df["structure_correct"].notna()].copy()
@@ -534,10 +740,24 @@ def plot_structure_confidence(df: pd.DataFrame) -> None:
 
     short_labels = ["PCS", "CCS", "IC"]
     y_pos = range(len(structs))
-    ax.barh(y_pos, correct_counts, color=colors, height=0.5,
-            edgecolor="#333", label="Correct")
-    ax.barh(y_pos, incorrect_counts, left=correct_counts, color=COLORS["red"],
-            height=0.5, edgecolor="#333", alpha=0.7, label="Incorrect")
+    ax.barh(
+        y_pos,
+        correct_counts,
+        color=colors,
+        height=0.5,
+        edgecolor="#333",
+        label="Correct",
+    )
+    ax.barh(
+        y_pos,
+        incorrect_counts,
+        left=correct_counts,
+        color=COLORS["red"],
+        height=0.5,
+        edgecolor="#333",
+        alpha=0.7,
+        label="Incorrect",
+    )
     ax.set_yticks(y_pos)
     ax.set_yticklabels(short_labels)
     ax.set_xlabel("Days")
@@ -547,8 +767,14 @@ def plot_structure_confidence(df: pd.DataFrame) -> None:
     # Add count labels
     for i, (c, ic) in enumerate(zip(correct_counts, incorrect_counts)):
         total = c + ic
-        ax.text(total + 0.3, i, f"{c}/{total} ({c/total:.0%})",
-                va="center", fontsize=10, color="#eee")
+        ax.text(
+            total + 0.3,
+            i,
+            f"{c}/{total} ({c / total:.0%})",
+            va="center",
+            fontsize=10,
+            color="#eee",
+        )
 
     # Right: Confidence calibration
     ax = axes[1]
@@ -575,13 +801,20 @@ def plot_structure_confidence(df: pd.DataFrame) -> None:
         ci_his = []
         for acc, n in zip(accs, counts):
             correct_count = int(round(acc * n))
-            lo, hi = proportion_confint(correct_count, n, method='wilson')
+            lo, hi = proportion_confint(correct_count, n, method="wilson")
             ci_los.append(acc - lo)
             ci_his.append(hi - acc)
 
-        bars = ax.bar(valid_confs, accs, color=valid_colors, width=0.5,
-                      edgecolor="#333", yerr=[ci_los, ci_his],
-                      capsize=5, error_kw={"color": "#aaa", "linewidth": 1.5})
+        bars = ax.bar(
+            valid_confs,
+            accs,
+            color=valid_colors,
+            width=0.5,
+            edgecolor="#333",
+            yerr=[ci_los, ci_his],
+            capsize=5,
+            error_kw={"color": "#aaa", "linewidth": 1.5},
+        )
 
         for bar, n in zip(bars, counts):
             if n < 3:
@@ -593,8 +826,14 @@ def plot_structure_confidence(df: pd.DataFrame) -> None:
         ax.set_title("Confidence Calibration")
 
         for bar, acc, n in zip(bars, accs, counts):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
-                    f"{acc:.0%}\n(n={n})", ha="center", fontsize=10, color="#eee")
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.02,
+                f"{acc:.0%}\n(n={n})",
+                ha="center",
+                fontsize=10,
+                color="#eee",
+            )
 
     fig.suptitle("Structure & Confidence Performance", fontsize=14, y=1.02)
     fig.tight_layout()
@@ -602,6 +841,7 @@ def plot_structure_confidence(df: pd.DataFrame) -> None:
 
 
 # ── Plot 7: Day of Week ─────────────────────────────────────
+
 
 def plot_day_of_week(df: pd.DataFrame) -> None:
     has_range = df[df["day_range_pts"].notna()].copy()
@@ -618,13 +858,36 @@ def plot_day_of_week(df: pd.DataFrame) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
 
     order = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-    palette = [COLORS["red"], COLORS["blue"], COLORS["green"], COLORS["orange"], COLORS["purple"]]
+    palette = [
+        COLORS["red"],
+        COLORS["blue"],
+        COLORS["green"],
+        COLORS["orange"],
+        COLORS["purple"],
+    ]
 
-    sns.boxplot(data=has_range, x="day_name", y="range", order=order,
-                hue="day_name", hue_order=order, palette=palette,
-                ax=ax, width=0.5, legend=False)
-    sns.swarmplot(data=has_range, x="day_name", y="range", order=order,
-                  color="white", size=6, alpha=0.6, ax=ax)
+    sns.boxplot(
+        data=has_range,
+        x="day_name",
+        y="range",
+        order=order,
+        hue="day_name",
+        hue_order=order,
+        palette=palette,
+        ax=ax,
+        width=0.5,
+        legend=False,
+    )
+    sns.swarmplot(
+        data=has_range,
+        x="day_name",
+        y="range",
+        order=order,
+        color="white",
+        size=6,
+        alpha=0.6,
+        ax=ax,
+    )
 
     # Add mean, median, and n= labels
     for i, day in enumerate(order):
@@ -633,9 +896,15 @@ def plot_day_of_week(df: pd.DataFrame) -> None:
             mean_val = subset.mean()
             median_val = subset.median()
             n = len(subset)
-            ax.text(i, subset.max() + 3,
-                    f"avg {mean_val:.0f} / med {median_val:.0f}\nn={n}",
-                    ha="center", fontsize=8, color="#ccc", linespacing=1.4)
+            ax.text(
+                i,
+                subset.max() + 3,
+                f"avg {mean_val:.0f} / med {median_val:.0f}\nn={n}",
+                ha="center",
+                fontsize=8,
+                color="#ccc",
+                linespacing=1.4,
+            )
 
     ax.set_xlabel("")
     ax.set_ylabel("Day Range (pts)")
@@ -645,6 +914,7 @@ def plot_day_of_week(df: pd.DataFrame) -> None:
 
 
 # ── Plot 8: Feature Stationarity ───────────────────────────
+
 
 def plot_stationarity(df: pd.DataFrame) -> None:
     """Plot rolling means of key features to assess stationarity."""
@@ -679,17 +949,34 @@ def plot_stationarity(df: pd.DataFrame) -> None:
             vals = vals / 1e6
 
         # Raw values
-        ax.plot(range(len(vals)), vals.values, color=color, alpha=0.4,
-                linewidth=1, marker="o", markersize=3)
+        ax.plot(
+            range(len(vals)),
+            vals.values,
+            color=color,
+            alpha=0.4,
+            linewidth=1,
+            marker="o",
+            markersize=3,
+        )
 
         # Rolling mean
         rolling = vals.rolling(window, min_periods=max(2, window // 2)).mean()
-        ax.plot(range(len(rolling)), rolling.values, color=color,
-                linewidth=2.5, label=f"{window}-day rolling mean")
+        ax.plot(
+            range(len(rolling)),
+            rolling.values,
+            color=color,
+            linewidth=2.5,
+            label=f"{window}-day rolling mean",
+        )
 
         # Overall mean reference
-        ax.axhline(y=vals.mean(), color="#555", linestyle=":", alpha=0.5,
-                   label=f"Overall mean ({vals.mean():.1f})")
+        ax.axhline(
+            y=vals.mean(),
+            color="#555",
+            linestyle=":",
+            alpha=0.5,
+            label=f"Overall mean ({vals.mean():.1f})",
+        )
 
         ax.set_ylabel(label, fontsize=10)
         ax.legend(fontsize=8, loc="upper right")
@@ -699,8 +986,12 @@ def plot_stationarity(df: pd.DataFrame) -> None:
     ax = axes[-1]
     tick_step = max(1, len(dates) // 15)
     ax.set_xticks(range(0, len(dates), tick_step))
-    ax.set_xticklabels([d.strftime("%m/%d") for d in dates[::tick_step]],
-                       rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(
+        [d.strftime("%m/%d") for d in dates[::tick_step]],
+        rotation=45,
+        ha="right",
+        fontsize=8,
+    )
 
     fig.suptitle("Feature Stationarity Check (Rolling Means)", fontsize=14, y=1.02)
     fig.tight_layout()
@@ -709,11 +1000,11 @@ def plot_stationarity(df: pd.DataFrame) -> None:
 
 # ── Plot 9: Failure Condition Heatmap (GEX × VIX) ──────────
 
+
 def plot_failure_heatmap(df: pd.DataFrame) -> None:
     """2D heatmap of GEX vs VIX colored by accuracy rate."""
     has_data = df[
-        df["gex_oi_t1"].notna() & df["vix"].notna()
-        & df["structure_correct"].notna()
+        df["gex_oi_t1"].notna() & df["vix"].notna() & df["structure_correct"].notna()
     ].copy()
     if len(has_data) < 10:
         return
@@ -730,7 +1021,9 @@ def plot_failure_heatmap(df: pd.DataFrame) -> None:
     has_data["gex_bin"] = pd.cut(has_data["gex_b"], bins=gex_bins, labels=gex_labels)
     has_data["vix_bin"] = pd.cut(has_data["vix_f"], bins=vix_bins, labels=vix_labels)
 
-    pivot_acc = has_data.groupby(["vix_bin", "gex_bin"], observed=True)["correct"].mean()
+    pivot_acc = has_data.groupby(["vix_bin", "gex_bin"], observed=True)[
+        "correct"
+    ].mean()
     pivot_n = has_data.groupby(["vix_bin", "gex_bin"], observed=True)["correct"].count()
 
     acc_matrix = pivot_acc.unstack(fill_value=float("nan"))
@@ -740,8 +1033,14 @@ def plot_failure_heatmap(df: pd.DataFrame) -> None:
         return
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    im = ax.imshow(acc_matrix.values, cmap="RdYlGn", vmin=0.5, vmax=1.0,
-                   aspect="auto", origin="lower")
+    im = ax.imshow(
+        acc_matrix.values,
+        cmap="RdYlGn",
+        vmin=0.5,
+        vmax=1.0,
+        aspect="auto",
+        origin="lower",
+    )
 
     ax.set_xticks(range(len(acc_matrix.columns)))
     ax.set_xticklabels(acc_matrix.columns, fontsize=10)
@@ -757,8 +1056,16 @@ def plot_failure_heatmap(df: pd.DataFrame) -> None:
             n = int(n_matrix.values[i, j])
             if n > 0 and not np.isnan(val):
                 color = "#111" if val > 0.75 else "#eee"
-                ax.text(j, i, f"{val:.0%}\nn={n}", ha="center", va="center",
-                        fontsize=11, fontweight="bold", color=color)
+                ax.text(
+                    j,
+                    i,
+                    f"{val:.0%}\nn={n}",
+                    ha="center",
+                    va="center",
+                    fontsize=11,
+                    fontweight="bold",
+                    color=color,
+                )
 
     ax.set_title("Structure Accuracy by GEX × VIX Regime", fontsize=14, pad=15)
     fig.colorbar(im, ax=ax, label="Accuracy", shrink=0.8)
@@ -768,10 +1075,15 @@ def plot_failure_heatmap(df: pd.DataFrame) -> None:
 
 # ── Plot 10: Dark Pool Premium vs Range ─────────────────────
 
+
 def plot_dark_pool_vs_range(df: pd.DataFrame) -> None:
     """Dark pool premium vs range, colored by S/R ratio."""
-    cols = ["dp_total_premium", "day_range_pts", "dp_support_resistance_ratio",
-            "structure_correct"]
+    cols = [
+        "dp_total_premium",
+        "day_range_pts",
+        "dp_support_resistance_ratio",
+        "structure_correct",
+    ]
     has_data = df[[c for c in cols if c in df.columns]].dropna(
         subset=["dp_total_premium", "day_range_pts"],
     )
@@ -793,16 +1105,36 @@ def plot_dark_pool_vs_range(df: pd.DataFrame) -> None:
             sr_vals = has_sr["dp_support_resistance_ratio"].astype(float)
             support_heavy = has_sr[sr_vals > 1.0]
             resist_heavy = has_sr[sr_vals <= 1.0]
-            ax.scatter(support_heavy["dp_m"], support_heavy["range"],
-                       c=COLORS["green"], label=f"Support > Resist (n={len(support_heavy)})",
-                       s=80, alpha=0.8, edgecolors="white", linewidth=0.5)
-            ax.scatter(resist_heavy["dp_m"], resist_heavy["range"],
-                       c=COLORS["red"], label=f"Resist >= Support (n={len(resist_heavy)})",
-                       s=80, alpha=0.8, edgecolors="white", linewidth=0.5)
+            ax.scatter(
+                support_heavy["dp_m"],
+                support_heavy["range"],
+                c=COLORS["green"],
+                label=f"Support > Resist (n={len(support_heavy)})",
+                s=80,
+                alpha=0.8,
+                edgecolors="white",
+                linewidth=0.5,
+            )
+            ax.scatter(
+                resist_heavy["dp_m"],
+                resist_heavy["range"],
+                c=COLORS["red"],
+                label=f"Resist >= Support (n={len(resist_heavy)})",
+                s=80,
+                alpha=0.8,
+                edgecolors="white",
+                linewidth=0.5,
+            )
             ax.legend(fontsize=9, loc="upper right")
     else:
-        ax.scatter(has_data["dp_m"], has_data["range"],
-                   c=COLORS["blue"], s=80, alpha=0.8, edgecolors="white")
+        ax.scatter(
+            has_data["dp_m"],
+            has_data["range"],
+            c=COLORS["blue"],
+            s=80,
+            alpha=0.8,
+            edgecolors="white",
+        )
     ax.set_xlabel("Dark Pool Total Premium ($B)")
     ax.set_ylabel("Day Range (pts)")
     ax.set_title("DP Premium vs Range, by S/R Ratio")
@@ -813,27 +1145,50 @@ def plot_dark_pool_vs_range(df: pd.DataFrame) -> None:
         has_sc = has_data[has_data["structure_correct"].notna()]
         correct = has_sc[has_sc["structure_correct"] == True]
         incorrect = has_sc[has_sc["structure_correct"] == False]
-        ax.scatter(correct["dp_m"], correct["range"],
-                   c=COLORS["green"], label="Correct", s=80, alpha=0.8,
-                   edgecolors="white", linewidth=0.5)
-        ax.scatter(incorrect["dp_m"], incorrect["range"],
-                   c=COLORS["red"], label="Incorrect", s=120, alpha=0.9,
-                   edgecolors="white", linewidth=1, marker="X")
+        ax.scatter(
+            correct["dp_m"],
+            correct["range"],
+            c=COLORS["green"],
+            label="Correct",
+            s=80,
+            alpha=0.8,
+            edgecolors="white",
+            linewidth=0.5,
+        )
+        ax.scatter(
+            incorrect["dp_m"],
+            incorrect["range"],
+            c=COLORS["red"],
+            label="Incorrect",
+            s=120,
+            alpha=0.9,
+            edgecolors="white",
+            linewidth=1,
+            marker="X",
+        )
         ax.legend(fontsize=9, loc="upper right")
     else:
-        ax.scatter(has_data["dp_m"], has_data["range"],
-                   c=COLORS["blue"], s=80, alpha=0.8, edgecolors="white")
+        ax.scatter(
+            has_data["dp_m"],
+            has_data["range"],
+            c=COLORS["blue"],
+            s=80,
+            alpha=0.8,
+            edgecolors="white",
+        )
     ax.set_xlabel("Dark Pool Total Premium ($B)")
     ax.set_ylabel("")
     ax.set_title("DP Premium vs Range, by Correctness")
 
-    fig.suptitle("Dark Pool Institutional Activity and Day Outcomes",
-                 fontsize=14, y=1.02)
+    fig.suptitle(
+        "Dark Pool Institutional Activity and Day Outcomes", fontsize=14, y=1.02
+    )
     fig.tight_layout()
     save(fig, "dark_pool_vs_range.png")
 
 
 # ── Plot 11: Cone Consumption vs Correctness ────────────────
+
 
 def plot_cone_consumption(df: pd.DataFrame) -> None:
     """Opening range cone consumption vs structure correctness."""
@@ -841,8 +1196,7 @@ def plot_cone_consumption(df: pd.DataFrame) -> None:
         return
 
     has_data = df[
-        df["opening_range_pct_consumed"].notna()
-        & df["structure_correct"].notna()
+        df["opening_range_pct_consumed"].notna() & df["structure_correct"].notna()
     ].copy()
     if len(has_data) < 5:
         return
@@ -857,12 +1211,29 @@ def plot_cone_consumption(df: pd.DataFrame) -> None:
     correct = has_data[has_data["correct"]]["cone_pct"]
     incorrect = has_data[~has_data["correct"]]["cone_pct"]
     bins = np.arange(0, 1.1, 0.1)
-    ax.hist(correct, bins=bins, color=COLORS["green"], alpha=0.7,
-            label=f"Correct (n={len(correct)})", edgecolor="#333")
-    ax.hist(incorrect, bins=bins, color=COLORS["red"], alpha=0.7,
-            label=f"Incorrect (n={len(incorrect)})", edgecolor="#333")
-    ax.axvline(x=0.65, color=COLORS["orange"], linestyle="--", alpha=0.6,
-               label="Danger zone (65%)")
+    ax.hist(
+        correct,
+        bins=bins,
+        color=COLORS["green"],
+        alpha=0.7,
+        label=f"Correct (n={len(correct)})",
+        edgecolor="#333",
+    )
+    ax.hist(
+        incorrect,
+        bins=bins,
+        color=COLORS["red"],
+        alpha=0.7,
+        label=f"Incorrect (n={len(incorrect)})",
+        edgecolor="#333",
+    )
+    ax.axvline(
+        x=0.65,
+        color=COLORS["orange"],
+        linestyle="--",
+        alpha=0.6,
+        label="Danger zone (65%)",
+    )
     ax.set_xlabel("Cone % Consumed at Entry")
     ax.set_ylabel("Days")
     ax.set_title("Cone Consumption Distribution")
@@ -883,8 +1254,11 @@ def plot_cone_consumption(df: pd.DataFrame) -> None:
 
     bar_colors = [COLORS["green"], COLORS["blue"], COLORS["orange"], COLORS["red"]]
     bars = ax.bar(
-        range(len(bucket_data)), bucket_data["accuracy"],
-        color=bar_colors[:len(bucket_data)], width=0.6, edgecolor="#333",
+        range(len(bucket_data)),
+        bucket_data["accuracy"],
+        color=bar_colors[: len(bucket_data)],
+        width=0.6,
+        edgecolor="#333",
     )
     ax.set_xticks(range(len(bucket_data)))
     ax.set_xticklabels(bucket_data.index, fontsize=10)
@@ -895,16 +1269,22 @@ def plot_cone_consumption(df: pd.DataFrame) -> None:
     for bar, (_, row) in zip(bars, bucket_data.iterrows()):
         n = int(row["total"])
         acc = row["accuracy"]
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
-                f"{acc:.0%}\n(n={n})", ha="center", fontsize=10, color="#eee")
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.02,
+            f"{acc:.0%}\n(n={n})",
+            ha="center",
+            fontsize=10,
+            color="#eee",
+        )
 
-    fig.suptitle("Does Entering Late in the Cone Hurt Accuracy?",
-                 fontsize=14, y=1.02)
+    fig.suptitle("Does Entering Late in the Cone Hurt Accuracy?", fontsize=14, y=1.02)
     fig.tight_layout()
     save(fig, "cone_consumption.png")
 
 
 # ── Plot 12: Previous Day → Current Day ─────────────────────
+
 
 def plot_prev_day_transition(df: pd.DataFrame) -> None:
     """Previous day range/VIX change vs current day outcomes."""
@@ -927,22 +1307,40 @@ def plot_prev_day_transition(df: pd.DataFrame) -> None:
             if "structure_correct" in sub.columns:
                 correct = sub[sub["structure_correct"] == True]
                 incorrect = sub[sub["structure_correct"] == False]
-                ax.scatter(correct["prev_range"], correct["range"],
-                           c=COLORS["green"], label="Correct", s=80,
-                           alpha=0.8, edgecolors="white", linewidth=0.5)
-                ax.scatter(incorrect["prev_range"], incorrect["range"],
-                           c=COLORS["red"], label="Incorrect", s=120,
-                           alpha=0.9, edgecolors="white", marker="X")
+                ax.scatter(
+                    correct["prev_range"],
+                    correct["range"],
+                    c=COLORS["green"],
+                    label="Correct",
+                    s=80,
+                    alpha=0.8,
+                    edgecolors="white",
+                    linewidth=0.5,
+                )
+                ax.scatter(
+                    incorrect["prev_range"],
+                    incorrect["range"],
+                    c=COLORS["red"],
+                    label="Incorrect",
+                    s=120,
+                    alpha=0.9,
+                    edgecolors="white",
+                    marker="X",
+                )
                 ax.legend(fontsize=9)
             else:
-                ax.scatter(sub["prev_range"], sub["range"],
-                           c=COLORS["blue"], s=80, alpha=0.8)
+                ax.scatter(
+                    sub["prev_range"], sub["range"], c=COLORS["blue"], s=80, alpha=0.8
+                )
 
             # Add diagonal reference
-            lims = [min(sub["prev_range"].min(), sub["range"].min()),
-                    max(sub["prev_range"].max(), sub["range"].max())]
-            ax.plot(lims, lims, color="#555", linestyle="--", alpha=0.4,
-                    label="same range")
+            lims = [
+                min(sub["prev_range"].min(), sub["range"].min()),
+                max(sub["prev_range"].max(), sub["range"].max()),
+            ]
+            ax.plot(
+                lims, lims, color="#555", linestyle="--", alpha=0.4, label="same range"
+            )
     ax.set_xlabel("Previous Day Range (pts)")
     ax.set_ylabel("Today's Range (pts)")
     ax.set_title("Range Persistence: Yesterday → Today")
@@ -953,21 +1351,35 @@ def plot_prev_day_transition(df: pd.DataFrame) -> None:
         sub = has_data[has_data["prev_day_vix_change"].notna()].copy()
         sub["prev_vix_chg"] = sub["prev_day_vix_change"].astype(float)
         if len(sub) >= 5:
-            colors = [COLORS["red"] if v > 0 else COLORS["green"]
-                      for v in sub["prev_vix_chg"]]
-            ax.scatter(sub["prev_vix_chg"], sub["range"],
-                       c=colors, s=80, alpha=0.8, edgecolors="white",
-                       linewidth=0.5)
+            colors = [
+                COLORS["red"] if v > 0 else COLORS["green"] for v in sub["prev_vix_chg"]
+            ]
+            ax.scatter(
+                sub["prev_vix_chg"],
+                sub["range"],
+                c=colors,
+                s=80,
+                alpha=0.8,
+                edgecolors="white",
+                linewidth=0.5,
+            )
             ax.axvline(x=0, color="#555", linestyle="--", alpha=0.4)
 
             # Mark failures
             if "structure_correct" in sub.columns:
                 fails = sub[sub["structure_correct"] == False]
                 if len(fails) > 0:
-                    ax.scatter(fails["prev_vix_chg"], fails["range"],
-                               c=COLORS["red"], s=150, marker="X",
-                               edgecolors="white", linewidth=1.5, zorder=5,
-                               label="Failures")
+                    ax.scatter(
+                        fails["prev_vix_chg"],
+                        fails["range"],
+                        c=COLORS["red"],
+                        s=150,
+                        marker="X",
+                        edgecolors="white",
+                        linewidth=1.5,
+                        zorder=5,
+                        label="Failures",
+                    )
                     ax.legend(fontsize=9)
     ax.set_xlabel("Previous Day VIX Change")
     ax.set_ylabel("")
@@ -979,6 +1391,7 @@ def plot_prev_day_transition(df: pd.DataFrame) -> None:
 
 
 # ── Plot 13: Confidence Calibration Over Time ───────────────
+
 
 def plot_confidence_over_time(df: pd.DataFrame) -> None:
     """Rolling accuracy by confidence level to detect calibration drift."""
@@ -999,9 +1412,13 @@ def plot_confidence_over_time(df: pd.DataFrame) -> None:
 
     # Overall rolling accuracy
     rolling_acc = labeled["correct"].rolling(window, min_periods=3).mean()
-    ax.plot(range(len(rolling_acc)), rolling_acc.values,
-            color=COLORS["blue"], linewidth=2.5,
-            label=f"Overall ({window}-day rolling)")
+    ax.plot(
+        range(len(rolling_acc)),
+        rolling_acc.values,
+        color=COLORS["blue"],
+        linewidth=2.5,
+        label=f"Overall ({window}-day rolling)",
+    )
 
     # Per-confidence rolling
     conf_colors = {"HIGH": COLORS["green"], "MODERATE": COLORS["orange"]}
@@ -1010,21 +1427,36 @@ def plot_confidence_over_time(df: pd.DataFrame) -> None:
         conf_data = labeled[mask]["correct"]
         if len(conf_data) >= 5:
             conf_rolling = conf_data.rolling(
-                min(7, len(conf_data) // 2), min_periods=2,
+                min(7, len(conf_data) // 2),
+                min_periods=2,
             ).mean()
             conf_x = [i for i, m in enumerate(mask) if m]
-            ax.plot(conf_x, conf_rolling.values,
-                    color=color, linewidth=1.5, alpha=0.8, linestyle="--",
-                    label=f"{conf} ({min(7, len(conf_data) // 2)}-day rolling)")
+            ax.plot(
+                conf_x,
+                conf_rolling.values,
+                color=color,
+                linewidth=1.5,
+                alpha=0.8,
+                linestyle="--",
+                label=f"{conf} ({min(7, len(conf_data) // 2)}-day rolling)",
+            )
 
     # Mark failure days
     failures = labeled[labeled["correct"] == 0]
     fail_x = [i for i, d in enumerate(labeled.index) if d in failures.index]
-    ax.scatter(fail_x, [0.0] * len(fail_x), c=COLORS["red"], s=100,
-               marker="v", zorder=5, label="Failures")
+    ax.scatter(
+        fail_x,
+        [0.0] * len(fail_x),
+        c=COLORS["red"],
+        s=100,
+        marker="v",
+        zorder=5,
+        label="Failures",
+    )
 
-    ax.axhline(y=0.90, color=COLORS["cyan"], linestyle=":", alpha=0.5,
-               label="90% target")
+    ax.axhline(
+        y=0.90, color=COLORS["cyan"], linestyle=":", alpha=0.5, label="90% target"
+    )
     ax.set_ylim(-0.05, 1.1)
     ax.set_ylabel("Rolling Accuracy")
     ax.set_title("Confidence Calibration Over Time", fontsize=14)
@@ -1034,14 +1466,19 @@ def plot_confidence_over_time(df: pd.DataFrame) -> None:
     dates = labeled.index
     tick_step = max(1, len(dates) // 12)
     ax.set_xticks(range(0, len(dates), tick_step))
-    ax.set_xticklabels([d.strftime("%m/%d") for d in dates[::tick_step]],
-                       rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(
+        [d.strftime("%m/%d") for d in dates[::tick_step]],
+        rotation=45,
+        ha="right",
+        fontsize=8,
+    )
 
     fig.tight_layout()
     save(fig, "confidence_over_time.png")
 
 
 # ── Plot 14: Feature Importance Comparison ──────────────────
+
 
 def plot_feature_importance_comparison(df: pd.DataFrame) -> None:
     """Side-by-side: EDA correlation vs XGBoost gain for top features."""
@@ -1053,10 +1490,23 @@ def plot_feature_importance_comparison(df: pd.DataFrame) -> None:
 
     target = labeled["structure_correct"].astype(float)
     numeric_cols = labeled.select_dtypes(include=[np.number]).columns
-    exclude = {"feature_completeness", "day_range_pts", "day_range_pct",
-               "settlement", "day_open", "day_high", "day_low", "close_vs_open",
-               "vix_close", "vix1d_close", "structure_correct",
-               "label_completeness", "day_of_week", "is_friday", "is_event_day"}
+    exclude = {
+        "feature_completeness",
+        "day_range_pts",
+        "day_range_pct",
+        "settlement",
+        "day_open",
+        "day_high",
+        "day_low",
+        "close_vs_open",
+        "vix_close",
+        "vix1d_close",
+        "structure_correct",
+        "label_completeness",
+        "day_of_week",
+        "is_friday",
+        "is_event_day",
+    }
     feature_cols = [c for c in numeric_cols if c not in exclude]
 
     # EDA: point-biserial correlation
@@ -1087,16 +1537,21 @@ def plot_feature_importance_comparison(df: pd.DataFrame) -> None:
     # Left: EDA correlation ranking
     ax = axes[0]
     y_pos = range(len(eda_features))
-    bars = ax.barh(y_pos, eda_norm, color=COLORS["blue"], height=0.6,
-                   edgecolor="#333")
+    bars = ax.barh(y_pos, eda_norm, color=COLORS["blue"], height=0.6, edgecolor="#333")
     ax.set_yticks(y_pos)
     ax.set_yticklabels(eda_features, fontsize=9)
     ax.set_xlabel("Normalized |r| (point-biserial)")
     ax.set_title("EDA: Correlation with Correctness")
     ax.invert_yaxis()
     for bar, val in zip(bars, eda_values):
-        ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
-                f"{val:.3f}", va="center", fontsize=8, color="#ccc")
+        ax.text(
+            bar.get_width() + 0.01,
+            bar.get_y() + bar.get_height() / 2,
+            f"{val:.3f}",
+            va="center",
+            fontsize=8,
+            color="#ccc",
+        )
 
     # Right: placeholder for XGBoost (read from latest experiment)
     ax = axes[1]
@@ -1105,6 +1560,7 @@ def plot_feature_importance_comparison(df: pd.DataFrame) -> None:
 
     if exp_files:
         import json
+
         try:
             # Pick the experiment with the most features, not just the latest —
             # recent runs may be data-limited (e.g., CI with partial data)
@@ -1125,15 +1581,25 @@ def plot_feature_importance_comparison(df: pd.DataFrame) -> None:
                 xgb_norm = [v / xgb_max for v in xgb_values]
 
                 y_pos2 = range(len(xgb_features))
-                bars2 = ax.barh(y_pos2, xgb_norm, color=COLORS["orange"],
-                                height=0.6, edgecolor="#333")
+                bars2 = ax.barh(
+                    y_pos2,
+                    xgb_norm,
+                    color=COLORS["orange"],
+                    height=0.6,
+                    edgecolor="#333",
+                )
                 ax.set_yticks(y_pos2)
                 ax.set_yticklabels(xgb_features, fontsize=9)
                 ax.invert_yaxis()
                 for bar, val in zip(bars2, xgb_values):
-                    ax.text(bar.get_width() + 0.01,
-                            bar.get_y() + bar.get_height() / 2,
-                            f"{val:.4f}", va="center", fontsize=8, color="#ccc")
+                    ax.text(
+                        bar.get_width() + 0.01,
+                        bar.get_y() + bar.get_height() / 2,
+                        f"{val:.4f}",
+                        va="center",
+                        fontsize=8,
+                        color="#ccc",
+                    )
 
                 # Highlight features that appear in both
                 eda_set = set(eda_features)
@@ -1147,17 +1613,22 @@ def plot_feature_importance_comparison(df: pd.DataFrame) -> None:
     ax.set_xlabel("Normalized XGBoost Gain")
     ax.set_title("XGBoost: Feature Importance (Gain)")
 
-    fig.suptitle("Where Do Statistics and ML Agree?",
-                 fontsize=14, y=1.02)
+    fig.suptitle("Where Do Statistics and ML Agree?", fontsize=14, y=1.02)
     # Legend note
-    fig.text(0.5, -0.02,
-             "Cyan border = feature appears in both top lists (high-signal agreement)",
-             ha="center", fontsize=9, color="#888")
+    fig.text(
+        0.5,
+        -0.02,
+        "Cyan border = feature appears in both top lists (high-signal agreement)",
+        ha="center",
+        fontsize=9,
+        color="#888",
+    )
     fig.tight_layout()
     save(fig, "feature_importance_comparison.png")
 
 
 # ── Main ─────────────────────────────────────────────────────
+
 
 def main() -> None:
     print("Loading data ...")
@@ -1190,14 +1661,17 @@ def main() -> None:
 
     # Save plot manifest as findings
     import os
+
     manifest = []
     for png in sorted(PLOT_DIR.glob("*.png")):
         size_kb = os.path.getsize(png) / 1024
-        manifest.append({
-            "name": png.stem,
-            "generated": True,
-            "file_size_kb": round(size_kb, 1),
-        })
+        manifest.append(
+            {
+                "name": png.stem,
+                "generated": True,
+                "file_size_kb": round(size_kb, 1),
+            }
+        )
     save_section_findings("plots", {"files": manifest, "count": len(manifest)})
 
 

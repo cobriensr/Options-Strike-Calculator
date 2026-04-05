@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -22,7 +23,6 @@ from backtest import (
     CONFIDENCE_SIZING,
     CREDIT_PER_CONTRACT,
     MAX_LOSS_PER_CONTRACT,
-    PLOT_DIR,
     SPREAD_WIDTH,
     compute_metrics,
     find_max_drawdown_period,
@@ -31,7 +31,6 @@ from backtest import (
     print_report,
     simulate_strategy,
 )
-
 
 # ── Helpers ─────────────────────────────────────────────────
 
@@ -85,11 +84,25 @@ class TestSimulateStrategy:
 
     def test_all_wins_default_sizing(self):
         """All wins with MODERATE confidence should each yield +$200."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test")
 
         assert len(result) == 3
@@ -99,10 +112,20 @@ class TestSimulateStrategy:
 
     def test_all_losses_default_sizing(self):
         """All losses with MODERATE confidence should each yield -$1800."""
-        df = make_df([
-            {"recommended_structure": "PCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "PCS", "label_confidence": "MODERATE", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "PCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "PCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test")
 
         assert list(result["pnl"]) == [-1800, -1800]
@@ -111,11 +134,25 @@ class TestSimulateStrategy:
 
     def test_mixed_wins_and_losses(self):
         """Mixed scenario: win, loss, win should produce correct cumulative P&L."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test")
 
         assert list(result["pnl"]) == [200, -1800, 200]
@@ -123,21 +160,37 @@ class TestSimulateStrategy:
 
     def test_high_confidence_sizing(self):
         """HIGH confidence should trade 2 contracts: win=+$400, loss=-$3600."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": False,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test", use_confidence_sizing=True)
 
         assert list(result["contracts"]) == [2, 2]
-        assert result["pnl"].iloc[0] == 400   # 200 * 2
+        assert result["pnl"].iloc[0] == 400  # 200 * 2
         assert result["pnl"].iloc[1] == -3600  # -1800 * 2
 
     def test_low_confidence_sizing(self):
         """LOW confidence should trade 1 contract."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "LOW", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "LOW",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test", use_confidence_sizing=True)
 
         assert result["contracts"].iloc[0] == 1
@@ -145,11 +198,25 @@ class TestSimulateStrategy:
 
     def test_mixed_confidence_levels(self):
         """Different confidence levels in the same run size correctly."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "LOW", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "LOW",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test", use_confidence_sizing=True)
 
         assert list(result["contracts"]) == [2, 1, 1]
@@ -157,10 +224,20 @@ class TestSimulateStrategy:
 
     def test_confidence_sizing_disabled(self):
         """When use_confidence_sizing=False, always trade 1 contract regardless."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": False,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test", use_confidence_sizing=False)
 
         assert list(result["contracts"]) == [1, 1]
@@ -169,33 +246,60 @@ class TestSimulateStrategy:
 
     def test_override_structure(self):
         """override_structure replaces recommended_structure in the output."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "PCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "PCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test", override_structure="IC")
 
         assert list(result["structure"]) == ["IC", "IC"]
 
     def test_override_contracts(self):
         """override_contracts forces a specific contract count regardless of confidence."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "LOW", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "LOW",
+                    "structure_correct": False,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test", override_contracts=3)
 
         assert list(result["contracts"]) == [3, 3]
-        assert result["pnl"].iloc[0] == 200 * 3   # win
+        assert result["pnl"].iloc[0] == 200 * 3  # win
         assert result["pnl"].iloc[1] == -1800 * 3  # loss
 
     def test_override_contracts_with_confidence_sizing_true(self):
         """override_contracts takes precedence over use_confidence_sizing."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(
-            df, name="test",
+            df,
+            name="test",
             use_confidence_sizing=True,
             override_contracts=5,
         )
@@ -205,12 +309,30 @@ class TestSimulateStrategy:
 
     def test_max_equity_and_drawdown(self):
         """max_equity tracks high-water mark; drawdown is cumulative - max_equity."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test")
 
         # cumulative: 200, 400, -1400, -1200
@@ -219,9 +341,15 @@ class TestSimulateStrategy:
 
     def test_name_attribute(self):
         """The result DataFrame should store the strategy name in attrs."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="My Strategy")
 
         assert result.attrs["name"] == "My Strategy"
@@ -235,41 +363,89 @@ class TestSimulateStrategy:
 
     def test_unknown_confidence_defaults_to_one(self):
         """An unknown confidence level should default to 1 contract via .get fallback."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "UNKNOWN_LEVEL", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "UNKNOWN_LEVEL",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test", use_confidence_sizing=True)
 
         assert result["contracts"].iloc[0] == 1
 
     def test_structure_preserved_from_recommended(self):
         """Without override, the structure column reflects recommended_structure."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "PCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "IC", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "PCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "IC",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test")
 
         assert list(result["structure"]) == ["CCS", "PCS", "IC"]
 
     def test_result_columns(self):
         """Verify the result DataFrame has all expected columns."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test")
 
-        expected_cols = {"pnl", "cumulative", "max_equity", "drawdown", "win", "structure", "contracts"}
+        expected_cols = {
+            "pnl",
+            "cumulative",
+            "max_equity",
+            "drawdown",
+            "win",
+            "structure",
+            "contracts",
+        }
         assert set(result.columns) == expected_cols
 
     def test_index_is_date_sorted(self):
         """Result should be indexed by date and sorted ascending."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         result = simulate_strategy(df, name="test")
 
         assert result.index.name == "date"
@@ -284,13 +460,35 @@ class TestComputeMetrics:
 
     def test_all_wins(self):
         """100% win rate with known P&L values."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         m = compute_metrics(trades)
 
@@ -305,11 +503,25 @@ class TestComputeMetrics:
 
     def test_all_losses(self):
         """0% win rate with known P&L values."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         m = compute_metrics(trades)
 
@@ -327,10 +539,18 @@ class TestComputeMetrics:
     def test_mixed_win_rate(self):
         """8 wins and 2 losses -> 80% win rate."""
         records = [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            }
             for _ in range(8)
         ] + [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            }
             for _ in range(2)
         ]
         df = make_df(records)
@@ -346,10 +566,18 @@ class TestComputeMetrics:
         """Verify profit_factor = gross_wins / gross_losses."""
         # 9 wins, 1 loss -> gross_wins = 1800, gross_losses = 1800 -> PF = 1.0
         records = [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            }
             for _ in range(9)
         ] + [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            },
         ]
         df = make_df(records)
         trades = simulate_strategy(df, name="test")
@@ -363,12 +591,30 @@ class TestComputeMetrics:
         # win, win, loss, win => cumulative: 200, 400, -1400, -1200
         # max_equity: 200, 400, 400, 400
         # drawdown: 0, 0, -1800, -1600
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         m = compute_metrics(trades)
 
@@ -377,11 +623,25 @@ class TestComputeMetrics:
 
     def test_max_drawdown_pct(self):
         """max_drawdown_pct = max_dd / peak_equity * 100."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         m = compute_metrics(trades)
 
@@ -392,10 +652,20 @@ class TestComputeMetrics:
 
     def test_max_drawdown_pct_no_positive_equity(self):
         """When peak equity never goes positive, max_drawdown_pct should be 0."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         m = compute_metrics(trades)
 
@@ -413,9 +683,15 @@ class TestComputeMetrics:
 
     def test_single_win(self):
         """Single winning trade metrics."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         m = compute_metrics(trades)
 
@@ -430,9 +706,15 @@ class TestComputeMetrics:
 
     def test_single_loss(self):
         """Single losing trade metrics."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         m = compute_metrics(trades)
 
@@ -444,11 +726,25 @@ class TestComputeMetrics:
 
     def test_high_confidence_affects_metrics(self):
         """HIGH confidence (2x) should produce doubled P&L in metrics."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": False,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test", use_confidence_sizing=True)
         m = compute_metrics(trades)
 
@@ -467,11 +763,25 @@ class TestFindMaxDrawdownPeriod:
 
     def test_simple_drawdown(self):
         """Win, win, loss => peak is day 2, trough is day 3."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         peak, trough = find_max_drawdown_period(trades)
 
@@ -482,13 +792,35 @@ class TestFindMaxDrawdownPeriod:
 
     def test_drawdown_with_recovery(self):
         """Win, win, loss, win, win => drawdown period is day2 to day3."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         peak, trough = find_max_drawdown_period(trades)
 
@@ -500,22 +832,78 @@ class TestFindMaxDrawdownPeriod:
     def test_two_drawdowns_picks_worst(self):
         """When there are two separate drawdowns, the function returns the worst one."""
         records = [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            },
             # Recover with many wins
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            },
             # Second drawdown: 2 losses in a row (worse)
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            },
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            },
         ]
         df = make_df(records)
         trades = simulate_strategy(df, name="test")
@@ -529,11 +917,25 @@ class TestFindMaxDrawdownPeriod:
 
     def test_no_drawdown_all_wins(self):
         """All wins means drawdown is always 0; peak and trough are the same."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         peak, trough = find_max_drawdown_period(trades)
 
@@ -552,9 +954,15 @@ class TestFindMaxDrawdownPeriod:
 
     def test_single_loss(self):
         """Single loss: peak and trough are the same date."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         peak, trough = find_max_drawdown_period(trades)
 
@@ -564,18 +972,60 @@ class TestFindMaxDrawdownPeriod:
 
     def test_immediate_loss_then_wins(self):
         """Loss on day 1 then wins: peak is day 1, trough is day 1."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test")
         peak, trough = find_max_drawdown_period(trades)
 
@@ -612,7 +1062,6 @@ class TestPrintMetricsTable:
                 "num_trades": 10,
             },
         }
-        from backtest import print_metrics_table
         print_metrics_table(metrics)
 
         captured = capsys.readouterr()
@@ -631,7 +1080,6 @@ class TestPrintMetricsTable:
                 "num_trades": 1,
             },
         }
-        from backtest import print_metrics_table
         print_metrics_table(metrics)
 
         captured = capsys.readouterr()
@@ -650,10 +1098,18 @@ class TestIntegration:
     def test_breakeven_at_nine_to_one(self):
         """At 9:1 risk/reward, 9 wins and 1 loss should break even."""
         records = [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            }
             for _ in range(9)
         ] + [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            },
         ]
         df = make_df(records)
         trades = simulate_strategy(df, name="test")
@@ -666,10 +1122,18 @@ class TestIntegration:
     def test_profitable_above_ninety_pct(self):
         """10 wins and 1 loss at 1x sizing: net positive."""
         records = [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            }
             for _ in range(10)
         ] + [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            },
         ]
         df = make_df(records)
         trades = simulate_strategy(df, name="test")
@@ -682,10 +1146,18 @@ class TestIntegration:
     def test_unprofitable_below_ninety_pct(self):
         """8 wins and 2 losses at 1x sizing: net negative."""
         records = [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            }
             for _ in range(8)
         ] + [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            }
             for _ in range(2)
         ]
         df = make_df(records)
@@ -698,10 +1170,20 @@ class TestIntegration:
 
     def test_override_contracts_larger_sizing(self):
         """Override to 5 contracts scales both wins and losses."""
-        df = make_df([
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True},
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False},
-        ])
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
         trades = simulate_strategy(df, name="test", override_contracts=5)
         m = compute_metrics(trades)
 
@@ -719,17 +1201,33 @@ class TestPlotEquityCurves:
     def test_plot_equity_curves_creates_file(self, tmp_path):
         """Plot should create backtest_equity.png in the configured PLOT_DIR."""
         records_win = [
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": True}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "HIGH",
+                "structure_correct": True,
+            }
             for _ in range(8)
         ] + [
-            {"recommended_structure": "CCS", "label_confidence": "HIGH", "structure_correct": False}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "HIGH",
+                "structure_correct": False,
+            }
             for _ in range(2)
         ]
         records_baseline = [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            }
             for _ in range(7)
         ] + [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": False}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": False,
+            }
             for _ in range(3)
         ]
         df_claude = make_df(records_win)
@@ -738,13 +1236,19 @@ class TestPlotEquityCurves:
 
         strategies = {
             "Claude Analysis": simulate_strategy(
-                df_claude, name="Claude Analysis", use_confidence_sizing=True,
+                df_claude,
+                name="Claude Analysis",
+                use_confidence_sizing=True,
             ),
             "Majority Class (CCS)": simulate_strategy(
-                df_baseline, name="Majority Class (CCS)", override_contracts=2,
+                df_baseline,
+                name="Majority Class (CCS)",
+                override_contracts=2,
             ),
             "Equal Size": simulate_strategy(
-                df_equal, name="Equal Size", use_confidence_sizing=False,
+                df_equal,
+                name="Equal Size",
+                use_confidence_sizing=False,
             ),
         }
         metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
@@ -763,7 +1267,11 @@ class TestPlotEquityCurves:
         empty_trades = simulate_strategy(empty_df, name="Empty")
 
         win_records = [
-            {"recommended_structure": "CCS", "label_confidence": "MODERATE", "structure_correct": True}
+            {
+                "recommended_structure": "CCS",
+                "label_confidence": "MODERATE",
+                "structure_correct": True,
+            }
             for _ in range(5)
         ]
         valid_df = make_df(win_records)
@@ -814,15 +1322,21 @@ class TestPrintReport:
 
         strategies = {
             "Claude Analysis": simulate_strategy(
-                df, name="Claude Analysis", use_confidence_sizing=True,
+                df,
+                name="Claude Analysis",
+                use_confidence_sizing=True,
             ),
             "Majority Class (CCS)": simulate_strategy(
-                df, name="Majority Class (CCS)",
-                override_structure="CCS", override_contracts=2,
+                df,
+                name="Majority Class (CCS)",
+                override_structure="CCS",
+                override_contracts=2,
             ),
             "Equal Size": simulate_strategy(
-                df, name="Equal Size",
-                use_confidence_sizing=False, override_contracts=1,
+                df,
+                name="Equal Size",
+                use_confidence_sizing=False,
+                override_contracts=1,
             ),
         }
         metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
@@ -865,44 +1379,54 @@ class TestPrintReport:
 
     def test_print_report_confidence_breakdown(self, capsys):
         """Confidence breakdown section should appear when label_confidence is present."""
-        records = [
-            {
-                "recommended_structure": "CCS",
-                "label_confidence": "HIGH",
-                "structure_correct": True,
-                "day_range_pts": 10.0,
-            }
-            for _ in range(5)
-        ] + [
-            {
-                "recommended_structure": "PCS",
-                "label_confidence": "MODERATE",
-                "structure_correct": True,
-                "day_range_pts": 12.0,
-            }
-            for _ in range(5)
-        ] + [
-            {
-                "recommended_structure": "CCS",
-                "label_confidence": "LOW",
-                "structure_correct": False,
-                "day_range_pts": 30.0,
-            }
-            for _ in range(2)
-        ]
+        records = (
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "HIGH",
+                    "structure_correct": True,
+                    "day_range_pts": 10.0,
+                }
+                for _ in range(5)
+            ]
+            + [
+                {
+                    "recommended_structure": "PCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                    "day_range_pts": 12.0,
+                }
+                for _ in range(5)
+            ]
+            + [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "LOW",
+                    "structure_correct": False,
+                    "day_range_pts": 30.0,
+                }
+                for _ in range(2)
+            ]
+        )
         df = make_df(records)
 
         strategies = {
             "Claude Analysis": simulate_strategy(
-                df, name="Claude Analysis", use_confidence_sizing=True,
+                df,
+                name="Claude Analysis",
+                use_confidence_sizing=True,
             ),
             "Majority Class (CCS)": simulate_strategy(
-                df, name="Majority Class (CCS)",
-                override_structure="CCS", override_contracts=2,
+                df,
+                name="Majority Class (CCS)",
+                override_structure="CCS",
+                override_contracts=2,
             ),
             "Equal Size": simulate_strategy(
-                df, name="Equal Size",
-                use_confidence_sizing=False, override_contracts=1,
+                df,
+                name="Equal Size",
+                use_confidence_sizing=False,
+                override_contracts=1,
             ),
         }
         metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
@@ -955,17 +1479,23 @@ class TestPrintReport:
         # P&L: 8*400 - 2*3600 = 3200 - 7200 = -4000
         strategies = {
             "Claude Analysis": simulate_strategy(
-                df, name="Claude Analysis", use_confidence_sizing=True,
+                df,
+                name="Claude Analysis",
+                use_confidence_sizing=True,
             ),
             # Majority baseline with 1 contract.
             # P&L: 8*200 - 2*1800 = 1600 - 3600 = -2000 => better than Claude
             "Majority Class (CCS)": simulate_strategy(
-                df, name="Majority Class (CCS)",
-                override_structure="CCS", override_contracts=1,
+                df,
+                name="Majority Class (CCS)",
+                override_structure="CCS",
+                override_contracts=1,
             ),
             "Equal Size": simulate_strategy(
-                df, name="Equal Size",
-                use_confidence_sizing=False, override_contracts=1,
+                df,
+                name="Equal Size",
+                use_confidence_sizing=False,
+                override_contracts=1,
             ),
         }
         metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}
@@ -974,7 +1504,9 @@ class TestPrintReport:
 
         captured = capsys.readouterr()
         out_lower = captured.out.lower()
-        assert "baseline outperforms" in out_lower or "not yet adding value" in out_lower
+        assert (
+            "baseline outperforms" in out_lower or "not yet adding value" in out_lower
+        )
 
     def test_print_report_sizing_adds_value(self, capsys):
         """When confidence sizing > equal sizing, 'calibration is working' should appear."""
@@ -1004,15 +1536,21 @@ class TestPrintReport:
         # Claude > Equal => sizing adds value
         strategies = {
             "Claude Analysis": simulate_strategy(
-                df, name="Claude Analysis", use_confidence_sizing=True,
+                df,
+                name="Claude Analysis",
+                use_confidence_sizing=True,
             ),
             "Majority Class (CCS)": simulate_strategy(
-                df, name="Majority Class (CCS)",
-                override_structure="CCS", override_contracts=2,
+                df,
+                name="Majority Class (CCS)",
+                override_structure="CCS",
+                override_contracts=2,
             ),
             "Equal Size": simulate_strategy(
-                df, name="Equal Size",
-                use_confidence_sizing=False, override_contracts=1,
+                df,
+                name="Equal Size",
+                use_confidence_sizing=False,
+                override_contracts=1,
             ),
         }
         metrics = {name: compute_metrics(trades) for name, trades in strategies.items()}

@@ -9,16 +9,13 @@ Run:
     cd ml && .venv/bin/python -m pytest test_visualize.py -v
 """
 
-from pathlib import Path
-from unittest.mock import patch
-
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
-
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -30,8 +27,11 @@ def _make_viz_df(n: int = 20) -> pd.DataFrame:
 
     structures = ["PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "IRON CONDOR"]
     charm_patterns = [
-        "all_negative", "all_positive", "mixed",
-        "pcs_confirming", "ccs_confirming",
+        "all_negative",
+        "all_positive",
+        "mixed",
+        "pcs_confirming",
+        "ccs_confirming",
     ]
     range_cats = ["NARROW", "NORMAL", "WIDE", "EXTREME"]
     confidences = ["HIGH", "MODERATE", "LOW"]
@@ -43,17 +43,14 @@ def _make_viz_df(n: int = 20) -> pd.DataFrame:
             "vix": rng.uniform(14, 28, n),
             "vix1d": rng.uniform(12, 30, n),
             "vix1d_vix_ratio": rng.uniform(0.8, 1.2, n),
-
             # GEX features
             "gex_oi_t1": rng.uniform(-50e9, 50e9, n),
             "gex_dir_t1": rng.uniform(-1, 1, n),
             "gex_vol_t1": rng.uniform(0, 1e9, n),
-
             # Greek features
             "agg_net_gamma": rng.uniform(-1e6, 1e6, n),
             "charm_slope": rng.uniform(-0.5, 0.5, n),
             "dte0_charm_pct": rng.uniform(-0.1, 0.1, n),
-
             # Flow features
             "flow_agreement_t1": rng.integers(0, 9, n).astype(float),
             "mt_ncp_t1": rng.uniform(-5e6, 5e6, n),
@@ -63,7 +60,6 @@ def _make_viz_df(n: int = 20) -> pd.DataFrame:
             "spy_etf_ncp_t1": rng.uniform(-5e6, 5e6, n),
             "qqq_etf_ncp_t1": rng.uniform(-5e6, 5e6, n),
             "zero_dte_ncp_t1": rng.uniform(-5e6, 5e6, n),
-
             # Outcome columns
             "day_range_pts": rng.uniform(15, 80, n),
             "day_range_pct": rng.uniform(0.3, 1.5, n),
@@ -72,7 +68,6 @@ def _make_viz_df(n: int = 20) -> pd.DataFrame:
             "day_high": rng.uniform(5740, 5780, n),
             "day_low": rng.uniform(5670, 5710, n),
             "close_vs_open": rng.uniform(-30, 30, n),
-
             # Label columns
             "recommended_structure": rng.choice(structures, n),
             "structure_correct": rng.choice([True, False], n),
@@ -80,7 +75,6 @@ def _make_viz_df(n: int = 20) -> pd.DataFrame:
             "charm_pattern": rng.choice(charm_patterns, n),
             "range_category": rng.choice(range_cats, n),
             "settlement_direction": rng.choice(settlement_dirs, n),
-
             # Day of week
             "day_of_week": [d.isoweekday() for d in dates],
         },
@@ -92,6 +86,7 @@ def _make_viz_df(n: int = 20) -> pd.DataFrame:
 def _redirect_plot_dir(tmp_path, monkeypatch):
     """Redirect PLOT_DIR to a temporary directory for every test."""
     import visualize
+
     monkeypatch.setattr(visualize, "PLOT_DIR", tmp_path)
 
 

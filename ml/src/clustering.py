@@ -14,12 +14,12 @@ Requires: pip install psycopg2-binary pandas scikit-learn matplotlib
 
 import argparse
 import sys
-from pathlib import Path
 
 try:
     import numpy as np
     import pandas as pd
-    from sklearn.cluster import KMeans, AgglomerativeClustering
+    from scipy.stats import chi2_contingency
+    from sklearn.cluster import AgglomerativeClustering, KMeans
     from sklearn.decomposition import PCA
     from sklearn.impute import SimpleImputer
     from sklearn.metrics import (
@@ -30,7 +30,6 @@ try:
     from sklearn.mixture import GaussianMixture
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
-    from scipy.stats import chi2_contingency
     from statsmodels.stats.proportion import proportion_confint
 except ImportError:
     print("Missing dependencies. Run:")
@@ -38,21 +37,20 @@ except ImportError:
     sys.exit(1)
 
 from utils import (
-    ML_ROOT,
-    load_data,
-    validate_dataframe,
-    save_section_findings,
-    VOLATILITY_FEATURES,
+    DARK_POOL_FEATURES,
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
-    DARK_POOL_FEATURES,
-    OPTIONS_VOLUME_FEATURES,
     IV_PCR_FEATURES,
     MAX_PAIN_FEATURES,
+    ML_ROOT,
     OI_CHANGE_FEATURES,
+    OPTIONS_VOLUME_FEATURES,
     VOL_SURFACE_FEATURES,
+    VOLATILITY_FEATURES,
+    load_data,
+    save_section_findings,
+    validate_dataframe,
 )
-
 
 # ── Feature Groups ───────────────────────────────────────────
 
@@ -60,36 +58,67 @@ from utils import (
 # VOLATILITY_FEATURES and GEX_FEATURES_T1T2 imported from utils.
 
 REGIME_FEATURES = [
-    "cluster_mult", "dow_mult", "sigma",
+    "cluster_mult",
+    "dow_mult",
+    "sigma",
 ]
 
 # Categorical features that need one-hot encoding
 CATEGORICAL_FEATURES = ["regime_zone"]
 
 CALENDAR_FEATURES = [
-    "day_of_week", "is_friday",
+    "day_of_week",
+    "is_friday",
 ]
 
 CALCULATOR_FEATURES = [
-    "ic_ceiling", "put_spread_ceiling", "call_spread_ceiling",
+    "ic_ceiling",
+    "put_spread_ceiling",
+    "call_spread_ceiling",
 ]
 
 FLOW_FEATURES_T1T2 = [
-    "mt_ncp_t1", "mt_npp_t1", "mt_ncp_t2", "mt_npp_t2",
-    "spx_ncp_t1", "spx_npp_t1", "spx_ncp_t2", "spx_npp_t2",
-    "spy_ncp_t1", "spy_npp_t1", "spy_ncp_t2", "spy_npp_t2",
-    "qqq_ncp_t1", "qqq_npp_t1", "qqq_ncp_t2", "qqq_npp_t2",
-    "spy_etf_ncp_t1", "spy_etf_npp_t1", "spy_etf_ncp_t2", "spy_etf_npp_t2",
-    "qqq_etf_ncp_t1", "qqq_etf_npp_t1", "qqq_etf_ncp_t2", "qqq_etf_npp_t2",
-    "zero_dte_ncp_t1", "zero_dte_npp_t1", "zero_dte_ncp_t2", "zero_dte_npp_t2",
-    "delta_flow_total_t1", "delta_flow_dir_t1",
-    "delta_flow_total_t2", "delta_flow_dir_t2",
+    "mt_ncp_t1",
+    "mt_npp_t1",
+    "mt_ncp_t2",
+    "mt_npp_t2",
+    "spx_ncp_t1",
+    "spx_npp_t1",
+    "spx_ncp_t2",
+    "spx_npp_t2",
+    "spy_ncp_t1",
+    "spy_npp_t1",
+    "spy_ncp_t2",
+    "spy_npp_t2",
+    "qqq_ncp_t1",
+    "qqq_npp_t1",
+    "qqq_ncp_t2",
+    "qqq_npp_t2",
+    "spy_etf_ncp_t1",
+    "spy_etf_npp_t1",
+    "spy_etf_ncp_t2",
+    "spy_etf_npp_t2",
+    "qqq_etf_ncp_t1",
+    "qqq_etf_npp_t1",
+    "qqq_etf_ncp_t2",
+    "qqq_etf_npp_t2",
+    "zero_dte_ncp_t1",
+    "zero_dte_npp_t1",
+    "zero_dte_ncp_t2",
+    "zero_dte_npp_t2",
+    "delta_flow_total_t1",
+    "delta_flow_dir_t1",
+    "delta_flow_total_t2",
+    "delta_flow_dir_t2",
 ]
 
 FLOW_AGGREGATE_T1T2 = [
-    "flow_agreement_t1", "flow_agreement_t2",
-    "etf_tide_divergence_t1", "etf_tide_divergence_t2",
-    "ncp_npp_gap_spx_t1", "ncp_npp_gap_spx_t2",
+    "flow_agreement_t1",
+    "flow_agreement_t2",
+    "etf_tide_divergence_t1",
+    "etf_tide_divergence_t2",
+    "ncp_npp_gap_spx_t1",
+    "ncp_npp_gap_spx_t2",
 ]
 
 # Clustering extends core greeks with charm OI features
@@ -98,16 +127,25 @@ GREEK_FEATURES = GREEK_FEATURES_CORE + ["charm_oi_t1", "charm_oi_t2"]
 CHARM_PATTERN_COL = "charm_pattern"
 
 ALL_NUMERIC_FEATURES = (
-    VOLATILITY_FEATURES + REGIME_FEATURES + CALENDAR_FEATURES +
-    CALCULATOR_FEATURES + FLOW_FEATURES_T1T2 + FLOW_AGGREGATE_T1T2 +
-    GEX_FEATURES_T1T2 + GREEK_FEATURES +
-    DARK_POOL_FEATURES + OPTIONS_VOLUME_FEATURES +
-    IV_PCR_FEATURES + MAX_PAIN_FEATURES +
-    OI_CHANGE_FEATURES + VOL_SURFACE_FEATURES
+    VOLATILITY_FEATURES
+    + REGIME_FEATURES
+    + CALENDAR_FEATURES
+    + CALCULATOR_FEATURES
+    + FLOW_FEATURES_T1T2
+    + FLOW_AGGREGATE_T1T2
+    + GEX_FEATURES_T1T2
+    + GREEK_FEATURES
+    + DARK_POOL_FEATURES
+    + OPTIONS_VOLUME_FEATURES
+    + IV_PCR_FEATURES
+    + MAX_PAIN_FEATURES
+    + OI_CHANGE_FEATURES
+    + VOL_SURFACE_FEATURES
 )
 
 
 # ── Data Loading ─────────────────────────────────────────────
+
 
 def load_data_clustering() -> pd.DataFrame:
     """Load training features + outcomes + labels from Neon."""
@@ -124,6 +162,7 @@ def load_data_clustering() -> pd.DataFrame:
 
 
 # ── Preprocessing ────────────────────────────────────────────
+
 
 def preprocess(df: pd.DataFrame) -> tuple[np.ndarray, list[str], pd.DataFrame]:
     """
@@ -156,40 +195,49 @@ def preprocess(df: pd.DataFrame) -> tuple[np.ndarray, list[str], pd.DataFrame]:
     n_features = len(df_feat.columns)
     n_nulls = df_feat.isnull().sum().sum()
     n_cells = len(df_feat) * n_features
-    print(f"  Features: {n_features}, Null cells: {n_nulls}/{n_cells} ({n_nulls/n_cells:.1%})")
+    print(
+        f"  Features: {n_features}, Null cells: {n_nulls}/{n_cells} ({n_nulls / n_cells:.1%})"
+    )
 
     # Impute → Standardize → PCA via Pipeline (avoids data leakage)
-    pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy="median")),
-        ('scaler', StandardScaler()),
-        ('pca', PCA(n_components=0.85, random_state=42)),
-    ])
+    pipeline = Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            ("pca", PCA(n_components=0.85, random_state=42)),
+        ]
+    )
     X_pca = pipeline.fit_transform(df_feat)
-    pca = pipeline.named_steps['pca']
+    pca = pipeline.named_steps["pca"]
 
     n_components = X_pca.shape[1]
     variance_explained = pca.explained_variance_ratio_.sum()
-    print(f"  PCA: {n_features} features -> {n_components} components ({variance_explained:.1%} variance)")
+    print(
+        f"  PCA: {n_features} features -> {n_components} components ({variance_explained:.1%} variance)"
+    )
 
     # Feature loadings for interpretation
     loadings = pd.DataFrame(
         pca.components_.T,
         index=df_feat.columns,
-        columns=[f"PC{i+1}" for i in range(n_components)],
+        columns=[f"PC{i + 1}" for i in range(n_components)],
     )
 
     # Top features per component
     print("\n  Top features per principal component:")
     for i in range(min(n_components, 5)):
-        pc = loadings[f"PC{i+1}"].abs().nlargest(5)
-        features_str = ", ".join(f"{name} ({loadings.loc[name, f'PC{i+1}']:+.2f})" for name in pc.index)
-        print(f"    PC{i+1} ({pca.explained_variance_ratio_[i]:.1%}): {features_str}")
+        pc = loadings[f"PC{i + 1}"].abs().nlargest(5)
+        features_str = ", ".join(
+            f"{name} ({loadings.loc[name, f'PC{i + 1}']:+.2f})" for name in pc.index
+        )
+        print(f"    PC{i + 1} ({pca.explained_variance_ratio_[i]:.1%}): {features_str}")
 
-    pca_labels = [f"PC{i+1}" for i in range(n_components)]
+    pca_labels = [f"PC{i + 1}" for i in range(n_components)]
     return X_pca, pca_labels, df_feat
 
 
 # ── Clustering ───────────────────────────────────────────────
+
 
 def run_clustering(X: np.ndarray, k_range: range) -> dict:
     """Run K-Means, GMM, and Hierarchical for each k. Return results."""
@@ -237,15 +285,21 @@ def print_results(results: dict) -> int:
     print("  CLUSTERING RESULTS")
     print(f"{'=' * 70}\n")
 
-    print(f"  {'k':>3s}  {'K-Means':>10s}  {'GMM':>10s}  {'Hier.':>10s}  {'CH':>10s}  {'DB':>8s}  {'GMM BIC':>12s}  {'Sizes (KM)':>20s}")
-    print(f"  {'':->3s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->8s}  {'':->12s}  {'':->20s}")
+    print(
+        f"  {'k':>3s}  {'K-Means':>10s}  {'GMM':>10s}  {'Hier.':>10s}  {'CH':>10s}  {'DB':>8s}  {'GMM BIC':>12s}  {'Sizes (KM)':>20s}"
+    )
+    print(
+        f"  {'':->3s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->8s}  {'':->12s}  {'':->20s}"
+    )
 
     best_k = 2
     best_sil = -1
 
     for k, r in sorted(results.items()):
         sizes = str(r["kmeans_sizes"])
-        print(f"  {k:3d}  {r['kmeans_sil']:10.3f}  {r['gmm_sil']:10.3f}  {r['hier_sil']:10.3f}  {r['kmeans_ch']:10.1f}  {r['kmeans_db']:8.3f}  {r['gmm_bic']:12.1f}  {sizes:>20s}")
+        print(
+            f"  {k:3d}  {r['kmeans_sil']:10.3f}  {r['gmm_sil']:10.3f}  {r['hier_sil']:10.3f}  {r['kmeans_ch']:10.1f}  {r['kmeans_db']:8.3f}  {r['gmm_bic']:12.1f}  {sizes:>20s}"
+        )
 
         avg_sil = (r["kmeans_sil"] + r["gmm_sil"] + r["hier_sil"]) / 3
         if avg_sil > best_sil:
@@ -266,23 +320,25 @@ def characterize_clusters(
     df_c = df.copy()
     df_c["cluster"] = labels
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  CLUSTER PROFILES ({method}, k={k})")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     for i in range(k):
         mask = df_c["cluster"] == i
         cluster = df_c[mask]
         n = len(cluster)
 
-        print(f"\n  --- Cluster {i} ({n} days, {n/len(df_c):.0%}) ---")
+        print(f"\n  --- Cluster {i} ({n} days, {n / len(df_c):.0%}) ---")
         print(f"  Dates: {', '.join(d.strftime('%m/%d') for d in cluster.index)}")
 
         # Volatility profile
         if "vix" in cluster.columns:
             vix_vals = cluster["vix"].dropna().astype(float)
             if len(vix_vals) > 0:
-                print(f"  VIX: {vix_vals.mean():.1f} avg ({vix_vals.min():.1f}-{vix_vals.max():.1f})")
+                print(
+                    f"  VIX: {vix_vals.mean():.1f} avg ({vix_vals.min():.1f}-{vix_vals.max():.1f})"
+                )
 
         if "vix1d_vix_ratio" in cluster.columns:
             ratio = cluster["vix1d_vix_ratio"].dropna().astype(float)
@@ -294,7 +350,9 @@ def characterize_clusters(
             gex = cluster["gex_oi_t1"].dropna().astype(float)
             if len(gex) > 0:
                 gex_b = gex / 1e9
-                print(f"  GEX OI (T1): {gex_b.mean():.1f}B avg ({gex_b.min():.1f}B to {gex_b.max():.1f}B)")
+                print(
+                    f"  GEX OI (T1): {gex_b.mean():.1f}B avg ({gex_b.min():.1f}B to {gex_b.max():.1f}B)"
+                )
 
         # Flow agreement
         if "flow_agreement_t1" in cluster.columns:
@@ -334,7 +392,15 @@ def characterize_clusters(
 
         # Calendar
         dow = cluster["day_of_week"].dropna().astype(int)
-        day_names = {0: "Sun", 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat"}
+        day_names = {
+            0: "Sun",
+            1: "Mon",
+            2: "Tue",
+            3: "Wed",
+            4: "Thu",
+            5: "Fri",
+            6: "Sat",
+        }
         if len(dow) > 0:
             dow_dist = dow.map(day_names).value_counts()
             parts = [f"{v}={c}" for v, c in dow_dist.items()]
@@ -359,7 +425,7 @@ def characterize_clusters(
             sc = cluster["structure_correct"].dropna()
             if len(sc) > 0:
                 correct = sc.sum()
-                print(f"  Correct: {correct}/{len(sc)} ({correct/len(sc):.0%})")
+                print(f"  Correct: {correct}/{len(sc)} ({correct / len(sc):.0%})")
 
         if "settlement_direction" in cluster.columns:
             sd = cluster["settlement_direction"].dropna()
@@ -453,7 +519,9 @@ def split_half_validation(X: np.ndarray, k: int, *, random_state: int = 42) -> d
 
 
 def outcome_association_test(
-    df: pd.DataFrame, labels: np.ndarray, _k: int,
+    df: pd.DataFrame,
+    labels: np.ndarray,
+    _k: int,
 ) -> None:
     """Test if cluster assignments are associated with trading outcomes."""
     df_c = df.copy()
@@ -461,7 +529,11 @@ def outcome_association_test(
 
     print("\n  --- Outcome Association Tests (chi-squared) ---\n")
 
-    for outcome_col in ["range_category", "settlement_direction", "recommended_structure"]:
+    for outcome_col in [
+        "range_category",
+        "settlement_direction",
+        "recommended_structure",
+    ]:
         if outcome_col not in df_c.columns:
             continue
         has_both = df_c[[outcome_col, "cluster"]].dropna()
@@ -480,13 +552,23 @@ def outcome_association_test(
             min_dim = min(ct.shape[0], ct.shape[1]) - 1
             cramers_v = np.sqrt(chi2 / (n * min_dim)) if min_dim > 0 else 0
             sig = " **" if p < 0.05 else " *" if p < 0.10 else ""
-            strength = "strong" if cramers_v >= 0.5 else "moderate" if cramers_v >= 0.3 else "weak"
-            print(f"  {outcome_col:25s}  chi2={chi2:6.2f}  p={p:.3f}  Cramer's V={cramers_v:.2f} ({strength}){sig}")
+            strength = (
+                "strong"
+                if cramers_v >= 0.5
+                else "moderate"
+                if cramers_v >= 0.3
+                else "weak"
+            )
+            print(
+                f"  {outcome_col:25s}  chi2={chi2:6.2f}  p={p:.3f}  Cramer's V={cramers_v:.2f} ({strength}){sig}"
+            )
 
             # Warning for small expected counts
             pct_small = (expected < 5).sum() / expected.size
             if pct_small > 0.2:
-                print(f"    Warning: {pct_small:.0%} of cells have expected count < 5 (Fisher's exact may be more appropriate)")
+                print(
+                    f"    Warning: {pct_small:.0%} of cells have expected count < 5 (Fisher's exact may be more appropriate)"
+                )
         except Exception:
             continue
 
@@ -494,13 +576,21 @@ def outcome_association_test(
     if "structure_correct" in df_c.columns:
         has_sc = df_c[["structure_correct", "cluster"]].dropna()
         if len(has_sc) >= 10:
-            correct_by_cluster = has_sc.groupby("cluster")["structure_correct"].agg(["sum", "count"])
+            correct_by_cluster = has_sc.groupby("cluster")["structure_correct"].agg(
+                ["sum", "count"]
+            )
             correct_by_cluster.columns = ["correct", "total"]
-            correct_by_cluster["pct"] = correct_by_cluster["correct"] / correct_by_cluster["total"]
+            correct_by_cluster["pct"] = (
+                correct_by_cluster["correct"] / correct_by_cluster["total"]
+            )
             print("\n  Structure correctness by cluster:")
             for cluster_id, row in correct_by_cluster.iterrows():
-                lo, hi = proportion_confint(int(row["correct"]), int(row["total"]), method='wilson')
-                print(f"    Cluster {cluster_id}: {int(row['correct'])}/{int(row['total'])} ({row['pct']:.0%})  CI [{lo:.0%}-{hi:.0%}]")
+                lo, hi = proportion_confint(
+                    int(row["correct"]), int(row["total"]), method="wilson"
+                )
+                print(
+                    f"    Cluster {cluster_id}: {int(row['correct'])}/{int(row['total'])} ({row['pct']:.0%})  CI [{lo:.0%}-{hi:.0%}]"
+                )
 
 
 def _draw_confidence_ellipse(ax, x, y, color, alpha=0.15):
@@ -527,8 +617,14 @@ def _draw_confidence_ellipse(ax, x, y, color, alpha=0.15):
     height = 2 * np.sqrt(chi2_val * eigenvalues[1])
 
     ellipse = Ellipse(
-        xy=(mean_x, mean_y), width=width, height=height, angle=angle,
-        facecolor=color, edgecolor=color, alpha=alpha, linewidth=1.5,
+        xy=(mean_x, mean_y),
+        width=width,
+        height=height,
+        angle=angle,
+        facecolor=color,
+        edgecolor=color,
+        alpha=alpha,
+        linewidth=1.5,
         linestyle="--",
     )
     ax.add_patch(ellipse)
@@ -538,6 +634,7 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
     """Save PCA scatter plot and cluster summary."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -554,19 +651,30 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
     for i in range(k):
         mask = labels == i
         ax.scatter(
-            X_pca[mask, 0], X_pca[mask, 1],
-            c=colors[i % len(colors)], label=f"Cluster {i} (n={mask.sum()})",
-            s=80, alpha=0.8, edgecolors="white", linewidth=0.5,
+            X_pca[mask, 0],
+            X_pca[mask, 1],
+            c=colors[i % len(colors)],
+            label=f"Cluster {i} (n={mask.sum()})",
+            s=80,
+            alpha=0.8,
+            edgecolors="white",
+            linewidth=0.5,
         )
         # Draw 95% confidence ellipse
-        _draw_confidence_ellipse(ax, X_pca[mask, 0], X_pca[mask, 1], colors[i % len(colors)])
+        _draw_confidence_ellipse(
+            ax, X_pca[mask, 0], X_pca[mask, 1], colors[i % len(colors)]
+        )
 
         # Annotate with dates
         dates = df.index[mask]
         for j, (x, y) in enumerate(zip(X_pca[mask, 0], X_pca[mask, 1])):
             ax.annotate(
-                dates[j].strftime("%m/%d"), (x, y),
-                fontsize=7, ha="center", va="bottom", alpha=0.7,
+                dates[j].strftime("%m/%d"),
+                (x, y),
+                fontsize=7,
+                ha="center",
+                va="bottom",
+                alpha=0.7,
             )
 
     ax.set_xlabel("PC1")
@@ -583,9 +691,15 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
     df_c["cluster"] = labels
 
     summary_features = [
-        "vix", "vix1d_vix_ratio", "gex_oi_t1", "flow_agreement_t1",
-        "charm_slope", "agg_net_gamma",
-        "dp_support_resistance_ratio", "opt_vol_pcr", "iv_open",
+        "vix",
+        "vix1d_vix_ratio",
+        "gex_oi_t1",
+        "flow_agreement_t1",
+        "charm_slope",
+        "agg_net_gamma",
+        "dp_support_resistance_ratio",
+        "opt_vol_pcr",
+        "iv_open",
     ]
     available = [f for f in summary_features if f in df_c.columns]
 
@@ -611,15 +725,20 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
 
 # ── Main ─────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 1: Day Type Clustering")
-    parser.add_argument("--k", type=int, default=None, help="Force specific k (default: auto-select)")
+    parser.add_argument(
+        "--k", type=int, default=None, help="Force specific k (default: auto-select)"
+    )
     parser.add_argument("--plot", action="store_true", help="Save plots to ml/plots/")
     args = parser.parse_args()
 
     print("Loading data ...")
     df = load_data_clustering()
-    print(f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})")
+    print(
+        f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})"
+    )
 
     validate_dataframe(
         df,
@@ -691,7 +810,9 @@ def main() -> None:
     print("  SUMMARY")
     print(f"{'=' * 70}")
     print(f"  Days: {n_samples}")
-    print(f"  Features used: {X_pca.shape[1]} PCA components from {len(df_feat.columns)} features")
+    print(
+        f"  Features used: {X_pca.shape[1]} PCA components from {len(df_feat.columns)} features"
+    )
     print(f"  Best k: {best_k}")
     print(f"  Silhouette: {results[best_k]['kmeans_sil']:.3f} (K-Means)")
     print(f"  Stability: {stability:.0%}")
@@ -705,8 +826,11 @@ def main() -> None:
     chi2_results = {}
     df_c = df.copy()
     df_c["cluster"] = best_labels
-    for outcome_col in ["range_category", "settlement_direction",
-                        "recommended_structure"]:
+    for outcome_col in [
+        "range_category",
+        "settlement_direction",
+        "recommended_structure",
+    ]:
         if outcome_col not in df_c.columns:
             continue
         has_both = df_c[[outcome_col, "cluster"]].dropna()
@@ -724,22 +848,25 @@ def main() -> None:
         except Exception:
             continue
 
-    save_section_findings("clustering", {
-        "best_k": best_k,
-        "algorithm": "KMeans",
-        "silhouette": round(float(best_r["kmeans_sil"]), 3),
-        "calinski_harabasz": round(float(best_r["kmeans_ch"]), 1),
-        "davies_bouldin": round(float(best_r["kmeans_db"]), 3),
-        "cluster_sizes": best_r["kmeans_sizes"],
-        "stability": round(float(stability), 3),
-        "split_half_holdout_sil": round(sh["holdout_silhouette"], 3),
-        "gmm_bic": round(float(best_r["gmm_bic"]), 1),
-        "permutation_p": round(float(p_value), 3),
-        "chi_squared": chi2_results,
-        "n_samples": n_samples,
-        "n_pca_components": int(X_pca.shape[1]),
-        "n_features": len(df_feat.columns),
-    })
+    save_section_findings(
+        "clustering",
+        {
+            "best_k": best_k,
+            "algorithm": "KMeans",
+            "silhouette": round(float(best_r["kmeans_sil"]), 3),
+            "calinski_harabasz": round(float(best_r["kmeans_ch"]), 1),
+            "davies_bouldin": round(float(best_r["kmeans_db"]), 3),
+            "cluster_sizes": best_r["kmeans_sizes"],
+            "stability": round(float(stability), 3),
+            "split_half_holdout_sil": round(sh["holdout_silhouette"], 3),
+            "gmm_bic": round(float(best_r["gmm_bic"]), 1),
+            "permutation_p": round(float(p_value), 3),
+            "chi_squared": chi2_results,
+            "n_samples": n_samples,
+            "n_pca_components": int(X_pca.shape[1]),
+            "n_features": len(df_feat.columns),
+        },
+    )
 
 
 if __name__ == "__main__":

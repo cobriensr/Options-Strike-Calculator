@@ -3,7 +3,7 @@
 
 PYTHON ?= .venv/bin/python
 
-.PHONY: all eda cluster visualize health milestone backtest early pin test test-cov test-html clean help
+.PHONY: all eda cluster visualize health milestone backtest early pin lint format test test-cov test-html review clean help
 
 all: health eda cluster visualize early backtest pin ## Run full analysis pipeline
 
@@ -33,6 +33,16 @@ early-shap: ## Run Phase 2 early experiment with SHAP plots
 
 pin: ## Run settlement pin risk / gamma correlation analysis
 	$(PYTHON) src/pin_analysis.py
+
+lint: ## Check code quality (ruff lint + format check)
+	$(PYTHON) -m ruff check src/ tests/
+	$(PYTHON) -m ruff format --check src/ tests/
+
+format: ## Auto-fix formatting and lint issues
+	$(PYTHON) -m ruff check --fix src/ tests/
+	$(PYTHON) -m ruff format src/ tests/
+
+review: lint test-cov ## Full quality gate: lint + tests + coverage
 
 test: ## Run unit tests
 	$(PYTHON) -m pytest -v

@@ -22,8 +22,8 @@ except ImportError:
 
 from utils import get_connection, section, subsection, takeaway
 
-
 # ── Helpers ───────────────────────────────────────────────────
+
 
 def add_business_days(start: datetime, n: int) -> datetime:
     """Add n business days to a date."""
@@ -51,6 +51,7 @@ def business_days_between(d1: datetime, d2: datetime) -> int:
 
 # ── Data Counting ─────────────────────────────────────────────
 
+
 def count_data() -> dict:
     """Query database for data volume metrics."""
     conn = get_connection()
@@ -62,9 +63,7 @@ def count_data() -> dict:
         total_days = cur.fetchone()[0]
 
         # Date range
-        cur.execute(
-            "SELECT MIN(date), MAX(date) FROM training_features"
-        )
+        cur.execute("SELECT MIN(date), MAX(date) FROM training_features")
         first_date, last_date = cur.fetchone()
 
         # Days with labels (structure_correct is not null)
@@ -165,6 +164,7 @@ CLASS_MILESTONES = [
 
 # ── Milestone Display ────────────────────────────────────────
 
+
 def print_milestones(data: dict) -> None:
     section("MILESTONES")
 
@@ -212,6 +212,7 @@ def print_milestones(data: dict) -> None:
 
 # ── Data Summary ──────────────────────────────────────────────
 
+
 def print_data_summary(data: dict) -> None:
     section("DATA VOLUME")
 
@@ -238,6 +239,7 @@ def print_data_summary(data: dict) -> None:
 
 
 # ── Data Quality ──────────────────────────────────────────────
+
 
 def print_quality(data: dict) -> None:
     section("DATA QUALITY")
@@ -273,6 +275,7 @@ def print_quality(data: dict) -> None:
 
 # ── Suggested Actions ─────────────────────────────────────────
 
+
 def print_actions(data: dict) -> None:
     section("SUGGESTED ACTIONS")
 
@@ -288,23 +291,17 @@ def print_actions(data: dict) -> None:
             "Run: python3 clustering.py --plot (check if clusters stabilize)"
         )
     if n >= 60:
-        actions.append(
-            "Run: python3 phase2_early.py --shap (full Phase 2 training)"
-        )
+        actions.append("Run: python3 phase2_early.py --shap (full Phase 2 training)")
     if n >= 100:
         actions.append("Ready for Phase 4: Intraday Range Regression")
 
     if not actions:
-        print(f"  Keep collecting data. Next milestone at 30 days "
-              f"({30 - n} to go).")
+        print(f"  Keep collecting data. Next milestone at 30 days ({30 - n} to go).")
     else:
         for action in actions:
             print(f"  - {action}")
 
-    takeaway(
-        f"{n} labeled days collected. "
-        f"Next milestone: {next_milestone_label(n)}."
-    )
+    takeaway(f"{n} labeled days collected. Next milestone: {next_milestone_label(n)}.")
 
 
 def next_milestone_label(n: int) -> str:
@@ -316,6 +313,7 @@ def next_milestone_label(n: int) -> str:
 
 
 # ── Main ──────────────────────────────────────────────────────
+
 
 def main() -> None:
     print("Data Milestone Tracker")

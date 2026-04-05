@@ -13,15 +13,14 @@ import pandas as pd
 import pytest
 
 from eda import (
-    rule_validation,
-    confidence_calibration,
-    structure_analysis,
     charm_analysis,
-    flow_analysis,
+    confidence_calibration,
     feature_importance,
+    flow_analysis,
     key_findings,
+    rule_validation,
+    structure_analysis,
 )
-
 
 # ── Helper ────────────────────────────────────────────────────
 

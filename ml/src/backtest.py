@@ -12,13 +12,13 @@ Requires: pip install psycopg2-binary pandas numpy matplotlib seaborn
 """
 
 import sys
-from pathlib import Path
 
 try:
     import matplotlib
+
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
     import pandas as pd
     import seaborn as sns
 except ImportError:
@@ -29,11 +29,11 @@ except ImportError:
 from utils import (
     ML_ROOT,
     load_data,
-    validate_dataframe,
+    save_section_findings,
     section,
     subsection,
     takeaway,
-    save_section_findings,
+    validate_dataframe,
 )
 
 PLOT_DIR = ML_ROOT / "plots"
@@ -42,18 +42,20 @@ PLOT_DIR.mkdir(exist_ok=True)
 # ── Style ────────────────────────────────────────────────────
 
 sns.set_theme(style="darkgrid", palette="muted")
-plt.rcParams.update({
-    "figure.facecolor": "#1a1a2e",
-    "axes.facecolor": "#16213e",
-    "axes.edgecolor": "#555",
-    "axes.labelcolor": "#ccc",
-    "text.color": "#ccc",
-    "xtick.color": "#aaa",
-    "ytick.color": "#aaa",
-    "grid.color": "#333",
-    "grid.alpha": 0.5,
-    "font.size": 11,
-})
+plt.rcParams.update(
+    {
+        "figure.facecolor": "#1a1a2e",
+        "axes.facecolor": "#16213e",
+        "axes.edgecolor": "#555",
+        "axes.labelcolor": "#ccc",
+        "text.color": "#ccc",
+        "xtick.color": "#aaa",
+        "ytick.color": "#aaa",
+        "grid.color": "#333",
+        "grid.alpha": 0.5,
+        "font.size": 11,
+    }
+)
 
 COLORS = {
     "green": "#2ecc71",
@@ -64,8 +66,8 @@ COLORS = {
 
 # ── Trade Model Constants ────────────────────────────────────
 
-SPREAD_WIDTH = 20       # points
-CREDIT_PER_CONTRACT = 200    # $2.00 * 100
+SPREAD_WIDTH = 20  # points
+CREDIT_PER_CONTRACT = 200  # $2.00 * 100
 MAX_LOSS_PER_CONTRACT = (SPREAD_WIDTH * 100) - CREDIT_PER_CONTRACT  # $1,800
 
 CONFIDENCE_SIZING = {
@@ -76,6 +78,7 @@ CONFIDENCE_SIZING = {
 
 
 # ── Data Loading ─────────────────────────────────────────────
+
 
 def load_data_backtest() -> pd.DataFrame:
     return load_data("""
@@ -93,6 +96,7 @@ def load_data_backtest() -> pd.DataFrame:
 
 
 # ── Trade Simulation ─────────────────────────────────────────
+
 
 def simulate_strategy(
     df: pd.DataFrame,
@@ -134,13 +138,15 @@ def simulate_strategy(
         else:
             pnl = -MAX_LOSS_PER_CONTRACT * contracts
 
-        rows.append({
-            "date": date,
-            "pnl": pnl,
-            "win": won,
-            "structure": structure,
-            "contracts": contracts,
-        })
+        rows.append(
+            {
+                "date": date,
+                "pnl": pnl,
+                "win": won,
+                "structure": structure,
+                "contracts": contracts,
+            }
+        )
 
     result = pd.DataFrame(rows)
     if len(result) == 0:
@@ -155,6 +161,7 @@ def simulate_strategy(
 
 
 # ── Metrics ──────────────────────────────────────────────────
+
 
 def compute_metrics(trades: pd.DataFrame) -> dict:
     """Compute backtest metrics from a simulated trades DataFrame."""
@@ -189,6 +196,7 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
 
 
 # ── Plotting ─────────────────────────────────────────────────
+
 
 def find_max_drawdown_period(trades: pd.DataFrame) -> tuple:
     """Find start and end dates of the maximum drawdown period."""
@@ -227,8 +235,12 @@ def plot_equity_curves(
             continue
         color = strategy_colors.get(name, COLORS["red"])
         ax.plot(
-            trades.index, trades["cumulative"],
-            label=name, color=color, linewidth=2, alpha=0.9,
+            trades.index,
+            trades["cumulative"],
+            label=name,
+            color=color,
+            linewidth=2,
+            alpha=0.9,
         )
 
     # Annotate max drawdown for Claude Analysis
@@ -237,8 +249,10 @@ def plot_equity_curves(
         peak_date, trough_date = find_max_drawdown_period(claude_trades)
         if peak_date is not None and peak_date != trough_date:
             ax.axvspan(
-                peak_date, trough_date,
-                alpha=0.15, color=COLORS["red"],
+                peak_date,
+                trough_date,
+                alpha=0.15,
+                color=COLORS["red"],
                 label="Max Drawdown Period",
             )
 
@@ -264,15 +278,20 @@ def plot_equity_curves(
             "alpha": 0.9,
         }
         ax.text(
-            0.02, 0.98, text,
+            0.02,
+            0.98,
+            text,
             transform=ax.transAxes,
-            fontsize=9, verticalalignment="top",
-            bbox=props, family="monospace",
+            fontsize=9,
+            verticalalignment="top",
+            bbox=props,
+            family="monospace",
         )
 
     ax.set_title(
         "0DTE Credit Spread Backtest: Equity Curves",
-        fontsize=14, fontweight="bold",
+        fontsize=14,
+        fontweight="bold",
     )
     ax.set_xlabel("Date")
     ax.set_ylabel("Cumulative P&L ($)")
@@ -290,13 +309,14 @@ def plot_equity_curves(
 
 # ── Summary Report ───────────────────────────────────────────
 
+
 def print_metrics_table(metrics: dict[str, dict]) -> None:
     """Print a comparison table of all strategy metrics."""
     subsection("Strategy Comparison")
 
     header = f"  {'Strategy':<25s} {'P&L':>10s} {'Win%':>7s} {'PF':>7s} {'MaxDD':>10s} {'Trades':>7s}"
     print(header)
-    print(f"  {'-'*66}")
+    print(f"  {'-' * 66}")
 
     for name, m in metrics.items():
         if not m:
@@ -323,7 +343,9 @@ def print_report(
     labeled = df[df["structure_correct"].notna()]
     print(f"  Total days loaded: {len(df)}")
     print(f"  Labeled days (tradeable): {len(labeled)}")
-    print(f"  Date range: {labeled.index.min():%Y-%m-%d} to {labeled.index.max():%Y-%m-%d}")
+    print(
+        f"  Date range: {labeled.index.min():%Y-%m-%d} to {labeled.index.max():%Y-%m-%d}"
+    )
 
     structures = labeled["recommended_structure"].value_counts()
     print("\n  Structure distribution:")
@@ -351,14 +373,10 @@ def print_report(
         # Confidence breakdown
         subsection("Claude Analysis by Confidence")
         for conf in ["HIGH", "MODERATE", "LOW"]:
-            conf_rows = labeled[
-                labeled["label_confidence"].str.upper() == conf
-            ]
+            conf_rows = labeled[labeled["label_confidence"].str.upper() == conf]
             if len(conf_rows) == 0:
                 continue
-            conf_trades = claude_trades.loc[
-                claude_trades.index.isin(conf_rows.index)
-            ]
+            conf_trades = claude_trades.loc[claude_trades.index.isin(conf_rows.index)]
             if len(conf_trades) == 0:
                 continue
             wins = conf_trades["win"].sum()
@@ -438,10 +456,13 @@ def print_report(
 
 # ── Main ─────────────────────────────────────────────────────
 
+
 def main() -> None:
     print("Loading data ...")
     df = load_data_backtest()
-    print(f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})")
+    print(
+        f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})"
+    )
 
     validate_dataframe(
         df,
@@ -467,16 +488,19 @@ def main() -> None:
     # Simulate strategies
     strategies = {}
     strategies["Claude Analysis"] = simulate_strategy(
-        labeled, name="Claude Analysis",
+        labeled,
+        name="Claude Analysis",
         use_confidence_sizing=True,
     )
     strategies["Majority Class (CCS)"] = simulate_strategy(
-        labeled, name="Majority Class (CCS)",
+        labeled,
+        name="Majority Class (CCS)",
         override_structure=majority_structure,
         override_contracts=2,
     )
     strategies["Equal Size"] = simulate_strategy(
-        labeled, name="Equal Size",
+        labeled,
+        name="Equal Size",
         use_confidence_sizing=False,
         override_contracts=1,
     )
@@ -503,10 +527,13 @@ def main() -> None:
             "max_drawdown": m.get("max_drawdown", 0),
             "num_trades": m.get("num_trades", 0),
         }
-    save_section_findings("backtest", {
-        "strategies": strategies_data,
-        "n_labeled_days": len(labeled),
-    })
+    save_section_findings(
+        "backtest",
+        {
+            "strategies": strategies_data,
+            "n_labeled_days": len(labeled),
+        },
+    )
 
 
 if __name__ == "__main__":

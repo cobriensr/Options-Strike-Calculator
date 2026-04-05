@@ -16,14 +16,13 @@ import psycopg2
 import pytest
 
 from utils import (
-    load_env,
-    get_connection,
-    load_data,
-    VOLATILITY_FEATURES,
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
+    VOLATILITY_FEATURES,
+    get_connection,
+    load_data,
+    load_env,
 )
-
 
 # ── Feature group constant tests ──────────────────────────────
 
@@ -82,7 +81,7 @@ class TestFeatureGroupConstants:
         """No feature group should contain empty strings."""
         all_features = VOLATILITY_FEATURES + GEX_FEATURES_T1T2 + GREEK_FEATURES_CORE
         for feat in all_features:
-            assert feat.strip() != "", f"Empty string found in feature groups"
+            assert feat.strip() != "", "Empty string found in feature groups"
 
 
 # ── load_env tests ─────────────────────────────────────────────
@@ -105,7 +104,9 @@ class TestLoadEnv:
     def test_skips_comments(self, tmp_path):
         """Should skip lines starting with #."""
         env_file = tmp_path / ".env"
-        env_file.write_text("# This is a comment\nFOO=bar\n# Another comment\nBAZ=qux\n")
+        env_file.write_text(
+            "# This is a comment\nFOO=bar\n# Another comment\nBAZ=qux\n"
+        )
 
         with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
@@ -121,8 +122,10 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("FOO=bar\n\n   \n\nBAZ=qux\n")
 
-        with patch("utils.ML_ROOT", tmp_path / "ml"), \
-             patch.dict("os.environ", {}, clear=True):
+        with (
+            patch("utils.ML_ROOT", tmp_path / "ml"),
+            patch.dict("os.environ", {}, clear=True),
+        ):
             result = load_env()
 
         assert len(result) == 2
@@ -152,7 +155,9 @@ class TestLoadEnv:
     def test_handles_value_with_equals_sign(self, tmp_path):
         """Should handle values containing = signs (partition splits on first =)."""
         env_file = tmp_path / ".env"
-        env_file.write_text("DATABASE_URL=postgres://user:pass@host/db?sslmode=require\n")
+        env_file.write_text(
+            "DATABASE_URL=postgres://user:pass@host/db?sslmode=require\n"
+        )
 
         with patch("utils.ML_ROOT", tmp_path / "ml"):
             result = load_env()
@@ -164,8 +169,10 @@ class TestLoadEnv:
         missing_file = tmp_path / ".env"
         assert not missing_file.exists()
 
-        with patch("utils.ML_ROOT", tmp_path / "ml"), \
-             patch.dict("os.environ", {"FROM_ENV": "yes"}, clear=True):
+        with (
+            patch("utils.ML_ROOT", tmp_path / "ml"),
+            patch.dict("os.environ", {"FROM_ENV": "yes"}, clear=True),
+        ):
             result = load_env()
 
         assert result == {"FROM_ENV": "yes"}
@@ -175,8 +182,10 @@ class TestLoadEnv:
         env_file = tmp_path / ".env"
         env_file.write_text("")
 
-        with patch("utils.ML_ROOT", tmp_path / "ml"), \
-             patch.dict("os.environ", {}, clear=True):
+        with (
+            patch("utils.ML_ROOT", tmp_path / "ml"),
+            patch.dict("os.environ", {}, clear=True),
+        ):
             result = load_env()
 
         assert result == {}
@@ -216,8 +225,10 @@ class TestLoadEnv:
             "  SPACED_KEY = spaced_value \n"
         )
 
-        with patch("utils.ML_ROOT", tmp_path / "ml"), \
-             patch.dict("os.environ", {}, clear=True):
+        with (
+            patch("utils.ML_ROOT", tmp_path / "ml"),
+            patch.dict("os.environ", {}, clear=True),
+        ):
             result = load_env()
 
         assert len(result) == 4
