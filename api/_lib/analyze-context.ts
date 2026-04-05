@@ -54,6 +54,7 @@ import type { PreMarketData } from '../pre-market.js';
 import { formatOvernightForClaude } from './overnight-gap.js';
 import { schwabFetch } from './api-helpers.js';
 import type { ImageMediaType } from './analyze-prompts.js';
+import { formatFuturesForClaude } from './futures-context.js';
 
 // Minimal Schwab chain types for 14 DTE directional chain fetch
 interface SchwabContract {
@@ -284,6 +285,7 @@ export async function buildAnalysisContext(
   let oiChangeContext: string | null = null;
   let volRealizedContext: string | null = null;
   let mlCalibrationContext: string | null = null;
+  let futuresContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
@@ -612,6 +614,22 @@ export async function buildAnalysisContext(
     );
   }
 
+  // Futures context — institutional signals from futures_snapshots
+  try {
+    const sql = getDb();
+    const currentSpx = context.spx as number | undefined;
+    futuresContext = await formatFuturesForClaude(
+      sql,
+      analysisDate,
+      currentSpx,
+    );
+  } catch (error_) {
+    logger.debug(
+      { err: error_ },
+      'Futures context fetch failed — skipping',
+    );
+  }
+
   // On-demand 14 DTE directional chain (midday only, not backtests)
   let directionalChainContext: string | null = null;
   if (mode === 'midday' && !context.isBacktest) {
@@ -730,6 +748,7 @@ export async function buildAnalysisContext(
   if (!ivTermStructureContext) unavailable.push('IV Term Structure');
   if (!overnightGapContext) unavailable.push('Overnight Gap Analysis');
   if (!oiChangeContext) unavailable.push('OI Change Analysis');
+  if (!futuresContext) unavailable.push('Futures Context');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -794,6 +813,7 @@ ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nT
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
 ${volRealizedContext ? `\n## Realized Vol & IV Rank (from API — daily)\n  ${volRealizedContext}\n` : ''}
 ${overnightGapContext ? `\n## ES Overnight Gap Analysis (from pre-market data)\nThe ES futures overnight session data provides pre-market context for the cash session. Gap fill probability, overnight range consumption, and VWAP positioning help calibrate the opening hour bias. On high gap fill probability days, the first 30 minutes are likely to see a reversal toward the previous close. On low fill probability days, the gap direction extends and aligns with the session trend.\n\n${overnightGapContext}\n` : ''}
+${futuresContext ? `\n${futuresContext}\nFutures signals lead options flow by 10-30 minutes. When futures and flow disagree, futures are usually right — institutional desks execute in futures first. See <futures_context_rules> in the system prompt for interpretation guidance.\n` : ''}
 ${
   straddleConeUpper && straddleConeLower && !spxCandlesContext
     ? `\n## Straddle Cone Boundaries (from Periscope)

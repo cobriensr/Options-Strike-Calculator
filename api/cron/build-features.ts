@@ -129,6 +129,40 @@ const NULLABLE_FEATURE_KEYS = new Set([
   'uw_iv_rv_spread',
   'uw_iv_overpricing_pct',
   'iv_rank',
+  // Futures features — nullable until sidecar is live
+  'es_momentum_t1',
+  'es_momentum_t2',
+  'es_spx_basis_t1',
+  'es_volume_ratio_t1',
+  'es_overnight_range',
+  'es_overnight_gap',
+  'es_gap_fill_pct_t1',
+  'es_vwap_deviation_t1',
+  'nq_momentum_t1',
+  'nq_es_ratio_t1',
+  'nq_es_ratio_change',
+  'nq_qqq_divergence_t1',
+  'vx_front_price',
+  'vx_term_spread',
+  'vx_term_slope_pct',
+  'vx_contango_signal',
+  'vx_basis',
+  'zn_momentum_t1',
+  'zn_daily_change',
+  'spx_zn_correlation_5d',
+  'rty_momentum_t1',
+  'rty_es_divergence_t1',
+  'cl_overnight_change_pct',
+  'cl_intraday_momentum_t1',
+  'cl_es_correlation_5d',
+  'es_put_oi_concentration',
+  'es_call_oi_concentration',
+  'es_options_max_pain_dist',
+  'es_spx_gamma_agreement',
+  'es_put_buy_aggressor_pct',
+  'es_call_buy_aggressor_pct',
+  'es_options_net_delta',
+  'es_atm_iv',
 ]);
 
 /** Compute feature completeness as fraction of non-null values. */
@@ -231,6 +265,58 @@ async function buildFeaturesForDate(
 
   // 10. Monitor features: IV dynamics + flow ratio dynamics
   await engineerMonitorFeatures(sql, dateStr, features);
+
+  // 11. Futures features (~32 features from futures_bars,
+  //     futures_snapshots, futures_options_daily)
+  // [Phase 2] Implement once futures_bars and futures_options_daily
+  //       tables are populated by the Databento sidecar.
+  //       Each feature group below queries the appropriate table
+  //       and writes to the features object.
+  //
+  // ES features (8):
+  //   - es_momentum_t1/t2: 1H return from futures_bars at T1/T2
+  //   - es_spx_basis_t1: ES price - SPX open at T1
+  //   - es_volume_ratio_t1: ES volume / 20-day avg at T1
+  //   - es_overnight_range/gap: from Globex session bars
+  //   - es_gap_fill_pct_t1: gap fill by T1
+  //   - es_vwap_deviation_t1: ES price - overnight VWAP at T1
+  //
+  // NQ features (4):
+  //   - nq_momentum_t1: NQ 1H return at T1
+  //   - nq_es_ratio_t1: NQ/ES price ratio at T1
+  //   - nq_es_ratio_change: ratio change from prior close
+  //   - nq_qqq_divergence_t1: sign agreement with QQQ NCP
+  //
+  // VX features (5):
+  //   - vx_front_price: VXM front month last
+  //   - vx_term_spread: front - back month
+  //   - vx_term_slope_pct: (front - back) / back
+  //   - vx_contango_signal: 1 contango, -1 backwardation
+  //   - vx_basis: VXM front - spot VIX
+  //
+  // ZN features (3):
+  //   - zn_momentum_t1: ZN 1H return at T1
+  //   - zn_daily_change: prior day change
+  //   - spx_zn_correlation_5d: 5-day rolling correlation
+  //
+  // RTY features (2):
+  //   - rty_momentum_t1: RTY 1H return at T1
+  //   - rty_es_divergence_t1: sign agreement with ES
+  //
+  // CL features (3):
+  //   - cl_overnight_change_pct: prior settlement to Globex close
+  //   - cl_intraday_momentum_t1: open to T1 change
+  //   - cl_es_correlation_5d: 5-day rolling correlation
+  //
+  // ES Options features (8):
+  //   - es_put/call_oi_concentration: from futures_options_daily
+  //   - es_options_max_pain_dist: distance to max pain
+  //   - es_spx_gamma_agreement: gamma wall agreement score
+  //   - es_put/call_buy_aggressor_pct: from futures_options_trades
+  //   - es_options_net_delta: sum of exchange delta * OI
+  //   - es_atm_iv: exchange-computed IV at ATM
+  //
+  // await engineerFuturesFeatures(sql, dateStr, features);
 
   features.feature_completeness = computeCompleteness(features);
 

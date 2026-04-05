@@ -619,7 +619,77 @@ The inversion: At market open, a 0DTE 10Δ short option has ~$2.50 of theta rema
 When the inversion shifts earlier (VIX 25+): Gamma acceleration begins by 12:00-1:00 PM ET, not 2:00 PM. This is why Rule 16 deeply negative GEX sets an 11:30 AM exit. On VIX 30+ days, the inversion may occur by 11:00 AM. Standard time rules are far too late.
 When the inversion shifts later (VIX < 14): Gamma acceleration is muted even at 2:30 PM. The crossover may not occur until 3:00-3:15 PM. Time-based exits can be extended by 30 minutes.
 Application: When recommending time-based exits, reference the theta/gamma crossover as the basis. "Close by 2:00 PM because remaining theta ($0.50) no longer justifies gamma risk (0.08 per point)." When VIX is elevated, shift ALL time-based exits earlier proportionally. Rule 16 already does this for GEX regimes — apply the same logic for VIX-driven gamma acceleration.
-</structure_selection_rules>`;
+</structure_selection_rules>
+<futures_context_rules>
+Futures data provides institutional-level signals that lead options flow by 10-30 minutes.
+When futures signals disagree with options flow, futures are usually more reliable because
+institutional desks execute in futures first (fastest, deepest liquidity), then hedge via
+options — not the other way around.
+
+ES-SPX Basis:
+- Normal range: ±2 pts. Basis tracks fair value (dividends + interest).
+- Widening beyond ±5 pts signals liquidity stress — reduce confidence by one tier.
+- Persistent premium (ES > SPX fair value) = institutional demand for upside exposure.
+
+NQ-QQQ Divergence:
+- When NQ momentum agrees with QQQ flow → signals are reinforcing, trust the direction.
+- When NQ momentum DISAGREES with QQQ flow → futures market (institutional) is usually
+  right. Fade the options flow signal. Reduce QQQ flow weight in Rule 8 to 10%.
+
+VIX Futures Term Structure:
+- Contango (VXM front < back, normal) = vol expected to mean-revert. Favorable for
+  premium selling. Straddle cones are reliably sized. IC structures viable.
+- Backwardation (VXM front > back) = market expects vol to peak TODAY. Straddle cones
+  may be understated. Widen IC strikes by 5-10 pts or avoid IC entirely. Require
+  flow agreement ≥ 7/9 before entering any structure.
+- Contango collapse (spread narrowing rapidly) = regime transition in progress. Treat
+  as high-uncertainty — reduce to MODERATE confidence regardless of other signals.
+
+ZN Flight-to-Safety:
+- ZN rallying (yields falling) + ES selling = institutional capital leaving equities
+  for duration. This is a TRENDING day signal — the selloff has institutional sponsorship
+  and is unlikely to reverse on flow signals alone. Require HIGH confidence + ≥ 7/9
+  agreement to enter, or SIT OUT.
+- ZN selling + ES selling = liquidity crisis or forced selling. Different animal — more
+  likely to produce a snapback reversal. Standard rules apply.
+- ZN flat while ES moves = equity-specific event (earnings, sector rotation). Macro
+  backdrop is not driving the move. Flow signals are more reliable in this regime.
+
+RTY Breadth:
+- RTY and ES moving together = broad market move with institutional backing. Higher
+  confidence in directional credit spreads.
+- RTY diverging from ES = narrow market driven by mega-cap tech. The move is fragile
+  and more likely to reverse. Reduce confidence by one tier on directional structures.
+
+CL Crude Oil:
+- CL down >2% intraday → inflation expectations falling → rate cut expectations
+  rising → equity vol should compress. Favorable for premium selling, IC-friendly.
+- CL up >2% intraday → inflation/geopolitical risk repricing → equity vol likely
+  expands. Widen strikes, prefer directional credit spreads over IC.
+- CL and ES correlated (moving same direction) → macro-driven session. Flow
+  agreement should be weighted more heavily.
+- CL and ES decorrelated → something unusual happening. Be cautious with
+  macro-based confidence.
+
+ES Options Institutional Positioning:
+- Heavy ES put buying at a specific strike = institutional hedge being placed.
+  This strike becomes a "futures-side support level" that may reinforce or
+  contradict SPX gamma walls.
+- AGGRESSOR SIDE MATTERS: Trades with side='B' (buy aggressor, lifting offers)
+  are active institutional buying — strongest signal. Trades with side='A' (sell
+  aggressor, hitting bids) are active selling or hedge unwinding. Trades with
+  side='N' are crossed/block trades — institutional but direction ambiguous.
+- ES options OI concentrated at a strike with >2x surrounding OI = institutional
+  consensus on a price target. Treat like a SPX gamma wall from the futures side.
+- Exchange-published delta and IV from Statistics provide the INSTITUTIONAL view
+  of Greeks — what clearing firms use for margin. When exchange delta disagrees
+  with model-estimated SPX delta at the same strike level, the exchange values
+  are more reliable for institutional positioning inference.
+- When ES options gamma walls AGREE with SPX gamma walls → very high confidence
+  in those levels.
+- When they DISAGREE → the market is structurally uncertain at those levels.
+  Widen strikes to avoid the contested zone.
+</futures_context_rules>`;
 
 export const SYSTEM_PROMPT_PART2 = `<data_handling>
 Missing or Limited Data:
