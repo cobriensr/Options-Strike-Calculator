@@ -22,7 +22,10 @@
     "lint": "tsc --noEmit && eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "review": "tsc --noEmit && eslint . && prettier --write . && vitest run --coverage"
+    "review": "tsc --noEmit && eslint . && prettier --write . && vitest run --coverage",
+    "db:up": "docker compose -f docker-compose.dev.yml up -d",
+    "db:down": "docker compose -f docker-compose.dev.yml down",
+    "db:reset": "docker compose -f docker-compose.dev.yml down -v && docker compose -f docker-compose.dev.yml up -d"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.81.0",

@@ -1,0 +1,41 @@
+# Local development stack — start with: docker compose -f docker-compose.dev.yml up -d
+#
+# Provides a local Postgres instance so you can develop without hitting Neon.
+# The sidecar service is included but commented out (needs Tradovate creds).
+#
+# After starting, set DATABASE_URL in .env.local:
+#   DATABASE_URL=postgresql://strike:strike@localhost:5432/strike_dev
+
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_DB: strike_dev
+      POSTGRES_USER: strike
+      POSTGRES_PASSWORD: strike
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'strike', '-d', 'strike_dev']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Uncomment to run the ES futures sidecar locally.
+  # Requires Tradovate credentials in sidecar/.env
+  #
+  # sidecar:
+  #   build: ./sidecar
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://strike:strike@postgres:5432/strike_dev
+  #   env_file: ./sidecar/.env
+  #   ports:
+  #     - '8080:8080'
+
+volumes:
+  pgdata:
