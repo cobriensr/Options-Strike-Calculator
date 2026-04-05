@@ -47,6 +47,13 @@ vi.mock('../_lib/db-strike-helpers.js', () => ({
   formatGreekFlowForClaude: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock('../_lib/embeddings.js', () => ({
+  generateEmbedding: vi.fn().mockResolvedValue(null),
+  findSimilarAnalyses: vi.fn().mockResolvedValue([]),
+  saveAnalysisEmbedding: vi.fn().mockResolvedValue(undefined),
+  buildAnalysisSummary: vi.fn().mockReturnValue(''),
+}));
+
 vi.mock('../_lib/lessons.js', () => ({
   getActiveLessons: vi.fn().mockResolvedValue([]),
   formatLessonsBlock: vi.fn().mockReturnValue(''),
