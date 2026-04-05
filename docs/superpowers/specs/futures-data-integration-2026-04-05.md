@@ -33,13 +33,21 @@ Replace the single-symbol Tradovate ES sidecar with a multi-symbol Databento sid
 
 ### Schemas Used
 
-| Schema | Purpose | Frequency |
-|--------|---------|-----------|
-| OHLCV-1m | 1-minute bars for all 7 futures + ES options | Real-time streaming via sidecar |
-| OHLCV-1h | Pre-aggregated hourly bars for ML features | Derived from 1m bars or requested directly for backfill |
-| OHLCV-1d | Daily bars for historical correlation features | Batch pull for backfill |
-| Statistics | EOD session summary — OI, settlement, volume | Daily cron post-settlement |
-| Definition | Instrument reference — expiration, strike, tick size | On-demand for contract rolls and ES options strike mapping |
+| Schema | Level | History | Purpose | Frequency |
+|--------|-------|---------|---------|-----------|
+| OHLCV-1m | L0 | 15+ years | 1-minute bars for all 7 futures | Real-time streaming via sidecar |
+| Trades | L1 | 12 months | Tick-level trades for ES options — includes aggressor side (`side` field: A=sell aggressor, B=buy aggressor). Detects whether institutional volume is aggressive buying or selling, not just volume magnitude. | Real-time streaming via sidecar (ATM ±10 strikes) |
+| Statistics | L0 | 15+ years | Official venue summary statistics. `stat_type` determines the record: opening price (1), settlement price (3, with flags for preliminary/final), session low/high (4/5), cleared volume (6), **open interest (9)**, fixing/VWAP (10/13), **implied volatility (14)**, **options delta (15)**, price limits (17/18). Provides exchange-computed Greeks for ES options — not model-estimated. | Daily cron post-settlement + live for intraday OI updates |
+| Definition | L0 | 15+ years | Instrument reference data. Key fields for ES options: `instrument_class` (C=Call, P=Put, F=Future), `strike_price` (1e-9 units), `expiration` (nanosecond timestamp), `underlying` (symbol), `security_type` (OOF=Option on Future). Used for dynamic strike discovery and contract roll management. | On-demand at session start + when ES moves ±50 pts |
+
+**Schemas NOT used** (and why):
+- **MBO, MBP-10** (L2/L3) — too expensive for live streaming. Historical-only (1 month) insufficient for feature engineering.
+- **BBO, CBBO, TBBO, TCBBO** — subsets of MBP-1 sampled at intervals. OHLCV-1m provides equivalent information more efficiently for our 1-minute decision cadence.
+- **Imbalance** — auction imbalance data. Relevant for equities (MOC), not for continuous futures trading.
+- **Status** — trading halts and session state changes. Low value — halt detection is implicit from price action stopping.
+- **MBP-1, CMBP-1** — top-of-book tick data. More granular than needed (1-minute bars are sufficient for 0DTE credit spread decisions).
+
+**Price handling**: All Databento prices are `int64_t` in 1e-9 units (nanodollars). The sidecar must convert: `price_decimal = raw_price / 1_000_000_000`. The Databento SDK may handle this conversion automatically — verify during implementation.
 
 ---
 
@@ -59,11 +67,11 @@ Replace the single-symbol Tradovate ES sidecar with a multi-symbol Databento sid
 
 ### ES Options (~20 contracts, rolling)
 
-Subscribe to OHLCV-1m for the 10 nearest put strikes and 10 nearest call strikes around the current ES ATM level. Re-center every 50 pts of ES movement or at session open.
+Subscribe to **Trades** schema (not OHLCV) for the 10 nearest put strikes and 10 nearest call strikes around the current ES ATM level. Re-center every 50 pts of ES movement or at session open. Use **Definition** schema at session start to discover available strikes and expirations.
 
-**Purpose**: Detect institutional hedge placement and directional bets in real-time. Heavy put buying at a specific ES strike = institutions positioning for downside. This leads SPX options flow by 10-30 minutes because institutional desks hit ES options first (fastest execution, deepest liquidity).
+**Why Trades instead of OHLCV for ES options**: The Trades schema includes the `side` field (aggressor side: `A`=sell aggressor hitting bids, `B`=buy aggressor lifting offers). This is the difference between "volume happened" and "institutions are aggressively buying puts." A 5,000-lot ES put trade at the ask (sell aggressor) means a market maker is selling to a buyer — institutional hedge being placed. The same volume at the bid (buy aggressor) means someone is dumping — unwinding a hedge. OHLCV would only show "5,000 contracts traded" with no directional intent.
 
-**EOD**: Pull Statistics schema for all ES option strikes — daily OI by strike gives the "futures-side gamma wall" to compare against the SPX-side gamma walls from Unusual Whales.
+**EOD**: Pull Statistics schema for all ES option strikes — gives daily OI (`stat_type=9`), settlement price (`stat_type=3`), exchange-computed **implied volatility** (`stat_type=14`), and **options delta** (`stat_type=15`). This means the "futures-side gamma wall" includes actual exchange-published Greeks, not model-estimated values. Comparing exchange-computed ES option delta profiles against Unusual Whales' SPX gamma walls gives two independent reads on the same positioning question.
 
 ---
 
@@ -73,22 +81,28 @@ Subscribe to OHLCV-1m for the 10 nearest put strikes and 10 nearest call strikes
 
 ```
 Databento Live TCP Client
-  ├── /ES OHLCV-1m bars
-  ├── /NQ OHLCV-1m bars
-  ├── /VXM front month OHLCV-1m bars
-  ├── /VXM second month OHLCV-1m bars
-  ├── /ZN OHLCV-1m bars
-  ├── /RTY OHLCV-1m bars
-  ├── /CL OHLCV-1m bars
-  └── ES options (ATM ±10) OHLCV-1m bars
+  │
+  ├── OHLCV-1m subscriptions (7 futures contracts):
+  │     /ES, /NQ, /VXM front, /VXM second, /ZN, /RTY, /CL
+  │
+  ├── Trades subscription (ES options ATM ±10 strikes):
+  │     ~20 contracts, includes aggressor side (buy/sell)
+  │     Re-centered via Definition schema when ES moves ±50 pts
+  │
+  ├── Definition subscription (ES options chain):
+  │     Pulled at session start for strike/expiry discovery
+  │
+  └── Statistics subscription (all instruments):
+        Captures OI, settlement, IV, delta as published by venue
         ↓
   Write to Neon Postgres
   ├── futures_bars (OHLCV per symbol per minute)
-  └── futures_options_bars (ES options OHLCV per strike per minute)
+  ├── futures_options_trades (ES option trades with aggressor side)
+  └── futures_options_daily (EOD OI, settlement, IV, delta per strike)
         ↓
   Alert Engine (in-sidecar)
-  ├── Evaluate alert conditions every minute
-  ├── Rate limit: max 1 alert per condition per 30 minutes
+  ├── Evaluate conditions on every new bar/trade
+  ├── Rate limit: max 1 alert per condition per cooldown period
   └── Fire via Twilio SMS when triggered
 ```
 
@@ -106,10 +120,11 @@ Databento Live TCP Client
 
 | File | Purpose |
 |------|---------|
-| `sidecar/src/databento-client.ts` | Databento Live TCP connection, subscription management |
-| `sidecar/src/symbol-manager.ts` | Contract roll logic, ES options strike re-centering |
-| `sidecar/src/alert-engine.ts` | Evaluate alert conditions, fire Twilio SMS |
-| `sidecar/src/alert-config.ts` | Configurable thresholds (or DB-backed for runtime adjustment) |
+| `sidecar/src/databento-client.ts` | Databento Live TCP connection, subscription management for OHLCV-1m + Trades + Statistics |
+| `sidecar/src/symbol-manager.ts` | Contract roll logic, ES options strike re-centering using Definition schema |
+| `sidecar/src/trade-processor.ts` | Process ES options Trades stream — extract aggressor side, aggregate rolling volume by strike, detect unusual activity |
+| `sidecar/src/alert-engine.ts` | Evaluate alert conditions on each new bar/trade, fire Twilio SMS |
+| `sidecar/src/alert-config.ts` | Configurable thresholds (DB-backed via `alert_config` table for runtime adjustment) |
 
 ### Existing Files Modified
 
@@ -147,26 +162,31 @@ CREATE INDEX IF NOT EXISTS idx_futures_bars_symbol_ts
 
 **Storage estimate**: 6 symbols × ~1,050 bars/day × 252 days × ~100 bytes ≈ 160 MB for 1-year backfill. With live accumulation: ~630 KB/day ongoing.
 
-### `futures_options_bars` (new)
+### `futures_options_trades` (new — tick-level ES option trades)
 
 ```sql
-CREATE TABLE IF NOT EXISTS futures_options_bars (
+CREATE TABLE IF NOT EXISTS futures_options_trades (
   id BIGSERIAL PRIMARY KEY,
   underlying TEXT NOT NULL,       -- 'ES'
   expiry DATE NOT NULL,           -- Option expiration date
   strike NUMERIC(10,2) NOT NULL,  -- Strike price
   option_type CHAR(1) NOT NULL,   -- 'C' or 'P'
-  ts TIMESTAMPTZ NOT NULL,
-  open NUMERIC(10,4) NOT NULL,
-  high NUMERIC(10,4) NOT NULL,
-  low NUMERIC(10,4) NOT NULL,
-  close NUMERIC(10,4) NOT NULL,
-  volume BIGINT NOT NULL DEFAULT 0,
-  UNIQUE(underlying, expiry, strike, option_type, ts)
+  ts TIMESTAMPTZ NOT NULL,        -- Trade timestamp (nanosecond precision from venue)
+  price NUMERIC(10,4) NOT NULL,   -- Trade price
+  size INT NOT NULL,              -- Number of contracts
+  side CHAR(1) NOT NULL,          -- 'A' = sell aggressor (hitting bid), 'B' = buy aggressor (lifting ask), 'N' = none
+  trade_date DATE NOT NULL        -- For partitioning/cleanup
 );
+
+CREATE INDEX IF NOT EXISTS idx_fot_strike_ts
+  ON futures_options_trades (underlying, strike, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_fot_trade_date
+  ON futures_options_trades (trade_date);
 ```
 
-### `futures_options_daily` (new — EOD Statistics)
+**Note**: No UNIQUE constraint — multiple trades can occur at the same nanosecond. Indexed by strike + timestamp for fast "recent volume at this strike" queries. The `trade_date` index supports daily cleanup (retain 5 trading days of tick data, archive or drop older).
+
+### `futures_options_daily` (new — EOD Statistics with Greeks)
 
 ```sql
 CREATE TABLE IF NOT EXISTS futures_options_daily (
@@ -176,12 +196,17 @@ CREATE TABLE IF NOT EXISTS futures_options_daily (
   expiry DATE NOT NULL,
   strike NUMERIC(10,2) NOT NULL,
   option_type CHAR(1) NOT NULL,
-  open_interest BIGINT NOT NULL,
-  volume BIGINT NOT NULL,
-  settlement NUMERIC(10,4),
+  open_interest BIGINT,           -- stat_type=9: outstanding contracts
+  volume BIGINT,                  -- stat_type=6: cleared volume
+  settlement NUMERIC(10,4),       -- stat_type=3: official settlement price
+  implied_vol NUMERIC(8,6),       -- stat_type=14: exchange-computed IV (decimal, e.g. 0.2450)
+  delta NUMERIC(8,6),             -- stat_type=15: exchange-computed delta (decimal, e.g. -0.3200)
+  is_final BOOLEAN DEFAULT false, -- stat_flags: preliminary vs final settlement
   UNIQUE(underlying, trade_date, expiry, strike, option_type)
 );
 ```
+
+**Note**: `implied_vol` and `delta` are exchange-published values from the Statistics schema, not model-estimated. These provide the "institutional Greeks" view — what the CME's settlement process computed, which is what clearing firms and institutional risk systems use for margin calculations.
 
 ### `futures_snapshots` (new — computed intraday context)
 
@@ -317,8 +342,16 @@ ES Options Institutional Positioning:
 - Heavy ES put buying at a specific strike = institutional hedge being placed.
   This strike becomes a "futures-side support level" that may reinforce or
   contradict SPX gamma walls.
+- AGGRESSOR SIDE MATTERS: Trades with side='B' (buy aggressor, lifting offers)
+  are active institutional buying — strongest signal. Trades with side='A' (sell
+  aggressor, hitting bids) are active selling or hedge unwinding. Trades with
+  side='N' are crossed/block trades — institutional but direction ambiguous.
 - ES options OI concentrated at a strike with >2x surrounding OI = institutional
   consensus on a price target. Treat like a SPX gamma wall from the futures side.
+- Exchange-published delta and IV from Statistics provide the INSTITUTIONAL view
+  of Greeks — what clearing firms use for margin. When exchange delta disagrees
+  with model-estimated SPX delta at the same strike level, the exchange values
+  are more reliable for institutional positioning inference.
 - When ES options gamma walls AGREE with SPX gamma walls → very high confidence
   in those levels.
 - When they DISAGREE → the market is structurally uncertain at those levels.
@@ -423,14 +456,18 @@ CL_FEATURES = [
 ]
 
 ES_OPTIONS_FEATURES = [
-    "es_put_oi_concentration",    # OI at largest put strike / total put OI
+    "es_put_oi_concentration",    # OI at largest put strike / total put OI (from Statistics stat_type=9)
     "es_call_oi_concentration",   # OI at largest call strike / total call OI
     "es_options_max_pain_dist",   # Distance from current ES to max pain strike (pts)
     "es_spx_gamma_agreement",     # Do ES and SPX gamma walls agree? (0-1 score)
+    "es_put_buy_aggressor_pct",   # % of ES put volume from buy aggressors (side='B') — institutional demand
+    "es_call_buy_aggressor_pct",  # % of ES call volume from buy aggressors — institutional bullishness
+    "es_options_net_delta",       # Sum of exchange-computed delta × OI across ATM strikes (from Statistics stat_type=15)
+    "es_atm_iv",                  # Exchange-computed IV at nearest ATM strike (from Statistics stat_type=14)
 ]
 ```
 
-**Total: ~28 new features** added to the training_features table.
+**Total: ~32 new features** added to the training_features table.
 
 ---
 
@@ -449,7 +486,7 @@ The alert engine runs inside the sidecar process (not on Vercel cron) for minimu
 | `es_nq_divergence` | /ES and /NQ diverge ≥0.5% in 30 min | 30 min | "⚠️ ES-NQ SPLIT: ES -0.3% but NQ +0.4% (30 min). Sector rotation active." |
 | `zn_flight_safety` | /ZN +0.5 pts while /ES -20 pts in 30 min | 60 min | "🏃 FLIGHT TO SAFETY: ZN rallying while ES dumping. Institutional exit." |
 | `cl_spike` | /CL moves ±2% in 60 min | 30 min | "🛢️ CRUDE SPIKE: /CL +2.8% in 45 min. Inflation repricing — vol expansion likely." |
-| `es_options_volume` | ES option strike hits ≥5× avg volume in 15 min | 30 min | "📊 ES OPTIONS: 5800P — 15K contracts in 12 min (5.2× avg). Institutional hedge." |
+| `es_options_volume` | ES option strike hits ≥5× avg volume in 15 min, with aggressor breakdown | 30 min | "📊 ES OPTIONS: 5800P — 15K contracts in 12 min (5.2× avg). 82% buy aggressor (lifting asks). Institutional put buying." |
 
 ### Configuration
 
@@ -469,15 +506,17 @@ Thresholds stored in `alert_config` Postgres table. Adjustable via:
 
 ### One-Time Script: `scripts/backfill-futures.ts`
 
-Uses Databento's batch/historical API to pull 1 year of data:
+Uses Databento's batch/historical API:
 
-| Data | Symbols | Schema | Rows (estimated) |
-|------|---------|--------|-------------------|
-| Futures bars | ES, NQ, VXM, ZN, RTY, CL | OHLCV-1m | ~1.6M rows (~160 MB) |
-| Futures daily | ES, NQ, VXM, ZN, RTY, CL | OHLCV-1d | ~1,500 rows |
-| ES options daily OI | All ES option strikes | Statistics | ~500K rows (~50 MB) |
+| Data | Symbols | Schema | Level | History Available | Rows (estimated) |
+|------|---------|--------|-------|-------------------|-------------------|
+| Futures bars | ES, NQ, VXM, ZN, RTY, CL | OHLCV-1m | L0 | 15+ years (pulling 1 year) | ~1.6M rows (~160 MB) |
+| Futures daily | ES, NQ, VXM, ZN, RTY, CL | OHLCV-1d | L0 | 15+ years (pulling 1 year) | ~1,500 rows |
+| ES options daily stats | All ES option strikes | Statistics | L0 | 15+ years (pulling 1 year) | ~500K rows (~50 MB) |
+| ES options trades | ATM ±50 strikes | Trades | L1 | 12 months max | ~2M rows (~200 MB) — optional, can skip for initial build |
 
-**Total**: ~210 MB. Well within Neon free tier's 0.5 GB limit (currently at 0.09 GB).
+**Total without trades backfill**: ~210 MB. Well within Neon free tier.
+**Total with trades backfill**: ~410 MB. Approaching limit — may need Neon upgrade or retention policy (keep only 3 months of tick trades, full year of daily stats).
 
 ### Backfill Process
 
