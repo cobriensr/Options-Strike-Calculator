@@ -1,4 +1,5 @@
 import js from '@eslint/js';
+import globals from 'globals';
 import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
@@ -10,7 +11,6 @@ export default [
     ignores: [
       'dist',
       'coverage',
-      'scripts',
       'ml/.venv',
       '.claude/skills',
       'sidecar',
@@ -52,6 +52,22 @@ export default [
       'sonarjs/slow-regex': 'off',
       'sonarjs/cognitive-complexity': 'off',
       'sonarjs/pseudo-random': 'off',
+    },
+  },
+  {
+    files: ['scripts/**'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+      'sonarjs/no-hardcoded-credentials': 'off',
+      'sonarjs/no-clear-text-protocols': 'off',
+      'sonarjs/no-hardcoded-ip': 'off',
+      'sonarjs/cognitive-complexity': 'off',
+      'sonarjs/no-nested-functions': 'off',
     },
   },
   prettier,
