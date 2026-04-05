@@ -421,11 +421,8 @@ export function parseOptions(
 
     const markField = markIdx >= 0 ? fields[markIdx] : undefined;
     const mark = markField ? Number.parseFloat(markField) : null;
-    const markValueField =
-      markValueIdx >= 0 ? fields[markValueIdx] : undefined;
-    const markValue = markValueField
-      ? parseCurrency(markValueField)
-      : null;
+    const markValueField = markValueIdx >= 0 ? fields[markValueIdx] : undefined;
+    const markValue = markValueField ? parseCurrency(markValueField) : null;
 
     legs.push({
       symbol,

@@ -38,8 +38,8 @@ export function ConfirmationBar({
           className="font-sans text-[11px] font-semibold"
           style={{ color: theme.caution }}
         >
-          Send {images.length} image{images.length > 1 ? 's' : ''} to Opus?
-          (~5{'\u201310'} min, billed on send)
+          Send {images.length} image{images.length > 1 ? 's' : ''} to Opus? (~5
+          {'\u201310'} min, billed on send)
         </div>
         <div className="text-muted mt-0.5 font-sans text-[10px]">
           {MODE_LABELS[mode].label} {'\u2022'}{' '}
@@ -124,10 +124,7 @@ export function LoadingIndicator({
           <div className="text-muted font-sans text-[10px]">
             {
               THINKING_MESSAGES[
-                Math.min(
-                  Math.floor(elapsed / 50),
-                  THINKING_MESSAGES.length - 1,
-                )
+                Math.min(Math.floor(elapsed / 50), THINKING_MESSAGES.length - 1)
               ]
             }
           </div>

@@ -1,10 +1,12 @@
 /**
  * useMarketData — React hook for live Schwab market data.
  *
- * Fetches from three independent endpoints in parallel on mount:
+ * Fetches from five independent endpoints in parallel on mount:
  *   /api/quotes    → SPY, SPX, VIX, VIX1D, VIX9D
  *   /api/intraday  → today's SPX OHLC + 30-min opening range
  *   /api/yesterday → prior day SPX OHLC for clustering
+ *   /api/events    → economic calendar events
+ *   /api/movers    → market movers
  *
  * Each endpoint is independent — if one fails, the others still load.
  *
@@ -14,31 +16,27 @@
  * (after visiting /api/auth/init) gets live data auto-fill.
  *
  * Auto-refreshes quotes every 60s during market hours, stops after close.
+ *
+ * Fetch logic and result processing are extracted to
+ * `useMarketData.fetchers.ts` for independent testability.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
-import { getErrorMessage } from '../utils/error';
 import { useIsOwner } from './useIsOwner';
-import type {
-  QuotesResponse,
-  IntradayResponse,
-  YesterdayResponse,
-  EventsResponse,
-  MoversResponse,
-} from '../types/api';
+import type { QuotesResponse, IntradayResponse } from '../types/api';
+import {
+  fetchJson,
+  fetchAllEndpoints,
+  processEndpointResults,
+} from './useMarketData.fetchers';
+import type { MarketData } from './useMarketData.fetchers';
 
 // ============================================================
-// TYPES
+// TYPES (re-export MarketData so consumers don't need to change imports)
 // ============================================================
 
-export interface MarketData {
-  quotes: QuotesResponse | null;
-  intraday: IntradayResponse | null;
-  yesterday: YesterdayResponse | null;
-  events: EventsResponse | null;
-  movers: MoversResponse | null;
-}
+export type { MarketData } from './useMarketData.fetchers';
 
 export interface MarketDataState {
   data: MarketData;
@@ -51,53 +49,6 @@ export interface MarketDataState {
   refresh: () => Promise<void>;
   /** Timestamp of last successful fetch */
   lastUpdated: string | null;
-}
-
-// ============================================================
-// FETCH HELPERS
-// ============================================================
-
-/** Timeout for individual API fetches (ms). Prevents hung requests from stacking. */
-const FETCH_TIMEOUT_MS = 10_000;
-
-async function fetchJson<T>(
-  url: string,
-  signal?: AbortSignal,
-): Promise<{ data: T } | { error: string; status: number }> {
-  try {
-    // Combine caller signal (unmount) with a per-request timeout
-    const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
-    const combinedSignal = signal
-      ? AbortSignal.any([signal, timeoutSignal])
-      : timeoutSignal;
-
-    const res = await fetch(url, {
-      credentials: 'same-origin',
-      signal: combinedSignal,
-    });
-    if (!res.ok) {
-      const body = await res
-        .json()
-        .catch(() => ({ error: `HTTP ${res.status}` }));
-      return {
-        error: body.error || `HTTP ${res.status}`,
-        status: res.status,
-      };
-    }
-    const data: T = await res.json();
-    return { data };
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      return { error: 'Request aborted', status: 0 };
-    }
-    if (err instanceof DOMException && err.name === 'TimeoutError') {
-      return { error: 'Request timed out', status: 0 };
-    }
-    return {
-      error: getErrorMessage(err),
-      status: 0,
-    };
-  }
 }
 
 // ============================================================
@@ -125,85 +76,40 @@ export function useMarketData(): MarketDataState {
   const consecutiveFailsRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
-    const [
-      quotesResult,
-      intradayResult,
-      yesterdayResult,
-      eventsResult,
-      moversResult,
-    ] = await Promise.all([
-      fetchJson<QuotesResponse>('/api/quotes'),
-      fetchJson<IntradayResponse>('/api/intraday'),
-      fetchJson<YesterdayResponse>('/api/yesterday'),
-      fetchJson<EventsResponse>('/api/events?days=30'),
-      fetchJson<MoversResponse>('/api/movers'),
-    ]);
-
-    let anySuccess = false;
-    let anyAuthError = false;
+    const results = await fetchAllEndpoints();
 
     setData((prev) => {
-      const next = { ...prev };
+      const { nextData, anySuccess, anyAuthError } = processEndpointResults(
+        prev,
+        results,
+      );
 
-      if ('data' in quotesResult) {
-        next.quotes = quotesResult.data;
-        anySuccess = true;
-      } else if (quotesResult.status === 401) {
-        anyAuthError = true;
+      // Only show needsAuth if the user previously had data (was authenticated)
+      // but now gets 401s. Don't show it for public visitors who never auth'd.
+      // Check the ref BEFORE updating it so we can detect the transition.
+      if (anyAuthError && !anySuccess && isOwnerRef.current) {
+        setNeedsAuth(true);
+      } else {
+        setNeedsAuth(false);
       }
 
-      if ('data' in intradayResult) {
-        next.intraday = intradayResult.data;
-        anySuccess = true;
-      } else if (intradayResult.status === 401) {
-        anyAuthError = true;
+      if (anySuccess) isOwnerRef.current = true;
+
+      if (anySuccess) {
+        consecutiveFailsRef.current = 0;
+      } else if (!anyAuthError) {
+        // Only count as a failure if it wasn't just a 401 (public visitor)
+        consecutiveFailsRef.current += 1;
       }
 
-      if ('data' in yesterdayResult) {
-        next.yesterday = yesterdayResult.data;
-        anySuccess = true;
-      } else if (yesterdayResult.status === 401) {
-        anyAuthError = true;
+      if (anySuccess) {
+        setLastUpdated(new Date().toISOString());
       }
 
-      // Events is public — always store if successful
-      if ('data' in eventsResult) {
-        next.events = eventsResult.data;
-      }
-
-      // Movers is owner-gated — silently skip 401s
-      if ('data' in moversResult) {
-        next.movers = moversResult.data;
-        anySuccess = true;
-      } else if (moversResult.status === 401) {
-        anyAuthError = true;
-      }
-
-      return next;
+      return nextData;
     });
 
-    // Only show needsAuth if the user previously had data (was authenticated)
-    // but now gets 401s. Don't show it for public visitors who never auth'd.
-    // Check the ref BEFORE updating it so we can detect the transition.
-    if (anyAuthError && !anySuccess && isOwnerRef.current) {
-      setNeedsAuth(true);
-    } else {
-      setNeedsAuth(false);
-    }
-
-    if (anySuccess) isOwnerRef.current = true;
-
-    if (anySuccess) {
-      consecutiveFailsRef.current = 0;
-    } else if (!anyAuthError) {
-      // Only count as a failure if it wasn't just a 401 (public visitor)
-      consecutiveFailsRef.current += 1;
-    }
-
     setLoading(false);
-    if (anySuccess) {
-      setLastUpdated(new Date().toISOString());
-    }
   }, []);
 
   // Fetch on mount
@@ -233,7 +139,10 @@ export function useMarketData(): MarketDataState {
           fetches.push(
             fetchJson<IntradayResponse>('/api/intraday').then((result) => {
               if ('data' in result) {
-                setData((prev) => ({ ...prev, intraday: result.data }));
+                setData((prev) => ({
+                  ...prev,
+                  intraday: result.data,
+                }));
               }
             }),
           );

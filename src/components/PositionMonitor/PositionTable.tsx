@@ -7,12 +7,7 @@
 
 import { ScrollHint } from '../ui';
 import type { HedgePosition, IronCondor, NakedPosition, Spread } from './types';
-import {
-  IronCondorRow,
-  SpreadRow,
-  HedgeRows,
-  NakedRows,
-} from './PositionRow';
+import { IronCondorRow, SpreadRow, HedgeRows, NakedRows } from './PositionRow';
 import { cushionPct } from './position-helpers';
 
 interface PositionTableProps {

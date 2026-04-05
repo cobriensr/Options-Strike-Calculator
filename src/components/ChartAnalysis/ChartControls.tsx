@@ -28,9 +28,7 @@ interface Props {
   readonly updateLabel: (id: string, label: string) => void;
   readonly handleDrop: (e: React.DragEvent) => void;
   readonly handleFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  readonly handleReplaceFile: (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => void;
+  readonly handleReplaceFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
   // CSV upload
   readonly csvInputRef: RefObject<HTMLInputElement | null>;
   readonly positionUpload: {
@@ -205,9 +203,7 @@ export default function ChartControls({
                   {CHART_LABELS.filter(
                     (l) =>
                       l === img.label ||
-                      !images.some(
-                        (o) => o.id !== img.id && o.label === l,
-                      ),
+                      !images.some((o) => o.id !== img.id && o.label === l),
                   ).map((l) => (
                     <option key={l} value={l}>
                       {l}
