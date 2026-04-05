@@ -106,7 +106,9 @@ function getMonthChunks(days: number): Array<{ start: string; end: string }> {
     chunkStart.setMonth(chunkStart.getMonth() - 1);
     chunkStart.setDate(chunkStart.getDate() + 1);
 
-    const effectiveStart = chunkStart < earliest ? earliest : chunkStart;
+    const effectiveStart = new Date(
+      Math.max(chunkStart.getTime(), earliest.getTime()),
+    );
 
     chunks.push({
       start: formatDate(effectiveStart),
@@ -240,7 +242,7 @@ async function fetchBars(
  * statements to keep memory usage reasonable.
  */
 async function insertBars(
-  sql: ReturnType<typeof neon>,
+  sql: ReturnType<typeof neon<false, false>>,
   symbol: string,
   bars: Array<{
     ts: string;
@@ -332,7 +334,9 @@ async function main() {
   console.log(`Done. ${grandTotal} total bars inserted.`);
 }
 
-main().catch((err: unknown) => {
+try {
+  await main();
+} catch (err: unknown) {
   console.error('Backfill failed:', err);
   process.exit(1);
-});
+}
