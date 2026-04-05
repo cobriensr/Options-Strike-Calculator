@@ -309,7 +309,11 @@ describe('GET /api/system-status', () => {
     await handler(req, res);
 
     const json = res._json as {
-      services: Record<string, { latencyMs?: number }>;
+      services: {
+        postgres: { latencyMs?: number };
+        redis: { latencyMs?: number };
+        schwab: { latencyMs?: number };
+      };
     };
     expect(json.services.postgres.latencyMs).toBeTypeOf('number');
     expect(json.services.redis.latencyMs).toBeTypeOf('number');
