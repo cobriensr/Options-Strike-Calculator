@@ -54,6 +54,7 @@ const ChartAnalysis = lazy(() => import('./components/ChartAnalysis'));
 const RiskCalculator = lazy(() => import('./components/RiskCalculator'));
 const PositionMonitor = lazy(() => import('./components/PositionMonitor'));
 const MLInsights = lazy(() => import('./components/ml-insights/MLInsights'));
+const FuturesPanel = lazy(() => import('./components/futures/FuturesPanel'));
 
 // ============================================================
 // MAIN COMPONENT
@@ -318,6 +319,7 @@ export default function StrikeCalculator() {
       ...(isOwner && hasMarketOrSnapshot
         ? [{ id: 'sec-darkpool', label: 'Dark Pool' }]
         : []),
+      ...(isOwner ? [{ id: 'sec-futures', label: 'Futures' }] : []),
       ...(hasMarketOrSnapshot ? [{ id: 'sec-charts', label: 'Charts' }] : []),
       { id: 'sec-history', label: 'History' },
       ...(isOwner ? [{ id: 'sec-ml-insights', label: 'ML Insights' }] : []),
@@ -663,6 +665,17 @@ export default function StrikeCalculator() {
                     error={darkPool.error}
                     updatedAt={darkPool.updatedAt}
                   />
+                </ErrorBoundary>
+              </>
+            )}
+
+            {isOwner && (
+              <>
+                <span id="sec-futures" className="block scroll-mt-28" />
+                <ErrorBoundary label="Futures">
+                  <Suspense fallback={<SkeletonSection lines={5} />}>
+                    <FuturesPanel />
+                  </Suspense>
                 </ErrorBoundary>
               </>
             )}
