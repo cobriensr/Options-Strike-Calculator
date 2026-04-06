@@ -20,7 +20,9 @@ import { getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Constants ───────────────────────────────────────────────
 
-const FUTURES_SYMBOLS = ['ES', 'NQ', 'VX1', 'VX2', 'ZN', 'RTY', 'CL'] as const;
+const FUTURES_SYMBOLS = [
+  'ES', 'NQ', 'VX1', 'VX2', 'ZN', 'RTY', 'CL', 'GC', 'DX',
+] as const;
 
 type FuturesSymbol = (typeof FUTURES_SYMBOLS)[number];
 

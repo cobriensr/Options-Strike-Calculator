@@ -22,6 +22,7 @@ from config import settings
 from logger_setup import log
 from symbol_manager import (
     DATASET_CME,
+    DATASET_IFUS,
     DATASET_XCBF,
     OptionsStrikeSet,
     compute_atm_strikes,
@@ -53,6 +54,7 @@ class DatabentoClient:
     ) -> None:
         self._client: db.Live | None = None
         self._vxm_client: db.Live | None = None
+        self._dx_client: db.Live | None = None
         self._alert_engine = alert_engine
         self._trade_processor = trade_processor
         self._connected = False
@@ -120,8 +122,11 @@ class DatabentoClient:
         self._connected = True
         log.info("CME Live client started -- streaming")
 
-        # Second client for VXM on XCBF.PITCH (separate dataset)
+        # Second client for VX on XCBF.PITCH (separate dataset)
         self._start_vxm_client()
+
+        # Third client for DX on IFUS.IMPACT (ICE Futures US)
+        self._start_dx_client()
 
     def _subscribe_futures_ohlcv(self) -> None:
         """Subscribe to OHLCV-1m for CME/CBOT/NYMEX futures."""
@@ -199,6 +204,97 @@ class DatabentoClient:
         except Exception as exc:
             log.error("Failed to start VX client: %s", exc)
             self._vxm_client = None
+
+    def _start_dx_client(self) -> None:
+        """Start a third Live client for DX on IFUS.IMPACT (ICE Futures US)."""
+        subs = get_all_futures_subscriptions()
+        dx_cfg = subs.get("DX")
+        if not dx_cfg or dx_cfg["dataset"] != DATASET_IFUS:
+            return
+
+        try:
+            self._dx_client = db.Live(
+                key=settings.databento_api_key,
+                ts_out=True,
+                heartbeat_interval_s=30,
+                reconnect_policy=ReconnectPolicy.RECONNECT,
+            )
+
+            self._dx_client.add_callback(
+                record_callback=self._on_dx_record,
+                exception_callback=self._on_error,
+            )
+
+            self._dx_client.subscribe(
+                dataset=DATASET_IFUS,
+                schema="ohlcv-1m",
+                symbols=[dx_cfg["parent_symbol"]],
+                stype_in="parent",
+            )
+
+            self._prefix_to_internal["DX"] = "DX"
+            self._dx_client.start()
+            log.info("DX Live client started on %s: %s", DATASET_IFUS, dx_cfg["parent_symbol"])
+        except Exception as exc:
+            log.error("Failed to start DX client: %s", exc)
+            self._dx_client = None
+
+    def _on_dx_record(self, record: Any) -> None:
+        """Callback for DX client records (IFUS.IMPACT)."""
+        try:
+            record_type = type(record).__name__
+            if record_type not in ("OHLCVMsg", "OhlcvMsg"):
+                return
+            self._handle_ohlcv_from_client(record, self._dx_client)
+        except Exception as exc:
+            log.error("Error processing DX record: %s", exc)
+
+    def _handle_ohlcv_from_client(
+        self, record: Any, client: db.Live | None
+    ) -> None:
+        """Process an OHLCV bar using a specific client's symbology map."""
+        from db import upsert_futures_bar
+
+        iid = getattr(record, "instrument_id", None)
+        if iid is None or client is None:
+            return
+
+        raw_symbol = client.symbology_map.get(iid)
+        if raw_symbol is None:
+            return
+
+        raw_str = str(raw_symbol)
+
+        # Filter out spreads/combos
+        if "-" in raw_str or ":" in raw_str or " " in raw_str:
+            return
+
+        # Prefix match to internal symbol
+        symbol = None
+        for prefix in sorted(self._prefix_to_internal, key=len, reverse=True):
+            if raw_str.startswith(prefix):
+                symbol = self._prefix_to_internal[prefix]
+                break
+        if symbol is None:
+            return
+
+        open_ = Decimal(record.open) / Decimal(1_000_000_000)
+        high = Decimal(record.high) / Decimal(1_000_000_000)
+        low = Decimal(record.low) / Decimal(1_000_000_000)
+        close = Decimal(record.close) / Decimal(1_000_000_000)
+        volume = record.volume
+        ts_ns = record.ts_event
+        ts = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
+        ts = ts.replace(second=0, microsecond=0)
+
+        try:
+            upsert_futures_bar(symbol, ts, open_, high, low, close, volume)
+            self._last_bar_ts = time.time()
+            log.debug("Bar: %s %s C=%.2f", symbol, ts.isoformat(), close)
+        except Exception as exc:
+            log.error("Failed to upsert bar for %s: %s", symbol, exc)
+
+        self._alert_engine.on_bar(symbol, ts.timestamp(), float(close), volume)
 
     def subscribe_es_options(self, es_price: float) -> None:
         """Subscribe to ES options Trades for ATM +/-10 strikes.
@@ -615,9 +711,14 @@ class DatabentoClient:
         return self._option_definitions.get(instrument_id)
 
     def stop(self) -> None:
-        """Gracefully stop both Databento clients."""
+        """Gracefully stop all Databento clients."""
         self._connected = False
-        for name, client in [("CME", self._client), ("VXM", self._vxm_client)]:
+        clients = [
+            ("CME", self._client),
+            ("VX", self._vxm_client),
+            ("DX", self._dx_client),
+        ]
+        for name, client in clients:
             if client:
                 try:
                     client.stop()
@@ -625,6 +726,7 @@ class DatabentoClient:
                     log.error("Error stopping %s client: %s", name, exc)
         self._client = None
         self._vxm_client = None
+        self._dx_client = None
         self._trade_processor.flush()
         log.info("Databento clients stopped")
 

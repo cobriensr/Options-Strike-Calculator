@@ -43,15 +43,20 @@ FUTURES_PARENT_SYMBOLS = {
     "ZN": "ZN.FUT",    # 10-Year Treasury Note
     "RTY": "RTY.FUT",  # E-mini Russell 2000
     "CL": "CL.FUT",    # WTI Crude Oil
+    "GC": "GC.FUT",    # Gold (COMEX)
 }
 
 # VX (full-size VIX futures) — two months for term structure
 VX_FRONT = "VX.FUT"      # Front month
 VX_SECOND = "VX.FUT.1"   # Second month (for contango/backwardation)
 
+# DX (US Dollar Index) on ICE Futures US — separate dataset
+DX_PARENT = "DX.FUT"
+
 # Datasets by exchange
-DATASET_CME = "GLBX.MDP3"   # CME, CBOT, NYMEX, COMEX
+DATASET_CME = "GLBX.MDP3"    # CME, CBOT, NYMEX, COMEX
 DATASET_XCBF = "XCBF.PITCH"  # CBOE Futures Exchange (VX)
+DATASET_IFUS = "IFUS.IMPACT"  # ICE Futures US (DX)
 
 # Internal symbol -> display name mapping
 SYMBOL_DISPLAY = {
@@ -62,6 +67,8 @@ SYMBOL_DISPLAY = {
     "ZN": "/ZN",
     "RTY": "/RTY",
     "CL": "/CL",
+    "GC": "/GC",
+    "DX": "/DX",
 }
 
 # Strike spacing for ES options (5-point increments)
@@ -164,6 +171,13 @@ def get_all_futures_subscriptions() -> dict[str, dict]:
         "parent_symbol": VX_SECOND,
         "dataset": DATASET_XCBF,
         "db_symbol": "VX2",
+    }
+
+    # DX (ICE Futures US)
+    subs["DX"] = {
+        "parent_symbol": DX_PARENT,
+        "dataset": DATASET_IFUS,
+        "db_symbol": "DX",
     }
 
     return subs

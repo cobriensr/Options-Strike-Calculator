@@ -19,6 +19,8 @@ const SYMBOL_LABELS: Record<string, string> = {
   ZN: '/ZN',
   RTY: '/RTY',
   CL: '/CL',
+  GC: '/GC',
+  DX: '/DX',
 };
 
 const SYMBOL_NAMES: Record<string, string> = {
@@ -29,6 +31,8 @@ const SYMBOL_NAMES: Record<string, string> = {
   ZN: '10Y Treasury',
   RTY: 'Russell 2000',
   CL: 'Crude Oil',
+  GC: 'Gold',
+  DX: 'US Dollar',
 };
 
 interface FuturesGridProps {
@@ -61,7 +65,8 @@ function volumeLabel(
 function formatPrice(symbol: string, price: number): string {
   // ZN trades in 32nds but snapshot stores decimal
   if (symbol === 'ZN') return price.toFixed(3);
-  if (symbol === 'CL') return price.toFixed(2);
+  if (symbol === 'CL' || symbol === 'GC' || symbol === 'DX')
+    return price.toFixed(2);
   if (symbol.startsWith('VX')) return price.toFixed(2);
   return price.toLocaleString('en-US', {
     minimumFractionDigits: 2,

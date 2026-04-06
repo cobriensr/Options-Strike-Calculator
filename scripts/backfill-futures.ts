@@ -20,7 +20,7 @@ import { neon } from '@neondatabase/serverless';
 
 // ── Config ─────────────────────────────────────────────────────
 
-const DEFAULT_SYMBOLS = ['ES', 'NQ', 'VX', 'ZN', 'RTY', 'CL'];
+const DEFAULT_SYMBOLS = ['ES', 'NQ', 'VX', 'ZN', 'RTY', 'CL', 'GC', 'DX'];
 const DEFAULT_DAYS = 252; // ~1 trading year
 
 interface BackfillConfig {
@@ -42,6 +42,8 @@ const DATABENTO_SYMBOL_MAP: Record<string, string> = {
   ZN: 'ZN.c.0',
   RTY: 'RTY.c.0',
   CL: 'CL.c.0',
+  GC: 'GC.c.0',
+  DX: 'DX.c.0',
 };
 
 // ── CLI arg parsing ────────────────────────────────────────────
@@ -163,7 +165,11 @@ async function fetchBars(
 > {
   const databentoSymbol = DATABENTO_SYMBOL_MAP[symbol] ?? symbol;
 
-  const dataset = symbol === 'VX' ? 'XCBF.PITCH' : 'GLBX.MDP3';
+  const DATASET_MAP: Record<string, string> = {
+    VX: 'XCBF.PITCH',
+    DX: 'IFUS.IMPACT',
+  };
+  const dataset = DATASET_MAP[symbol] ?? 'GLBX.MDP3';
 
   const body = {
     dataset,
