@@ -141,12 +141,10 @@ describe('useFuturesData', () => {
 
   it('aborts fetch on unmount', async () => {
     let abortSignal: AbortSignal | null | undefined;
-    mockFetch.mockImplementationOnce(
-      (_url: string, init?: RequestInit) => {
-        abortSignal = init?.signal;
-        return new Promise(() => {}); // never resolve
-      },
-    );
+    mockFetch.mockImplementationOnce((_url: string, init?: RequestInit) => {
+      abortSignal = init?.signal;
+      return new Promise(() => {}); // never resolve
+    });
 
     const { unmount } = renderHook(() => useFuturesData());
     unmount();

@@ -257,7 +257,15 @@ async function insertBars(
     const values = batch
       .map(
         (bar) =>
-          `(${[symbol, bar.ts, bar.open, bar.high, bar.low, bar.close, bar.volume]
+          `(${[
+            symbol,
+            bar.ts,
+            bar.open,
+            bar.high,
+            bar.low,
+            bar.close,
+            bar.volume,
+          ]
             .map((v) => (typeof v === 'string' ? `'${v}'` : v))
             .join(', ')})`,
       )

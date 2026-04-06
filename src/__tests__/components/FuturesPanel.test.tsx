@@ -123,18 +123,14 @@ describe('FuturesPanel: empty state', () => {
     render(<FuturesPanel />);
 
     expect(screen.getByText('No futures data yet')).toBeInTheDocument();
-    expect(
-      screen.getByText(/sidecar is streaming/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/sidecar is streaming/)).toBeInTheDocument();
   });
 
   it('does not show empty state when loading', () => {
     mockState({ loading: true, snapshots: [] });
     render(<FuturesPanel />);
 
-    expect(
-      screen.queryByText('No futures data yet'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('No futures data yet')).not.toBeInTheDocument();
   });
 
   it('does not show empty state when error is present', () => {
@@ -145,9 +141,7 @@ describe('FuturesPanel: empty state', () => {
     });
     render(<FuturesPanel />);
 
-    expect(
-      screen.queryByText('No futures data yet'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('No futures data yet')).not.toBeInTheDocument();
   });
 });
 
@@ -246,8 +240,6 @@ describe('FuturesPanel: section structure', () => {
     mockState();
     render(<FuturesPanel />);
 
-    expect(
-      screen.getByRole('region', { name: 'Futures' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Futures' })).toBeInTheDocument();
   });
 });

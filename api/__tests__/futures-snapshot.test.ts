@@ -261,9 +261,7 @@ describe('GET /api/futures/snapshot', () => {
   it('computes ES-SPX basis correctly', async () => {
     const ts = '2026-04-03T16:00:00.000Z';
     mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
-    mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('ES', 5710),
-    ]);
+    mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5710)]);
     // SPX query
     mockSql.mockResolvedValueOnce([{ spx: '5700' }]);
 
@@ -278,9 +276,7 @@ describe('GET /api/futures/snapshot', () => {
   it('returns null ES-SPX basis when no SPX data', async () => {
     const ts = '2026-04-03T16:00:00.000Z';
     mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
-    mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('ES', 5710),
-    ]);
+    mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5710)]);
     // SPX query returns empty
     mockSql.mockResolvedValueOnce([]);
 
@@ -296,9 +292,7 @@ describe('GET /api/futures/snapshot', () => {
   it('sets correct cache headers when data exists', async () => {
     const ts = '2026-04-03T16:00:00.000Z';
     mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
-    mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('ES', 5700),
-    ]);
+    mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5700)]);
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();

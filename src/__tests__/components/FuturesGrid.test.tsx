@@ -39,9 +39,7 @@ function makeAllSnapshots(
 
 describe('FuturesGrid: renders all symbol cards', () => {
   it('renders all 7 symbol cards with correct labels', () => {
-    render(
-      <FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />,
-    );
+    render(<FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />);
 
     expect(screen.getByText('/ES')).toBeInTheDocument();
     expect(screen.getByText('/NQ')).toBeInTheDocument();
@@ -60,9 +58,7 @@ describe('FuturesGrid: renders all symbol cards', () => {
   });
 
   it('has a list role with accessible label', () => {
-    render(
-      <FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />,
-    );
+    render(<FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />);
 
     expect(
       screen.getByRole('list', { name: 'Futures prices' }),
@@ -70,9 +66,7 @@ describe('FuturesGrid: renders all symbol cards', () => {
   });
 
   it('renders 7 listitems', () => {
-    render(
-      <FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />,
-    );
+    render(<FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />);
 
     expect(screen.getAllByRole('listitem')).toHaveLength(7);
   });
@@ -132,9 +126,7 @@ describe('FuturesGrid: change colors', () => {
   it('shows green color for positive changes', () => {
     render(
       <FuturesGrid
-        snapshots={[
-          makeSnapshot({ change1hPct: 0.5, changeDayPct: 1.2 }),
-        ]}
+        snapshots={[makeSnapshot({ change1hPct: 0.5, changeDayPct: 1.2 })]}
         esSpxBasis={null}
       />,
     );
@@ -149,9 +141,7 @@ describe('FuturesGrid: change colors', () => {
   it('shows red color for negative changes', () => {
     render(
       <FuturesGrid
-        snapshots={[
-          makeSnapshot({ change1hPct: -0.3, changeDayPct: -0.75 }),
-        ]}
+        snapshots={[makeSnapshot({ change1hPct: -0.3, changeDayPct: -0.75 })]}
         esSpxBasis={null}
       />,
     );
@@ -166,9 +156,7 @@ describe('FuturesGrid: change colors', () => {
   it('shows dash for null change values', () => {
     render(
       <FuturesGrid
-        snapshots={[
-          makeSnapshot({ change1hPct: null, changeDayPct: null }),
-        ]}
+        snapshots={[makeSnapshot({ change1hPct: null, changeDayPct: null })]}
         esSpxBasis={null}
       />,
     );
@@ -217,10 +205,7 @@ describe('FuturesGrid: volume badge', () => {
     );
 
     const badge = screen.getByText('2.5x');
-    expect(badge).toHaveAttribute(
-      'title',
-      'Volume: 2.5x 20-day avg',
-    );
+    expect(badge).toHaveAttribute('title', 'Volume: 2.5x 20-day avg');
   });
 
   it('shows volume badge for elevated volume (1.5x-2x)', () => {
@@ -292,8 +277,6 @@ describe('FuturesGrid: ES-SPX basis annotation', () => {
       />,
     );
 
-    expect(
-      screen.getByTitle('ES - SPX fair value basis'),
-    ).toBeInTheDocument();
+    expect(screen.getByTitle('ES - SPX fair value basis')).toBeInTheDocument();
   });
 });

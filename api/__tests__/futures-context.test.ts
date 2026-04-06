@@ -41,9 +41,7 @@ function makeSnapshot(
   };
 }
 
-function makeEsOption(
-  overrides: Partial<EsOptionsRow> = {},
-): EsOptionsRow {
+function makeEsOption(overrides: Partial<EsOptionsRow> = {}): EsOptionsRow {
   return {
     strike: '5700',
     option_type: 'P',
@@ -76,10 +74,7 @@ describe('formatFuturesForClaude', () => {
       new Error('relation "futures_snapshots" does not exist'),
     );
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toBeNull();
   });
@@ -87,10 +82,7 @@ describe('formatFuturesForClaude', () => {
   it('returns null when no snapshot rows exist', async () => {
     mockSql.mockResolvedValueOnce([]); // snapshots query
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toBeNull();
   });
@@ -127,10 +119,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([es]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).not.toBeNull();
     expect(result).not.toContain('ES-SPX Basis');
@@ -151,10 +140,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([es, nq]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).not.toBeNull();
     expect(result).toContain('NQ Futures (/NQ)');
@@ -177,10 +163,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([es, nq]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('DIVERGING');
   });
@@ -193,10 +176,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([vxm1, vxm2]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('VIX Futures (/VXM)');
     expect(result).toContain('CONTANGO');
@@ -210,10 +190,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([vxm1, vxm2]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('BACKWARDATION');
     // 22 - 20 = +2.00 → > 0.25 → BACKWARDATION
@@ -226,10 +203,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([vxm1, vxm2]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('FLAT');
     // 19.10 - 19.00 = 0.10 → abs ≤ 0.25 → FLAT
@@ -252,10 +226,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([es, zn]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('10Y Treasury (/ZN)');
     // ZN day +0.30 > 0.1 && ES day -0.50 < -0.2 → flight to safety
@@ -274,10 +245,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([es, zn]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('Broad liquidation');
   });
@@ -294,10 +262,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([es, zn]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('ZN flat');
     expect(result).toContain('not macro-driven');
@@ -314,10 +279,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([cl]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('Crude Oil (/CL)');
     // day change -2.50 < -2 → vol compression signal
@@ -332,10 +294,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([cl]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     // day change +3.00 > 2 → vol expansion signal
     expect(result).toContain('vol expansion likely');
@@ -359,10 +318,7 @@ describe('formatFuturesForClaude', () => {
     });
     mockSql.mockResolvedValueOnce([putOption, callOption]); // options
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('ES Options Institutional Activity');
     expect(result).toContain('Top Put OI: 5650P');
@@ -378,10 +334,7 @@ describe('formatFuturesForClaude', () => {
       new Error('relation "futures_options_daily" does not exist'),
     ); // options fails
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     // Should still return ES data, just without options section
     expect(result).not.toBeNull();
@@ -398,10 +351,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([es, cl]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).not.toBeNull();
     expect(result).toContain('ES Futures (/ES)');
@@ -419,10 +369,7 @@ describe('formatFuturesForClaude', () => {
     mockSql.mockResolvedValueOnce([es]);
     mockSql.mockResolvedValueOnce([]);
 
-    const result = await formatFuturesForClaude(
-      mockSql as never,
-      analysisDate,
-    );
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toMatch(/^## Futures Context\n\n/);
   });

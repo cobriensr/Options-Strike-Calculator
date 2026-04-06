@@ -48,11 +48,7 @@ function makeCronReq() {
  * Helper to build mock OI rows for futures_options_daily.
  * Each row has { strike, option_type, oi }.
  */
-function makeOiRow(
-  strike: number,
-  optionType: 'C' | 'P',
-  oi: number,
-) {
+function makeOiRow(strike: number, optionType: 'C' | 'P', oi: number) {
   return {
     strike: String(strike),
     option_type: optionType,

@@ -18,15 +18,11 @@ function makeSnapshot(
   };
 }
 
-function frontMonth(
-  overrides: Partial<FuturesSnapshot> = {},
-): FuturesSnapshot {
+function frontMonth(overrides: Partial<FuturesSnapshot> = {}): FuturesSnapshot {
   return makeSnapshot({ symbol: 'VXM1', price: 18.75, ...overrides });
 }
 
-function backMonth(
-  overrides: Partial<FuturesSnapshot> = {},
-): FuturesSnapshot {
+function backMonth(overrides: Partial<FuturesSnapshot> = {}): FuturesSnapshot {
   return makeSnapshot({ symbol: 'VXM2', price: 20.1, ...overrides });
 }
 
@@ -120,10 +116,7 @@ describe('VixTermStructure (futures): structure badges', () => {
   it('shows BACKWARDATION badge', () => {
     render(
       <VixTermStructure
-        snapshots={[
-          frontMonth({ price: 22.0 }),
-          backMonth({ price: 20.0 }),
-        ]}
+        snapshots={[frontMonth({ price: 22.0 }), backMonth({ price: 20.0 })]}
         vxTermSpread={2.0}
         vxTermStructure="BACKWARDATION"
       />,
@@ -135,10 +128,7 @@ describe('VixTermStructure (futures): structure badges', () => {
   it('shows FLAT badge', () => {
     render(
       <VixTermStructure
-        snapshots={[
-          frontMonth({ price: 20.0 }),
-          backMonth({ price: 20.05 }),
-        ]}
+        snapshots={[frontMonth({ price: 20.0 }), backMonth({ price: 20.05 })]}
         vxTermSpread={-0.05}
         vxTermStructure="FLAT"
       />,
@@ -157,9 +147,7 @@ describe('VixTermStructure (futures): structure badges', () => {
     );
 
     expect(screen.queryByText('CONTANGO')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('BACKWARDATION'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('BACKWARDATION')).not.toBeInTheDocument();
     expect(screen.queryByText('FLAT')).not.toBeInTheDocument();
   });
 });
@@ -185,10 +173,7 @@ describe('VixTermStructure (futures): spread value', () => {
   it('shows positive spread in backwardation', () => {
     render(
       <VixTermStructure
-        snapshots={[
-          frontMonth({ price: 22.0 }),
-          backMonth({ price: 20.0 }),
-        ]}
+        snapshots={[frontMonth({ price: 22.0 }), backMonth({ price: 20.0 })]}
         vxTermSpread={2.0}
         vxTermStructure="BACKWARDATION"
       />,
@@ -306,8 +291,6 @@ describe('VixTermStructure (futures): accessibility', () => {
       />,
     );
 
-    expect(
-      screen.getByText('VIX Term Structure'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('VIX Term Structure')).toBeInTheDocument();
   });
 });
