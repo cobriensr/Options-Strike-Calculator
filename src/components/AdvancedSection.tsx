@@ -62,6 +62,7 @@ export default function AdvancedSection({
   return (
     <SectionBox
       label="Advanced"
+      collapsible
       headerRight={
         <div className="flex gap-2">
           <button

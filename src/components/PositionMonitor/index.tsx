@@ -129,6 +129,7 @@ export default function PositionMonitor({
   return (
     <SectionBox
       label="Position Monitor"
+      collapsible
       badge={
         statement
           ? `${statement.date} \u2022 ${String(spreadCount)} spreads`
