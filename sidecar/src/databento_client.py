@@ -59,15 +59,12 @@ class DatabentoClient:
         self._options_strikes = OptionsStrikeSet()
         self._lock = threading.Lock()
 
-        # Symbol mapping: Databento instrument_id -> our internal symbol
-        # Populated during subscription via SymbolMappingMsg
-        self._instrument_map: dict[int, str] = {}
+        # Map raw symbol prefixes to internal names for resolving
+        # SDK symbology_map values (e.g., "ESM5" -> "ES")
+        self._prefix_to_internal: dict[str, str] = {}
 
-        # Reverse: internal symbol -> list of instrument_ids
-        self._symbol_to_instruments: dict[str, list[int]] = {}
-
-        # Track raw_symbol -> internal symbol for mapping callbacks
-        self._raw_to_internal: dict[str, str] = {}
+        # Cache: instrument_id -> internal symbol (populated on first resolve)
+        self._resolved_cache: dict[int, str | None] = {}
 
         # Log symbol mapping summary once, not per-contract
         self._mapping_summary_logged = False
@@ -135,7 +132,9 @@ class DatabentoClient:
         for sym, cfg in subs.items():
             if cfg["dataset"] == DATASET_CME:
                 cme_symbols.append(cfg["parent_symbol"])
-                self._raw_to_internal[cfg["parent_symbol"]] = cfg["db_symbol"]
+                # Map prefix for resolving raw symbols from SDK symbology_map
+                # e.g., "ES" -> "ES" so "ESM5" matches prefix "ES"
+                self._prefix_to_internal[cfg["db_symbol"]] = cfg["db_symbol"]
 
         if cme_symbols:
             self._client.subscribe(
@@ -161,7 +160,7 @@ class DatabentoClient:
         for sym, cfg in subs.items():
             if cfg["dataset"] == DATASET_XCBF:
                 cfe_symbols.append(cfg["parent_symbol"])
-                self._raw_to_internal[cfg["parent_symbol"]] = cfg["db_symbol"]
+                self._prefix_to_internal[cfg["db_symbol"]] = cfg["db_symbol"]
 
         if cfe_symbols:
             self._client.subscribe(
@@ -271,11 +270,39 @@ class DatabentoClient:
         self._connected = True
 
     def _resolve_symbol(self, record: Any) -> str | None:
-        """Resolve a record's instrument_id to our internal symbol."""
-        instrument_id = getattr(record, "hd", None)
-        if instrument_id is not None:
-            iid = instrument_id.instrument_id
-            return self._instrument_map.get(iid)
+        """Resolve a record's instrument_id to our internal symbol.
+
+        Uses the SDK's symbology_map which maps instrument_id -> raw symbol
+        (e.g., 15 -> "ESM5"), then matches the raw symbol prefix to our
+        internal name (e.g., "ESM5" starts with "ES" -> "ES").
+        """
+        hd = getattr(record, "hd", None)
+        if hd is None or self._client is None:
+            return None
+        iid = hd.instrument_id
+
+        # Check cache first
+        if iid in self._resolved_cache:
+            return self._resolved_cache[iid]
+
+        # Look up raw symbol from SDK's auto-populated symbology map
+        raw_symbol = self._client.symbology_map.get(iid)
+        if raw_symbol is None:
+            self._resolved_cache[iid] = None
+            return None
+
+        raw_str = str(raw_symbol)
+
+        # Match against known prefixes (longest match first to avoid
+        # "ES" matching "ESM5" when "ESM" might be a different product)
+        # Sort by length descending so "RTY" matches before "RT"
+        for prefix in sorted(self._prefix_to_internal, key=len, reverse=True):
+            if raw_str.startswith(prefix):
+                internal = self._prefix_to_internal[prefix]
+                self._resolved_cache[iid] = internal
+                return internal
+
+        self._resolved_cache[iid] = None
         return None
 
     def _handle_ohlcv(self, record: Any) -> None:
@@ -466,22 +493,18 @@ class DatabentoClient:
         )
 
     def _handle_symbol_mapping(self, record: Any) -> None:
-        """Process a SymbolMappingMsg to build instrument_id -> symbol map."""
-        iid = record.hd.instrument_id if hasattr(record, "hd") else 0
+        """Log symbol mappings for debugging.
+
+        The SDK's symbology_map property handles the actual mapping
+        automatically — we just log for observability.
+        """
         stype_in_symbol = getattr(record, "stype_in_symbol", "")
         stype_out_symbol = getattr(record, "stype_out_symbol", "")
-
-        # Map parent symbols to our internal names
-        internal = self._raw_to_internal.get(stype_in_symbol)
-        if internal:
-            self._instrument_map[iid] = internal
-            if internal not in self._symbol_to_instruments:
-                self._symbol_to_instruments[internal] = []
-            self._symbol_to_instruments[internal].append(iid)
-            log.debug(
-                "Symbol mapping: %s (%s) -> iid %d -> %s",
-                stype_in_symbol, stype_out_symbol, iid, internal,
-            )
+        iid = getattr(record, "instrument_id", 0)
+        log.debug(
+            "Symbol mapping: %s (%s) -> iid %d",
+            stype_in_symbol, stype_out_symbol, iid,
+        )
 
     def _handle_system(self, record: Any) -> None:
         """Handle system/error messages."""
@@ -495,11 +518,13 @@ class DatabentoClient:
         # Log mapping summary once after first data interval
         if not self._mapping_summary_logged and "End of interval" in msg:
             self._mapping_summary_logged = True
-            counts = {
-                sym: len(ids)
-                for sym, ids in self._symbol_to_instruments.items()
-            }
-            log.info("Symbol mappings complete: %s", counts)
+            if self._client:
+                smap = self._client.symbology_map
+                log.info(
+                    "Symbology map: %d instrument_ids mapped (sample: %s)",
+                    len(smap),
+                    dict(list(smap.items())[:5]),
+                )
 
     def _get_option_info(self, instrument_id: int) -> dict | None:
         """Look up option strike/type/expiry for an instrument_id."""
