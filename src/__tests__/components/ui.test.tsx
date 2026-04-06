@@ -42,6 +42,75 @@ describe('SectionBox', () => {
     );
     expect(screen.getByRole('button', { name: 'Toggle' })).toBeInTheDocument();
   });
+
+  it('shows children by default when collapsible', () => {
+    render(
+      <SectionBox label="Sec" collapsible>
+        Visible
+      </SectionBox>,
+    );
+    expect(screen.getByText('Visible')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Toggle Sec/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('hides children when defaultCollapsed is true', () => {
+    render(
+      <SectionBox label="Sec" collapsible defaultCollapsed>
+        Hidden
+      </SectionBox>,
+    );
+    expect(screen.queryByText('Hidden')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Toggle Sec/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('toggles children on header click', async () => {
+    render(
+      <SectionBox label="Sec" collapsible>
+        Toggle me
+      </SectionBox>,
+    );
+    expect(screen.getByText('Toggle me')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Toggle Sec/ }));
+    expect(screen.queryByText('Toggle me')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Toggle Sec/ }));
+    expect(screen.getByText('Toggle me')).toBeInTheDocument();
+  });
+
+  it('toggles on Enter and Space key', async () => {
+    render(
+      <SectionBox label="Sec" collapsible>
+        Keyboard
+      </SectionBox>,
+    );
+    const header = screen.getByRole('button', { name: /Toggle Sec/ });
+    header.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(screen.queryByText('Keyboard')).not.toBeInTheDocument();
+    await userEvent.keyboard(' ');
+    expect(screen.getByText('Keyboard')).toBeInTheDocument();
+  });
+
+  it('does not collapse when headerRight is clicked', async () => {
+    const fn = vi.fn();
+    render(
+      <SectionBox
+        label="Sec"
+        collapsible
+        headerRight={<button onClick={fn}>Action</button>}
+      >
+        Content
+      </SectionBox>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Action' }));
+    expect(fn).toHaveBeenCalledOnce();
+    expect(screen.getByText('Content')).toBeInTheDocument();
+  });
 });
 
 describe('Chip', () => {

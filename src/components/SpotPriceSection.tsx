@@ -30,7 +30,7 @@ export default function SpotPriceSection({
   errors,
 }: Readonly<Props>) {
   return (
-    <SectionBox label="Spot Price">
+    <SectionBox label="Spot Price" collapsible>
       <div className="grid grid-cols-2 gap-2.5">
         <div>
           <label htmlFor="spot-price" className={tinyLbl}>

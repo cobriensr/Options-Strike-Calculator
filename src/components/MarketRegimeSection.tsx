@@ -52,6 +52,7 @@ export default function MarketRegimeSection({
     <SectionBox
       label="Market Regime"
       badge={results ? 'VIX ' + (vixNum || '\u2014') : null}
+      collapsible
       headerRight={
         <button
           type="button"

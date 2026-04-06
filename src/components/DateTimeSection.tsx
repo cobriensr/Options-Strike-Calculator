@@ -75,7 +75,7 @@ export default function DateTimeSection({
   errors,
 }: Readonly<Props>) {
   return (
-    <SectionBox label="Date & Time">
+    <SectionBox label="Date & Time" collapsible>
       {/* Date picker */}
       {vixDataLoaded && (
         <>

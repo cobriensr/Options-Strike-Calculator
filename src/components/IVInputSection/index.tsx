@@ -71,6 +71,7 @@ export default function IVInputSection({
   return (
     <SectionBox
       label="Implied Volatility"
+      collapsible
       headerRight={
         <fieldset className="m-0 border-none p-0">
           <legend className="sr-only">IV input mode</legend>

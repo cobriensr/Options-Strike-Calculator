@@ -17,6 +17,7 @@ export default function VixUploadSection({
     <SectionBox
       label="Historical VIX Data"
       badge={vixDataLoaded ? vixDataSource : null}
+      collapsible
     >
       <input
         ref={fileInputRef}

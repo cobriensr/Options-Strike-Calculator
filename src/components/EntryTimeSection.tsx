@@ -30,7 +30,7 @@ export default function EntryTimeSection({
   errors,
 }: Readonly<Props>) {
   return (
-    <SectionBox label="Entry Time">
+    <SectionBox label="Entry Time" collapsible>
       <div className="grid grid-cols-2 items-end gap-2.5">
         <div>
           <label htmlFor="entry-hour" className={tinyLbl}>

@@ -7,7 +7,7 @@ export default function RiskCalculator() {
   const rc = useRiskCalculator();
 
   return (
-    <SectionBox label="Risk Calculator">
+    <SectionBox label="Risk Calculator" collapsible>
       <RiskInputs
         mode={rc.mode}
         balance={rc.balance}

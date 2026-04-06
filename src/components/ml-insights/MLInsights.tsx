@@ -23,6 +23,7 @@ export default function MLInsights() {
     <SectionBox
       label="ML Insights"
       badge={pipelineDate}
+      collapsible
       headerRight={
         <button
           type="button"

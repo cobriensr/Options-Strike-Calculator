@@ -27,12 +27,14 @@ interface Props {
   readonly results: CalculationResults | null;
   readonly context: import('./types').AnalysisContext;
   readonly onAnalysisSaved?: () => void;
+  readonly csvPositionSummary?: string | null;
 }
 
 export default function ChartAnalysis({
   results,
   context,
   onAnalysisSaved,
+  csvPositionSummary,
 }: Props) {
   const [mode, setMode] = useState<AnalysisMode>('entry');
   const [confirming, setConfirming] = useState(false);
@@ -84,6 +86,7 @@ export default function ChartAnalysis({
     results,
     mode,
     hasCSVPositions,
+    csvPositionSummary: csvPositionSummary ?? undefined,
     onAnalysisSaved,
     onModeCompleted: (completedMode) => {
       if (completedMode === 'entry') setEntryExistsToday(true);
@@ -183,7 +186,7 @@ export default function ChartAnalysis({
   // ── Render ────────────────────────────────────────────────
 
   return (
-    <SectionBox label="Chart Analysis">
+    <SectionBox label="Chart Analysis" collapsible>
       <div className="font-sans text-[11px] leading-relaxed">
         <ChartControls
           mode={mode}

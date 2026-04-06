@@ -45,6 +45,7 @@ export default function FuturesPanel() {
     <SectionBox
       label="Futures"
       badge={timeLabel}
+      collapsible
       headerRight={
         <button
           type="button"

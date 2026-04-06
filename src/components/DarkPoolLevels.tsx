@@ -147,7 +147,11 @@ export default memo(function DarkPoolLevels({
 
   if (loading) {
     return (
-      <SectionBox label="Dark Pool Levels" headerRight={headerRight}>
+      <SectionBox
+        label="Dark Pool Levels"
+        collapsible
+        headerRight={headerRight}
+      >
         <div className="text-muted animate-pulse text-center font-sans text-xs">
           Loading dark pool data...
         </div>
@@ -157,7 +161,11 @@ export default memo(function DarkPoolLevels({
 
   if (error) {
     return (
-      <SectionBox label="Dark Pool Levels" headerRight={headerRight}>
+      <SectionBox
+        label="Dark Pool Levels"
+        collapsible
+        headerRight={headerRight}
+      >
         <div className="text-muted text-center font-sans text-xs">{error}</div>
       </SectionBox>
     );
@@ -168,6 +176,7 @@ export default memo(function DarkPoolLevels({
       <SectionBox
         label="Dark Pool Levels"
         badge={badge}
+        collapsible
         headerRight={headerRight}
       >
         <div className="border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-8 text-center">
@@ -187,6 +196,7 @@ export default memo(function DarkPoolLevels({
     <SectionBox
       label="Dark Pool Levels"
       badge={badge}
+      collapsible
       headerRight={headerRight}
     >
       <table className="w-full border-collapse" aria-label="Dark pool levels">

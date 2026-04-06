@@ -214,7 +214,7 @@ export default function AnalysisHistory({ refreshKey }: Props) {
 
   if (allDates.length === 0) {
     return (
-      <SectionBox label="Analysis History">
+      <SectionBox label="Analysis History" collapsible>
         {fetchError && (
           <div className="text-danger text-[11px]">{fetchError}</div>
         )}
@@ -234,7 +234,7 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   }
 
   return (
-    <SectionBox label="Analysis History">
+    <SectionBox label="Analysis History" collapsible>
       <AnalysisHistoryPicker
         modeFilter={modeFilter}
         onModeFilterChange={setModeFilter}

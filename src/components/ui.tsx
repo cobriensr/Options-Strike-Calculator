@@ -12,20 +12,58 @@ export const SectionBox = memo(function SectionBox({
   label,
   badge,
   headerRight,
+  collapsible,
+  defaultCollapsed,
   children,
 }: {
   label: string;
   badge?: string | null;
   headerRight?: ReactNode;
+  collapsible?: boolean;
+  defaultCollapsed?: boolean;
   children: ReactNode;
 }) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed ?? false);
+  const toggle = useCallback(() => setCollapsed((v) => !v), []);
+  const isOpen = !collapsible || !collapsed;
+
   return (
     <section
       aria-label={label}
       className="animate-fade-in-up bg-surface border-edge border-t-accent mt-6 flex h-full flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)] first:mt-0"
     >
-      <div className="mb-3.5 flex items-center justify-between">
+      <div
+        className={
+          (isOpen ? 'mb-3.5 ' : '') +
+          'flex items-center justify-between' +
+          (collapsible ? ' cursor-pointer select-none' : '')
+        }
+        onClick={collapsible ? toggle : undefined}
+        role={collapsible ? 'button' : undefined}
+        tabIndex={collapsible ? 0 : undefined}
+        aria-label={collapsible ? `Toggle ${label}` : undefined}
+        aria-expanded={collapsible ? isOpen : undefined}
+        onKeyDown={
+          collapsible
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggle();
+                }
+              }
+            : undefined
+        }
+      >
         <div className="flex items-center gap-2.5">
+          {collapsible && (
+            <span
+              className="text-muted text-[12px] transition-transform duration-200"
+              style={{ transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+              aria-hidden="true"
+            >
+              &#x25BE;
+            </span>
+          )}
           <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
             {label}
           </h2>
@@ -35,9 +73,14 @@ export const SectionBox = memo(function SectionBox({
             </span>
           )}
         </div>
-        {headerRight}
+        {/* Wrap headerRight to stop clicks from toggling collapse */}
+        {headerRight && collapsible ? (
+          <div onClick={(e) => e.stopPropagation()}>{headerRight}</div>
+        ) : (
+          headerRight
+        )}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+      {isOpen && <div className="flex min-h-0 flex-1 flex-col">{children}</div>}
     </section>
   );
 });

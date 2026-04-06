@@ -22,7 +22,7 @@ export default function DateLookupSection({
   liveEvents,
 }: Readonly<Props>) {
   return (
-    <SectionBox label="Date Lookup">
+    <SectionBox label="Date Lookup" collapsible>
       <label htmlFor="lookup-date-picker" className="sr-only">
         Select date
       </label>

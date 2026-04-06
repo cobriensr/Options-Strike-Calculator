@@ -190,6 +190,7 @@ export default function PreMarketInput({
     <SectionBox
       label="Pre-Market"
       badge={autoFilled ? 'Auto-filled \u2713' : saved ? '\u2713 Saved' : null}
+      collapsible
       headerRight={
         <button
           type="button"

@@ -94,7 +94,7 @@ export default memo(function TradingScheduleSection() {
   }, []);
 
   return (
-    <SectionBox label="Trading Schedule" badge="CT">
+    <SectionBox label="Trading Schedule" badge="CT" collapsible>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {PHASES.map((phase, i) => {
           const active = i === activeIdx;
