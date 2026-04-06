@@ -65,9 +65,7 @@ interface SymbolData {
  * `symbolMap` keys are symbol names → data for that symbol.
  * Missing symbols return empty arrays for latest bar (→ skipped).
  */
-function setupSqlDispatch(
-  symbolMap: Record<string, SymbolData | null>,
-) {
+function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
   mockSql.mockImplementation(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
       const query = strings.join('??');
@@ -280,13 +278,13 @@ describe('fetch-futures-snapshot handler', () => {
 
   // ── Stale data handling ───────────────────────────────────
 
-  it('skips symbols with stale bars (>15 min old)', async () => {
-    const staleTs = new Date(
+  it('stores bars regardless of age (no staleness filter)', async () => {
+    const oldTs = new Date(
       MARKET_TIME.getTime() - 20 * 60 * 1000,
     ).toISOString();
 
     setupSqlDispatch({
-      ES: makeSymbolData({ latestClose: '5700', latestTs: staleTs }),
+      ES: makeSymbolData({ latestClose: '5700', latestTs: oldTs }),
       NQ: null,
       VXM1: null,
       VXM2: null,
@@ -300,9 +298,9 @@ describe('fetch-futures-snapshot handler', () => {
 
     expect(res._status).toBe(200);
     const json = res._json as { stored: number; skipped: number };
-    // ES stale → null, 6 others empty → all skipped
-    expect(json.stored).toBe(0);
-    expect(json.skipped).toBe(7);
+    // ES stored even though bar is 20 min old, 6 others empty
+    expect(json.stored).toBe(1);
+    expect(json.skipped).toBe(6);
   });
 
   // ── Partial failure tolerance ─────────────────────────────
@@ -323,9 +321,7 @@ describe('fetch-futures-snapshot handler', () => {
     const originalImpl = mockSql.getMockImplementation()!;
     mockSql.mockImplementation(
       (strings: TemplateStringsArray, ...values: unknown[]) => {
-        const symbol = values.find(
-          (v) => typeof v === 'string' && v === 'NQ',
-        );
+        const symbol = values.find((v) => typeof v === 'string' && v === 'NQ');
         if (
           symbol === 'NQ' &&
           strings.join('').includes('ORDER BY ts DESC LIMIT 1')
