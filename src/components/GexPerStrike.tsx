@@ -135,10 +135,7 @@ export default memo(function GexPerStrike({
       const half = Math.floor(visibleCount / 2);
       const lo = Math.max(0, center - half);
       const hi = Math.min(strikes.length, lo + visibleCount);
-      return strikes.slice(
-        Math.max(0, hi - visibleCount),
-        hi,
-      );
+      return strikes.slice(Math.max(0, hi - visibleCount), hi);
     }
     return [...strikes].sort(
       (a, b) =>
@@ -147,8 +144,7 @@ export default memo(function GexPerStrike({
   }, [strikes, sortBy, viewMode, price, visibleCount]);
 
   const filtered = useMemo(
-    () =>
-      sortBy === 'strike' ? sorted : sorted.slice(0, visibleCount),
+    () => (sortBy === 'strike' ? sorted : sorted.slice(0, visibleCount)),
     [sorted, visibleCount, sortBy],
   );
 
@@ -297,28 +293,14 @@ export default memo(function GexPerStrike({
         aria-label="0DTE gamma exposure per strike"
       >
         <thead>
-          <tr className="text-muted flex items-center gap-2 border-b border-[var(--color-edge)] pb-1 font-sans text-[9px] uppercase tracking-wider">
-            <th className="w-[52px] shrink-0 text-right font-normal">
-              Strike
-            </th>
-            <th className="w-[46px] shrink-0 text-right font-normal">
-              Dist
-            </th>
-            <th className="min-w-0 flex-1 text-left font-normal">
-              GEX
-            </th>
-            <th className="w-[64px] shrink-0 text-right font-normal">
-              Net $
-            </th>
-            <th className="w-[68px] shrink-0 text-right font-normal">
-              Charm
-            </th>
-            <th className="w-[58px] shrink-0 text-right font-normal">
-              Call γ
-            </th>
-            <th className="w-[58px] shrink-0 text-right font-normal">
-              Put γ
-            </th>
+          <tr className="text-muted flex items-center gap-2 border-b border-[var(--color-edge)] pb-1 font-sans text-[9px] tracking-wider uppercase">
+            <th className="w-[52px] shrink-0 text-right font-normal">Strike</th>
+            <th className="w-[46px] shrink-0 text-right font-normal">Dist</th>
+            <th className="min-w-0 flex-1 text-left font-normal">GEX</th>
+            <th className="w-[64px] shrink-0 text-right font-normal">Net $</th>
+            <th className="w-[68px] shrink-0 text-right font-normal">Charm</th>
+            <th className="w-[58px] shrink-0 text-right font-normal">Call γ</th>
+            <th className="w-[58px] shrink-0 text-right font-normal">Put γ</th>
             <th
               className="w-[24px] shrink-0 text-center font-normal"
               title="Today's volume vs OI: ● reinforcing, ○ opposing"
