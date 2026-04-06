@@ -58,7 +58,6 @@ async function computeSnapshot(
   if (latestRows.length === 0) return null;
 
   const price = Number.parseFloat(String(latestRows[0]!.close));
-  const latestTs = new Date(String(latestRows[0]!.ts));
 
   // 1H change: bar from ~1 hour ago
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
