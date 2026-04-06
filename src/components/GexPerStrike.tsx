@@ -88,13 +88,19 @@ function GexTooltip({
     data.netVanna > 0
       ? 'Sell pressure if IV drops'
       : 'Buy pressure if IV drops';
+  const volLabel =
+    data.volReinforcement === 'reinforcing'
+      ? 'Reinforcing'
+      : data.volReinforcement === 'opposing'
+        ? 'Opposing'
+        : '—';
 
   return (
     <div
-      className="pointer-events-none fixed z-50 min-w-[220px] rounded-md border border-[rgba(255,255,255,0.08)] p-3 font-mono text-[11px] shadow-xl backdrop-blur-xl"
+      className="pointer-events-none fixed z-50 min-w-[260px] rounded-md border border-[rgba(255,255,255,0.08)] p-3 font-mono text-[11px] shadow-xl backdrop-blur-xl"
       style={{
         left: x + 16,
-        top: y - 80,
+        top: y - 120,
         backgroundColor: 'rgba(10,10,18,0.96)',
         color: theme.textSecondary,
       }}
@@ -105,15 +111,36 @@ function GexTooltip({
       >
         Strike {data.strike}
       </div>
-      <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1">
-        <span>Net GEX</span>
+      <div className="grid grid-cols-[1fr_auto_auto] gap-x-2 gap-y-1">
+        {/* Header row */}
+        <span />
+        <span className="text-[9px]" style={{ color: theme.textMuted }}>
+          Net
+        </span>
+        <span className="text-[9px]" style={{ color: theme.textMuted }}>
+          C / P
+        </span>
+
+        {/* GEX */}
+        <span>GEX</span>
         <span
           className="font-semibold"
           style={{ color: netGex >= 0 ? theme.green : theme.red }}
         >
           {formatNum(netGex)}
         </span>
-        <span>Net Charm</span>
+        <span className="text-[10px]">
+          <span style={{ color: theme.green }}>
+            {formatNum(data.callGammaOi)}
+          </span>
+          {' / '}
+          <span style={{ color: theme.red }}>
+            {formatNum(data.putGammaOi)}
+          </span>
+        </span>
+
+        {/* Charm */}
+        <span>Charm</span>
         <span
           className="font-semibold"
           style={{
@@ -122,7 +149,36 @@ function GexTooltip({
         >
           {formatNum(data.netCharm)}
         </span>
-        <span>Net Vanna</span>
+        <span className="text-[10px]">
+          <span style={{ color: CHARM_POS }}>
+            {formatNum(data.callCharmOi)}
+          </span>
+          {' / '}
+          <span style={{ color: CHARM_NEG }}>
+            {formatNum(data.putCharmOi)}
+          </span>
+        </span>
+
+        {/* DEX */}
+        <span>DEX</span>
+        <span
+          className="font-semibold"
+          style={{ color: data.netDelta >= 0 ? DEX_POS : DEX_NEG }}
+        >
+          {formatNum(data.netDelta)}
+        </span>
+        <span className="text-[10px]">
+          <span style={{ color: DEX_POS }}>
+            {formatNum(data.callDeltaOi)}
+          </span>
+          {' / '}
+          <span style={{ color: DEX_NEG }}>
+            {formatNum(data.putDeltaOi)}
+          </span>
+        </span>
+
+        {/* Vanna */}
+        <span>Vanna</span>
         <span
           className="font-semibold"
           style={{
@@ -131,11 +187,19 @@ function GexTooltip({
         >
           {formatNum(data.netVanna)}
         </span>
-        <span>Net DEX</span>
-        <span className="font-semibold" style={{ color: theme.textSecondary }}>
-          {formatNum(data.netDelta)}
+        <span className="text-[10px]">
+          <span style={{ color: VANNA_POS }}>
+            {formatNum(data.callVannaOi)}
+          </span>
+          {' / '}
+          <span style={{ color: VANNA_NEG }}>
+            {formatNum(data.putVannaOi)}
+          </span>
         </span>
-        <span className="col-span-2 mt-1 border-t border-[rgba(255,255,255,0.06)] pt-1.5" />
+      </div>
+
+      {/* Analysis section */}
+      <div className="mt-2 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 border-t border-[rgba(255,255,255,0.06)] pt-2">
         <span>Charm Effect</span>
         <span
           style={{
@@ -152,6 +216,20 @@ function GexTooltip({
           }}
         >
           {vannaDir}
+        </span>
+        <span>Vol Flow</span>
+        <span
+          className="text-[10px]"
+          style={{
+            color:
+              data.volReinforcement === 'reinforcing'
+                ? theme.green
+                : data.volReinforcement === 'opposing'
+                  ? theme.red
+                  : theme.textMuted,
+          }}
+        >
+          {volLabel}
         </span>
       </div>
     </div>
