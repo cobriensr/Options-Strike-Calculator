@@ -29,7 +29,7 @@ import { getETDateStr } from '../src/utils/timezone.js';
 /**
  * Compute proximity-weighted centroid and top-3 gamma concentration.
  */
-function computeProxCentroid(strikes: StrikeExposureRow[]): {
+export function computeProxCentroid(strikes: StrikeExposureRow[]): {
   centroid: number;
   concentration: number;
 } {
@@ -60,9 +60,14 @@ function computeProxCentroid(strikes: StrikeExposureRow[]): {
 
 /**
  * Compute charm-adjusted centroid from a set of strikes.
- * Upweights strikes where charm is positive (wall strengthening).
+ *
+ * Charm amplifies the existing gamma effect at a strike:
+ *   +γ +charm → wall strengthening (best pin)       → boost 1.5×
+ *   +γ -charm → wall decaying over time              → dampen 0.75×
+ *   -γ +charm → acceleration intensifying ("rockets") → discount 0.5×
+ *   -γ -charm → acceleration weakening               → neutral 1.0×
  */
-function computeCharmCentroid(strikes: StrikeExposureRow[]): number {
+export function computeCharmCentroid(strikes: StrikeExposureRow[]): number {
   const price = strikes[0]!.price;
   let charmWeightedSum = 0;
   let charmTotalWeight = 0;
@@ -70,7 +75,15 @@ function computeCharmCentroid(strikes: StrikeExposureRow[]): number {
   for (const s of strikes) {
     const dist = Math.max(Math.abs(s.strike - price), 1);
     const absGamma = Math.abs(s.netGamma);
-    const charmBoost = s.netCharm > 0 ? 1.5 : 1;
+    const isPositiveGamma = s.netGamma > 0;
+    const charmBoost =
+      isPositiveGamma && s.netCharm > 0
+        ? 1.5
+        : isPositiveGamma && s.netCharm < 0
+          ? 0.75
+          : !isPositiveGamma && s.netCharm > 0
+            ? 0.5
+            : 1;
     const charmProxWeight = (absGamma * charmBoost) / (dist * dist);
     charmWeightedSum += s.strike * charmProxWeight;
     charmTotalWeight += charmProxWeight;
