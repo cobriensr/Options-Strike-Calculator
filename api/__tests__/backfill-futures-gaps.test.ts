@@ -239,8 +239,9 @@ describe('backfill-futures-gaps handler', () => {
 
     const firstCall = mockFetch.mock.calls[0];
     const headers = firstCall?.[1]?.headers as Record<string, string>;
+    const auth = headers.Authorization ?? '';
     const decoded = Buffer.from(
-      headers.Authorization.replace('Basic ', ''),
+      auth.replace('Basic ', ''),
       'base64',
     ).toString();
     expect(decoded).toBe('db-test-key:');
