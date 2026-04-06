@@ -60,10 +60,6 @@ async function computeSnapshot(
   const price = Number.parseFloat(String(latestRows[0]!.close));
   const latestTs = new Date(String(latestRows[0]!.ts));
 
-  // Skip if latest bar is more than 15 minutes old (stale data)
-  const ageMs = now.getTime() - latestTs.getTime();
-  if (ageMs > 15 * 60 * 1000) return null;
-
   // 1H change: bar from ~1 hour ago
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
   const hourAgoRows = await sql`
