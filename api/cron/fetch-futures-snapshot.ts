@@ -135,7 +135,8 @@ async function computeSnapshot(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, { requireApiKey: false });
+  // Futures trade Sun 5 PM CT – Fri 5 PM CT; skip stock market hours check
+  const guard = cronGuard(req, res, { requireApiKey: false, marketHours: false });
   if (!guard) return;
 
   const startTime = Date.now();
