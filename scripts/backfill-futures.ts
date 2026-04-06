@@ -31,9 +31,8 @@ interface BackfillConfig {
 }
 
 // ── Databento symbol mapping ───────────────────────────────────
-// Maps our internal symbol names to Databento continuous contract
-// root symbols. Actual dataset + stype_in values will need to be
-// confirmed against the Databento API docs during implementation.
+// Maps internal names to Databento parent symbols for continuous
+// front-month contracts. Uses stype_in='continuous' for backfill.
 
 const DATABENTO_SYMBOL_MAP: Record<string, string> = {
   ES: 'ES.FUT',
@@ -124,18 +123,11 @@ function getMonthChunks(days: number): Array<{ start: string; end: string }> {
 
 // ── Databento API types ────────────────────────────────────────
 
-// [Databento] Confirm exact response shape from the HTTP API.
-// The timeseries.get_range endpoint returns records in the
-// requested schema format. For OHLCV-1m, each record has:
-interface DatabentoBarsResponse {
-  records?: DabentoOhlcvRecord[];
-}
-
-// [Databento] Confirm field names from Databento docs.
+// NDJSON record shape for OHLCV-1m schema.
 // Prices are int64 in 1e-9 units (nanodollars).
 interface DabentoOhlcvRecord {
-  ts_event: string; // ISO timestamp or nanosecond epoch
-  open: number; // nanodollar price
+  ts_event: string;
+  open: number;
   high: number;
   low: number;
   close: number;
@@ -150,15 +142,8 @@ const NANODOLLAR = 1_000_000_000;
 /**
  * Fetch OHLCV-1m bars for a single symbol over a date range.
  *
- * [Databento] The exact endpoint path, query parameters, and auth
- * mechanism need to be confirmed against the Databento HTTP API
- * documentation. The structure below is a best-effort placeholder
- * based on the known API patterns.
- *
- * Databento HTTP Historical API uses:
- *   POST /v0/timeseries.get_range
- *   Auth: Basic auth with API key as password
- *   Body: JSON with dataset, symbols, schema, start, end, stype_in
+ * POST /v0/timeseries.get_range with Basic auth (API key as password).
+ * Response is NDJSON with nanodollar (1e-9) prices.
  */
 async function fetchBars(
   symbol: string,
@@ -177,9 +162,7 @@ async function fetchBars(
 > {
   const databentoSymbol = DATABENTO_SYMBOL_MAP[symbol] ?? symbol;
 
-  // [Databento] Confirm dataset name — CME futures use 'GLBX.MDP3'
-  // VXM may use 'XCFE.TC' (CFE exchange)
-  const dataset = symbol === 'VXM' ? 'XCFE.TC' : 'GLBX.MDP3';
+  const dataset = symbol === 'VXM' ? 'XCBF.PITCH' : 'GLBX.MDP3';
 
   const body = {
     dataset,
@@ -191,8 +174,6 @@ async function fetchBars(
     encoding: 'json',
   };
 
-  // [Databento] Confirm auth mechanism — Databento uses API key as
-  // Basic auth password with empty username
   const encodedKey = Buffer.from(`:${apiKey}`).toString('base64');
   const authHeader = `Basic ${encodedKey}`;
 
@@ -215,12 +196,15 @@ async function fetchBars(
     return [];
   }
 
-  const data = (await res.json()) as DatabentoBarsResponse;
-  const records = data.records ?? [];
+  // Databento HTTP API returns NDJSON (one JSON object per line)
+  const text = await res.text();
+  const records = text
+    .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as DabentoOhlcvRecord);
 
-  // [Databento] Confirm price format — Databento uses 1e-9
-  // (nanodollar) prices as int64. The JSON encoding may return
-  // these as numbers or strings. Verify and adjust accordingly.
+  // Prices are int64 in 1e-9 units (nanodollars)
   return records.map((r) => ({
     ts: r.ts_event,
     open: r.open / NANODOLLAR,
