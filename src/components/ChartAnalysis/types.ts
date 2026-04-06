@@ -93,6 +93,14 @@ export interface AnalysisResult {
     netCharm?: ChartSignal;
     aggregateGex?: ChartSignal;
     periscopeCharm?: ChartSignal;
+    darkPool?: ChartSignal;
+    ivTermStructure?: ChartSignal;
+    spxCandles?: ChartSignal;
+    overnightGap?: ChartSignal;
+    vannaExposure?: ChartSignal;
+    pinRisk?: ChartSignal;
+    skew?: ChartSignal;
+    futuresContext?: ChartSignal;
   };
   observations: string[];
   strikeGuidance?: {

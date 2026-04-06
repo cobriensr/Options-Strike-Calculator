@@ -939,7 +939,8 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "overnightGap": { "signal": "GAP_FILL_LIKELY" | "GAP_EXTENDS" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Gap direction, fill probability, cone consumption" },
     "vannaExposure": { "signal": "TAILWIND" | "HEADWIND" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Aggregate vanna direction and VIX intraday trend — Rule 17 management adjustment" },
     "pinRisk": { "signal": "LOW" | "MODERATE" | "HIGH" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Top OI strikes relative to short strike placement — pin magnet proximity" },
-    "skew": { "signal": "STEEP_PUT" | "FLAT" | "SYMMETRIC" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "25Δ put skew level and skew ratio — tail risk premium assessment" }
+    "skew": { "signal": "STEEP_PUT" | "FLAT" | "SYMMETRIC" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "25Δ put skew level and skew ratio — tail risk premium assessment" },
+    "futuresContext": { "signal": "RISK_ON" | "RISK_OFF" | "MIXED" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Cross-asset regime summary: ES basis, NQ divergence, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven, DX dollar headwind — which futures signals are active and what they mean for the structure" }
   },
   "observations": ["point 1", "point 2", "point 3", "point 4", "point 5"],
   "strikeGuidance": {
