@@ -52,6 +52,7 @@ class DatabentoClient:
         trade_processor: TradeProcessor,
     ) -> None:
         self._client: db.Live | None = None
+        self._vxm_client: db.Live | None = None
         self._alert_engine = alert_engine
         self._trade_processor = trade_processor
         self._connected = False
@@ -65,6 +66,11 @@ class DatabentoClient:
 
         # Cache: instrument_id -> internal symbol (populated on first resolve)
         self._resolved_cache: dict[int, str | None] = {}
+
+        # VXM instrument_id -> internal symbol (VXM1 or VXM2)
+        # Populated when first VXM bars arrive, keyed by instrument_id
+        self._vxm_resolved: dict[int, str] = {}
+        self._vxm_ids_seen: list[int] = []
 
         # Log symbol mapping summary once, not per-contract
         self._mapping_summary_logged = False
@@ -106,18 +112,16 @@ class DatabentoClient:
         # Subscribe to futures OHLCV-1m (CME Group only — single dataset per session)
         self._subscribe_futures_ohlcv()
 
-        # NOTE: VXM (XCBF.PITCH) requires a separate Live session because
-        # Databento only allows one dataset per connection. Skipping VXM
-        # subscription for now — will add a second client in a follow-up.
-        # self._subscribe_vxm()
-
         # Subscribe to ES options after first ES bar arrives (need price for ATM)
         self._options_subscription_pending = True
 
         # Start streaming (non-blocking with callbacks)
         self._client.start()
         self._connected = True
-        log.info("Databento Live client started -- streaming")
+        log.info("CME Live client started -- streaming")
+
+        # Second client for VXM on XCBF.PITCH (separate dataset)
+        self._start_vxm_client()
 
     def _subscribe_futures_ohlcv(self) -> None:
         """Subscribe to OHLCV-1m for CME/CBOT/NYMEX futures."""
@@ -149,11 +153,13 @@ class DatabentoClient:
                 extra={"symbols": cme_symbols},
             )
 
-    def _subscribe_vxm(self) -> None:
-        """Subscribe to OHLCV-1m for VXM front and second month on CFE."""
-        if not self._client:
-            return
+    def _start_vxm_client(self) -> None:
+        """Start a second Live client for VXM on XCBF.PITCH.
 
+        Databento only allows one dataset per Live session, so VXM
+        (CBOE Futures Exchange) needs its own client separate from
+        the CME Group client.
+        """
         subs = get_all_futures_subscriptions()
         cfe_symbols = []
         for sym, cfg in subs.items():
@@ -161,19 +167,38 @@ class DatabentoClient:
                 cfe_symbols.append(cfg["parent_symbol"])
                 self._prefix_to_internal[cfg["db_symbol"]] = cfg["db_symbol"]
 
-        if cfe_symbols:
-            self._client.subscribe(
+        if not cfe_symbols:
+            return
+
+        try:
+            self._vxm_client = db.Live(
+                key=settings.databento_api_key,
+                ts_out=True,
+                heartbeat_interval_s=30,
+                reconnect_policy=ReconnectPolicy.RECONNECT,
+            )
+
+            self._vxm_client.add_callback(
+                record_callback=self._on_vxm_record,
+                exception_callback=self._on_error,
+            )
+
+            self._vxm_client.subscribe(
                 dataset=DATASET_XCBF,
                 schema="ohlcv-1m",
                 symbols=cfe_symbols,
                 stype_in="parent",
             )
+
+            self._vxm_client.start()
             log.info(
-                "Subscribed to OHLCV-1m on %s: %s",
+                "VXM Live client started on %s: %s",
                 DATASET_XCBF,
                 cfe_symbols,
-                extra={"symbols": cfe_symbols},
             )
+        except Exception as exc:
+            log.error("Failed to start VXM client: %s", exc)
+            self._vxm_client = None
 
     def subscribe_es_options(self, es_price: float) -> None:
         """Subscribe to ES options Trades for ATM +/-10 strikes.
@@ -253,6 +278,61 @@ class DatabentoClient:
             # Ignore other record types (heartbeats, etc.)
         except Exception as exc:
             log.error("Error processing record: %s", exc)
+
+    def _on_vxm_record(self, record: Any) -> None:
+        """Callback for VXM client records (XCBF.PITCH)."""
+        try:
+            record_type = type(record).__name__
+            if record_type not in ("OHLCVMsg", "OhlcvMsg"):
+                return  # Only process OHLCV bars from VXM client
+
+            self._handle_vxm_ohlcv(record)
+        except Exception as exc:
+            log.error("Error processing VXM record: %s", exc)
+
+    def _handle_vxm_ohlcv(self, record: Any) -> None:
+        """Process a VXM OHLCV-1m bar.
+
+        VXM.FUT (front month) and VXM.FUT.1 (second month) each get
+        a unique instrument_id. We assign VXM1 to the first seen and
+        VXM2 to the second, then route through the normal bar handler.
+        """
+        from db import upsert_futures_bar
+
+        iid = getattr(record, "instrument_id", None)
+        if iid is None or self._vxm_client is None:
+            return
+
+        # Resolve instrument_id to VXM1 or VXM2
+        if iid not in self._vxm_resolved:
+            if len(self._vxm_ids_seen) >= 2:
+                return  # Already have both, ignore extra instruments
+            self._vxm_ids_seen.append(iid)
+            symbol = "VXM1" if len(self._vxm_ids_seen) == 1 else "VXM2"
+            self._vxm_resolved[iid] = symbol
+            log.info("VXM mapping: iid %d -> %s", iid, symbol)
+
+        symbol = self._vxm_resolved[iid]
+
+        # Convert prices and timestamp (same as _handle_ohlcv)
+        open_ = Decimal(record.open) / Decimal(1_000_000_000)
+        high = Decimal(record.high) / Decimal(1_000_000_000)
+        low = Decimal(record.low) / Decimal(1_000_000_000)
+        close = Decimal(record.close) / Decimal(1_000_000_000)
+        volume = record.volume
+        ts_ns = record.ts_event
+        ts = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
+        ts = ts.replace(second=0, microsecond=0)
+
+        try:
+            upsert_futures_bar(symbol, ts, open_, high, low, close, volume)
+            self._last_bar_ts = time.time()
+            log.debug("VXM Bar: %s %s C=%.2f", symbol, ts.isoformat(), close)
+        except Exception as exc:
+            log.error("Failed to upsert VXM bar for %s: %s", symbol, exc)
+
+        # Feed to alert engine for backwardation checks
+        self._alert_engine.on_bar(symbol, ts.timestamp(), float(close), volume)
 
     def _on_error(self, exc: Exception) -> None:
         """Handle streaming errors."""
@@ -535,16 +615,18 @@ class DatabentoClient:
         return self._option_definitions.get(instrument_id)
 
     def stop(self) -> None:
-        """Gracefully stop the Databento client."""
+        """Gracefully stop both Databento clients."""
         self._connected = False
-        if self._client:
-            try:
-                self._client.stop()
-            except Exception as exc:
-                log.error("Error stopping Databento client: %s", exc)
-            self._client = None
+        for name, client in [("CME", self._client), ("VXM", self._vxm_client)]:
+            if client:
+                try:
+                    client.stop()
+                except Exception as exc:
+                    log.error("Error stopping %s client: %s", name, exc)
+        self._client = None
+        self._vxm_client = None
         self._trade_processor.flush()
-        log.info("Databento client stopped")
+        log.info("Databento clients stopped")
 
     def block_for_close(self, timeout: float | None = None) -> None:
         """Block until the client connection closes."""
