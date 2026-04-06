@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import PositionTable from '../../components/PositionMonitor/PositionTable';
 import type {
+  ButterflyPosition,
   HedgePosition,
   IronCondor,
   NakedPosition,
@@ -130,6 +131,7 @@ function renderTable(
   overrides: {
     spreads?: Spread[];
     ironCondors?: IronCondor[];
+    butterflies?: ButterflyPosition[];
     hedges?: HedgePosition[];
     nakedPositions?: NakedPosition[];
     spotPrice?: number;
@@ -139,6 +141,7 @@ function renderTable(
     <PositionTable
       spreads={overrides.spreads ?? []}
       ironCondors={overrides.ironCondors ?? []}
+      butterflies={overrides.butterflies ?? []}
       hedges={overrides.hedges ?? []}
       nakedPositions={overrides.nakedPositions ?? []}
       spotPrice={overrides.spotPrice ?? 5700}

@@ -109,6 +109,23 @@ export function formatPositionSummaryForClaude(
     );
   }
 
+  for (const bfly of statement.butterflies) {
+    const label = bfly.isBrokenWing ? 'BWB' : 'BFLY';
+    const strikes = `${bfly.lowerLeg.strike}/${bfly.middleLeg.strike}/${bfly.upperLeg.strike}`;
+    const typeChar = bfly.optionType === 'CALL' ? 'C' : 'P';
+    const pinDist =
+      bfly.distanceToPin != null
+        ? `${bfly.distanceToPin > 0 ? '+' : ''}${bfly.distanceToPin.toFixed(0)} pts from pin`
+        : '';
+    lines.push(
+      `${label} ${strikes} ${typeChar} x${bfly.contracts} — ` +
+        `debit $${bfly.debitPaid.toFixed(2)}, ` +
+        `max profit $${bfly.maxProfit.toFixed(0)} at ${bfly.maxProfitStrike}, ` +
+        `wings ${bfly.lowerWidth}/${bfly.upperWidth}` +
+        (pinDist ? `, ${pinDist}` : ''),
+    );
+  }
+
   if (lines.length === 0) return '';
 
   const totalCredit =
@@ -117,7 +134,7 @@ export function formatPositionSummaryForClaude(
   const totalMaxLoss = statement.portfolioRisk.totalMaxLoss;
 
   const header =
-    `${statement.spreads.length + statement.ironCondors.length} defined-risk positions ` +
+    `${statement.spreads.length + statement.ironCondors.length + statement.butterflies.length} defined-risk positions ` +
     `(all vertical spreads, NO naked legs). ` +
     `Total credit: $${totalCredit.toFixed(2)}, ` +
     `Total max loss: $${totalMaxLoss.toFixed(0)}. ` +

@@ -221,6 +221,33 @@ export interface NakedPosition {
   readonly type: 'CALL' | 'PUT';
 }
 
+/** A butterfly or broken wing butterfly (3-leg structure) */
+export interface ButterflyPosition {
+  readonly lowerLeg: OpenLeg;
+  readonly middleLeg: OpenLeg;
+  readonly upperLeg: OpenLeg;
+  readonly optionType: 'CALL' | 'PUT';
+  readonly contracts: number;
+  /** Lower wing: middle - lower strike */
+  readonly lowerWidth: number;
+  /** Upper wing: upper - middle strike */
+  readonly upperWidth: number;
+  /** True if wings are unequal (broken wing) */
+  readonly isBrokenWing: boolean;
+  /** Strike of max profit (the short/middle strike) */
+  readonly maxProfitStrike: number;
+  /** Net debit paid */
+  readonly debitPaid: number;
+  /** Max profit = narrower wing width * 100 * contracts - debit */
+  readonly maxProfit: number;
+  /** Max loss on the wide side = wider wing - narrower wing * 100 * contracts + debit (for BWB) or just debit (symmetric) */
+  readonly maxLoss: number;
+  /** Entry time from trade history */
+  readonly entryTime: string | null;
+  /** Distance from spot to max profit strike */
+  readonly distanceToPin: number | null;
+}
+
 // ── Closed Spreads ─────────────────────────────────────────
 
 /** Outcome classification for a closed spread */
@@ -385,6 +412,7 @@ export interface DailyStatement {
   // Grouped positions
   readonly spreads: readonly Spread[];
   readonly ironCondors: readonly IronCondor[];
+  readonly butterflies: readonly ButterflyPosition[];
   readonly hedges: readonly HedgePosition[];
   readonly nakedPositions: readonly NakedPosition[];
   readonly closedSpreads: readonly ClosedSpread[];

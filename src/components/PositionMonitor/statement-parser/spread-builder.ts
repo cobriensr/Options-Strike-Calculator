@@ -5,6 +5,7 @@
  */
 
 import type {
+  ButterflyPosition,
   CashEntry,
   ExecutedTrade,
   HedgePosition,
@@ -22,6 +23,7 @@ import { round2 } from '../../../utils/formatting';
 export interface GroupResult {
   readonly spreads: Spread[];
   readonly ironCondors: IronCondor[];
+  readonly butterflies: ButterflyPosition[];
   readonly hedges: HedgePosition[];
   readonly naked: NakedPosition[];
 }
@@ -224,6 +226,7 @@ export function groupIntoSpreads(
 ): GroupResult {
   const allSpreads: Spread[] = [];
   const allICs: IronCondor[] = [];
+  const allButterflies: ButterflyPosition[] = [];
   const allHedges: HedgePosition[] = [];
   const allNaked: NakedPosition[] = [];
 
@@ -235,6 +238,84 @@ export function groupIntoSpreads(
   const openTrades = trades.filter((t) =>
     t.legs.some((l) => l.posEffect === 'TO OPEN'),
   );
+
+  // ─ Step 0: Detect BUTTERFLY trades (3-leg) ─────────────
+  for (const trade of openTrades) {
+    if (trade.spread !== 'BUTTERFLY') continue;
+    const openLegs = trade.legs.filter((l) => l.posEffect === 'TO OPEN');
+    if (openLegs.length !== 3) continue;
+
+    const buys = openLegs.filter((l) => l.side === 'BUY');
+    const sells = openLegs.filter((l) => l.side === 'SELL');
+    if (buys.length !== 2 || sells.length !== 1) continue;
+
+    // All legs same type
+    const optType = buys[0]!.type;
+    if (
+      buys[1]!.type !== optType ||
+      sells[0]!.type !== optType
+    )
+      continue;
+
+    const middleStrike = sells[0]!.strike;
+    const wingStrikes = buys
+      .map((b) => b.strike)
+      .sort((a, b) => a - b);
+    const lowerStrike = wingStrikes[0]!;
+    const upperStrike = wingStrikes[1]!;
+    const contracts = Math.abs(buys[0]!.qty);
+
+    const lowerWidth = middleStrike - lowerStrike;
+    const upperWidth = upperStrike - middleStrike;
+    const isBrokenWing = lowerWidth !== upperWidth;
+
+    const narrowerWidth = Math.min(lowerWidth, upperWidth);
+    const debitPaid = Math.abs(trade.netPrice) * MULTIPLIER * contracts;
+    const maxProfit = round2(narrowerWidth * MULTIPLIER * contracts - debitPaid);
+
+    // BWB max loss: on the wider side, loss = (wider - narrower) * 100 * contracts + debit
+    // Symmetric: max loss = debit paid
+    const maxLoss = isBrokenWing
+      ? round2(
+          (Math.max(lowerWidth, upperWidth) - narrowerWidth) *
+            MULTIPLIER *
+            contracts +
+            debitPaid,
+        )
+      : debitPaid;
+
+    const distanceToPin =
+      spotPrice > 0 ? round2(middleStrike - spotPrice) : null;
+
+    const makeBflyLeg = (leg: (typeof openLegs)[0]): OpenLeg => ({
+      symbol: leg.symbol,
+      optionCode: '',
+      exp: leg.exp,
+      strike: leg.strike,
+      type: leg.type,
+      qty: leg.side === 'SELL' ? -Math.abs(leg.qty) : Math.abs(leg.qty),
+      tradePrice: leg.price,
+      mark: null,
+      markValue: null,
+    });
+
+    allButterflies.push({
+      lowerLeg: makeBflyLeg(buys.find((b) => b.strike === lowerStrike)!),
+      middleLeg: makeBflyLeg(sells[0]!),
+      upperLeg: makeBflyLeg(buys.find((b) => b.strike === upperStrike)!),
+      optionType: optType,
+      contracts,
+      lowerWidth,
+      upperWidth,
+      isBrokenWing,
+      maxProfitStrike: middleStrike,
+      debitPaid: round2(debitPaid),
+      maxProfit,
+      maxLoss,
+      entryTime: trade.execTime,
+      distanceToPin,
+    });
+  }
 
   // Build a spread from each 2-leg TO OPEN trade
   type TradeSpread = {
@@ -406,6 +487,23 @@ export function groupIntoSpreads(
       ic.contracts,
     );
   }
+  for (const bfly of allButterflies) {
+    addCovered(
+      bfly.lowerLeg.strike,
+      bfly.lowerLeg.type,
+      bfly.contracts,
+    );
+    addCovered(
+      bfly.middleLeg.strike,
+      bfly.middleLeg.type,
+      bfly.contracts * 2,
+    );
+    addCovered(
+      bfly.upperLeg.strike,
+      bfly.upperLeg.type,
+      bfly.contracts,
+    );
+  }
 
   for (const leg of legs) {
     const key = `${leg.strike}:${leg.type}`;
@@ -448,6 +546,7 @@ export function groupIntoSpreads(
   return {
     spreads: allSpreads,
     ironCondors: allICs,
+    butterflies: allButterflies,
     hedges: allHedges,
     naked: allNaked,
   };

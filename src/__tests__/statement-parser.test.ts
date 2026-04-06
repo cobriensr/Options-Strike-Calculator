@@ -1776,6 +1776,7 @@ function makeStatement(
     accountSummary: DEFAULT_ACCOUNT,
     spreads: [],
     ironCondors: [],
+    butterflies: [],
     hedges: [],
     nakedPositions: [],
     closedSpreads: [],

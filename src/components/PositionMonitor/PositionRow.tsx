@@ -6,7 +6,13 @@
  */
 
 import { useState } from 'react';
-import type { HedgePosition, IronCondor, NakedPosition, Spread } from './types';
+import type {
+  ButterflyPosition,
+  HedgePosition,
+  IronCondor,
+  NakedPosition,
+  Spread,
+} from './types';
 import {
   TD_CLASS,
   TD_LEFT,
@@ -277,6 +283,54 @@ export function HedgeRows({
         );
       })}
     </>
+  );
+}
+
+// ── Butterfly / BWB Row ─────────────────────────────────────────
+
+export function ButterflyRow({
+  butterfly: bfly,
+  rowIndex,
+}: Readonly<{
+  butterfly: ButterflyPosition;
+  rowIndex: number;
+}>) {
+  const alt = rowIndex % 2 === 1;
+  const bg = alt ? 'bg-table-alt' : 'bg-surface';
+  const label = bfly.isBrokenWing ? 'BWB' : 'BFLY';
+  const strikes = `${bfly.lowerLeg.strike}/${bfly.middleLeg.strike}/${bfly.upperLeg.strike}`;
+  const typeChar = bfly.optionType === 'CALL' ? 'C' : 'P';
+
+  return (
+    <tr className={`${bg} border-accent/40 border-l-4`}>
+      <td className={TD_LEFT}>
+        <span className="text-accent font-bold">{label}</span>
+      </td>
+      <td className={TD_LEFT}>
+        {strikes} {typeChar}
+      </td>
+      <td className={TD_CLASS}>{bfly.contracts}</td>
+      <td className={`${TD_CLASS} text-danger`}>
+        ({formatCurrency(bfly.debitPaid)})
+      </td>
+      <td className={TD_CLASS}>{'\u2014'}</td>
+      <td className={TD_CLASS}>{'\u2014'}</td>
+      <td className={`${TD_CLASS} text-danger`}>
+        {formatCurrency(bfly.maxLoss)}
+      </td>
+      <td className={TD_CLASS}>
+        {bfly.maxProfit > 0
+          ? `${(bfly.maxLoss / bfly.maxProfit).toFixed(1)}:1`
+          : '\u2014'}
+      </td>
+      <td className={TD_CLASS}>{bfly.maxProfitStrike}</td>
+      <td className={TD_CLASS}>
+        {bfly.distanceToPin != null
+          ? `${bfly.distanceToPin > 0 ? '+' : ''}${bfly.distanceToPin.toFixed(0)} pts`
+          : '\u2014'}
+      </td>
+      <td className={TD_CLASS}>{formatTime(bfly.entryTime)}</td>
+    </tr>
   );
 }
 

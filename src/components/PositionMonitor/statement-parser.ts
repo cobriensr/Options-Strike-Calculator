@@ -201,6 +201,7 @@ export function parseStatement(csv: string, spotPrice: number): DailyStatement {
     accountSummary,
     spreads: grouped.spreads,
     ironCondors: grouped.ironCondors,
+    butterflies: grouped.butterflies,
     hedges: grouped.hedges,
     nakedPositions: grouped.naked,
     closedSpreads,

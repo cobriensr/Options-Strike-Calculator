@@ -631,6 +631,7 @@ function buildOpenSpreadsFromTrades(
   }
 
   const pairs: SpreadPair[] = [];
+  const bflyLines: string[] = [];
 
   // Group trades by time (trades with same execTime are one VERTICAL)
   const tradesByTime = new Map<string, ParsedTrade[]>();
@@ -645,6 +646,45 @@ function buildOpenSpreadsFromTrades(
 
     const openLegs = legs.filter((l) => l.posEffect === 'TO OPEN');
     const closeLegs = legs.filter((l) => l.posEffect === 'TO CLOSE');
+
+    // 3-leg BUTTERFLY / BWB trades
+    if (openLegs.length === 3) {
+      const buys = openLegs.filter((l) => l.quantity > 0);
+      const sells = openLegs.filter((l) => l.quantity < 0);
+      if (
+        buys.length === 2 &&
+        sells.length === 1 &&
+        buys[0]!.putCall === buys[1]!.putCall &&
+        buys[0]!.putCall === sells[0]!.putCall
+      ) {
+        const sell = sells[0]!;
+        const middleStrike = sell.strike;
+        const wingStrikes = buys
+          .map((b) => b.strike)
+          .sort((a, b) => a - b);
+        const lowerStrike = wingStrikes[0]!;
+        const upperStrike = wingStrikes[1]!;
+        const contracts = Math.abs(buys[0]!.quantity);
+        const lowerWidth = middleStrike - lowerStrike;
+        const upperWidth = upperStrike - middleStrike;
+        const isBrokenWing = lowerWidth !== upperWidth;
+        const label = isBrokenWing ? 'BWB' : 'BFLY';
+        const typeChar = sell.putCall === 'CALL' ? 'CALL' : 'PUT';
+        const debit = Math.abs(sell.netPrice) * 100 * contracts;
+        const narrowerWidth = Math.min(lowerWidth, upperWidth);
+        const maxProfit = narrowerWidth * 100 * contracts - debit;
+
+        bflyLines.push(
+          `  ${label} ${lowerStrike}/${middleStrike}/${upperStrike} ${typeChar} x${contracts} — ` +
+            `debit $${debit.toLocaleString('en-US', { maximumFractionDigits: 0 })}, ` +
+            `max profit at ${middleStrike}, ` +
+            `wings ${lowerWidth}/${upperWidth}` +
+            (maxProfit > 0
+              ? `, max profit $${maxProfit.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+              : ''),
+        );
+      }
+    }
 
     if (openLegs.length === 2) {
       const sell = openLegs.find((l) => l.quantity < 0);
@@ -682,11 +722,11 @@ function buildOpenSpreadsFromTrades(
   }
 
   const openPairs = pairs.filter((p) => !p.closed);
-  if (openPairs.length === 0) return [];
+  if (openPairs.length === 0 && bflyLines.length === 0) return [];
 
   const sorted = openPairs.sort((a, b) => a.shortStrike - b.shortStrike);
 
-  return sorted.map((p) => {
+  const spreadLines = sorted.map((p) => {
     const typeLabel = p.type === 'PUT' ? 'PCS' : 'CCS';
     const maxLoss = p.width * 100 * p.qty - p.credit * 100 * p.qty;
     const cushion =
@@ -704,6 +744,8 @@ function buildOpenSpreadsFromTrades(
       `${p.width} wide${cushionStr}`
     );
   });
+
+  return [...spreadLines, ...bflyLines];
 }
 
 // ── Helper: pair legs into spread display lines ─────────────

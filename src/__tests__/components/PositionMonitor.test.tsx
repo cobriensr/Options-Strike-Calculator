@@ -100,6 +100,7 @@ function makeStatement(
       optionBuyingPower: 100000,
       equityCommissionsYtd: 5,
     },
+    butterflies: [],
     spreads: [
       {
         spreadType: 'PUT_CREDIT_SPREAD',

@@ -115,7 +115,9 @@ export default function PositionMonitor({
   if (!isOwner) return null;
 
   const spreadCount = statement
-    ? statement.spreads.length + statement.ironCondors.length
+    ? statement.spreads.length +
+      statement.ironCondors.length +
+      (statement.butterflies.length ?? 0)
     : 0;
 
   // Format sim time for display
@@ -266,6 +268,7 @@ export default function PositionMonitor({
           <PositionTable
             spreads={statement.spreads}
             ironCondors={statement.ironCondors}
+            butterflies={statement.butterflies}
             hedges={statement.hedges}
             nakedPositions={statement.nakedPositions}
             spotPrice={spotPrice}

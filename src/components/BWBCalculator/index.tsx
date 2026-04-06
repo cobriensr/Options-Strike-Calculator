@@ -134,10 +134,7 @@ export default function BWBCalculator({
   };
 
   const [sectionCollapsed, setSectionCollapsed] = useState(false);
-  const toggleSection = useCallback(
-    () => setSectionCollapsed((v) => !v),
-    [],
-  );
+  const toggleSection = useCallback(() => setSectionCollapsed((v) => !v), []);
 
   return (
     <section
@@ -148,7 +145,7 @@ export default function BWBCalculator({
       <div
         className={
           (sectionCollapsed ? '' : 'mb-3.5 ') +
-          'flex cursor-pointer select-none items-center justify-between'
+          'flex cursor-pointer items-center justify-between select-none'
         }
         onClick={toggleSection}
         role="button"
@@ -166,9 +163,7 @@ export default function BWBCalculator({
           <span
             className="text-muted text-[12px] transition-transform duration-200"
             style={{
-              transform: sectionCollapsed
-                ? 'rotate(-90deg)'
-                : 'rotate(0deg)',
+              transform: sectionCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
             }}
             aria-hidden="true"
           >
@@ -191,48 +186,48 @@ export default function BWBCalculator({
       {!sectionCollapsed && (
         <>
           <BWBInputs
-        side={side}
-        contracts={contracts}
-        sweetSpot={sweetSpot}
-        narrowWing={narrowWing}
-        wideWing={wideWing}
-        lowStrike={lowStrike}
-        midStrike={midStrike}
-        highStrike={highStrike}
-        netInput={netInput}
-        isCredit={isCredit}
-        anchor={anchor}
-        useCharm={useCharm}
-        strikesValid={strikesValid}
-        onSideChange={handleSideChange}
-        setContracts={setContracts}
-        onSweetSpotChange={handleSweetSpotChange}
-        onNarrowChange={handleNarrowChange}
-        onWideChange={handleWideChange}
-        setLowStrike={setLowStrike}
-        setMidStrike={setMidStrike}
-        setHighStrike={setHighStrike}
-        setSweetSpot={setSweetSpot}
-        setNetInput={setNetInput}
-        setIsCredit={setIsCredit}
-        setUseCharm={setUseCharm}
-        onRefreshAnchor={refreshAnchor}
-      />
+            side={side}
+            contracts={contracts}
+            sweetSpot={sweetSpot}
+            narrowWing={narrowWing}
+            wideWing={wideWing}
+            lowStrike={lowStrike}
+            midStrike={midStrike}
+            highStrike={highStrike}
+            netInput={netInput}
+            isCredit={isCredit}
+            anchor={anchor}
+            useCharm={useCharm}
+            strikesValid={strikesValid}
+            onSideChange={handleSideChange}
+            setContracts={setContracts}
+            onSweetSpotChange={handleSweetSpotChange}
+            onNarrowChange={handleNarrowChange}
+            onWideChange={handleWideChange}
+            setLowStrike={setLowStrike}
+            setMidStrike={setMidStrike}
+            setHighStrike={setHighStrike}
+            setSweetSpot={setSweetSpot}
+            setNetInput={setNetInput}
+            setIsCredit={setIsCredit}
+            setUseCharm={setUseCharm}
+            onRefreshAnchor={refreshAnchor}
+          />
 
-      {/* Results — only when all inputs are valid */}
-      {allValid && metrics && (
-        <BWBResults
-          side={side}
-          contracts={contracts}
-          low={low}
-          mid={mid}
-          high={high}
-          net={net}
-          metrics={metrics}
-          pnlRows={pnlRows}
-          midStrike={midStrike}
-        />
-      )}
+          {/* Results — only when all inputs are valid */}
+          {allValid && metrics && (
+            <BWBResults
+              side={side}
+              contracts={contracts}
+              low={low}
+              mid={mid}
+              high={high}
+              net={net}
+              metrics={metrics}
+              pnlRows={pnlRows}
+              midStrike={midStrike}
+            />
+          )}
 
           {/* Empty state */}
           {!allValid && (

@@ -6,13 +6,26 @@
  */
 
 import { ScrollHint } from '../ui';
-import type { HedgePosition, IronCondor, NakedPosition, Spread } from './types';
-import { IronCondorRow, SpreadRow, HedgeRows, NakedRows } from './PositionRow';
+import type {
+  ButterflyPosition,
+  HedgePosition,
+  IronCondor,
+  NakedPosition,
+  Spread,
+} from './types';
+import {
+  IronCondorRow,
+  SpreadRow,
+  ButterflyRow,
+  HedgeRows,
+  NakedRows,
+} from './PositionRow';
 import { cushionPct } from './position-helpers';
 
 interface PositionTableProps {
   spreads: readonly Spread[];
   ironCondors: readonly IronCondor[];
+  butterflies: readonly ButterflyPosition[];
   hedges: readonly HedgePosition[];
   nakedPositions: readonly NakedPosition[];
   spotPrice: number;
@@ -55,6 +68,7 @@ const TH_RIGHT =
 export default function PositionTable({
   spreads,
   ironCondors,
+  butterflies,
   hedges,
   nakedPositions,
   spotPrice,
@@ -63,6 +77,7 @@ export default function PositionTable({
   const hasPositions =
     ironCondors.length > 0 ||
     sorted.length > 0 ||
+    butterflies.length > 0 ||
     hedges.length > 0 ||
     nakedPositions.length > 0;
 
@@ -137,18 +152,33 @@ export default function PositionTable({
               rowIndex={ironCondors.length + i}
             />
           ))}
+          {/* Butterflies / BWBs */}
+          {butterflies.map((bfly, i) => (
+            <ButterflyRow
+              key={`bfly-${String(i)}`}
+              butterfly={bfly}
+              rowIndex={ironCondors.length + sorted.length + i}
+            />
+          ))}
           {/* Hedges */}
           {hedges.length > 0 && (
             <HedgeRows
               hedges={hedges}
-              startIndex={ironCondors.length + sorted.length}
+              startIndex={
+                ironCondors.length + sorted.length + butterflies.length
+              }
             />
           )}
           {/* Naked positions */}
           {nakedPositions.length > 0 && (
             <NakedRows
               naked={nakedPositions}
-              startIndex={ironCondors.length + sorted.length + hedges.length}
+              startIndex={
+                ironCondors.length +
+                sorted.length +
+                butterflies.length +
+                hedges.length
+              }
             />
           )}
         </tbody>

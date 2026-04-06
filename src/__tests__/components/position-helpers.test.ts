@@ -77,6 +77,7 @@ function makeStatement(
     },
     spreads,
     ironCondors: [],
+    butterflies: [],
     hedges: [],
     nakedPositions: [],
     closedSpreads: [],
