@@ -116,10 +116,7 @@ async function fetchBars(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   // No market hours check — runs daily regardless of day
   const guard = cronGuard(req, res, {
     requireApiKey: false,

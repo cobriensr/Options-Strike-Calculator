@@ -46,14 +46,16 @@ function makeNdjsonResponse(records: Array<Record<string, unknown>>): string {
   return records.map((r) => JSON.stringify(r)).join('\n');
 }
 
-function makeOhlcvRecord(overrides: Partial<{
-  ts_event: string;
-  open: string;
-  high: string;
-  low: string;
-  close: string;
-  volume: string;
-}> = {}) {
+function makeOhlcvRecord(
+  overrides: Partial<{
+    ts_event: string;
+    open: string;
+    high: string;
+    low: string;
+    close: string;
+    volume: string;
+  }> = {},
+) {
   return {
     hd: { ts_event: overrides.ts_event ?? '1775001600000000000' },
     open: overrides.open ?? '5700000000000',
@@ -208,8 +210,7 @@ describe('backfill-futures-gaps handler', () => {
       }
       return Promise.resolve({
         ok: true,
-        text: () =>
-          Promise.resolve(makeNdjsonResponse([makeOhlcvRecord()])),
+        text: () => Promise.resolve(makeNdjsonResponse([makeOhlcvRecord()])),
       });
     });
 

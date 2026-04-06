@@ -239,7 +239,9 @@ async function fetchBars(
         Math.abs(r.low) > max ||
         Math.abs(r.close) > max
       ) {
-        console.warn(`  Skipping bar with overflow price: ${JSON.stringify(r)}`);
+        console.warn(
+          `  Skipping bar with overflow price: ${JSON.stringify(r)}`,
+        );
         return false;
       }
       return true;
