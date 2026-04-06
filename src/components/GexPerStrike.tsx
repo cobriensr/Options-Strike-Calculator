@@ -1,17 +1,11 @@
 /**
- * GexPerStrike — dashboard widget showing 0DTE gamma exposure by strike.
+ * GexPerStrike — 0DTE gamma exposure per strike with center-diverging bars,
+ * charm/vanna overlays, hover tooltips, spot price line, and summary cards.
  *
- * Ranked by absolute GEX magnitude (largest impact first), like dark pool
- * levels ranked by premium. Each row shows:
- *   - Strike price (ATM marked with ◄)
- *   - Distance from current price (e.g., +5pts, -12pts)
- *   - GEX bar proportional to magnitude
- *   - Net GEX $ value (positive = green, negative = red)
- *   - Call vs Put gamma breakdown
- *
- * Sort toggles between "By GEX" (magnitude) and "By Strike" (ascending).
- * OI/Dir toggle switches between open-interest-based and directionalized view.
- * Visible count controls ±5 (default 15, range 5–50).
+ * Visual design: strikes listed vertically with horizontal bars extending
+ * left (negative gamma, red) or right (positive gamma, green) from a center
+ * axis. Charm and vanna are toggle-able overlays shown as thin bars and dots.
+ * Hovering a row reveals a rich tooltip with full greek breakdown.
  */
 
 import { memo, useMemo, useState, useCallback } from 'react';
@@ -19,13 +13,24 @@ import { theme } from '../themes';
 import { SectionBox } from './ui';
 import type { GexStrikeLevel } from '../hooks/useGexPerStrike';
 
+// ── Constants ────────────────────────────────────────────
+
 const DEFAULT_VISIBLE = 15;
 const MIN_VISIBLE = 5;
 const MAX_VISIBLE = 50;
 const STEP = 5;
+const BAR_HEIGHT = 36;
+const MAX_BAR_PCT = 45; // max bar width as % of chart area
 
 type ViewMode = 'oi' | 'directional';
-type SortMode = 'gex' | 'strike';
+
+// Overlay colors that complement the dark theme
+const CHARM_POS = '#ffd740';
+const CHARM_NEG = '#ff6e40';
+const VANNA_POS = '#40c4ff';
+const VANNA_NEG = '#e040fb';
+const DEX_POS = '#69f0ae';
+const DEX_NEG = '#ff8a80';
 
 interface Props {
   strikes: GexStrikeLevel[];
@@ -35,24 +40,15 @@ interface Props {
   onRefresh: () => void;
 }
 
-function formatGex(value: number): string {
-  const abs = Math.abs(value);
-  const sign = value < 0 ? '-' : '+';
-  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(1)}T`;
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(1)}B`;
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(0)}M`;
-  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(0)}K`;
-  return `${sign}$${abs.toFixed(0)}`;
-}
+// ── Formatters ───────────────────────────────────────────
 
-/** Compact format for call/put columns */
-function formatCompact(value: number): string {
-  const abs = Math.abs(value);
-  if (abs >= 1e12) return `${(value / 1e12).toFixed(1)}T`;
-  if (abs >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
-  if (abs >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
-  return value.toFixed(0);
+function formatNum(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return n.toFixed(0);
 }
 
 function formatTime(iso: string | null): string {
@@ -68,50 +64,102 @@ function formatTime(iso: string | null): string {
   }
 }
 
-/** Net gamma for the active view mode */
 function getNetGamma(s: GexStrikeLevel, mode: ViewMode): number {
   if (mode === 'oi') return s.netGamma;
   return s.callGammaAsk + s.callGammaBid + s.putGammaAsk + s.putGammaBid;
 }
 
-/** Call gamma for the active view mode */
-function getCallGamma(s: GexStrikeLevel, mode: ViewMode): number {
-  if (mode === 'oi') return s.callGammaOi;
-  return s.callGammaAsk + s.callGammaBid;
+// ── Tooltip ──────────────────────────────────────────────
+
+function GexTooltip({
+  data,
+  viewMode,
+  x,
+  y,
+}: Readonly<{
+  data: GexStrikeLevel;
+  viewMode: ViewMode;
+  x: number;
+  y: number;
+}>) {
+  const netGex = getNetGamma(data, viewMode);
+  const charmEffect =
+    data.netCharm > 0 ? 'Strengthening' : 'Weakening';
+  const vannaDir =
+    data.netVanna > 0
+      ? 'Sell pressure if IV drops'
+      : 'Buy pressure if IV drops';
+
+  return (
+    <div
+      className="pointer-events-none fixed z-50 min-w-[220px] rounded-md border border-[rgba(255,255,255,0.08)] p-3 font-mono text-[11px] shadow-xl backdrop-blur-xl"
+      style={{
+        left: x + 16,
+        top: y - 80,
+        backgroundColor: 'rgba(10,10,18,0.96)',
+        color: theme.textSecondary,
+      }}
+    >
+      <div
+        className="mb-2 border-b border-[rgba(255,255,255,0.06)] pb-1.5 text-[13px] font-bold"
+        style={{ color: theme.text }}
+      >
+        Strike {data.strike}
+      </div>
+      <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1">
+        <span>Net GEX</span>
+        <span
+          className="font-semibold"
+          style={{ color: netGex >= 0 ? theme.green : theme.red }}
+        >
+          {formatNum(netGex)}
+        </span>
+        <span>Net Charm</span>
+        <span
+          className="font-semibold"
+          style={{
+            color: data.netCharm >= 0 ? CHARM_POS : CHARM_NEG,
+          }}
+        >
+          {formatNum(data.netCharm)}
+        </span>
+        <span>Net Vanna</span>
+        <span
+          className="font-semibold"
+          style={{
+            color: data.netVanna >= 0 ? VANNA_POS : VANNA_NEG,
+          }}
+        >
+          {formatNum(data.netVanna)}
+        </span>
+        <span>Net DEX</span>
+        <span className="font-semibold" style={{ color: theme.textSecondary }}>
+          {formatNum(data.netDelta)}
+        </span>
+        <span className="col-span-2 mt-1 border-t border-[rgba(255,255,255,0.06)] pt-1.5" />
+        <span>Charm Effect</span>
+        <span
+          style={{
+            color: data.netCharm > 0 ? CHARM_POS : CHARM_NEG,
+          }}
+        >
+          {charmEffect}
+        </span>
+        <span>Vanna Hedge</span>
+        <span
+          className="text-[10px]"
+          style={{
+            color: data.netVanna > 0 ? VANNA_POS : VANNA_NEG,
+          }}
+        >
+          {vannaDir}
+        </span>
+      </div>
+    </div>
+  );
 }
 
-/** Put gamma for the active view mode */
-function getPutGamma(s: GexStrikeLevel, mode: ViewMode): number {
-  if (mode === 'oi') return s.putGammaOi;
-  return s.putGammaAsk + s.putGammaBid;
-}
-
-function formatDist(strike: number, price: number): string {
-  const diff = Math.round(strike - price);
-  if (diff === 0) return 'ATM';
-  return `${diff > 0 ? '+' : ''}${diff}pts`;
-}
-
-/**
- * Charm effect on gamma level:
- *   - positive charm + positive gamma = strengthening (level holds)
- *   - positive charm + negative gamma = strengthening (acceleration)
- *   - negative charm + positive gamma = weakening (level eroding)
- *   - negative charm + negative gamma = weakening (acceleration fading)
- *
- * "Strengthening" means charm is pushing the gamma effect further from zero.
- * "Weakening" means charm is pulling the gamma effect toward zero.
- */
-function getCharmEffect(
-  netGamma: number,
-  netCharm: number,
-): 'strengthening' | 'weakening' | 'neutral' {
-  if (netCharm === 0 || netGamma === 0) return 'neutral';
-  // Same sign = charm is reinforcing gamma's direction
-  const sameSign =
-    (netGamma > 0 && netCharm > 0) || (netGamma < 0 && netCharm < 0);
-  return sameSign ? 'strengthening' : 'weakening';
-}
+// ── Main Component ───────────────────────────────────────
 
 export default memo(function GexPerStrike({
   strikes,
@@ -122,42 +170,70 @@ export default memo(function GexPerStrike({
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
   const [viewMode, setViewMode] = useState<ViewMode>('oi');
-  const [sortBy, setSortBy] = useState<SortMode>('gex');
+  const [showCharm, setShowCharm] = useState(true);
+  const [showVanna, setShowVanna] = useState(true);
+  const [showDex, setShowDex] = useState(false);
+  const [hovered, setHovered] = useState<number | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
   const price = strikes.length > 0 ? strikes[0]!.price : 0;
 
-  // Sort: by absolute GEX (desc) or by strike (centered on ATM)
-  const sorted = useMemo(() => {
-    if (sortBy === 'strike') {
-      // Center around ATM: take ±half of visibleCount around the ATM strike
-      const atmIdx = strikes.findIndex((s) => s.strike >= price);
-      const center = atmIdx >= 0 ? atmIdx : Math.floor(strikes.length / 2);
-      const half = Math.floor(visibleCount / 2);
-      const lo = Math.max(0, center - half);
-      const hi = Math.min(strikes.length, lo + visibleCount);
-      return strikes.slice(Math.max(0, hi - visibleCount), hi);
-    }
-    return [...strikes].sort(
-      (a, b) =>
-        Math.abs(getNetGamma(b, viewMode)) - Math.abs(getNetGamma(a, viewMode)),
+  // Center around ATM
+  const filtered = useMemo(() => {
+    if (strikes.length === 0) return [];
+    const atmIdx = strikes.findIndex((s) => s.strike >= price);
+    const center =
+      atmIdx >= 0 ? atmIdx : Math.floor(strikes.length / 2);
+    const half = Math.floor(visibleCount / 2);
+    const lo = Math.max(0, center - half);
+    const hi = Math.min(strikes.length, lo + visibleCount);
+    return strikes.slice(Math.max(0, hi - visibleCount), hi);
+  }, [strikes, price, visibleCount]);
+
+  // Compute scales
+  const { maxGex, maxCharm, maxVanna, maxDelta } = useMemo(() => {
+    if (filtered.length === 0)
+      return { maxGex: 1, maxCharm: 1, maxVanna: 1, maxDelta: 1 };
+    return {
+      maxGex: Math.max(
+        ...filtered.map((d) => Math.abs(getNetGamma(d, viewMode))),
+        1,
+      ),
+      maxCharm: Math.max(
+        ...filtered.map((d) => Math.abs(d.netCharm)),
+        1,
+      ),
+      maxDelta: Math.max(
+        ...filtered.map((d) => Math.abs(d.netDelta)),
+        1,
+      ),
+      maxVanna: Math.max(
+        ...filtered.map((d) => Math.abs(d.netVanna)),
+        1,
+      ),
+    };
+  }, [filtered, viewMode]);
+
+  // Summary stats
+  const summary = useMemo(() => {
+    const totalGex = filtered.reduce(
+      (s, d) => s + getNetGamma(d, viewMode),
+      0,
     );
-  }, [strikes, sortBy, viewMode, price, visibleCount]);
-
-  const filtered = useMemo(
-    () => (sortBy === 'strike' ? sorted : sorted.slice(0, visibleCount)),
-    [sorted, visibleCount, sortBy],
-  );
-
-  const maxAbsGamma = useMemo(
-    () =>
-      filtered.length > 0
-        ? Math.max(
-            ...filtered.map((s) => Math.abs(getNetGamma(s, viewMode))),
-            1,
-          )
-        : 1,
-    [filtered, viewMode],
-  );
+    const totalCharm = filtered.reduce((s, d) => s + d.netCharm, 0);
+    const totalVanna = filtered.reduce((s, d) => s + d.netVanna, 0);
+    // GEX flip: first strike where sign changes
+    let flipStrike = '—';
+    for (let i = 1; i < filtered.length; i++) {
+      const prev = getNetGamma(filtered[i - 1]!, viewMode);
+      const curr = getNetGamma(filtered[i]!, viewMode);
+      if (Math.sign(prev) !== Math.sign(curr) && prev !== 0) {
+        flipStrike = String(filtered[i]!.strike);
+        break;
+      }
+    }
+    return { totalGex, totalCharm, totalVanna, flipStrike };
+  }, [filtered, viewMode]);
 
   const handleLess = useCallback(
     () => setVisibleCount((v) => Math.max(v - STEP, MIN_VISIBLE)),
@@ -167,19 +243,16 @@ export default memo(function GexPerStrike({
     () => setVisibleCount((v) => Math.min(v + STEP, MAX_VISIBLE)),
     [],
   );
-  const toggleSort = useCallback(
-    () => setSortBy((s) => (s === 'gex' ? 'strike' : 'gex')),
-    [],
-  );
   const toggleView = useCallback(
     () => setViewMode((v) => (v === 'oi' ? 'directional' : 'oi')),
     [],
   );
 
   const totalStrikes = strikes.length;
-
   const badge =
-    totalStrikes > 0 ? `${filtered.length} of ${totalStrikes}` : null;
+    totalStrikes > 0
+      ? `${filtered.length} of ${totalStrikes}`
+      : null;
 
   const headerRight = (
     <div className="flex items-center gap-2">
@@ -196,20 +269,6 @@ export default memo(function GexPerStrike({
       >
         &#x21bb;
       </button>
-      <button
-        onClick={toggleView}
-        aria-label={`Switch to ${viewMode === 'oi' ? 'directional' : 'OI'} view`}
-        className="text-accent hover:text-primary border-edge cursor-pointer rounded border px-1.5 py-0.5 font-sans text-[10px] font-semibold transition-colors"
-      >
-        {viewMode === 'oi' ? 'OI' : 'Dir'}
-      </button>
-      <button
-        onClick={toggleSort}
-        aria-label={`Sort by ${sortBy === 'gex' ? 'strike' : 'GEX magnitude'}`}
-        className="text-accent hover:text-primary border-edge cursor-pointer rounded border px-1.5 py-0.5 font-sans text-[10px] font-semibold transition-colors"
-      >
-        {sortBy === 'gex' ? 'By GEX' : 'By Strike'}
-      </button>
       <div className="border-edge flex items-center gap-0.5 rounded border">
         <button
           onClick={handleLess}
@@ -224,7 +283,9 @@ export default memo(function GexPerStrike({
         </span>
         <button
           onClick={handleMore}
-          disabled={visibleCount >= MAX_VISIBLE || visibleCount >= totalStrikes}
+          disabled={
+            visibleCount >= MAX_VISIBLE || visibleCount >= totalStrikes
+          }
           aria-label="Show more strikes"
           className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
         >
@@ -233,6 +294,8 @@ export default memo(function GexPerStrike({
       </div>
     </div>
   );
+
+  // ── Loading / Error / Empty ────────────────────────────
 
   if (loading) {
     return (
@@ -255,7 +318,9 @@ export default memo(function GexPerStrike({
         collapsible
         headerRight={headerRight}
       >
-        <div className="text-muted text-center font-sans text-xs">{error}</div>
+        <div className="text-muted text-center font-sans text-xs">
+          {error}
+        </div>
       </SectionBox>
     );
   }
@@ -281,6 +346,21 @@ export default memo(function GexPerStrike({
     );
   }
 
+  // ── Spot line position ─────────────────────────────────
+
+  const spotIdx = filtered.findIndex((d) => d.strike >= price);
+  const spotY = (() => {
+    if (spotIdx < 0) return null;
+    if (spotIdx > 0) {
+      const prev = filtered[spotIdx - 1]!;
+      const curr = filtered[spotIdx]!;
+      const frac =
+        (price - prev.strike) / (curr.strike - prev.strike);
+      return (spotIdx - 1) * BAR_HEIGHT + BAR_HEIGHT * frac;
+    }
+    return spotIdx * BAR_HEIGHT;
+  })();
+
   return (
     <SectionBox
       label="0DTE GEX Per Strike"
@@ -288,185 +368,435 @@ export default memo(function GexPerStrike({
       collapsible
       headerRight={headerRight}
     >
-      <table
-        className="w-full border-collapse"
-        aria-label="0DTE gamma exposure per strike"
-      >
-        <thead>
-          <tr className="text-muted flex items-center gap-2 border-b border-[var(--color-edge)] pb-1 font-sans text-[9px] tracking-wider uppercase">
-            <th className="w-[52px] shrink-0 text-right font-normal">Strike</th>
-            <th className="w-[46px] shrink-0 text-right font-normal">Dist</th>
-            <th className="min-w-0 flex-1 text-left font-normal">GEX</th>
-            <th className="w-[64px] shrink-0 text-right font-normal">Net $</th>
-            <th className="w-[68px] shrink-0 text-right font-normal">Charm</th>
-            <th className="w-[58px] shrink-0 text-right font-normal">Call γ</th>
-            <th className="w-[58px] shrink-0 text-right font-normal">Put γ</th>
-            <th
-              className="w-[24px] shrink-0 text-center font-normal"
-              title="Today's volume vs OI: ● reinforcing, ○ opposing"
+      {/* Controls: overlays + OI/Dir */}
+      <div className="text-muted mb-2 flex items-center gap-3 font-mono text-[10px]">
+        <span className="text-[9px] uppercase tracking-wider">
+          Overlays
+        </span>
+        {(
+          [
+            {
+              key: 'charm',
+              label: 'CHARM',
+              color: CHARM_POS,
+              active: showCharm,
+              toggle: () => setShowCharm((v) => !v),
+            },
+            {
+              key: 'vanna',
+              label: 'VANNA',
+              color: VANNA_POS,
+              active: showVanna,
+              toggle: () => setShowVanna((v) => !v),
+            },
+            {
+              key: 'dex',
+              label: 'DEX',
+              color: DEX_POS,
+              active: showDex,
+              toggle: () => setShowDex((v) => !v),
+            },
+          ] as const
+        ).map((o) => (
+          <button
+            key={o.key}
+            onClick={o.toggle}
+            className="cursor-pointer rounded px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide transition-all"
+            style={{
+              background: o.active
+                ? `${o.color}15`
+                : 'transparent',
+              border: `1px solid ${o.active ? o.color + '40' : 'rgba(255,255,255,0.06)'}`,
+              color: o.active ? o.color : theme.textMuted,
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+        <div className="ml-auto flex gap-1">
+          {(['oi', 'directional'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={toggleView}
+              className="cursor-pointer rounded px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide"
+              style={{
+                background:
+                  viewMode === m
+                    ? 'rgba(255,255,255,0.06)'
+                    : 'transparent',
+                border: `1px solid ${viewMode === m ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)'}`,
+                color:
+                  viewMode === m ? theme.text : theme.textMuted,
+              }}
             >
-              Vol
-            </th>
-            <th
-              className="w-[52px] shrink-0 text-right font-normal"
-              title="Net delta exposure (MM directional lean)"
-            >
-              DEX
-            </th>
-            <th
-              className="w-[48px] shrink-0 text-right font-normal"
-              title="Net vanna (delta sensitivity to IV changes)"
-            >
-              Vanna
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((s) => (
-            <StrikeRow
-              key={s.strike}
-              level={s}
-              price={price}
-              viewMode={viewMode}
-              maxAbsGamma={maxAbsGamma}
-            />
+              {m === 'oi' ? 'OI' : 'VOL'}
+            </button>
           ))}
-        </tbody>
-      </table>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="text-muted mb-2 flex items-center gap-5 font-mono text-[10px]">
+        <span className="flex items-center gap-1">
+          <span
+            className="inline-block h-2 w-2 rounded-sm"
+            style={{ background: theme.green }}
+          />
+          +Gamma
+        </span>
+        <span className="flex items-center gap-1">
+          <span
+            className="inline-block h-2 w-2 rounded-sm"
+            style={{ background: theme.red }}
+          />
+          -Gamma
+        </span>
+        {showCharm && (
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block h-[3px] w-2 rounded-sm"
+              style={{ background: CHARM_POS }}
+            />
+            Charm
+          </span>
+        )}
+        {showVanna && (
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block h-2 w-2 rounded-full border"
+              style={{
+                background: `${VANNA_POS}22`,
+                borderColor: VANNA_POS,
+              }}
+            />
+            Vanna
+          </span>
+        )}
+        {showDex && (
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block h-2 w-2 rotate-45 border"
+              style={{
+                background: `${DEX_POS}22`,
+                borderColor: DEX_POS,
+              }}
+            />
+            DEX
+          </span>
+        )}
+        <span className="ml-auto flex items-center gap-1">
+          <span
+            className="inline-block h-2.5 w-px"
+            style={{ background: theme.accent }}
+          />
+          SPOT
+        </span>
+      </div>
+
+      {/* Chart area */}
+      <div
+        className="flex overflow-x-auto"
+        aria-label="0DTE gamma exposure per strike"
+        role="img"
+      >
+        {/* Strike labels */}
+        <div className="w-[56px] shrink-0">
+          {filtered.map((d) => (
+            <div
+              key={d.strike}
+              className="flex items-center justify-end pr-2 font-mono text-[11px]"
+              style={{
+                height: BAR_HEIGHT,
+                fontWeight:
+                  Math.abs(d.strike - price) < 2.5 ? 700 : 400,
+                color:
+                  Math.abs(d.strike - price) < 2.5
+                    ? theme.accent
+                    : Math.abs(d.strike - price) <= 10
+                      ? theme.textSecondary
+                      : theme.textMuted,
+              }}
+            >
+              {d.strike}
+            </div>
+          ))}
+        </div>
+
+        {/* Bar chart */}
+        <div className="relative min-w-0 flex-1">
+          {/* Center axis */}
+          <div
+            className="absolute top-0 bottom-0 left-1/2 w-px"
+            style={{ background: 'rgba(255,255,255,0.06)' }}
+          />
+
+          {/* Spot price line */}
+          {spotY != null && (
+            <div
+              className="absolute right-0 left-0 z-[2] h-px"
+              style={{
+                top: spotY,
+                background: theme.accent,
+                opacity: 0.5,
+                boxShadow: `0 0 6px ${theme.accent}44`,
+              }}
+            />
+          )}
+
+          {/* Rows */}
+          {filtered.map((d, i) => {
+            const net = getNetGamma(d, viewMode);
+            const gexPct = net / maxGex;
+            const charmPct = d.netCharm / maxCharm;
+            const vannaPct = d.netVanna / maxVanna;
+            const deltaPct = d.netDelta / maxDelta;
+            const isHov = hovered === i;
+
+            return (
+              <div
+                key={d.strike}
+                className="relative flex cursor-crosshair items-center transition-colors duration-150"
+                style={{
+                  height: BAR_HEIGHT,
+                  background: isHov
+                    ? 'rgba(255,255,255,0.02)'
+                    : 'transparent',
+                }}
+                onMouseEnter={(e) => {
+                  setHovered(i);
+                  setMousePos({ x: e.clientX, y: e.clientY });
+                }}
+                onMouseMove={(e) =>
+                  setMousePos({ x: e.clientX, y: e.clientY })
+                }
+                onMouseLeave={() => setHovered(null)}
+              >
+                {/* GEX bar */}
+                <div
+                  className="absolute h-4 transition-all duration-200"
+                  style={{
+                    left:
+                      gexPct >= 0
+                        ? '50%'
+                        : `calc(50% + ${gexPct * MAX_BAR_PCT}%)`,
+                    width: `${Math.abs(gexPct) * MAX_BAR_PCT}%`,
+                    background:
+                      net >= 0
+                        ? `linear-gradient(90deg, transparent, ${isHov ? 'rgba(var(--success-rgb,0,230,118),0.8)' : 'rgba(var(--success-rgb,0,230,118),0.53)'})`
+                        : `linear-gradient(270deg, transparent, ${isHov ? 'rgba(var(--danger-rgb,255,23,68),0.8)' : 'rgba(var(--danger-rgb,255,23,68),0.53)'})`,
+                    borderRadius:
+                      net >= 0 ? '0 3px 3px 0' : '3px 0 0 3px',
+                    boxShadow: isHov
+                      ? `0 0 12px ${net >= 0 ? 'rgba(var(--success-rgb,0,230,118),0.2)' : 'rgba(var(--danger-rgb,255,23,68),0.2)'}`
+                      : 'none',
+                  }}
+                />
+
+                {/* Charm overlay bar */}
+                {showCharm && (
+                  <div
+                    className="absolute h-[3px] rounded-sm transition-opacity duration-200"
+                    style={{
+                      bottom: 4,
+                      left:
+                        charmPct >= 0
+                          ? '50%'
+                          : `calc(50% + ${charmPct * MAX_BAR_PCT * 0.6}%)`,
+                      width: `${Math.abs(charmPct) * MAX_BAR_PCT * 0.6}%`,
+                      background:
+                        d.netCharm >= 0 ? CHARM_POS : CHARM_NEG,
+                      opacity: isHov ? 0.9 : 0.5,
+                    }}
+                  />
+                )}
+
+                {/* Vanna dot */}
+                {showVanna && (
+                  <div
+                    className="absolute rounded-full transition-opacity duration-200"
+                    style={{
+                      top: 4,
+                      left: `calc(50% + ${vannaPct * MAX_BAR_PCT * 0.5}%)`,
+                      width: Math.max(
+                        4,
+                        Math.abs(vannaPct) * 10,
+                      ),
+                      height: Math.max(
+                        4,
+                        Math.abs(vannaPct) * 10,
+                      ),
+                      background:
+                        d.netVanna >= 0
+                          ? `${VANNA_POS}22`
+                          : `${VANNA_NEG}22`,
+                      border: `1px solid ${d.netVanna >= 0 ? VANNA_POS : VANNA_NEG}`,
+                      opacity: isHov ? 0.9 : 0.4,
+                      transform: 'translate(-50%, 0)',
+                    }}
+                  />
+                )}
+
+                {/* DEX diamond */}
+                {showDex && (
+                  <div
+                    className="absolute transition-opacity duration-200"
+                    style={{
+                      top: BAR_HEIGHT / 2 - 4,
+                      left: `calc(50% + ${deltaPct * MAX_BAR_PCT * 0.5}%)`,
+                      width: 7,
+                      height: 7,
+                      transform: 'translate(-50%, 0) rotate(45deg)',
+                      background:
+                        d.netDelta >= 0
+                          ? `${DEX_POS}33`
+                          : `${DEX_NEG}33`,
+                      border: `1px solid ${d.netDelta >= 0 ? DEX_POS : DEX_NEG}`,
+                      opacity: isHov ? 0.9 : 0.4,
+                    }}
+                  />
+                )}
+
+                {/* Hover value label */}
+                {isHov && (
+                  <div
+                    className="absolute text-[10px] font-semibold"
+                    style={{
+                      ...(net >= 0
+                        ? {
+                            left: `calc(50% + ${Math.abs(gexPct) * MAX_BAR_PCT}% + 6px)`,
+                          }
+                        : { right: 8 }),
+                      color: net >= 0 ? theme.green : theme.red,
+                    }}
+                  >
+                    {formatNum(net)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Right panel: charm/vanna/dex values */}
+        <div
+          className="w-[140px] shrink-0 border-l pl-2"
+          style={{ borderColor: 'rgba(255,255,255,0.04)' }}
+        >
+          {filtered.map((d, i) => {
+            const isHov = hovered === i;
+            return (
+              <div
+                key={d.strike}
+                className="flex items-center gap-1.5 font-mono text-[10px] transition-opacity duration-150"
+                style={{
+                  height: BAR_HEIGHT,
+                  opacity: isHov ? 1 : 0.4,
+                }}
+              >
+                {showCharm && (
+                  <span
+                    className="w-[56px] font-semibold"
+                    style={{
+                      color:
+                        d.netCharm > 0 ? CHARM_POS : CHARM_NEG,
+                    }}
+                  >
+                    {d.netCharm > 0 ? '▲' : '▼'}{' '}
+                    {formatNum(Math.abs(d.netCharm))}
+                  </span>
+                )}
+                {showVanna && (
+                  <span
+                    className="w-[46px] font-semibold"
+                    style={{
+                      color:
+                        d.netVanna > 0 ? VANNA_POS : VANNA_NEG,
+                    }}
+                  >
+                    {d.netVanna > 0 ? '▲' : '▼'}{' '}
+                    {formatNum(Math.abs(d.netVanna))}
+                  </span>
+                )}
+                {showDex && (
+                  <span
+                    className="w-[46px] font-semibold"
+                    style={{
+                      color:
+                        d.netDelta > 0 ? DEX_POS : DEX_NEG,
+                    }}
+                  >
+                    {d.netDelta > 0 ? '▲' : '▼'}{' '}
+                    {formatNum(Math.abs(d.netDelta))}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Bottom summary cards */}
+      <div className="mt-3 grid grid-cols-4 gap-2 font-mono text-[10px]">
+        {(
+          [
+            {
+              label: 'TOTAL NET GEX',
+              value: formatNum(summary.totalGex),
+              color:
+                summary.totalGex >= 0 ? theme.green : theme.red,
+            },
+            {
+              label: 'NET CHARM',
+              value: formatNum(summary.totalCharm),
+              color:
+                summary.totalCharm >= 0 ? CHARM_POS : CHARM_NEG,
+            },
+            {
+              label: 'NET VANNA',
+              value: formatNum(summary.totalVanna),
+              color:
+                summary.totalVanna >= 0 ? VANNA_POS : VANNA_NEG,
+            },
+            {
+              label: 'GEX FLIP',
+              value: summary.flipStrike,
+              color: theme.text,
+            },
+          ] as const
+        ).map((card) => (
+          <div
+            key={card.label}
+            className="rounded-md border p-2.5"
+            style={{
+              background: 'rgba(255,255,255,0.02)',
+              borderColor: 'rgba(255,255,255,0.04)',
+            }}
+          >
+            <div
+              className="mb-1 text-[9px] font-semibold tracking-wide"
+              style={{ color: theme.textMuted }}
+            >
+              {card.label}
+            </div>
+            <div
+              className="text-[14px] font-bold"
+              style={{ color: card.color }}
+            >
+              {card.value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Tooltip */}
+      {hovered !== null && filtered[hovered] && (
+        <GexTooltip
+          data={filtered[hovered]}
+          viewMode={viewMode}
+          x={mousePos.x}
+          y={mousePos.y}
+        />
+      )}
     </SectionBox>
   );
 });
-
-function StrikeRow({
-  level,
-  price,
-  viewMode,
-  maxAbsGamma,
-}: Readonly<{
-  level: GexStrikeLevel;
-  price: number;
-  viewMode: ViewMode;
-  maxAbsGamma: number;
-}>) {
-  const netGamma = getNetGamma(level, viewMode);
-  const callGamma = getCallGamma(level, viewMode);
-  const putGamma = getPutGamma(level, viewMode);
-  const isPositive = netGamma >= 0;
-  const barPct = Math.max((Math.abs(netGamma) / maxAbsGamma) * 100, 2);
-  const charmEffect = getCharmEffect(netGamma, level.netCharm);
-  const isAtm = Math.abs(level.strike - price) < 2.5;
-  const dist = formatDist(level.strike, price);
-
-  return (
-    <tr
-      className="flex items-center gap-2 py-1.5"
-      style={isAtm ? { backgroundColor: 'rgba(255,255,255,0.04)' } : undefined}
-    >
-      {/* Strike */}
-      <td
-        className="w-[52px] shrink-0 text-right font-mono text-sm font-bold"
-        style={{ color: isAtm ? theme.accent : theme.text }}
-      >
-        {level.strike}
-      </td>
-
-      {/* Distance from ATM */}
-      <td
-        className="w-[46px] shrink-0 text-right font-mono text-[10px]"
-        style={{
-          color: isAtm
-            ? theme.accent
-            : level.strike > price
-              ? theme.green
-              : theme.red,
-        }}
-      >
-        {dist}
-      </td>
-
-      {/* GEX bar */}
-      <td className="min-w-0 flex-1">
-        <div
-          className="h-[14px] rounded-sm transition-[width] duration-300"
-          style={{
-            width: `${barPct}%`,
-            backgroundColor: isPositive ? theme.green : theme.red,
-            opacity: 0.6,
-          }}
-          aria-label={`${formatGex(netGamma)} gamma exposure`}
-        />
-      </td>
-
-      {/* Net GEX value */}
-      <td
-        className="w-[64px] shrink-0 text-right font-mono text-xs font-semibold"
-        style={{ color: isPositive ? theme.green : theme.red }}
-      >
-        {formatGex(netGamma)}
-      </td>
-
-      {/* Charm effect indicator */}
-      <td
-        className="w-[68px] shrink-0 text-right font-mono text-[10px]"
-        title={`Net charm: ${formatGex(level.netCharm)} — ${charmEffect === 'strengthening' ? 'reinforcing gamma' : charmEffect === 'weakening' ? 'eroding gamma' : 'neutral'}`}
-      >
-        {charmEffect === 'strengthening' && (
-          <span style={{ color: theme.green }}>▲</span>
-        )}
-        {charmEffect === 'weakening' && (
-          <span style={{ color: theme.red }}>▼</span>
-        )}
-        <span className="text-secondary ml-0.5">
-          {formatCompact(level.netCharm)}
-        </span>
-      </td>
-
-      {/* Call gamma */}
-      <td className="w-[58px] shrink-0 text-right font-mono text-[10px]">
-        <span style={{ color: theme.green }}>C</span>
-        <span className="text-secondary ml-1">{formatCompact(callGamma)}</span>
-      </td>
-
-      {/* Put gamma */}
-      <td className="w-[58px] shrink-0 text-right font-mono text-[10px]">
-        <span style={{ color: theme.red }}>P</span>
-        <span className="text-secondary ml-1">{formatCompact(putGamma)}</span>
-      </td>
-
-      {/* Vol vs OI reinforcement */}
-      <td
-        className="w-[24px] shrink-0 text-center font-mono text-[10px]"
-        title={
-          level.volReinforcement === 'reinforcing'
-            ? "Today's flow reinforces this level"
-            : level.volReinforcement === 'opposing'
-              ? "Today's flow opposes this level"
-              : 'No vol signal'
-        }
-      >
-        {level.volReinforcement === 'reinforcing' && (
-          <span style={{ color: theme.green }}>&#x25CF;</span>
-        )}
-        {level.volReinforcement === 'opposing' && (
-          <span style={{ color: theme.red }}>&#x25CB;</span>
-        )}
-      </td>
-
-      {/* DEX (net delta) */}
-      <td
-        className="text-muted w-[52px] shrink-0 text-right font-mono text-[10px]"
-        title={`DEX: C ${formatCompact(level.callDeltaOi)} / P ${formatCompact(level.putDeltaOi)}`}
-      >
-        {formatCompact(level.netDelta)}
-      </td>
-
-      {/* Vanna */}
-      <td
-        className="text-muted w-[48px] shrink-0 text-right font-mono text-[10px]"
-        title={`Vanna: C ${formatCompact(level.callVannaOi)} / P ${formatCompact(level.putVannaOi)}`}
-      >
-        {formatCompact(level.netVanna)}
-      </td>
-    </tr>
-  );
-}

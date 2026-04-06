@@ -8,7 +8,9 @@ const noop = vi.fn();
 
 // ── Helpers ───────────────────────────────────────────────
 
-function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
+function makeStrike(
+  overrides: Partial<GexStrikeLevel> = {},
+): GexStrikeLevel {
   return {
     strike: 5800,
     price: 5795,
@@ -104,7 +106,9 @@ describe('GexPerStrike: empty state', () => {
         onRefresh={noop}
       />,
     );
-    expect(screen.getByText(/no 0dte gex data available/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no 0dte gex data available/i),
+    ).toBeInTheDocument();
   });
 });
 
@@ -113,10 +117,10 @@ describe('GexPerStrike: empty state', () => {
 // ============================================================
 
 describe('GexPerStrike: rendering strikes', () => {
-  it('renders strike levels', () => {
+  it('renders strike labels', () => {
     const strikes = [
-      makeStrike({ strike: 5800, netGamma: 200_000_000_000 }),
-      makeStrike({ strike: 5805, netGamma: 100_000_000_000 }),
+      makeStrike({ strike: 5800 }),
+      makeStrike({ strike: 5805 }),
     ];
     render(
       <GexPerStrike
@@ -127,7 +131,6 @@ describe('GexPerStrike: rendering strikes', () => {
         onRefresh={noop}
       />,
     );
-
     expect(screen.getByText('5800')).toBeInTheDocument();
     expect(screen.getByText('5805')).toBeInTheDocument();
   });
@@ -148,40 +151,14 @@ describe('GexPerStrike: rendering strikes', () => {
     );
     expect(screen.getByText('2 of 2')).toBeInTheDocument();
   });
+});
 
-  it('shows distance from ATM', () => {
-    const strikes = [
-      makeStrike({ strike: 5800, price: 5795 }),
-      makeStrike({ strike: 5810, price: 5795 }),
-    ];
-    render(
-      <GexPerStrike
-        strikes={strikes}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByText('+5pts')).toBeInTheDocument();
-    expect(screen.getByText('+15pts')).toBeInTheDocument();
-  });
+// ============================================================
+// OVERLAYS
+// ============================================================
 
-  it('marks ATM strike', () => {
-    const strikes = [makeStrike({ strike: 5795, price: 5795 })];
-    render(
-      <GexPerStrike
-        strikes={strikes}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByText('ATM')).toBeInTheDocument();
-  });
-
-  it('shows call and put gamma breakdown', () => {
+describe('GexPerStrike: overlay toggles', () => {
+  it('renders CHARM, VANNA, and DEX toggle buttons', () => {
     render(
       <GexPerStrike
         strikes={[makeStrike()]}
@@ -191,112 +168,12 @@ describe('GexPerStrike: rendering strikes', () => {
         onRefresh={noop}
       />,
     );
-    // Call and Put labels exist
-    expect(screen.getByText('C')).toBeInTheDocument();
-    expect(screen.getByText('P')).toBeInTheDocument();
-  });
-});
-
-// ============================================================
-// CHARM EFFECT
-// ============================================================
-
-describe('GexPerStrike: charm effect', () => {
-  it('shows ▲ when charm strengthens gamma (same sign)', () => {
-    // Positive gamma + positive charm = strengthening
-    render(
-      <GexPerStrike
-        strikes={[
-          makeStrike({
-            netGamma: 200_000_000_000,
-            netCharm: 50_000_000_000,
-          }),
-        ]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByText('▲')).toBeInTheDocument();
+    expect(screen.getByText('CHARM')).toBeInTheDocument();
+    expect(screen.getByText('VANNA')).toBeInTheDocument();
+    expect(screen.getByText('DEX')).toBeInTheDocument();
   });
 
-  it('shows ▼ when charm erodes gamma (opposite sign)', () => {
-    // Positive gamma + negative charm = weakening
-    render(
-      <GexPerStrike
-        strikes={[
-          makeStrike({
-            netGamma: 200_000_000_000,
-            netCharm: -50_000_000_000,
-          }),
-        ]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByText('▼')).toBeInTheDocument();
-  });
-
-  it('shows charm tooltip with effect description', () => {
-    render(
-      <GexPerStrike
-        strikes={[
-          makeStrike({
-            netGamma: 200_000_000_000,
-            netCharm: 50_000_000_000,
-          }),
-        ]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByTitle(/reinforcing gamma/)).toBeInTheDocument();
-  });
-});
-
-// ============================================================
-// VOL vs OI REINFORCEMENT
-// ============================================================
-
-describe('GexPerStrike: vol reinforcement', () => {
-  it('shows filled dot when flow reinforces level', () => {
-    render(
-      <GexPerStrike
-        strikes={[makeStrike({ volReinforcement: 'reinforcing' })]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByTitle(/flow reinforces/)).toBeInTheDocument();
-  });
-
-  it('shows hollow dot when flow opposes level', () => {
-    render(
-      <GexPerStrike
-        strikes={[makeStrike({ volReinforcement: 'opposing' })]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByTitle(/flow opposes/)).toBeInTheDocument();
-  });
-});
-
-// ============================================================
-// DEX AND VANNA
-// ============================================================
-
-describe('GexPerStrike: DEX and vanna', () => {
-  it('shows net delta with call/put tooltip', () => {
+  it('renders OI and VOL mode buttons', () => {
     render(
       <GexPerStrike
         strikes={[makeStrike()]}
@@ -306,10 +183,17 @@ describe('GexPerStrike: DEX and vanna', () => {
         onRefresh={noop}
       />,
     );
-    expect(screen.getByTitle(/DEX: C/)).toBeInTheDocument();
+    expect(screen.getByText('OI')).toBeInTheDocument();
+    expect(screen.getByText('VOL')).toBeInTheDocument();
   });
+});
 
-  it('shows net vanna with call/put tooltip', () => {
+// ============================================================
+// LEGEND
+// ============================================================
+
+describe('GexPerStrike: legend', () => {
+  it('shows gamma legend when data present', () => {
     render(
       <GexPerStrike
         strikes={[makeStrike()]}
@@ -319,29 +203,53 @@ describe('GexPerStrike: DEX and vanna', () => {
         onRefresh={noop}
       />,
     );
-    expect(screen.getByTitle(/Vanna: C/)).toBeInTheDocument();
+    expect(screen.getByText('+Gamma')).toBeInTheDocument();
+    expect(screen.getByText('-Gamma')).toBeInTheDocument();
+    expect(screen.getByText('SPOT')).toBeInTheDocument();
   });
-});
 
-// ============================================================
-// GEX FORMATTING
-// ============================================================
-
-describe('GexPerStrike: GEX formatting', () => {
-  it('formats trillions with T suffix', () => {
+  it('shows Charm in legend when overlay is active', () => {
     render(
       <GexPerStrike
-        strikes={[makeStrike({ netGamma: 1_500_000_000_000 })]}
+        strikes={[makeStrike()]}
         loading={false}
         error={null}
         timestamp={null}
         onRefresh={noop}
       />,
     );
-    expect(screen.getByText('+$1.5T')).toBeInTheDocument();
+    expect(screen.getByText('Charm')).toBeInTheDocument();
+    expect(screen.getByText('Vanna')).toBeInTheDocument();
   });
 
-  it('formats billions with B suffix', () => {
+  it('hides Charm/Vanna from legend when toggled off', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // Toggle charm off
+    await user.click(screen.getByText('CHARM'));
+    expect(screen.queryByText('Charm')).not.toBeInTheDocument();
+
+    // Toggle vanna off
+    await user.click(screen.getByText('VANNA'));
+    expect(screen.queryByText('Vanna')).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// SUMMARY CARDS
+// ============================================================
+
+describe('GexPerStrike: summary cards', () => {
+  it('shows total net GEX', () => {
     render(
       <GexPerStrike
         strikes={[makeStrike({ netGamma: 200_000_000_000 })]}
@@ -351,102 +259,10 @@ describe('GexPerStrike: GEX formatting', () => {
         onRefresh={noop}
       />,
     );
-    expect(screen.getByText('+$200.0B')).toBeInTheDocument();
+    expect(screen.getByText('TOTAL NET GEX')).toBeInTheDocument();
   });
 
-  it('formats negative values with minus sign', () => {
-    render(
-      <GexPerStrike
-        strikes={[makeStrike({ netGamma: -500_000_000_000 })]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByText('-$500.0B')).toBeInTheDocument();
-  });
-});
-
-// ============================================================
-// GEX BAR
-// ============================================================
-
-describe('GexPerStrike: GEX bar', () => {
-  it('renders bars with aria-label', () => {
-    render(
-      <GexPerStrike
-        strikes={[makeStrike({ netGamma: 100_000_000_000 })]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(
-      screen.getByLabelText(/^\+\$100\.0B gamma exposure$/),
-    ).toBeInTheDocument();
-  });
-
-  it('renders proportional bar widths', () => {
-    const strikes = [
-      makeStrike({
-        strike: 5800,
-        netGamma: 1_000_000_000_000,
-      }),
-      makeStrike({
-        strike: 5805,
-        netGamma: 500_000_000_000,
-      }),
-    ];
-    render(
-      <GexPerStrike
-        strikes={strikes}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-
-    const bars = screen.getAllByLabelText(/gamma exposure$/);
-    // Filter out the table itself (only get bar divs)
-    const barDivs = bars.filter((el) => el.tagName.toLowerCase() === 'div');
-    expect(barDivs).toHaveLength(2);
-
-    const bar1 = barDivs[0] as HTMLElement;
-    const bar2 = barDivs[1] as HTMLElement;
-    expect(bar1.style.width).toBe('100%');
-    expect(bar2.style.width).toBe('50%');
-  });
-});
-
-// ============================================================
-// SORTING
-// ============================================================
-
-describe('GexPerStrike: sorting', () => {
-  it('default sort is by GEX magnitude', () => {
-    const strikes = [
-      makeStrike({ strike: 5800, netGamma: 100_000_000 }),
-      makeStrike({ strike: 5805, netGamma: 500_000_000 }),
-    ];
-    render(
-      <GexPerStrike
-        strikes={strikes}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    // 5805 (larger GEX) should appear first
-    const rows = screen.getAllByRole('row');
-    // Row 0 = header (sr-only), Row 1 = first data row
-    expect(rows[1]!.textContent).toContain('5805');
-  });
-
-  it('renders sort toggle button', () => {
+  it('shows net charm card', () => {
     render(
       <GexPerStrike
         strikes={[makeStrike()]}
@@ -456,9 +272,33 @@ describe('GexPerStrike: sorting', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByRole('button', { name: /sort by strike/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByText('NET CHARM')).toBeInTheDocument();
+  });
+
+  it('shows net vanna card', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByText('NET VANNA')).toBeInTheDocument();
+  });
+
+  it('shows GEX flip card', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByText('GEX FLIP')).toBeInTheDocument();
   });
 });
 
@@ -482,7 +322,7 @@ describe('GexPerStrike: accessibility', () => {
     ).toBeInTheDocument();
   });
 
-  it('has table role for screen readers', () => {
+  it('has chart area with role img', () => {
     render(
       <GexPerStrike
         strikes={[makeStrike()]}
@@ -493,27 +333,8 @@ describe('GexPerStrike: accessibility', () => {
       />,
     );
     expect(
-      screen.getByRole('table', { name: /0dte gamma exposure/i }),
+      screen.getByRole('img', { name: /gamma exposure/i }),
     ).toBeInTheDocument();
-  });
-
-  it('has column headers for screen readers', () => {
-    render(
-      <GexPerStrike
-        strikes={[makeStrike()]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    expect(screen.getByText('Strike')).toBeInTheDocument();
-    expect(screen.getByText('Dist')).toBeInTheDocument();
-    expect(screen.getByText('Net $')).toBeInTheDocument();
-    expect(screen.getByText('Charm')).toBeInTheDocument();
-    expect(screen.getByText('DEX')).toBeInTheDocument();
-    expect(screen.getByText('Vanna')).toBeInTheDocument();
-    expect(screen.getByText('Vol')).toBeInTheDocument();
   });
 });
 
@@ -563,46 +384,9 @@ describe('GexPerStrike: header controls', () => {
         onRefresh={noop}
       />,
     );
-    expect(screen.getByRole('button', { name: /refresh gex/i })).toBeDisabled();
-  });
-
-  it('renders OI/Dir toggle button', () => {
-    render(
-      <GexPerStrike
-        strikes={[makeStrike()]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
     expect(
-      screen.getByRole('button', { name: /switch to directional/i }),
-    ).toBeInTheDocument();
-  });
-
-  it('toggles between OI and directional view', async () => {
-    const user = userEvent.setup();
-    render(
-      <GexPerStrike
-        strikes={[makeStrike()]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-
-    const toggle = screen.getByRole('button', {
-      name: /switch to directional/i,
-    });
-    expect(toggle).toHaveTextContent('OI');
-
-    await user.click(toggle);
-
-    expect(
-      screen.getByRole('button', { name: /switch to oi/i }),
-    ).toHaveTextContent('Dir');
+      screen.getByRole('button', { name: /refresh gex/i }),
+    ).toBeDisabled();
   });
 
   it('renders visible count controls', () => {
@@ -621,26 +405,7 @@ describe('GexPerStrike: header controls', () => {
     expect(
       screen.getByRole('button', { name: /show more/i }),
     ).toBeInTheDocument();
-    // Default is 15
     expect(screen.getByText('15')).toBeInTheDocument();
-  });
-
-  it('disables minus button at minimum', async () => {
-    const user = userEvent.setup();
-    render(
-      <GexPerStrike
-        strikes={[makeStrike()]}
-        loading={false}
-        error={null}
-        timestamp={null}
-        onRefresh={noop}
-      />,
-    );
-    // Click minus twice: 15 → 10 → 5 (min)
-    const minus = screen.getByRole('button', { name: /show fewer/i });
-    await user.click(minus);
-    await user.click(minus);
-    expect(minus).toBeDisabled();
   });
 });
 
