@@ -59,6 +59,7 @@ ml/__pycache__/
 ml/src/__pycache__/
 ml/tests/__pycache__/
 ml/.pytest_cache/
+ml/.ruff_cache/
 ml/htmlcov/
 ml/.coverage
 
