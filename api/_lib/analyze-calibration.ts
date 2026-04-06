@@ -59,55 +59,10 @@ ${JSON.stringify({
       confidence: 'HIGH',
       note: 'Dominant +3000 positive gamma wall at 6650-6660 acts as upside magnet ~42-52 pts above price. Price sits on +1000 positive gamma at 6600-6605 providing immediate floor. Negative gamma cluster 6615-6640 between price and wall will ACCELERATE any upward move toward the magnet.',
     },
-    netCharm: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Naive Net Charm chart not provided. Cannot assess the broad directional charm slope for Rule 11 confirmation. Relying on Periscope Charm for strike-level charm assessment instead.',
-    },
-    aggregateGex: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Aggregate GEX panel not provided. Cannot determine macro gamma regime (Rule 16). VIX at 25.28 suggests caution, but VIX1D extreme inversion (42% below) overrides this for premium selling. Defaulting to moderate management timing.',
-    },
     periscopeCharm: {
       signal: 'MIXED',
       confidence: 'MODERATE',
       note: 'Positive charm ~+5-7M at 6665 confirms ceiling STRENGTHENS. Near-zero charm at 6600-6605 (immediate floor) — neutral, neither strengthening nor weakening. Deeper +3-5M charm at 6525. NOT all-negative — Override protocol does not apply.',
-    },
-    darkPool: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'No dark pool data available for this session.',
-    },
-    ivTermStructure: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'IV term structure data not available.',
-    },
-    spxCandles: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Intraday candle data not yet available at entry time.',
-    },
-    overnightGap: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Overnight gap data not available.',
-    },
-    vannaExposure: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Vanna data not available without aggregate GEX panel.',
-    },
-    pinRisk: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'OI concentration data not provided.',
-    },
-    skew: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Skew metrics not available.',
     },
   },
   observations: [
@@ -257,55 +212,10 @@ ${JSON.stringify({
       confidence: 'HIGH',
       note: 'DOMINANT +3500-4000 positive gamma wall at 6605 (purple bar) is the largest feature on the board, sitting just above current price (~6596). All four short puts (6535-6550) are 45-65 pts below this wall.',
     },
-    netCharm: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'No naive Net Charm chart provided. Using Periscope Charm for strike-level analysis.',
-    },
-    aggregateGex: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'No aggregate GEX panel provided. Without GEX data, defaulting to conservative Rule 16 timing — target 50% by 1:00 PM ET.',
-    },
     periscopeCharm: {
       signal: 'MIXED',
       confidence: 'MODERATE',
       note: 'CRITICAL: The 6605 gamma wall has slightly NEGATIVE real MM charm (-1 to -2M) — this wall will WEAKEN into the afternoon. Do not rely on it past ~1:00 PM ET. Deep floors at 6520-6525 have +5-7M positive charm and STRENGTHEN all day. Upside magnet at 6665-6670 has +25M positive charm.',
-    },
-    darkPool: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'No dark pool data available.',
-    },
-    ivTermStructure: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'IV term structure not available.',
-    },
-    spxCandles: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Candle data not provided for this analysis.',
-    },
-    overnightGap: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Overnight gap data not available.',
-    },
-    vannaExposure: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Vanna data not available without aggregate GEX panel.',
-    },
-    pinRisk: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'OI concentration data not provided.',
-    },
-    skew: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Skew metrics not available.',
     },
   },
   observations: [
@@ -471,41 +381,6 @@ ${JSON.stringify({
       signal: 'CONFIRMS',
       confidence: 'HIGH',
       note: 'CRITICAL OVERRIDE APPLIED: Periscope Charm showed +100M at 6605 and +70-80M at 6545 — invalidating the naive ALL-NEGATIVE trending day signal. The day was range-bound, not trending. The 6605 ceiling held. The 6545 floor was never tested. Periscope Charm was the most valuable structural tool of the day.',
-    },
-    darkPool: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Dark pool data not available for review.',
-    },
-    ivTermStructure: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'IV term structure data not available.',
-    },
-    spxCandles: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Candle data not separately provided.',
-    },
-    overnightGap: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Overnight gap data not available.',
-    },
-    vannaExposure: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Vanna data not separately tracked.',
-    },
-    pinRisk: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'OI concentration not separately tracked.',
-    },
-    skew: {
-      signal: 'NOT PROVIDED',
-      confidence: 'LOW',
-      note: 'Skew metrics not available.',
     },
   },
   observations: [

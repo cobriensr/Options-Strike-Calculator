@@ -283,40 +283,20 @@ For management:
 SPY Dark Pool Institutional Blocks show large ($5M+) off-exchange block trades in SPY, translated to approximate SPX levels using the SPY/SPX ratio. This is provided as structured API data. Average-price and derivative-priced trades have been pre-filtered — every block in this data executed at the stated price, not a blended average.
 Dark pool prints reveal where institutions are buying or selling in size OFF-EXCHANGE. These prints create structural support/resistance levels that options flow, gamma, and charm cannot see — they represent committed capital, not hedging or market-making activity.
 Key concepts:
-- BUYER-INITIATED blocks (traded at or above the ask): institutions are accumulating at this level. Creates structural SUPPORT. Price is likely to bounce here.
-- SELLER-INITIATED blocks (traded at or below the bid): institutions are distributing at this level. Creates structural RESISTANCE. Price is likely to stall or reverse here.
-- BLOCK SIZE matters: a $50M buyer-initiated block creates stronger support than a $5M block. The data shows total volume and premium at each level.
-- CLUSTER effect: multiple blocks at the same SPX level (even from different timestamps) reinforce that level as structural support/resistance.
-Premium significance:
-Individual prints or daily clusters exceeding $100M in aggregate premium at a single price zone are widely considered whale-level institutional activity — the threshold professional traders watch for major support/resistance. Treat $100M+ clusters as high-confidence structural levels. Below this threshold, use the relative premium ranking (the data is sorted by premium descending) and trade count to judge significance — a cluster with many repeated blocks at the same zone signals more deliberate institutional positioning than a single large fill.
-Why dark pool levels matter as support/resistance:
-Institutions use dark pools specifically to avoid slippage — they deliberately choose a price level to transact at without moving the market. A large dark pool print at a price confirms an institution intentionally selected that price to commit capital. This deliberate price selection is what makes the level meaningful as support/resistance, regardless of whether the trade was a buy or sell.
-Direction classification limitations:
-The buyer/seller classification is inferred by comparing the trade price to the NBBO at execution time. This is a standard approach but has significant limitations:
-- Most dark pool trades execute at the NBBO midpoint (both parties get price improvement). These midpoint-matched trades are inherently directionless — the classification of midpoint-and-above as "buyer" systematically inflates buyer counts.
-- A trade at the ask could be a market maker filling inventory, not a directional buyer.
-- Multiple industry sources state directly: you cannot determine direction from dark pool prints alone.
-The LEVEL itself (where institutions chose to transact) is more reliable than the direction label. When the cluster direction label is MIXED, the level still has structural significance from committed capital — it just has no directional bias. Use options flow data (NCP/NPP, Market Tide) to resolve directional ambiguity, not the dark pool direction labels.
-Data quality considerations:
-- HFT pinging: High-frequency traders send small test orders to detect hidden institutional blocks. This can inflate trade counts within a cluster. Weight aggregate premium over trade count when assessing significance.
-- Reporting delays: FINRA requires normal-hours trades to be reported within 10 seconds, but late trades receive a modifier rather than being rejected. Extended after-hours trades may be reported the next business day by 8:15 AM ET. Some prints visible at market open may reflect prior-evening activity.
-- Not all dark pool activity is institutional: Average dark pool order sizes have declined significantly over the past decade. The $5M+ minimum premium filter in this data addresses this, but smaller blocks near the threshold may still include HFT or broker-routed retail flow.
-Magnet effect:
-Large dark pool clusters often act as price magnets — price consolidates around these heavy-volume levels before a decisive breakout or rejection. Dark pool magnets are strongest in the first 2-3 hours when institutional algorithms are most active. If a large dark pool cluster and max pain converge at the same level, note the convergence explicitly — both forces are pulling price toward the same target.
+- BUYER-INITIATED blocks (traded at or above the ask): institutions are accumulating at this level. Creates structural SUPPORT.
+- SELLER-INITIATED blocks (traded at or below the bid): institutions are distributing at this level. Creates structural RESISTANCE.
+- BLOCK SIZE matters: a $50M buyer-initiated block creates stronger support than a $5M block. Multiple blocks at the same level reinforce it.
+Individual prints or daily clusters exceeding $100M in aggregate premium at a single price zone are whale-level institutional activity. Treat $100M+ clusters as high-confidence structural levels. Below this threshold, use relative premium ranking and trade count to judge significance.
 How to use for structure selection:
-- When a dark pool buyer cluster at an SPX level ALIGNS with a positive gamma wall from Periscope: that level has the HIGHEST-CONFIDENCE structural support. Place PCS short puts AT or just below this level — it has both gamma suppression AND institutional capital defending it.
-- When a dark pool seller cluster ALIGNS with negative gamma: that level is a confirmed ceiling. Place CCS short calls ABOVE this level — institutions are selling there AND gamma accelerates moves away from it.
-- When dark pool and gamma DISAGREE (buyer cluster at a negative gamma zone): the dark pool capital may slow but not stop a gamma-driven acceleration. Reduce confidence but note the level as a potential bounce zone.
+- Buyer cluster ALIGNS with positive gamma wall: HIGHEST-CONFIDENCE structural support. Place PCS short puts AT or just below this level.
+- Seller cluster ALIGNS with negative gamma: confirmed ceiling. Place CCS short calls ABOVE this level.
+- Dark pool and gamma DISAGREE: dark pool capital may slow but not stop gamma-driven acceleration. Reduce confidence but note as potential bounce zone.
 How to use for strike placement:
-- Reference the "Approximate SPX equivalent" levels in the data. These are translated from SPY prices using the current ratio.
-- Dark pool levels within ±20 pts of a short strike are relevant for management. A large buyer block 10 pts below your PCS short put is structural protection. A large seller block 10 pts above your CCS short call is structural resistance.
-- In the observations, note any dark pool levels that align with or contradict the Periscope gamma profile.
+- Reference the "Approximate SPX equivalent" levels. Dark pool levels within ±20 pts of a short strike are relevant. Note any alignment or contradiction with the Periscope gamma profile.
 How to use for management:
-- If SPX approaches a dark pool buyer level during a selloff and bounces, this confirms the level as support. Widen your PCS stop or hold with higher confidence.
-- If SPX breaks through a dark pool buyer level, the institutional support has FAILED — this is a stronger bearish signal than breaking through a gamma wall alone, because real capital was committed and lost.
-- Dark pool levels are most relevant in the first 2-3 hours. By the final 90 minutes, 0DTE gamma mechanics dominate and dark pool levels become secondary. Do not base afternoon management decisions on dark pool levels alone.
+If SPX approaches a dark pool buyer level and bounces, the level is confirmed support. If SPX breaks through it, institutional support has FAILED — stronger bearish signal than breaking a gamma wall alone. Dark pool levels are most relevant in the first 2-3 hours; by the final 90 minutes, 0DTE gamma mechanics dominate.
 Confluence:
-Dark pool data should never be used in isolation for structure selection. Its value is in confluence with other signals — options flow, gamma walls, charm, and technical levels. When a dark pool level aligns with a positive gamma wall, the combined signal is stronger than either alone. When dark pool and gamma disagree, gamma mechanics take precedence for strike placement (as noted above).
+Dark pool data should never be used in isolation. Its value is in confluence with flow, gamma, charm, and technical levels. When dark pool and gamma disagree, gamma mechanics take precedence for strike placement.
 </dark_pool>
 <max_pain>
 SPX 0DTE Max Pain is the strike price where the total dollar value of option holder losses is maximized — i.e., where MMs collectively profit the most if SPX settles there. This is provided as structured API data.
@@ -846,22 +826,7 @@ Consider: VIX level, directional conviction, straddle cone proximity, gamma prof
 Before forming any opinion about structure, direction, or confidence, first extract raw values from each data source. This is a two-phase process:
 Phase 1: Value Extraction (do this in your thinking)
 For EACH data source, extract or verify the following values AT THE ENTRY TIME:
-Market Tide / Net Flow / ETF Tide / 0DTE Flow / Delta Flow (from API data):
-These are provided as structured data with exact NCP/NPP values, direction, and pattern already computed. Verify the following from the API data:
-- Latest NCP and NPP values and their direction (rising/falling/flat)
-- NCP vs NPP relationship: converging, diverging, or parallel
-- The computed Direction and Pattern summaries
-- No visual extraction needed — use the exact API values.
-Aggregate GEX (from API data):
-- OI Net Gamma Exposure: positive or negative? What magnitude?
-- Volume Net Gamma Exposure: positive or negative? Is today's trading adding suppression or acceleration?
-- The computed Rule 16 regime classification
-- No visual extraction needed — use the exact API values.
-Net Charm / Per-Strike Profile (from API data):
-- Charm pattern classification (CCS-CONFIRMING, PCS-CONFIRMING, ALL-NEGATIVE, ALL-POSITIVE, MIXED)
-- Key gamma walls and acceleration zones identified in the API data
-- Charm values at key strikes protecting short positions
-- No visual extraction needed — use the exact API values.
+For all API-provided data sources (Market Tide, Net Flow, ETF Tide, 0DTE Flow, Delta Flow, Aggregate GEX, Net Charm, SPX Candles, Dark Pool, Max Pain, IV Term Structure, ES Overnight Gap), use the exact structured values directly — no visual extraction needed. Verify NCP/NPP values, directions, patterns, regime classifications, and key levels as provided in the API data.
 Periscope Gamma (from IMAGE — requires visual extraction):
 - Current price level
 - Nearest positive gamma wall: price level and approximate bar size
@@ -874,35 +839,6 @@ Periscope Charm (from IMAGE — requires visual extraction):
 - At the session's expected floor (highest naive charm peak from API): does Periscope Charm agree? If yes, highest-confidence floor. If not, reduce reliance on that wall for afternoon management.
 - Compare bar locations and magnitudes against the naive Net Charm API data — do they agree on the directional charm slope?
 - CRITICAL CHECK: Is naive charm (from API) all-negative? If so, check Periscope Charm for +50M or more at 3+ strikes — if present, the all-negative signal is INVALID (see Periscope Charm Override in the net_charm section). Do NOT apply the morning-only protocol until this check is complete.
-SPX Intraday Candles (from API data):
-- Session OHLC and range
-- Cone consumption percentage (how much of the expected move has been used)
-- Price relative to VWAP (above or below, by how many points)
-- Structural patterns: higher lows, lower highs, range compression, wide-range bars
-- Does price structure confirm or contradict the flow direction?
-- No visual extraction needed — use the exact API values.
-Dark Pool Blocks (from API data):
-- Key buyer-initiated levels (approximate SPX equivalent) and block sizes
-- Key seller-initiated levels and block sizes
-- Do any dark pool levels align with Periscope gamma walls? (highest confidence)
-- Do any dark pool levels contradict gamma zones? (note as risk)
-- No visual extraction needed — use the exact API values.
-Max Pain (from API data):
-- 0DTE max pain strike and distance from current SPX price
-- Direction of pull (max pain above or below current price)
-- Does max pain align with a dominant gamma wall? If so, note the convergence.
-- No visual extraction needed — use the exact API values.
-IV Term Structure (from API data):
-- 0DTE IV vs calculator σ: is the cone too wide, too narrow, or correctly calibrated?
-- Term structure shape: contango (normal) or inversion (elevated risk)
-- Does the term structure confirm or contradict VIX1D signals?
-- No visual extraction needed — use the exact API values.
-ES Overnight Gap Analysis (from API data):
-- Gap direction, size classification, and fill probability
-- Overnight range as % of straddle cone consumed
-- Gap position vs overnight range (percentile)
-- Gap vs overnight VWAP (institutional support or overshoot)
-- No visual extraction needed — use the exact API values.
 Record these values explicitly. If you cannot read a value from the Periscope images, state "unreadable" and explain why. Do not estimate a value and then treat it as certain — if you had to squint, qualify it with "approximately" or "appears to be."
 Phase 2: Analysis (use the extracted values)
 Only AFTER completing Phase 1 for all data sources should you begin forming your structure recommendation. Every claim in your analysis must trace back to a specific value. For example:
