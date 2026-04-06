@@ -79,7 +79,7 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
       const symbol = values.find(
         (v) =>
           typeof v === 'string' &&
-          ['ES', 'NQ', 'VX1', 'VX2', 'ZN', 'RTY', 'CL'].includes(v),
+          ['ES', 'NQ', 'VX1', 'VX2', 'ZN', 'RTY', 'CL', 'GC', 'DX'].includes(v),
       ) as string | undefined;
 
       if (!symbol) return Promise.resolve([]);
@@ -168,9 +168,9 @@ describe('fetch-futures-snapshot handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  // ── Happy path: all 7 symbols ─────────────────────────────
+  // ── Happy path: all 9 symbols ─────────────────────────────
 
-  it('processes all 7 symbols and upserts snapshots', async () => {
+  it('processes all 9 symbols and upserts snapshots', async () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
@@ -179,6 +179,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: makeSymbolData({ latestClose: '110.5' }),
       RTY: makeSymbolData({ latestClose: '2100' }),
       CL: makeSymbolData({ latestClose: '75.50' }),
+      GC: makeSymbolData({ latestClose: '2350' }),
+      DX: makeSymbolData({ latestClose: '104.25' }),
     });
 
     const res = mockResponse();
@@ -190,9 +192,9 @@ describe('fetch-futures-snapshot handler', () => {
       skipped: number;
       symbols: { symbol: string }[];
     };
-    expect(json.stored).toBe(7);
+    expect(json.stored).toBe(9);
     expect(json.skipped).toBe(0);
-    expect(json.symbols).toHaveLength(7);
+    expect(json.symbols).toHaveLength(9);
   });
 
   // ── Missing bars for some symbols ─────────────────────────
@@ -201,11 +203,13 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
-      VX1: null, // empty
-      VX2: null, // empty
+      VX1: null,
+      VX2: null,
       ZN: makeSymbolData({ latestClose: '110.5' }),
-      RTY: null, // empty
+      RTY: null,
       CL: makeSymbolData({ latestClose: '75.50' }),
+      GC: null,
+      DX: null,
     });
 
     const res = mockResponse();
@@ -214,7 +218,7 @@ describe('fetch-futures-snapshot handler', () => {
     expect(res._status).toBe(200);
     const json = res._json as { stored: number; skipped: number };
     expect(json.stored).toBe(4);
-    expect(json.skipped).toBe(3);
+    expect(json.skipped).toBe(5);
   });
 
   // ── Change percentage computation ─────────────────────────
@@ -232,6 +236,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: null,
       RTY: null,
       CL: null,
+      GC: null,
+      DX: null,
     });
 
     const res = mockResponse();
@@ -263,6 +269,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: null,
       RTY: null,
       CL: null,
+      GC: null,
+      DX: null,
     });
 
     const res = mockResponse();
@@ -291,6 +299,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: null,
       RTY: null,
       CL: null,
+      GC: null,
+      DX: null,
     });
 
     const res = mockResponse();
@@ -298,9 +308,9 @@ describe('fetch-futures-snapshot handler', () => {
 
     expect(res._status).toBe(200);
     const json = res._json as { stored: number; skipped: number };
-    // ES stored even though bar is 20 min old, 6 others empty
+    // ES stored even though bar is 20 min old, 8 others empty
     expect(json.stored).toBe(1);
-    expect(json.skipped).toBe(6);
+    expect(json.skipped).toBe(8);
   });
 
   // ── Partial failure tolerance ─────────────────────────────
@@ -315,6 +325,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: null,
       RTY: null,
       CL: null,
+      GC: null,
+      DX: null,
     });
 
     // Override: intercept NQ queries to throw
@@ -363,6 +375,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: null,
       RTY: null,
       CL: null,
+      GC: null,
+      DX: null,
     });
 
     const res = mockResponse();
@@ -392,6 +406,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: null,
       RTY: null,
       CL: null,
+      GC: null,
+      DX: null,
     });
 
     const res = mockResponse();
@@ -418,6 +434,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: null,
       RTY: null,
       CL: null,
+      GC: null,
+      DX: null,
     });
 
     const res = mockResponse();
@@ -448,6 +466,8 @@ describe('fetch-futures-snapshot handler', () => {
       ZN: null,
       RTY: null,
       CL: null,
+      GC: null,
+      DX: null,
     });
 
     // Override: make INSERT upsert throw
