@@ -10,6 +10,12 @@ import { THINKING_MESSAGES } from '../constants';
 import { buildPreviousRecommendation } from '../utils/analysis';
 import { getErrorMessage } from '../utils/error';
 
+export interface RetryPrompt {
+  attempt: number;
+  maxAttempts: number;
+  error: string;
+}
+
 export interface UseChartAnalysisReturn {
   analysis: AnalysisResult | null;
   rawResponse: string | null;
@@ -20,7 +26,15 @@ export interface UseChartAnalysisReturn {
   cancelAnalysis: () => void;
   lastAnalysis: AnalysisResult | null;
   THINKING_MESSAGES: typeof THINKING_MESSAGES;
+  retryPrompt: RetryPrompt | null;
+  confirmRetry: () => void;
+  cancelRetry: () => void;
 }
+
+const MAX_ATTEMPTS = 3;
+// Each attempt gets a full 800s timeout (exceeds backend maxDuration
+// of 780s so the server-side limit is the binding constraint).
+const PER_ATTEMPT_TIMEOUT = 800_000;
 
 async function compressImage(
   file: File,
@@ -61,6 +75,7 @@ export function useChartAnalysis(opts: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [retryPrompt, setRetryPrompt] = useState<RetryPrompt | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastAnalysisRef = useRef<AnalysisResult | null>(null);
   const onAnalysisSavedRef = useRef(onAnalysisSaved);
@@ -68,11 +83,46 @@ export function useChartAnalysis(opts: {
   onAnalysisSavedRef.current = onAnalysisSaved;
   onModeCompletedRef.current = onModeCompleted;
 
+  // Refs for values that must be fresh on retry — the user may update
+  // screenshots or market conditions may change during the 10+ minute wait.
+  const imagesRef = useRef(images);
+  const contextRef = useRef(context);
+  const resultsRef = useRef(results);
+  const modeRef = useRef(mode);
+  const hasCSVPositionsRef = useRef(hasCSVPositions);
+  imagesRef.current = images;
+  contextRef.current = context;
+  resultsRef.current = results;
+  modeRef.current = mode;
+  hasCSVPositionsRef.current = hasCSVPositions;
+
+  // Promise resolver for the pausable retry loop — resolves when the
+  // user clicks "Retry" or "Cancel" in the retry prompt dialog.
+  const retryResolverRef = useRef<
+    ((action: 'retry' | 'cancel') => void) | null
+  >(null);
+
   const cancelAnalysis = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    retryResolverRef.current?.('cancel');
+    retryResolverRef.current = null;
+    setRetryPrompt(null);
     setLoading(false);
     setError('Analysis cancelled.');
+  }, []);
+
+  const confirmRetry = useCallback(() => {
+    retryResolverRef.current?.('retry');
+    retryResolverRef.current = null;
+  }, []);
+
+  const cancelRetry = useCallback(() => {
+    retryResolverRef.current?.('cancel');
+    retryResolverRef.current = null;
+    setRetryPrompt(null);
+    setLoading(false);
+    setError('Retry cancelled.');
   }, []);
 
   // Elapsed timer while loading
@@ -86,206 +136,249 @@ export function useChartAnalysis(opts: {
     return () => clearInterval(interval);
   }, [loading]);
 
+  // Build a fresh payload from current ref values so retries
+  // always send up-to-date market data and potentially new images.
+  const buildPayload = useCallback(async () => {
+    const currentImages = imagesRef.current;
+    const currentContext = contextRef.current;
+    const currentResults = resultsRef.current;
+    const currentMode = modeRef.current;
+
+    const imageData = await Promise.all(
+      currentImages.map(async (img) => {
+        const compressed = await compressImage(img.file);
+        const buffer = await compressed.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (const b of bytes) binary += String.fromCodePoint(b);
+        return {
+          data: btoa(binary),
+          mediaType: 'image/jpeg',
+          label: img.label,
+        };
+      }),
+    );
+
+    // Fetch live positions from Schwab (fire-and-forget save to DB)
+    if (
+      !currentContext.isBacktest &&
+      currentResults?.spot &&
+      !hasCSVPositionsRef.current
+    ) {
+      try {
+        await fetch(`/api/positions?spx=${currentResults.spot}`, {
+          credentials: 'include',
+        });
+      } catch {
+        console.warn(
+          'Failed to fetch positions — analysis will proceed without them',
+        );
+      }
+    }
+
+    return JSON.stringify({
+      images: imageData,
+      context: {
+        ...currentContext,
+        mode: currentMode,
+        sigma: currentResults?.sigma,
+        T: currentResults?.T,
+        hoursRemaining: currentResults?.hoursRemaining,
+        spx: currentResults?.spot,
+        previousRecommendation:
+          lastAnalysisRef.current &&
+          (currentMode === 'midday' || currentMode === 'review')
+            ? buildPreviousRecommendation(lastAnalysisRef.current)
+            : undefined,
+      },
+    });
+  }, []);
+
+  /** Play a two-tone chime when analysis completes. */
+  const playChime = useCallback(() => {
+    try {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(659.25, ctx.currentTime);
+      osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.4);
+    } catch {
+      // Audio not available — silent fallback
+    }
+  }, []);
+
+  /**
+   * Run a single analysis attempt. Returns a discriminated result so
+   * the caller can decide whether to prompt for retry.
+   */
+  const runAttempt = useCallback(
+    async (
+      payload: string,
+    ): Promise<
+      | { outcome: 'success' }
+      | { outcome: 'partial' }
+      | { outcome: 'retryable'; error: string }
+      | { outcome: 'fatal'; error: string }
+    > => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const timeout = setTimeout(() => controller.abort(), PER_ATTEMPT_TIMEOUT);
+
+      try {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: payload,
+        });
+
+        clearTimeout(timeout);
+
+        const ndjson = await res.text();
+        const lines = ndjson.split('\n').filter((l) => l.trim().length > 0);
+        const lastLine = lines.at(-1) ?? '{}';
+        const data = JSON.parse(lastLine);
+
+        if (data.error) {
+          const status = res.status;
+          if (status >= 400 && status < 500) {
+            return { outcome: 'fatal', error: data.error };
+          }
+          return { outcome: 'retryable', error: data.error };
+        }
+
+        // Server timed out mid-stream — last NDJSON line is a keepalive
+        if (!data.analysis && !data.raw && !data.error) {
+          return {
+            outcome: 'retryable',
+            error:
+              'Server connection dropped \u2014 the analysis may have timed out.',
+          };
+        }
+
+        if (data.analysis) {
+          setAnalysis(data.analysis);
+          lastAnalysisRef.current = data.analysis;
+          onAnalysisSavedRef.current?.();
+          onModeCompletedRef.current?.(modeRef.current);
+          playChime();
+        }
+        if (data.raw) setRawResponse(data.raw);
+
+        // Raw text present but no structured analysis — partial success
+        if (!data.analysis && data.raw) {
+          return { outcome: 'partial' };
+        }
+
+        return { outcome: 'success' };
+      } catch (err) {
+        clearTimeout(timeout);
+
+        // User manually cancelled
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          if (!abortRef.current) {
+            return { outcome: 'fatal', error: 'Analysis cancelled.' };
+          }
+          // Timeout-triggered abort
+          return {
+            outcome: 'retryable',
+            error: 'Request timed out.',
+          };
+        }
+
+        // Non-retryable client errors
+        const status = (err as Error & { status?: number }).status;
+        if (status && status >= 400 && status < 500) {
+          return { outcome: 'fatal', error: getErrorMessage(err) };
+        }
+
+        return { outcome: 'retryable', error: getErrorMessage(err) };
+      }
+    },
+    [playChime],
+  );
+
   const analyze = useCallback(async () => {
-    if (images.length === 0) return;
+    if (imagesRef.current.length === 0) return;
     setLoading(true);
     setError(null);
     setAnalysis(null);
     setRawResponse(null);
+    setRetryPrompt(null);
 
     try {
-      const imageData = await Promise.all(
-        images.map(async (img) => {
-          const compressed = await compressImage(img.file);
-          const buffer = await compressed.arrayBuffer();
-          const bytes = new Uint8Array(buffer);
-          let binary = '';
-          for (const b of bytes) binary += String.fromCodePoint(b);
-          return {
-            data: btoa(binary),
-            mediaType: 'image/jpeg',
-            label: img.label,
-          };
-        }),
-      );
-
-      // Fetch live positions from Schwab before analysis (fire-and-forget save to DB)
-      // The /api/analyze endpoint auto-reads positions from DB, so this just ensures they're fresh
-      if (!context.isBacktest && results?.spot && !hasCSVPositions) {
-        try {
-          await fetch(`/api/positions?spx=${results.spot}`, {
-            credentials: 'include',
-          });
-        } catch {
-          // Positions are optional — analysis still works without them
-          console.warn(
-            'Failed to fetch positions — analysis will proceed without them',
-          );
-        }
-      }
-
-      const payload = JSON.stringify({
-        images: imageData,
-        context: {
-          ...context,
-          mode,
-          sigma: results?.sigma,
-          T: results?.T,
-          hoursRemaining: results?.hoursRemaining,
-          spx: results?.spot,
-          // Previous recommendation is now auto-fetched from DB by the backend.
-          // Keep the client-side fallback for cases where DB hasn't been populated yet
-          // (e.g., first analysis of the day, or backtesting without saved analyses).
-          previousRecommendation:
-            lastAnalysisRef.current && (mode === 'midday' || mode === 'review')
-              ? buildPreviousRecommendation(lastAnalysisRef.current)
-              : undefined,
-        },
-      });
-
-      const MAX_ATTEMPTS = 3;
-      // Each attempt gets a full 800s timeout (exceeds backend maxDuration
-      // of 780s so the server-side limit is the binding constraint).
-      const PER_ATTEMPT_TIMEOUT = 800_000;
-      let lastError: unknown = null;
-
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        // Fresh controller per attempt so a timeout on attempt N
-        // doesn't poison attempt N+1
-        const controller = new AbortController();
-        abortRef.current = controller;
-        const timeout = setTimeout(
-          () => controller.abort(),
-          PER_ATTEMPT_TIMEOUT,
-        );
+        // Build a fresh payload each attempt so market data and
+        // potentially updated screenshots are current.
+        if (attempt > 1) {
+          setError(`Starting attempt ${attempt}/${MAX_ATTEMPTS}...`);
+        }
 
-        try {
-          const res = await fetch('/api/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: payload,
+        const payload = await buildPayload();
+        const result = await runAttempt(payload);
+
+        if (result.outcome === 'success') {
+          setError(null);
+          break;
+        }
+
+        if (result.outcome === 'partial') {
+          setError(
+            'Could not parse structured response. See raw output below.',
+          );
+          break;
+        }
+
+        if (result.outcome === 'fatal') {
+          setError(result.error);
+          break;
+        }
+
+        // Retryable failure — prompt the user before continuing
+        if (attempt < MAX_ATTEMPTS) {
+          setLoading(false);
+          setRetryPrompt({
+            attempt,
+            maxAttempts: MAX_ATTEMPTS,
+            error: result.error,
           });
 
-          clearTimeout(timeout);
+          // Pause the loop until the user decides
+          const action = await new Promise<'retry' | 'cancel'>((resolve) => {
+            retryResolverRef.current = resolve;
+          });
 
-          // Response is NDJSON: keepalive pings followed by the
-          // final line with the real payload. Parse the last
-          // non-empty line as the response.
-          const ndjson = await res.text();
-          const lines = ndjson.split('\n').filter((l) => l.trim().length > 0);
-          const lastLine = lines.at(-1) ?? '{}';
-          const data = JSON.parse(lastLine);
-
-          if (data.error) {
-            const httpErr = new Error(data.error);
-            (httpErr as Error & { status: number }).status = res.status;
-            throw httpErr;
-          }
-
-          // Clear any interim retry message now that we have a response
-          lastError = null;
-          setError(null);
-
-          // If the server timed out mid-stream, the last NDJSON line
-          // is a keepalive ping with no meaningful payload. Treat as
-          // a retryable timeout so the user gets feedback.
-          if (!data.analysis && !data.raw && !data.error) {
-            const timeoutErr = new Error(
-              'Server connection dropped — the analysis may have timed out.',
-            );
-            (timeoutErr as Error & { status: number }).status = 504;
-            throw timeoutErr;
-          }
-
-          if (data.analysis) {
-            setAnalysis(data.analysis);
-            lastAnalysisRef.current = data.analysis;
-            onAnalysisSavedRef.current?.();
-            // Notify parent so it can lock completed modes
-            onModeCompletedRef.current?.(mode);
-
-            // Play a notification chime so the user knows analysis is ready
-            try {
-              const ctx = new AudioContext();
-              const osc = ctx.createOscillator();
-              const gain = ctx.createGain();
-              osc.connect(gain);
-              gain.connect(ctx.destination);
-              osc.type = 'sine';
-              // Two-tone chime: E5 → G5
-              osc.frequency.setValueAtTime(659.25, ctx.currentTime);
-              osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.15);
-              gain.gain.setValueAtTime(0.3, ctx.currentTime);
-              gain.gain.exponentialRampToValueAtTime(
-                0.01,
-                ctx.currentTime + 0.4,
-              );
-              osc.start(ctx.currentTime);
-              osc.stop(ctx.currentTime + 0.4);
-            } catch {
-              // Audio not available — silent fallback
-            }
-          }
-          if (data.raw) setRawResponse(data.raw);
-          if (!data.analysis && data.raw)
-            setError(
-              'Could not parse structured response. See raw output below.',
-            );
-
-          break;
-        } catch (err) {
-          clearTimeout(timeout);
-          lastError = err;
-
-          // User manually cancelled — don't retry
-          if (err instanceof DOMException && err.name === 'AbortError') {
-            if (!abortRef.current) break; // manual cancel (abortRef cleared)
-            // Timeout-triggered abort — retry if attempts remain
-            if (attempt === MAX_ATTEMPTS) break;
-            setError(
-              `Attempt ${attempt}/${MAX_ATTEMPTS} timed out — retrying...`,
-            );
-            continue;
-          }
-
-          // Non-retryable client errors (auth, validation, bad request)
-          const status = (err as Error & { status?: number }).status;
-          if (status && status >= 400 && status < 500) {
+          if (action === 'cancel') {
+            setRetryPrompt(null);
+            setError('Retry cancelled.');
             break;
           }
 
-          // Retryable failure — back off then retry
-          if (attempt < MAX_ATTEMPTS) {
-            const delaySec = 2 ** (attempt - 1); // 1s, 2s
-            setError(
-              `Attempt ${attempt}/${MAX_ATTEMPTS} failed — retrying in ${delaySec}s...`,
-            );
-            await new Promise((r) => setTimeout(r, delaySec * 1000));
-          }
-        }
-      }
-
-      if (lastError) {
-        if (
-          lastError instanceof DOMException &&
-          lastError.name === 'AbortError'
-        ) {
-          if (abortRef.current)
-            setError(
-              `Analysis timed out after ${MAX_ATTEMPTS} attempts. Try fewer images or simpler charts.`,
-            );
+          // User chose to retry — resume with fresh data
+          setRetryPrompt(null);
+          setLoading(true);
         } else {
-          setError(getErrorMessage(lastError));
+          // Final attempt exhausted
+          setError(
+            `Analysis failed after ${MAX_ATTEMPTS} attempts: ${result.error}`,
+          );
         }
       }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
       abortRef.current = null;
+      setRetryPrompt(null);
       setLoading(false);
     }
-  }, [images, context, results, mode, hasCSVPositions]);
+  }, [buildPayload, runAttempt]);
 
   return {
     analysis,
@@ -297,5 +390,8 @@ export function useChartAnalysis(opts: {
     cancelAnalysis,
     lastAnalysis: lastAnalysisRef.current,
     THINKING_MESSAGES,
+    retryPrompt,
+    confirmRetry,
+    cancelRetry,
   };
 }

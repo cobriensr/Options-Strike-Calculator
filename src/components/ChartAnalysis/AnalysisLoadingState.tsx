@@ -1,10 +1,11 @@
 /**
- * AnalysisLoadingState — Confirmation dialog and loading indicator
- * for the chart analysis flow.
+ * AnalysisLoadingState — Confirmation dialog, loading indicator,
+ * and retry prompt for the chart analysis flow.
  */
 
 import { theme } from '../../themes';
 import type { AnalysisMode, UploadedImage } from './types';
+import type { RetryPrompt as RetryPromptType } from '../../hooks/useChartAnalysis';
 import { MODE_LABELS } from './types';
 import { tint } from '../../utils/ui-utils';
 
@@ -149,6 +150,82 @@ export function LoadingIndicator({
             Cancel
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Retry Prompt ────────────────────────────────────────────
+
+export function RetryPromptDialog({
+  retryPrompt,
+  onRetryNow,
+  onUpdateScreenshots,
+  onCancel,
+}: Readonly<{
+  retryPrompt: RetryPromptType;
+  onRetryNow: () => void;
+  onUpdateScreenshots: () => void;
+  onCancel: () => void;
+}>) {
+  const remaining = retryPrompt.maxAttempts - retryPrompt.attempt;
+
+  return (
+    <div
+      className="mb-3 rounded-lg px-4 py-4"
+      style={{
+        backgroundColor: tint(theme.caution, '10'),
+        border: '1.5px solid ' + tint(theme.caution, '30'),
+      }}
+      role="alertdialog"
+      aria-label="Analysis retry prompt"
+    >
+      <div
+        className="mb-2 font-sans text-[12px] font-semibold"
+        style={{ color: theme.caution }}
+      >
+        Attempt {retryPrompt.attempt}/{retryPrompt.maxAttempts} failed
+      </div>
+      <div className="text-secondary mb-3 font-sans text-[11px]">
+        {retryPrompt.error}
+      </div>
+      <div className="text-muted mb-4 font-sans text-[10px]">
+        {remaining} attempt{remaining > 1 ? 's' : ''} remaining. Retrying will
+        fetch fresh market data. You can also update your Periscope screenshots
+        before retrying.
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onRetryNow}
+          className="cursor-pointer rounded-md px-4 py-1.5 font-sans text-[10px] font-bold tracking-wider uppercase transition-opacity hover:opacity-90"
+          style={{ backgroundColor: theme.accent, color: '#fff' }}
+        >
+          Retry Now
+        </button>
+        <button
+          type="button"
+          onClick={onUpdateScreenshots}
+          className="cursor-pointer rounded-md px-4 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
+          style={{
+            backgroundColor: tint(theme.green, '15'),
+            color: theme.green,
+            border: `1px solid ${tint(theme.green, '30')}`,
+          }}
+        >
+          Update Screenshots First
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="cursor-pointer rounded-md px-3 py-1.5 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80"
+          style={{
+            backgroundColor: theme.surfaceAlt,
+            color: theme.textMuted,
+          }}
+        >
+          Cancel
+        </button>
       </div>
     </div>
   );

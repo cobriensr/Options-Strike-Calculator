@@ -69,6 +69,14 @@ function makeSuccessResponse(analysis = sampleAnalysis) {
   };
 }
 
+function makeErrorResponse(error: string, status = 400) {
+  return {
+    ok: status < 400,
+    status,
+    text: () => Promise.resolve(JSON.stringify({ error }) + '\n'),
+  };
+}
+
 // ============================================================
 // TESTS
 // ============================================================
@@ -85,6 +93,7 @@ describe('useChartAnalysis', () => {
     expect(result.current.elapsed).toBe(0);
     expect(result.current.rawResponse).toBeNull();
     expect(result.current.lastAnalysis).toBeNull();
+    expect(result.current.retryPrompt).toBeNull();
   });
 
   // ── Returns THINKING_MESSAGES ──
@@ -144,17 +153,10 @@ describe('useChartAnalysis', () => {
     expect(onAnalysisSaved).toHaveBeenCalledOnce();
   });
 
-  // ── analyze: on HTTP error ──
+  // ── analyze: fatal HTTP error (4xx) ──
 
-  it('sets error message on HTTP error', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: () =>
-        Promise.resolve(
-          JSON.stringify({ error: 'Internal server error' }) + '\n',
-        ),
-    });
+  it('sets error immediately on fatal (4xx) error', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse('Bad request', 400));
 
     const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
 
@@ -162,22 +164,16 @@ describe('useChartAnalysis', () => {
       await result.current.analyze();
     });
 
-    expect(result.current.error).toBe('Internal server error');
+    expect(result.current.error).toBe('Bad request');
     expect(result.current.analysis).toBeNull();
     expect(result.current.loading).toBe(false);
+    expect(result.current.retryPrompt).toBeNull();
   });
 
-  // ── analyze: on abort/timeout ──
+  // ── analyze: does not retry 4xx errors ──
 
-  it('sets timeout error message on abort', async () => {
-    // Simulate all 3 attempts aborting (timeout). The hook retries up to 3 times
-    // for timeout-triggered aborts. We need to simulate AbortError while keeping
-    // abortRef.current set (so the hook thinks it was a timeout, not a manual cancel).
-    mockFetch.mockImplementation(() =>
-      Promise.reject(
-        new DOMException('The operation was aborted', 'AbortError'),
-      ),
-    );
+  it('does not retry on 4xx client errors', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse('Unauthorized', 401));
 
     const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
 
@@ -185,8 +181,12 @@ describe('useChartAnalysis', () => {
       await result.current.analyze();
     });
 
-    expect(result.current.error).toMatch(/timed out/i);
-    expect(result.current.loading).toBe(false);
+    // Should only be called once (no retries for client errors)
+    const analyzeCalls = mockFetch.mock.calls.filter(
+      (call) => call[0] === '/api/analyze',
+    );
+    expect(analyzeCalls.length).toBe(1);
+    expect(result.current.error).toBe('Unauthorized');
   });
 
   // ── cancelAnalysis ──
@@ -326,29 +326,154 @@ describe('useChartAnalysis', () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(result.current.loading).toBe(false);
   });
+});
 
-  // ── HTTP 400-level error does not retry ──
+// ============================================================
+// RETRY PROMPT
+// ============================================================
 
-  it('does not retry on 4xx client errors', async () => {
-    // Pre-Anthropic rejections (auth, validation) still return real HTTP
-    // status codes via res.json(), not NDJSON
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 401,
-      text: () => Promise.resolve(JSON.stringify({ error: 'Unauthorized' })),
-    });
+describe('useChartAnalysis: retry prompt', () => {
+  it('shows retry prompt on retryable error', async () => {
+    // Server error (5xx status in response body) is retryable
+    mockFetch.mockResolvedValue(makeErrorResponse('Server overloaded', 500));
 
     const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
 
-    await act(async () => {
-      await result.current.analyze();
+    // Start analyze without awaiting — it will pause at retry prompt
+    act(() => {
+      result.current.analyze();
     });
 
-    // Should only be called once (no retries for client errors)
+    // Flush microtasks for buildPayload + runAttempt
+    await act(async () => {});
+
+    expect(result.current.retryPrompt).toEqual({
+      attempt: 1,
+      maxAttempts: 3,
+      error: 'Server overloaded',
+    });
+    expect(result.current.loading).toBe(false);
+
+    // Clean up — cancel the pending retry to release the promise
+    act(() => {
+      result.current.cancelRetry();
+    });
+    await act(async () => {});
+  });
+
+  it('confirmRetry resumes with the next attempt', async () => {
+    // First call: server error. Second call: success.
+    mockFetch
+      .mockResolvedValueOnce(makeErrorResponse('Server timeout', 500))
+      .mockResolvedValueOnce(makeSuccessResponse());
+
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+
+    // Retry prompt should be showing
+    expect(result.current.retryPrompt?.attempt).toBe(1);
+
+    // User clicks "Retry Now"
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await act(async () => {});
+
+    // Second attempt succeeds
+    expect(result.current.analysis).toEqual(sampleAnalysis);
+    expect(result.current.retryPrompt).toBeNull();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('cancelRetry stops the loop and sets error', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse('Server error', 500));
+
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+
+    expect(result.current.retryPrompt).not.toBeNull();
+
+    act(() => {
+      result.current.cancelRetry();
+    });
+    await act(async () => {});
+
+    expect(result.current.error).toBe('Retry cancelled.');
+    expect(result.current.retryPrompt).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('shows final error after all attempts exhausted', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse('Server down', 500));
+
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+
+    // Attempt 1 failed → retry prompt
+    expect(result.current.retryPrompt?.attempt).toBe(1);
+
+    // Confirm retry → attempt 2
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await act(async () => {});
+
+    // Attempt 2 failed → retry prompt
+    expect(result.current.retryPrompt?.attempt).toBe(2);
+
+    // Confirm retry → attempt 3 (final)
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await act(async () => {});
+
+    // All attempts exhausted — error shown, no prompt
+    expect(result.current.retryPrompt).toBeNull();
+    expect(result.current.error).toMatch(/failed after 3 attempts/i);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('rebuilds payload on retry (fresh data)', async () => {
+    mockFetch
+      .mockResolvedValueOnce(makeErrorResponse('Timeout', 500))
+      .mockResolvedValueOnce(makeSuccessResponse());
+
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+
+    // Confirm retry
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await act(async () => {});
+
+    // Two /api/analyze calls — each with a freshly built payload
     const analyzeCalls = mockFetch.mock.calls.filter(
       (call) => call[0] === '/api/analyze',
     );
-    expect(analyzeCalls.length).toBe(1);
-    expect(result.current.error).toBe('Unauthorized');
+    expect(analyzeCalls.length).toBe(2);
+
+    // Both payloads should be complete JSON
+    const body1 = JSON.parse(analyzeCalls[0]![1].body);
+    const body2 = JSON.parse(analyzeCalls[1]![1].body);
+    expect(body1.images).toHaveLength(1);
+    expect(body2.images).toHaveLength(1);
   });
 });

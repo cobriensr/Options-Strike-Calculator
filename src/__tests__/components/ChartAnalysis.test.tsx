@@ -1541,7 +1541,7 @@ describe('ChartAnalysis', () => {
   // ── TIMEOUT ERROR ──
 
   describe('timeout error', () => {
-    it('shows timeout message when AbortError fires from timeout', async () => {
+    it('shows retry prompt when AbortError fires from timeout', async () => {
       const user = userEvent.setup();
       const abortError = new DOMException(
         'The operation was aborted.',
@@ -1556,8 +1556,12 @@ describe('ChartAnalysis', () => {
       await clickAnalyzeAndConfirm(user);
 
       await waitFor(() => {
-        expect(screen.getByText(/analysis timed out/i)).toBeInTheDocument();
+        expect(screen.getByText(/request timed out/i)).toBeInTheDocument();
       });
+      // Retry prompt buttons should be visible
+      expect(
+        screen.getByRole('button', { name: /retry now/i }),
+      ).toBeInTheDocument();
     });
   });
 

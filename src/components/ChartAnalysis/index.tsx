@@ -75,6 +75,9 @@ export default function ChartAnalysis({
     cancelAnalysis,
     lastAnalysis,
     THINKING_MESSAGES,
+    retryPrompt,
+    confirmRetry,
+    cancelRetry,
   } = useChartAnalysis({
     images,
     context,
@@ -211,6 +214,9 @@ export default function ChartAnalysis({
           THINKING_MESSAGES={THINKING_MESSAGES}
           cancelAnalysis={cancelAnalysis}
           error={error}
+          retryPrompt={retryPrompt}
+          onRetryNow={confirmRetry}
+          onCancelRetry={cancelRetry}
           isBacktest={context.isBacktest ?? false}
           lastAnalysis={lastAnalysis}
         />

@@ -5,12 +5,18 @@
  * Confirmation dialog and loading indicator are in AnalysisLoadingState.
  */
 
+import { useState, useEffect } from 'react';
 import type { RefObject } from 'react';
 import { theme } from '../../themes';
 import type { AnalysisMode, UploadedImage } from './types';
+import type { RetryPrompt } from '../../hooks/useChartAnalysis';
 import { CHART_LABELS, MODE_LABELS } from './types';
 import { tint } from '../../utils/ui-utils';
-import { ConfirmationBar, LoadingIndicator } from './AnalysisLoadingState';
+import {
+  ConfirmationBar,
+  LoadingIndicator,
+  RetryPromptDialog,
+} from './AnalysisLoadingState';
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -47,6 +53,10 @@ interface Props {
   readonly THINKING_MESSAGES: readonly string[];
   readonly cancelAnalysis: () => void;
   readonly error: string | null;
+  // Retry prompt
+  readonly retryPrompt: RetryPrompt | null;
+  readonly onRetryNow: () => void;
+  readonly onCancelRetry: () => void;
   // Context for confirmation dialog
   readonly isBacktest: boolean;
   readonly lastAnalysis: { structure: string } | null;
@@ -80,9 +90,22 @@ export default function ChartControls({
   THINKING_MESSAGES,
   cancelAnalysis,
   error,
+  retryPrompt,
+  onRetryNow,
+  onCancelRetry,
   isBacktest,
   lastAnalysis,
 }: Props) {
+  // When the user clicks "Update Screenshots" in the retry dialog,
+  // we hide the dialog so the upload area is accessible, and show a
+  // "Retry with Updated Images" button instead.
+  const [updatingForRetry, setUpdatingForRetry] = useState(false);
+
+  // Reset local state when retry prompt clears (retry started or cancelled)
+  useEffect(() => {
+    if (!retryPrompt) setUpdatingForRetry(false);
+  }, [retryPrompt]);
+
   return (
     <>
       {/* Mode selector */}
@@ -267,7 +290,7 @@ export default function ChartControls({
       )}
 
       {/* Analyze button + confirmation step */}
-      {images.length > 0 && !loading && !confirming && (
+      {images.length > 0 && !loading && !confirming && !retryPrompt && (
         <button
           type="button"
           onClick={onConfirmStart}
@@ -297,8 +320,34 @@ export default function ChartControls({
         />
       )}
 
+      {/* Retry prompt — shown when an attempt fails and retries remain */}
+      {retryPrompt && !loading && !updatingForRetry && (
+        <RetryPromptDialog
+          retryPrompt={retryPrompt}
+          onRetryNow={onRetryNow}
+          onUpdateScreenshots={() => setUpdatingForRetry(true)}
+          onCancel={onCancelRetry}
+        />
+      )}
+
+      {/* "Retry with Updated Images" button — user is updating screenshots */}
+      {retryPrompt && updatingForRetry && !loading && (
+        <button
+          type="button"
+          onClick={() => {
+            setUpdatingForRetry(false);
+            onRetryNow();
+          }}
+          className="mb-3 w-full cursor-pointer rounded-lg px-4 py-2.5 font-sans text-[12px] font-bold tracking-wider uppercase transition-opacity"
+          style={{ backgroundColor: theme.accent, color: '#fff' }}
+        >
+          Retry with Updated Images ({retryPrompt.attempt + 1}/
+          {retryPrompt.maxAttempts})
+        </button>
+      )}
+
       {/* Error */}
-      {error && (
+      {error && !retryPrompt && (
         <div
           className="mb-3 rounded-lg px-3 py-2 text-[11px]"
           style={{
