@@ -285,6 +285,57 @@ export async function formatFuturesForClaude(
     sections.push(lines.join('\n'));
   }
 
+  // GC section
+  const gc = bySymbol.get('GC');
+  if (gc) {
+    const lines = [
+      `Gold (/GC):`,
+      `  Current: ${fmtPrice(num(gc.price))} | 1H: ${fmtPct(num(gc.change_1h_pct))} | Day: ${fmtPct(num(gc.change_day_pct))}`,
+    ];
+    const gcDay = num(gc.change_day_pct);
+    const esDay = num(bySymbol.get('ES')?.change_day_pct ?? null);
+    const znDay = num(bySymbol.get('ZN')?.change_day_pct ?? null);
+    if (gcDay != null && esDay != null) {
+      if (gcDay > 0.5 && esDay < -0.2) {
+        lines.push(
+          `  Signal: SAFE HAVEN BID \u2014 gold rising while equities fall. Fear-driven positioning.`,
+        );
+        if (znDay != null && znDay > 0.1) {
+          lines.push(
+            `  Gold + Bonds both bid = HIGH-CONVICTION flight to safety.`,
+          );
+        }
+      } else if (gcDay < -0.5 && esDay > 0.2) {
+        lines.push(
+          `  Signal: Risk-on rotation \u2014 gold sold as equities rally. Favorable for premium selling.`,
+        );
+      }
+    }
+    sections.push(lines.join('\n'));
+  }
+
+  // DX section
+  const dx = bySymbol.get('DX');
+  if (dx) {
+    const lines = [
+      `US Dollar Index (/DX):`,
+      `  Current: ${fmtPrice(num(dx.price))} | 1H: ${fmtPct(num(dx.change_1h_pct))} | Day: ${fmtPct(num(dx.change_day_pct))}`,
+    ];
+    const dxDay = num(dx.change_day_pct);
+    if (dxDay != null) {
+      if (dxDay > 0.5) {
+        lines.push(
+          `  Signal: DOLLAR STRENGTH \u2014 equity headwind. Strong dollar pressures multinational earnings and risk assets.`,
+        );
+      } else if (dxDay < -0.5) {
+        lines.push(
+          `  Signal: DOLLAR WEAKNESS \u2014 equity tailwind. Weak dollar supports risk appetite.`,
+        );
+      }
+    }
+    sections.push(lines.join('\n'));
+  }
+
   // ES Options section
   if (esOptionsRows.length > 0) {
     const putRows = esOptionsRows.filter((r) => r.option_type === 'P');

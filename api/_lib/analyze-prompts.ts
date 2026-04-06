@@ -671,6 +671,22 @@ CL Crude Oil:
 - CL and ES decorrelated → something unusual happening. Be cautious with
   macro-based confidence.
 
+GC Gold (Safe Haven):
+- GC rising + ES falling = SAFE HAVEN BID. Institutions rotating to safety assets.
+  When GC AND ZN both rally while ES sells → HIGH-CONVICTION flight to safety.
+  This reinforces the ZN flight-to-safety signal — treat as a trending day.
+- GC falling + ES rising = risk-on. Gold selling confirms equity rally has broad
+  institutional support. Favorable for premium selling.
+- GC flat while ES moves = equity-specific event, gold is not participating.
+  No macro signal — weight options flow more heavily.
+
+DX US Dollar Index (Headwind/Tailwind):
+- DX rising >0.5% = dollar STRENGTH. Creates headwind for equities (especially
+  multinationals in NQ). Reduce bullish confidence by one notch when DX is surging.
+- DX falling >0.5% = dollar WEAKNESS. Tailwind for risk assets. Supports bullish
+  thesis for PCS.
+- DX flat = neutral macro backdrop, no dollar-driven directional pressure.
+
 ES Options Institutional Positioning:
 - Heavy ES put buying at a specific strike = institutional hedge being placed.
   This strike becomes a "futures-side support level" that may reinforce or
