@@ -172,11 +172,19 @@ class AlertEngine:
         except Exception as exc:
             log.error("Failed to refresh alert configs: %s", exc)
 
+    # Require N bars of history before firing any alert to avoid
+    # false positives on cold start (first bar has no baseline).
+    MIN_BARS_WARMUP = 5
+
     def on_bar(self, symbol: str, ts: float, close: float, volume: int) -> None:
         """Called for each new 1-minute bar. Evaluates all relevant alerts."""
         self._state.record_bar(symbol, ts, close, volume)
         self.refresh_configs_if_needed()
-        self._evaluate_all(symbol)
+
+        # Skip alert evaluation until we have enough history
+        history = self._state.price_history.get(symbol)
+        if history and len(history) >= self.MIN_BARS_WARMUP:
+            self._evaluate_all(symbol)
 
     def _evaluate_all(self, triggering_symbol: str) -> None:
         """Run all alert evaluations relevant to the triggering symbol."""

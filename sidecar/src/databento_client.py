@@ -69,9 +69,6 @@ class DatabentoClient:
         # Log symbol mapping summary once, not per-contract
         self._mapping_summary_logged = False
 
-        # Diagnostic: log first data record type once
-        self._first_data_logged = False
-
         # Store option definitions: instrument_id -> {strike, option_type, expiry}
         self._option_definitions: dict[int, dict] = {}
 
@@ -114,9 +111,8 @@ class DatabentoClient:
         # subscription for now — will add a second client in a follow-up.
         # self._subscribe_vxm()
 
-        # ES options trades subscription deferred until basic futures bars are verified
-        # TODO: Enable after confirming OHLCV-1m flow is stable
-        self._options_subscription_pending = False
+        # Subscribe to ES options after first ES bar arrives (need price for ATM)
+        self._options_subscription_pending = True
 
         # Start streaming (non-blocking with callbacks)
         self._client.start()
@@ -241,18 +237,6 @@ class DatabentoClient:
         try:
             # Route by record type
             record_type = type(record).__name__
-
-            # Diagnostic: log first non-mapping/non-system record type
-            if not self._first_data_logged and record_type not in (
-                "SymbolMappingMsg", "SystemMsg", "ErrorMsg",
-            ):
-                self._first_data_logged = True
-                iid = getattr(record, "instrument_id", "?")
-                sym = self._resolve_symbol(record)
-                log.info(
-                    "First data record: type=%s iid=%s sym=%s",
-                    record_type, iid, sym,
-                )
 
             if record_type in ("OHLCVMsg", "OhlcvMsg"):
                 self._handle_ohlcv(record)
