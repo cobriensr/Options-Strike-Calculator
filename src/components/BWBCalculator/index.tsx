@@ -32,6 +32,7 @@ export default function BWBCalculator({
     charmAdjusted: number;
   } | null>(null);
   const [useCharm, setUseCharm] = useState(false);
+  const [anchorKey, setAnchorKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,7 +52,12 @@ export default function BWBCalculator({
     return () => {
       cancelled = true;
     };
-  }, [selectedDate]);
+  }, [selectedDate, anchorKey]);
+
+  const refreshAnchor = useCallback(
+    () => setAnchorKey((k) => k + 1),
+    [],
+  );
 
   // Auto-fill strikes from sweet spot + wing widths
   const fillStrikes = useCallback(
@@ -162,6 +168,7 @@ export default function BWBCalculator({
         setIsCredit={setIsCredit}
         setUseCharm={setUseCharm}
         onClear={handleClear}
+        onRefreshAnchor={refreshAnchor}
       />
 
       {/* Results — only when all inputs are valid */}

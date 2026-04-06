@@ -43,6 +43,7 @@ interface BWBInputsProps {
   setIsCredit: (v: boolean) => void;
   setUseCharm: (v: boolean) => void;
   onClear: () => void;
+  onRefreshAnchor: () => void;
 }
 
 export default function BWBInputs({
@@ -72,6 +73,7 @@ export default function BWBInputs({
   setIsCredit,
   setUseCharm,
   onClear,
+  onRefreshAnchor,
 }: Readonly<BWBInputsProps>) {
   return (
     <>
@@ -137,8 +139,16 @@ export default function BWBInputs({
 
       {/* Sweet spot auto-fill (optional) */}
       <div className="bg-surface-alt mb-4 rounded-lg p-3">
-        <div className="mb-1.5">
+        <div className="mb-1.5 flex items-center justify-between">
           <span className={LABEL}>Sweet Spot</span>
+          <button
+            onClick={onRefreshAnchor}
+            className="text-muted hover:text-accent cursor-pointer text-xs transition-colors"
+            aria-label="Refresh gamma anchor"
+            title="Refresh gamma anchor"
+          >
+            &#x21BB;
+          </button>
         </div>
 
         {/* Gamma anchor suggestion */}
