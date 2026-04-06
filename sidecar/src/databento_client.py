@@ -69,6 +69,9 @@ class DatabentoClient:
         # Track raw_symbol -> internal symbol for mapping callbacks
         self._raw_to_internal: dict[str, str] = {}
 
+        # Log symbol mapping summary once, not per-contract
+        self._mapping_summary_logged = False
+
         # Store option definitions: instrument_id -> {strike, option_type, expiry}
         self._option_definitions: dict[int, dict] = {}
 
@@ -475,7 +478,7 @@ class DatabentoClient:
             if internal not in self._symbol_to_instruments:
                 self._symbol_to_instruments[internal] = []
             self._symbol_to_instruments[internal].append(iid)
-            log.info(
+            log.debug(
                 "Symbol mapping: %s (%s) -> iid %d -> %s",
                 stype_in_symbol, stype_out_symbol, iid, internal,
             )
@@ -488,6 +491,15 @@ class DatabentoClient:
             log.error("Databento system error: %s", msg)
         else:
             log.info("Databento system message: %s", msg)
+
+        # Log mapping summary once after first data interval
+        if not self._mapping_summary_logged and "End of interval" in msg:
+            self._mapping_summary_logged = True
+            counts = {
+                sym: len(ids)
+                for sym, ids in self._symbol_to_instruments.items()
+            }
+            log.info("Symbol mappings complete: %s", counts)
 
     def _get_option_info(self, instrument_id: int) -> dict | None:
         """Look up option strike/type/expiry for an instrument_id."""
