@@ -30,7 +30,10 @@ export const SectionBox = memo(function SectionBox({
   return (
     <section
       aria-label={label}
-      className="animate-fade-in-up bg-surface border-edge border-t-accent mt-6 flex h-full flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)] first:mt-0"
+      className={
+        'animate-fade-in-up bg-surface border-edge border-t-accent mt-6 flex flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)] first:mt-0' +
+        (isOpen ? ' h-full' : ' self-start')
+      }
     >
       <div
         className={
