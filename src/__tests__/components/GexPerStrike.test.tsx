@@ -8,9 +8,7 @@ const noop = vi.fn();
 
 // ── Helpers ───────────────────────────────────────────────
 
-function makeStrike(
-  overrides: Partial<GexStrikeLevel> = {},
-): GexStrikeLevel {
+function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
   return {
     strike: 5800,
     price: 5795,
@@ -106,9 +104,7 @@ describe('GexPerStrike: empty state', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByText(/no 0dte gex data available/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no 0dte gex data available/i)).toBeInTheDocument();
   });
 });
 
@@ -384,9 +380,7 @@ describe('GexPerStrike: header controls', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByRole('button', { name: /refresh gex/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: /refresh gex/i })).toBeDisabled();
   });
 
   it('renders visible count controls', () => {

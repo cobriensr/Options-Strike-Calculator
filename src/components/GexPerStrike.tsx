@@ -83,8 +83,7 @@ function GexTooltip({
   y: number;
 }>) {
   const netGex = getNetGamma(data, viewMode);
-  const charmEffect =
-    data.netCharm > 0 ? 'Strengthening' : 'Weakening';
+  const charmEffect = data.netCharm > 0 ? 'Strengthening' : 'Weakening';
   const vannaDir =
     data.netVanna > 0
       ? 'Sell pressure if IV drops'
@@ -182,8 +181,7 @@ export default memo(function GexPerStrike({
   const filtered = useMemo(() => {
     if (strikes.length === 0) return [];
     const atmIdx = strikes.findIndex((s) => s.strike >= price);
-    const center =
-      atmIdx >= 0 ? atmIdx : Math.floor(strikes.length / 2);
+    const center = atmIdx >= 0 ? atmIdx : Math.floor(strikes.length / 2);
     const half = Math.floor(visibleCount / 2);
     const lo = Math.max(0, center - half);
     const hi = Math.min(strikes.length, lo + visibleCount);
@@ -199,27 +197,15 @@ export default memo(function GexPerStrike({
         ...filtered.map((d) => Math.abs(getNetGamma(d, viewMode))),
         1,
       ),
-      maxCharm: Math.max(
-        ...filtered.map((d) => Math.abs(d.netCharm)),
-        1,
-      ),
-      maxDelta: Math.max(
-        ...filtered.map((d) => Math.abs(d.netDelta)),
-        1,
-      ),
-      maxVanna: Math.max(
-        ...filtered.map((d) => Math.abs(d.netVanna)),
-        1,
-      ),
+      maxCharm: Math.max(...filtered.map((d) => Math.abs(d.netCharm)), 1),
+      maxDelta: Math.max(...filtered.map((d) => Math.abs(d.netDelta)), 1),
+      maxVanna: Math.max(...filtered.map((d) => Math.abs(d.netVanna)), 1),
     };
   }, [filtered, viewMode]);
 
   // Summary stats
   const summary = useMemo(() => {
-    const totalGex = filtered.reduce(
-      (s, d) => s + getNetGamma(d, viewMode),
-      0,
-    );
+    const totalGex = filtered.reduce((s, d) => s + getNetGamma(d, viewMode), 0);
     const totalCharm = filtered.reduce((s, d) => s + d.netCharm, 0);
     const totalVanna = filtered.reduce((s, d) => s + d.netVanna, 0);
     // GEX flip: first strike where sign changes
@@ -250,9 +236,7 @@ export default memo(function GexPerStrike({
 
   const totalStrikes = strikes.length;
   const badge =
-    totalStrikes > 0
-      ? `${filtered.length} of ${totalStrikes}`
-      : null;
+    totalStrikes > 0 ? `${filtered.length} of ${totalStrikes}` : null;
 
   const headerRight = (
     <div className="flex items-center gap-2">
@@ -283,9 +267,7 @@ export default memo(function GexPerStrike({
         </span>
         <button
           onClick={handleMore}
-          disabled={
-            visibleCount >= MAX_VISIBLE || visibleCount >= totalStrikes
-          }
+          disabled={visibleCount >= MAX_VISIBLE || visibleCount >= totalStrikes}
           aria-label="Show more strikes"
           className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
         >
@@ -318,9 +300,7 @@ export default memo(function GexPerStrike({
         collapsible
         headerRight={headerRight}
       >
-        <div className="text-muted text-center font-sans text-xs">
-          {error}
-        </div>
+        <div className="text-muted text-center font-sans text-xs">{error}</div>
       </SectionBox>
     );
   }
@@ -354,8 +334,7 @@ export default memo(function GexPerStrike({
     if (spotIdx > 0) {
       const prev = filtered[spotIdx - 1]!;
       const curr = filtered[spotIdx]!;
-      const frac =
-        (price - prev.strike) / (curr.strike - prev.strike);
+      const frac = (price - prev.strike) / (curr.strike - prev.strike);
       return (spotIdx - 1) * BAR_HEIGHT + BAR_HEIGHT * frac;
     }
     return spotIdx * BAR_HEIGHT;
@@ -370,9 +349,7 @@ export default memo(function GexPerStrike({
     >
       {/* Controls: overlays + OI/Dir */}
       <div className="text-muted mb-2 flex items-center gap-3 font-mono text-[10px]">
-        <span className="text-[9px] uppercase tracking-wider">
-          Overlays
-        </span>
+        <span className="text-[9px] tracking-wider uppercase">Overlays</span>
         {(
           [
             {
@@ -403,9 +380,7 @@ export default memo(function GexPerStrike({
             onClick={o.toggle}
             className="cursor-pointer rounded px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide transition-all"
             style={{
-              background: o.active
-                ? `${o.color}15`
-                : 'transparent',
+              background: o.active ? `${o.color}15` : 'transparent',
               border: `1px solid ${o.active ? o.color + '40' : 'rgba(255,255,255,0.06)'}`,
               color: o.active ? o.color : theme.textMuted,
             }}
@@ -421,12 +396,9 @@ export default memo(function GexPerStrike({
               className="cursor-pointer rounded px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide"
               style={{
                 background:
-                  viewMode === m
-                    ? 'rgba(255,255,255,0.06)'
-                    : 'transparent',
+                  viewMode === m ? 'rgba(255,255,255,0.06)' : 'transparent',
                 border: `1px solid ${viewMode === m ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)'}`,
-                color:
-                  viewMode === m ? theme.text : theme.textMuted,
+                color: viewMode === m ? theme.text : theme.textMuted,
               }}
             >
               {m === 'oi' ? 'OI' : 'VOL'}
@@ -507,8 +479,7 @@ export default memo(function GexPerStrike({
               className="flex items-center justify-end pr-2 font-mono text-[11px]"
               style={{
                 height: BAR_HEIGHT,
-                fontWeight:
-                  Math.abs(d.strike - price) < 2.5 ? 700 : 400,
+                fontWeight: Math.abs(d.strike - price) < 2.5 ? 700 : 400,
                 color:
                   Math.abs(d.strike - price) < 2.5
                     ? theme.accent
@@ -558,17 +529,13 @@ export default memo(function GexPerStrike({
                 className="relative flex cursor-crosshair items-center transition-colors duration-150"
                 style={{
                   height: BAR_HEIGHT,
-                  background: isHov
-                    ? 'rgba(255,255,255,0.02)'
-                    : 'transparent',
+                  background: isHov ? 'rgba(255,255,255,0.02)' : 'transparent',
                 }}
                 onMouseEnter={(e) => {
                   setHovered(i);
                   setMousePos({ x: e.clientX, y: e.clientY });
                 }}
-                onMouseMove={(e) =>
-                  setMousePos({ x: e.clientX, y: e.clientY })
-                }
+                onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
                 onMouseLeave={() => setHovered(null)}
               >
                 {/* GEX bar */}
@@ -584,8 +551,7 @@ export default memo(function GexPerStrike({
                       net >= 0
                         ? `linear-gradient(90deg, transparent, ${isHov ? 'rgba(var(--success-rgb,0,230,118),0.8)' : 'rgba(var(--success-rgb,0,230,118),0.53)'})`
                         : `linear-gradient(270deg, transparent, ${isHov ? 'rgba(var(--danger-rgb,255,23,68),0.8)' : 'rgba(var(--danger-rgb,255,23,68),0.53)'})`,
-                    borderRadius:
-                      net >= 0 ? '0 3px 3px 0' : '3px 0 0 3px',
+                    borderRadius: net >= 0 ? '0 3px 3px 0' : '3px 0 0 3px',
                     boxShadow: isHov
                       ? `0 0 12px ${net >= 0 ? 'rgba(var(--success-rgb,0,230,118),0.2)' : 'rgba(var(--danger-rgb,255,23,68),0.2)'}`
                       : 'none',
@@ -603,8 +569,7 @@ export default memo(function GexPerStrike({
                           ? '50%'
                           : `calc(50% + ${charmPct * MAX_BAR_PCT * 0.6}%)`,
                       width: `${Math.abs(charmPct) * MAX_BAR_PCT * 0.6}%`,
-                      background:
-                        d.netCharm >= 0 ? CHARM_POS : CHARM_NEG,
+                      background: d.netCharm >= 0 ? CHARM_POS : CHARM_NEG,
                       opacity: isHov ? 0.9 : 0.5,
                     }}
                   />
@@ -617,18 +582,10 @@ export default memo(function GexPerStrike({
                     style={{
                       top: 4,
                       left: `calc(50% + ${vannaPct * MAX_BAR_PCT * 0.5}%)`,
-                      width: Math.max(
-                        4,
-                        Math.abs(vannaPct) * 10,
-                      ),
-                      height: Math.max(
-                        4,
-                        Math.abs(vannaPct) * 10,
-                      ),
+                      width: Math.max(4, Math.abs(vannaPct) * 10),
+                      height: Math.max(4, Math.abs(vannaPct) * 10),
                       background:
-                        d.netVanna >= 0
-                          ? `${VANNA_POS}22`
-                          : `${VANNA_NEG}22`,
+                        d.netVanna >= 0 ? `${VANNA_POS}22` : `${VANNA_NEG}22`,
                       border: `1px solid ${d.netVanna >= 0 ? VANNA_POS : VANNA_NEG}`,
                       opacity: isHov ? 0.9 : 0.4,
                       transform: 'translate(-50%, 0)',
@@ -647,9 +604,7 @@ export default memo(function GexPerStrike({
                       height: 7,
                       transform: 'translate(-50%, 0) rotate(45deg)',
                       background:
-                        d.netDelta >= 0
-                          ? `${DEX_POS}33`
-                          : `${DEX_NEG}33`,
+                        d.netDelta >= 0 ? `${DEX_POS}33` : `${DEX_NEG}33`,
                       border: `1px solid ${d.netDelta >= 0 ? DEX_POS : DEX_NEG}`,
                       opacity: isHov ? 0.9 : 0.4,
                     }}
@@ -697,8 +652,7 @@ export default memo(function GexPerStrike({
                   <span
                     className="w-[56px] font-semibold"
                     style={{
-                      color:
-                        d.netCharm > 0 ? CHARM_POS : CHARM_NEG,
+                      color: d.netCharm > 0 ? CHARM_POS : CHARM_NEG,
                     }}
                   >
                     {d.netCharm > 0 ? '▲' : '▼'}{' '}
@@ -709,8 +663,7 @@ export default memo(function GexPerStrike({
                   <span
                     className="w-[46px] font-semibold"
                     style={{
-                      color:
-                        d.netVanna > 0 ? VANNA_POS : VANNA_NEG,
+                      color: d.netVanna > 0 ? VANNA_POS : VANNA_NEG,
                     }}
                   >
                     {d.netVanna > 0 ? '▲' : '▼'}{' '}
@@ -721,8 +674,7 @@ export default memo(function GexPerStrike({
                   <span
                     className="w-[46px] font-semibold"
                     style={{
-                      color:
-                        d.netDelta > 0 ? DEX_POS : DEX_NEG,
+                      color: d.netDelta > 0 ? DEX_POS : DEX_NEG,
                     }}
                   >
                     {d.netDelta > 0 ? '▲' : '▼'}{' '}
@@ -742,20 +694,17 @@ export default memo(function GexPerStrike({
             {
               label: 'TOTAL NET GEX',
               value: formatNum(summary.totalGex),
-              color:
-                summary.totalGex >= 0 ? theme.green : theme.red,
+              color: summary.totalGex >= 0 ? theme.green : theme.red,
             },
             {
               label: 'NET CHARM',
               value: formatNum(summary.totalCharm),
-              color:
-                summary.totalCharm >= 0 ? CHARM_POS : CHARM_NEG,
+              color: summary.totalCharm >= 0 ? CHARM_POS : CHARM_NEG,
             },
             {
               label: 'NET VANNA',
               value: formatNum(summary.totalVanna),
-              color:
-                summary.totalVanna >= 0 ? VANNA_POS : VANNA_NEG,
+              color: summary.totalVanna >= 0 ? VANNA_POS : VANNA_NEG,
             },
             {
               label: 'GEX FLIP',
