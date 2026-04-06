@@ -33,6 +33,17 @@ const SYMBOLS: Record<string, { continuous: string; dataset: string }> = {
   DX: { continuous: 'DX.c.0', dataset: 'IFUS.IMPACT' },
 };
 
+// Reasonable price bounds to filter spread/combo bars [min, max]
+const PRICE_BOUNDS: Record<string, [number, number]> = {
+  ES: [1000, 20000],
+  NQ: [5000, 50000],
+  ZN: [50, 200],
+  RTY: [500, 10000],
+  CL: [20, 250],
+  GC: [500, 10000],
+  DX: [70, 150],
+};
+
 interface OhlcvRecord {
   hd: { ts_event: string };
   open: string;
@@ -105,13 +116,26 @@ async function fetchBars(
       close: Number(r.close) / NANODOLLAR,
       volume: Number(r.volume),
     }))
-    .filter(
-      (r) =>
-        Math.abs(r.open) <= MAX_PRICE &&
-        Math.abs(r.high) <= MAX_PRICE &&
-        Math.abs(r.low) <= MAX_PRICE &&
-        Math.abs(r.close) <= MAX_PRICE,
-    );
+    .filter((r) => {
+      // Filter overflow (INT64_MAX sentinel)
+      if (
+        Math.abs(r.open) > MAX_PRICE ||
+        Math.abs(r.high) > MAX_PRICE ||
+        Math.abs(r.low) > MAX_PRICE ||
+        Math.abs(r.close) > MAX_PRICE
+      ) {
+        return false;
+      }
+      // Filter spread/combo bars using per-symbol price bounds
+      const bounds = PRICE_BOUNDS[symbol];
+      if (bounds) {
+        const [lo, hi] = bounds;
+        if (r.close < lo || r.close > hi || r.low < lo * 0.5) {
+          return false;
+        }
+      }
+      return true;
+    });
 }
 
 // ── Handler ─────────────────────────────────────────────────

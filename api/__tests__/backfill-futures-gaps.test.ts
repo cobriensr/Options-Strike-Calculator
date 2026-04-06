@@ -129,9 +129,10 @@ describe('backfill-futures-gaps handler', () => {
       symbols: Array<{ symbol: string; inserted: number }>;
     };
     expect(json.job).toBe('backfill-futures-gaps');
-    expect(json.totalInserted).toBe(14); // 2 bars × 7 symbols
+    // Mock price 5705 is in-bounds for ES, NQ, RTY, GC (4 symbols × 2 bars)
+    // Out-of-bounds for ZN (50-200), CL (20-250), DX (70-150)
+    expect(json.totalInserted).toBe(8);
     expect(json.symbols).toHaveLength(7);
-    // 7 symbols × 1 fetch each
     expect(mockFetch).toHaveBeenCalledTimes(7);
   });
 
@@ -195,8 +196,8 @@ describe('backfill-futures-gaps handler', () => {
       totalInserted: number;
       symbols: Array<{ symbol: string; inserted: number }>;
     };
-    // Only 1 valid bar per symbol × 7 symbols
-    expect(json.totalInserted).toBe(7);
+    // 1 valid bar per in-bounds symbol (ES, NQ, RTY, GC = 4)
+    expect(json.totalInserted).toBe(4);
   });
 
   // ── Partial failures ──────────────────────────────────
@@ -222,8 +223,8 @@ describe('backfill-futures-gaps handler', () => {
       totalInserted: number;
       errors: string[] | undefined;
     };
-    // 6 symbols succeed with 1 bar each, 1 fails
-    expect(json.totalInserted).toBe(6);
+    // ES fails (network), 6 fetch. Of those, NQ/RTY/GC in-bounds = 3 bars
+    expect(json.totalInserted).toBe(3);
     expect(json.errors).toHaveLength(1);
   });
 
