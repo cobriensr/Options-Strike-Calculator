@@ -95,7 +95,7 @@
     },
     {
       "path": "/api/cron/fetch-futures-snapshot",
-      "schedule": "*/5 13-21 * * 1-5"
+      "schedule": "*/5 * * * 0-5"
     },
     {
       "path": "/api/cron/fetch-es-options-eod",
