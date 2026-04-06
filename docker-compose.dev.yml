@@ -1,7 +1,7 @@
 # Local development stack — start with: docker compose -f docker-compose.dev.yml up -d
 #
 # Provides a local Postgres instance so you can develop without hitting Neon.
-# The sidecar service is included but commented out (needs Tradovate creds).
+# The sidecar service is included but commented out (needs DATABENTO_API_KEY).
 #
 # After starting, set DATABASE_URL in .env.local:
 #   DATABASE_URL=postgresql://strike:strike@localhost:5432/strike_dev
@@ -23,8 +23,12 @@ services:
       timeout: 3s
       retries: 5
 
-  # Uncomment to run the ES futures sidecar locally.
-  # Requires Tradovate credentials in sidecar/.env
+  # Uncomment to run the Databento futures sidecar locally.
+  # Requires DATABENTO_API_KEY in sidecar/.env
+  #
+  # Streams OHLCV-1m bars for ES, NQ, ZN, RTY, CL, GC (CME/GLBX.MDP3),
+  # VX front + second month (CBOE/XCBF.PITCH), and DX (ICE/IFUS.IMPACT).
+  # Also subscribes to ES options trades/statistics/definitions.
   #
   # sidecar:
   #   build: ./sidecar
@@ -33,7 +37,8 @@ services:
   #       condition: service_healthy
   #   environment:
   #     DATABASE_URL: postgresql://strike:strike@postgres:5432/strike_dev
-  #   env_file: ./sidecar/.env
+  #     DATABENTO_API_KEY: ${DATABENTO_API_KEY}
+  #     LOG_LEVEL: INFO
   #   ports:
   #     - '8080:8080'
 
