@@ -69,6 +69,9 @@ class DatabentoClient:
         # Log symbol mapping summary once, not per-contract
         self._mapping_summary_logged = False
 
+        # Diagnostic: log first data record type once
+        self._first_data_logged = False
+
         # Store option definitions: instrument_id -> {strike, option_type, expiry}
         self._option_definitions: dict[int, dict] = {}
 
@@ -238,6 +241,17 @@ class DatabentoClient:
         try:
             # Route by record type
             record_type = type(record).__name__
+
+            # Diagnostic: log first non-mapping/non-system record type
+            if not self._first_data_logged and record_type not in (
+                "SymbolMappingMsg", "SystemMsg", "ErrorMsg",
+            ):
+                self._first_data_logged = True
+                iid = getattr(getattr(record, "hd", None), "instrument_id", "?")
+                log.info(
+                    "First data record: type=%s iid=%s repr=%.200s",
+                    record_type, iid, repr(record),
+                )
 
             if record_type == "OhlcvMsg":
                 self._handle_ohlcv(record)
