@@ -659,9 +659,7 @@ function buildOpenSpreadsFromTrades(
       ) {
         const sell = sells[0]!;
         const middleStrike = sell.strike;
-        const wingStrikes = buys
-          .map((b) => b.strike)
-          .sort((a, b) => a - b);
+        const wingStrikes = buys.map((b) => b.strike).sort((a, b) => a - b);
         const lowerStrike = wingStrikes[0]!;
         const upperStrike = wingStrikes[1]!;
         const contracts = Math.abs(buys[0]!.quantity);

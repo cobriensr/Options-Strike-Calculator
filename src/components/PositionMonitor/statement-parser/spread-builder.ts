@@ -251,16 +251,10 @@ export function groupIntoSpreads(
 
     // All legs same type
     const optType = buys[0]!.type;
-    if (
-      buys[1]!.type !== optType ||
-      sells[0]!.type !== optType
-    )
-      continue;
+    if (buys[1]!.type !== optType || sells[0]!.type !== optType) continue;
 
     const middleStrike = sells[0]!.strike;
-    const wingStrikes = buys
-      .map((b) => b.strike)
-      .sort((a, b) => a - b);
+    const wingStrikes = buys.map((b) => b.strike).sort((a, b) => a - b);
     const lowerStrike = wingStrikes[0]!;
     const upperStrike = wingStrikes[1]!;
     const contracts = Math.abs(buys[0]!.qty);
@@ -271,7 +265,9 @@ export function groupIntoSpreads(
 
     const narrowerWidth = Math.min(lowerWidth, upperWidth);
     const debitPaid = Math.abs(trade.netPrice) * MULTIPLIER * contracts;
-    const maxProfit = round2(narrowerWidth * MULTIPLIER * contracts - debitPaid);
+    const maxProfit = round2(
+      narrowerWidth * MULTIPLIER * contracts - debitPaid,
+    );
 
     // BWB max loss: on the wider side, loss = (wider - narrower) * 100 * contracts + debit
     // Symmetric: max loss = debit paid
@@ -488,21 +484,9 @@ export function groupIntoSpreads(
     );
   }
   for (const bfly of allButterflies) {
-    addCovered(
-      bfly.lowerLeg.strike,
-      bfly.lowerLeg.type,
-      bfly.contracts,
-    );
-    addCovered(
-      bfly.middleLeg.strike,
-      bfly.middleLeg.type,
-      bfly.contracts * 2,
-    );
-    addCovered(
-      bfly.upperLeg.strike,
-      bfly.upperLeg.type,
-      bfly.contracts,
-    );
+    addCovered(bfly.lowerLeg.strike, bfly.lowerLeg.type, bfly.contracts);
+    addCovered(bfly.middleLeg.strike, bfly.middleLeg.type, bfly.contracts * 2);
+    addCovered(bfly.upperLeg.strike, bfly.upperLeg.type, bfly.contracts);
   }
 
   for (const leg of legs) {
