@@ -231,9 +231,7 @@ class TestCheckFreshness:
         target = datetime(2026, 3, 30)  # Monday
         mock_bday.return_value = target
         stale = datetime(2026, 3, 25)
-        mock_get_conn.return_value = self._mock_cursor(
-            [(stale,), (stale,), (stale,)]
-        )
+        mock_get_conn.return_value = self._mock_cursor([(stale,), (stale,), (stale,)])
 
         warnings: list[str] = []
         failures: list[str] = []
