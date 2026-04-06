@@ -24,17 +24,20 @@ def _gamma_snapshot(
     call_gamma_oi: list[float],
     put_gamma_oi: list[float],
     price: float = 5800.0,
+    call_charm_oi: list[float] | None = None,
+    put_charm_oi: list[float] | None = None,
 ) -> pd.DataFrame:
     """Build a minimal DataFrame mimicking one timestamp's strike data."""
     n = len(strikes)
-    return pd.DataFrame(
-        {
-            "strike": strikes,
-            "price": [price] * n,
-            "call_gamma_oi": call_gamma_oi,
-            "put_gamma_oi": put_gamma_oi,
-        }
-    )
+    data = {
+        "strike": strikes,
+        "price": [price] * n,
+        "call_gamma_oi": call_gamma_oi,
+        "put_gamma_oi": put_gamma_oi,
+        "call_charm_oi": call_charm_oi if call_charm_oi is not None else [0.0] * n,
+        "put_charm_oi": put_charm_oi if put_charm_oi is not None else [0.0] * n,
+    }
+    return pd.DataFrame(data)
 
 
 def _oi_snapshot(
@@ -60,7 +63,16 @@ class TestComputeGammaProfile:
 
     def test_empty_dataframe_returns_empty_dict(self):
         """An empty snapshot must return {}."""
-        df = pd.DataFrame(columns=["strike", "price", "call_gamma_oi", "put_gamma_oi"])
+        df = pd.DataFrame(
+            columns=[
+                "strike",
+                "price",
+                "call_gamma_oi",
+                "put_gamma_oi",
+                "call_charm_oi",
+                "put_charm_oi",
+            ]
+        )
         assert compute_gamma_profile(df) == {}
 
     def test_all_zero_gamma_returns_empty_dict(self):
@@ -244,6 +256,7 @@ class TestComputeGammaProfile:
             "gamma_centroid",
             "pos_centroid",
             "prox_centroid",
+            "charm_centroid",
             "pos_gamma_above",
             "pos_gamma_below",
             "price",
@@ -281,6 +294,8 @@ class TestComputeGammaProfile:
                 "price": [5800, 5800, 5800],
                 "call_gamma_oi": ["bad", "10", "5"],
                 "put_gamma_oi": ["0", "0", "0"],
+                "call_charm_oi": [0.0, 0.0, 0.0],
+                "put_charm_oi": [0.0, 0.0, 0.0],
             }
         )
         result = compute_gamma_profile(df)
@@ -303,6 +318,57 @@ class TestComputeGammaProfile:
         # prox_centroid should be very close to 5800
         assert result["prox_centroid"] == pytest.approx(5800.0, abs=1.0)
 
+    def test_charm_centroid_boosts_positive_gamma_positive_charm(self):
+        """Charm centroid should weight +gamma +charm strikes 1.5x."""
+        # Two strikes equidistant from price with equal gamma.
+        # 5790: +gamma +charm → 1.5x boost
+        # 5810: +gamma -charm → 0.75x boost
+        # Charm centroid should pull toward 5790.
+        df = _gamma_snapshot(
+            strikes=[5790, 5810],
+            call_gamma_oi=[10, 10],
+            put_gamma_oi=[0, 0],
+            price=5800.0,
+            call_charm_oi=[5, -5],
+            put_charm_oi=[0, 0],
+        )
+        result = compute_gamma_profile(df)
+        # prox_centroid (no charm) → midpoint 5800
+        assert result["prox_centroid"] == pytest.approx(5800.0, abs=0.1)
+        # charm_centroid should be < 5800 (pulled toward 5790)
+        assert result["charm_centroid"] < 5800.0
+
+    def test_charm_centroid_zero_charm_equals_prox(self):
+        """When all charm is zero, charm_centroid should equal prox_centroid."""
+        df = _gamma_snapshot(
+            strikes=[5790, 5800, 5810],
+            call_gamma_oi=[10, 20, 10],
+            put_gamma_oi=[0, 0, 0],
+            price=5800.0,
+            call_charm_oi=[0, 0, 0],
+            put_charm_oi=[0, 0, 0],
+        )
+        result = compute_gamma_profile(df)
+        assert result["charm_centroid"] == pytest.approx(
+            result["prox_centroid"], abs=0.01
+        )
+
+    def test_charm_centroid_negative_gamma_positive_charm_penalized(self):
+        """Negative gamma + positive charm should get 0.5x (weakest boost)."""
+        # 5790: -gamma +charm → 0.5x
+        # 5810: -gamma -charm → 1.0x
+        df = _gamma_snapshot(
+            strikes=[5790, 5810],
+            call_gamma_oi=[0, 0],
+            put_gamma_oi=[-10, -10],
+            price=5800.0,
+            call_charm_oi=[5, -5],
+            put_charm_oi=[0, 0],
+        )
+        result = compute_gamma_profile(df)
+        # 5810 gets higher charm_boost (1.0 vs 0.5) → centroid pulls toward 5810
+        assert result["charm_centroid"] > 5800.0
+
     def test_single_strike_snapshot(self):
         """A single-strike snapshot should still produce valid results."""
         df = _gamma_snapshot(
@@ -316,6 +382,7 @@ class TestComputeGammaProfile:
         assert result["gamma_centroid"] == pytest.approx(5800.0)
         assert result["pos_centroid"] == pytest.approx(5800.0)
         assert result["prox_centroid"] == pytest.approx(5800.0)
+        assert result["charm_centroid"] == pytest.approx(5800.0)
         # net_gamma = 20 (positive), so all positive gamma is at-or-below price
         assert result["pos_gamma_above"] == pytest.approx(0.0)
         assert result["pos_gamma_below"] == pytest.approx(20.0)
@@ -611,6 +678,8 @@ def _make_strike_df(n_days=3, n_strikes=5):
                         "put_gamma_oi": float(rng.integers(-40, 0)),
                         "call_delta_oi": float(rng.integers(1, 100)),
                         "put_delta_oi": float(rng.integers(-100, 0)),
+                        "call_charm_oi": float(rng.integers(-20, 20)),
+                        "put_charm_oi": float(rng.integers(-20, 20)),
                         "settlement": settlement,
                         "day_open": day_open,
                     }
@@ -643,7 +712,7 @@ class TestAnalyzeSettlementGravity:
             assert cp_name in captured.out
 
     def test_prints_predictor_names(self, capsys):
-        """All six gamma predictors should appear in output."""
+        """All seven gamma predictors should appear in output."""
         df = _make_strike_df(n_days=5, n_strikes=5)
         analyze_settlement_gravity(df)
         captured = capsys.readouterr()
@@ -654,6 +723,7 @@ class TestAnalyzeSettlementGravity:
             "All-γ centroid",
             "Pos-γ centroid",
             "Prox-wt centroid",
+            "Charm-wt centroid",
         ]:
             assert pred in captured.out, f"Missing predictor: {pred}"
 
@@ -686,6 +756,8 @@ class TestAnalyzeSettlementGravity:
                     "price": 5800,
                     "call_gamma_oi": 10.0,
                     "put_gamma_oi": -5.0,
+                    "call_charm_oi": 0.0,
+                    "put_charm_oi": 0.0,
                     "settlement": 5800,
                     "day_open": 5795,
                 }
@@ -737,6 +809,8 @@ class TestAnalyzeTimeImprovement:
                     "price": 5800,
                     "call_gamma_oi": 10.0,
                     "put_gamma_oi": -5.0,
+                    "call_charm_oi": 0.0,
+                    "put_charm_oi": 0.0,
                     "settlement": 5800,
                     "day_open": 5795,
                 }
@@ -760,6 +834,8 @@ class TestAnalyzeTimeImprovement:
                     "price": 5800,
                     "call_gamma_oi": 10.0,
                     "put_gamma_oi": -5.0,
+                    "call_charm_oi": 0.0,
+                    "put_charm_oi": 0.0,
                     "settlement": 5800,
                     "day_open": 5795,
                 }

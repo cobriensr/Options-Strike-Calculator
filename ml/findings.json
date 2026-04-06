@@ -1,9 +1,12 @@
 {
-  "generated_at": "2026-04-06T06:23:47+00:00",
+  "generated_at": "2026-04-06T19:40:27+00:00",
   "dataset": {
     "total_days": 39,
     "labeled_days": 36,
-    "date_range": ["2026-02-09", "2026-04-03"],
+    "date_range": [
+      "2026-02-09",
+      "2026-04-03"
+    ],
     "overall_accuracy": 0.917
   },
   "structure_accuracy": {
@@ -189,7 +192,7 @@
     "status": "PASS",
     "warnings": [],
     "failures": [],
-    "run_time": "2026-04-06 01:23:42"
+    "run_time": "2026-04-06 14:34:28"
   },
   "pipeline_sections": [
     "health",
@@ -438,7 +441,10 @@
     "silhouette": 0.108,
     "calinski_harabasz": 4.7,
     "davies_bouldin": 2.727,
-    "cluster_sizes": [23, 16],
+    "cluster_sizes": [
+      23,
+      16
+    ],
     "stability": 0.897,
     "split_half_holdout_sil": 0.08,
     "gmm_bic": 2812.8,
@@ -623,6 +629,13 @@
       "prox_centroid": {
         "avg_distance": 9.3,
         "median_distance": 7.7,
+        "within_10": 0.714,
+        "within_20": 1.0,
+        "n_days": 7
+      },
+      "charm_centroid": {
+        "avg_distance": 9.4,
+        "median_distance": 8.0,
         "within_10": 0.714,
         "within_20": 1.0,
         "n_days": 7

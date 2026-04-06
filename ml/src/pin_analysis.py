@@ -102,6 +102,7 @@ def load_strike_data(dte_filter: str = "0dte") -> pd.DataFrame:
                 se.date, se.timestamp, se.strike, se.price,
                 se.call_gamma_oi, se.put_gamma_oi,
                 se.call_delta_oi, se.put_delta_oi,
+                se.call_charm_oi, se.put_charm_oi,
                 o.settlement, o.day_open
             FROM strike_exposures se
             JOIN outcomes o ON o.date = se.date
@@ -193,6 +194,41 @@ def compute_gamma_profile(snapshot: pd.DataFrame) -> dict:
         else centroid
     )
 
+    # Charm-adjusted proximity-weighted centroid
+    # Interaction matrix: +γ +charm → 1.5×, +γ -charm → 0.75×,
+    #                     -γ +charm → 0.5×, -γ -charm → 1.0×, zero charm → 1.0×
+    if "call_charm_oi" in df.columns and "put_charm_oi" in df.columns:
+        df["call_charm_oi"] = pd.to_numeric(df["call_charm_oi"], errors="coerce")
+        df["put_charm_oi"] = pd.to_numeric(df["put_charm_oi"], errors="coerce")
+        df["net_charm"] = df["call_charm_oi"].fillna(0) + df["put_charm_oi"].fillna(0)
+    else:
+        df["net_charm"] = 0.0
+
+    def _charm_boost(row):
+        nc = row["net_charm"]
+        ng = row["net_gamma"]
+        if nc == 0:
+            return 1.0
+        if ng > 0 and nc > 0:
+            return 1.5
+        if ng > 0 and nc < 0:
+            return 0.75
+        if ng < 0 and nc > 0:
+            return 0.5
+        # ng < 0 and nc < 0, or ng == 0
+        return 1.0
+
+    df["charm_boost"] = df.apply(_charm_boost, axis=1)
+    df["charm_weight"] = (
+        df["abs_gamma"] * df["charm_boost"] / (df["dist_from_price"] ** 2)
+    )
+    charm_total = df["charm_weight"].sum()
+    charm_centroid = (
+        (df["strike"].astype(float) * df["charm_weight"]).sum() / charm_total
+        if charm_total > 0
+        else centroid
+    )
+
     # Gamma above/below current price
     above = df[df["strike"].astype(float) > price]
     below = df[df["strike"].astype(float) <= price]
@@ -210,6 +246,7 @@ def compute_gamma_profile(snapshot: pd.DataFrame) -> dict:
         "gamma_centroid": float(centroid),
         "pos_centroid": float(pos_centroid),
         "prox_centroid": float(prox_centroid),
+        "charm_centroid": float(charm_centroid),
         "pos_gamma_above": float(pos_gamma_above),
         "pos_gamma_below": float(pos_gamma_below),
         "price": price,
@@ -283,6 +320,7 @@ def analyze_settlement_gravity(df: pd.DataFrame) -> None:
                     "centroid_dist": abs(settlement - profile["gamma_centroid"]),
                     "pos_centroid_dist": abs(settlement - profile["pos_centroid"]),
                     "prox_centroid_dist": abs(settlement - profile["prox_centroid"]),
+                    "charm_centroid_dist": abs(settlement - profile["charm_centroid"]),
                 }
             )
 
@@ -299,6 +337,7 @@ def analyze_settlement_gravity(df: pd.DataFrame) -> None:
             ("All-γ centroid", "centroid_dist"),
             ("Pos-γ centroid", "pos_centroid_dist"),
             ("Prox-wt centroid", "prox_centroid_dist"),
+            ("Charm-wt centroid", "charm_centroid_dist"),
         ]
 
         print(
@@ -608,7 +647,7 @@ def analyze_all_predictors(
 ) -> None:
     """Compare ALL settlement predictors: gamma, OI, max pain."""
     section("4. ALL PREDICTORS HEAD-TO-HEAD")
-    print("  Gamma (5 variants) vs OI Pin vs Max Pain at T-30min\n")
+    print("  Gamma (6 variants) vs OI Pin vs Max Pain at T-30min\n")
 
     dates = sorted(df["date"].unique())
     mp_dates = set(max_pain_df["date"].values) if len(max_pain_df) > 0 else set()
@@ -639,6 +678,7 @@ def analyze_all_predictors(
             "gc_dist": abs(settlement - profile["gamma_centroid"]),
             "pc_dist": abs(settlement - profile["pos_centroid"]),
             "prox_dist": abs(settlement - profile["prox_centroid"]),
+            "charm_dist": abs(settlement - profile["charm_centroid"]),
         }
 
         # Max pain
@@ -679,6 +719,7 @@ def analyze_all_predictors(
         ("All-γ Centroid", "gc_dist"),
         ("Pos-γ Centroid", "pc_dist"),
         ("Prox-wt Centroid", "prox_dist"),
+        ("Charm-wt Centroid", "charm_dist"),
         ("OI Pin Strike", "oi_pin_dist"),
         ("OI Centroid", "oi_centroid_dist"),
         ("Max Pain", "mp_dist"),
@@ -812,6 +853,7 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
     pos_peak_dists = []
     pos_centroid_dists = []
     prox_dists = []
+    charm_dists = []
     for date in dates:
         day_data = df[df["date"] == date]
         settlement = float(day_data["settlement"].iloc[0])
@@ -825,6 +867,7 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
         pos_peak_dists.append(abs(settlement - profile["pos_peak_strike"]))
         pos_centroid_dists.append(abs(settlement - profile["pos_centroid"]))
         prox_dists.append(abs(settlement - profile["prox_centroid"]))
+        charm_dists.append(abs(settlement - profile["charm_centroid"]))
 
     # Compute max pain stats
     mp_dates = set(max_pain_df["date"].values) if len(max_pain_df) > 0 else set()
@@ -845,6 +888,17 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
         print(f"    Within ±10 pts: {w10_prox:.0%}")
         print(f"    Within ±20 pts: {w20_prox:.0%}")
         print(f"    Avg distance:   {avg_prox:.1f} pts")
+    else:
+        print("    No data at T-30min checkpoint")
+
+    print(f"\n  CHARM-WEIGHTED CENTROID (at T-30min, n={len(charm_dists)}):")
+    if charm_dists:
+        charm_avg = np.mean(charm_dists)
+        w10_charm = sum(1 for d in charm_dists if d <= 10) / len(charm_dists)
+        w20_charm = sum(1 for d in charm_dists if d <= 20) / len(charm_dists)
+        print(f"    Within ±10 pts: {w10_charm:.0%}")
+        print(f"    Within ±20 pts: {w20_charm:.0%}")
+        print(f"    Avg distance:   {charm_avg:.1f} pts")
     else:
         print("    No data at T-30min checkpoint")
 
@@ -872,11 +926,13 @@ def key_findings(df: pd.DataFrame, max_pain_df: pd.DataFrame) -> None:
     print("\n  RECOMMENDATION:")
     if prox_dists:
         prox_avg = np.mean(prox_dists)
+        charm_avg = np.mean(charm_dists) if charm_dists else float("inf")
         gc_avg = np.mean(pg_dists) if pg_dists else float("inf")
         mp_avg = np.mean(mp_dists) if mp_dists else float("inf")
 
         candidates = [
             ("Prox-weighted centroid", prox_avg),
+            ("Charm-weighted centroid", charm_avg),
             ("All-gamma centroid", gc_avg),
         ]
         if mp_dists:
@@ -2345,6 +2401,7 @@ def main() -> None:
         "pos_peak": "pos_peak_strike",
         "pos_centroid": "pos_centroid",
         "prox_centroid": "prox_centroid",
+        "charm_centroid": "charm_centroid",
         "gamma_centroid": "gamma_centroid",
     }
     method_dists: dict[str, list[float]] = {k: [] for k in predictor_methods}
