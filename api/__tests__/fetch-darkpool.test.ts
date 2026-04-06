@@ -122,7 +122,7 @@ describe('fetch-darkpool cron handler', () => {
 
     expect(fetchAllDarkPoolTrades).toHaveBeenCalledWith(
       'test-uw-key',
-      undefined,
+      '2026-04-02',
       { newerThan: 1743530400 },
     );
   });
@@ -137,7 +137,7 @@ describe('fetch-darkpool cron handler', () => {
 
     expect(fetchAllDarkPoolTrades).toHaveBeenCalledWith(
       'test-uw-key',
-      undefined,
+      '2026-04-02',
       { newerThan: undefined },
     );
   });

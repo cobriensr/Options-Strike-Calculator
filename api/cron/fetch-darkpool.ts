@@ -50,7 +50,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         : undefined;
 
     const trades = await withRetry(() =>
-      fetchAllDarkPoolTrades(apiKey, undefined, { newerThan: cursorTs }),
+      fetchAllDarkPoolTrades(apiKey, today, { newerThan: cursorTs }),
     );
 
     if (trades.length === 0) {
