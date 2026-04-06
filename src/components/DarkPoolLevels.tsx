@@ -24,6 +24,7 @@ interface Props {
   loading: boolean;
   error: string | null;
   updatedAt: string | null;
+  onRefresh: () => void;
 }
 
 function formatPremium(value: number): string {
@@ -52,6 +53,7 @@ export default memo(function DarkPoolLevels({
   loading,
   error,
   updatedAt,
+  onRefresh,
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
   const [sortBy, setSortBy] = useState<'premium' | 'time'>('premium');
@@ -104,6 +106,14 @@ export default memo(function DarkPoolLevels({
           Updated {formatTime(updatedAt)}
         </span>
       )}
+      <button
+        onClick={onRefresh}
+        disabled={loading}
+        aria-label="Refresh dark pool data"
+        className="text-accent hover:text-primary disabled:text-muted cursor-pointer font-sans text-[10px] font-semibold transition-colors disabled:cursor-default"
+      >
+        &#x21bb;
+      </button>
       <button
         onClick={toggleSort}
         aria-label={`Sort by ${sortBy === 'premium' ? 'latest time' : 'premium'}`}

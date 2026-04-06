@@ -664,6 +664,7 @@ export default function StrikeCalculator() {
                     loading={darkPool.loading}
                     error={darkPool.error}
                     updatedAt={darkPool.updatedAt}
+                    onRefresh={darkPool.refresh}
                   />
                 </ErrorBoundary>
               </>

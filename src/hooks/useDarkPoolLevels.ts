@@ -28,6 +28,7 @@ export interface UseDarkPoolLevelsReturn {
   loading: boolean;
   error: string | null;
   updatedAt: string | null;
+  refresh: () => void;
 }
 
 export function useDarkPoolLevels(
@@ -110,5 +111,5 @@ export function useDarkPoolLevels(
     return () => clearInterval(id);
   }, [isOwner, marketOpen, hasExplicitDate, fetchLevels]);
 
-  return { levels, loading, error, updatedAt };
+  return { levels, loading, error, updatedAt, refresh: fetchLevels };
 }

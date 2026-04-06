@@ -1,8 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DarkPoolLevels from '../../components/DarkPoolLevels';
 import type { DarkPoolLevel } from '../../hooks/useDarkPoolLevels';
+
+const noop = vi.fn();
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -30,6 +32,7 @@ describe('DarkPoolLevels: loading state', () => {
         loading={true}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText(/loading dark pool/i)).toBeInTheDocument();
@@ -42,6 +45,7 @@ describe('DarkPoolLevels: loading state', () => {
         loading={true}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(
@@ -62,6 +66,7 @@ describe('DarkPoolLevels: error state', () => {
         loading={false}
         error="Failed to load dark pool data"
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(
@@ -82,6 +87,7 @@ describe('DarkPoolLevels: empty state', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(
@@ -100,6 +106,7 @@ describe('DarkPoolLevels: empty state', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     // All levels shown — no premium floor filtering
@@ -129,6 +136,7 @@ describe('DarkPoolLevels: rendering levels', () => {
         loading={false}
         error={null}
         updatedAt="2026-04-02T16:35:00Z"
+        onRefresh={noop}
       />,
     );
 
@@ -150,6 +158,7 @@ describe('DarkPoolLevels: rendering levels', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
 
@@ -171,6 +180,7 @@ describe('DarkPoolLevels: premium formatting', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText('$1.7B')).toBeInTheDocument();
@@ -183,6 +193,7 @@ describe('DarkPoolLevels: premium formatting', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText('$373M')).toBeInTheDocument();
@@ -195,6 +206,7 @@ describe('DarkPoolLevels: premium formatting', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText('$750K')).toBeInTheDocument();
@@ -213,6 +225,7 @@ describe('DarkPoolLevels: block count', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText('13 blocks')).toBeInTheDocument();
@@ -225,6 +238,7 @@ describe('DarkPoolLevels: block count', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText('1 block')).toBeInTheDocument();
@@ -247,6 +261,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
 
@@ -270,6 +285,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
 
@@ -291,6 +307,7 @@ describe('DarkPoolLevels: accessibility', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(
@@ -305,6 +322,7 @@ describe('DarkPoolLevels: accessibility', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(
@@ -319,6 +337,7 @@ describe('DarkPoolLevels: accessibility', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText('SPX Level')).toBeInTheDocument();
@@ -334,6 +353,7 @@ describe('DarkPoolLevels: accessibility', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     // Header row + 2 data rows
@@ -348,6 +368,7 @@ describe('DarkPoolLevels: accessibility', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByLabelText('$500M premium')).toBeInTheDocument();
@@ -366,6 +387,7 @@ describe('DarkPoolLevels: header', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(
@@ -380,6 +402,7 @@ describe('DarkPoolLevels: header', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.queryByText(/of/)).not.toBeInTheDocument();
@@ -392,6 +415,7 @@ describe('DarkPoolLevels: header', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText('1 of 1')).toBeInTheDocument();
@@ -410,6 +434,7 @@ describe('DarkPoolLevels: time display', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     // 19:30 UTC = 2:30 PM CT
@@ -423,6 +448,7 @@ describe('DarkPoolLevels: time display', () => {
         loading={false}
         error={null}
         updatedAt="2026-04-02T19:35:00Z"
+        onRefresh={noop}
       />,
     );
     expect(screen.getByText(/Updated/)).toBeInTheDocument();
@@ -441,6 +467,7 @@ describe('DarkPoolLevels: visible count control', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     expect(
@@ -458,6 +485,7 @@ describe('DarkPoolLevels: visible count control', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     // Default is 15
@@ -472,6 +500,7 @@ describe('DarkPoolLevels: visible count control', () => {
         loading={false}
         error={null}
         updatedAt={null}
+        onRefresh={noop}
       />,
     );
     // Click minus twice: 15 → 10 → 5 (min)
@@ -479,5 +508,59 @@ describe('DarkPoolLevels: visible count control', () => {
     await user.click(minus);
     await user.click(minus);
     expect(minus).toBeDisabled();
+  });
+});
+
+// ============================================================
+// REFRESH BUTTON
+// ============================================================
+
+describe('DarkPoolLevels: refresh button', () => {
+  it('renders refresh button', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /refresh dark pool/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('calls onRefresh when clicked', async () => {
+    const onRefresh = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={onRefresh}
+      />,
+    );
+    await user.click(
+      screen.getByRole('button', { name: /refresh dark pool/i }),
+    );
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('is disabled while loading', () => {
+    render(
+      <DarkPoolLevels
+        levels={[]}
+        loading={true}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /refresh dark pool/i }),
+    ).toBeDisabled();
   });
 });
