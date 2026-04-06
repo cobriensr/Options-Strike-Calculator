@@ -24,6 +24,7 @@ jobs:
     outputs:
       app: ${{ steps.filter.outputs.app }}
       ml: ${{ steps.filter.outputs.ml }}
+      sidecar: ${{ steps.filter.outputs.sidecar }}
       e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@v6
@@ -44,6 +45,8 @@ jobs:
               - 'vitest.config.ts'
             ml:
               - 'ml/**'
+            sidecar:
+              - 'sidecar/**'
             e2e:
               - 'src/**'
               - 'api/**'
@@ -136,3 +139,28 @@ jobs:
 
       - name: Lint, Format Check & Tests
         run: cd ml && make review
+
+  sidecar:
+    name: Sidecar Quality Gate
+    needs: [changes]
+    if: needs.changes.outputs.sidecar == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: sidecar/requirements.txt
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev
+
+      - name: Install dependencies
+        run: pip install -r sidecar/requirements.txt
+
+      - name: Tests
+        run: cd sidecar && python -m pytest tests/ -v
