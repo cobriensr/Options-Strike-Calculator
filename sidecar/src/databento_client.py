@@ -291,6 +291,13 @@ class DatabentoClient:
 
         raw_str = str(raw_symbol)
 
+        # Only accept outright contracts (e.g., "ESM6", "CLK26"), not
+        # spreads ("CLM6-CLZ6"), butterflies ("CL:BF"), or cracks ("CL:C1").
+        # Outrights match: ROOT + month code + year digits
+        if "-" in raw_str or ":" in raw_str or " " in raw_str:
+            self._resolved_cache[iid] = None
+            return None
+
         # Match against known prefixes (longest match first to avoid
         # "ES" matching "ESM5" when "ESM" might be a different product)
         # Sort by length descending so "RTY" matches before "RT"
