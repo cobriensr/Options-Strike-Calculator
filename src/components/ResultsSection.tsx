@@ -1,3 +1,4 @@
+import { useState, useCallback } from 'react';
 import type { CalculationResults } from '../types';
 import { DEFAULTS } from '../constants';
 import ParameterSummary from './ParameterSummary';
@@ -30,6 +31,9 @@ export default function ResultsSection({
   bwbNarrowWidth,
   bwbWideMultiplier,
 }: Readonly<Props>) {
+  const [collapsed, setCollapsed] = useState(false);
+  const toggle = useCallback(() => setCollapsed((v) => !v), []);
+
   return (
     <div id="results" tabIndex={-1} className="mt-6">
       {results ? (
@@ -37,61 +41,90 @@ export default function ResultsSection({
           aria-label="Strike results for all deltas"
           className="animate-fade-in-up bg-surface border-edge-heavy border-t-accent rounded-[14px] border-2 border-t-[3px] p-[24px_20px] shadow-[0_4px_12px_rgba(0,0,0,0.08),0_12px_32px_rgba(0,0,0,0.06)]"
         >
-          <div className="text-accent mb-[18px] font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+          <div
+            className={
+              (collapsed ? '' : 'mb-[18px] ') +
+              'text-accent flex cursor-pointer items-center gap-2.5 font-sans text-[13px] font-bold tracking-[0.12em] uppercase select-none'
+            }
+            onClick={toggle}
+            role="button"
+            tabIndex={0}
+            aria-label="Toggle All Delta Strikes"
+            aria-expanded={!collapsed}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggle();
+              }
+            }}
+          >
+            <span
+              className="text-muted text-[12px] transition-transform duration-200"
+              style={{
+                transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+              }}
+              aria-hidden="true"
+            >
+              &#x25BE;
+            </span>
             All Delta Strikes
           </div>
 
-          <ParameterSummary
-            spySpot={(results.spot / effectiveRatio).toFixed(2)}
-            spxLabel={
-              'SPX (\u00D7' +
-              effectiveRatio.toFixed(spxDirectActive ? 4 : 2) +
-              ')'
-            }
-            spxValue={results.spot.toFixed(0)}
-            sigma={(results.sigma * 100).toFixed(2) + '%'}
-            T={results.T.toFixed(6)}
-            hoursLeft={results.hoursRemaining.toFixed(2) + 'h'}
-          />
+          {!collapsed && (
+            <>
+              <ParameterSummary
+                spySpot={(results.spot / effectiveRatio).toFixed(2)}
+                spxLabel={
+                  'SPX (\u00D7' +
+                  effectiveRatio.toFixed(spxDirectActive ? 4 : 2) +
+                  ')'
+                }
+                spxValue={results.spot.toFixed(0)}
+                sigma={(results.sigma * 100).toFixed(2) + '%'}
+                T={results.T.toFixed(6)}
+                hoursLeft={results.hoursRemaining.toFixed(2) + 'h'}
+              />
 
-          <DeltaStrikesTable
-            allDeltas={results.allDeltas}
-            spot={results.spot}
-          />
+              <DeltaStrikesTable
+                allDeltas={results.allDeltas}
+                spot={results.spot}
+              />
 
-          {showIC && (
-            <IronCondorSection
-              results={results}
-              wingWidth={wingWidth}
-              contracts={contracts}
-              effectiveRatio={effectiveRatio}
-              skewPct={skewPct}
-            />
+              {showIC && (
+                <IronCondorSection
+                  results={results}
+                  wingWidth={wingWidth}
+                  contracts={contracts}
+                  effectiveRatio={effectiveRatio}
+                  skewPct={skewPct}
+                />
+              )}
+
+              {showBWB && (
+                <BWBSection
+                  results={results}
+                  narrowWidth={bwbNarrowWidth}
+                  wideMultiplier={bwbWideMultiplier}
+                  contracts={contracts}
+                  effectiveRatio={effectiveRatio}
+                />
+              )}
+
+              <p className="text-tertiary mt-3.5 text-xs leading-[1.7]">
+                {skewPct > 0
+                  ? 'Put skew: +' +
+                    skewPct +
+                    '% IV on puts, \u2212' +
+                    skewPct +
+                    '% on calls. '
+                  : ''}
+                Accuracy {'\u00B1'}5{'\u2013'}15 SPX points. Snapped: SPX
+                nearest {DEFAULTS.STRIKE_INCREMENT}-pt, SPY nearest $1. Ratio:{' '}
+                {effectiveRatio.toFixed(spxDirectActive ? 4 : 2)}
+                {spxDirectActive ? ' (derived)' : ''}.
+              </p>
+            </>
           )}
-
-          {showBWB && (
-            <BWBSection
-              results={results}
-              narrowWidth={bwbNarrowWidth}
-              wideMultiplier={bwbWideMultiplier}
-              contracts={contracts}
-              effectiveRatio={effectiveRatio}
-            />
-          )}
-
-          <p className="text-tertiary mt-3.5 text-xs leading-[1.7]">
-            {skewPct > 0
-              ? 'Put skew: +' +
-                skewPct +
-                '% IV on puts, \u2212' +
-                skewPct +
-                '% on calls. '
-              : ''}
-            Accuracy {'\u00B1'}5{'\u2013'}15 SPX points. Snapped: SPX nearest{' '}
-            {DEFAULTS.STRIKE_INCREMENT}-pt, SPY nearest $1. Ratio:{' '}
-            {effectiveRatio.toFixed(spxDirectActive ? 4 : 2)}
-            {spxDirectActive ? ' (derived)' : ''}.
-          </p>
         </section>
       ) : (
         <div className="animate-fade-in-up border-edge-strong bg-surface rounded-[14px] border-2 border-dashed px-8 py-12 text-center">
