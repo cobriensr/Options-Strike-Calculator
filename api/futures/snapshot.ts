@@ -61,7 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `;
 
     const latestTs = latestTsRows[0]?.latest_ts
-      ? String(latestTsRows[0].latest_ts)
+      ? new Date(String(latestTsRows[0].latest_ts)).toISOString()
       : null;
 
     if (!latestTs) {
