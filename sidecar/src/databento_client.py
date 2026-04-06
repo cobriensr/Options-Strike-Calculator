@@ -247,13 +247,14 @@ class DatabentoClient:
                 "SymbolMappingMsg", "SystemMsg", "ErrorMsg",
             ):
                 self._first_data_logged = True
-                iid = getattr(getattr(record, "hd", None), "instrument_id", "?")
+                iid = getattr(record, "instrument_id", "?")
+                sym = self._resolve_symbol(record)
                 log.info(
-                    "First data record: type=%s iid=%s repr=%.200s",
-                    record_type, iid, repr(record),
+                    "First data record: type=%s iid=%s sym=%s",
+                    record_type, iid, sym,
                 )
 
-            if record_type == "OhlcvMsg":
+            if record_type in ("OHLCVMsg", "OhlcvMsg"):
                 self._handle_ohlcv(record)
             elif record_type == "TradeMsg":
                 self._handle_trade(record)
@@ -290,10 +291,9 @@ class DatabentoClient:
         (e.g., 15 -> "ESM5"), then matches the raw symbol prefix to our
         internal name (e.g., "ESM5" starts with "ES" -> "ES").
         """
-        hd = getattr(record, "hd", None)
-        if hd is None or self._client is None:
+        iid = getattr(record, "instrument_id", None)
+        if iid is None or self._client is None:
             return None
-        iid = hd.instrument_id
 
         # Check cache first
         if iid in self._resolved_cache:
@@ -325,8 +325,7 @@ class DatabentoClient:
 
         symbol = self._resolve_symbol(record)
         if symbol is None:
-            # Try to resolve via instrument_id directly
-            iid = record.hd.instrument_id if hasattr(record, "hd") else 0
+            iid = getattr(record, "instrument_id", 0)
             log.debug("Unknown instrument_id for OHLCV: %d", iid)
             return
 
@@ -338,7 +337,7 @@ class DatabentoClient:
         volume = record.volume
 
         # Convert timestamp (nanoseconds since epoch) to datetime
-        ts_ns = record.hd.ts_event if hasattr(record.hd, "ts_event") else record.ts_event
+        ts_ns = record.ts_event
         ts = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
 
         # Normalize to minute boundary
@@ -386,7 +385,7 @@ class DatabentoClient:
 
         # We need to determine if this is an ES option and extract
         # strike/expiry from the instrument definition
-        iid = record.hd.instrument_id if hasattr(record, "hd") else 0
+        iid = getattr(record, "instrument_id", 0)
         instrument_info = self._get_option_info(iid)
         if instrument_info is None:
             return  # Not an option we're tracking
@@ -427,7 +426,7 @@ class DatabentoClient:
         ):
             return
 
-        iid = record.hd.instrument_id if hasattr(record, "hd") else 0
+        iid = getattr(record, "instrument_id", 0)
         instrument_info = self._get_option_info(iid)
         if instrument_info is None:
             return
@@ -491,7 +490,7 @@ class DatabentoClient:
         else:
             return
 
-        iid = record.hd.instrument_id if hasattr(record, "hd") else 0
+        iid = getattr(record, "instrument_id", 0)
 
         # Store the option info for this instrument_id
         with self._lock:
