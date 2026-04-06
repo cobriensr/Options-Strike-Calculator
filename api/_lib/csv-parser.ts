@@ -500,16 +500,30 @@ export function parseFullCSV(csv: string): ParsedCSV {
 export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
   const lines: string[] = [];
 
-  // ── Open positions ──────────────────────────────────────
-  if (parsed.openLegs.length > 0) {
+  // ── Open positions (using trade-history pairs, not flat legs) ──
+  // Build open spread pairs from VERTICAL TO OPEN trades that haven't
+  // been closed. This avoids the flat Options section's aggregated
+  // quantities which can't distinguish shared long strikes.
+  const openSpreads = buildOpenSpreadsFromTrades(parsed.allTrades, spxPrice);
+
+  if (openSpreads.length > 0) {
+    lines.push(
+      `=== OPEN SPX 0DTE Positions (${openSpreads.length} defined-risk spread${openSpreads.length !== 1 ? 's' : ''}, NO naked legs) ===`,
+    );
+    if (spxPrice) lines.push(`SPX at fetch time: ${spxPrice}`);
+    lines.push('');
+    for (const s of openSpreads) {
+      lines.push(s);
+    }
+    lines.push('');
+  } else if (parsed.openLegs.length > 0) {
+    // Fallback to flat legs if trade history is empty
     const calls = parsed.openLegs.filter((l) => l.putCall === 'CALL');
     const puts = parsed.openLegs.filter((l) => l.putCall === 'PUT');
-
     const spreadLines = pairForDisplay(calls, puts, spxPrice);
     const spreadCount = spreadLines.filter((l) =>
       l.startsWith('  Short'),
     ).length;
-
     lines.push(
       `=== OPEN SPX 0DTE Positions (${spreadCount} spread${spreadCount !== 1 ? 's' : ''}) ===`,
     );
@@ -592,6 +606,103 @@ export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
   }
 
   return lines.join('\n');
+}
+
+// ── Helper: build open spreads from trade history ────────────
+// Uses explicit VERTICAL trade pairs instead of flat leg matching,
+// so shared long strikes (e.g., 6525P +40 from two spreads) are
+// correctly attributed to their respective spread pairs.
+
+function buildOpenSpreadsFromTrades(
+  allTrades: ParsedTrade[],
+  spxPrice?: number,
+): string[] {
+  // Track net opens: each VERTICAL TO OPEN adds a pair,
+  // each VERTICAL TO CLOSE removes one.
+  interface SpreadPair {
+    shortStrike: number;
+    longStrike: number;
+    type: 'PUT' | 'CALL';
+    qty: number;
+    credit: number;
+    width: number;
+    openTime: string;
+    closed: boolean;
+  }
+
+  const pairs: SpreadPair[] = [];
+
+  // Group trades by time (trades with same execTime are one VERTICAL)
+  const tradesByTime = new Map<string, ParsedTrade[]>();
+  for (const t of allTrades) {
+    const existing = tradesByTime.get(t.execTime) ?? [];
+    existing.push(t);
+    tradesByTime.set(t.execTime, existing);
+  }
+
+  for (const [time, legs] of tradesByTime) {
+    if (legs.length < 2) continue;
+
+    const openLegs = legs.filter((l) => l.posEffect === 'TO OPEN');
+    const closeLegs = legs.filter((l) => l.posEffect === 'TO CLOSE');
+
+    if (openLegs.length === 2) {
+      const sell = openLegs.find((l) => l.quantity < 0);
+      const buy = openLegs.find((l) => l.quantity > 0);
+      if (sell && buy && sell.putCall === buy.putCall) {
+        pairs.push({
+          shortStrike: sell.strike,
+          longStrike: buy.strike,
+          type: sell.putCall,
+          qty: Math.abs(sell.quantity),
+          credit: sell.netPrice,
+          width: Math.abs(sell.strike - buy.strike),
+          openTime: time,
+          closed: false,
+        });
+      }
+    }
+
+    if (closeLegs.length === 2) {
+      const btc = closeLegs.find((l) => l.quantity > 0);
+      if (btc) {
+        // Mark matching open spread as closed
+        for (const p of pairs) {
+          if (
+            !p.closed &&
+            p.shortStrike === btc.strike &&
+            p.type === btc.putCall
+          ) {
+            p.closed = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  const openPairs = pairs.filter((p) => !p.closed);
+  if (openPairs.length === 0) return [];
+
+  const sorted = openPairs.sort((a, b) => a.shortStrike - b.shortStrike);
+
+  return sorted.map((p) => {
+    const typeLabel = p.type === 'PUT' ? 'PCS' : 'CCS';
+    const maxLoss = p.width * 100 * p.qty - p.credit * 100 * p.qty;
+    const cushion =
+      spxPrice != null
+        ? p.type === 'PUT'
+          ? spxPrice - p.shortStrike
+          : p.shortStrike - spxPrice
+        : null;
+    const cushionStr = cushion != null ? `, ${cushion.toFixed(0)} pts cushion` : '';
+    return (
+      `  ${typeLabel} ${p.shortStrike}/${p.longStrike} x${p.qty} — ` +
+      `credit $${(p.credit * 100 * p.qty).toFixed(0)}, ` +
+      `max loss $${maxLoss.toFixed(0)}, ` +
+      `${p.width} wide${cushionStr}`
+    );
+  });
 }
 
 // ── Helper: pair legs into spread display lines ─────────────
