@@ -18,7 +18,7 @@ const mockFetch = vi.fn().mockResolvedValue({
 });
 vi.stubGlobal('fetch', mockFetch);
 
-const mockNotification = vi.fn();
+const mockNotification = vi.fn(function () {});
 Object.defineProperty(mockNotification, 'permission', {
   value: 'default',
   writable: true,
@@ -28,28 +28,31 @@ Object.defineProperty(mockNotification, 'requestPermission', {
 });
 vi.stubGlobal('Notification', mockNotification);
 
-vi.stubGlobal(
-  'AudioContext',
-  vi.fn(() => ({
-    createOscillator: () => ({
+class DefaultMockAudioContext {
+  destination = {};
+  currentTime = 0;
+  createOscillator() {
+    return {
       type: '',
       frequency: { value: 0 },
       connect: vi.fn(),
       start: vi.fn(),
       stop: vi.fn(),
-    }),
-    createGain: () => ({
+    };
+  }
+  createGain() {
+    return {
       connect: vi.fn(),
       gain: {
         setValueAtTime: vi.fn(),
         exponentialRampToValueAtTime: vi.fn(),
       },
-    }),
-    destination: {},
-    currentTime: 0,
-    close: vi.fn(),
-  })),
-);
+    };
+  }
+  close = vi.fn();
+}
+
+vi.stubGlobal('AudioContext', DefaultMockAudioContext);
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -88,28 +91,7 @@ afterEach(() => {
   // Re-stub globals for subsequent tests
   vi.stubGlobal('fetch', mockFetch);
   vi.stubGlobal('Notification', mockNotification);
-  vi.stubGlobal(
-    'AudioContext',
-    vi.fn(() => ({
-      createOscillator: () => ({
-        type: '',
-        frequency: { value: 0 },
-        connect: vi.fn(),
-        start: vi.fn(),
-        stop: vi.fn(),
-      }),
-      createGain: () => ({
-        connect: vi.fn(),
-        gain: {
-          setValueAtTime: vi.fn(),
-          exponentialRampToValueAtTime: vi.fn(),
-        },
-      }),
-      destination: {},
-      currentTime: 0,
-      close: vi.fn(),
-    })),
-  );
+  vi.stubGlobal('AudioContext', DefaultMockAudioContext);
 });
 
 // ============================================================
