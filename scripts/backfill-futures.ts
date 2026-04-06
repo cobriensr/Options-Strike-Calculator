@@ -221,14 +221,29 @@ async function fetchBars(
   }
 
   // Convert nanosecond epoch strings to ISO timestamps, nanodollar strings to numbers
-  return records.map((r) => ({
-    ts: new Date(Number(BigInt(r.hd.ts_event) / 1_000_000n)).toISOString(),
-    open: Number(r.open) / NANODOLLAR,
-    high: Number(r.high) / NANODOLLAR,
-    low: Number(r.low) / NANODOLLAR,
-    close: Number(r.close) / NANODOLLAR,
-    volume: Number(r.volume),
-  }));
+  // Filter out rows with prices exceeding NUMERIC(12,4) limit (10^8)
+  return records
+    .map((r) => ({
+      ts: new Date(Number(BigInt(r.hd.ts_event) / 1_000_000n)).toISOString(),
+      open: Number(r.open) / NANODOLLAR,
+      high: Number(r.high) / NANODOLLAR,
+      low: Number(r.low) / NANODOLLAR,
+      close: Number(r.close) / NANODOLLAR,
+      volume: Number(r.volume),
+    }))
+    .filter((r) => {
+      const max = 99_999_999;
+      if (
+        Math.abs(r.open) > max ||
+        Math.abs(r.high) > max ||
+        Math.abs(r.low) > max ||
+        Math.abs(r.close) > max
+      ) {
+        console.warn(`  Skipping bar with overflow price: ${JSON.stringify(r)}`);
+        return false;
+      }
+      return true;
+    });
 }
 
 // ── Database insertion ─────────────────────────────────────────
