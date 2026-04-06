@@ -22,6 +22,7 @@ import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
+import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
@@ -40,6 +41,7 @@ import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
+import GexPerStrike from './components/GexPerStrike';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { useToast } from './hooks/useToast';
@@ -149,6 +151,10 @@ export default function StrikeCalculator() {
   );
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
   const darkPool = useDarkPoolLevels(
+    market.data.quotes?.marketOpen ?? false,
+    vix.selectedDate,
+  );
+  const gexStrike = useGexPerStrike(
     market.data.quotes?.marketOpen ?? false,
     vix.selectedDate,
   );
@@ -320,7 +326,10 @@ export default function StrikeCalculator() {
       { id: 'sec-risk', label: 'Risk' },
       { id: 'sec-regime', label: 'Regime' },
       ...(isOwner && hasMarketOrSnapshot
-        ? [{ id: 'sec-darkpool', label: 'Dark Pool' }]
+        ? [
+            { id: 'sec-darkpool', label: 'Dark Pool' },
+            { id: 'sec-gex', label: 'GEX' },
+          ]
         : []),
       ...(isOwner ? [{ id: 'sec-futures', label: 'Futures' }] : []),
       ...(hasMarketOrSnapshot ? [{ id: 'sec-charts', label: 'Charts' }] : []),
@@ -668,6 +677,21 @@ export default function StrikeCalculator() {
                     error={darkPool.error}
                     updatedAt={darkPool.updatedAt}
                     onRefresh={darkPool.refresh}
+                  />
+                </ErrorBoundary>
+              </>
+            )}
+
+            {isOwner && (market.hasData || !!historySnapshot) && (
+              <>
+                <span id="sec-gex" className="block scroll-mt-28" />
+                <ErrorBoundary label="0DTE GEX Per Strike">
+                  <GexPerStrike
+                    strikes={gexStrike.strikes}
+                    loading={gexStrike.loading}
+                    error={gexStrike.error}
+                    timestamp={gexStrike.timestamp}
+                    onRefresh={gexStrike.refresh}
                   />
                 </ErrorBoundary>
               </>

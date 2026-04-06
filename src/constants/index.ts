@@ -252,6 +252,8 @@ export const POLL_INTERVALS = {
   ALERTS: 10_000,
   /** Dark pool levels refresh (useDarkPoolLevels) */
   DARK_POOL: 60_000,
+  /** GEX per strike refresh (useGexPerStrike) */
+  GEX_STRIKE: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */

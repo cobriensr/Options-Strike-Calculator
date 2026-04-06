@@ -1120,4 +1120,48 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 47,
+    description:
+      'Create gex_strike_0dte table for per-minute 0DTE gamma exposure by strike',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS gex_strike_0dte (
+          id              SERIAL PRIMARY KEY,
+          date            DATE NOT NULL,
+          timestamp       TIMESTAMPTZ NOT NULL,
+          strike          DECIMAL(10,2) NOT NULL,
+          price           DECIMAL(10,2) NOT NULL,
+          call_gamma_oi   DECIMAL(20,4),
+          put_gamma_oi    DECIMAL(20,4),
+          call_gamma_vol  DECIMAL(20,4),
+          put_gamma_vol   DECIMAL(20,4),
+          call_gamma_ask  DECIMAL(20,4),
+          call_gamma_bid  DECIMAL(20,4),
+          put_gamma_ask   DECIMAL(20,4),
+          put_gamma_bid   DECIMAL(20,4),
+          call_charm_oi   DECIMAL(20,4),
+          put_charm_oi    DECIMAL(20,4),
+          call_charm_vol  DECIMAL(20,4),
+          put_charm_vol   DECIMAL(20,4),
+          call_delta_oi   DECIMAL(20,4),
+          put_delta_oi    DECIMAL(20,4),
+          call_vanna_oi   DECIMAL(20,4),
+          put_vanna_oi    DECIMAL(20,4),
+          call_vanna_vol  DECIMAL(20,4),
+          put_vanna_vol   DECIMAL(20,4),
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(date, timestamp, strike)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gex_strike_0dte_date
+        ON gex_strike_0dte(date)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gex_strike_0dte_ts
+        ON gex_strike_0dte(timestamp DESC)
+      `,
+    ],
+  },
 ];
