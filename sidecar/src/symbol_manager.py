@@ -11,12 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from typing import TYPE_CHECKING
+import math
 
 from logger_setup import log
-
-if TYPE_CHECKING:
-    pass
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +93,7 @@ class OptionsStrikeSet:
 
     def needs_recenter(self, current_es_price: float) -> bool:
         """Check if ES has moved enough to warrant re-centering strikes."""
-        if self.center_price == 0.0:
+        if math.isclose(self.center_price, 0.0):
             return True
         return abs(current_es_price - self.center_price) >= ES_RECENTER_THRESHOLD
 

@@ -267,7 +267,6 @@ class AlertEngine:
         params = self._configs[alert_type]["params"]
         pts_threshold = params["pts_threshold"]
         window = params["window_minutes"]
-        vol_multiple = params["volume_multiple"]
 
         change, volume = self._state.get_price_change("ES", window)
 

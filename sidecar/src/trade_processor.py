@@ -11,13 +11,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import TYPE_CHECKING
 
 from db import batch_insert_options_trades
 from logger_setup import log
-
-if TYPE_CHECKING:
-    pass
 
 # Batch size for DB inserts -- accumulate trades and flush periodically
 BATCH_SIZE = 100
