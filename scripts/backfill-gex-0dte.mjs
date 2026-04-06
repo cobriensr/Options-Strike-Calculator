@@ -254,7 +254,12 @@ async function main() {
     const rows = await fetchStrike0dte(date);
 
     // Handle historic data access block — skip ahead automatically
-    if (rows && typeof rows === 'object' && !Array.isArray(rows) && rows.blocked) {
+    if (
+      rows &&
+      typeof rows === 'object' &&
+      !Array.isArray(rows) &&
+      rows.blocked
+    ) {
       if (rows.earliestDate) {
         console.log(
           `  ${date}: ⚠ Plan limit — skipping ahead to ${rows.earliestDate}`,
