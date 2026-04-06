@@ -128,7 +128,17 @@ def insert_options_trade(
                     (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (underlying, expiry, strike, option_type, ts, price, size, side, trade_date),
+                (
+                    underlying,
+                    expiry,
+                    strike,
+                    option_type,
+                    ts,
+                    price,
+                    size,
+                    side,
+                    trade_date,
+                ),
             )
 
 
@@ -186,8 +196,17 @@ def upsert_options_daily(
                     is_final      = COALESCE(EXCLUDED.is_final, futures_options_daily.is_final)
                 """,
                 (
-                    underlying, trade_date, expiry, strike, option_type,
-                    open_interest, volume, settlement, implied_vol, delta, is_final,
+                    underlying,
+                    trade_date,
+                    expiry,
+                    strike,
+                    option_type,
+                    open_interest,
+                    volume,
+                    settlement,
+                    implied_vol,
+                    delta,
+                    is_final,
                 ),
             )
 
@@ -217,9 +236,7 @@ def load_alert_config() -> dict[str, dict]:
     return configs
 
 
-def get_recent_bars(
-    symbol: str, minutes: int = 60
-) -> list[dict]:
+def get_recent_bars(symbol: str, minutes: int = 60) -> list[dict]:
     """Fetch the most recent N minutes of bars for a symbol."""
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:

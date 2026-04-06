@@ -234,7 +234,11 @@ class DatabentoClient:
 
             self._prefix_to_internal["DX"] = "DX"
             self._dx_client.start()
-            log.info("DX Live client started on %s: %s", DATASET_IFUS, dx_cfg["parent_symbol"])
+            log.info(
+                "DX Live client started on %s: %s",
+                DATASET_IFUS,
+                dx_cfg["parent_symbol"],
+            )
         except Exception as exc:
             log.error("Failed to start DX client: %s", exc)
             self._dx_client = None
@@ -249,9 +253,7 @@ class DatabentoClient:
         except Exception as exc:
             log.error("Error processing DX record: %s", exc)
 
-    def _handle_ohlcv_from_client(
-        self, record: Any, client: db.Live | None
-    ) -> None:
+    def _handle_ohlcv_from_client(self, record: Any, client: db.Live | None) -> None:
         """Process an OHLCV bar using a specific client's symbology map."""
         from db import upsert_futures_bar
 
@@ -516,15 +518,19 @@ class DatabentoClient:
             self._last_bar_ts = time.time()
             log.debug(
                 "Bar: %s %s O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
-                symbol, ts.isoformat(), open_, high, low, close, volume,
+                symbol,
+                ts.isoformat(),
+                open_,
+                high,
+                low,
+                close,
+                volume,
             )
         except Exception as exc:
             log.error("Failed to upsert bar for %s: %s", symbol, exc)
 
         # Feed to alert engine
-        self._alert_engine.on_bar(
-            symbol, ts.timestamp(), float(close), volume
-        )
+        self._alert_engine.on_bar(symbol, ts.timestamp(), float(close), volume)
 
         # Check if we need to subscribe to ES options (first ES bar)
         if symbol == "ES" and self._options_subscription_pending:
@@ -604,37 +610,65 @@ class DatabentoClient:
         trade_date = date.today()
 
         # Convert stat value from 1e-9 int to Decimal
-        stat_value = Decimal(record.stat_value) / Decimal(1_000_000_000) if hasattr(record, "stat_value") else None
+        stat_value = (
+            Decimal(record.stat_value) / Decimal(1_000_000_000)
+            if hasattr(record, "stat_value")
+            else None
+        )
         stat_quantity = getattr(record, "stat_quantity", None)
 
         # Determine if settlement is final
-        is_final = bool(getattr(record, "stat_flags", 0) & 1) if stat_type == STAT_TYPE_SETTLEMENT else False
+        is_final = (
+            bool(getattr(record, "stat_flags", 0) & 1)
+            if stat_type == STAT_TYPE_SETTLEMENT
+            else False
+        )
 
         try:
             if stat_type == STAT_TYPE_OPEN_INTEREST:
                 upsert_options_daily(
-                    "ES", trade_date, expiry, Decimal(str(strike)), option_type,
+                    "ES",
+                    trade_date,
+                    expiry,
+                    Decimal(str(strike)),
+                    option_type,
                     open_interest=int(stat_quantity) if stat_quantity else None,
                 )
             elif stat_type == STAT_TYPE_SETTLEMENT:
                 upsert_options_daily(
-                    "ES", trade_date, expiry, Decimal(str(strike)), option_type,
+                    "ES",
+                    trade_date,
+                    expiry,
+                    Decimal(str(strike)),
+                    option_type,
                     settlement=stat_value,
                     is_final=is_final,
                 )
             elif stat_type == STAT_TYPE_CLEARED_VOLUME:
                 upsert_options_daily(
-                    "ES", trade_date, expiry, Decimal(str(strike)), option_type,
+                    "ES",
+                    trade_date,
+                    expiry,
+                    Decimal(str(strike)),
+                    option_type,
                     volume=int(stat_quantity) if stat_quantity else None,
                 )
             elif stat_type == STAT_TYPE_IMPLIED_VOL:
                 upsert_options_daily(
-                    "ES", trade_date, expiry, Decimal(str(strike)), option_type,
+                    "ES",
+                    trade_date,
+                    expiry,
+                    Decimal(str(strike)),
+                    option_type,
                     implied_vol=stat_value,
                 )
             elif stat_type == STAT_TYPE_DELTA:
                 upsert_options_daily(
-                    "ES", trade_date, expiry, Decimal(str(strike)), option_type,
+                    "ES",
+                    trade_date,
+                    expiry,
+                    Decimal(str(strike)),
+                    option_type,
                     delta=stat_value,
                 )
         except Exception as exc:
@@ -669,7 +703,10 @@ class DatabentoClient:
 
         log.debug(
             "Definition: iid=%d strike=%.2f type=%s expiry=%s",
-            iid, strike, instrument_class, expiry,
+            iid,
+            strike,
+            instrument_class,
+            expiry,
         )
 
     def _handle_symbol_mapping(self, record: Any) -> None:
@@ -683,13 +720,17 @@ class DatabentoClient:
         iid = getattr(record, "instrument_id", 0)
         log.debug(
             "Symbol mapping: %s (%s) -> iid %d",
-            stype_in_symbol, stype_out_symbol, iid,
+            stype_in_symbol,
+            stype_out_symbol,
+            iid,
         )
 
     def _handle_system(self, record: Any) -> None:
         """Handle system/error messages."""
         msg = getattr(record, "msg", "")
-        is_error = getattr(record, "is_error", False) or type(record).__name__ == "ErrorMsg"
+        is_error = (
+            getattr(record, "is_error", False) or type(record).__name__ == "ErrorMsg"
+        )
         if is_error:
             log.error("Databento system error: %s", msg)
         else:

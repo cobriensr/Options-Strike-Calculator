@@ -47,10 +47,12 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         healthy = all(checks.values())
         status = 200 if healthy else 503
-        body = json.dumps({
-            "status": "ok" if healthy else "degraded",
-            "checks": checks,
-        })
+        body = json.dumps(
+            {
+                "status": "ok" if healthy else "degraded",
+                "checks": checks,
+            }
+        )
 
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -75,7 +77,6 @@ def _is_data_expected() -> bool:
 
     Simplified: skip weekends and the 5 PM CT hour (maintenance window).
     """
-    from datetime import timezone as tz
     import zoneinfo
 
     ct = datetime.now(zoneinfo.ZoneInfo("America/Chicago"))

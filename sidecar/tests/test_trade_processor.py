@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -15,14 +15,15 @@ mock_logger = MagicMock()
 sys.modules["db"] = mock_db
 sys.modules["logger_setup"] = mock_logger
 
-from trade_processor import BATCH_SIZE, StrikeVolume, TradeProcessor
+from trade_processor import BATCH_SIZE, StrikeVolume, TradeProcessor  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def processor() -> TradeProcessor:
@@ -62,6 +63,7 @@ def _process_one(
 # StrikeVolume dataclass
 # ---------------------------------------------------------------------------
 
+
 class TestStrikeVolume:
     def test_total_volume_sums_all_three(self) -> None:
         sv = StrikeVolume(buy_volume=10, sell_volume=5, none_volume=3)
@@ -91,6 +93,7 @@ class TestStrikeVolume:
 # ---------------------------------------------------------------------------
 # TradeProcessor — volume tracking
 # ---------------------------------------------------------------------------
+
 
 class TestProcessTradeVolume:
     def test_buy_side_increments_buy_volume(self, processor: TradeProcessor) -> None:
@@ -125,6 +128,7 @@ class TestProcessTradeVolume:
 # TradeProcessor — price conversion
 # ---------------------------------------------------------------------------
 
+
 class TestProcessTradePriceConversion:
     def test_price_raw_converts_to_decimal(self, processor: TradeProcessor) -> None:
         """price_raw=50_250_000_000 should become Decimal('50.25')."""
@@ -140,6 +144,7 @@ class TestProcessTradePriceConversion:
 # ---------------------------------------------------------------------------
 # TradeProcessor — buffer / flush
 # ---------------------------------------------------------------------------
+
 
 class TestBufferFlush:
     def test_no_flush_before_batch_size(self, processor: TradeProcessor) -> None:
@@ -174,6 +179,7 @@ class TestBufferFlush:
 # TradeProcessor — volume snapshot & strike lookup
 # ---------------------------------------------------------------------------
 
+
 class TestVolumeSnapshot:
     def test_get_volume_snapshot_returns_copy(self, processor: TradeProcessor) -> None:
         _process_one(processor, strike=5300.0, option_type="C")
@@ -203,6 +209,7 @@ class TestVolumeSnapshot:
 # TradeProcessor — reset
 # ---------------------------------------------------------------------------
 
+
 class TestResetVolumeWindow:
     def test_reset_clears_all_volume_data(self, processor: TradeProcessor) -> None:
         _process_one(processor, strike=5300.0, option_type="C", size=10)
@@ -217,6 +224,7 @@ class TestResetVolumeWindow:
 # ---------------------------------------------------------------------------
 # TradeProcessor — unusual volume detection
 # ---------------------------------------------------------------------------
+
 
 class TestUnusualVolumeStrikes:
     def test_detects_strikes_exceeding_threshold(
@@ -239,9 +247,7 @@ class TestUnusualVolumeStrikes:
         assert entry["buy_aggressor_pct"] == pytest.approx(1.0)
         assert entry["sell_aggressor_pct"] == pytest.approx(0.0)
 
-    def test_does_not_flag_below_threshold(
-        self, processor: TradeProcessor
-    ) -> None:
+    def test_does_not_flag_below_threshold(self, processor: TradeProcessor) -> None:
         processor._avg_volume[(5300.0, "C")] = 100.0
         _process_one(processor, strike=5300.0, option_type="C", side="B", size=10)
         unusual = processor.get_unusual_volume_strikes(threshold_multiple=5.0)

@@ -65,8 +65,12 @@ class TestComputeAtmStrikes:
 
     def test_lowest_and_highest_strikes(self):
         strikes = compute_atm_strikes(5850.0)
-        assert strikes[0] == pytest.approx(5850.0 - ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING)
-        assert strikes[-1] == pytest.approx(5850.0 + ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING)
+        assert strikes[0] == pytest.approx(
+            5850.0 - ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING
+        )
+        assert strikes[-1] == pytest.approx(
+            5850.0 + ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING
+        )
 
     def test_all_values_are_multiples_of_5(self):
         strikes = compute_atm_strikes(5847.3)

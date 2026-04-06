@@ -406,8 +406,10 @@ class AlertEngine:
         top = max(unusual, key=lambda x: x["multiple"])
         buy_pct = top["buy_aggressor_pct"] * 100
 
-        side_desc = "buy aggressor (lifting asks)" if buy_pct > 60 else (
-            "sell aggressor (hitting bids)" if buy_pct < 40 else "mixed"
+        side_desc = (
+            "buy aggressor (lifting asks)"
+            if buy_pct > 60
+            else ("sell aggressor (hitting bids)" if buy_pct < 40 else "mixed")
         )
         opt_label = "call" if top["option_type"] == "C" else "put"
 

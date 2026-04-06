@@ -214,9 +214,7 @@ class TestWarmup:
 
 
 class TestCooldown:
-    def test_alert_blocked_during_cooldown(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_alert_blocked_during_cooldown(self, engine: AlertEngine) -> None:
         base_ts = 1_000_000.0
         # Feed warmup + trigger bars
         prices = [5000.0, 5005.0, 5010.0, 5015.0, 5045.0]
@@ -232,9 +230,7 @@ class TestCooldown:
         # last_fired timestamp should not have changed
         assert engine._state.last_fired["es_momentum"] == first_fire_time
 
-    def test_alert_fires_after_cooldown_expires(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_alert_fires_after_cooldown_expires(self, engine: AlertEngine) -> None:
         # Use a controllable wall clock so _can_fire / _fire_alert see
         # time advancing past the cooldown window.
         wall_clock = 1_000_000.0
@@ -252,17 +248,13 @@ class TestCooldown:
             first_fire_time = engine._state.last_fired["es_momentum"]
 
             # Advance wall clock past cooldown (30 min = 1800s)
-            cooldown_s = (
-                engine._configs["es_momentum"]["cooldown_minutes"] * 60
-            )
+            cooldown_s = engine._configs["es_momentum"]["cooldown_minutes"] * 60
             wall_clock = base_ts + cooldown_s + 600
 
             # Build up fresh history past the cooldown boundary
             new_prices = [5100.0, 5105.0, 5110.0, 5115.0, 5155.0]
             for i, p in enumerate(new_prices):
-                engine.on_bar(
-                    "ES", wall_clock + i * 60, p, 500
-                )
+                engine.on_bar("ES", wall_clock + i * 60, p, 500)
 
             # Should have fired again with a newer timestamp
             assert engine._state.last_fired["es_momentum"] > first_fire_time
@@ -274,9 +266,7 @@ class TestCooldown:
 
 
 class TestGlobalCap:
-    def test_can_fire_returns_false_after_cap(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_can_fire_returns_false_after_cap(self, engine: AlertEngine) -> None:
         now = time.time()
         # Simulate GLOBAL_HOURLY_CAP fires in the last hour
         for _ in range(GLOBAL_HOURLY_CAP):
@@ -284,9 +274,7 @@ class TestGlobalCap:
 
         assert engine._can_fire("es_momentum") is False
 
-    def test_can_fire_true_when_under_cap(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_can_fire_true_when_under_cap(self, engine: AlertEngine) -> None:
         now = time.time()
         for _ in range(GLOBAL_HOURLY_CAP - 1):
             engine._state.global_fires.append(now)
@@ -307,25 +295,19 @@ class TestGlobalCap:
 
 
 class TestEsMomentum:
-    def test_fires_on_large_move_with_volume(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_fires_on_large_move_with_volume(self, engine: AlertEngine) -> None:
         # 35-point move over warmup bars
         prices = [5000.0, 5005.0, 5010.0, 5015.0, 5035.0]
         _feed_bars(engine, "ES", prices, volume=200)
         assert "es_momentum" in engine._state.last_fired
 
-    def test_does_not_fire_on_small_move(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_does_not_fire_on_small_move(self, engine: AlertEngine) -> None:
         # 10-point move -- below 30-pt threshold
         prices = [5000.0, 5002.0, 5004.0, 5006.0, 5010.0]
         _feed_bars(engine, "ES", prices, volume=200)
         assert "es_momentum" not in engine._state.last_fired
 
-    def test_does_not_fire_with_zero_volume(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_does_not_fire_with_zero_volume(self, engine: AlertEngine) -> None:
         prices = [5000.0, 5005.0, 5010.0, 5015.0, 5035.0]
         _feed_bars(engine, "ES", prices, volume=0)
         assert "es_momentum" not in engine._state.last_fired
@@ -347,9 +329,7 @@ class TestVxBackwardation:
 
         assert "vx_backwardation" in engine._state.last_fired
 
-    def test_does_not_fire_when_front_lt_back(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_does_not_fire_when_front_lt_back(self, engine: AlertEngine) -> None:
         base_ts = 1_000_000.0
         for i in range(AlertEngine.MIN_BARS_WARMUP):
             ts = base_ts + i * 60
@@ -374,9 +354,7 @@ class TestVxBackwardation:
 
 
 class TestEsNqDivergence:
-    def test_fires_on_opposite_direction_moves(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_fires_on_opposite_direction_moves(self, engine: AlertEngine) -> None:
         base_ts = 1_000_000.0
         for i in range(AlertEngine.MIN_BARS_WARMUP):
             ts = base_ts + i * 60
@@ -386,9 +364,7 @@ class TestEsNqDivergence:
 
         assert "es_nq_divergence" in engine._state.last_fired
 
-    def test_does_not_fire_when_moving_together(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_does_not_fire_when_moving_together(self, engine: AlertEngine) -> None:
         base_ts = 1_000_000.0
         for i in range(AlertEngine.MIN_BARS_WARMUP):
             ts = base_ts + i * 60
@@ -449,9 +425,7 @@ class TestClSpike:
 
         assert "cl_spike" in engine._state.last_fired
 
-    def test_does_not_fire_on_small_move(
-        self, engine: AlertEngine
-    ) -> None:
+    def test_does_not_fire_on_small_move(self, engine: AlertEngine) -> None:
         base_ts = 1_000_000.0
         # Start at 80, end at 80.8 = +1.0% -- below 2% threshold
         prices = [80.0, 80.1, 80.2, 80.4, 80.8]

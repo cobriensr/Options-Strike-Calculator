@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -24,7 +24,7 @@ FLUSH_INTERVAL_S = 5.0
 class StrikeVolume:
     """Rolling volume tracker for a single strike."""
 
-    buy_volume: int = 0   # side='B' (buy aggressor, lifting offers)
+    buy_volume: int = 0  # side='B' (buy aggressor, lifting offers)
     sell_volume: int = 0  # side='A' (sell aggressor, hitting bids)
     none_volume: int = 0  # side='N' (crossed/block)
 
@@ -182,9 +182,7 @@ class TradeProcessor:
         self._volume_window_start = datetime.now(timezone.utc)
         log.info("Volume window reset")
 
-    def get_unusual_volume_strikes(
-        self, threshold_multiple: float = 5.0
-    ) -> list[dict]:
+    def get_unusual_volume_strikes(self, threshold_multiple: float = 5.0) -> list[dict]:
         """Find strikes with volume exceeding threshold * average.
 
         Returns list of dicts with strike info and aggressor breakdown.
@@ -193,13 +191,15 @@ class TradeProcessor:
         for (strike, opt_type), vol in self._volume.items():
             avg = self._avg_volume.get((strike, opt_type), 0.0)
             if avg > 0 and vol.total_volume > avg * threshold_multiple:
-                unusual.append({
-                    "strike": strike,
-                    "option_type": opt_type,
-                    "volume": vol.total_volume,
-                    "avg_volume": avg,
-                    "multiple": vol.total_volume / avg,
-                    "buy_aggressor_pct": vol.buy_aggressor_pct,
-                    "sell_aggressor_pct": vol.sell_aggressor_pct,
-                })
+                unusual.append(
+                    {
+                        "strike": strike,
+                        "option_type": opt_type,
+                        "volume": vol.total_volume,
+                        "avg_volume": avg,
+                        "multiple": vol.total_volume / avg,
+                        "buy_aggressor_pct": vol.buy_aggressor_pct,
+                        "sell_aggressor_pct": vol.sell_aggressor_pct,
+                    }
+                )
         return unusual

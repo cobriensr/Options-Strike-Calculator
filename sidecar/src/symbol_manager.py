@@ -13,16 +13,24 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 import math
 
-from logger_setup import log
-
 
 # ---------------------------------------------------------------------------
 # Month codes for CME/CBOT/NYMEX/CFE futures
 # ---------------------------------------------------------------------------
 
 MONTH_CODES = {
-    1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
-    7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z",
+    1: "F",
+    2: "G",
+    3: "H",
+    4: "J",
+    5: "K",
+    6: "M",
+    7: "N",
+    8: "Q",
+    9: "U",
+    10: "V",
+    11: "X",
+    12: "Z",
 }
 
 QUARTERLY_MONTHS = [3, 6, 9, 12]
@@ -35,23 +43,23 @@ QUARTERLY_MONTHS = [3, 6, 9, 12]
 # For OHLCV-1m subscriptions, we use parent symbology (stype_in='parent')
 # which automatically resolves to the active front-month contract.
 FUTURES_PARENT_SYMBOLS = {
-    "ES": "ES.FUT",    # E-mini S&P 500
-    "NQ": "NQ.FUT",    # E-mini Nasdaq 100
-    "ZN": "ZN.FUT",    # 10-Year Treasury Note
+    "ES": "ES.FUT",  # E-mini S&P 500
+    "NQ": "NQ.FUT",  # E-mini Nasdaq 100
+    "ZN": "ZN.FUT",  # 10-Year Treasury Note
     "RTY": "RTY.FUT",  # E-mini Russell 2000
-    "CL": "CL.FUT",    # WTI Crude Oil
-    "GC": "GC.FUT",    # Gold (COMEX)
+    "CL": "CL.FUT",  # WTI Crude Oil
+    "GC": "GC.FUT",  # Gold (COMEX)
 }
 
 # VX (full-size VIX futures) — two months for term structure
-VX_FRONT = "VX.FUT"      # Front month
-VX_SECOND = "VX.FUT.1"   # Second month (for contango/backwardation)
+VX_FRONT = "VX.FUT"  # Front month
+VX_SECOND = "VX.FUT.1"  # Second month (for contango/backwardation)
 
 # DX (US Dollar Index) on ICE Futures US — separate dataset
 DX_PARENT = "DX.FUT"
 
 # Datasets by exchange
-DATASET_CME = "GLBX.MDP3"    # CME, CBOT, NYMEX, COMEX
+DATASET_CME = "GLBX.MDP3"  # CME, CBOT, NYMEX, COMEX
 DATASET_XCBF = "XCBF.PITCH"  # CBOE Futures Exchange (VX)
 DATASET_IFUS = "IFUS.IMPACT"  # ICE Futures US (DX)
 
@@ -71,7 +79,7 @@ SYMBOL_DISPLAY = {
 # Strike spacing for ES options (5-point increments)
 ES_STRIKE_SPACING = 5
 ES_RECENTER_THRESHOLD = 50  # Re-center when ES moves +/-50 pts
-ES_STRIKES_EACH_SIDE = 10   # ATM +/-10 strikes = ~20 contracts
+ES_STRIKES_EACH_SIDE = 10  # ATM +/-10 strikes = ~20 contracts
 
 
 @dataclass

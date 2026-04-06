@@ -4,3 +4,5 @@ twilio>=9.0.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 pytest>=8.0.0
+pytest-cov>=6.0
+ruff>=0.11

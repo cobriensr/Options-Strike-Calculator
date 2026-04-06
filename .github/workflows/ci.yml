@@ -162,5 +162,5 @@ jobs:
       - name: Install dependencies
         run: pip install -r sidecar/requirements.txt
 
-      - name: Tests
-        run: cd sidecar && python -m pytest tests/ -v
+      - name: Lint, Format Check & Tests
+        run: cd sidecar && make review PYTHON=python
