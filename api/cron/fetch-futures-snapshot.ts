@@ -123,11 +123,15 @@ async function computeSnapshot(
     }
   }
 
+  // Clamp percentages to avoid NUMERIC(8,4) overflow on stale comparisons
+  const clamp = (v: number | null) =>
+    v != null ? Math.max(-999, Math.min(999, v)) : null;
+
   return {
     symbol,
     price,
-    change1hPct,
-    changeDayPct,
+    change1hPct: clamp(change1hPct),
+    changeDayPct: clamp(changeDayPct),
     volumeRatio,
   };
 }
