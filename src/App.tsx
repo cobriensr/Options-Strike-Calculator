@@ -273,6 +273,9 @@ export default function StrikeCalculator() {
   );
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const [csvPositionSummary, setCsvPositionSummary] = useState<string | null>(
+    null,
+  );
   const handleAnalysisSaved = useCallback(() => {
     setHistoryRefreshKey((k) => k + 1);
     toast.show('Analysis saved', 'success');
@@ -691,6 +694,7 @@ export default function StrikeCalculator() {
                       results={results}
                       onAnalysisSaved={handleAnalysisSaved}
                       context={analysisContext}
+                      csvPositionSummary={csvPositionSummary}
                     />
                   </Suspense>
                 </ErrorBoundary>
@@ -717,7 +721,10 @@ export default function StrikeCalculator() {
             <span id="sec-positions" className="block scroll-mt-28" />
             <ErrorBoundary label="Paper Dashboard">
               <Suspense fallback={<SkeletonSection lines={5} tall />}>
-                <PositionMonitor spotPrice={results?.spot ?? spxVal ?? 0} />
+                <PositionMonitor
+                  spotPrice={results?.spot ?? spxVal ?? 0}
+                  onPositionSummaryChange={setCsvPositionSummary}
+                />
               </Suspense>
             </ErrorBoundary>
 

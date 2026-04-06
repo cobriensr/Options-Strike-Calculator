@@ -1,7 +1,8 @@
-import { useRef, useState, useCallback, useMemo } from 'react';
+import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { useIsOwner } from '../../hooks/useIsOwner';
 import { SectionBox } from '../ui';
 import { parseStatement, applyBSEstimates } from './statement-parser';
+import { formatPositionSummaryForClaude } from './position-helpers';
 import AccountOverview from './AccountOverview';
 import DataQualityAlerts from './DataQualityAlerts';
 import ExecutionQuality from './ExecutionQuality';
@@ -13,6 +14,7 @@ import type { DailyStatement } from './types';
 
 interface PositionMonitorProps {
   spotPrice: number;
+  onPositionSummaryChange?: (summary: string | null) => void;
 }
 
 // ── Self-contained time → T conversion ──────────────────
@@ -32,6 +34,7 @@ function timeToT(hour: number, minute: number): number | null {
 
 export default function PositionMonitor({
   spotPrice,
+  onPositionSummaryChange,
 }: Readonly<PositionMonitorProps>) {
   const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
   // Snapshot spot price at upload time to avoid re-renders from
@@ -65,6 +68,18 @@ export default function PositionMonitor({
       return { ...rawStatement };
     }
   }, [rawStatement, uploadSpot, decayEnabled, simHour, simMinute]);
+
+  // Push parsed position summary to parent for Claude analysis context
+  useEffect(() => {
+    if (!onPositionSummaryChange) return;
+    if (rawStatement && rawStatement.spreads.length > 0) {
+      onPositionSummaryChange(
+        formatPositionSummaryForClaude(rawStatement, uploadSpot),
+      );
+    } else {
+      onPositionSummaryChange(null);
+    }
+  }, [rawStatement, uploadSpot, onPositionSummaryChange]);
 
   const handleUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {

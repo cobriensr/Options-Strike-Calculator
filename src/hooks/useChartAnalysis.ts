@@ -57,6 +57,7 @@ export function useChartAnalysis(opts: {
   results: CalculationResults | null;
   mode: AnalysisMode;
   hasCSVPositions?: boolean;
+  csvPositionSummary?: string;
   onAnalysisSaved?: () => void;
   onModeCompleted?: (mode: AnalysisMode) => void;
 }): UseChartAnalysisReturn {
@@ -68,6 +69,7 @@ export function useChartAnalysis(opts: {
     onAnalysisSaved,
     onModeCompleted,
     hasCSVPositions,
+    csvPositionSummary,
   } = opts;
 
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
@@ -90,11 +92,13 @@ export function useChartAnalysis(opts: {
   const resultsRef = useRef(results);
   const modeRef = useRef(mode);
   const hasCSVPositionsRef = useRef(hasCSVPositions);
+  const csvPositionSummaryRef = useRef(csvPositionSummary);
   imagesRef.current = images;
   contextRef.current = context;
   resultsRef.current = results;
   modeRef.current = mode;
   hasCSVPositionsRef.current = hasCSVPositions;
+  csvPositionSummaryRef.current = csvPositionSummary;
 
   // Promise resolver for the pausable retry loop — resolves when the
   // user clicks "Retry" or "Cancel" in the retry prompt dialog.
@@ -185,6 +189,7 @@ export function useChartAnalysis(opts: {
         T: currentResults?.T,
         hoursRemaining: currentResults?.hoursRemaining,
         spx: currentResults?.spot,
+        currentPosition: csvPositionSummaryRef.current ?? undefined,
         previousRecommendation:
           lastAnalysisRef.current &&
           (currentMode === 'midday' || currentMode === 'review')
