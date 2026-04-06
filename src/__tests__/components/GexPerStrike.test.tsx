@@ -508,9 +508,12 @@ describe('GexPerStrike: accessibility', () => {
       />,
     );
     expect(screen.getByText('Strike')).toBeInTheDocument();
-    expect(screen.getByText('Distance')).toBeInTheDocument();
-    expect(screen.getByText('GEX $')).toBeInTheDocument();
+    expect(screen.getByText('Dist')).toBeInTheDocument();
+    expect(screen.getByText('Net $')).toBeInTheDocument();
     expect(screen.getByText('Charm')).toBeInTheDocument();
+    expect(screen.getByText('DEX')).toBeInTheDocument();
+    expect(screen.getByText('Vanna')).toBeInTheDocument();
+    expect(screen.getByText('Vol')).toBeInTheDocument();
   });
 });
 
