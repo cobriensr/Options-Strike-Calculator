@@ -110,6 +110,16 @@ async function fetchStrike0dte(date) {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+
+    // Detect historic data access limit and extract earliest date
+    if (res.status === 403 && text.includes('historic_data_access_missing')) {
+      const match = /available to you is (\d{4}-\d{2}-\d{2})/.exec(text);
+      if (match) {
+        return { blocked: true, earliestDate: match[1] };
+      }
+      return { blocked: true, earliestDate: null };
+    }
+
     console.warn(`  UW API ${res.status} for ${date}: ${text.slice(0, 100)}`);
     return [];
   }
@@ -190,6 +200,34 @@ function fmt(val) {
   return `${sign}${abs.toFixed(0)}`;
 }
 
+// ── Logging helper ─────────────────────────────────────────
+
+function logDay(date, rows, result) {
+  let peakGamma = { strike: 0, val: 0 };
+  let troughGamma = { strike: 0, val: 0 };
+  let peakCharm = { strike: 0, val: 0 };
+
+  const price = result.price ?? 0;
+  for (const row of rows) {
+    const s = Number.parseFloat(row.strike);
+    if (Math.abs(s - price) > ATM_RANGE) continue;
+    const netG =
+      Number.parseFloat(row.call_gamma_oi) +
+      Number.parseFloat(row.put_gamma_oi);
+    const netC =
+      Number.parseFloat(row.call_charm_oi) +
+      Number.parseFloat(row.put_charm_oi);
+    if (netG > peakGamma.val) peakGamma = { strike: s, val: netG };
+    if (netG < troughGamma.val) troughGamma = { strike: s, val: netG };
+    if (Math.abs(netC) > Math.abs(peakCharm.val))
+      peakCharm = { strike: s, val: netC };
+  }
+
+  console.log(
+    `  ${date}: ${rows.length} total → ${result.filtered} filtered (${result.stored} new) | SPX: ${result.price ?? 'N/A'} | γ wall: ${peakGamma.strike} (${fmt(peakGamma.val)}) | γ trough: ${troughGamma.strike} (${fmt(troughGamma.val)}) | charm peak: ${peakCharm.strike} (${fmt(peakCharm.val)})`,
+  );
+}
+
 // ── Main ───────────────────────────────────────────────────
 
 async function main() {
@@ -204,39 +242,33 @@ async function main() {
 
   let totalStored = 0;
 
+  let skippedToDate = null;
+
   for (const date of tradingDays) {
-    // Rate limit: 600ms between requests
-    await new Promise((r) => setTimeout(r, 600));
+    // Skip dates before the plan's earliest available date
+    if (skippedToDate && date < skippedToDate) continue;
+
+    // Rate limit: 120 req/60s → 550ms between requests with margin
+    await new Promise((r) => setTimeout(r, 550));
 
     const rows = await fetchStrike0dte(date);
-    const result = await storeStrikes(rows, date);
 
-    totalStored += result.stored;
-
-    // Find peak/trough gamma for logging
-    let peakGamma = { strike: 0, val: 0 };
-    let troughGamma = { strike: 0, val: 0 };
-    let peakCharm = { strike: 0, val: 0 };
-
-    const price = result.price ?? 0;
-    for (const row of rows) {
-      const s = Number.parseFloat(row.strike);
-      if (Math.abs(s - price) > ATM_RANGE) continue;
-      const netG =
-        Number.parseFloat(row.call_gamma_oi) +
-        Number.parseFloat(row.put_gamma_oi);
-      const netC =
-        Number.parseFloat(row.call_charm_oi) +
-        Number.parseFloat(row.put_charm_oi);
-      if (netG > peakGamma.val) peakGamma = { strike: s, val: netG };
-      if (netG < troughGamma.val) troughGamma = { strike: s, val: netG };
-      if (Math.abs(netC) > Math.abs(peakCharm.val))
-        peakCharm = { strike: s, val: netC };
+    // Handle historic data access block — skip ahead automatically
+    if (rows && typeof rows === 'object' && !Array.isArray(rows) && rows.blocked) {
+      if (rows.earliestDate) {
+        console.log(
+          `  ${date}: ⚠ Plan limit — skipping ahead to ${rows.earliestDate}`,
+        );
+        skippedToDate = rows.earliestDate;
+      } else {
+        console.log(`  ${date}: ⚠ Plan limit — skipping`);
+      }
+      continue;
     }
 
-    console.log(
-      `  ${date}: ${rows.length} total → ${result.filtered} filtered (${result.stored} new) | SPX: ${result.price ?? 'N/A'} | γ wall: ${peakGamma.strike} (${fmt(peakGamma.val)}) | γ trough: ${troughGamma.strike} (${fmt(troughGamma.val)}) | charm peak: ${peakCharm.strike} (${fmt(peakCharm.val)})`,
-    );
+    const result = await storeStrikes(rows, date);
+    totalStored += result.stored;
+    logDay(date, rows, result);
   }
 
   console.log(`\nDone!`);
