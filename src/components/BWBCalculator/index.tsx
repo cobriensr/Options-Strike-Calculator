@@ -54,10 +54,7 @@ export default function BWBCalculator({
     };
   }, [selectedDate, anchorKey]);
 
-  const refreshAnchor = useCallback(
-    () => setAnchorKey((k) => k + 1),
-    [],
-  );
+  const refreshAnchor = useCallback(() => setAnchorKey((k) => k + 1), []);
 
   // Auto-fill strikes from sweet spot + wing widths
   const fillStrikes = useCallback(

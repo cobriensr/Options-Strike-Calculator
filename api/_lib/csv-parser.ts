@@ -695,7 +695,8 @@ function buildOpenSpreadsFromTrades(
           ? spxPrice - p.shortStrike
           : p.shortStrike - spxPrice
         : null;
-    const cushionStr = cushion != null ? `, ${cushion.toFixed(0)} pts cushion` : '';
+    const cushionStr =
+      cushion != null ? `, ${cushion.toFixed(0)} pts cushion` : '';
     return (
       `  ${typeLabel} ${p.shortStrike}/${p.longStrike} x${p.qty} — ` +
       `credit $${(p.credit * 100 * p.qty).toFixed(0)}, ` +
