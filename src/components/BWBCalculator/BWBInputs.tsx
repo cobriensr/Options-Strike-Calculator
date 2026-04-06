@@ -42,7 +42,6 @@ interface BWBInputsProps {
   setNetInput: (v: string) => void;
   setIsCredit: (v: boolean) => void;
   setUseCharm: (v: boolean) => void;
-  onClear: () => void;
   onRefreshAnchor: () => void;
 }
 
@@ -72,24 +71,10 @@ export default function BWBInputs({
   setNetInput,
   setIsCredit,
   setUseCharm,
-  onClear,
   onRefreshAnchor,
 }: Readonly<BWBInputsProps>) {
   return (
     <>
-      {/* Header */}
-      <div className="mb-3.5 flex items-center justify-between">
-        <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
-          BWB Live Calculator
-        </h2>
-        <button
-          onClick={onClear}
-          className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
-        >
-          Clear
-        </button>
-      </div>
-
       {/* Side toggle + Contracts */}
       <div className="mb-4 flex items-center justify-between gap-4">
         <div className="flex gap-1.5">

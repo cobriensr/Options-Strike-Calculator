@@ -133,12 +133,64 @@ export default function BWBCalculator({
     setContracts(1);
   };
 
+  const [sectionCollapsed, setSectionCollapsed] = useState(false);
+  const toggleSection = useCallback(
+    () => setSectionCollapsed((v) => !v),
+    [],
+  );
+
   return (
     <section
       aria-label="BWB live calculator"
       className="animate-fade-in-up bg-surface border-edge border-t-accent mt-6 flex flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)]"
     >
-      <BWBInputs
+      {/* Collapsible header */}
+      <div
+        className={
+          (sectionCollapsed ? '' : 'mb-3.5 ') +
+          'flex cursor-pointer select-none items-center justify-between'
+        }
+        onClick={toggleSection}
+        role="button"
+        tabIndex={0}
+        aria-label="Toggle BWB Live Calculator"
+        aria-expanded={!sectionCollapsed}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleSection();
+          }
+        }}
+      >
+        <div className="flex items-center gap-2.5">
+          <span
+            className="text-muted text-[12px] transition-transform duration-200"
+            style={{
+              transform: sectionCollapsed
+                ? 'rotate(-90deg)'
+                : 'rotate(0deg)',
+            }}
+            aria-hidden="true"
+          >
+            &#x25BE;
+          </span>
+          <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+            BWB Live Calculator
+          </h2>
+        </div>
+        <div onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={handleClear}
+            className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
+      {!sectionCollapsed && (
+        <>
+          <BWBInputs
         side={side}
         contracts={contracts}
         sweetSpot={sweetSpot}
@@ -164,7 +216,6 @@ export default function BWBCalculator({
         setNetInput={setNetInput}
         setIsCredit={setIsCredit}
         setUseCharm={setUseCharm}
-        onClear={handleClear}
         onRefreshAnchor={refreshAnchor}
       />
 
@@ -183,11 +234,13 @@ export default function BWBCalculator({
         />
       )}
 
-      {/* Empty state */}
-      {!allValid && (
-        <div className="text-muted mt-4 text-center text-sm italic">
-          Enter three strikes and a fill price to see the P&L profile.
-        </div>
+          {/* Empty state */}
+          {!allValid && (
+            <div className="text-muted mt-4 text-center text-sm italic">
+              Enter three strikes and a fill price to see the P&L profile.
+            </div>
+          )}
+        </>
       )}
     </section>
   );
