@@ -21,7 +21,7 @@ import { neon } from '@neondatabase/serverless';
 // ── Config ─────────────────────────────────────────────────────
 
 const DEFAULT_SYMBOLS = ['ES', 'NQ', 'VX', 'ZN', 'RTY', 'CL', 'GC', 'DX'];
-const DEFAULT_DAYS = 252; // ~1 trading year
+const DEFAULT_DAYS = 365; // full calendar year of L1 history
 
 interface BackfillConfig {
   symbols: string[];
