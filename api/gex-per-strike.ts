@@ -58,7 +58,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           WHERE date = ${date}
             AND timestamp <= (${localTs}::timestamp AT TIME ZONE 'America/Chicago')
         `;
-      } else {
+      }
+
+      // Fall back to latest snapshot if time filter matched nothing (e.g. backfill has one snapshot/day)
+      if (!tsRows?.[0]?.latest_ts) {
         tsRows = await sql`
           SELECT MAX(timestamp) AS latest_ts
           FROM gex_strike_0dte
