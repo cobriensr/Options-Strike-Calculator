@@ -101,6 +101,24 @@ describe('GET /api/gex-per-strike', () => {
     expect(body.date).toBe('2026-03-28');
   });
 
+  it('uses time param to filter snapshot timestamp', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-03-28T15:30:00Z' }]);
+    mockSql.mockResolvedValueOnce([makeDbRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-03-28', time: '10:30' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    // Verify both queries were executed (timestamp lookup + strike fetch)
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects invalid date format', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
 

@@ -44,12 +44,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               timeZone: 'America/New_York',
             });
 
-      // Get the latest timestamp for this date
-      const tsRows = await sql`
-        SELECT MAX(timestamp) AS latest_ts
-        FROM gex_strike_0dte
-        WHERE date = ${date}
-      `;
+      // Optional time filter: "HH:MM" in CT → find closest snapshot at/before
+      const timeParam = req.query.time as string | undefined;
+      const hasTime = timeParam && /^\d{2}:\d{2}$/.test(timeParam);
+
+      let tsRows;
+      if (hasTime) {
+        // Convert CT time to UTC via Postgres timezone conversion
+        const localTs = `${date} ${timeParam}:00`;
+        tsRows = await sql`
+          SELECT MAX(timestamp) AS latest_ts
+          FROM gex_strike_0dte
+          WHERE date = ${date}
+            AND timestamp <= (${localTs}::timestamp AT TIME ZONE 'America/Chicago')
+        `;
+      } else {
+        tsRows = await sql`
+          SELECT MAX(timestamp) AS latest_ts
+          FROM gex_strike_0dte
+          WHERE date = ${date}
+        `;
+      }
 
       const latestTs = tsRows[0]?.latest_ts;
       if (!latestTs) {

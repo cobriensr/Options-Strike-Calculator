@@ -57,6 +57,7 @@ export interface UseGexPerStrikeReturn {
 export function useGexPerStrike(
   marketOpen: boolean,
   selectedDate?: string,
+  selectedTime?: string,
 ): UseGexPerStrikeReturn {
   const isOwner = useIsOwner();
   const [strikes, setStrikes] = useState<GexStrikeLevel[]>([]);
@@ -69,7 +70,10 @@ export function useGexPerStrike(
 
   const fetchData = useCallback(async () => {
     try {
-      const params = selectedDate ? `?date=${selectedDate}` : '';
+      const qs = new URLSearchParams();
+      if (selectedDate) qs.set('date', selectedDate);
+      if (selectedTime) qs.set('time', selectedTime);
+      const params = qs.size > 0 ? `?${qs}` : '';
       const res = await fetch(`/api/gex-per-strike${params}`, {
         credentials: 'same-origin',
         signal: AbortSignal.timeout(5_000),
@@ -97,7 +101,7 @@ export function useGexPerStrike(
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [selectedDate]);
+  }, [selectedDate, selectedTime]);
 
   useEffect(() => {
     mountedRef.current = true;

@@ -39,13 +39,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               timeZone: 'America/New_York',
             });
 
-      const rows = await sql`
-        SELECT spx_approx, total_premium, trade_count, total_shares,
-               latest_time, updated_at
-        FROM dark_pool_levels
-        WHERE date = ${date}
-        ORDER BY total_premium DESC
-      `;
+      // Optional time filter: "HH:MM" in CT → only show levels with trades by that time
+      const timeParam = req.query.time as string | undefined;
+      const hasTime = timeParam && /^\d{2}:\d{2}$/.test(timeParam);
+
+      const rows = hasTime
+        ? await sql`
+            SELECT spx_approx, total_premium, trade_count, total_shares,
+                   latest_time, updated_at
+            FROM dark_pool_levels
+            WHERE date = ${date}
+              AND latest_time <= (${`${date} ${timeParam}:00`}::timestamp AT TIME ZONE 'America/Chicago')
+            ORDER BY total_premium DESC
+          `
+        : await sql`
+            SELECT spx_approx, total_premium, trade_count, total_shares,
+                   latest_time, updated_at
+            FROM dark_pool_levels
+            WHERE date = ${date}
+            ORDER BY total_premium DESC
+          `;
 
       const levels = rows.map((r) => ({
         spxLevel: Number(r.spx_approx),

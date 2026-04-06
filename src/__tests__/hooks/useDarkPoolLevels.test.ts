@@ -326,4 +326,20 @@ describe('useDarkPoolLevels: backtest mode', () => {
 
     expect(mockFetch).not.toHaveBeenCalled();
   });
+
+  it('passes time param when selectedTime provided', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ levels: [makeLevel()], date: '2026-03-28' }),
+    });
+
+    renderHook(() => useDarkPoolLevels(false, '2026-03-28', '10:30'));
+
+    await act(async () => {});
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const url = mockFetch.mock.calls[0]?.[0] as string;
+    expect(url).toContain('date=2026-03-28');
+    expect(url).toContain('time=10%3A30');
+  });
 });

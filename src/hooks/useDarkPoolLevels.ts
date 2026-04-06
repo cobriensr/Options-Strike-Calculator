@@ -34,6 +34,7 @@ export interface UseDarkPoolLevelsReturn {
 export function useDarkPoolLevels(
   marketOpen: boolean,
   selectedDate?: string,
+  selectedTime?: string,
 ): UseDarkPoolLevelsReturn {
   const isOwner = useIsOwner();
   const [levels, setLevels] = useState<DarkPoolLevel[]>([]);
@@ -46,7 +47,10 @@ export function useDarkPoolLevels(
 
   const fetchLevels = useCallback(async () => {
     try {
-      const params = selectedDate ? `?date=${selectedDate}` : '';
+      const qs = new URLSearchParams();
+      if (selectedDate) qs.set('date', selectedDate);
+      if (selectedTime) qs.set('time', selectedTime);
+      const params = qs.size > 0 ? `?${qs}` : '';
       const res = await fetch(`/api/darkpool-levels${params}`, {
         credentials: 'same-origin',
         signal: AbortSignal.timeout(5_000),
@@ -77,7 +81,7 @@ export function useDarkPoolLevels(
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [selectedDate]);
+  }, [selectedDate, selectedTime]);
 
   useEffect(() => {
     mountedRef.current = true;
