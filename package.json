@@ -26,6 +26,9 @@
     "review:ml": "cd ml && make review",
     "review:sidecar": "cd sidecar && make review",
     "review:python": "npm run review:ml && npm run review:sidecar",
+    "format:ml": "cd ml && make format",
+    "format:sidecar": "cd sidecar && make format",
+    "format:python": "npm run format:ml && npm run format:sidecar",
     "db:up": "docker compose -f docker-compose.dev.yml up -d",
     "db:down": "docker compose -f docker-compose.dev.yml down",
     "db:reset": "docker compose -f docker-compose.dev.yml down -v && docker compose -f docker-compose.dev.yml up -d"
