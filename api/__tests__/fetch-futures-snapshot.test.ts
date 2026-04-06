@@ -79,7 +79,7 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
       const symbol = values.find(
         (v) =>
           typeof v === 'string' &&
-          ['ES', 'NQ', 'VXM1', 'VXM2', 'ZN', 'RTY', 'CL'].includes(v),
+          ['ES', 'NQ', 'VX1', 'VX2', 'ZN', 'RTY', 'CL'].includes(v),
       ) as string | undefined;
 
       if (!symbol) return Promise.resolve([]);
@@ -174,8 +174,8 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
-      VXM1: makeSymbolData({ latestClose: '18.5' }),
-      VXM2: makeSymbolData({ latestClose: '20.0' }),
+      VX1: makeSymbolData({ latestClose: '18.5' }),
+      VX2: makeSymbolData({ latestClose: '20.0' }),
       ZN: makeSymbolData({ latestClose: '110.5' }),
       RTY: makeSymbolData({ latestClose: '2100' }),
       CL: makeSymbolData({ latestClose: '75.50' }),
@@ -201,8 +201,8 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
-      VXM1: null, // empty
-      VXM2: null, // empty
+      VX1: null, // empty
+      VX2: null, // empty
       ZN: makeSymbolData({ latestClose: '110.5' }),
       RTY: null, // empty
       CL: makeSymbolData({ latestClose: '75.50' }),
@@ -227,8 +227,8 @@ describe('fetch-futures-snapshot handler', () => {
         dayOpenClose: '5600',
       }),
       NQ: null,
-      VXM1: null,
-      VXM2: null,
+      VX1: null,
+      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -258,8 +258,8 @@ describe('fetch-futures-snapshot handler', () => {
         dayOpenClose: '5600',
       }),
       NQ: null,
-      VXM1: null,
-      VXM2: null,
+      VX1: null,
+      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -286,8 +286,8 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700', latestTs: oldTs }),
       NQ: null,
-      VXM1: null,
-      VXM2: null,
+      VX1: null,
+      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -310,8 +310,8 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
-      VXM1: null,
-      VXM2: null,
+      VX1: null,
+      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -358,8 +358,8 @@ describe('fetch-futures-snapshot handler', () => {
         todayVol: null,
       }),
       NQ: null,
-      VXM1: null,
-      VXM2: null,
+      VX1: null,
+      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -387,8 +387,8 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: null,
       NQ: null,
-      VXM1: null,
-      VXM2: null,
+      VX1: null,
+      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -413,8 +413,8 @@ describe('fetch-futures-snapshot handler', () => {
         todayVol: '120000',
       }),
       NQ: null,
-      VXM1: null,
-      VXM2: null,
+      VX1: null,
+      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -443,8 +443,8 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: null,
-      VXM1: null,
-      VXM2: null,
+      VX1: null,
+      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,

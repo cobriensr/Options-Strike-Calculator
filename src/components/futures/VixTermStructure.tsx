@@ -39,8 +39,8 @@ const VixTermStructure = memo(function VixTermStructure({
   vxTermSpread,
   vxTermStructure,
 }: VixTermStructureProps) {
-  const front = snapshots.find((s) => s.symbol === 'VXM1');
-  const back = snapshots.find((s) => s.symbol === 'VXM2');
+  const front = snapshots.find((s) => s.symbol === 'VX1');
+  const back = snapshots.find((s) => s.symbol === 'VX2');
 
   if (!front && !back && vxTermStructure == null) return null;
 

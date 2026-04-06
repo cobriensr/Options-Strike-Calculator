@@ -20,7 +20,7 @@ import { neon } from '@neondatabase/serverless';
 
 // ── Config ─────────────────────────────────────────────────────
 
-const DEFAULT_SYMBOLS = ['ES', 'NQ', 'VXM', 'ZN', 'RTY', 'CL'];
+const DEFAULT_SYMBOLS = ['ES', 'NQ', 'VX', 'ZN', 'RTY', 'CL'];
 const DEFAULT_DAYS = 252; // ~1 trading year
 
 interface BackfillConfig {
@@ -38,7 +38,7 @@ interface BackfillConfig {
 const DATABENTO_SYMBOL_MAP: Record<string, string> = {
   ES: 'ES.c.0',
   NQ: 'NQ.c.0',
-  VXM: 'VXM.c.0',
+  VX: 'VX.c.0',
   ZN: 'ZN.c.0',
   RTY: 'RTY.c.0',
   CL: 'CL.c.0',
@@ -163,7 +163,7 @@ async function fetchBars(
 > {
   const databentoSymbol = DATABENTO_SYMBOL_MAP[symbol] ?? symbol;
 
-  const dataset = symbol === 'VXM' ? 'XCBF.PITCH' : 'GLBX.MDP3';
+  const dataset = symbol === 'VX' ? 'XCBF.PITCH' : 'GLBX.MDP3';
 
   const body = {
     dataset,

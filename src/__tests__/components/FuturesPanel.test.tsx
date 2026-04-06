@@ -44,14 +44,14 @@ function makeSnapshots() {
       volumeRatio: 0.9,
     },
     {
-      symbol: 'VXM1',
+      symbol: 'VX1',
       price: 18.75,
       change1hPct: null,
       changeDayPct: -1.5,
       volumeRatio: null,
     },
     {
-      symbol: 'VXM2',
+      symbol: 'VX2',
       price: 20.1,
       change1hPct: null,
       changeDayPct: -0.8,

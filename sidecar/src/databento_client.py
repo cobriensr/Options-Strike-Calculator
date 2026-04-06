@@ -67,8 +67,8 @@ class DatabentoClient:
         # Cache: instrument_id -> internal symbol (populated on first resolve)
         self._resolved_cache: dict[int, str | None] = {}
 
-        # VXM instrument_id -> internal symbol (VXM1 or VXM2)
-        # Populated when first VXM bars arrive, keyed by instrument_id
+        # VX instrument_id -> internal symbol (VX1 or VX2)
+        # Populated when first VX bars arrive, keyed by instrument_id
         self._vxm_resolved: dict[int, str] = {}
         self._vxm_ids_seen: list[int] = []
 
@@ -192,12 +192,12 @@ class DatabentoClient:
 
             self._vxm_client.start()
             log.info(
-                "VXM Live client started on %s: %s",
+                "VX Live client started on %s: %s",
                 DATASET_XCBF,
                 cfe_symbols,
             )
         except Exception as exc:
-            log.error("Failed to start VXM client: %s", exc)
+            log.error("Failed to start VX client: %s", exc)
             self._vxm_client = None
 
     def subscribe_es_options(self, es_price: float) -> None:
@@ -291,11 +291,11 @@ class DatabentoClient:
             log.error("Error processing VXM record: %s", exc)
 
     def _handle_vxm_ohlcv(self, record: Any) -> None:
-        """Process a VXM OHLCV-1m bar.
+        """Process a VX OHLCV-1m bar.
 
-        VXM.FUT (front month) and VXM.FUT.1 (second month) each get
-        a unique instrument_id. We assign VXM1 to the first seen and
-        VXM2 to the second, then route through the normal bar handler.
+        VX.FUT (front month) and VX.FUT.1 (second month) each get
+        a unique instrument_id. We assign VX1 to the first seen and
+        VX2 to the second, then route through the normal bar handler.
         """
         from db import upsert_futures_bar
 
@@ -308,7 +308,7 @@ class DatabentoClient:
             if len(self._vxm_ids_seen) >= 2:
                 return  # Already have both, ignore extra instruments
             self._vxm_ids_seen.append(iid)
-            symbol = "VXM1" if len(self._vxm_ids_seen) == 1 else "VXM2"
+            symbol = "VX1" if len(self._vxm_ids_seen) == 1 else "VX2"
             self._vxm_resolved[iid] = symbol
             log.info("VXM mapping: iid %d -> %s", iid, symbol)
 

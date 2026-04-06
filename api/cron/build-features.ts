@@ -288,11 +288,11 @@ async function buildFeaturesForDate(
   //   - nq_qqq_divergence_t1: sign agreement with QQQ NCP
   //
   // VX features (5):
-  //   - vx_front_price: VXM front month last
+  //   - vx_front_price: VX front month last
   //   - vx_term_spread: front - back month
   //   - vx_term_slope_pct: (front - back) / back
   //   - vx_contango_signal: 1 contango, -1 backwardation
-  //   - vx_basis: VXM front - spot VIX
+  //   - vx_basis: VX front - spot VIX
   //
   // ZN features (3):
   //   - zn_momentum_t1: ZN 1H return at T1

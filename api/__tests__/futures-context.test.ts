@@ -171,22 +171,22 @@ describe('formatFuturesForClaude', () => {
   // ── VX section with term structure ──────────────────────
 
   it('formats VX section with CONTANGO signal', async () => {
-    const vxm1 = makeSnapshot('VXM1', { price: '18.00' });
-    const vxm2 = makeSnapshot('VXM2', { price: '19.50' });
+    const vxm1 = makeSnapshot('VX1', { price: '18.00' });
+    const vxm2 = makeSnapshot('VX2', { price: '19.50' });
     mockSql.mockResolvedValueOnce([vxm1, vxm2]);
     mockSql.mockResolvedValueOnce([]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
-    expect(result).toContain('VIX Futures (/VXM)');
+    expect(result).toContain('VIX Futures (/VX)');
     expect(result).toContain('CONTANGO');
     // 18.00 - 19.50 = -1.50 → < -0.25 → CONTANGO
     expect(result).toContain('premium selling');
   });
 
   it('formats VX section with BACKWARDATION signal', async () => {
-    const vxm1 = makeSnapshot('VXM1', { price: '22.00' });
-    const vxm2 = makeSnapshot('VXM2', { price: '20.00' });
+    const vxm1 = makeSnapshot('VX1', { price: '22.00' });
+    const vxm2 = makeSnapshot('VX2', { price: '20.00' });
     mockSql.mockResolvedValueOnce([vxm1, vxm2]);
     mockSql.mockResolvedValueOnce([]);
 
@@ -198,8 +198,8 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('formats VX section with FLAT term structure', async () => {
-    const vxm1 = makeSnapshot('VXM1', { price: '19.10' });
-    const vxm2 = makeSnapshot('VXM2', { price: '19.00' });
+    const vxm1 = makeSnapshot('VX1', { price: '19.10' });
+    const vxm2 = makeSnapshot('VX2', { price: '19.00' });
     mockSql.mockResolvedValueOnce([vxm1, vxm2]);
     mockSql.mockResolvedValueOnce([]);
 

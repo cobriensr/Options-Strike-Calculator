@@ -14,8 +14,8 @@ import type { FuturesSnapshot } from '../../hooks/useFuturesData';
 const SYMBOL_LABELS: Record<string, string> = {
   ES: '/ES',
   NQ: '/NQ',
-  VXM1: '/VXM F',
-  VXM2: '/VXM B',
+  VX1: '/VX F',
+  VX2: '/VX B',
   ZN: '/ZN',
   RTY: '/RTY',
   CL: '/CL',
@@ -24,8 +24,8 @@ const SYMBOL_LABELS: Record<string, string> = {
 const SYMBOL_NAMES: Record<string, string> = {
   ES: 'S&P 500',
   NQ: 'Nasdaq 100',
-  VXM1: 'VIX Front',
-  VXM2: 'VIX Back',
+  VX1: 'VIX Front',
+  VX2: 'VIX Back',
   ZN: '10Y Treasury',
   RTY: 'Russell 2000',
   CL: 'Crude Oil',
@@ -62,7 +62,7 @@ function formatPrice(symbol: string, price: number): string {
   // ZN trades in 32nds but snapshot stores decimal
   if (symbol === 'ZN') return price.toFixed(3);
   if (symbol === 'CL') return price.toFixed(2);
-  if (symbol.startsWith('VXM')) return price.toFixed(2);
+  if (symbol.startsWith('VX')) return price.toFixed(2);
   return price.toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,

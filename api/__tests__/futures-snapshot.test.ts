@@ -137,8 +137,8 @@ describe('GET /api/futures/snapshot', () => {
       makeSnapshotRow('ES', 5700, 0.15, 0.8, 1.3, ts),
       makeSnapshotRow('NQ', 20500, -0.1, 0.5, 0.9, ts),
       makeSnapshotRow('RTY', 2100, 0.3, -0.2, 1.0, ts),
-      makeSnapshotRow('VXM1', 18.5, null, null, null, ts),
-      makeSnapshotRow('VXM2', 20.0, null, null, null, ts),
+      makeSnapshotRow('VX1', 18.5, null, null, null, ts),
+      makeSnapshotRow('VX2', 20.0, null, null, null, ts),
       makeSnapshotRow('ZN', 110.5, 0.05, 0.1, 0.8, ts),
     ]);
 
@@ -167,10 +167,10 @@ describe('GET /api/futures/snapshot', () => {
 
   // ── VX term structure: CONTANGO ───────────────────────────
 
-  it('computes CONTANGO when VXM1 < VXM2 (spread < -0.25)', async () => {
+  it('computes CONTANGO when VX1 < VX2 (spread < -0.25)', async () => {
     mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('VXM1', 18.0),
-      makeSnapshotRow('VXM2', 20.0),
+      makeSnapshotRow('VX1', 18.0),
+      makeSnapshotRow('VX2', 20.0),
     ]);
 
     const res = mockResponse();
@@ -188,10 +188,10 @@ describe('GET /api/futures/snapshot', () => {
 
   // ── VX term structure: BACKWARDATION ──────────────────────
 
-  it('computes BACKWARDATION when VXM1 > VXM2 (spread > 0.25)', async () => {
+  it('computes BACKWARDATION when VX1 > VX2 (spread > 0.25)', async () => {
     mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('VXM1', 22.0),
-      makeSnapshotRow('VXM2', 20.0),
+      makeSnapshotRow('VX1', 22.0),
+      makeSnapshotRow('VX2', 20.0),
     ]);
 
     const res = mockResponse();
@@ -208,10 +208,10 @@ describe('GET /api/futures/snapshot', () => {
 
   // ── VX term structure: FLAT ───────────────────────────────
 
-  it('computes FLAT when VXM1 ≈ VXM2 (spread within threshold)', async () => {
+  it('computes FLAT when VX1 ≈ VX2 (spread within threshold)', async () => {
     mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('VXM1', 20.1),
-      makeSnapshotRow('VXM2', 20.0),
+      makeSnapshotRow('VX1', 20.1),
+      makeSnapshotRow('VX2', 20.0),
     ]);
 
     const res = mockResponse();

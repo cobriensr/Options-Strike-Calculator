@@ -45,24 +45,20 @@ FUTURES_PARENT_SYMBOLS = {
     "CL": "CL.FUT",    # WTI Crude Oil
 }
 
-# VXM needs two months: front and second
-VXM_FRONT = "VXM.FUT"   # Front month
-VXM_SECOND = "VXM.FUT.1"  # Second month (for term structure)
+# VX (full-size VIX futures) — two months for term structure
+VX_FRONT = "VX.FUT"      # Front month
+VX_SECOND = "VX.FUT.1"   # Second month (for contango/backwardation)
 
 # Datasets by exchange
-DATASET_CME = "GLBX.MDP3"  # CME, CBOT, NYMEX, COMEX all under GLBX.MDP3
-# CBOE Futures Exchange (VX/VXM) uses XCBF.PITCH
-# Verify at runtime; start with GLBX.MDP3 for all CME products.
-# For VXM on CFE, use XCBF.PITCH dataset.
-
-DATASET_XCBF = "XCBF.PITCH"  # CBOE Futures Exchange (VXM)
+DATASET_CME = "GLBX.MDP3"   # CME, CBOT, NYMEX, COMEX
+DATASET_XCBF = "XCBF.PITCH"  # CBOE Futures Exchange (VX)
 
 # Internal symbol -> display name mapping
 SYMBOL_DISPLAY = {
     "ES": "/ES",
     "NQ": "/NQ",
-    "VXM1": "/VXM (front)",
-    "VXM2": "/VXM (2nd)",
+    "VX1": "/VX (front)",
+    "VX2": "/VX (2nd)",
     "ZN": "/ZN",
     "RTY": "/RTY",
     "CL": "/CL",
@@ -156,18 +152,18 @@ def get_all_futures_subscriptions() -> dict[str, dict]:
             "db_symbol": sym,
         }
 
-    # VXM front month (CFE)
-    subs["VXM1"] = {
-        "parent_symbol": VXM_FRONT,
+    # VX front month (CFE)
+    subs["VX1"] = {
+        "parent_symbol": VX_FRONT,
         "dataset": DATASET_XCBF,
-        "db_symbol": "VXM1",
+        "db_symbol": "VX1",
     }
 
-    # VXM second month (CFE)
-    subs["VXM2"] = {
-        "parent_symbol": VXM_SECOND,
+    # VX second month (CFE)
+    subs["VX2"] = {
+        "parent_symbol": VX_SECOND,
         "dataset": DATASET_XCBF,
-        "db_symbol": "VXM2",
+        "db_symbol": "VX2",
     }
 
     return subs

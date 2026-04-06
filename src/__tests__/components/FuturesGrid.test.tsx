@@ -25,8 +25,8 @@ function makeAllSnapshots(
   return [
     makeSnapshot({ symbol: 'ES', price: 5450.25, ...overrides }),
     makeSnapshot({ symbol: 'NQ', price: 19800.5, ...overrides }),
-    makeSnapshot({ symbol: 'VXM1', price: 18.75, ...overrides }),
-    makeSnapshot({ symbol: 'VXM2', price: 20.1, ...overrides }),
+    makeSnapshot({ symbol: 'VX1', price: 18.75, ...overrides }),
+    makeSnapshot({ symbol: 'VX2', price: 20.1, ...overrides }),
     makeSnapshot({ symbol: 'ZN', price: 110.234, ...overrides }),
     makeSnapshot({ symbol: 'RTY', price: 2050.0, ...overrides }),
     makeSnapshot({ symbol: 'CL', price: 72.45, ...overrides }),
@@ -43,8 +43,8 @@ describe('FuturesGrid: renders all symbol cards', () => {
 
     expect(screen.getByText('/ES')).toBeInTheDocument();
     expect(screen.getByText('/NQ')).toBeInTheDocument();
-    expect(screen.getByText('/VXM F')).toBeInTheDocument();
-    expect(screen.getByText('/VXM B')).toBeInTheDocument();
+    expect(screen.getByText('/VX F')).toBeInTheDocument();
+    expect(screen.getByText('/VX B')).toBeInTheDocument();
     expect(screen.getByText('/ZN')).toBeInTheDocument();
     expect(screen.getByText('/RTY')).toBeInTheDocument();
     expect(screen.getByText('/CL')).toBeInTheDocument();
@@ -97,10 +97,10 @@ describe('FuturesGrid: price formatting', () => {
     expect(screen.getByText('72.40')).toBeInTheDocument();
   });
 
-  it('formats VXM with 2 decimal places', () => {
+  it('formats VX with 2 decimal places', () => {
     render(
       <FuturesGrid
-        snapshots={[makeSnapshot({ symbol: 'VXM1', price: 18.7 })]}
+        snapshots={[makeSnapshot({ symbol: 'VX1', price: 18.7 })]}
         esSpxBasis={null}
       />,
     );

@@ -637,9 +637,9 @@ NQ-QQQ Divergence:
   right. Fade the options flow signal. Reduce QQQ flow weight in Rule 8 to 10%.
 
 VIX Futures Term Structure:
-- Contango (VXM front < back, normal) = vol expected to mean-revert. Favorable for
+- Contango (VX front < back, normal) = vol expected to mean-revert. Favorable for
   premium selling. Straddle cones are reliably sized. IC structures viable.
-- Backwardation (VXM front > back) = market expects vol to peak TODAY. Straddle cones
+- Backwardation (VX front > back) = market expects vol to peak TODAY. Straddle cones
   may be understated. Widen IC strikes by 5-10 pts or avoid IC entirely. Require
   flow agreement ≥ 7/9 before entering any structure.
 - Contango collapse (spread narrowing rapidly) = regime transition in progress. Treat

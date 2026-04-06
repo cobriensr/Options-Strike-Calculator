@@ -9,7 +9,7 @@ function makeSnapshot(
   overrides: Partial<FuturesSnapshot> = {},
 ): FuturesSnapshot {
   return {
-    symbol: 'VXM1',
+    symbol: 'VX1',
     price: 18.75,
     change1hPct: null,
     changeDayPct: -1.5,
@@ -19,11 +19,11 @@ function makeSnapshot(
 }
 
 function frontMonth(overrides: Partial<FuturesSnapshot> = {}): FuturesSnapshot {
-  return makeSnapshot({ symbol: 'VXM1', price: 18.75, ...overrides });
+  return makeSnapshot({ symbol: 'VX1', price: 18.75, ...overrides });
 }
 
 function backMonth(overrides: Partial<FuturesSnapshot> = {}): FuturesSnapshot {
-  return makeSnapshot({ symbol: 'VXM2', price: 20.1, ...overrides });
+  return makeSnapshot({ symbol: 'VX2', price: 20.1, ...overrides });
 }
 
 // ============================================================

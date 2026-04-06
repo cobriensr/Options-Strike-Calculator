@@ -189,12 +189,12 @@ export async function formatFuturesForClaude(
   }
 
   // VIX Futures section
-  const vxFront = bySymbol.get('VXM1');
-  const vxBack = bySymbol.get('VXM2');
+  const vxFront = bySymbol.get('VX1');
+  const vxBack = bySymbol.get('VX2');
   if (vxFront) {
     const frontPrice = num(vxFront.price);
     const backPrice = num(vxBack?.price ?? null);
-    const lines = [`VIX Futures (/VXM):`];
+    const lines = [`VIX Futures (/VX):`];
     if (frontPrice != null && backPrice != null) {
       lines.push(
         `  Front Month: ${fmtPrice(frontPrice)} | Second Month: ${fmtPrice(backPrice)}`,
@@ -336,8 +336,8 @@ function computeDerivedSignals(
   }
 
   // VX term structure
-  const vxFront = num(bySymbol.get('VXM1')?.price ?? null);
-  const vxBack = num(bySymbol.get('VXM2')?.price ?? null);
+  const vxFront = num(bySymbol.get('VX1')?.price ?? null);
+  const vxBack = num(bySymbol.get('VX2')?.price ?? null);
   if (vxFront != null && vxBack != null) {
     result.vxTermSpread = vxFront - vxBack;
     if (result.vxTermSpread > 0.25) {

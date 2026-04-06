@@ -2,7 +2,7 @@
 
 Alert types:
 - es_momentum: ES moves +/-30 pts in 10 min at 2x+ volume
-- vx_backwardation: VXM front crosses above VXM second
+- vx_backwardation: VX front crosses above VX second
 - es_nq_divergence: ES and NQ diverge >=0.5% in 30 min
 - zn_flight_safety: ZN +0.5 pts while ES -20 pts in 30 min
 - cl_spike: CL moves +/-2% in 60 min
@@ -194,7 +194,7 @@ class AlertEngine:
             self._check_zn_flight_safety()
         elif triggering_symbol == "NQ":
             self._check_es_nq_divergence()
-        elif triggering_symbol in ("VXM1", "VXM2"):
+        elif triggering_symbol in ("VX1", "VX2"):
             self._check_vx_backwardation()
         elif triggering_symbol == "ZN":
             self._check_zn_flight_safety()
@@ -290,13 +290,13 @@ class AlertEngine:
         self._fire_alert(alert_type, msg)
 
     def _check_vx_backwardation(self) -> None:
-        """VXM front crosses above VXM second (backwardation)."""
+        """VX front crosses above VX second (backwardation)."""
         alert_type = "vx_backwardation"
         if not self._can_fire(alert_type):
             return
 
-        front = self._state.latest_prices.get("VXM1")
-        back = self._state.latest_prices.get("VXM2")
+        front = self._state.latest_prices.get("VX1")
+        back = self._state.latest_prices.get("VX2")
         if front is None or back is None:
             return
 

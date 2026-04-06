@@ -156,11 +156,11 @@ NQ_FEATURES: list[str] = [
 ]
 
 VX_FEATURES: list[str] = [
-    "vx_front_price",  # VXM front month close/last
-    "vx_term_spread",  # VXM front - VXM second (pts)
+    "vx_front_price",  # VX front month close/last
+    "vx_term_spread",  # VX front - VX second (pts)
     "vx_term_slope_pct",  # (front - back) / back as percentage
     "vx_contango_signal",  # 1 = contango, -1 = backwardation
-    "vx_basis",  # VXM front - spot VIX (futures premium)
+    "vx_basis",  # VX front - spot VIX (futures premium)
 ]
 
 ZN_FEATURES: list[str] = [

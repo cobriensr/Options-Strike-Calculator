@@ -102,13 +102,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }));
 
     // Compute cross-symbol metrics
-    const vxm1 = snapshots.find((s) => s.symbol === 'VXM1');
-    const vxm2 = snapshots.find((s) => s.symbol === 'VXM2');
+    const vx1 = snapshots.find((s) => s.symbol === 'VX1');
+    const vx2 = snapshots.find((s) => s.symbol === 'VX2');
     let vxTermSpread: number | null = null;
     let vxTermStructure: 'CONTANGO' | 'FLAT' | 'BACKWARDATION' | null = null;
 
-    if (vxm1 && vxm2) {
-      vxTermSpread = vxm1.price - vxm2.price;
+    if (vx1 && vx2) {
+      vxTermSpread = vx1.price - vx2.price;
       if (vxTermSpread > 0.25) {
         vxTermStructure = 'BACKWARDATION';
       } else if (vxTermSpread < -0.25) {
