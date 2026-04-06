@@ -43,6 +43,7 @@ function makeSnapshotRow(
   change1h: number | null = null,
   changeDay: number | null = null,
   volumeRatio: number | null = null,
+  ts: string = '2026-04-03T16:00:00.000Z',
 ) {
   return {
     symbol,
@@ -50,6 +51,7 @@ function makeSnapshotRow(
     change_1h_pct: change1h != null ? String(change1h) : null,
     change_day_pct: changeDay != null ? String(changeDay) : null,
     volume_ratio: volumeRatio != null ? String(volumeRatio) : null,
+    ts,
   };
 }
 
@@ -108,8 +110,8 @@ describe('GET /api/futures/snapshot', () => {
   // ── No data ───────────────────────────────────────────────
 
   it('returns null fields when no data exists', async () => {
-    // MAX(ts) returns null
-    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    // Combined query returns no rows
+    mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -129,21 +131,18 @@ describe('GET /api/futures/snapshot', () => {
   it('returns correct response shape with mock data', async () => {
     const ts = '2026-04-03T16:00:00.000Z';
 
-    // 1. MAX(ts) query
-    mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
-
-    // 2. Snapshot rows at latest ts
+    // 1. Combined query (snapshot rows with inline MAX subquery)
     mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('CL', 75.5, 0.5, 1.2, 1.1),
-      makeSnapshotRow('ES', 5700, 0.15, 0.8, 1.3),
-      makeSnapshotRow('NQ', 20500, -0.1, 0.5, 0.9),
-      makeSnapshotRow('RTY', 2100, 0.3, -0.2, 1.0),
-      makeSnapshotRow('VXM1', 18.5, null, null, null),
-      makeSnapshotRow('VXM2', 20.0, null, null, null),
-      makeSnapshotRow('ZN', 110.5, 0.05, 0.1, 0.8),
+      makeSnapshotRow('CL', 75.5, 0.5, 1.2, 1.1, ts),
+      makeSnapshotRow('ES', 5700, 0.15, 0.8, 1.3, ts),
+      makeSnapshotRow('NQ', 20500, -0.1, 0.5, 0.9, ts),
+      makeSnapshotRow('RTY', 2100, 0.3, -0.2, 1.0, ts),
+      makeSnapshotRow('VXM1', 18.5, null, null, null, ts),
+      makeSnapshotRow('VXM2', 20.0, null, null, null, ts),
+      makeSnapshotRow('ZN', 110.5, 0.05, 0.1, 0.8, ts),
     ]);
 
-    // 3. SPX query (ES exists → look up SPX)
+    // 2. SPX query (ES exists → look up SPX)
     mockSql.mockResolvedValueOnce([{ spx: '5690' }]);
 
     const res = mockResponse();
@@ -169,8 +168,6 @@ describe('GET /api/futures/snapshot', () => {
   // ── VX term structure: CONTANGO ───────────────────────────
 
   it('computes CONTANGO when VXM1 < VXM2 (spread < -0.25)', async () => {
-    const ts = '2026-04-03T16:00:00.000Z';
-    mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
     mockSql.mockResolvedValueOnce([
       makeSnapshotRow('VXM1', 18.0),
       makeSnapshotRow('VXM2', 20.0),
@@ -192,8 +189,6 @@ describe('GET /api/futures/snapshot', () => {
   // ── VX term structure: BACKWARDATION ──────────────────────
 
   it('computes BACKWARDATION when VXM1 > VXM2 (spread > 0.25)', async () => {
-    const ts = '2026-04-03T16:00:00.000Z';
-    mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
     mockSql.mockResolvedValueOnce([
       makeSnapshotRow('VXM1', 22.0),
       makeSnapshotRow('VXM2', 20.0),
@@ -214,8 +209,6 @@ describe('GET /api/futures/snapshot', () => {
   // ── VX term structure: FLAT ───────────────────────────────
 
   it('computes FLAT when VXM1 ≈ VXM2 (spread within threshold)', async () => {
-    const ts = '2026-04-03T16:00:00.000Z';
-    mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
     mockSql.mockResolvedValueOnce([
       makeSnapshotRow('VXM1', 20.1),
       makeSnapshotRow('VXM2', 20.0),
@@ -236,8 +229,6 @@ describe('GET /api/futures/snapshot', () => {
   // ── Null VX term structure when missing VX symbols ────────
 
   it('returns null term structure when VX symbols are missing', async () => {
-    const ts = '2026-04-03T16:00:00.000Z';
-    mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
     mockSql.mockResolvedValueOnce([
       makeSnapshotRow('ES', 5700, 0.1, 0.5, 1.0),
       makeSnapshotRow('NQ', 20500),
@@ -259,8 +250,6 @@ describe('GET /api/futures/snapshot', () => {
   // ── ES-SPX basis ──────────────────────────────────────────
 
   it('computes ES-SPX basis correctly', async () => {
-    const ts = '2026-04-03T16:00:00.000Z';
-    mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
     mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5710)]);
     // SPX query
     mockSql.mockResolvedValueOnce([{ spx: '5700' }]);
@@ -274,8 +263,6 @@ describe('GET /api/futures/snapshot', () => {
   });
 
   it('returns null ES-SPX basis when no SPX data', async () => {
-    const ts = '2026-04-03T16:00:00.000Z';
-    mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
     mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5710)]);
     // SPX query returns empty
     mockSql.mockResolvedValueOnce([]);
@@ -290,8 +277,6 @@ describe('GET /api/futures/snapshot', () => {
   // ── Cache headers ─────────────────────────────────────────
 
   it('sets correct cache headers when data exists', async () => {
-    const ts = '2026-04-03T16:00:00.000Z';
-    mockSql.mockResolvedValueOnce([{ latest_ts: ts }]);
     mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5700)]);
     mockSql.mockResolvedValueOnce([]);
 
@@ -304,7 +289,7 @@ describe('GET /api/futures/snapshot', () => {
   });
 
   it('sets correct cache headers when no data exists', async () => {
-    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
