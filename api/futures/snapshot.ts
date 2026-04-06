@@ -53,18 +53,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const tradeDate = getETDateStr(new Date());
 
-    // Get the latest snapshot timestamp for today
-    const latestTsRows = await sql`
-      SELECT MAX(ts) AS latest_ts
+    // Get all symbols at the latest snapshot timestamp for today
+    // Uses inline MAX to avoid JS Date round-trip precision loss
+    const rows = await sql`
+      SELECT symbol, price, change_1h_pct, change_day_pct, volume_ratio, ts
       FROM futures_snapshots
       WHERE trade_date = ${tradeDate}
+        AND ts = (
+          SELECT MAX(ts) FROM futures_snapshots
+          WHERE trade_date = ${tradeDate}
+        )
+      ORDER BY symbol
     `;
 
-    const latestTs = latestTsRows[0]?.latest_ts
-      ? new Date(String(latestTsRows[0].latest_ts)).toISOString()
-      : null;
-
-    if (!latestTs) {
+    if (rows.length === 0) {
       res.setHeader(
         'Cache-Control',
         'private, s-maxage=60, stale-while-revalidate=30',
@@ -78,13 +80,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } satisfies FuturesSnapshotResponse);
     }
 
-    // Get all symbols at the latest timestamp
-    const rows = await sql`
-      SELECT symbol, price, change_1h_pct, change_day_pct, volume_ratio
-      FROM futures_snapshots
-      WHERE ts = ${latestTs}
-      ORDER BY symbol
-    `;
+    const latestTs = rows[0]!.ts
+      ? new Date(String(rows[0]!.ts)).toISOString()
+      : null;
 
     const snapshots: FuturesSnapshotItem[] = rows.map((r) => ({
       symbol: String(r.symbol),
