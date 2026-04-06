@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import ResultsSection from '../../components/ResultsSection';
 import type { CalculationResults, DeltaRow } from '../../types';
 
@@ -191,6 +192,60 @@ describe('ResultsSection', () => {
       />,
     );
     expect(screen.queryByText(/Put skew:/)).not.toBeInTheDocument();
+  });
+
+  it('collapses and expands on click', async () => {
+    render(
+      <ResultsSection
+        results={makeResults()}
+        effectiveRatio={10}
+        spxDirectActive={false}
+        showIC={false}
+        wingWidth={10}
+        contracts={1}
+        skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
+      />,
+    );
+    const toggle = screen.getByRole('button', {
+      name: /Toggle All Delta Strikes/,
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('SPY Spot')).toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('SPY Spot')).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(screen.getByText('SPY Spot')).toBeInTheDocument();
+  });
+
+  it('toggles on keyboard Enter and Space', async () => {
+    render(
+      <ResultsSection
+        results={makeResults()}
+        effectiveRatio={10}
+        spxDirectActive={false}
+        showIC={false}
+        wingWidth={10}
+        contracts={1}
+        skewPct={0}
+        showBWB={false}
+        bwbNarrowWidth={20}
+        bwbWideMultiplier={2}
+      />,
+    );
+    const toggle = screen.getByRole('button', {
+      name: /Toggle All Delta Strikes/,
+    });
+    toggle.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.keyboard(' ');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('shows derived label when spxDirectActive', () => {
