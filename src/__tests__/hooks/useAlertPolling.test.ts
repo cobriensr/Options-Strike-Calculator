@@ -520,11 +520,7 @@ describe('useAlertPolling: interval polling', () => {
 
     const { result } = renderHook(() => useAlertPolling(true));
 
-    await waitFor(() =>
-      expect(result.current.alerts.length).toBeLessThanOrEqual(50),
-    );
-
-    expect(result.current.alerts.length).toBe(50);
+    await waitFor(() => expect(result.current.alerts.length).toBe(50));
   });
 });
 
