@@ -143,10 +143,7 @@ async function storeStrikes(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;

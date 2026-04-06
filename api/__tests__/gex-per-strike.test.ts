@@ -87,9 +87,7 @@ describe('GET /api/gex-per-strike', () => {
   });
 
   it('uses date query param when provided', async () => {
-    mockSql.mockResolvedValueOnce([
-      { latest_ts: '2026-03-28T15:00:00Z' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-03-28T15:00:00Z' }]);
     mockSql.mockResolvedValueOnce([makeDbRow()]);
 
     const res = mockResponse();
@@ -134,9 +132,7 @@ describe('GET /api/gex-per-strike', () => {
   });
 
   it('returns strikes with computed netGamma and netCharm', async () => {
-    mockSql.mockResolvedValueOnce([
-      { latest_ts: '2026-04-02T15:00:00Z' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
     mockSql.mockResolvedValueOnce([makeDbRow()]);
 
     const res = mockResponse();
@@ -171,17 +167,14 @@ describe('GET /api/gex-per-strike', () => {
   });
 
   it('converts string DB values to numbers', async () => {
-    mockSql.mockResolvedValueOnce([
-      { latest_ts: '2026-04-02T15:00:00Z' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
     mockSql.mockResolvedValueOnce([makeDbRow()]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
 
-    const strike = (
-      res._json as { strikes: Array<Record<string, unknown>> }
-    ).strikes[0]!;
+    const strike = (res._json as { strikes: Array<Record<string, unknown>> })
+      .strikes[0]!;
     expect(typeof strike.strike).toBe('number');
     expect(typeof strike.price).toBe('number');
     expect(typeof strike.callGammaOi).toBe('number');
@@ -219,9 +212,7 @@ describe('GET /api/gex-per-strike', () => {
 
   it('calls scope.setTransactionName', async () => {
     const setTransactionName = vi.fn();
-    (
-      Sentry.withIsolationScope as ReturnType<typeof vi.fn>
-    ).mockImplementation(
+    (Sentry.withIsolationScope as ReturnType<typeof vi.fn>).mockImplementation(
       (
         cb: (scope: {
           setTransactionName: typeof setTransactionName;
@@ -233,8 +224,6 @@ describe('GET /api/gex-per-strike', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
 
-    expect(setTransactionName).toHaveBeenCalledWith(
-      'GET /api/gex-per-strike',
-    );
+    expect(setTransactionName).toHaveBeenCalledWith('GET /api/gex-per-strike');
   });
 });

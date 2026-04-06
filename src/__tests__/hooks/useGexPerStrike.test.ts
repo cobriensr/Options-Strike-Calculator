@@ -20,9 +20,7 @@ vi.stubGlobal('fetch', mockFetch);
 
 // ── Helpers ───────────────────────────────────────────────
 
-function makeStrike(
-  overrides: Partial<GexStrikeLevel> = {},
-): GexStrikeLevel {
+function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
   return {
     strike: 5800,
     price: 5795,
@@ -336,9 +334,7 @@ describe('useGexPerStrike: backtest mode', () => {
       }),
     });
 
-    const { result } = renderHook(() =>
-      useGexPerStrike(false, '2026-03-28'),
-    );
+    const { result } = renderHook(() => useGexPerStrike(false, '2026-03-28'));
 
     await waitFor(() => expect(result.current.strikes).toHaveLength(1));
 

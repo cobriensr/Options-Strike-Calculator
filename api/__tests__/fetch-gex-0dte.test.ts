@@ -73,9 +73,7 @@ describe('fetch-gex-0dte handler', () => {
     vi.resetAllMocks();
     mockSql.transaction = mockTransaction;
     mockTransaction.mockImplementation(
-      async (
-        fn: (txn: (...args: unknown[]) => unknown) => unknown[],
-      ) => {
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
         const txnFn = () => ({});
         const queries = fn(txnFn);
         return queries.map(() => [{ id: 1 }]);
@@ -195,9 +193,7 @@ describe('fetch-gex-0dte handler', () => {
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
     mockTransaction.mockImplementationOnce(
-      async (
-        fn: (txn: (...args: unknown[]) => unknown) => unknown[],
-      ) => {
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
         const txnFn = () => ({});
         const queries = fn(txnFn);
         return queries.map(() => []);
@@ -279,9 +275,7 @@ describe('fetch-gex-0dte handler', () => {
 
   it('handles batch insert errors gracefully', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    mockTransaction.mockRejectedValueOnce(
-      new Error('DB batch insert failed'),
-    );
+    mockTransaction.mockRejectedValueOnce(new Error('DB batch insert failed'));
     stubFetch([makeStrikeRow()]);
 
     const res = mockResponse();

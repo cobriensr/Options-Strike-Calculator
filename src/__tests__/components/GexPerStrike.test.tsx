@@ -8,9 +8,7 @@ const noop = vi.fn();
 
 // ── Helpers ───────────────────────────────────────────────
 
-function makeStrike(
-  overrides: Partial<GexStrikeLevel> = {},
-): GexStrikeLevel {
+function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
   return {
     strike: 5800,
     price: 5795,
@@ -87,9 +85,7 @@ describe('GexPerStrike: error state', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByText('Failed to load GEX data'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Failed to load GEX data')).toBeInTheDocument();
   });
 });
 
@@ -108,9 +104,7 @@ describe('GexPerStrike: empty state', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByText(/no 0dte gex data available/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no 0dte gex data available/i)).toBeInTheDocument();
   });
 });
 
@@ -261,9 +255,7 @@ describe('GexPerStrike: charm effect', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByTitle(/reinforcing gamma/),
-    ).toBeInTheDocument();
+    expect(screen.getByTitle(/reinforcing gamma/)).toBeInTheDocument();
   });
 });
 
@@ -282,9 +274,7 @@ describe('GexPerStrike: vol reinforcement', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByTitle(/flow reinforces/),
-    ).toBeInTheDocument();
+    expect(screen.getByTitle(/flow reinforces/)).toBeInTheDocument();
   });
 
   it('shows hollow dot when flow opposes level', () => {
@@ -297,9 +287,7 @@ describe('GexPerStrike: vol reinforcement', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByTitle(/flow opposes/),
-    ).toBeInTheDocument();
+    expect(screen.getByTitle(/flow opposes/)).toBeInTheDocument();
   });
 });
 
@@ -423,9 +411,7 @@ describe('GexPerStrike: GEX bar', () => {
 
     const bars = screen.getAllByLabelText(/gamma exposure$/);
     // Filter out the table itself (only get bar divs)
-    const barDivs = bars.filter(
-      (el) => el.tagName.toLowerCase() === 'div',
-    );
+    const barDivs = bars.filter((el) => el.tagName.toLowerCase() === 'div');
     expect(barDivs).toHaveLength(2);
 
     const bar1 = barDivs[0] as HTMLElement;
@@ -560,9 +546,7 @@ describe('GexPerStrike: header controls', () => {
         onRefresh={onRefresh}
       />,
     );
-    await user.click(
-      screen.getByRole('button', { name: /refresh gex/i }),
-    );
+    await user.click(screen.getByRole('button', { name: /refresh gex/i }));
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
@@ -576,9 +560,7 @@ describe('GexPerStrike: header controls', () => {
         onRefresh={noop}
       />,
     );
-    expect(
-      screen.getByRole('button', { name: /refresh gex/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: /refresh gex/i })).toBeDisabled();
   });
 
   it('renders OI/Dir toggle button', () => {

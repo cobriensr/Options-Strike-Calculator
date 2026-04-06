@@ -23,10 +23,7 @@ import { Sentry } from './_lib/sentry.js';
 import { rejectIfNotOwner } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/gex-per-strike');
 
@@ -127,9 +124,7 @@ export default async function handler(
       });
 
       res.setHeader('Cache-Control', 'no-store');
-      return res
-        .status(200)
-        .json({ strikes, date, timestamp: latestTs });
+      return res.status(200).json({ strikes, date, timestamp: latestTs });
     } catch (err) {
       Sentry.captureException(err);
       logger.error({ err }, 'gex-per-strike fetch error');

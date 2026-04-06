@@ -131,8 +131,7 @@ export default memo(function GexPerStrike({
     if (sortBy === 'strike') return strikes;
     return [...strikes].sort(
       (a, b) =>
-        Math.abs(getNetGamma(b, viewMode)) -
-        Math.abs(getNetGamma(a, viewMode)),
+        Math.abs(getNetGamma(b, viewMode)) - Math.abs(getNetGamma(a, viewMode)),
     );
   }, [strikes, sortBy, viewMode]);
 
@@ -157,8 +156,7 @@ export default memo(function GexPerStrike({
     [],
   );
   const handleMore = useCallback(
-    () =>
-      setVisibleCount((v) => Math.min(v + STEP, MAX_VISIBLE)),
+    () => setVisibleCount((v) => Math.min(v + STEP, MAX_VISIBLE)),
     [],
   );
   const toggleSort = useCallback(
@@ -173,9 +171,7 @@ export default memo(function GexPerStrike({
   const totalStrikes = strikes.length;
 
   const badge =
-    totalStrikes > 0
-      ? `${filtered.length} of ${totalStrikes}`
-      : null;
+    totalStrikes > 0 ? `${filtered.length} of ${totalStrikes}` : null;
 
   const headerRight = (
     <div className="flex items-center gap-2">
@@ -220,9 +216,7 @@ export default memo(function GexPerStrike({
         </span>
         <button
           onClick={handleMore}
-          disabled={
-            visibleCount >= MAX_VISIBLE || visibleCount >= totalStrikes
-          }
+          disabled={visibleCount >= MAX_VISIBLE || visibleCount >= totalStrikes}
           aria-label="Show more strikes"
           className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
         >
@@ -253,9 +247,7 @@ export default memo(function GexPerStrike({
         collapsible
         headerRight={headerRight}
       >
-        <div className="text-muted text-center font-sans text-xs">
-          {error}
-        </div>
+        <div className="text-muted text-center font-sans text-xs">{error}</div>
       </SectionBox>
     );
   }
@@ -337,10 +329,7 @@ function StrikeRow({
   const callGamma = getCallGamma(level, viewMode);
   const putGamma = getPutGamma(level, viewMode);
   const isPositive = netGamma >= 0;
-  const barPct = Math.max(
-    (Math.abs(netGamma) / maxAbsGamma) * 100,
-    2,
-  );
+  const barPct = Math.max((Math.abs(netGamma) / maxAbsGamma) * 100, 2);
   const charmEffect = getCharmEffect(netGamma, level.netCharm);
   const isAtm = Math.abs(level.strike - price) < 2.5;
   const dist = formatDist(level.strike, price);
@@ -348,11 +337,7 @@ function StrikeRow({
   return (
     <tr
       className="flex items-center gap-2 py-1.5"
-      style={
-        isAtm
-          ? { backgroundColor: 'rgba(255,255,255,0.04)' }
-          : undefined
-      }
+      style={isAtm ? { backgroundColor: 'rgba(255,255,255,0.04)' } : undefined}
     >
       {/* Strike */}
       <td
@@ -416,17 +401,13 @@ function StrikeRow({
       {/* Call gamma */}
       <td className="w-[58px] shrink-0 text-right font-mono text-[10px]">
         <span style={{ color: theme.green }}>C</span>
-        <span className="text-secondary ml-1">
-          {formatCompact(callGamma)}
-        </span>
+        <span className="text-secondary ml-1">{formatCompact(callGamma)}</span>
       </td>
 
       {/* Put gamma */}
       <td className="w-[58px] shrink-0 text-right font-mono text-[10px]">
         <span style={{ color: theme.red }}>P</span>
-        <span className="text-secondary ml-1">
-          {formatCompact(putGamma)}
-        </span>
+        <span className="text-secondary ml-1">{formatCompact(putGamma)}</span>
       </td>
 
       {/* Vol vs OI reinforcement */}
