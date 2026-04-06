@@ -122,15 +122,13 @@ export async function getHistoricalWinRate(conditions: {
 
   const whereClause = filters.join(' AND ');
 
-  const rows = (await sql.unsafe(`
-    SELECT
+  const rows = (await sql`SELECT
       COUNT(*)::int AS total,
       COUNT(*) FILTER (WHERE (market_conditions->>'wasCorrect')::boolean = true)::int AS wins,
       AVG((market_conditions->>'vix')::numeric)::numeric AS avg_vix,
       ARRAY_AGG(DISTINCT market_conditions->>'structure') AS structures
     FROM lessons
-    WHERE ${whereClause}
-  `)) as unknown as Array<Record<string, unknown>>;
+    WHERE ${sql.unsafe(whereClause)}`) as Array<Record<string, unknown>>;
 
   const row = rows[0];
   if (!row || (row.total as number) < 5) return null;

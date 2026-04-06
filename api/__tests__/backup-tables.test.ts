@@ -3,15 +3,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockUnsafe, mockPut, mockList, mockDel } = vi.hoisted(() => ({
-  mockUnsafe: vi.fn(),
-  mockPut: vi.fn(),
-  mockList: vi.fn(),
-  mockDel: vi.fn(),
-}));
+const { mockSql, mockPut, mockList, mockDel } = vi.hoisted(() => {
+  const fn = vi.fn() as ReturnType<typeof vi.fn> & {
+    unsafe: ReturnType<typeof vi.fn>;
+  };
+  fn.unsafe = vi.fn((raw: string) => raw);
+  return {
+    mockSql: fn,
+    mockPut: vi.fn(),
+    mockList: vi.fn(),
+    mockDel: vi.fn(),
+  };
+});
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => ({ unsafe: mockUnsafe })),
+  getDb: vi.fn(() => mockSql),
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -43,7 +49,8 @@ describe('backup-tables handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockUnsafe.mockResolvedValue([]);
+    mockSql.unsafe = vi.fn((raw: string) => raw);
+    mockSql.mockResolvedValue([]);
     mockPut.mockResolvedValue({ url: 'https://blob.test/file' });
     mockList.mockResolvedValue({ blobs: [] });
     mockDel.mockResolvedValue(undefined);
@@ -124,7 +131,7 @@ describe('backup-tables handler', () => {
 
   it('exports all 16 tables and returns expected response shape', async () => {
     const fakeRow = { id: 1, name: 'test' };
-    mockUnsafe.mockResolvedValue([fakeRow]);
+    mockSql.mockResolvedValue([fakeRow]);
 
     const req = mockRequest({
       method: 'GET',
@@ -157,8 +164,8 @@ describe('backup-tables handler', () => {
     });
   });
 
-  it('calls sql.unsafe with SELECT * FROM for each table', async () => {
-    mockUnsafe.mockResolvedValue([]);
+  it('calls sql tagged template with unsafe table name for each table', async () => {
+    mockSql.mockResolvedValue([]);
 
     const req = mockRequest({
       method: 'GET',
@@ -167,10 +174,11 @@ describe('backup-tables handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // 16 tables = 16 sql.unsafe calls
-    expect(mockUnsafe).toHaveBeenCalledTimes(16);
-    expect(mockUnsafe).toHaveBeenCalledWith('SELECT * FROM market_snapshots');
-    expect(mockUnsafe).toHaveBeenCalledWith('SELECT * FROM schema_migrations');
+    // 16 tables = 16 tagged-template calls + 16 unsafe interpolations
+    expect(mockSql).toHaveBeenCalledTimes(16);
+    expect(mockSql.unsafe).toHaveBeenCalledTimes(16);
+    expect(mockSql.unsafe).toHaveBeenCalledWith('market_snapshots');
+    expect(mockSql.unsafe).toHaveBeenCalledWith('schema_migrations');
   });
 
   it('calls put() with correct path, options, and JSONL content', async () => {
@@ -178,7 +186,7 @@ describe('backup-tables handler', () => {
       { id: 1, value: 'alpha' },
       { id: 2, value: 'beta' },
     ];
-    mockUnsafe.mockResolvedValue(rows);
+    mockSql.mockResolvedValue(rows);
 
     const req = mockRequest({
       method: 'GET',
@@ -206,7 +214,7 @@ describe('backup-tables handler', () => {
 
   it('computes totalBytes correctly from JSONL content', async () => {
     const row = { id: 1 };
-    mockUnsafe.mockResolvedValue([row]);
+    mockSql.mockResolvedValue([row]);
 
     const req = mockRequest({
       method: 'GET',
@@ -222,7 +230,7 @@ describe('backup-tables handler', () => {
   });
 
   it('handles empty tables (zero rows) gracefully', async () => {
-    mockUnsafe.mockResolvedValue([]);
+    mockSql.mockResolvedValue([]);
 
     const req = mockRequest({
       method: 'GET',
@@ -247,7 +255,7 @@ describe('backup-tables handler', () => {
 
   it('continues when a single table export fails', async () => {
     let callCount = 0;
-    mockUnsafe.mockImplementation(async () => {
+    mockSql.mockImplementation(async () => {
       callCount++;
       // Fail on the 3rd table (outcomes)
       if (callCount === 3) {
@@ -286,7 +294,7 @@ describe('backup-tables handler', () => {
   });
 
   it('continues when put() fails for a table', async () => {
-    mockUnsafe.mockResolvedValue([{ id: 1 }]);
+    mockSql.mockResolvedValue([{ id: 1 }]);
     let putCallCount = 0;
     mockPut.mockImplementation(async () => {
       putCallCount++;
@@ -317,7 +325,7 @@ describe('backup-tables handler', () => {
 
   it('handles non-Error throws in table export', async () => {
     let callCount = 0;
-    mockUnsafe.mockImplementation(async () => {
+    mockSql.mockImplementation(async () => {
       callCount++;
       if (callCount === 1) {
         throw 'string error';
@@ -340,7 +348,7 @@ describe('backup-tables handler', () => {
 
   it('reports multiple table failures', async () => {
     let callCount = 0;
-    mockUnsafe.mockImplementation(async () => {
+    mockSql.mockImplementation(async () => {
       callCount++;
       // Fail on 1st and 4th tables
       if (callCount === 1 || callCount === 4) {
@@ -509,7 +517,7 @@ describe('backup-tables handler', () => {
 
   it('uses the current date in the backup path', async () => {
     vi.setSystemTime(new Date('2026-12-25T05:00:00.000Z'));
-    mockUnsafe.mockResolvedValue([{ id: 1 }]);
+    mockSql.mockResolvedValue([{ id: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -529,7 +537,7 @@ describe('backup-tables handler', () => {
   // ── Response structure completeness ───────────────────────
 
   it('returns all required fields in the response', async () => {
-    mockUnsafe.mockResolvedValue([{ id: 1 }]);
+    mockSql.mockResolvedValue([{ id: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -550,7 +558,7 @@ describe('backup-tables handler', () => {
 
   it('includes errors field only when there are errors', async () => {
     // Success case: no errors field
-    mockUnsafe.mockResolvedValue([]);
+    mockSql.mockResolvedValue([]);
     const req1 = mockRequest({
       method: 'GET',
       headers: { authorization: 'Bearer test-secret' },
@@ -561,7 +569,7 @@ describe('backup-tables handler', () => {
 
     // Error case: errors field present
     vi.resetAllMocks();
-    mockUnsafe.mockRejectedValue(new Error('DB down'));
+    mockSql.mockRejectedValue(new Error('DB down'));
     mockList.mockResolvedValue({ blobs: [] });
     const req2 = mockRequest({
       method: 'GET',

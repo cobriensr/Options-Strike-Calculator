@@ -51,9 +51,10 @@ async function exportTable(
   tableName: string,
 ): Promise<{ jsonl: string; rowCount: number }> {
   const sql = getDb();
-  const rows = (await sql.unsafe(
-    `SELECT * FROM ${tableName}`,
-  )) as unknown as Record<string, unknown>[];
+  const rows = (await sql`SELECT * FROM ${sql.unsafe(tableName)}`) as Record<
+    string,
+    unknown
+  >[];
   const lines = rows.map((row) => JSON.stringify(row));
   return { jsonl: lines.join('\n'), rowCount: rows.length };
 }

@@ -8,7 +8,7 @@ const mockSql = vi.fn() as ReturnType<typeof vi.fn> & {
   unsafe: ReturnType<typeof vi.fn>;
 };
 mockSql.transaction = vi.fn();
-mockSql.unsafe = vi.fn();
+mockSql.unsafe = vi.fn((raw: string) => raw);
 
 vi.mock('@neondatabase/serverless', () => ({
   neon: vi.fn(() => mockSql),
@@ -36,6 +36,7 @@ describe('lessons.ts', () => {
     mockSql.mockReset();
     mockSql.transaction.mockReset();
     mockSql.unsafe.mockReset();
+    mockSql.unsafe.mockImplementation((raw: string) => raw);
     vi.mocked(neon).mockReturnValue(mockSql as never);
     _resetDb();
   });
@@ -479,21 +480,19 @@ describe('lessons.ts', () => {
     }
 
     it('returns null when fewer than 5 matching sessions', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ total: 3, wins: 2 }),
-      ]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ total: 3, wins: 2 })]);
       const result = await getHistoricalWinRate({ vix: 18 });
       expect(result).toBeNull();
     });
 
     it('returns null when query returns no rows', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([]);
+      mockSql.mockResolvedValueOnce([]);
       const result = await getHistoricalWinRate({ vix: 18 });
       expect(result).toBeNull();
     });
 
     it('returns win rate result when sample is sufficient', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow()]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       const result = await getHistoricalWinRate({ vix: 18 });
 
       expect(result).not.toBeNull();
@@ -505,38 +504,32 @@ describe('lessons.ts', () => {
     });
 
     it('rounds win rate to nearest integer', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ total: 7, wins: 5 }),
-      ]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ total: 7, wins: 5 })]);
       const result = await getHistoricalWinRate({});
       // 5/7 = 71.4... → 71
       expect(result!.winRate).toBe(71);
     });
 
     it('rounds avgVix to one decimal place', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ avg_vix: 22.3456 }),
-      ]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ avg_vix: 22.3456 })]);
       const result = await getHistoricalWinRate({});
       expect(result!.avgVix).toBe(22.3);
     });
 
     it('returns null avgVix when DB returns null', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow({ avg_vix: null })]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ avg_vix: null })]);
       const result = await getHistoricalWinRate({});
       expect(result!.avgVix).toBeNull();
     });
 
     it('defaults structures to empty array when DB returns null', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ structures: null }),
-      ]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ structures: null })]);
       const result = await getHistoricalWinRate({});
       expect(result!.structures).toEqual([]);
     });
 
     it('builds VIX range filter with ±5', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow()]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ vix: 20 });
 
       const query = mockSql.unsafe.mock.calls[0]![0] as string;
@@ -545,7 +538,7 @@ describe('lessons.ts', () => {
     });
 
     it('builds VIX range filter with fractional VIX', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow()]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ vix: 18.7 });
 
       const query = mockSql.unsafe.mock.calls[0]![0] as string;
@@ -554,7 +547,7 @@ describe('lessons.ts', () => {
     });
 
     it('builds gexRegime filter', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow()]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ gexRegime: 'GREEN' });
 
       const query = mockSql.unsafe.mock.calls[0]![0] as string;
@@ -562,7 +555,7 @@ describe('lessons.ts', () => {
     });
 
     it('builds structure filter', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow()]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ structure: 'IRON CONDOR' });
 
       const query = mockSql.unsafe.mock.calls[0]![0] as string;
@@ -572,7 +565,7 @@ describe('lessons.ts', () => {
     });
 
     it('builds dayOfWeek filter', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow()]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ dayOfWeek: 'Friday' });
 
       const query = mockSql.unsafe.mock.calls[0]![0] as string;
@@ -580,7 +573,7 @@ describe('lessons.ts', () => {
     });
 
     it('combines all filters when all conditions provided', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow()]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({
         vix: 18,
         gexRegime: 'RED',
@@ -596,7 +589,7 @@ describe('lessons.ts', () => {
     });
 
     it('omits optional filters when conditions are empty', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([makeWinRateRow()]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({});
 
       const query = mockSql.unsafe.mock.calls[0]![0] as string;
@@ -611,9 +604,7 @@ describe('lessons.ts', () => {
     });
 
     it('accepts exactly 5 sessions (minimum boundary)', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ total: 5, wins: 3 }),
-      ]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ total: 5, wins: 3 })]);
       const result = await getHistoricalWinRate({});
       expect(result).not.toBeNull();
       expect(result!.total).toBe(5);
@@ -621,25 +612,19 @@ describe('lessons.ts', () => {
     });
 
     it('rejects exactly 4 sessions (below minimum)', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ total: 4, wins: 3 }),
-      ]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ total: 4, wins: 3 })]);
       const result = await getHistoricalWinRate({});
       expect(result).toBeNull();
     });
 
     it('handles 100% win rate', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ total: 8, wins: 8 }),
-      ]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ total: 8, wins: 8 })]);
       const result = await getHistoricalWinRate({});
       expect(result!.winRate).toBe(100);
     });
 
     it('handles 0% win rate', async () => {
-      mockSql.unsafe.mockResolvedValueOnce([
-        makeWinRateRow({ total: 6, wins: 0 }),
-      ]);
+      mockSql.mockResolvedValueOnce([makeWinRateRow({ total: 6, wins: 0 })]);
       const result = await getHistoricalWinRate({});
       expect(result!.winRate).toBe(0);
     });
