@@ -31,16 +31,17 @@ interface BackfillConfig {
 }
 
 // ── Databento symbol mapping ───────────────────────────────────
-// Maps internal names to Databento parent symbols for continuous
-// front-month contracts. Uses stype_in='continuous' for backfill.
+// Continuous contract symbols: ROOT.ROLL_RULE.RANK
+// c = calendar roll, 0 = front month
+// See: https://databento.com/docs/standards-and-conventions/symbology
 
 const DATABENTO_SYMBOL_MAP: Record<string, string> = {
-  ES: 'ES.FUT',
-  NQ: 'NQ.FUT',
-  VXM: 'VXM.FUT', // Micro VIX front month
-  ZN: 'ZN.FUT',
-  RTY: 'RTY.FUT',
-  CL: 'CL.FUT',
+  ES: 'ES.c.0',
+  NQ: 'NQ.c.0',
+  VXM: 'VXM.c.0',
+  ZN: 'ZN.c.0',
+  RTY: 'RTY.c.0',
+  CL: 'CL.c.0',
 };
 
 // ── CLI arg parsing ────────────────────────────────────────────
@@ -124,14 +125,14 @@ function getMonthChunks(days: number): Array<{ start: string; end: string }> {
 // ── Databento API types ────────────────────────────────────────
 
 // NDJSON record shape for OHLCV-1m schema.
-// Prices are int64 in 1e-9 units (nanodollars).
+// All numeric fields are JSON strings (int64). Prices in nanodollars (1e-9).
 interface DabentoOhlcvRecord {
-  ts_event: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
+  hd: { ts_event: string; instrument_id: number };
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: string;
 }
 
 // ── Databento HTTP API calls ───────────────────────────────────
@@ -174,16 +175,19 @@ async function fetchBars(
     encoding: 'json',
   };
 
-  const encodedKey = Buffer.from(`:${apiKey}`).toString('base64');
+  const encodedKey = Buffer.from(`${apiKey}:`).toString('base64');
   const authHeader = `Basic ${encodedKey}`;
+
+  const formBody = new URLSearchParams(
+    Object.entries(body).map(([k, v]) => [k, String(v)]),
+  );
 
   const res = await fetch(`${DATABENTO_BASE}/timeseries.get_range`, {
     method: 'POST',
     headers: {
       Authorization: authHeader,
-      'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: formBody,
     signal: AbortSignal.timeout(120_000),
   });
 
@@ -204,14 +208,20 @@ async function fetchBars(
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as DabentoOhlcvRecord);
 
-  // Prices are int64 in 1e-9 units (nanodollars)
+  // Log first record shape for debugging
+  if (records.length > 0) {
+    console.log('  Sample record keys:', Object.keys(records[0]).join(', '));
+    console.log('  Sample record:', JSON.stringify(records[0]).slice(0, 300));
+  }
+
+  // Convert nanosecond epoch strings to ISO timestamps, nanodollar strings to numbers
   return records.map((r) => ({
-    ts: r.ts_event,
-    open: r.open / NANODOLLAR,
-    high: r.high / NANODOLLAR,
-    low: r.low / NANODOLLAR,
-    close: r.close / NANODOLLAR,
-    volume: r.volume,
+    ts: new Date(Number(BigInt(r.hd.ts_event) / 1_000_000n)).toISOString(),
+    open: Number(r.open) / NANODOLLAR,
+    high: Number(r.high) / NANODOLLAR,
+    low: Number(r.low) / NANODOLLAR,
+    close: Number(r.close) / NANODOLLAR,
+    volume: Number(r.volume),
   }));
 }
 
@@ -238,28 +248,26 @@ async function insertBars(
   }>,
 ): Promise<number> {
   let inserted = 0;
-  const BATCH_SIZE = 500;
+  const BATCH_SIZE = 100;
 
   for (let i = 0; i < bars.length; i += BATCH_SIZE) {
     const batch = bars.slice(i, i + BATCH_SIZE);
-    const promises = batch.map(
-      (bar) =>
-        sql`
-        INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
-        VALUES (
-          ${symbol},
-          ${bar.ts},
-          ${bar.open},
-          ${bar.high},
-          ${bar.low},
-          ${bar.close},
-          ${bar.volume}
-        )
-        ON CONFLICT (symbol, ts) DO NOTHING
-      `,
-    );
 
-    await Promise.all(promises);
+    // Build a single multi-row INSERT to avoid connection floods
+    const values = batch
+      .map(
+        (bar) =>
+          `(${[symbol, bar.ts, bar.open, bar.high, bar.low, bar.close, bar.volume]
+            .map((v) => (typeof v === 'string' ? `'${v}'` : v))
+            .join(', ')})`,
+      )
+      .join(',\n');
+
+    await sql.query(
+      `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
+       VALUES ${values}
+       ON CONFLICT (symbol, ts) DO NOTHING`,
+    );
     inserted += batch.length;
   }
 
