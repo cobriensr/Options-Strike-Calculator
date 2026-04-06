@@ -27,6 +27,16 @@ import {
 } from '../_lib/lessons.js';
 import type { Lesson, WinRateResult } from '../_lib/lessons.js';
 
+function makeWinRateRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    total: 10,
+    wins: 7,
+    avg_vix: 18.5,
+    structures: ['IRON CONDOR', 'PUT CREDIT SPREAD'],
+    ...overrides,
+  };
+}
+
 describe('lessons.ts', () => {
   const originalEnv = process.env;
 
@@ -469,16 +479,6 @@ describe('lessons.ts', () => {
   // getHistoricalWinRate
   // ============================================================
   describe('getHistoricalWinRate', () => {
-    function makeWinRateRow(overrides: Partial<Record<string, unknown>> = {}) {
-      return {
-        total: 10,
-        wins: 7,
-        avg_vix: 18.5,
-        structures: ['IRON CONDOR', 'PUT CREDIT SPREAD'],
-        ...overrides,
-      };
-    }
-
     it('returns null when fewer than 5 matching sessions', async () => {
       mockSql.mockResolvedValueOnce([makeWinRateRow({ total: 3, wins: 2 })]);
       const result = await getHistoricalWinRate({ vix: 18 });

@@ -328,7 +328,7 @@ describe('backup-tables handler', () => {
     mockSql.mockImplementation(async () => {
       callCount++;
       if (callCount === 1) {
-        throw 'string error';
+        throw 'string error'; // intentional: tests non-Error throw handling
       }
       return [];
     });
