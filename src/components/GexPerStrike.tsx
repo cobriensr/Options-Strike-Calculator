@@ -114,9 +114,7 @@ function GexTooltip({
   const netVannaView = getNetVanna(data, viewMode);
   const charmEffect = netCharmView > 0 ? 'Strengthening' : 'Weakening';
   const vannaDir =
-    netVannaView > 0
-      ? 'Sell pressure if IV drops'
-      : 'Buy pressure if IV drops';
+    netVannaView > 0 ? 'Sell pressure if IV drops' : 'Buy pressure if IV drops';
   const volLabel =
     data.volReinforcement === 'reinforcing'
       ? 'Reinforcing'
@@ -186,9 +184,7 @@ function GexTooltip({
           </span>
           {' / '}
           <span style={{ color: CHARM_NEG }}>
-            {formatNum(
-              viewMode === 'vol' ? data.putCharmVol : data.putCharmOi,
-            )}
+            {formatNum(viewMode === 'vol' ? data.putCharmVol : data.putCharmOi)}
           </span>
         </span>
 
@@ -224,9 +220,7 @@ function GexTooltip({
           </span>
           {' / '}
           <span style={{ color: VANNA_NEG }}>
-            {formatNum(
-              viewMode === 'vol' ? data.putVannaVol : data.putVannaOi,
-            )}
+            {formatNum(viewMode === 'vol' ? data.putVannaVol : data.putVannaOi)}
           </span>
         </span>
       </div>
@@ -324,10 +318,7 @@ export default memo(function GexPerStrike({
 
   // Summary stats — totals from visible window, flip from FULL strike array
   const summary = useMemo(() => {
-    const totalGex = filtered.reduce(
-      (s, d) => s + getNetGamma(d, viewMode),
-      0,
-    );
+    const totalGex = filtered.reduce((s, d) => s + getNetGamma(d, viewMode), 0);
     const totalCharm = filtered.reduce(
       (s, d) => s + getNetCharm(d, viewMode),
       0,
@@ -346,7 +337,7 @@ export default memo(function GexPerStrike({
       flowPressurePct = (Math.abs(totalGexVol) / Math.abs(totalGexOi)) * 100;
       if (totalGexVol !== 0) {
         flowSign =
-          (totalGexOi > 0) === (totalGexVol > 0) ? 'reinforcing' : 'opposing';
+          totalGexOi > 0 === totalGexVol > 0 ? 'reinforcing' : 'opposing';
       }
     }
 
@@ -553,25 +544,23 @@ export default memo(function GexPerStrike({
           </button>
         ))}
         <div className="ml-auto flex gap-1">
-          {(
-            [
-              {
-                mode: 'oi' as const,
-                label: 'OI',
-                title: 'Open Interest — standing positions',
-              },
-              {
-                mode: 'vol' as const,
-                label: 'VOL',
-                title: "Volume — today's fresh flow",
-              },
-              {
-                mode: 'dir' as const,
-                label: 'DIR',
-                title: 'Directionalized — MM-side bid/ask proxy (gamma only)',
-              },
-            ]
-          ).map((m) => (
+          {[
+            {
+              mode: 'oi' as const,
+              label: 'OI',
+              title: 'Open Interest — standing positions',
+            },
+            {
+              mode: 'vol' as const,
+              label: 'VOL',
+              title: "Volume — today's fresh flow",
+            },
+            {
+              mode: 'dir' as const,
+              label: 'DIR',
+              title: 'Directionalized — MM-side bid/ask proxy (gamma only)',
+            },
+          ].map((m) => (
             <button
               key={m.mode}
               onClick={() => setViewMode(m.mode)}
@@ -583,8 +572,7 @@ export default memo(function GexPerStrike({
                     ? 'rgba(255,255,255,0.06)'
                     : 'transparent',
                 border: `1px solid ${viewMode === m.mode ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)'}`,
-                color:
-                  viewMode === m.mode ? theme.text : theme.textMuted,
+                color: viewMode === m.mode ? theme.text : theme.textMuted,
               }}
             >
               {m.label}
@@ -714,6 +702,7 @@ export default memo(function GexPerStrike({
             return (
               <div
                 key={d.strike}
+                aria-label={`Strike ${d.strike} row`}
                 className="relative flex cursor-crosshair items-center transition-colors duration-150"
                 style={{
                   height: BAR_HEIGHT,
@@ -845,8 +834,7 @@ export default memo(function GexPerStrike({
                       color: charmView > 0 ? CHARM_POS : CHARM_NEG,
                     }}
                   >
-                    {charmView > 0 ? '▲' : '▼'}{' '}
-                    {formatNum(Math.abs(charmView))}
+                    {charmView > 0 ? '▲' : '▼'} {formatNum(Math.abs(charmView))}
                   </span>
                 )}
                 {showVanna && (
@@ -856,8 +844,7 @@ export default memo(function GexPerStrike({
                       color: vannaView > 0 ? VANNA_POS : VANNA_NEG,
                     }}
                   >
-                    {vannaView > 0 ? '▲' : '▼'}{' '}
-                    {formatNum(Math.abs(vannaView))}
+                    {vannaView > 0 ? '▲' : '▼'} {formatNum(Math.abs(vannaView))}
                   </span>
                 )}
                 {showDex && (
@@ -924,8 +911,7 @@ export default memo(function GexPerStrike({
             {
               label: 'CHARM BURN/MIN',
               value: formatNum(summary.charmBurnRate),
-              color:
-                summary.charmBurnRate >= 0 ? CHARM_POS : CHARM_NEG,
+              color: summary.charmBurnRate >= 0 ? CHARM_POS : CHARM_NEG,
               sub:
                 summary.charmBurnRate >= 0
                   ? 'buying pressure'

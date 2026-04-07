@@ -454,4 +454,688 @@ describe('GexPerStrike: time display', () => {
     // 19:00 UTC = 2:00 PM CT
     expect(screen.getByText(/2:00/)).toBeInTheDocument();
   });
+
+  it('handles invalid timestamp gracefully', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="not-a-valid-iso-date"
+        onRefresh={noop}
+      />,
+    );
+    // Component should still render without crashing
+    expect(
+      screen.getByRole('region', { name: /0dte gex per strike/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// MODE SWITCHING (OI / VOL / DIR)
+// ============================================================
+
+describe('GexPerStrike: mode switching', () => {
+  it('shows OI values in TOTAL NET GEX card by default', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike({ strike: 5795, price: 5795 })]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    // formatNum(200B) = "200.00B"
+    const gexCard = screen.getByText('TOTAL NET GEX').parentElement;
+    expect(gexCard?.textContent).toContain('200.00B');
+  });
+
+  it('switches to VOL mode and shows vol-based totals', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netGamma: 200_000_000_000,
+            netGammaVol: 50_000_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.click(screen.getByText('VOL'));
+
+    // TOTAL NET GEX now shows VOL (50B)
+    const gexCard = screen.getByText('TOTAL NET GEX').parentElement;
+    expect(gexCard?.textContent).toContain('50.00B');
+  });
+
+  it('switches to DIR mode using bid/ask gamma sum', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            // Directional sum: -100M + 300M + 50M + -150M = +100M
+            callGammaAsk: -100_000_000,
+            callGammaBid: 300_000_000,
+            putGammaAsk: 50_000_000,
+            putGammaBid: -150_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.click(screen.getByText('DIR'));
+
+    const gexCard = screen.getByText('TOTAL NET GEX').parentElement;
+    expect(gexCard?.textContent).toContain('100.00M');
+  });
+
+  it('VOL mode uses charm_vol for charm card', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netCharm: 200_000_000,
+            netCharmVol: 800_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.click(screen.getByText('VOL'));
+
+    const charmCard = screen.getByText('NET CHARM').parentElement;
+    expect(charmCard?.textContent).toContain('800.00M');
+  });
+});
+
+// ============================================================
+// TOOLTIP (hover behavior)
+// ============================================================
+
+describe('GexPerStrike: tooltip', () => {
+  it('shows tooltip with strike label on hover', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[makeStrike({ strike: 5795, price: 5795 })]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    // Tooltip header shows "Strike 5795"
+    expect(screen.getByText(/^Strike 5795$/)).toBeInTheDocument();
+  });
+
+  it('tooltip shows Charm Effect analysis', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netCharm: 500_000_000, // positive = strengthening
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    expect(screen.getByText('Strengthening')).toBeInTheDocument();
+  });
+
+  it('tooltip shows Weakening when charm is negative', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netCharm: -500_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    expect(screen.getByText('Weakening')).toBeInTheDocument();
+  });
+
+  it('tooltip shows Vanna Hedge direction', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netVanna: 100_000_000, // positive
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    expect(screen.getByText(/Sell pressure if IV drops/)).toBeInTheDocument();
+  });
+
+  it('tooltip shows Buy pressure when vanna is negative', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netVanna: -100_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    expect(screen.getByText(/Buy pressure if IV drops/)).toBeInTheDocument();
+  });
+
+  it('tooltip shows Vol Flow: Reinforcing', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            volReinforcement: 'reinforcing',
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    expect(screen.getByText('Reinforcing')).toBeInTheDocument();
+  });
+
+  it('tooltip exercises call/put split in VOL mode', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            callGammaVol: 999_000_000,
+            putGammaVol: -333_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // Switch to VOL mode first
+    await user.click(screen.getByText('VOL'));
+    // Then hover the row — tooltip renders call/put using getCallGamma/getPutGamma in VOL branch
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    expect(screen.getByText(/^Strike 5795$/)).toBeInTheDocument();
+    // Tooltip should show the VOL-based call/put values
+    expect(screen.getByText('999.00M')).toBeInTheDocument();
+    expect(screen.getByText('-333.00M')).toBeInTheDocument();
+  });
+
+  it('tooltip exercises call/put split in DIR mode', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            callGammaAsk: 100_000_000,
+            callGammaBid: 200_000_000,
+            putGammaAsk: -50_000_000,
+            putGammaBid: -150_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.click(screen.getByText('DIR'));
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    expect(screen.getByText(/^Strike 5795$/)).toBeInTheDocument();
+    // Tooltip call = 100M + 200M = 300M, put = -50M + -150M = -200M
+    expect(screen.getByText('300.00M')).toBeInTheDocument();
+    expect(screen.getByText('-200.00M')).toBeInTheDocument();
+  });
+
+  it('tooltip disappears on mouse leave', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[makeStrike({ strike: 5795, price: 5795 })]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    const row = screen.getByLabelText(/Strike 5795 row/);
+    await user.hover(row);
+    expect(screen.getByText(/^Strike 5795$/)).toBeInTheDocument();
+
+    await user.unhover(row);
+    expect(screen.queryByText(/^Strike 5795$/)).not.toBeInTheDocument();
+  });
+
+  it('tooltip shows Vol Flow: Opposing', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            volReinforcement: 'opposing',
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.hover(screen.getByLabelText(/Strike 5795 row/));
+
+    expect(screen.getByText('Opposing')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// FLOW PRESSURE (reinforcing / opposing / neutral branches)
+// ============================================================
+
+describe('GexPerStrike: flow pressure calculation', () => {
+  it('shows reinforcing when vol and OI have same sign', () => {
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netGamma: 200_000_000_000, // +
+            netGammaVol: 50_000_000_000, // +
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByText('reinforcing')).toBeInTheDocument();
+  });
+
+  it('shows opposing when vol and OI have opposite signs', () => {
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netGamma: 200_000_000_000, // +
+            netGammaVol: -50_000_000_000, // -
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByText('opposing')).toBeInTheDocument();
+  });
+
+  it('shows neutral when vol gex is zero', () => {
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netGamma: 200_000_000_000,
+            netGammaVol: 0,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByText('neutral')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// CHARM BURN RATE (sign branches)
+// ============================================================
+
+describe('GexPerStrike: charm burn rate', () => {
+  it('shows selling pressure when net charm is negative', () => {
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netCharm: -390_000_000, // -1M / min
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByText('selling pressure')).toBeInTheDocument();
+  });
+
+  it('shows buying pressure when net charm is positive', () => {
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netCharm: 390_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByText('buying pressure')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// GEX FLIP CALCULATION
+// ============================================================
+
+describe('GexPerStrike: GEX flip', () => {
+  it('finds flip strike when gamma changes sign', () => {
+    const strikes = [
+      makeStrike({
+        strike: 5790,
+        price: 5795,
+        netGamma: -500_000_000_000,
+      }),
+      makeStrike({
+        strike: 5800,
+        price: 5795,
+        netGamma: 500_000_000_000,
+      }),
+    ];
+    render(
+      <GexPerStrike
+        strikes={strikes}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    // The "GEX FLIP" card should show 5800 as its value
+    const flipCard = screen.getByText('GEX FLIP').parentElement;
+    expect(flipCard?.textContent).toContain('5800');
+  });
+
+  it('shows — when no flip exists (all same sign)', () => {
+    const strikes = [
+      makeStrike({ strike: 5790, price: 5795, netGamma: 100_000_000 }),
+      makeStrike({ strike: 5800, price: 5795, netGamma: 200_000_000 }),
+      makeStrike({ strike: 5810, price: 5795, netGamma: 150_000_000 }),
+    ];
+    render(
+      <GexPerStrike
+        strikes={strikes}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    const flipCard = screen.getByText('GEX FLIP').parentElement;
+    expect(flipCard?.textContent).toContain('—');
+  });
+
+  it('picks flip closest to spot when multiple exist', () => {
+    // Multiple sign changes — should pick the one nearest spot (5795)
+    const strikes = [
+      makeStrike({ strike: 5700, price: 5795, netGamma: 100_000_000 }),
+      makeStrike({ strike: 5710, price: 5795, netGamma: -100_000_000 }), // flip 1 (dist 85)
+      makeStrike({ strike: 5790, price: 5795, netGamma: 100_000_000 }), // flip 2 (dist 5)
+      makeStrike({ strike: 5800, price: 5795, netGamma: -100_000_000 }), // flip 3 (dist 5)
+    ];
+    render(
+      <GexPerStrike
+        strikes={strikes}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    const flipCard = screen.getByText('GEX FLIP').parentElement;
+    // Should pick 5790 or 5800 (both dist 5) — first one found is 5790
+    // (scan goes in ascending order, takes first match at closestDist)
+    expect(flipCard?.textContent).toMatch(/579|580/);
+  });
+});
+
+// ============================================================
+// OVERLAY TOGGLES (chart-level behavior)
+// ============================================================
+
+describe('GexPerStrike: overlay behavior', () => {
+  it('DEX toggle adds DEX values to right panel', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netDelta: 5_000_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // Before toggling DEX on, DEX legend item should not appear
+    expect(screen.queryByText(/^DEX$/)).toBeInTheDocument(); // button exists
+
+    // Click DEX button
+    await user.click(screen.getByText('DEX'));
+
+    // After DEX is on, the legend should show DEX entry
+    // The button is still there, but now also a legend entry
+    const dexMatches = screen.getAllByText(/DEX/);
+    expect(dexMatches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('charm toggle off hides charm from legend', async () => {
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // Charm is on by default — legend shows it
+    expect(screen.getByText('Charm')).toBeInTheDocument();
+
+    // Turn it off
+    await user.click(screen.getByText('CHARM'));
+    expect(screen.queryByText('Charm')).not.toBeInTheDocument();
+  });
+
+  it('visible count +/- controls adjust the count', async () => {
+    const user = userEvent.setup();
+    // Make 30 strikes so +/- is meaningful
+    const strikes = Array.from({ length: 30 }, (_, i) =>
+      makeStrike({ strike: 5700 + i * 5, price: 5795 }),
+    );
+    render(
+      <GexPerStrike
+        strikes={strikes}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    expect(screen.getByText('15')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /show more/i }));
+    expect(screen.getByText('20')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /show fewer/i }));
+    expect(screen.getByText('15')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// STRIKE ORDERING
+// ============================================================
+
+describe('GexPerStrike: strike ordering', () => {
+  it('renders highest strike at top in price-ladder order', () => {
+    const strikes = [
+      makeStrike({ strike: 5790, price: 5795 }),
+      makeStrike({ strike: 5800, price: 5795 }),
+      makeStrike({ strike: 5810, price: 5795 }),
+    ];
+    render(
+      <GexPerStrike
+        strikes={strikes}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // All three strikes render
+    const s5790 = screen.getByText('5790');
+    const s5810 = screen.getByText('5810');
+    // 5810 should appear before 5790 in DOM order (top to bottom)
+    const pos5810 = s5810.compareDocumentPosition(s5790);
+    // If 5790 follows 5810 in the DOM, this returns DOCUMENT_POSITION_FOLLOWING (4)
+    expect(pos5810 & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+// ============================================================
+// ATM CENTERING
+// ============================================================
+
+describe('GexPerStrike: ATM centering', () => {
+  it('centers visible window around spot price', () => {
+    // 30 strikes spanning 5650-5795 (price 5725, mid)
+    const strikes = Array.from({ length: 30 }, (_, i) =>
+      makeStrike({ strike: 5650 + i * 5, price: 5725 }),
+    );
+    render(
+      <GexPerStrike
+        strikes={strikes}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // With default visibleCount=15 centered around 5725, we should see
+    // approximately strikes 5690-5760 (7 below + spot + 7 above)
+    expect(screen.getByText('5725')).toBeInTheDocument();
+    // Far strikes should be excluded
+    expect(screen.queryByText('5650')).not.toBeInTheDocument();
+    expect(screen.queryByText('5795')).not.toBeInTheDocument();
+  });
 });
