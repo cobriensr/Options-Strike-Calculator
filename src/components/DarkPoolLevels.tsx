@@ -266,7 +266,8 @@ function LevelRow({
 }>) {
   const barWidth = Math.max((level.totalPremium / maxPremium) * 100, 2);
   const isAtm = spxPrice != null && Math.abs(level.spxLevel - spxPrice) < 2.5;
-  const distLabel = spxPrice != null ? formatDist(level.spxLevel, spxPrice) : null;
+  const distLabel =
+    spxPrice != null ? formatDist(level.spxLevel, spxPrice) : null;
 
   // Color the distance label: above spot = green, below = red, at = accent
   const distColor = (() => {
@@ -278,9 +279,7 @@ function LevelRow({
   return (
     <tr
       className="flex items-center gap-2 py-1.5"
-      style={
-        isAtm ? { backgroundColor: 'rgba(255,255,255,0.04)' } : undefined
-      }
+      style={isAtm ? { backgroundColor: 'rgba(255,255,255,0.04)' } : undefined}
     >
       {/* SPX Level */}
       <td
