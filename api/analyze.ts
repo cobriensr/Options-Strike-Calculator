@@ -153,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let data: Awaited<ReturnType<typeof streamRequest>>;
     let usedModel = 'claude-opus-4-6';
     try {
-      data = await streamRequest('claude-opus-4-6', 128000, 'high');
+      data = await streamRequest('claude-opus-4-6', 128000, 'medium');
     } catch (error_) {
       // Only fall back on availability issues — request errors won't succeed on any model
       if (
