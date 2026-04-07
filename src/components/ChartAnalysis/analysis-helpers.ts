@@ -19,7 +19,11 @@ export function signalColor(s: string): string {
     s === 'CONTRADICTS' ||
     s === 'UNFAVORABLE' ||
     s === 'DECAYING' ||
-    s === 'NEGATIVE'
+    s === 'NEGATIVE' ||
+    s === 'RISK_OFF' ||
+    s === 'HEADWIND' ||
+    s === 'HIGH' ||
+    s === 'STEEP_PUT'
   )
     return theme.red;
   if (
@@ -27,7 +31,11 @@ export function signalColor(s: string): string {
     s === 'CONFIRMS' ||
     s === 'FAVORABLE' ||
     s === 'SUPPORTIVE' ||
-    s === 'POSITIVE'
+    s === 'POSITIVE' ||
+    s === 'RISK_ON' ||
+    s === 'TAILWIND' ||
+    s === 'LOW' ||
+    s === 'FLAT'
   )
     return theme.green;
   if (s === 'NEUTRAL' || s === 'NOT PROVIDED') return theme.textMuted;
