@@ -245,7 +245,7 @@ export default memo(function GexPerStrike({
 
   const price = strikes.length > 0 ? strikes[0]!.price : 0;
 
-  // Center around ATM
+  // Center around ATM, then reverse so highest strikes render at the top
   const filtered = useMemo(() => {
     if (strikes.length === 0) return [];
     const atmIdx = strikes.findIndex((s) => s.strike >= price);
@@ -253,7 +253,9 @@ export default memo(function GexPerStrike({
     const half = Math.floor(visibleCount / 2);
     const lo = Math.max(0, center - half);
     const hi = Math.min(strikes.length, lo + visibleCount);
-    return strikes.slice(Math.max(0, hi - visibleCount), hi);
+    const window = strikes.slice(Math.max(0, hi - visibleCount), hi);
+    // Reverse: higher strikes at top, lower at bottom (price-ladder order)
+    return [...window].reverse();
   }, [strikes, price, visibleCount]);
 
   // Compute scales
@@ -271,23 +273,30 @@ export default memo(function GexPerStrike({
     };
   }, [filtered, viewMode]);
 
-  // Summary stats
+  // Summary stats — totals from visible window, flip from FULL strike array
   const summary = useMemo(() => {
     const totalGex = filtered.reduce((s, d) => s + getNetGamma(d, viewMode), 0);
     const totalCharm = filtered.reduce((s, d) => s + d.netCharm, 0);
     const totalVanna = filtered.reduce((s, d) => s + d.netVanna, 0);
-    // GEX flip: first strike where sign changes
-    let flipStrike = '—';
-    for (let i = 1; i < filtered.length; i++) {
-      const prev = getNetGamma(filtered[i - 1]!, viewMode);
-      const curr = getNetGamma(filtered[i]!, viewMode);
-      if (Math.sign(prev) !== Math.sign(curr) && prev !== 0) {
-        flipStrike = String(filtered[i]!.strike);
-        break;
+
+    // GEX flip: scan the full strikes array (ascending), find the strike
+    // closest to spot where net gamma sign changes. Survives window filtering.
+    let flipStrike: string = '—';
+    let closestDist = Infinity;
+    for (let i = 1; i < strikes.length; i++) {
+      const prev = getNetGamma(strikes[i - 1]!, viewMode);
+      const curr = getNetGamma(strikes[i]!, viewMode);
+      if (prev === 0 || curr === 0) continue;
+      if (Math.sign(prev) !== Math.sign(curr)) {
+        const dist = Math.abs(strikes[i]!.strike - price);
+        if (dist < closestDist) {
+          closestDist = dist;
+          flipStrike = String(strikes[i]!.strike);
+        }
       }
     }
     return { totalGex, totalCharm, totalVanna, flipStrike };
-  }, [filtered, viewMode]);
+  }, [filtered, strikes, viewMode, price]);
 
   const handleLess = useCallback(
     () => setVisibleCount((v) => Math.max(v - STEP, MIN_VISIBLE)),
@@ -394,18 +403,24 @@ export default memo(function GexPerStrike({
     );
   }
 
-  // ── Spot line position ─────────────────────────────────
+  // ── Spot line position (filtered is descending: high → low) ────
 
-  const spotIdx = filtered.findIndex((d) => d.strike >= price);
   const spotY = (() => {
+    if (filtered.length === 0) return null;
+    const highest = filtered[0]!.strike;
+    const lowest = filtered[filtered.length - 1]!.strike;
+    // Spot outside visible window — don't draw the line
+    if (price > highest || price < lowest) return null;
+
+    // First strike at or below spot (searching top → bottom in descending list)
+    const spotIdx = filtered.findIndex((d) => d.strike <= price);
     if (spotIdx < 0) return null;
-    if (spotIdx > 0) {
-      const prev = filtered[spotIdx - 1]!;
-      const curr = filtered[spotIdx]!;
-      const frac = (price - prev.strike) / (curr.strike - prev.strike);
-      return (spotIdx - 1) * BAR_HEIGHT + BAR_HEIGHT * frac;
-    }
-    return spotIdx * BAR_HEIGHT;
+    if (spotIdx === 0) return 0;
+
+    const above = filtered[spotIdx - 1]!; // higher strike (row above)
+    const below = filtered[spotIdx]!; // lower or equal strike (current row)
+    const frac = (above.strike - price) / (above.strike - below.strike);
+    return (spotIdx - 1) * BAR_HEIGHT + BAR_HEIGHT * frac;
   })();
 
   return (
