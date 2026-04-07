@@ -3,9 +3,10 @@
  *
  * 1-minute cron that monitors ATM 0DTE implied volatility for spikes.
  * Fetches the UW interpolated-iv endpoint, stores in iv_monitor table,
- * and fires a market alert when IV jumps >= 3 vol points in 5 minutes
- * while SPX moves < 5 points — the "canary" signal that informed flow
- * is positioning before a directional move.
+ * and fires a market alert when IV jumps >= IV_JUMP_MIN (1 vol point)
+ * in 5 minutes while SPX moves < IV_PRICE_MAX_MOVE points — the
+ * "canary" signal that informed flow is positioning before a
+ * directional move. Thresholds live in alert-thresholds.ts.
  *
  * SPX price is read from flow_ratio_monitor (populated by the sibling
  * monitor-flow-ratio cron) or falls back to flow_data.
@@ -162,8 +163,10 @@ async function detectIvSpike(
       ? (current.spxPrice - prevPrice).toFixed(1)
       : 'N/A';
 
+  // Proportional to IV_JUMP_MIN = 0.01. Warning tier is [1, 2) vol pts,
+  // critical tier is >= 2 vol pts in the lookback window.
   const severity: AlertPayload['severity'] =
-    ivDelta >= 0.05 ? 'critical' : 'warning';
+    ivDelta >= 0.02 ? 'critical' : 'warning';
 
   return {
     type: 'iv_spike',

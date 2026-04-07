@@ -33,13 +33,11 @@ vi.mock('../_lib/api-helpers.js', () => ({
   withRetry: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('../_lib/alert-thresholds.js', () => ({
-  ALERT_THRESHOLDS: {
-    RATIO_DELTA_MIN: 0.4,
-    RATIO_LOOKBACK_MINUTES: 5,
-    COOLDOWN_MINUTES: 5,
-  },
-}));
+// Intentionally NOT mocking alert-thresholds — tests import the real
+// values so any threshold drift breaks tests and forces an update.
+// Prior to 2026-04-07 this file mocked stale values (RATIO_DELTA_MIN: 0.4,
+// no RATIO_PREMIUM_MIN) and the tests passed while production silently
+// rejected every alert. Never mock thresholds.
 
 import handler from '../cron/monitor-flow-ratio.js';
 import { cronGuard, uwFetch } from '../_lib/api-helpers.js';
@@ -192,7 +190,7 @@ describe('monitor-flow-ratio handler', () => {
 
   // ── Alert detection ──────────────────────────────────────
 
-  it('does NOT fire alert when ratio delta < 0.4', async () => {
+  it('does NOT fire alert when ratio delta < RATIO_DELTA_MIN (0.7)', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
       makeFlowTick({
         net_call_premium: '43000000',
@@ -210,7 +208,7 @@ describe('monitor-flow-ratio handler', () => {
           abs_ncp: '43000000',
         },
       ]);
-    // delta = 1.279 - 1.15 = 0.129 < 0.4
+    // delta = 1.279 - 1.15 = 0.129 < 0.7 — ratio gate blocks
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -220,12 +218,45 @@ describe('monitor-flow-ratio handler', () => {
     expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
   });
 
-  it('fires alert when ratio surges >= 0.4 (BEARISH when NPP drove it)', async () => {
-    // Current: absNpp=80M, absNcp=50M, ratio=1.6
+  it('does NOT fire alert when ratio gate passes but premium floor (1M) blocks', async () => {
+    // Low-volume ratio swing: big ratio move but tiny absolute premium
     vi.mocked(uwFetch).mockResolvedValue([
       makeFlowTick({
-        net_call_premium: '50000000',
-        net_put_premium: '-80000000',
+        net_call_premium: '500000',
+        net_put_premium: '-1000000',
+      }),
+    ]);
+    // absNpp=1.0M, absNcp=0.5M, ratio=2.0
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([
+        {
+          ratio: '0.6',
+          abs_npp: '300000',
+          abs_ncp: '500000',
+        },
+      ]);
+    // ratioDelta = 2.0 - 0.6 = 1.4 ≫ 0.7 ✓ (ratio gate passes)
+    // nppChange = 1.0M - 0.3M = 0.7M
+    // ncpChange = 0.5M - 0.5M = 0
+    // max driver premium = 0.7M < 1M → premium floor blocks
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ alerted: false });
+    expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
+  });
+
+  it('fires alert when driver premium is in [1M, 5M) — locks in new $1M floor', async () => {
+    // Regression guard: this exact scenario was suppressed under the
+    // old $5M RATIO_PREMIUM_MIN. It fires under the calibrated $1M
+    // floor. If anyone reverts the floor above $1.6M, this test breaks.
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '2000000',
+        net_put_premium: '-3600000',
       }),
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
@@ -234,15 +265,16 @@ describe('monitor-flow-ratio handler', () => {
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
       .mockResolvedValueOnce([
         {
-          // detectRatioSurge: prev reading
-          ratio: '1.15',
-          abs_npp: '50000000',
-          abs_ncp: '43000000',
+          ratio: '1.0',
+          abs_npp: '2000000',
+          abs_ncp: '2000000',
         },
       ]);
-    // delta = 1.6 - 1.15 = 0.45 >= 0.4
-    // NPP delta = 80M - 50M = 30M, NCP delta = 50M - 43M = 7M
-    // |nppDelta| > |ncpDelta| and nppDelta > 0 → BEARISH
+    // absNpp=3.6M, absNcp=2.0M, ratio=1.8
+    // ratioDelta = 1.8 - 1.0 = 0.8 → warning tier [0.7, 0.9)
+    // nppChange = 3.6M - 2.0M = 1.6M (in the [1M, 5M) band)
+    // ncpChange = 0; max driver = 1.6M
+    // → fires under current $1M floor; would fail under old $5M
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -259,12 +291,12 @@ describe('monitor-flow-ratio handler', () => {
     );
   });
 
-  it('fires alert when ratio collapses >= 0.4 (BULLISH when NCP drove it)', async () => {
-    // Current: absNpp=50M, absNcp=80M, ratio=0.625
+  it('fires warning alert at ratio delta in [0.7, 0.9) — BEARISH when NPP drove it', async () => {
+    // Current: absNpp=90M, absNcp=50M, ratio=1.8
     vi.mocked(uwFetch).mockResolvedValue([
       makeFlowTick({
-        net_call_premium: '80000000',
-        net_put_premium: '-50000000',
+        net_call_premium: '50000000',
+        net_put_premium: '-90000000',
       }),
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
@@ -273,15 +305,56 @@ describe('monitor-flow-ratio handler', () => {
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
       .mockResolvedValueOnce([
         {
-          // detectRatioSurge: prev reading
-          ratio: '1.10',
-          abs_npp: '55000000',
+          // detectRatioSurge: prev reading, ratio = 1.0
+          ratio: '1.0',
+          abs_npp: '50000000',
           abs_ncp: '50000000',
         },
       ]);
-    // delta = 0.625 - 1.10 = -0.475, |delta| = 0.475 >= 0.4
-    // NPP delta = 50M - 55M = -5M, NCP delta = 80M - 50M = 30M
+    // delta = 1.8 - 1.0 = 0.8 → in warning tier [0.7, 0.9)
+    // NPP delta = 90M - 50M = 40M, NCP delta = 50M - 50M = 0
+    // |nppDelta| > |ncpDelta| and nppDelta > 0 → BEARISH
+    // max driver premium = 40M ≫ 1M → premium floor passes
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ alerted: true });
+    expect(vi.mocked(writeAlertIfNew)).toHaveBeenCalledWith(
+      '2026-03-24',
+      expect.objectContaining({
+        type: 'ratio_surge',
+        direction: 'BEARISH',
+        severity: 'warning',
+      }),
+    );
+  });
+
+  it('fires alert when ratio collapses — BULLISH when NCP drove it', async () => {
+    // Current: absNpp=40M, absNcp=80M, ratio=0.5
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '80000000',
+        net_put_premium: '-40000000',
+      }),
+    ]);
+    vi.mocked(writeAlertIfNew).mockResolvedValue(true);
+
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([
+        {
+          // detectRatioSurge: prev reading, ratio = 1.222
+          ratio: '1.222',
+          abs_npp: '55000000',
+          abs_ncp: '45000000',
+        },
+      ]);
+    // delta = 0.5 - 1.222 = -0.722, |delta| = 0.722 → in [0.7, 0.9) warning
+    // NPP delta = 40M - 55M = -15M, NCP delta = 80M - 45M = 35M
     // |ncpDelta| > |nppDelta| and ncpDelta > 0 → BULLISH (call side growing)
+    // max driver premium = 35M ≫ 1M → premium floor passes
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -297,7 +370,7 @@ describe('monitor-flow-ratio handler', () => {
     );
   });
 
-  it('sets severity to critical when |ratioDelta| >= 0.6', async () => {
+  it('sets severity to critical when |ratioDelta| >= 0.9', async () => {
     // Current: absNpp=100M, absNcp=50M, ratio=2.0
     vi.mocked(uwFetch).mockResolvedValue([
       makeFlowTick({
@@ -309,12 +382,13 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
       {
-        ratio: '1.15',
+        ratio: '1.0',
         abs_npp: '50000000',
-        abs_ncp: '43000000',
+        abs_ncp: '50000000',
       },
     ]);
-    // delta = 2.0 - 1.15 = 0.85 >= 0.6
+    // delta = 2.0 - 1.0 = 1.0 >= 0.9 → critical tier
+    // NPP delta = 50M (≫ 1M) → premium floor passes
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -376,9 +450,10 @@ describe('monitor-flow-ratio handler', () => {
         abs_ncp: '60000000',
       },
     ]);
-    // absNpp=78M, absNcp=20M, ratio=3.9, delta=2.6 >= 0.4
+    // absNpp=78M, absNcp=20M, ratio=3.9, delta=2.6 ≫ 0.7 (critical tier)
     // nppDelta = 78M-78M = 0, ncpDelta = 20M-60M = -40M
     // |ncpDelta| > |nppDelta|, ncpDelta < 0 → BEARISH
+    // max driver premium = 40M ≫ 1M → premium floor passes
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -437,10 +512,11 @@ describe('monitor-flow-ratio handler', () => {
   // ── Combined alert integration ────────────────────────────
 
   it('calls checkForCombinedAlert with ratio_surge when alert fires', async () => {
+    // Same fixture as the "fires warning" test: delta 0.8, driver NPP $40M
     vi.mocked(uwFetch).mockResolvedValue([
       makeFlowTick({
         net_call_premium: '50000000',
-        net_put_premium: '-80000000',
+        net_put_premium: '-90000000',
       }),
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
@@ -448,9 +524,9 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
       {
-        ratio: '1.15',
+        ratio: '1.0',
         abs_npp: '50000000',
-        abs_ncp: '43000000',
+        abs_ncp: '50000000',
       },
     ]);
 
@@ -479,10 +555,11 @@ describe('monitor-flow-ratio handler', () => {
   });
 
   it('returns combined: false when alert fires but no iv_spike exists', async () => {
+    // Same fixture as the "fires warning" test: delta 0.8, driver NPP $40M
     vi.mocked(uwFetch).mockResolvedValue([
       makeFlowTick({
         net_call_premium: '50000000',
-        net_put_premium: '-80000000',
+        net_put_premium: '-90000000',
       }),
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
@@ -490,9 +567,9 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
       {
-        ratio: '1.15',
+        ratio: '1.0',
         abs_npp: '50000000',
-        abs_ncp: '43000000',
+        abs_ncp: '50000000',
       },
     ]);
 

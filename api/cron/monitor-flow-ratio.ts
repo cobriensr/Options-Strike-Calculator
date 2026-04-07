@@ -4,7 +4,8 @@
  * 1-minute cron that monitors the 0DTE put/call premium ratio for
  * sudden shifts. Fetches the UW 0DTE index flow, computes |NPP|/|NCP|,
  * stores in flow_ratio_monitor, and fires a market alert when the
- * ratio delta exceeds 0.4 in a 5-minute window.
+ * ratio delta and driver-side premium delta both exceed the thresholds
+ * in alert-thresholds.ts over a 5-minute window.
  *
  * Uses delta-based detection (not hardcoded levels) so it catches
  * regime shifts regardless of where the ratio started the session.
@@ -139,8 +140,9 @@ async function detectRatioSurge(
   const nppChange = current.absNpp - prevNpp;
   const ncpChange = current.absNcp - prevNcp;
 
-  // Premium filter: the driving side must have moved at least $5M.
-  // Filters low-volume ratio swings that lack institutional conviction.
+  // Premium filter: the driving side must have moved at least
+  // RATIO_PREMIUM_MIN. Filters low-volume ratio swings that lack
+  // institutional conviction.
   const maxPremiumDelta = Math.max(Math.abs(nppChange), Math.abs(ncpChange));
   if (maxPremiumDelta < ALERT_THRESHOLDS.RATIO_PREMIUM_MIN) return null;
 
@@ -155,8 +157,11 @@ async function detectRatioSurge(
       ? `NPP ${nppChange >= 0 ? '+' : ''}$${(nppChange / 1e6).toFixed(1)}M`
       : `NCP ${ncpChange >= 0 ? '+' : ''}$${(ncpChange / 1e6).toFixed(1)}M`;
 
+  // Critical tier sits above the gate (RATIO_DELTA_MIN = 0.7) so that
+  // delta in [0.7, 0.9) is warning and >= 0.9 is critical. The previous
+  // critical threshold (0.6) was dead code because it sat below the gate.
   const severity: AlertPayload['severity'] =
-    Math.abs(ratioDelta) >= 0.6 ? 'critical' : 'warning';
+    Math.abs(ratioDelta) >= 0.9 ? 'critical' : 'warning';
 
   return {
     type: 'ratio_surge',

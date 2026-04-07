@@ -208,8 +208,8 @@ describe('engineerMonitorFeatures', () => {
       expect(features.iv_crush_rate).toBeUndefined();
     });
 
-    it('counts iv spikes where vol jumped >= 0.03 with SPX < 5 pts', async () => {
-      // Need >= 6 rows. Spike at index 5: vol[5] - vol[0] >= 0.03
+    it('counts iv spikes where vol jumped >= IV_JUMP_MIN with SPX < 5 pts', async () => {
+      // Need >= 6 rows. Spike at index 5: vol[5] - vol[0] >= IV_JUMP_MIN (0.01)
       const ivRows = [
         makeIvRow(570, 0.2, 6600),
         makeIvRow(571, 0.2, 6600),
@@ -464,8 +464,10 @@ describe('engineerMonitorFeatures', () => {
       expect(features.iv_at_t2).toBeCloseTo(0.24, 4);
       // crush: endVol(0.14) - startVol(0.20) = -0.06
       expect(features.iv_crush_rate).toBeCloseTo(-0.06, 4);
-      // spike at index 5: vol 0.26-0.22=0.04≥0.03, price 6603-6600=3<5
-      expect(features.iv_spike_count).toBe(1);
+      // Spikes detected with IV_JUMP_MIN=0.01 (lowered 2026-04-07):
+      //   index 5: vol 0.26-0.22=0.04 ≥ 0.01, price 6603-6600=3 < 5 ✓
+      //   index 6: vol 0.24-0.22=0.02 ≥ 0.01, price 6605-6601=4 < 5 ✓
+      expect(features.iv_spike_count).toBe(2);
 
       // PCR features
       expect(features.pcr_open).toBeCloseTo(0.8, 4);

@@ -33,14 +33,9 @@ vi.mock('../_lib/api-helpers.js', () => ({
   withRetry: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('../_lib/alert-thresholds.js', () => ({
-  ALERT_THRESHOLDS: {
-    IV_JUMP_MIN: 0.03,
-    IV_PRICE_MAX_MOVE: 5,
-    IV_LOOKBACK_MINUTES: 5,
-    COOLDOWN_MINUTES: 5,
-  },
-}));
+// Intentionally NOT mocking alert-thresholds — see the same rationale
+// in monitor-flow-ratio.test.ts. Tests import the real values so any
+// drift breaks tests instead of silently passing with stale mocks.
 
 import handler from '../cron/monitor-iv.js';
 import { cronGuard, uwFetch } from '../_lib/api-helpers.js';
@@ -184,7 +179,7 @@ describe('monitor-iv handler', () => {
 
   // ── Alert detection ──────────────────────────────────────
 
-  it('does NOT fire alert when IV delta < threshold', async () => {
+  it('does NOT fire alert when IV delta < IV_JUMP_MIN (0.01)', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
       {
         date: '2026-03-24',
@@ -197,7 +192,8 @@ describe('monitor-iv handler', () => {
     mockSql
       .mockResolvedValueOnce([{ spx_price: '6600' }]) // getLatestSpxPrice
       .mockResolvedValueOnce([]) // storeIvReading INSERT
-      .mockResolvedValueOnce([{ volatility: '0.240', spx_price: '6600' }]); // prev reading
+      .mockResolvedValueOnce([{ volatility: '0.245', spx_price: '6600' }]); // prev reading
+    // delta = 0.250 - 0.245 = 0.005 < 0.01 → no alert
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -207,12 +203,12 @@ describe('monitor-iv handler', () => {
     expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
   });
 
-  it('fires alert when IV spikes >= 3 vol pts while SPX < 5 pt move', async () => {
+  it('fires warning alert at IV delta in [0.01, 0.02) while SPX < 5 pt move', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
       {
         date: '2026-03-24',
         days: 0,
-        volatility: '0.277',
+        volatility: '0.255',
         implied_move_perc: '1.8',
         percentile: '72',
       },
@@ -222,7 +218,8 @@ describe('monitor-iv handler', () => {
     mockSql
       .mockResolvedValueOnce([{ spx_price: '6600' }]) // getLatestSpxPrice
       .mockResolvedValueOnce([]) // storeIvReading INSERT
-      .mockResolvedValueOnce([{ volatility: '0.229', spx_price: '6600' }]); // prev
+      .mockResolvedValueOnce([{ volatility: '0.240', spx_price: '6600' }]); // prev
+    // delta = 0.255 - 0.240 = 0.015 → warning tier [0.01, 0.02)
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -234,6 +231,7 @@ describe('monitor-iv handler', () => {
       expect.objectContaining({
         type: 'iv_spike',
         direction: 'BEARISH',
+        severity: 'warning',
       }),
     );
   });
@@ -243,7 +241,7 @@ describe('monitor-iv handler', () => {
       {
         date: '2026-03-24',
         days: 0,
-        volatility: '0.277',
+        volatility: '0.255',
         implied_move_perc: '1.8',
         percentile: '72',
       },
@@ -252,7 +250,8 @@ describe('monitor-iv handler', () => {
     mockSql
       .mockResolvedValueOnce([{ spx_price: '6607' }]) // getLatestSpxPrice (current)
       .mockResolvedValueOnce([]) // storeIvReading INSERT
-      .mockResolvedValueOnce([{ volatility: '0.229', spx_price: '6600' }]); // prev (7 pt diff)
+      .mockResolvedValueOnce([{ volatility: '0.240', spx_price: '6600' }]); // prev (7 pt diff)
+    // delta = 0.015 passes IV gate, but |spxMove| = 7 ≥ 5 → price-move filter blocks
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -262,12 +261,12 @@ describe('monitor-iv handler', () => {
     expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
   });
 
-  it('sets severity to critical when IV delta >= 5 vol pts', async () => {
+  it('sets severity to critical when IV delta >= 2 vol pts', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
       {
         date: '2026-03-24',
         days: 0,
-        volatility: '0.300',
+        volatility: '0.265',
         implied_move_perc: '2.0',
         percentile: '80',
       },
@@ -277,7 +276,8 @@ describe('monitor-iv handler', () => {
     mockSql
       .mockResolvedValueOnce([{ spx_price: '6601' }])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ volatility: '0.229', spx_price: '6600' }]);
+      .mockResolvedValueOnce([{ volatility: '0.240', spx_price: '6600' }]);
+    // delta = 0.265 - 0.240 = 0.025 >= 0.02 → critical tier
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
