@@ -630,7 +630,7 @@ describe('DarkPoolLevels: distance from spot', () => {
 // ============================================================
 
 describe('DarkPoolLevels: sort modes', () => {
-  it('cycles through sort modes: Premium → Strike → Distance → Premium', async () => {
+  it('cycles: Premium → Latest → Strike → Distance → Premium', async () => {
     const user = userEvent.setup();
     render(
       <DarkPoolLevels
@@ -643,19 +643,82 @@ describe('DarkPoolLevels: sort modes', () => {
       />,
     );
 
-    // Starts at "By Premium"
     expect(
       screen.getByRole('button', { name: /sort mode: by premium/i }),
     ).toBeInTheDocument();
 
-    const sortBtn = screen.getByText('By Premium');
-    await user.click(sortBtn);
+    await user.click(screen.getByText('By Premium'));
+    expect(screen.getByText('By Latest')).toBeInTheDocument();
+
+    await user.click(screen.getByText('By Latest'));
     expect(screen.getByText('By Strike')).toBeInTheDocument();
 
     await user.click(screen.getByText('By Strike'));
     expect(screen.getByText('By Distance')).toBeInTheDocument();
 
     await user.click(screen.getByText('By Distance'));
+    expect(screen.getByText('By Premium')).toBeInTheDocument();
+  });
+
+  it('By Latest orders most recently updated first', async () => {
+    const user = userEvent.setup();
+    render(
+      <DarkPoolLevels
+        levels={[
+          makeLevel({
+            spxLevel: 6600,
+            latestTime: '2026-04-07T14:00:00Z',
+            totalPremium: 500_000_000,
+          }),
+          makeLevel({
+            spxLevel: 6610,
+            latestTime: '2026-04-07T20:30:00Z',
+            totalPremium: 100_000_000,
+          }),
+          makeLevel({
+            spxLevel: 6620,
+            latestTime: '2026-04-07T18:00:00Z',
+            totalPremium: 300_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // Premium → Latest
+    await user.click(screen.getByText('By Premium'));
+
+    // 6610 (20:30) should come before 6620 (18:00) in DOM order
+    const s6610 = screen.getByText('6610');
+    const s6620 = screen.getByText('6620');
+    const pos =
+      s6610.compareDocumentPosition(s6620) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(pos).toBeTruthy();
+  });
+
+  it('skips Distance in cycle when spxPrice is missing', async () => {
+    const user = userEvent.setup();
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // Premium → Latest → Strike → Premium (Distance skipped)
+    await user.click(screen.getByText('By Premium'));
+    expect(screen.getByText('By Latest')).toBeInTheDocument();
+
+    await user.click(screen.getByText('By Latest'));
+    expect(screen.getByText('By Strike')).toBeInTheDocument();
+
+    await user.click(screen.getByText('By Strike'));
     expect(screen.getByText('By Premium')).toBeInTheDocument();
   });
 
@@ -675,7 +738,9 @@ describe('DarkPoolLevels: sort modes', () => {
       />,
     );
 
+    // Premium → Latest → Strike
     await user.click(screen.getByText('By Premium'));
+    await user.click(screen.getByText('By Latest'));
 
     const s6600 = screen.getByText('6600');
     const s6620 = screen.getByText('6620');
@@ -702,9 +767,9 @@ describe('DarkPoolLevels: sort modes', () => {
       />,
     );
 
-    // Click twice: Premium → Strike → Distance
-    const btn = screen.getByText('By Premium');
-    await user.click(btn);
+    // Premium → Latest → Strike → Distance
+    await user.click(screen.getByText('By Premium'));
+    await user.click(screen.getByText('By Latest'));
     await user.click(screen.getByText('By Strike'));
 
     // 6612 is 2pts from spot, 6580 is 30pts, 6640 is 30pts
@@ -716,24 +781,4 @@ describe('DarkPoolLevels: sort modes', () => {
     expect(pos).toBeTruthy();
   });
 
-  it('does not lock into Distance sort when spxPrice is missing', async () => {
-    const user = userEvent.setup();
-    render(
-      <DarkPoolLevels
-        levels={[makeLevel()]}
-        loading={false}
-        error={null}
-        updatedAt={null}
-        onRefresh={noop}
-      />,
-    );
-
-    // Cycle to Distance — button should be disabled when we reach it
-    await user.click(screen.getByText('By Premium'));
-    await user.click(screen.getByText('By Strike'));
-
-    // Now showing "By Distance" but it should be disabled since no spxPrice
-    const distBtn = screen.getByText('By Distance');
-    expect(distBtn).toBeDisabled();
-  });
 });

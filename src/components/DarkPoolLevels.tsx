@@ -21,7 +21,7 @@ const MIN_VISIBLE = 5;
 const MAX_VISIBLE = 50;
 const STEP = 5;
 
-type SortMode = 'premium' | 'strike' | 'distance';
+type SortMode = 'premium' | 'latest' | 'strike' | 'distance';
 
 interface Props {
   levels: DarkPoolLevel[];
@@ -61,6 +61,7 @@ function formatDist(level: number, price: number): string {
 
 const SORT_LABELS: Record<SortMode, string> = {
   premium: 'By Premium',
+  latest: 'By Latest',
   strike: 'By Strike',
   distance: 'By Distance',
 };
@@ -76,16 +77,28 @@ export default memo(function DarkPoolLevels({
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
   const [sortBy, setSortBy] = useState<SortMode>('premium');
 
-  // Cycle: premium → strike → distance → premium
+  // Cycle: premium → latest → strike → distance → premium
+  // Distance step is skipped when spxPrice is unknown.
   const cycleSort = useCallback(() => {
+    const canDistance = spxPrice != null;
     setSortBy((s) => {
-      if (s === 'premium') return 'strike';
-      if (s === 'strike') return 'distance';
+      if (s === 'premium') return 'latest';
+      if (s === 'latest') return 'strike';
+      if (s === 'strike') return canDistance ? 'distance' : 'premium';
       return 'premium';
     });
-  }, []);
+  }, [spxPrice]);
 
   const sorted = useMemo(() => {
+    if (sortBy === 'latest') {
+      // Most recently hit first — useful for scanning which levels are
+      // still active during a live session
+      return [...levels].sort((a, b) => {
+        const tA = a.latestTime ?? '';
+        const tB = b.latestTime ?? '';
+        return tB.localeCompare(tA);
+      });
+    }
     if (sortBy === 'strike') {
       // Price-ladder order: highest strike at top, lowest at bottom
       return [...levels].sort((a, b) => b.spxLevel - a.spxLevel);
