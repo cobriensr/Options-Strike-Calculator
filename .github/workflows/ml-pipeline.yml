@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 30
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PYTHON: python
 
     steps:
       - name: Checkout repository
@@ -53,7 +54,6 @@ jobs:
         run: cd ml && make all
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          PYTHON: python
 
       - name: Upload plots to Vercel Blob
         env:
