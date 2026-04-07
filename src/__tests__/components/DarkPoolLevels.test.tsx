@@ -780,5 +780,4 @@ describe('DarkPoolLevels: sort modes', () => {
       s6612.compareDocumentPosition(s6580) & Node.DOCUMENT_POSITION_FOLLOWING;
     expect(pos).toBeTruthy();
   });
-
 });
