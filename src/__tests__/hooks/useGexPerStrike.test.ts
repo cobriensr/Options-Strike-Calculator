@@ -38,12 +38,18 @@ function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
     callCharmOi: 1_000_000_000,
     putCharmOi: -800_000_000,
     netCharm: 200_000_000,
+    callCharmVol: 500_000_000,
+    putCharmVol: -400_000_000,
+    netCharmVol: 100_000_000,
     callDeltaOi: 5_000_000_000,
     putDeltaOi: -3_000_000_000,
     netDelta: 2_000_000_000,
     callVannaOi: 100_000_000,
     putVannaOi: -60_000_000,
     netVanna: 40_000_000,
+    callVannaVol: 50_000_000,
+    putVannaVol: -30_000_000,
+    netVannaVol: 20_000_000,
     ...overrides,
   };
 }

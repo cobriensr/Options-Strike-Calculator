@@ -21,8 +21,9 @@ const MAX_VISIBLE = 50;
 const STEP = 5;
 const BAR_HEIGHT = 36;
 const MAX_BAR_PCT = 45; // max bar width as % of chart area
+const TRADING_MINUTES_PER_DAY = 390; // for charm burn rate
 
-type ViewMode = 'oi' | 'directional';
+type ViewMode = 'oi' | 'vol' | 'dir';
 
 // Overlay colors that complement the dark theme
 const CHARM_POS = '#ffd740';
@@ -66,7 +67,33 @@ function formatTime(iso: string | null): string {
 
 function getNetGamma(s: GexStrikeLevel, mode: ViewMode): number {
   if (mode === 'oi') return s.netGamma;
+  if (mode === 'vol') return s.netGammaVol;
+  // dir: sum of directionalized bid/ask components
   return s.callGammaAsk + s.callGammaBid + s.putGammaAsk + s.putGammaBid;
+}
+
+/** Net charm for the active mode (DIR falls back to OI — no bid/ask for charm) */
+function getNetCharm(s: GexStrikeLevel, mode: ViewMode): number {
+  return mode === 'vol' ? s.netCharmVol : s.netCharm;
+}
+
+/** Net vanna for the active mode (DIR falls back to OI — no bid/ask for vanna) */
+function getNetVanna(s: GexStrikeLevel, mode: ViewMode): number {
+  return mode === 'vol' ? s.netVannaVol : s.netVanna;
+}
+
+/** Call gamma for the active mode */
+function getCallGamma(s: GexStrikeLevel, mode: ViewMode): number {
+  if (mode === 'oi') return s.callGammaOi;
+  if (mode === 'vol') return s.callGammaVol;
+  return s.callGammaAsk + s.callGammaBid;
+}
+
+/** Put gamma for the active mode */
+function getPutGamma(s: GexStrikeLevel, mode: ViewMode): number {
+  if (mode === 'oi') return s.putGammaOi;
+  if (mode === 'vol') return s.putGammaVol;
+  return s.putGammaAsk + s.putGammaBid;
 }
 
 // ── Tooltip ──────────────────────────────────────────────
@@ -83,9 +110,11 @@ function GexTooltip({
   y: number;
 }>) {
   const netGex = getNetGamma(data, viewMode);
-  const charmEffect = data.netCharm > 0 ? 'Strengthening' : 'Weakening';
+  const netCharmView = getNetCharm(data, viewMode);
+  const netVannaView = getNetVanna(data, viewMode);
+  const charmEffect = netCharmView > 0 ? 'Strengthening' : 'Weakening';
   const vannaDir =
-    data.netVanna > 0
+    netVannaView > 0
       ? 'Sell pressure if IV drops'
       : 'Buy pressure if IV drops';
   const volLabel =
@@ -131,10 +160,12 @@ function GexTooltip({
         </span>
         <span className="text-[10px]">
           <span style={{ color: theme.green }}>
-            {formatNum(data.callGammaOi)}
+            {formatNum(getCallGamma(data, viewMode))}
           </span>
           {' / '}
-          <span style={{ color: theme.red }}>{formatNum(data.putGammaOi)}</span>
+          <span style={{ color: theme.red }}>
+            {formatNum(getPutGamma(data, viewMode))}
+          </span>
         </span>
 
         {/* Charm */}
@@ -142,20 +173,26 @@ function GexTooltip({
         <span
           className="font-semibold"
           style={{
-            color: data.netCharm >= 0 ? CHARM_POS : CHARM_NEG,
+            color: netCharmView >= 0 ? CHARM_POS : CHARM_NEG,
           }}
         >
-          {formatNum(data.netCharm)}
+          {formatNum(netCharmView)}
         </span>
         <span className="text-[10px]">
           <span style={{ color: CHARM_POS }}>
-            {formatNum(data.callCharmOi)}
+            {formatNum(
+              viewMode === 'vol' ? data.callCharmVol : data.callCharmOi,
+            )}
           </span>
           {' / '}
-          <span style={{ color: CHARM_NEG }}>{formatNum(data.putCharmOi)}</span>
+          <span style={{ color: CHARM_NEG }}>
+            {formatNum(
+              viewMode === 'vol' ? data.putCharmVol : data.putCharmOi,
+            )}
+          </span>
         </span>
 
-        {/* DEX */}
+        {/* DEX (OI only — no vol variant from UW) */}
         <span>DEX</span>
         <span
           className="font-semibold"
@@ -174,17 +211,23 @@ function GexTooltip({
         <span
           className="font-semibold"
           style={{
-            color: data.netVanna >= 0 ? VANNA_POS : VANNA_NEG,
+            color: netVannaView >= 0 ? VANNA_POS : VANNA_NEG,
           }}
         >
-          {formatNum(data.netVanna)}
+          {formatNum(netVannaView)}
         </span>
         <span className="text-[10px]">
           <span style={{ color: VANNA_POS }}>
-            {formatNum(data.callVannaOi)}
+            {formatNum(
+              viewMode === 'vol' ? data.callVannaVol : data.callVannaOi,
+            )}
           </span>
           {' / '}
-          <span style={{ color: VANNA_NEG }}>{formatNum(data.putVannaOi)}</span>
+          <span style={{ color: VANNA_NEG }}>
+            {formatNum(
+              viewMode === 'vol' ? data.putVannaVol : data.putVannaOi,
+            )}
+          </span>
         </span>
       </div>
 
@@ -193,7 +236,7 @@ function GexTooltip({
         <span>Charm Effect</span>
         <span
           style={{
-            color: data.netCharm > 0 ? CHARM_POS : CHARM_NEG,
+            color: netCharmView > 0 ? CHARM_POS : CHARM_NEG,
           }}
         >
           {charmEffect}
@@ -202,7 +245,7 @@ function GexTooltip({
         <span
           className="text-[10px]"
           style={{
-            color: data.netVanna > 0 ? VANNA_POS : VANNA_NEG,
+            color: netVannaView > 0 ? VANNA_POS : VANNA_NEG,
           }}
         >
           {vannaDir}
@@ -258,7 +301,7 @@ export default memo(function GexPerStrike({
     return [...window].reverse();
   }, [strikes, price, visibleCount]);
 
-  // Compute scales
+  // Compute scales (mode-aware for charm/vanna)
   const { maxGex, maxCharm, maxVanna, maxDelta } = useMemo(() => {
     if (filtered.length === 0)
       return { maxGex: 1, maxCharm: 1, maxVanna: 1, maxDelta: 1 };
@@ -267,20 +310,53 @@ export default memo(function GexPerStrike({
         ...filtered.map((d) => Math.abs(getNetGamma(d, viewMode))),
         1,
       ),
-      maxCharm: Math.max(...filtered.map((d) => Math.abs(d.netCharm)), 1),
+      maxCharm: Math.max(
+        ...filtered.map((d) => Math.abs(getNetCharm(d, viewMode))),
+        1,
+      ),
       maxDelta: Math.max(...filtered.map((d) => Math.abs(d.netDelta)), 1),
-      maxVanna: Math.max(...filtered.map((d) => Math.abs(d.netVanna)), 1),
+      maxVanna: Math.max(
+        ...filtered.map((d) => Math.abs(getNetVanna(d, viewMode))),
+        1,
+      ),
     };
   }, [filtered, viewMode]);
 
   // Summary stats — totals from visible window, flip from FULL strike array
   const summary = useMemo(() => {
-    const totalGex = filtered.reduce((s, d) => s + getNetGamma(d, viewMode), 0);
-    const totalCharm = filtered.reduce((s, d) => s + d.netCharm, 0);
-    const totalVanna = filtered.reduce((s, d) => s + d.netVanna, 0);
+    const totalGex = filtered.reduce(
+      (s, d) => s + getNetGamma(d, viewMode),
+      0,
+    );
+    const totalCharm = filtered.reduce(
+      (s, d) => s + getNetCharm(d, viewMode),
+      0,
+    );
+    const totalVanna = filtered.reduce(
+      (s, d) => s + getNetVanna(d, viewMode),
+      0,
+    );
 
-    // GEX flip: scan the full strikes array (ascending), find the strike
-    // closest to spot where net gamma sign changes. Survives window filtering.
+    // Flow Pressure: today's volume GEX as % of standing OI GEX (regardless of viewMode)
+    const totalGexOi = filtered.reduce((s, d) => s + d.netGamma, 0);
+    const totalGexVol = filtered.reduce((s, d) => s + d.netGammaVol, 0);
+    let flowPressurePct = 0;
+    let flowSign: 'reinforcing' | 'opposing' | 'neutral' = 'neutral';
+    if (Math.abs(totalGexOi) > 0) {
+      flowPressurePct = (Math.abs(totalGexVol) / Math.abs(totalGexOi)) * 100;
+      if (totalGexVol !== 0) {
+        flowSign =
+          (totalGexOi > 0) === (totalGexVol > 0) ? 'reinforcing' : 'opposing';
+      }
+    }
+
+    // Charm burn rate: per-minute hedging pressure from theta decay.
+    // UW charm is expressed in $ of delta exposure decay over the trading day.
+    // Dividing by 390 trading minutes gives a per-minute forcing function.
+    const charmBurnRate = totalCharm / TRADING_MINUTES_PER_DAY;
+
+    // GEX flip: scan the full strikes array, find the strike closest to spot
+    // where net gamma sign changes. Survives window filtering.
     let flipStrike: string = '—';
     let closestDist = Infinity;
     for (let i = 1; i < strikes.length; i++) {
@@ -295,7 +371,15 @@ export default memo(function GexPerStrike({
         }
       }
     }
-    return { totalGex, totalCharm, totalVanna, flipStrike };
+    return {
+      totalGex,
+      totalCharm,
+      totalVanna,
+      flipStrike,
+      flowPressurePct,
+      flowSign,
+      charmBurnRate,
+    };
   }, [filtered, strikes, viewMode, price]);
 
   const handleLess = useCallback(
@@ -306,10 +390,7 @@ export default memo(function GexPerStrike({
     () => setVisibleCount((v) => Math.min(v + STEP, MAX_VISIBLE)),
     [],
   );
-  const toggleView = useCallback(
-    () => setViewMode((v) => (v === 'oi' ? 'directional' : 'oi')),
-    [],
-  );
+  // setViewMode is used directly in the 3-way toggle buttons below.
 
   const totalStrikes = strikes.length;
   const badge =
@@ -472,19 +553,41 @@ export default memo(function GexPerStrike({
           </button>
         ))}
         <div className="ml-auto flex gap-1">
-          {(['oi', 'directional'] as const).map((m) => (
+          {(
+            [
+              {
+                mode: 'oi' as const,
+                label: 'OI',
+                title: 'Open Interest — standing positions',
+              },
+              {
+                mode: 'vol' as const,
+                label: 'VOL',
+                title: "Volume — today's fresh flow",
+              },
+              {
+                mode: 'dir' as const,
+                label: 'DIR',
+                title: 'Directionalized — MM-side bid/ask proxy (gamma only)',
+              },
+            ]
+          ).map((m) => (
             <button
-              key={m}
-              onClick={toggleView}
+              key={m.mode}
+              onClick={() => setViewMode(m.mode)}
+              title={m.title}
               className="cursor-pointer rounded px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide"
               style={{
                 background:
-                  viewMode === m ? 'rgba(255,255,255,0.06)' : 'transparent',
-                border: `1px solid ${viewMode === m ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)'}`,
-                color: viewMode === m ? theme.text : theme.textMuted,
+                  viewMode === m.mode
+                    ? 'rgba(255,255,255,0.06)'
+                    : 'transparent',
+                border: `1px solid ${viewMode === m.mode ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)'}`,
+                color:
+                  viewMode === m.mode ? theme.text : theme.textMuted,
               }}
             >
-              {m === 'oi' ? 'OI' : 'VOL'}
+              {m.label}
             </button>
           ))}
         </div>
@@ -600,9 +703,11 @@ export default memo(function GexPerStrike({
           {/* Rows */}
           {filtered.map((d, i) => {
             const net = getNetGamma(d, viewMode);
+            const charmView = getNetCharm(d, viewMode);
+            const vannaView = getNetVanna(d, viewMode);
             const gexPct = net / maxGex;
-            const charmPct = d.netCharm / maxCharm;
-            const vannaPct = d.netVanna / maxVanna;
+            const charmPct = charmView / maxCharm;
+            const vannaPct = vannaView / maxVanna;
             const deltaPct = d.netDelta / maxDelta;
             const isHov = hovered === i;
 
@@ -652,7 +757,7 @@ export default memo(function GexPerStrike({
                           ? '50%'
                           : `calc(50% + ${charmPct * MAX_BAR_PCT * 0.6}%)`,
                       width: `${Math.abs(charmPct) * MAX_BAR_PCT * 0.6}%`,
-                      background: d.netCharm >= 0 ? CHARM_POS : CHARM_NEG,
+                      background: charmView >= 0 ? CHARM_POS : CHARM_NEG,
                       opacity: isHov ? 0.9 : 0.5,
                     }}
                   />
@@ -668,8 +773,8 @@ export default memo(function GexPerStrike({
                       width: Math.max(4, Math.abs(vannaPct) * 10),
                       height: Math.max(4, Math.abs(vannaPct) * 10),
                       background:
-                        d.netVanna >= 0 ? `${VANNA_POS}22` : `${VANNA_NEG}22`,
-                      border: `1px solid ${d.netVanna >= 0 ? VANNA_POS : VANNA_NEG}`,
+                        vannaView >= 0 ? `${VANNA_POS}22` : `${VANNA_NEG}22`,
+                      border: `1px solid ${vannaView >= 0 ? VANNA_POS : VANNA_NEG}`,
                       opacity: isHov ? 0.9 : 0.4,
                       transform: 'translate(-50%, 0)',
                     }}
@@ -722,6 +827,8 @@ export default memo(function GexPerStrike({
         >
           {filtered.map((d, i) => {
             const isHov = hovered === i;
+            const charmView = getNetCharm(d, viewMode);
+            const vannaView = getNetVanna(d, viewMode);
             return (
               <div
                 key={d.strike}
@@ -735,22 +842,22 @@ export default memo(function GexPerStrike({
                   <span
                     className="w-[56px] font-semibold"
                     style={{
-                      color: d.netCharm > 0 ? CHARM_POS : CHARM_NEG,
+                      color: charmView > 0 ? CHARM_POS : CHARM_NEG,
                     }}
                   >
-                    {d.netCharm > 0 ? '▲' : '▼'}{' '}
-                    {formatNum(Math.abs(d.netCharm))}
+                    {charmView > 0 ? '▲' : '▼'}{' '}
+                    {formatNum(Math.abs(charmView))}
                   </span>
                 )}
                 {showVanna && (
                   <span
                     className="w-[46px] font-semibold"
                     style={{
-                      color: d.netVanna > 0 ? VANNA_POS : VANNA_NEG,
+                      color: vannaView > 0 ? VANNA_POS : VANNA_NEG,
                     }}
                   >
-                    {d.netVanna > 0 ? '▲' : '▼'}{' '}
-                    {formatNum(Math.abs(d.netVanna))}
+                    {vannaView > 0 ? '▲' : '▼'}{' '}
+                    {formatNum(Math.abs(vannaView))}
                   </span>
                 )}
                 {showDex && (
@@ -771,28 +878,58 @@ export default memo(function GexPerStrike({
       </div>
 
       {/* Bottom summary cards */}
-      <div className="mt-3 grid grid-cols-4 gap-2 font-mono text-[10px]">
+      <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-[10px] md:grid-cols-3 lg:grid-cols-6">
         {(
           [
             {
               label: 'TOTAL NET GEX',
               value: formatNum(summary.totalGex),
               color: summary.totalGex >= 0 ? theme.green : theme.red,
+              sub: null,
             },
             {
               label: 'NET CHARM',
               value: formatNum(summary.totalCharm),
               color: summary.totalCharm >= 0 ? CHARM_POS : CHARM_NEG,
+              sub: null,
             },
             {
               label: 'NET VANNA',
               value: formatNum(summary.totalVanna),
               color: summary.totalVanna >= 0 ? VANNA_POS : VANNA_NEG,
+              sub: null,
             },
             {
               label: 'GEX FLIP',
               value: summary.flipStrike,
               color: theme.text,
+              sub: null,
+            },
+            {
+              label: 'FLOW PRESSURE',
+              value: `${summary.flowPressurePct.toFixed(0)}%`,
+              color:
+                summary.flowSign === 'reinforcing'
+                  ? theme.green
+                  : summary.flowSign === 'opposing'
+                    ? theme.red
+                    : theme.textMuted,
+              sub:
+                summary.flowSign === 'reinforcing'
+                  ? 'reinforcing'
+                  : summary.flowSign === 'opposing'
+                    ? 'opposing'
+                    : 'neutral',
+            },
+            {
+              label: 'CHARM BURN/MIN',
+              value: formatNum(summary.charmBurnRate),
+              color:
+                summary.charmBurnRate >= 0 ? CHARM_POS : CHARM_NEG,
+              sub:
+                summary.charmBurnRate >= 0
+                  ? 'buying pressure'
+                  : 'selling pressure',
             },
           ] as const
         ).map((card) => (
@@ -816,6 +953,14 @@ export default memo(function GexPerStrike({
             >
               {card.value}
             </div>
+            {card.sub && (
+              <div
+                className="mt-0.5 text-[9px]"
+                style={{ color: theme.textMuted }}
+              >
+                {card.sub}
+              </div>
+            )}
           </div>
         ))}
       </div>

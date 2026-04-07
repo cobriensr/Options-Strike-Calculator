@@ -32,18 +32,26 @@ export interface GexStrikeLevel {
   callGammaBid: number;
   putGammaAsk: number;
   putGammaBid: number;
-  // Charm
+  // Charm — OI
   callCharmOi: number;
   putCharmOi: number;
   netCharm: number;
-  // Delta (DEX)
+  // Charm — volume
+  callCharmVol: number;
+  putCharmVol: number;
+  netCharmVol: number;
+  // Delta (DEX) — OI only, no vol variant from UW
   callDeltaOi: number;
   putDeltaOi: number;
   netDelta: number;
-  // Vanna
+  // Vanna — OI
   callVannaOi: number;
   putVannaOi: number;
   netVanna: number;
+  // Vanna — volume
+  callVannaVol: number;
+  putVannaVol: number;
+  netVannaVol: number;
 }
 
 export interface UseGexPerStrikeReturn {

@@ -104,6 +104,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const netGammaVol = callGammaVol + putGammaVol;
         const callCharmOi = n(r.call_charm_oi);
         const putCharmOi = n(r.put_charm_oi);
+        const callCharmVol = n(r.call_charm_vol);
+        const putCharmVol = n(r.put_charm_vol);
+        const callVannaOi = n(r.call_vanna_oi);
+        const putVannaOi = n(r.put_vanna_oi);
+        const callVannaVol = n(r.call_vanna_vol);
+        const putVannaVol = n(r.put_vanna_vol);
 
         // Vol vs OI reinforcement: same sign = today's flow supports the level
         let volReinforcement: 'reinforcing' | 'opposing' | 'neutral' =
@@ -118,26 +124,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return {
           strike: Number(r.strike),
           price: Number(r.price),
+          // Gamma — OI
           callGammaOi,
           putGammaOi,
           netGamma: netGammaOi,
+          // Gamma — volume
           callGammaVol,
           putGammaVol,
           netGammaVol,
           volReinforcement,
+          // Gamma — directionalized (bid/ask)
           callGammaAsk: n(r.call_gamma_ask),
           callGammaBid: n(r.call_gamma_bid),
           putGammaAsk: n(r.put_gamma_ask),
           putGammaBid: n(r.put_gamma_bid),
+          // Charm — OI
           callCharmOi,
           putCharmOi,
           netCharm: callCharmOi + putCharmOi,
+          // Charm — volume
+          callCharmVol,
+          putCharmVol,
+          netCharmVol: callCharmVol + putCharmVol,
+          // Delta (OI only — no vol variant from UW)
           callDeltaOi: n(r.call_delta_oi),
           putDeltaOi: n(r.put_delta_oi),
           netDelta: n(r.call_delta_oi) + n(r.put_delta_oi),
-          callVannaOi: n(r.call_vanna_oi),
-          putVannaOi: n(r.put_vanna_oi),
-          netVanna: n(r.call_vanna_oi) + n(r.put_vanna_oi),
+          // Vanna — OI
+          callVannaOi,
+          putVannaOi,
+          netVanna: callVannaOi + putVannaOi,
+          // Vanna — volume
+          callVannaVol,
+          putVannaVol,
+          netVannaVol: callVannaVol + putVannaVol,
         };
       });
 

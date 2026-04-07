@@ -182,6 +182,10 @@ describe('GET /api/gex-per-strike', () => {
     expect(strike.netDelta).toBe(2_000_000_000);
     // Vanna
     expect(strike.netVanna).toBe(40_000_000);
+    // Charm vol: call_charm_vol + put_charm_vol = 500M + (-400M) = 100M
+    expect(strike.netCharmVol).toBe(100_000_000);
+    // Vanna vol: call_vanna_vol + put_vanna_vol = 50M + (-30M) = 20M
+    expect(strike.netVannaVol).toBe(20_000_000);
   });
 
   it('converts string DB values to numbers', async () => {
