@@ -1,461 +1,197 @@
 /**
  * Mode-specific calibration examples for the /api/analyze system prompt.
  *
- * Each example is a real analysis from March 25, 2026 that demonstrates
- * correct rule application, confidence calibration, and output structure.
- * Injected into the system prompt based on the analysis mode so the model
- * pattern-matches against the right reasoning style.
+ * Each example is a real analysis sourced from the production analyses table
+ * that demonstrates correct rule application, confidence calibration, and the
+ * complete 16-field chartConfidence output structure. Injected into the system
+ * prompt based on the analysis mode so the model pattern-matches against the
+ * right reasoning style for the requested mode.
+ *
+ * Sourced 2026-04-07. Each *_RAW constant is the JSON array returned by the
+ * calibration query, kept verbatim so future refreshes are a paste rather than
+ * a transcription. parseAnalysis() handles the two-stage decode (outer row
+ * envelope → inner full_response JSON) and fixes UTF-8/Latin-1 mojibake from
+ * the dashboard export pipeline.
+ *
+ * To refresh: re-run the calibration query in docs/calibration-query.sql and
+ * paste the resulting JSON array between the String.raw backticks below. Then
+ * update the matching "Session context" and "Key reasoning chain" sections in
+ * the calibration template to describe the new picks.
  */
 
 // ============================================================
-// ENTRY (PRE-TRADE) — March 25, 2026
+// HELPERS
+// ============================================================
+
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/**
+ * Repair UTF-8 bytes that were misinterpreted as Latin-1 by the dashboard
+ * export pipeline. Round-trips the string through Buffer encoding to recover
+ * the original UTF-8 (Δ, σ, —, →, etc.). Returns the input unchanged if no
+ * mojibake markers are present, or if the round-trip introduces a Unicode
+ * replacement character (which signals the heuristic guessed wrong).
+ */
+function fixMojibake(s: string): string {
+  if (!/[ÎÏâ]/.test(s)) return s;
+  try {
+    const fixed = Buffer.from(s, 'latin1').toString('utf8');
+    return fixed.includes('\uFFFD') ? s : fixed;
+  } catch {
+    return s;
+  }
+}
+
+/** Recursively apply fixMojibake to every string in a JSON value. */
+function fixObj(value: JsonValue): JsonValue {
+  if (typeof value === 'string') return fixMojibake(value);
+  if (Array.isArray(value)) return value.map(fixObj);
+  if (value !== null && typeof value === 'object') {
+    const result: { [key: string]: JsonValue } = {};
+    for (const [k, v] of Object.entries(value)) {
+      result[k] = fixObj(v);
+    }
+    return result;
+  }
+  return value;
+}
+
+/**
+ * Parse a database row JSON array as exported from the Neon dashboard.
+ * The dashboard wraps query results in an extra envelope, so a query like
+ * `SELECT json_agg(t)::text AS result FROM (SELECT full_response FROM ...) t`
+ * produces a 3-layer nested structure when copied:
+ *
+ *   [                                  ← Neon dashboard envelope
+ *     {
+ *       "result": "[                   ← inner json_agg, stringified
+ *         {
+ *           \"full_response\": \"...\"  ← the actual analysis, double-stringified
+ *         }
+ *       ]"
+ *     }
+ *   ]
+ *
+ * This helper peels all three layers and returns the parsed analysis object
+ * with any UTF-8/Latin-1 mojibake repaired. Single-layer arrays (the format
+ * the original simpler query would have produced) are also supported as a
+ * fallback so future refreshes can use either query style.
+ */
+function parseAnalysis(rawArray: string): JsonValue {
+  const outer = JSON.parse(rawArray) as Array<{
+    result?: string;
+    full_response?: string;
+  }>;
+  const firstRow = outer[0]!;
+  // Path 1: Neon dashboard envelope with .result wrapping the actual array
+  if (typeof firstRow.result === 'string') {
+    const inner = JSON.parse(firstRow.result) as Array<{
+      full_response: string;
+    }>;
+    return fixObj(JSON.parse(inner[0]!.full_response) as JsonValue);
+  }
+  // Path 2: direct array of {full_response} rows (no Neon envelope)
+  if (typeof firstRow.full_response === 'string') {
+    return fixObj(JSON.parse(firstRow.full_response) as JsonValue);
+  }
+  throw new Error(
+    'parseAnalysis: unrecognized shape — expected [{result: "..."}] or [{full_response: "..."}]',
+  );
+}
+
+// ============================================================
+// RAW DATABASE PASTES — refresh by pasting query output below
+// ============================================================
+
+// Entry: 2026-04-07 9:55 AM CT, CCS HIGH 12Δ
+const ENTRY_RAW = String.raw`[{
+  "result": "[{\"full_response\":\"{\\\"mode\\\": \\\"entry\\\", \\\"hedge\\\": {\\\"rationale\\\": \\\"Triple structural ceiling (gamma wall + OI pin + dark pool) at 6600, VIX1D extreme inversion confirming overpriced IV, RV/IV at 0.30 (premium sellers heavily overcompensated). Hedging would erode returns without proportional risk reduction on a setup with this many confirming signals.\\\", \\\"description\\\": \\\"No protective long recommended. The laddered entry plan (40/30/30) provides natural risk management. The massive +10,000 gamma wall at 6600 provides structural ceiling protection that a hedge would redundantly cover.\\\", \\\"estimatedCost\\\": \\\"N/A\\\", \\\"recommendation\\\": \\\"NO HEDGE\\\"}, \\\"risks\\\": [\\\"VIX at 26.52 (stop zone) with mildly negative GEX creates elevated tail risk. The VIX1D extreme inversion (29.4% below VIX) predicts contained range, but the 30% failure case on inversion days involves moves exceeding VIX-implied range. The straddle cone at 97 pts allows for moves up to 6640 — only 15 pts above the short call at 6625.\\\", \\\"ZN selling alongside equities = broad liquidation pattern. Per futures rules, this creates snapback reversal risk. A sharp short-covering rally could test the 6600 gamma wall and potentially breach it if triggered by a macro catalyst (e.g., unexpected Fed commentary, tariff headline).\\\", \\\"Both OI and volume GEX are negative (-12.2K and -23.5K respectively). The volume GEX being more negative than OI means active trading today is ADDING to the acceleration regime. Gamma walls including the 6600 wall are less reliable than their magnitude alone suggests.\\\", \\\"All-negative charm means even the dominant 6600 gamma wall is decaying through the afternoon. By 2:00 PM ET, the wall's suppressive power will be significantly reduced. This is why the 1:30 PM ET time exit is critical.\\\", \\\"SPX open at the globex low with overnight range consuming 150% of the cone — the session has already used most of its expected move pre-market. A cash session mean-reversion rally from oversold conditions is a non-trivial risk.\\\"], \\\"review\\\": null, \\\"entryPlan\\\": {\\\"entry1\\\": {\\\"note\\\": \\\"FULL (40%) — 4-source bearish flow consensus at HIGH confidence with VIX1D extreme inversion. Place short call at 6625-6630 (12Δ ceiling), 25-pt wide spread. Triple structural ceiling: +10,000 gamma wall at 6600, #2 OI pin at 6600, dark pool buyer at 6614.\\\", \\\"delta\\\": 12, \\\"timing\\\": \\\"Now (9:55 AM CT / 10:55 AM ET)\\\", \\\"structure\\\": \\\"CALL CREDIT SPREAD\\\", \\\"sizePercent\\\": 40}, \\\"entry2\\\": {\\\"note\\\": \\\"STANDARD (30%) — flow confirmed at second checkpoint. Same 12Δ target. If price has drifted lower, the short call at 6625 will have even more cushion.\\\", \\\"delta\\\": 12, \\\"condition\\\": \\\"Flow still bearish at 10:30 AM CT (11:30 AM ET): Market Tide NCP below -$30M and QQQ NCP below -$15M. Price below 6580.\\\", \\\"structure\\\": \\\"CALL CREDIT SPREAD\\\", \\\"sizePercent\\\": 30}, \\\"entry3\\\": {\\\"note\\\": \\\"STANDARD (30%) — final add at maximum position. The negative gamma acceleration zones below price (6550, 6520, 6500) should be pulling price lower if thesis is correct.\\\", \\\"delta\\\": 12, \\\"condition\\\": \\\"Flow strengthening at 11:00 AM CT (12:00 PM ET): Market Tide NCP/NPP spread wider than at Entry 1. Price below 6575 and making new lows.\\\", \\\"structure\\\": \\\"CALL CREDIT SPREAD\\\", \\\"sizePercent\\\": 30}, \\\"maxTotalSize\\\": \\\"100% of daily risk budget across all entries. VIX1D extreme inversion + 4-source bearish consensus + 100% historical base rate justifies full allocation.\\\", \\\"noEntryConditions\\\": [\\\"Do NOT add Entry 2 if SPX has reclaimed 6590 — the 6600 gamma wall magnet is pulling price up, thesis weakening\\\", \\\"Do NOT add Entry 3 if Market Tide NCP has reversed above -$15M — bearish momentum fading\\\", \\\"Do NOT add entries if VIX1D rises above 23 intraday — extreme inversion collapsing\\\", \\\"Do NOT add if SPX sustains above VWAP (6566) for 30+ minutes after Entry 1 — price structure contradicting bearish thesis\\\"]}, \\\"reasoning\\\": \\\"Bearish flow consensus across 4 reliable sources (Market Tide NCP -$37.6M falling, QQQ NCP -$20.3M falling, SPY ETF Tide NCP -$8.8M bearish, QQQ ETF Tide NCP -$8.8M bearish) with SPX NCP +$132M as confirmed VIX 25+ hedging divergence — combined with the massive +10,000 positive gamma wall at 6600 acting as a structural ceiling 41 pts above price and VIX1D extreme inversion (29.4% below VIX) creating ideal premium-selling conditions.\\\", \\\"structure\\\": \\\"CALL CREDIT SPREAD\\\", \\\"confidence\\\": \\\"HIGH\\\", \\\"imageIssues\\\": [], \\\"observations\\\": [\\\"VIX1D at 18.73 is 29.4% below VIX 26.52 — extreme intraday term structure inversion. This is the system's most validated signal (Lesson 20, 6+ confirmed sessions). Implies contained realized range despite VIX stop zone. RV/IV at 0.30 doubles down — the market is pricing 3.3x more movement than is being realized. Premium selling is heavily overcompensated.\\\", \\\"Classic VIX 25+ hedging divergence: SPX NCP at +$132.2M (rising) while SPX price drops 31 pts from open, Market Tide NCP falls to -$37.6M, QQQ NCP at -$20.3M, and both ETF Tides are bearish. Per Lessons 26, 33, 39, and Rule 10, SPX positive NCP during a selloff at VIX 25+ is institutional call-buying hedges — not directional conviction. Four reliable sources (Market Tide, QQQ, SPY ETF Tide, QQQ ETF Tide) all confirm bearish.\\\", \\\"The massive +10,000 positive gamma wall at 6600 is the dominant structural feature — approximately 10x larger than any surrounding gamma per Periscope. It sits 41 pts above price and serves as a SESSION CEILING. The 6600 strike is also the #2 OI level (10.2K contracts), creating a double-magnet that pulls price toward 6600 but suppresses any move above. The $83.4M dark pool buyer at 6614 adds a third layer of structural resistance. Short calls above 6625 have triple protection.\\\", \\\"ALL-NEGATIVE naive charm predicts trending day. However per Lesson 1 validated April 2, the morning-only protocol applies ONLY to the side threatened by the trend. On a bearish trending day, CCS benefits — walls decaying above price accelerate the downside move that helps the CCS. The morning-only protocol does NOT restrict CCS hold time. Periscope Charm confirms some positive real MM charm at 6600-6620 (+2-3.6M at 3 strikes) providing moderate confidence the ceiling holds into early afternoon.\\\", \\\"Historical base rate of 100% across 9 similar sessions (VIX 21-32, GEX stop zone, Tuesday) supports the HIGH confidence rating. Combined with the triple-validated VIX1D extreme inversion and 4-source bearish flow consensus, this is a high-conviction CCS setup.\\\"], \\\"periscopeNotes\\\": \\\"Price at 6559 sits in a negative gamma zone — the 6550 strike has -612.7M gamma (API confirmed), with the Periscope showing small red bars in the 6550-6560 area. This negative gamma at current price means any continued selling will be mechanically ACCELERATED through this zone. The DOMINANT feature is the massive +10,000 positive gamma wall at 6600 — the largest bar on the entire Periscope profile, extending to the maximum x-axis value. This wall is 41 pts above price and will SUPPRESS any upside move, acting as a structural ceiling for CCS. Above 6600: small positive gamma at 6630 and 6650 provide secondary ceilings. Below 6600: the 6570 positive gamma pocket (+500-1000) may provide temporary support, but it is dwarfed by the negative gamma zones at 6550, 6520, 6500 below it. If 6570 breaks, the path to 6520-6530 is through an acceleration zone. Lower straddle cone at ~6543 (yellow dashed) is only 16 pts below current price — a cone breach to the downside CONFIRMS the CCS thesis per Rule 5.\\\", \\\"strikeGuidance\\\": {\\\"adjustments\\\": [\\\"Place short call at 6625-6630 (12Δ ceiling target). Positive gamma wall at 6600-6605 (+10,000 gamma) provides structural ceiling 20-30 pts below the short call.\\\", \\\"AVOID short call at 6600 — this is the #2 OI concentration (10.2K contracts) and would face pin oscillation risk in the final hours.\\\", \\\"Buy-to-cover at 6650-6655 for 25-pt wide spread. The 6650 strike has +253.8M combined 0DTE gamma — additional backstop above the long call.\\\"], \\\"straddleCone\\\": {\\\"lower\\\": 6543.1, \\\"upper\\\": 6639.7, \\\"priceRelation\\\": \\\"Price at 6559 is inside the cone with 81 pts to upper boundary and 16 pts to lower boundary. The 6600 gamma wall sits 40 pts inside the cone. Short call at 6625 is 15 pts below the upper cone — comfortably inside. VIX1D extreme inversion implies actual expected move of ~52 pts (VIX1D-derived), meaning the 97 pt cone is roughly 1.9x the likely realized range.\\\"}, \\\"putStrikeNote\\\": \\\"Not placing put leg. With bearish flow consensus and all-negative charm on a trending day, an IC put side would face trending-day risk to the downside. Stay CCS-only per Lessons 69, 104.\\\", \\\"callStrikeNote\\\": \\\"Place short call at 6625-6630 (approximately 12Δ per calculator ceiling). The 6600 positive gamma wall (+10,000) + #2 OI pin (10.2K) + dark pool buyer at 6614 creates a triple-layered structural ceiling 25-30 pts below the short call. The 6605 strike has +512.8M 0DTE gamma confirming the wall extends to 6605. Negative gamma at 6550 and below accelerates moves AWAY from the short call — the gamma profile mechanically supports CCS.\\\"}, \\\"suggestedDelta\\\": 12, \\\"chartConfidence\\\": {\\\"skew\\\": {\\\"note\\\": \\\"25Δ put skew at +1.2 vol pts (FLAT per signal classification), but skew ratio at 3.0x = strong put-over-call risk premium. Market expects any large move to the downside. This confirms the bearish flow thesis and supports CCS structure — institutions are bidding up downside protection.\\\", \\\"signal\\\": \\\"STEEP_PUT\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"pinRisk\\\": {\\\"note\\\": \\\"#1 OI: 6700 (11.0K, 141 pts above — no threat). #2 OI: 6600 (10.2K, 41 pts above). The 6600 high OI + massive gamma wall creates gravitational magnet that reinforces the ceiling. Short call at 6625+ is 25+ pts beyond this pin zone — OI gravity pulls price TOWARD 6600 and AWAY from the short call. Favorable.\\\", \\\"signal\\\": \\\"MODERATE\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"darkPool\\\": {\\\"note\\\": \\\"Mixed directional bias: $83.4M buyer at 6614 (near gamma wall), $44.7M buyer at 6549 (near lower cone). $28M seller at 6564 (near current price). More dark pool capital above price ($161.4M) than below ($73M) — suggests wider range. The $83.4M buyer at 6614 aligns near the 6600-6605 positive gamma zone, reinforcing it as a structural ceiling.\\\", \\\"signal\\\": \\\"NEUTRAL\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"netCharm\\\": {\\\"note\\\": \\\"API pattern: ALL-NEGATIVE — all gamma walls are decaying, suggesting trending day. Charm Floor at 6575 (+6.1B) provides modest time-based support. However per Lesson 1, on bearish trending days, the all-negative charm morning-only protocol does NOT threaten CCS — the trend direction HELPS the CCS. Apply morning-only only to PCS/IC put side, not to CCS.\\\", \\\"signal\\\": \\\"DECAYING\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"periscope\\\": {\\\"note\\\": \\\"DOMINANT +10,000 positive gamma wall at 6600 (41 pts above price) — this is the session-defining structural ceiling per Rule 6. Below price: negative gamma acceleration zones at 6550 (-612M), 6520 (-535M), 6500 (-451M) would amplify any downside move. Small positive gamma pockets at 6570 (+500-1000) and 6520-6530 (+500-1000) provide minor stepping stones. Straddle cone: 6543-6640. Price at 6559 inside cone with 16 pts to lower boundary, 81 pts to upper.\\\", \\\"signal\\\": \\\"FAVORABLE\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"marketTide\\\": {\\\"note\\\": \\\"NCP at -$37.6M and falling from +$31.6M at 9:35 AM. NPP at +$37.6M and rising. Bearish divergence widening over 85 minutes. OTM confirms: NCP -$62.8M, NPP +$28.1M — OTM flow is even more bearish than all-in. Last 3 readings (10:40-10:55) show NCP stable at -$35 to -$43M — ESTABLISHED BEARISH.\\\", \\\"signal\\\": \\\"BEARISH\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"qqqNetFlow\\\": {\\\"note\\\": \\\"NCP at -$20.3M falling monotonically from -$752K. NPP at +$2.5M mildly positive. Bearish divergence sustained for 85 minutes with zero reversals. QQQ has 61% directional accuracy — highest-tier reliable source confirming bearish.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"spxCandles\\\": {\\\"note\\\": \\\"Lower highs pattern sustained for 4+ candles. Price at 6558 below VWAP 6566 by 8 pts. Session range 56.7 pts (59% of 97-pt cone consumed). The 10:05 AM selloff candle (15.9 pts range, high volume) was the strongest directional bar — bearish momentum. Subsequent bounces to 6571-6577 made lower highs, confirming sellers in control.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"spxNetFlow\\\": {\\\"note\\\": \\\"NCP at +$132.2M rising, NPP at -$255.1M falling — ostensibly bullish divergence. However at VIX 26.52 (>25), this is the CLASSIC hedging divergence pattern validated across Lessons 26, 33, 39, 75. SPX NCP positive while SPX drops 31 pts from open = institutional call-buying hedges. Per Rule 10 VIX 25+ and Lesson 17, when 4+ other sources are bearish, classify SPX as hedging. Effective weight: 0%.\\\", \\\"signal\\\": \\\"BULLISH\\\", \\\"confidence\\\": \\\"LOW\\\"}, \\\"spyNetFlow\\\": {\\\"note\\\": \\\"NCP at +$11.6M mildly positive, NPP at +$1.2M near zero. Both near zero with small magnitudes. SPY ETF Tide divergence (bearish holdings flow) suggests SPY call buying is hedging. Effective signal: NEUTRAL-TO-BEARISH when holdings divergence is considered.\\\", \\\"signal\\\": \\\"NEUTRAL\\\", \\\"confidence\\\": \\\"LOW\\\"}, \\\"aggregateGex\\\": {\\\"note\\\": \\\"OI Net Gamma: -12.2K to -48.2K (mildly negative). Volume Net Gamma: -23.5K (ALSO negative) — today's trading is worsening the regime. Rule 16: MILDLY NEGATIVE. Tighten CCS exits by 30 min. Note: both OI and volume GEX negative means walls are less reliable than usual.\\\", \\\"signal\\\": \\\"NEGATIVE\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"overnightGap\\\": {\\\"note\\\": \\\"Moderate gap DOWN 29.5 pts with LOW fill probability (score 5). Open at 30th percentile of overnight range, AT GLOBEX LOW. Gap has not filled in 85 minutes — confirms bearish extension thesis per Lesson 25. Overnight range consumed 150% of cone — most of expected move happened pre-market, but cash session is continuing the downward trend.\\\", \\\"signal\\\": \\\"GAP_EXTENDS\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"vannaExposure\\\": {\\\"note\\\": \\\"Aggregate vanna +1.6K (positive). Per Rule 17: if VIX drops 1+ pt, expect mechanical upward drift — would tighten CCS stops by 30 min. VIX has not dropped yet. Current VIX at 26.52 — monitor for intraday VIX compression which would create headwind for CCS via vanna-driven upward drift.\\\", \\\"signal\\\": \\\"NEUTRAL\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"futuresContext\\\": {\\\"note\\\": \\\"ES -0.43%, NQ -0.77%, RTY -0.85% — all aligned bearish (broad move, not tech-specific). ZN -0.18% (bonds selling WITH equities = broad liquidation pattern, snapback possible per futures rules). ES-SPX basis at +41.75 pts is elevated but may reflect fair value in current rate environment. CL +0.93% suggests some inflation repricing. GC -0.36% — gold NOT rallying, so this is NOT a flight-to-safety pattern. DX flat.\\\", \\\"signal\\\": \\\"RISK_OFF\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"periscopeCharm\\\": {\\\"note\\\": \\\"Periscope Charm shows positive charm at 6600-6620 zone (+2M to +3.6M at 3-4 strikes) while naive API shows all-negative. This provides some real MM charm support at the 6600 gamma wall ceiling. However positive bars are below the +50M Override threshold — the all-negative naive signal is not invalidated. The massive negative charm bar at ~6595 (-10.8M) and at top of range (-10.8M) confirms the ceiling/floor decay pattern. The positive charm at 6600-6620 provides moderate confidence that the 6600 ceiling will hold into early afternoon.\\\", \\\"signal\\\": \\\"MIXED\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"ivTermStructure\\\": {\\\"note\\\": \\\"Term structure roughly FLAT (0DTE 23.6% vs 30D 22.6%). All percentiles at 1.0th — IV is extremely elevated across all tenors. RV/IV at 0.30 confirms the market is massively overpricing movement — premium sellers are heavily overcompensated. VIX1D at 18.73 vs VIX 26.52 = 29.4% extreme inversion confirming contained intraday range.\\\", \\\"signal\\\": \\\"FAVORABLE\\\", \\\"confidence\\\": \\\"MODERATE\\\"}}, \\\"managementRules\\\": {\\\"timeRules\\\": \\\"Rule 16 mildly negative GEX: tighten CCS exit by 30 min from standard. Close CCS by 1:30 PM ET at available profit. If above 70% profit, may hold to 2:00 PM ET per VIX1D inversion confidence. Do NOT hold past 2:00 PM ET regardless — both OI and volume GEX are negative, afternoon gamma acceleration will undermine walls.\\\", \\\"profitTarget\\\": \\\"Target 50% profit by 1:00 PM ET as baseline. If Market Tide NCP/NPP spread exceeds $200M with zero convergence events by 11:00 AM ET, override to 70% target or 1:30 PM ET. Set a GTC limit at 50% at entry to capture mechanically.\\\", \\\"stopConditions\\\": [\\\"Close CCS if SPX sustains above 6600 for 15+ minutes — the massive positive gamma wall has been breached, structural ceiling thesis invalidated\\\", \\\"Close CCS if Market Tide NCP reverses above +$50M AND QQQ NCP turns positive — bearish flow consensus broken\\\", \\\"Do NOT close on downside moves — per Rule 5, downside cone breach CONFIRMS CCS thesis\\\", \\\"Close if VIX1D spikes above 24 intraday — the extreme inversion thesis would weaken significantly\\\", \\\"If VIX drops 1+ pt from session high (Rule 17 vanna), tighten the time-based exit by an additional 30 min\\\"], \\\"flowReversalSignal\\\": \\\"If Market Tide NCP rises above -$10M AND QQQ NCP rises above -$5M, the bearish thesis is weakening — take whatever profit is available. If both cross zero, close immediately regardless of profit level. Do NOT use SPX NCP as a reversal trigger at VIX 25+ (Lesson 26).\\\"}, \\\"structureRationale\\\": \\\"CALL CREDIT SPREAD is the clear structure based on: (1) 4-source bearish flow consensus — Market Tide NCP -$37.6M falling, QQQ NCP -$20.3M falling, SPY ETF Tide NCP -$8.8M bearish, QQQ ETF Tide NCP -$8.8M bearish — with SPX +$132M classified as VIX 25+ hedging divergence per Rule 10 and Lessons 26, 33, 39; (2) massive +10,000 positive gamma wall at 6600 acting as structural ceiling 41 pts above price; (3) negative gamma acceleration zones at 6550, 6520, 6500 below price facilitating continued selloff; (4) lower highs price pattern with price below VWAP; (5) overnight gap DOWN with LOW fill probability extending bearish. IRON CONDOR rejected despite VIX1D extreme inversion because all-negative charm signals trending day (Lesson 91) and 4-source bearish consensus is too directional for a neutral structure (Lesson 109). PUT CREDIT SPREAD is wrong-direction against all reliable flow signals.\\\", \\\"directionalOpportunity\\\": null}\"}]"
+}]
+`;
+
+// Midday: 2026-04-07 10:15 AM CT, CCS HIGH 10Δ (continuation of entry above)
+const MIDDAY_RAW = String.raw`[{
+  "result": "[{\"full_response\":\"{\\\"mode\\\": \\\"midday\\\", \\\"hedge\\\": {\\\"rationale\\\": \\\"4-source bearish flow consensus at HIGH confidence, VIX1D extreme inversion (25.7%), massive structural ceiling at 6600, and all positions are already profitable. The recommended management plan (50% profit by 12:30 PM, hard close 1:30 PM) provides natural risk reduction through time-based exits.\\\", \\\"description\\\": \\\"Existing CCS positions have 52-77 pts of cushion behind the +10,000 gamma wall at 6600 with triple structural protection (gamma + OI pin + dark pool). Hedging at this distance is premium waste.\\\", \\\"estimatedCost\\\": \\\"N/A\\\", \\\"recommendation\\\": \\\"NO HEDGE\\\"}, \\\"risks\\\": [\\\"6600 GAMMA WALL CHARM DECAY: The session's structural ceiling has ~-16M negative Periscope Charm and will weaken in the afternoon. While the 6615-6625 positive charm provides a secondary ceiling, the primary barrier loses effectiveness. If a rally attempt occurs after 1:00 PM ET, the 6600 wall provides less resistance than it did this morning.\\\", \\\"BROAD LIQUIDATION SNAPBACK: ZN, ES, NQ, RTY ALL selling — per futures rules, this is 'broad liquidation' with 'higher snapback reversal probability.' A coordinated snapback rally could be violent. The 6600 gamma wall provides structural protection, but monitor for ZN stabilization as a leading indicator of equity recovery.\\\", \\\"VIX1D RISING: VIX1D up from 18.73 to 19.88 (+1.15 pts, +6.1%). Still in extreme inversion (25.7% below VIX), but the direction of change narrows the safety margin. Per Lesson 11, if VIX1D continues rising, the inversion thesis weakens.\\\", \\\"ES-SPX BASIS STRESS: +29.5 pts exceeds the normal ±2 range by a wide margin. This signals liquidity stress and elevated institutional activity. Confirms the elevated risk environment.\\\", \\\"VOLUME GEX WORSENING: Volume GEX at -41.5K is materially more negative than OI GEX (-17.7K), meaning today's trading is ADDING to the acceleration regime. Afternoon gamma mechanics will be less reliable than the OI number alone suggests.\\\"], \\\"review\\\": null, \\\"entryPlan\\\": {\\\"entry1\\\": {\\\"note\\\": \\\"Positions live: short calls at 6605/6610/6615/6620/6625/6630, all 30-pt wide with 20 contracts each. Total credit ~$30,200. Max risk $329,800. All positions profitable with 52-77 pts cushion. Bearish thesis fully confirmed.\\\", \\\"delta\\\": 12, \\\"timing\\\": \\\"FILLED — 6 CCS positions active\\\", \\\"structure\\\": \\\"CALL CREDIT SPREAD\\\", \\\"sizePercent\\\": 100}, \\\"entry2\\\": {\\\"note\\\": \\\"Target 6640-6645 short call (10Δ), 30-pt wide. Above upper straddle cone (6640) and above all existing positions. Only add if total exposure including existing $329.8K remains within daily risk budget. The 6600 gamma wall + 6615-6625 charm + 6613 dark pool create 3 layers of protection.\\\", \\\"delta\\\": 10, \\\"condition\\\": \\\"CONDITIONS MET — Market Tide NCP -$46.7M (<-$30M ✓), QQQ NCP -$19.9M (<-$15M ✓), Price 6553 (<6580 ✓). Trader may add NOW if risk budget allows.\\\", \\\"structure\\\": \\\"CALL CREDIT SPREAD\\\", \\\"sizePercent\\\": 30}, \\\"entry3\\\": {\\\"note\\\": \\\"Conservative — existing exposure is already substantial. Only if flow acceleration is exceptional.\\\", \\\"delta\\\": 10, \\\"condition\\\": \\\"Flow strengthening at 12:00 PM ET: Market Tide NCP/NPP spread wider than $150M AND price below 6540 making new session lows. Only add if Entry 2 was filled.\\\", \\\"structure\\\": \\\"CALL CREDIT SPREAD\\\", \\\"sizePercent\\\": 0}, \\\"maxTotalSize\\\": \\\"Existing positions are already at significant allocation. Entry 2 should only be added if within daily risk budget. Cap total at risk budget ceiling.\\\", \\\"noEntryConditions\\\": [\\\"Do NOT add if Market Tide NCP rises above -$20M\\\", \\\"Do NOT add if SPX rallies above 6580\\\", \\\"Do NOT add if VIX1D rises above 24\\\", \\\"Do NOT add during lunch lull (12:00-1:30 PM ET) — poor fills\\\"]}, \\\"reasoning\\\": \\\"Entry CCS thesis fully confirmed and strengthened — Market Tide NCP deepened from -$37.6M to -$46.7M, QQQ NCP at -$19.9M, both ETF Tides bearish, SPX NCP +$155.6M is textbook VIX 25+ hedging divergence, and all 6 CCS positions have 52-77 pts cushion behind the massive +10,000 positive gamma wall at 6600.\\\", \\\"structure\\\": \\\"CALL CREDIT SPREAD\\\", \\\"confidence\\\": \\\"HIGH\\\", \\\"imageIssues\\\": [], \\\"observations\\\": [\\\"CONSISTENCY CHECK: Entry recommended CCS at HIGH with SPX at 6559, VIX 26.52, VIX1D 18.73. Now SPX 6553 (down 6 pts), VIX 26.78 (slightly higher), VIX1D 19.88 (up 1.15 pts but still 25.7% below VIX — extreme inversion intact at 20%+ threshold). All flow signals have STRENGTHENED bearish since entry. Core thesis fully confirmed.\\\", \\\"POSITION SAFETY: All 6 CCS positions have massive structural protection. Nearest short call at 6605 has 52 pts cushion with the +10,000 gamma wall at 6600, #2 OI pin at 6600 (10.2K), and $83.4M dark pool buyer at 6613 all creating a TRIPLE structural ceiling. SPX would need to rally 52 pts through this wall to threaten the nearest position. VIX1D-implied remaining move is ~33 pts — the nearest short call is 52 pts away.\\\", \\\"ENTRY 2 CONDITIONS MET: Prior plan required Market Tide NCP below -$30M (current -$46.7M ✓), QQQ NCP below -$15M (current -$19.9M ✓), price below 6580 (current 6553 ✓). Trader may add if budget allows. However, existing 6-position exposure ($329.8K max risk) is already substantial — only add if within risk budget.\\\", \\\"6600 GAMMA WALL CHARM DECAY WARNING: Periscope Charm shows the 6600 mega gamma wall has ~-16M NEGATIVE real MM charm — this wall WEAKENS into the afternoon. The standard morning-only exit is overridden by Lesson 1 (CCS benefits from bearish trending day — walls decaying above accelerate the trend AWAY from short calls). However, the decay means a potential afternoon rally would face LESS resistance at 6600. Secondary protection at 6615-6625 has small positive Periscope Charm (+2-4M) — this strengthens.\\\", \\\"BROAD LIQUIDATION REGIME: ZN, ES, NQ, RTY all selling simultaneously. Per futures rules, this is NOT flight-to-safety (ZN would rally if so) — it's broad liquidation that has higher snapback reversal probability than pure equity selling. Combined with the 20-pt bounce from 6533, monitor for a reversal attempt into the lunch lull. The 6600 gamma wall provides structural protection against any bounce.\\\"], \\\"periscopeNotes\\\": \\\"GAMMA: The +10,000 positive gamma wall at 6600 (purple bar) remains the SESSION'S DOMINANT STRUCTURAL FEATURE — approximately 10x larger than any other gamma bar. It sits 47 pts above price and functions as an absolute ceiling with the #2 OI pin (10.2K contracts) at the same level. BELOW PRICE: Negative gamma clusters at 6550 (ATM, -644.7M per API), 6520 (-618.3M), 6500 (-531.3M) create downside acceleration zones. Positive gamma at 6500 (+5000-6000 purple bar) and 6520 (+2000-3000) provide structural floors. Orange bar at 6545 indicates recently flipped gamma — potential bounce zone. ABOVE PRICE: Sparse gamma from 6610-6640 with tiny red bars — no structural resistance above the 6600 wall until the straddle cone boundary at 6640. All 6 short calls sit in this low-gamma zone between the 6600 wall and the cone.\\\\n\\\\nCHARM: The 6600 wall has ~-16M NEGATIVE real MM charm — session's largest negative charm bar at this level. This wall WEAKENS with time. The 6615-6625 zone shows +2-4M POSITIVE charm (green bars) — this secondary ceiling STRENGTHENS. The 6500 floor has +4-5M positive charm — deepens with time. Massive negative charm at 6650+ confirms upside is structurally impossible. Periscope Charm Override NOT triggered (<+50M threshold). The naive ALL-NEGATIVE pattern is broadly confirmed but with important nuance: the 6615-6625 positive charm provides localized protection for the short calls at those strikes.\\\", \\\"strikeGuidance\\\": {\\\"adjustments\\\": [\\\"HOLD: 6605C short — 52 pts cushion, behind +10,000 gamma wall at 6600 and Periscope positive charm at 6615-6625\\\", \\\"HOLD: 6610C short — 57 pts cushion, structurally safe\\\", \\\"HOLD: 6615C short — 62 pts cushion, sits IN the positive Periscope charm zone\\\", \\\"HOLD: 6620C short — 67 pts cushion, in strengthening charm zone\\\", \\\"HOLD: 6625C short — 72 pts cushion\\\", \\\"HOLD: 6630C short — 77 pts cushion, furthest OTM, lowest risk\\\", \\\"IF ADDING Entry 2: target 6640-6645 short call (10Δ ceiling) with 30-pt wide spread. Above all existing positions and above the upper straddle cone (6640).\\\"], \\\"straddleCone\\\": {\\\"lower\\\": 6543.1, \\\"upper\\\": 6639.7, \\\"priceRelation\\\": \\\"Price at 6553 is INSIDE the cone, 10 pts above the lower boundary (6543) and 87 pts below the upper boundary (6640). All short calls (6605-6630) are well inside to just above the upper cone. 68% of cone consumed to the downside — consistent with bearish thesis.\\\"}, \\\"putStrikeNote\\\": \\\"Not applicable — CCS only. Per Lessons 69 and 104, do not add put legs to create IC on a bearish trending day with all-negative charm and 4-source bearish consensus.\\\", \\\"callStrikeNote\\\": \\\"All existing short calls (6605-6630) are optimally placed above the +10,000 gamma wall at 6600. The 6605 short call is 5 pts above the wall with 52 pts total cushion. If adding Entry 2, target 6640-6645 (10Δ ceiling area) for additional safety margin — the 6600 wall + 6615-6625 strengthening charm provides double protection.\\\"}, \\\"suggestedDelta\\\": 10, \\\"chartConfidence\\\": {\\\"skew\\\": {\\\"note\\\": \\\"25Δ put skew +1.0 vol pt — FLAT, unusually low hedging demand. Skew ratio 14.4x — strong put-over-call risk premium despite flat skew level. Interpretation: institutions expect any large move to the downside but aren't aggressively hedging with puts. Consistent with the SPX NCP hedging divergence (buying calls, not puts, for protection).\\\", \\\"signal\\\": \\\"FLAT\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"pinRisk\\\": {\\\"note\\\": \\\"Top OI: 6700 (11K, 147 pts above), 6600 (10.2K, 47 pts above). The 6600 OI magnet aligns with the gamma wall — reinforces the ceiling. No short calls are AT #1 or #2 OI levels. 6600 pin risk is CCS-favorable (pulls price toward 6600, not through it to 6605+).\\\", \\\"signal\\\": \\\"LOW\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"darkPool\\\": {\\\"note\\\": \\\"$83.4M buyer at ~6613 reinforces the 6600-6605 gamma wall as institutional ceiling — 3 layers of resistance (gamma + OI + dark pool) between price and nearest short call. $50M buyer at ~6548 provides near-price floor. More dark pool capital above price ($172M) than below ($100M) — per backtested data, this correlates with wider ranges (~95 pts avg). CCS-favorable.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"netCharm\\\": {\\\"note\\\": \\\"API pattern: ALL-NEGATIVE — trending day signal. However, per Lesson 1, the morning-only protocol applies ONLY to the side THREATENED by the trend. CCS benefits from the bearish trend (walls decaying above = price struggles to rally). Charm floor at 6575 (+8.0B) provides moderate downside support. The trending day risk is directionally FAVORABLE for CCS.\\\", \\\"signal\\\": \\\"DECAYING\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"periscope\\\": {\\\"note\\\": \\\"DOMINANT +10,000 positive gamma wall at 6600 (purple bar, ~10x all surrounding gamma) serves as SESSION CEILING 47 pts above price. All 6 short calls (6605-6630) sit above this wall. Negative gamma at 6550 (current price), 6520, 6500 below price creates downside acceleration zones that push price AWAY from short calls. Secondary positive gamma at 6500 (+5000-6000) provides structural floor 53 pts below.\\\", \\\"signal\\\": \\\"FAVORABLE\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"marketTide\\\": {\\\"note\\\": \\\"NCP -$46.7M (deepened from -$37.6M at entry), NPP +$60.1M (rose from +$37.6M). Spread $107M and widening. Last 3 readings: NCP stable at -$47 to -$50M, NPP stable at +$60-69M. Sustained bearish divergence with zero convergence events. OTM NCP at -$79.2M is even more bearish.\\\", \\\"signal\\\": \\\"BEARISH\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"qqqNetFlow\\\": {\\\"note\\\": \\\"NCP -$19.9M sustained (deepened from -$20.3M at entry, briefly hit -$23.7M at 11:10). Monotonically bearish since open. 61% directional accuracy — second-strongest reliable source. Confirms bearish thesis.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"spxCandles\\\": {\\\"note\\\": \\\"Lower highs pattern: 6598→6576→6571→6568→6563→6560→6548→6541→6533. Price below VWAP (6560) by 8 pts. 68% of cone consumed to downside. Recent bounce from 6533 to 6553 (20 pts) is notable but within normal oversold bounce territory. Session range 65 pts already. Bearish structure intact.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"spxNetFlow\\\": {\\\"note\\\": \\\"HEDGING DIVERGENCE — NCP +$155.6M (rose from +$132M at entry), NPP -$237.5M. A $393M 'bullish' spread that is classic VIX 25+ institutional hedging per Rule 10 and Lessons 26, 33, 39. SPX price dropped 36 pts from open while NCP surged — textbook anti-signal. Assigned 10% weight, effectively ignored.\\\", \\\"signal\\\": \\\"BULLISH\\\", \\\"confidence\\\": \\\"LOW\\\"}, \\\"spyNetFlow\\\": {\\\"note\\\": \\\"NCP +$13.2M, NPP +$6.1M. Tiny magnitudes, near-zero signal. SPY-specific flow is a coin flip (47% accuracy). Neither confirms nor contradicts.\\\", \\\"signal\\\": \\\"NEUTRAL\\\", \\\"confidence\\\": \\\"LOW\\\"}, \\\"aggregateGex\\\": {\\\"note\\\": \\\"OI GEX -17.7K (mildly negative), but Volume GEX -41.5K — today's trading is WORSENING the acceleration regime. Treat as borderline moderately negative. Tighten CCS time exits by 30-60 min from standard. Periscope walls are slightly less reliable in the afternoon.\\\", \\\"signal\\\": \\\"NEGATIVE\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"overnightGap\\\": {\\\"note\\\": \\\"Gap DOWN 34.5 pts, LOW fill probability (score 5). Open at globex low — overnight shorts covering at open. 150% of straddle cone consumed overnight. Per Lesson 25, extreme gap with low fill probability at globex low is highest-conviction bearish signal. Gap has NOT filled — bearish extension confirmed.\\\", \\\"signal\\\": \\\"GAP_EXTENDS\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"vannaExposure\\\": {\\\"note\\\": \\\"Aggregate vanna +1.4K positive. VIX at 26.78 — hasn't dropped 1+ pt from session high yet, so no vanna-driven upward drift active. If VIX drops later, positive vanna would create mild CCS headwind. Monitor but no adjustment needed now.\\\", \\\"signal\\\": \\\"NEUTRAL\\\", \\\"confidence\\\": \\\"LOW\\\"}, \\\"futuresContext\\\": {\\\"note\\\": \\\"ES -0.71%, NQ -1.01%, RTY -1.26% — ALL aligned bearish. Broad-based risk-off. ZN ALSO selling (-0.23%) = broad liquidation, not flight-to-safety. Per futures rules, ZN selling + ES selling is 'liquidity crisis or forced selling — more likely to produce snapback reversal.' CL +1.4% adds inflation concern. ES-SPX basis +29.5 pts = STRESS (>5 pts). DX flat. Note: ZN selling alongside equities raises snapback reversal probability — monitor for afternoon mean-reversion.\\\", \\\"signal\\\": \\\"RISK_OFF\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"periscopeCharm\\\": {\\\"note\\\": \\\"CRITICAL: The 6600 mega gamma wall has NEGATIVE Periscope Charm (~-16M) — this wall WEAKENS into the afternoon. However, 6615-6625 area shows small POSITIVE Periscope Charm (+2-4M each) — secondary ceiling that STRENGTHENS. The 6500 floor has +4-5M positive charm — deepens with time. Net effect: the 6600 primary ceiling decays but 6615-6625 secondary ceiling builds. For short calls at 6605+, the strengthening 6615-6625 zone provides incremental protection. Override threshold NOT met (<+50M at these strikes).\\\", \\\"signal\\\": \\\"MIXED\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"ivTermStructure\\\": {\\\"note\\\": \\\"0DTE IV 24% vs 30D IV 22.9% — flat to mildly inverted. σ calibration shows cone is 1004% wider than market pricing (API 0DTE move 1.80% vs calculator σ 19.88%). RV/IV at 0.28 = deeply IV-rich. The market is massively overpricing movement relative to realized. Premium selling is heavily overcompensated. All IVs at 1st percentile — extreme readings.\\\", \\\"signal\\\": \\\"FAVORABLE\\\", \\\"confidence\\\": \\\"HIGH\\\"}}, \\\"managementRules\\\": {\\\"timeRules\\\": \\\"Rule 16 mildly negative GEX (-17.7K OI, -41.5K volume — worsening regime): tighten CCS exit by 30-60 min. Target 50% by 12:30 PM ET. If 40%+ profit at 1:00 PM ET, close — the 6600 wall charm is negative and cannot be trusted for afternoon protection. Hard close by 1:30 PM ET regardless of profit level. Per Lesson 1, the all-negative charm morning-only protocol does NOT apply to CCS on a bearish trending day — the trend pushes price AWAY from short calls.\\\", \\\"profitTarget\\\": \\\"Target 50% of total credit by 12:30 PM ET (11:30 AM CT). If Market Tide NCP/NPP spread exceeds $200M with zero convergence events by 11:30 AM ET, override to 70% target or 1:30 PM ET per Lessons 10, 12, 16. Currently at ~$107M spread — monitor for acceleration. Set GTC limit at 50% now if not already placed.\\\", \\\"stopConditions\\\": [\\\"CLOSE ALL if SPX sustains above 6600 for 15+ minutes — the +10,000 gamma wall has been breached and the structural ceiling thesis is invalidated\\\", \\\"CLOSE ALL if Market Tide NCP reverses above +$50M AND QQQ NCP turns positive simultaneously — bearish flow consensus broken\\\", \\\"Do NOT close on downside moves — per Rule 5, any further selloff CONFIRMS the CCS thesis\\\", \\\"Do NOT use SPX NCP as a reversal trigger — at VIX 26.78, SPX NCP is confirmed hedging (Lessons 26, 33, 39)\\\", \\\"Close if VIX1D spikes above 24 intraday — extreme inversion thesis would weaken from 25.7% to <12%\\\", \\\"AFTERNOON CAUTION: After 1:00 PM ET, the 6600 gamma wall has negative Periscope charm and will be weaker. If SPX rallies above 6590 after 1:00 PM ET, take whatever profit is available rather than waiting for target\\\"], \\\"flowReversalSignal\\\": \\\"Monitor Market Tide NCP trajectory. If NCP rises above -$20M AND NPP drops below +$20M (spread narrowing to <$40M from current $107M), the bearish momentum is fading. If Market Tide NCP crosses zero, close ALL immediately. QQQ NCP crossing zero is the secondary trigger. Per Lesson 26: do NOT use SPX NCP crossover as a trigger at VIX 25+.\\\"}, \\\"structureRationale\\\": \\\"CALL CREDIT SPREAD remains correct, consistent with entry analysis. The bearish thesis has STRENGTHENED since entry: (1) Market Tide NCP deepened from -$37.6M to -$46.7M with NPP rising from +$37.6M to +$60.1M — the spread widened from $75M to $107M; (2) SPX NCP hedging divergence widened from +$132M to +$155M; (3) QQQ NCP sustained at -$20M; (4) Both ETF Tides remain bearish; (5) Price made new lows at 6533 and bounced — lower highs structure intact; (6) Futures confirm broad risk-off with ES, NQ, RTY all down 0.7-1.3%. IRON CONDOR rejected per Lessons 69 and 104 — all-negative charm on a 4-source bearish day is too directional for a neutral structure. PUT CREDIT SPREAD is wrong-direction.\\\", \\\"directionalOpportunity\\\": null}\"}]"
+}]
+`;
+
+// Review: 2026-04-06 2:55 PM CT, PCS MODERATE 10Δ
+const REVIEW_RAW = String.raw`[{
+  "result": "[{\"full_response\":\"{\\\"mode\\\": \\\"review\\\", \\\"hedge\\\": {\\\"rationale\\\": \\\"With VIX1D predicting a ~35 pt range (actual: 42.2 pts), short puts 65-80 pts below settlement were structurally safe. Per Lesson 125, hedge cost exceeding spread credit on structurally safe positions is disproportionate.\\\", \\\"description\\\": \\\"No hedge was needed. VIX1D extreme inversion at 25%, defined-risk spreads with 65-80 pts cushion, and quadruple convergence at the settlement zone made hedging unnecessary. The $3-8 hedge cost would have been pure waste.\\\", \\\"estimatedCost\\\": \\\"$0 — no hedge warranted\\\", \\\"recommendation\\\": \\\"NO HEDGE\\\"}, \\\"risks\\\": [\\\"The primary risk was the 4 naked short puts (6550-6565) which represented unlimited downside. The 1:10 PM selloff to 6578 came within 13 pts of the 6565P — the closest approach of the day. While all expired worthless, the process violation created unnecessary risk. The midday analysis correctly flagged this 3 consecutive times.\\\", \\\"The secondary risk was the SPY ETF Tide deterioration — NCP collapsed from +$40M morning peak to -$27.9M at 3:45 PM. If Market Tide OTM had also turned negative, the combined trigger would have forced all-positions closure. This risk was correctly identified but never materialized.\\\", \\\"The 1DTE Periscope gamma profile shows massive negative gamma at 6603-6605 — this is a significant risk for TOMORROW's session. Any positions carried overnight (none should be) would face acceleration risk at this level.\\\"], \\\"review\\\": {\\\"wasCorrect\\\": true, \\\"whatMissed\\\": \\\"(1) MODERATE confidence was slightly conservative — the 100% base rate across 13 sessions and the strong VIX1D signal justified HIGH confidence. QQQ bearish divergence was the main reason for keeping MODERATE, but QQQ at 10% weight should not have prevented the upgrade when the VIX1D regime signal was this strong. (2) The naked put closure recommendation was repeated 3 times without execution — the process was correct but the communication urgency should have been escalated. The 1:10 PM selloff to 6578 (13 pts from 6565P) was a genuine warning that was not acted upon. (3) The afternoon SPY ETF Tide deterioration (NCP from +$40M to -$27.9M) was correctly identified as a risk but over-weighted in the analysis — it did not translate to SPX weakness because Market Tide OTM remained bullish throughout.\\\", \\\"whatWorked\\\": \\\"PCS was exactly correct — all defined-risk positions expired worthless with 65-80 pts of cushion at settlement ~6610. Key signals that predicted the outcome: (1) VIX1D extreme inversion at 25.0% predicted contained 42.2 pt range (46% of cone) on a Monday that typically averages 100 pts. (2) Market Tide OTM NCP was bullish all day, rising from +$4.7M to +$55.2M — the most persistent and reliable signal. (3) Periscope Charm Override at 6600 (+345M) correctly identified the structural floor and invalidated the naive ALL-NEGATIVE trending day signal. (4) The 6600-6610 gamma+OI+charm+dark pool quadruple convergence predicted settlement within 10 pts. (5) SPX Net Flow anti-signal confirmed (NCP -$60.6M while SPX rallied 30+ pts — institutional hedging, not direction). (6) Positive vanna (+1.4K) with declining VIX provided mechanical upward drift supporting PCS.\\\", \\\"optimalTrade\\\": \\\"The actual defined-risk PCS at 6530-6545 short puts was the optimal tradeable structure. In hindsight, short puts at 6550-6560 (10-12Δ at morning entry) would have captured more premium while maintaining 50-60 pts of cushion — still structurally safe under VIX1D extreme inversion. An IC adding short calls at 6660+ would have added ~$0.50-1.00 per contract of additional credit with 50+ pts cushion (high expired 6624), but the all-negative charm above and QQQ bearish flow made the call side process-incorrect. The structure selection was correct; the delta was slightly conservative.\\\", \\\"lessonsLearned\\\": [\\\"VIX1D EXTREME INVERSION ON MONDAYS OVERRIDES RULE 3F MONDAY RANGE CALIBRATION: Monday typically averages ~100 pts range vs ~65 pts on Wednesday. This session: 42.2 pts on VIX 24.24. The VIX1D signal (25% inversion) was far more predictive than the day-of-week adjustment. On future Monday sessions with VIX1D extreme inversion, do NOT widen strikes or reduce IC confidence per Rule 3F — the VIX1D containment signal dominates the Monday-wider-range tendency. This is now a validated override.\\\", \\\"PERISCOPE CHARM OVERRIDE IS NOW A 4-SESSION VALIDATED SIGNAL (March 24, March 25, April 1, April 6): On every VIX 24+ session where naive charm was ALL-NEGATIVE, Periscope Charm showed massive positive walls that held. The naive customer/MM split assumption breaks down systematically at elevated VIX. Future protocol: on VIX 24+ days, do NOT apply ALL-NEGATIVE morning-only protocol until Periscope Charm has been checked. Consider this a MANDATORY check, not optional.\\\", \\\"QUADRUPLE CONVERGENCE (GAMMA + OI + CHARM + DARK POOL) IS THE HIGHEST-CONFIDENCE SETTLEMENT PREDICTOR: Settlement at ~6610 was within 10 pts of the 6600-6610 convergence zone. This combines Lesson 34 (gamma+OI convergence) with Lesson 4 (dark pool+gamma). When all four signals converge at a single zone, treat it as the settlement target with the highest confidence available in the system. Use this convergence zone to determine hold-to-settlement vs close decisions.\\\", \\\"MARKET TIDE OTM IS MORE RELIABLE THAN ALL-IN FOR 0DTE DIRECTIONAL READS: All-In NCP was negative for most of the session (-$60.7M trough) while OTM NCP was positive all day (+$55.2M peak). The All-In includes ITM flow which captures hedging and rolling activity that is directionally noisy. OTM flow captures fresh directional bets which are more predictive. On future sessions, when All-In and OTM diverge, trust OTM for structure selection.\\\", \\\"QQQ BEARISH DIVERGENCE AT 10% WEIGHT IS CORRECTLY CALIBRATED BUT SHOULD NOT PREVENT HIGH CONFIDENCE WHEN VIX1D EXTREME INVERSION IS PRESENT: QQQ NCP was -$9.5M to -$19.9M all day yet SPX settled +27 pts. The 10% weight correctly prevented structure change (PCS → IC) but the confidence reduction (HIGH → MODERATE) was over-conservative given the 100% base rate and 25% VIX1D inversion. Proposed calibration: when VIX1D extreme inversion exceeds 20% AND historical base rate exceeds 90%, QQQ divergence should reduce confidence ONLY if QQQ NCP exceeds -$30M (vs the current any-amount threshold).\\\"]}, \\\"entryPlan\\\": null, \\\"reasoning\\\": \\\"PCS was correct — VIX1D extreme inversion at 25.0% predicted a contained 42.2 pt range (46% of 92 pt cone) on a Monday, all defined-risk short puts at 6530-6545 expired worthless with 65-80 pts of cushion at settlement ~6610, and the 6600-6610 gamma+OI+charm quadruple convergence anchored settlement exactly as predicted.\\\", \\\"structure\\\": \\\"PUT CREDIT SPREAD\\\", \\\"confidence\\\": \\\"MODERATE\\\", \\\"imageIssues\\\": [], \\\"observations\\\": [\\\"VIX1D EXTREME INVERSION AT 25.0% VALIDATED FOR THE 7th+ TIME: VIX1D 18.17 vs VIX 24.24. Actual range 42.2 pts consumed only 46% of the 92-pt straddle cone. On a Monday (which typically averages ~100 pts), this was especially impressive containment. All PCS short puts at 6530-6545 expired worthless with 65-80 pts of cushion. The 100% historical base rate across 13 matching sessions (VIX 19-30, GEX caution, Monday) held. VIX1D extreme inversion remains the system's most validated signal for premium selling.\\\", \\\"PERISCOPE CHARM OVERRIDE VALIDATED 4th TIME: Naive API charm was ALL-NEGATIVE — would have predicted trending day and morning-only trading protocol. Periscope Charm showed +345M at 6600, +100M at 6615, +60-80M at 6620. The session was NOT trending — it was a steady bullish grind within the straddle cone (46% consumed). The 6600 charm wall held as the structural floor all afternoon. Without the Override, the morning-only protocol would have forced early closure costing significant premium on positions that were never threatened.\\\", \\\"6600-6610 QUADRUPLE CONVERGENCE = SETTLEMENT ZONE PREDICTOR: The midday analysis identified the 6600-6610 zone as a quadruple convergence: (1) +5.1B positive gamma at 6610 and +1.5B at 6600, (2) 8.9K OI concentration at 6600, (3) +345M Periscope Charm at 6600, (4) $158M dark pool buyer clusters at 6597-6607. Settlement at ~6610 was precisely in this zone. This validates Lessons 4 and 34 — when gamma, OI, charm, and dark pool converge, the settlement prediction is highest-confidence.\\\", \\\"SPX NET FLOW ANTI-SIGNAL VALIDATED AGAIN: SPX NCP was negative (-$60.6M peak at 1:25 PM) while SPX rallied 30+ pts. NPP surged to +$181M — pure institutional put buying hedges. The $181M NPP with negative NCP on a rally day is textbook Rule 10 hedging divergence. At VIX 24.24 (<25), the standard weighting correctly assigned SPX only 10% weight. Market Tide OTM (+$55.2M NCP) was the reliable signal.\\\", \\\"QQQ BEARISH DIVERGENCE CORRECTLY DISCOUNTED: QQQ NCP was negative all day (-$9.5M to -$19.9M range) while SPX rallied. QQQ ETF Tide NCP was also deeply negative (-$48.9M at 3:55 PM). This tech-specific bearish flow did not translate to broad SPX weakness — per Rule 2, QQQ at 10% weight. The RTY-ES divergence (RTY -0.32% vs ES +0.30%) confirmed this was a narrow/fragile move, but it still resolved bullish for SPX. Lesson: QQQ and RTY bearish divergence on VIX1D extreme inversion days reduce confidence (correct to keep MODERATE) but should NOT change structure.\\\"], \\\"periscopeNotes\\\": \\\"GAMMA (1DTE, post-2:00 PM): The dominant feature is MASSIVE negative gamma at ~6603-6605 extending to approximately -30,000 on the scale — this is tomorrow's primary structural concern, an acceleration cliff that will drive price away from this level. Large purple positive gamma at 6600 (~+5,000-10,000) provides the other side of this binary zone. Moderate purple positive gamma at 6610 (~+2,000-3,000). Above 6610 to 6640: gamma desert — no structural walls for tomorrow's call side. Below 6600 to 6540: scattered small positive gamma (6575, 6560, 6550). The 0DTE API data confirmed the intraday anchors: +5.1B at 6610, +3.6B at 6605, +1.5B at 6600 — settlement at ~6610 was precisely at the largest gamma wall. CHARM (Periscope): +345M at 6600 was the session's dominant positive charm feature — structural floor confirmed. +100M at 6615 and +60-80M at 6620 provided mid-range support. Large negative charm at 6590-6595 (~-250M to -350M) created a charm cliff below 6600. This pattern confirmed the 6600 level as a hard binary floor — above it, charm-supported; below it, acceleration into a charm void.\\\", \\\"strikeGuidance\\\": {\\\"adjustments\\\": [\\\"All defined-risk short puts (6530-6545) were correctly placed below the straddle cone lower boundary (6545) — the most conservative possible placement with the charm floor at 6525 providing backstop\\\", \\\"The 6600 gamma wall (+1.5B) combined with 8.9K OI concentration was correctly identified as the session's structural anchor — any PCS with short puts below 6600 was structurally safe\\\", \\\"For future VIX1D extreme inversion sessions on Mondays: short puts at 6550-6560 (10-12Δ) would have captured more premium while still maintaining 50-60 pts of cushion — the 6530-6545 placement was conservative for the regime\\\", \\\"The 1DTE Periscope shows massive negative gamma at 6603-6605 (~-30,000) — this is TOMORROW's structural concern, not today's. Tomorrow's session faces acceleration risk if price approaches 6600-6605 from above\\\"], \\\"straddleCone\\\": {\\\"lower\\\": 6545, \\\"upper\\\": 6637, \\\"priceRelation\\\": \\\"Settlement at ~6610 was 65 pts above lower cone and 27 pts below upper cone. Actual range of 42.2 pts consumed 46% of the 92-pt cone — well inside the expected range. VIX1D extreme inversion correctly predicted this containment.\\\"}, \\\"putStrikeNote\\\": \\\"All four defined-risk short puts (6530-6545) were in gamma desert — zero gamma threat. The 6545P sat on the naive charm floor (+5.0B at 6525 from API) and was protected by Periscope Charm (+345M at 6600 ceiling). The 6540P had API positive gamma (+3.7M) with strengthening charm (+75.3M). Layered defense: 6600 gamma wall (+1.5B), 6590 wall (+49.3M), 6580 wall (+50.0M), 6575 wall (+46.7M) all stood between the short puts and price. Ideal strike zone was 6540-6550 for 10Δ entry — the 6530-6545 placement was slightly conservative but process-correct given the naked put complication.\\\", \\\"callStrikeNote\\\": \\\"No call legs entered — correct decision. Charm above 6610 was uniformly negative (naive: -808.1M at 6610, -596.4M at 6620, -2.0B at 6625). The Periscope Charm showed negative charm at 6608-6610 (~-60M). An IC call leg at 6660+ would have expired worthless (50+ pts cushion), but the all-negative charm above ATM and QQQ bearish flow made it process-incorrect to add. PCS-only was validated.\\\"}, \\\"suggestedDelta\\\": 10, \\\"chartConfidence\\\": {\\\"skew\\\": {\\\"note\\\": \\\"25Δ put skew at +2.2 vol pts — FLAT/low hedging demand. Skew ratio effectively 0 — unusually symmetric. Per IV skew rules, flat put skew supports IC and PCS with higher confidence. Institutions were NOT aggressively hedging downside, consistent with VIX1D extreme inversion.\\\", \\\"signal\\\": \\\"FLAT\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"pinRisk\\\": {\\\"note\\\": \\\"#1 OI: 6600 (8.9K, all calls, 12 pts below settlement). #2 OI: 6605 (3.8K calls, 7 pts below). The massive OI at 6600 acted as a gravitational anchor. Settlement at ~6610 was pulled slightly above the pin by the +5.1B gamma at 6610. The defined-risk short puts at 6530-6545 were 65-80 pts below the OI concentration — zero pin risk. Correct per rule: never place short strikes at #1 or #2 OI levels.\\\", \\\"signal\\\": \\\"LOW\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"darkPool\\\": {\\\"note\\\": \\\"$90.2M buyer cluster at ~6607 (3:56 PM) provided late institutional support AT the settlement zone. $67.8M buyer cluster at ~6597 provided structural floor. Combined $158M of buyer-initiated blocks at 6597-6607 aligned with the 6600-6610 gamma+OI convergence zone. The $102.8M seller cluster at ~6602 at 12:03 PM was absorbed — price traded above this level for the entire afternoon. Dark pool confirmed the settlement zone.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"netCharm\\\": {\\\"note\\\": \\\"Naive charm pattern classified ALL-NEGATIVE — every gamma wall supposedly decaying. However, Periscope Charm Override INVALIDATED this signal (see periscopeCharm). 0DTE Net Charm was actually +68.1M net (put charm +173.0M, call charm -104.9M). The naive all-negative classification was WRONG — the 0DTE charm was net positive, supporting PCS through time decay of put-side walls strengthening.\\\", \\\"signal\\\": \\\"MIXED\\\", \\\"confidence\\\": \\\"LOW\\\"}, \\\"periscope\\\": {\\\"note\\\": \\\"1DTE Periscope (post-2:00 PM): MASSIVE negative gamma at ~6603-6605 (~-30,000, dominant feature for tomorrow). Large purple positive gamma at 6600 (~+5,000-10,000) and 6610 (~+2,000-3,000). For today's 0DTE session, the API per-strike profile confirmed +5.1B gamma at 6610 and +1.5B at 6600 — these were the settlement magnets. All short puts (6530-6545) were in gamma desert — zero gamma threat. The 1DTE profile warns of massive negative gamma at 6603-6605 for tomorrow.\\\", \\\"signal\\\": \\\"FAVORABLE\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"marketTide\\\": {\\\"note\\\": \\\"All-In NCP was negative through midday (trough -$60.7M at 1:20 PM) before recovering to +$15.9M by 4:00 PM. OTM NCP was BULLISH all day — rose from +$4.7M at 9:35 AM to +$55.2M at 4:00 PM with NPP deepening to -$25.6M. The OTM bullish divergence (+$55.2M NCP, -$25.6M NPP = $80.8M spread) was the most persistent directional signal of the session. All-In was conflicted mid-session but resolved bullish — the OTM filter was the superior signal.\\\", \\\"signal\\\": \\\"BULLISH\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"qqqNetFlow\\\": {\\\"note\\\": \\\"NCP was negative all day (-$6.7M by 9:40 AM, deepened to -$19.9M at 1:15 PM, ended -$9.5M). NPP was slightly positive (+$14.7M at close). Bearish QQQ flow contradicted the bullish SPX settlement (+27 pts). Per Rule 2, QQQ at 10% weight — this correctly reduced confidence from HIGH to MODERATE but should NOT have changed structure from PCS.\\\", \\\"signal\\\": \\\"CONTRADICTS\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"spxCandles\\\": {\\\"note\\\": \\\"Session opened at 6585.29, dipped to 6581.88, then rallied steadily to settle ~6610. Pattern of higher lows (6581.88 → 6578 at 1:10 PM → 6604.87 at 3:30 PM) confirmed bullish structure. Range compression in final hour (5.2 pt average vs 14.8 pts earlier) preceded the final settlement push above 6610. Price above VWAP (6602.8) by 12 pts at close confirmed institutional buyers in control. The 46% cone consumption validated VIX1D's containment prediction.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"spxNetFlow\\\": {\\\"note\\\": \\\"Classic anti-signal confirmed again (31% directional accuracy). NCP stayed negative all day (trough -$60.6M at 1:25 PM, recovered to -$3.5M by close). NPP was massively positive all day ($84.6M by 10:00 AM, peaked +$181.0M at 3:05 PM). This +$181M NPP represents institutional put BUYING hedges — not bearish conviction. SPX rallied 30+ pts while SPX NCP was -$50M+. Per Lessons 3, 26, 33: SPX NCP divergence from price during VIX 24 sessions is pure hedging flow.\\\", \\\"signal\\\": \\\"BEARISH\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"spyNetFlow\\\": {\\\"note\\\": \\\"NPP consistently negative all day (deepened to -$22.6M by close) — put selling is bullish. NCP oscillated near zero (peaked +$10.4M at 10:25 AM, faded to -$5.1M at close). The persistent negative NPP confirmed bullish lean. SPY Net Flow was directionally correct for the session.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"aggregateGex\\\": {\\\"note\\\": \\\"OI Net Gamma improved from -44.1K (mildly negative at midday) to +11.5K (mildly positive at 4:00 PM). Volume GEX strongly positive at +852.8K. The regime improved from 'mildly negative — tighten CCS exits' to 'mildly positive — walls reliable, standard management' during the afternoon. This improvement reinforced the 6600-6610 gamma wall reliability for settlement mechanics.\\\", \\\"signal\\\": \\\"POSITIVE\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"overnightGap\\\": {\\\"note\\\": \\\"Moderate gap UP of 27.2 pts. Open at 26th percentile of overnight range (near low) suggested the gap-up was from a bounce off overnight lows — institutional positioning was cautious. Overnight range consumed 190% of straddle cone — most of the 'expected move' happened overnight. This correctly predicted a compressed cash session (42.2 pts). Gap fill probability was MODERATE — the gap partially filled (low 6581.88 vs prev close 6584.79) before extending higher.\\\", \\\"signal\\\": \\\"NEUTRAL\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"vannaExposure\\\": {\\\"note\\\": \\\"Aggregate OI vanna +1.4K (positive). With VIX declining during the session, positive vanna created mechanical upward drift — dealers buying delta as IV compressed. This tailwind supported the steady rally from 6582 to 6610+. Per Rule 17, this provides structural support for PCS positions and explains the afternoon rally despite deteriorating flow signals.\\\", \\\"signal\\\": \\\"TAILWIND\\\", \\\"confidence\\\": \\\"MODERATE\\\"}, \\\"futuresContext\\\": {\\\"note\\\": \\\"RTY diverging from ES (-0.32% vs +0.30%) signals narrow/fragile move — reduces directional spread confidence per futures rules. ZN flat — no macro flight-to-safety signal. NQ-ES aligned. CL at +61.28% appears to be a data error (crude oil at 112.35 is implausible for this date). ES-SPX basis at +38.75 pts flagged as STRESS but likely reflects normal fair value carry at these levels. Overall: futures context was mixed with limited actionable signal beyond the RTY breadth divergence.\\\", \\\"signal\\\": \\\"MIXED\\\", \\\"confidence\\\": \\\"LOW\\\"}, \\\"periscopeCharm\\\": {\\\"note\\\": \\\"CRITICAL OVERRIDE APPLIED: Periscope Charm showed ~+345M at 6600 (massive positive, the session's strongest structural anchor), ~+100M at 6615, and ~+60-80M at 6620. This is +50M at 3+ strikes — Periscope Charm Override invalidates the naive ALL-NEGATIVE signal. The 6600 charm wall was the session's structural floor, confirmed by both Periscope Charm and naive 0DTE put charm (+173.0M). Negative charm at 6590-6595 (~-250M to -350M from Periscope) created a 'charm cliff' below the floor — any breach of 6600 would have accelerated the decline, making the 6600 level a hard binary threshold.\\\", \\\"signal\\\": \\\"CONFIRMS\\\", \\\"confidence\\\": \\\"HIGH\\\"}, \\\"ivTermStructure\\\": {\\\"note\\\": \\\"Flat term structure (0DTE/30D ratio 0.98). 0DTE implied move of 1.40% vs calculator σ of 18.17% suggests the cone was wider than market pricing. The flat structure combined with VIX1D extreme inversion (25%) confirmed premium-rich conditions for selling — actual range (42.2 pts, 0.64%) was well within the 1.40% implied move.\\\", \\\"signal\\\": \\\"FAVORABLE\\\", \\\"confidence\\\": \\\"MODERATE\\\"}}, \\\"managementRules\\\": {\\\"timeRules\\\": \\\"GEX improved from mildly negative (-44.1K) to mildly positive (+11.5K) during the afternoon. The initial Rule 16 regime (mildly negative, tighten CCS exits by 30 min) upgraded to standard management. For PCS, no time-based exit was appropriate — the VIX1D extreme inversion + positive vanna + improving GEX all supported holding to settlement. Rule 17 vanna tailwind: positive vanna (+1.4K) with VIX declining provided structural support for PCS, justifying +30 min extension (though no extension was needed since holding to settlement).\\\", \\\"profitTarget\\\": \\\"Defined-risk PCS: holding to settlement was optimal. All 4 spreads at ~95%+ max profit by 2:55 PM CT with 65-80 pts cushion. The 6600-6610 quadruple convergence made the remaining $100-300 of premium safe to collect. The Market Tide OTM +$55.2M NCP with monotonically bullish trajectory met the $200M+ hold-to-settlement criteria in spirit (OTM spread exceeded $80M). Naked puts: should have been closed at ANY price per process rules — see review.lessonsLearned.\\\", \\\"stopConditions\\\": [\\\"The 6560 stop condition from the midday analysis was never triggered — SPX low was 6581.88 at the open and 6578 at 1:10 PM, both well above 6560\\\", \\\"The Market Tide OTM NCP never turned negative — stayed positive all day, rising from +$4.7M at 9:35 AM to +$55.2M at 4:00 PM. The dual monitor threshold (OTM NCP + SPY ETF Tide both negative) was partially triggered (SPY ETF Tide turned negative at ~1:50 PM) but OTM NCP held, so the combined trigger never fired\\\", \\\"VIX1D stayed well below 20 all day (ended at 18.17) — the VIX1D spike stop was never approached\\\"], \\\"flowReversalSignal\\\": \\\"No flow reversal occurred. Market Tide OTM NCP rose monotonically for the final 3 hours (+$13.5M at 2:00 PM → +$55.2M at 4:00 PM). SPX Net Flow anti-signal persisted (NCP negative, NPP +$110M) — correctly ignored per Rule 10. The SPY ETF Tide deterioration (crossing zero at ~1:50 PM) was the session's only bearish flow development, but it was correctly overridden by the Market Tide OTM persistence and VIX1D regime signal.\\\"}, \\\"structureRationale\\\": \\\"PUT CREDIT SPREAD was the correct structure for multiple converging reasons: (1) VIX1D extreme inversion at 25.0% — 7th+ validated session, 100% base rate across 13 matching conditions. (2) Market Tide OTM bullish all day (+$55.2M NCP final with monotonically widening divergence). (3) The 6600-6610 quadruple convergence (gamma +5.1B, OI 8.9K, Periscope Charm +345M, dark pool $158M buyers) created the highest-confidence structural floor. (4) Periscope Charm Override correctly invalidated naive ALL-NEGATIVE charm. IRON CONDOR REJECTED: all-negative naive charm (before Override), QQQ bearish all day, Monday regime, charm uniformly negative above 6610. CALL CREDIT SPREAD REJECTED: Market Tide OTM bullish, settlement convergence pulling price UP toward 6600-6610, positive vanna tailwind with declining VIX. MODERATE confidence (not HIGH) because: QQQ NCP -$9.5M to -$19.9M bearish all day (Rule 2 — reduces confidence), SPY ETF Tide NCP collapsed from +$40M to -$27.9M, RTY diverging from ES (narrow/fragile). In hindsight, the 100% base rate justified HIGH confidence — the conservative MODERATE call was defensible but left sizing on the table.\\\", \\\"directionalOpportunity\\\": null}\"}]"
+}]
+`;
+
+const ENTRY_OUTPUT = parseAnalysis(ENTRY_RAW);
+const MIDDAY_OUTPUT = parseAnalysis(MIDDAY_RAW);
+const REVIEW_OUTPUT = parseAnalysis(REVIEW_RAW);
+
+// ============================================================
+// ENTRY (PRE-TRADE) — April 7, 2026, 9:55 AM CT
 // ============================================================
 
 const CALIBRATION_ENTRY = `<calibration_example>
-This is a real pre-trade analysis from March 25, 2026 that demonstrates correct application of all rules. Use it to calibrate your confidence levels, specificity of observations, strike guidance detail, and output structure.
+This is a real pre-trade analysis from April 7, 2026 that demonstrates correct application of all rules on a CALL CREDIT SPREAD setup with 4-source bearish flow consensus, VIX1D extreme inversion, and confirmed VIX 25+ hedging divergence in SPX Net Flow. Use it to calibrate your confidence levels, specificity of observations, strike guidance detail, and output structure.
 
-Session context: SPX 6608, VIX 25.28, VIX1D 14.66 (42% below VIX = extreme inversion), entry time 9:35 AM CT. Calculator put spread ceiling: 15Δ. Periscope showed +3000 positive gamma wall at 6650-6660. No aggregate GEX data available.
+Session context: SPX 6559, VIX 26.52, VIX1D 18.73 (29.4% below VIX = extreme inversion), entry time 9:55 AM CT. Calculator call spread ceiling: 12Δ. Periscope showed dominant +10,000 positive gamma wall at 6600 (10x surrounding gamma). Mildly negative GEX (-12.2K OI, -23.5K volume).
 
 Key reasoning chain:
-1. Rule 8 weighting: SPX NCP +$102.5M (50%, BULLISH HIGH) + Market Tide NCP +$123M (25%, BULLISH HIGH) + SPY NCP +$6.3M (15%, CONFIRMS MODERATE) + QQQ neutral (10%, NEUTRAL) = net BULLISH at HIGH confidence
-2. VIX1D 42% below VIX → extreme inversion → overrides VIX stop zone (Rule 3D validated)
-3. Periscope: dominant +3000 wall at 6650-6660 = upside magnet. +1000 support at 6600-6605. No asymmetric negative gamma danger (Rule 1 does not trigger for IC override)
-4. RV/IV 0.70 = IV-rich, premium sellers overcompensated
-5. Structure: PCS. Not IC because triple-unanimity bullish flow is too directional for neutral structure. Not CCS because against all flow signals.
-6. Confidence: HIGH — 3 primary flow signals confirm with widening divergence, 0 contradict
-7. Strikes: Put spread ceiling is 15Δ (~6580 zone). Negative gamma cluster at 6575-6585 forces 1Δ adjustment → targeting 14Δ at 6570-6575, with positive gamma pocket at 6565 as structural support below
+1. Rule 8 weighting: 4-source bearish consensus — Market Tide NCP -$37.6M, QQQ NCP -$20.3M, SPY ETF Tide -$8.8M, QQQ ETF Tide -$8.8M. SPX NCP +$132M correctly classified as VIX 25+ hedging divergence per Rule 10 → 0% effective weight.
+2. VIX1D 29.4% below VIX → extreme inversion → most validated premium-selling regime signal (Lesson 20).
+3. Periscope: dominant +10,000 positive gamma wall at 6600 = SESSION CEILING, aligned with #2 OI pin (10.2K) and $83.4M dark pool buyer at 6614 = TRIPLE structural resistance 41 pts above price.
+4. ALL-NEGATIVE charm pattern — but Lesson 1 directional cushion override applies: CCS benefits from bearish trending day because walls decaying above accelerate the trend AWAY from short calls.
+5. Structure: CCS. Not IC because 4-source bearish flow is too directional for neutral structure. Not PCS because against all reliable flow signals.
+6. Confidence: HIGH — 4 primary flow signals confirm with widening divergence, 0 reliable signals contradict, historical base rate 100% across 9 similar sessions (VIX 21-32, GEX stop zone, Tuesday).
+7. Strikes: Call spread ceiling 12Δ → short call at 6625-6630 (25 pts above the +10,000 wall, 15 pts below upper cone), 25-pt wide spread with long at 6650-6655.
 
 Correct output:
-${JSON.stringify({
-  mode: 'entry',
-  structure: 'PUT CREDIT SPREAD',
-  confidence: 'HIGH',
-  suggestedDelta: 14,
-  reasoning:
-    'Triple-unanimity bullish flow (SPX NCP +$102.5M rising, Market Tide NCP +$123M rising, SPY confirming) combined with extreme VIX1D inversion (42% below VIX) signals a contained bullish session ideal for aggressive put credit spreads with the 6650-6660 positive gamma wall acting as an upside price magnet.',
-  chartConfidence: {
-    marketTide: {
-      signal: 'BULLISH',
-      confidence: 'HIGH',
-      note: 'NCP at +$123.0M and rising monotonically from open; NPP at -$30.8M and falling. Divergence widening over 60 minutes (+$104.9M NCP rise). OTM confirms: NCP +$61.3M, NPP -$13.9M. This is a clean bullish divergence with no reversals — per Lesson 48 and 64, triple unanimity that strengthens warrants HIGH confidence.',
-    },
-    spxNetFlow: {
-      signal: 'BULLISH',
-      confidence: 'HIGH',
-      note: 'Primary signal (50% weight). NCP at +$102.5M and rising, NPP at -$28.2M and falling. Divergence spread of ~$131M widening. NCP rose from +$191K to +$102.5M in 65 minutes — sustained bullish accumulation with no pauses or reversals.',
-    },
-    spyNetFlow: {
-      signal: 'CONFIRMS',
-      confidence: 'MODERATE',
-      note: 'NCP at +$6.3M (mildly positive, rising from -$888K), NPP at -$14.8M (negative, falling). Both confirm bullish direction. Magnitude is modest compared to SPX but direction unambiguously confirms.',
-    },
-    qqqNetFlow: {
-      signal: 'NEUTRAL',
-      confidence: 'MODERATE',
-      note: 'NCP at +$2.5M and NPP at +$2.0M — both near zero with tiny magnitudes. This is effectively neutral tech flow, not a divergence. Per Rule 2, since SPX/Market Tide/SPY all agree, QQQ neutrality should not reduce structure confidence.',
-    },
-    periscope: {
-      signal: 'FAVORABLE',
-      confidence: 'HIGH',
-      note: 'Dominant +3000 positive gamma wall at 6650-6660 acts as upside magnet ~42-52 pts above price. Price sits on +1000 positive gamma at 6600-6605 providing immediate floor. Negative gamma cluster 6615-6640 between price and wall will ACCELERATE any upward move toward the magnet.',
-    },
-    periscopeCharm: {
-      signal: 'MIXED',
-      confidence: 'MODERATE',
-      note: 'Positive charm ~+5-7M at 6665 confirms ceiling STRENGTHENS. Near-zero charm at 6600-6605 (immediate floor) — neutral, neither strengthening nor weakening. Deeper +3-5M charm at 6525. NOT all-negative — Override protocol does not apply.',
-    },
-  },
-  observations: [
-    "VIX1D at 14.66 is 42% below VIX 25.28 — extreme intraday term structure inversion. Per validated March 24 lesson and Rule 4 Override, this overrides stop zone restrictions for premium selling. VIX1D implies ~29 pt expected move vs the ~58 pt straddle cone, meaning the cone is roughly 2x wider than today's likely realized range.",
-    'All three primary flow signals are unanimously bullish with widening divergence: SPX NCP +$102.5M (rising), Market Tide NCP +$123M (rising), SPY NCP +$6.3M (rising from negative). Per Lesson 64, triple unanimity from the first hour that strengthens warrants HIGH confidence and hold-to-expiration candidacy.',
-    'The +3000 positive gamma wall at 6650-6660 is the dominant structural feature — approximately 3x larger than surrounding gamma. In a bullish flow environment, this acts as an afternoon magnet pulling price upward.',
-    'RV/IV at 0.70 confirms an IV-rich environment — the market is pricing more movement than is occurring, which means theta decay heavily favors premium sellers. Combined with VIX1D extreme inversion, this is an ideal premium-selling setup.',
-    'Periscope Charm confirms the upside ceiling zone will hold: +5-7M positive charm at 6665 strengthens the gamma wall through the afternoon. This supports the PCS thesis (price drifts up but has a defined ceiling).',
-  ],
-  strikeGuidance: {
-    adjustments: [
-      'Place short put at 6570-6575 (14Δ) — ceiling is 15Δ, adjusted 1Δ for negative gamma at 6575-6585. Positive gamma pocket at 6565 provides structural backstop',
-      'AVOID short put at 6575-6580 — negative gamma zone at cone boundary creates acceleration risk toward the position',
-      'The 6600-6605 positive gamma (+1000 each) is the primary structural floor — any short put below this level has 35-45 pts of cushion plus gamma suppression',
-      'If considering IC add-on later: short call at 6670-6680 with the 6650-6660 wall (+3000) and positive charm at 6665 as structural ceiling',
-    ],
-    straddleCone: {
-      lower: 6575.6,
-      upper: 6666.2,
-      priceRelation:
-        'Price at 6608 is inside the cone — 58 pts to upper boundary, 32 pts to lower boundary. VIX1D implies actual expected move of ~29 pts, meaning the cone is roughly 2x the likely realized range. The 6650-6660 gamma wall sits just inside the upper cone, creating a double ceiling.',
-    },
-    putStrikeNote:
-      'Calculator ceiling is 15Δ (~6580). Negative gamma at 6575-6585 forces 1Δ adjustment → short put at 6570-6575 (14Δ). Positive gamma pocket at 6565 provides structural support just below. The +1000 positive gamma floor at 6600-6605 gives 25-35 pts of structural protection above the short put.',
-    callStrikeNote:
-      'Not placing call leg. However, if converting to IC later, short call should be placed at 6670+ (above the 6666.20 upper cone boundary). The +3000 positive gamma wall at 6650-6660 with positive charm at 6665 provides a structural ceiling.',
-  },
-  managementRules: {
-    profitTarget:
-      'Target 50% profit by 1:00 PM ET as baseline. If Market Tide NCP/NPP spread exceeds $200M with zero reversals by 11:00 AM ET, override to 70% target or 2:00 PM ET per Market Tide magnitude rule. If spread exceeds $500M and Rule 16 VIX1D Extension conditions are met, hold to settlement. Set a GTC limit at 50% at entry to capture mechanically.',
-    stopConditions: [
-      'Close PCS if SPX breaks below 6575.60 (lower straddle cone) and sustains for 10+ minutes — this would exceed the VIX1D implied move and invalidate the contained-range thesis',
-      'Close PCS if positive gamma at 6600-6605 is breached (SPX below 6595 sustained) AND NCP reverses below +$50M — the structural floor has broken with flow confirmation',
-      'Do NOT close on upside moves — per Rule 5, upside cone breach CONFIRMS PCS thesis',
-      'Close if VIX1D spikes above 20 intraday — the contained-range thesis would be invalidated',
-    ],
-    timeRules:
-      'Without Aggregate GEX, default to moderate management: hold to 2:00 PM ET max if above 50% profit, hold to settlement if above 70%. If below 30% profit at 2:00 PM ET, close — remaining theta is not worth the gamma acceleration risk.',
-    flowReversalSignal:
-      'If SPX NCP drops below +$50M AND Market Tide NCP reverses direction (begins falling), the bullish thesis is weakening — take whatever profit is available. If NCP/NPP converge and cross, close immediately.',
-  },
-  entryPlan: {
-    entry1: {
-      timing: 'Now (9:35 AM CT / 10:35 AM ET)',
-      sizePercent: 40,
-      delta: 14,
-      structure: 'PUT CREDIT SPREAD',
-      note: 'FULL (40%) — triple-unanimity bullish flow at HIGH confidence with VIX1D extreme inversion. Place short put at 6570-6575 (14Δ), targeting calculator ceiling (15Δ) adjusted 1Δ for negative gamma at 6575-6585.',
-    },
-    entry2: {
-      condition:
-        'Flow still bullish at 10:30 AM CT (11:30 AM ET): SPX NCP above +$100M and NPP still negative. Price above 6600.',
-      sizePercent: 30,
-      delta: 14,
-      structure: 'PUT CREDIT SPREAD',
-      note: 'STANDARD (30%) — flow confirmed but awaiting second checkpoint. Same 14Δ target or step up to full 15Δ ceiling if the positive gamma wall at 6650-6660 has acted as a magnet and price has moved higher.',
-    },
-    entry3: {
-      condition:
-        'Flow strengthening at 11:30 AM CT (12:30 PM ET): NCP/NPP divergence wider than at Entry 1. Price approaching or above 6640.',
-      sizePercent: 30,
-      delta: 15,
-      structure: 'PUT CREDIT SPREAD',
-      note: 'STANDARD (30%) — final add, max position reached. If price is near 6650, step to full 15Δ ceiling as the move toward the gamma wall confirms the bullish thesis.',
-    },
-    maxTotalSize:
-      '100% of daily risk budget across all entries. The VIX1D extreme inversion combined with triple-unanimity flow justifies full allocation.',
-    noEntryConditions: [
-      'Do NOT add Entry 2 if SPX NCP has dropped below +$50M — flow conviction weakening',
-      'Do NOT add Entry 3 if SPX has dropped below 6585 at any point — structural floor tested',
-      'Do NOT add entries if NCP/NPP divergence has begun narrowing',
-      'Do NOT add if VIX1D rises above 20 intraday — the extreme inversion thesis is invalidated',
-    ],
-  },
-  risks: [
-    'VIX at 25.28 (stop zone) creates elevated tail risk despite VIX1D suppression — an exogenous shock could produce a move that exceeds even the VIX-implied range. The VIX1D inversion correctly predicts range 70%+ of the time but the 30% failure case is severe.',
-    'Aggregate GEX not provided — cannot confirm whether the macro dealer gamma regime supports or undermines the per-strike Periscope walls.',
-    'Periscope Charm shows near-zero charm at the 6600-6605 floor — this support will not strengthen through the day. If a selloff begins after 1:00 PM ET, this floor has no time-based reinforcement.',
-    'QQQ NPP slightly positive (+$2.0M) while other signals are bullish — could indicate very early-stage tech hedging.',
-  ],
-  hedge: {
-    recommendation: 'NO HEDGE',
-    description:
-      'No protective long recommended. The laddered entry plan (40/30/30) provides natural risk management. Full-size deployment only occurs after flow confirmation at each checkpoint.',
-    rationale:
-      'Triple-unanimity bullish flow + VIX1D extreme inversion (42% below VIX) + IV-rich environment (RV/IV 0.70) makes this a high-conviction setup where hedges erode returns without proportional risk reduction.',
-    estimatedCost: 'N/A',
-  },
-  periscopeNotes:
-    'Price at 6608-6610 sits on a +1000 positive gamma pocket at 6600-6605, providing immediate structural support. The dominant feature is the massive +3000 positive gamma wall at 6650-6660, approximately 42-52 pts above — in the bullish flow environment this acts as a powerful upside magnet. Between price and the wall, a negative gamma cluster at 6615-6640 will ACCELERATE any upward move, pushing price through that zone toward the wall. Below price, the lower cone at 6575.60 has negative gamma at 6575-6585 — if broken, this would accelerate downside. But positive gamma pockets at 6565 and 6550 provide stepping stones of support.',
-  structureRationale:
-    'PUT CREDIT SPREAD is the clear structure based on (1) triple-unanimity bullish flow across all three primary signals — SPX NCP +$102.5M rising, Market Tide NCP +$123M rising, SPY NCP +$6.3M rising — with QQQ neutral, (2) the dominant +3000 positive gamma wall at 6650-6660 acting as an upside magnet, and (3) the extreme VIX1D inversion (14.66 vs VIX 25.28, 42% below) confirming a contained daily range. IRON CONDOR was considered given the VIX1D extreme inversion override, but the flow is too directionally unanimous for a neutral structure. CALL CREDIT SPREAD is wrong-direction against all flow signals.',
-  directionalOpportunity: null,
-  review: null,
-  imageIssues: [],
-})}
+${JSON.stringify(ENTRY_OUTPUT)}
 </calibration_example>`;
 
 // ============================================================
-// MIDDAY — March 25, 2026 (first midday check, 10:20 AM CT)
+// MIDDAY — April 7, 2026, 10:15 AM CT
 // ============================================================
 
 const CALIBRATION_MIDDAY = `<calibration_example>
-This is a real mid-day re-analysis from March 25, 2026 that demonstrates correct continuity with a previous recommendation, use of actual Schwab position data, and condition assessment for additional entries.
+This is a real mid-day re-analysis from April 7, 2026 that demonstrates correct continuity with a previous CCS recommendation, position-by-position safety assessment for an active 6-leg spread ladder, condition evaluation for the original entry plan's Entry 2 trigger, and management adjustment based on Periscope Charm decay at the primary gamma wall.
 
-Session context: SPX 6591, VIX 25.81, VIX1D 16.14 (37% below VIX = extreme inversion still intact), midday check at 10:20 AM CT. Trader has 4 open PCS positions: short puts at 6535/6540/6545/6550 with 20 contracts each. Entry analysis had recommended PCS at HIGH confidence.
+Session context: SPX 6553, VIX 26.78, VIX1D 19.88 (25.7% below VIX = extreme inversion still intact at the 20%+ threshold), midday check at 10:15 AM CT. Trader has 6 active CCS positions: short calls at 6605/6610/6615/6620/6625/6630 with 20 contracts each, ~$30,200 total credit, $329,800 max risk. Entry analysis had recommended CCS at HIGH confidence with the original Entry 2 condition: "Market Tide NCP below -$30M and QQQ NCP below -$15M, price below 6580."
 
 Key reasoning chain:
-1. Continuity: "Entry recommended PCS at HIGH with SPX at 6608. Now SPX ~6596 (down 12 pts). Core thesis remains valid — VIX1D inversion intact, flow still bullish."
-2. Actual positions: calculated real cushion — 46-61 pts from each short put to gamma wall at 6605
-3. SPX Net Flow STRENGTHENED since entry: NPP deepened from -$15.5M to -$114.5M (massive institutional put selling) — $196M bullish spread
-4. BUT Market Tide converging: NCP fell $29M, NPP rose $41M in last 20 min — monitoring concern
-5. Entry 2 conditions NOT met: SPX NCP at +$81.8M (below +$100M threshold), price ~6596 (below 6600). Do not add.
-6. Confidence: HIGH maintained because SPX Net Flow (primary, 50% weight) strengthened despite Market Tide fade
+1. Continuity: "Entry recommended CCS at HIGH with SPX 6559, VIX 26.52, VIX1D 18.73. Now SPX 6553 (down 6 pts), VIX 26.78 (slightly higher), VIX1D 19.88 (up 1.15 pts but still 25.7% below VIX — extreme inversion intact)." Core thesis fully confirmed.
+2. Flow STRENGTHENED since entry: Market Tide NCP deepened from -$37.6M to -$46.7M, NPP rose from +$37.6M to +$60.1M — bearish spread widened from $75M to $107M with zero convergence events. SPX hedging divergence widened from +$132M to +$155M.
+3. Position safety (per-leg): All 6 short calls have 52-77 pts cushion behind the +10,000 gamma wall at 6600. The 6615-6625 strikes sit IN the strengthening Periscope charm pocket (+2-4M each).
+4. Entry 2 conditions MET: Market Tide NCP -$46.7M ✓ (<-$30M), QQQ NCP -$19.9M ✓ (<-$15M), price 6553 ✓ (<6580). Recommend adding 10Δ at 6640-6645 if total exposure remains within daily risk budget.
+5. 6600 GAMMA WALL CHARM DECAY warning: Periscope Charm shows -16M negative real MM charm at 6600 — wall weakens into afternoon. Secondary 6615-6625 ceiling (+2-4M positive charm) strengthens. Add explicit afternoon caution rule: if SPX rallies above 6590 after 1:00 PM ET, take whatever profit is available rather than waiting for target.
+6. Confidence: HIGH maintained because flow strengthened and 4-source bearish consensus is unchanged. Tighten time-based exit by 30-60 min per Rule 16 mildly negative GEX with worsening volume GEX.
 
 Correct output:
-${JSON.stringify({
-  mode: 'midday',
-  structure: 'PUT CREDIT SPREAD',
-  confidence: 'HIGH',
-  suggestedDelta: 14,
-  reasoning:
-    'SPX Net Flow NPP at -$114.5M (massive institutional put selling) is the strongest bullish signal of the session, maintaining PCS thesis despite Market Tide convergence in the last 20 minutes; existing positions have 45+ pts cushion to nearest short put with a dominant +3500 positive gamma wall at 6605 standing between price and all short strikes.',
-  chartConfidence: {
-    marketTide: {
-      signal: 'BULLISH',
-      confidence: 'MODERATE',
-      note: 'NCP +$103.8M still positive but falling from peak of +$132.6M at 11:05. NPP surged from -$37.6M to +$3.0M in last 20 min — convergence warning. Still net bullish (NCP 30x NPP) but momentum is fading.',
-    },
-    spxNetFlow: {
-      signal: 'BULLISH',
-      confidence: 'HIGH',
-      note: 'PRIMARY SIGNAL. NCP +$81.8M, NPP -$114.5M — a $196M bullish spread that has WIDENED since entry. NPP dropped from -$15.5M at 10:20 to -$114.5M now — massive institutional put selling in SPX specifically.',
-    },
-    spyNetFlow: {
-      signal: 'CONFIRMS',
-      confidence: 'MODERATE',
-      note: 'NCP +$11.7M (stable around +$12M for an hour), NPP -$3.4M (converging from -$13.4M at 11:00). Mildly bullish but NPP convergence mirrors Market Tide fade.',
-    },
-    qqqNetFlow: {
-      signal: 'CONTRADICTS',
-      confidence: 'LOW',
-      note: 'NCP +$1.9M (tiny), NPP +$8.3M (put buying = bearish). Bearish divergence widening. Per Rule 2, QQQ is only 10% weight — divergence reduces confidence, not structure.',
-    },
-    periscope: {
-      signal: 'FAVORABLE',
-      confidence: 'HIGH',
-      note: 'DOMINANT +3500-4000 positive gamma wall at 6605 (purple bar) is the largest feature on the board, sitting just above current price (~6596). All four short puts (6535-6550) are 45-65 pts below this wall.',
-    },
-    periscopeCharm: {
-      signal: 'MIXED',
-      confidence: 'MODERATE',
-      note: 'CRITICAL: The 6605 gamma wall has slightly NEGATIVE real MM charm (-1 to -2M) — this wall will WEAKEN into the afternoon. Do not rely on it past ~1:00 PM ET. Deep floors at 6520-6525 have +5-7M positive charm and STRENGTHEN all day. Upside magnet at 6665-6670 has +25M positive charm.',
-    },
-  },
-  observations: [
-    'CONSISTENCY CHECK: Entry recommended PCS at HIGH confidence with SPX at 6608, VIX 25.28, VIX1D 14.66. Now SPX ~6596 (down 12 pts), VIX 25.81 (slightly higher), VIX1D 16.14 (up but still 37% below VIX — extreme inversion intact). Core thesis remains valid: contained bullish day for premium selling.',
-    'MARKET TIDE CONVERGENCE WARNING: NCP fell $29M and NPP rose $41M in the last 20 minutes. This is a $70M narrowing of the bullish divergence. If this rate continues, NCP/NPP could cross within 30-40 minutes. However, SPX Net Flow NPP at -$114.5M tells the opposite story: massive institutional put selling continues.',
-    'ENTRY 2 CONDITIONS NOT MET: Original plan required SPX NCP above +$100M (currently +$81.8M — below threshold) and price above 6600 (currently ~6596 — below threshold). Do NOT add Entry 2 at this time.',
-    'POSITION SAFETY: All 4 PCS positions (short puts 6535-6550) have massive structural protection: (1) +3500 gamma wall at 6605 just 9 pts above price, (2) positive gamma at 6600, (3) straddle cone lower at 6575.60, (4) deep charm floors at 6525 and 6500 that strengthen with time. The VIX1D-implied remaining move is ~27 pts — the nearest short put at 6550 is 46 pts away.',
-    'CHARM TIMING RISK: The 6605 gamma wall has slightly negative Periscope Charm (-1 to -2M), meaning it will weaken into the afternoon. Plan to have 50% profit captured by 1:00 PM ET before this wall loses structural reliability.',
-  ],
-  strikeGuidance: {
-    adjustments: [
-      'HOLD: Short 6550P has 46 pts cushion — sits in positive gamma pocket, no adjustment needed',
-      'HOLD: Short 6545P has 51 pts cushion — adequate spacing',
-      'HOLD: Short 6540P has 56 pts cushion — protected by 3 layers above',
-      'HOLD: Short 6535P has 61 pts cushion — in negative gamma zone BUT 65 pts of protection from 6605 wall, cone, and intermediate structure',
-      'IF ADDING: Target 6540-6545 zone to maintain positive gamma pocket placement',
-    ],
-    straddleCone: {
-      lower: 6575.6,
-      upper: 6666.2,
-      priceRelation:
-        'Price at ~6596 is INSIDE the cone, 20 pts above the lower boundary and 70 pts below the upper boundary. The lower cone at 6575.60 is 26 pts above the nearest short put at 6550.',
-    },
-    putStrikeNote:
-      'All existing short puts (6535-6550) are well-placed. The 6550 short put sits in a small positive gamma pocket. At 45-65 pts of cushion, all positions are safe. If adding Entry 2 later, target 6540-6545 to cluster with existing positions.',
-    callStrikeNote:
-      'Not adding call legs. However, if Market Tide flattens and flow shifts neutral later, a CCS at 6670-6680 would be structurally sound: above the 6666.20 upper cone, above the 6650-6660 positive gamma wall, and the 6665-6670 positive charm at +25M provides a STRENGTHENING ceiling.',
-  },
-  managementRules: {
-    profitTarget:
-      'Take 50% of total credit by 1:00 PM ET (12:00 PM CT). The 6605 gamma wall has negative charm and will weaken — capture profit while it is still holding. If SPX rallies above 6620 and holds, consider extending hold to 70% ONLY if Market Tide NCP re-diverges above +$120M.',
-    stopConditions: [
-      'CLOSE ALL if SPX breaks below 6575.60 (lower straddle cone) and sustains for 10+ minutes',
-      'CLOSE ALL if SPX drops below 6595 sustained AND Market Tide NCP drops below +$50M simultaneously — the 6605 gamma wall has broken WITH flow confirmation',
-      'CLOSE ALL if VIX1D spikes above 20 intraday',
-      'TAKE PROFIT IMMEDIATELY if Market Tide NCP/NPP cross (NPP exceeds NCP) — currently NCP +$103.8M vs NPP +$3.0M, gap is $101M but narrowing rapidly',
-      'Do NOT close on upside moves — per Rule 5, any rally confirms the PCS thesis',
-    ],
-    timeRules:
-      'Without aggregate GEX data, use conservative timing. Target 50% profit by 1:00 PM ET. If 40%+ profit at 2:00 PM ET, close — the 6605 wall charm is slightly negative and cannot be trusted for final-2-hour protection. Hard close by 2:30 PM ET regardless.',
-    flowReversalSignal:
-      'WATCH CLOSELY: Market Tide NCP/NPP narrowed $70M in the last 20 minutes (spread from $170M to $101M). If NPP exceeds NCP (crossover), close ALL positions immediately. Also monitor SPX NCP — if it drops below +$50M, the primary bullish signal is failing.',
-  },
-  entryPlan: {
-    entry1: {
-      timing: 'FILLED — 4 PCS positions active',
-      sizePercent: 100,
-      delta: 14,
-      structure: 'PUT CREDIT SPREAD',
-      note: 'Positions are live: short puts at 6535/6540/6545/6550 with 20 contracts each across various widths. All are well-placed with 45-65 pts of cushion. Unrealized P&L: +$150.',
-    },
-    entry2: {
-      condition:
-        'REVISED: Wait for ALL THREE conditions: (1) SPX price above 6605, (2) Market Tide NCP/NPP spread widens back above $130M, (3) SPX NCP stabilizes above +$100M. The Market Tide convergence must REVERSE before adding risk.',
-      sizePercent: 0,
-      delta: 14,
-      structure: 'PUT CREDIT SPREAD',
-      note: 'Entry 2 conditions from original plan are NOT met: SPX NCP at +$81.8M (below +$100M threshold), price at ~6596 (below 6600 threshold). Market Tide convergence is a warning — adding now would increase risk into a potentially fading signal.',
-    },
-    entry3: {
-      condition:
-        'CANCELLED unless Entry 2 fills AND flow re-strengthens. With the Market Tide fade, the original plan for 3 entries is overly aggressive.',
-      sizePercent: 0,
-      delta: 12,
-      structure: 'PUT CREDIT SPREAD',
-      note: 'Conservative posture given Market Tide convergence. Do not over-allocate into a fading signal.',
-    },
-    maxTotalSize:
-      'Current positions represent approximately 40-50% of daily risk budget. If Entry 2 fills, cap at 70%.',
-    noEntryConditions: [
-      'Do NOT add if Market Tide NCP drops below +$75M',
-      'Do NOT add if Market Tide NPP exceeds NCP (crossover)',
-      'Do NOT add if SPX breaks below 6580',
-      'Do NOT add if VIX1D exceeds 19',
-    ],
-  },
-  risks: [
-    'MARKET TIDE CONVERGENCE: NCP fell $29M while NPP rose $41M in the last 20 minutes. If this rate continues, the bullish divergence could cross within 30-40 minutes. However, SPX Net Flow NPP at -$114.5M contradicts this fade.',
-    'GAMMA WALL CHARM DECAY: The dominant 6605 positive gamma wall has slightly negative Periscope Charm (-1 to -2M). Per Rule 11, this wall is a morning ally that weakens into afternoon.',
-    'VIX1D RISING: VIX1D increased from 14.66 to 16.14 (10% rise). While still in extreme inversion territory (37% below VIX), the direction of change reduces the safety cushion.',
-    'NO AGGREGATE GEX DATA: Cannot determine whether the macro regime is positive or negative.',
-    'QQQ BEARISH DIVERGENCE: QQQ NPP at +$8.3M contradicts the bullish thesis. Per Lesson 10, QQQ divergence on a directional day should tighten profit targets.',
-  ],
-  hedge: {
-    recommendation: 'NO HEDGE',
-    description:
-      'Existing positions have 45-65 pts of cushion with massive gamma wall protection at 6605. Adding a protective long at this distance would be pure premium waste.',
-    rationale:
-      'SPX Net Flow is strongly bullish (NCP +$82M, NPP -$115M), VIX1D extreme inversion intact (37% below VIX), and the dominant +3500 gamma wall at 6605 stands between price and all short puts.',
-    estimatedCost: 'N/A',
-  },
-  periscopeNotes:
-    "The Periscope gamma profile is dominated by the massive +3500-4000 positive gamma wall at 6605 (purple bar) — this is the session's structural anchor and sits just 9 pts above current price (~6596). ABOVE PRICE: Negative gamma cluster at 6615-6640 creates acceleration potential for upside moves toward the positive gamma at 6650-6660. BELOW PRICE: Small negative gamma at 6580-6590, orange bar at 6565. Positive gamma pockets at 6550 and 6520 provide support. All PCS short puts (6535-6550) are in zero-gamma territory — completely unthreatened.",
-  structureRationale:
-    'PUT CREDIT SPREAD remains the correct structure, consistent with the entry analysis. The primary signal (SPX Net Flow, 50% weight) has actually STRENGTHENED since entry: NPP plunged from -$15.5M to -$114.5M. Market Tide is still bullish but the convergence is a monitoring concern, not yet a reversal. SPY confirms. QQQ contradicts (10% weight). VIX1D extreme inversion remains the strongest macro signal for premium selling.',
-  directionalOpportunity: null,
-  review: null,
-  imageIssues: [],
-})}
+${JSON.stringify(MIDDAY_OUTPUT)}
 </calibration_example>`;
 
 // ============================================================
-// REVIEW (END-OF-DAY) — March 25, 2026
+// REVIEW (END-OF-DAY) — April 6, 2026, 2:55 PM CT
 // ============================================================
 
 const CALIBRATION_REVIEW = `<calibration_example>
-This is a real end-of-day review from March 25, 2026 that demonstrates correct retrospective analysis: evaluating whether the recommendation was correct, identifying what signals predicted the outcome, what could have been improved, and whether the actual trade was the optimal tradeable option.
+This is a real end-of-day review from April 6, 2026 that demonstrates correct retrospective analysis: evaluating whether the PUT CREDIT SPREAD recommendation was correct, identifying what signals predicted the outcome, what management could have been improved, and proposing specific calibration improvements based on the validated patterns. This example also demonstrates how to acknowledge data quality issues (a CL futures price data error) without letting them invalidate the broader analysis.
 
-Session context: SPX settled ~6595, VIX 25.35, VIX1D 19.40. Actual range was ~25 pts (6585-6610), consuming only 28% of the 91-pt straddle cone. Entry recommended PCS at HIGH confidence — the recommendation was correct, all PCS positions expired worthless.
+Session context: SPX settled ~6612, VIX 24.24, VIX1D 18.17. Actual range was 42.2 pts (46% of the 92-pt straddle cone) on a Monday that typically averages ~100 pts. Entry recommended PCS at MODERATE confidence — the recommendation was correct, all defined-risk PCS positions (6530-6545 short puts) expired worthless with 65-80 pts of cushion at settlement.
 
 Key reasoning chain:
-1. Was correct: Yes — all PCS short puts (6535-6550) expired worthless with 45-60 pts of cushion
-2. What worked: VIX1D extreme inversion (23.5% below VIX) predicted 25 pt range, SPX NCP/NPP $293M spread (strongest bullish flow), Periscope Charm Override correctly invalidated naive ALL-NEGATIVE charm
-3. What missed: one position closed early by mechanical stop at 3:35 PM — cost ~$100-200 but was process-correct
-4. Optimal trade: the actual PCS was the optimal tradeable trade — IC call side would have also worked but flow didn't support neutral structure
-5. Lessons: VIX1D extreme inversion validated 4th time, Periscope Charm Override essential on VIX 25+ days, orange gamma bars predict settlement
+1. Was correct: Yes — all defined-risk PCS short puts expired worthless with 65-80 pts cushion at settlement ~6610.
+2. What worked: (a) VIX1D extreme inversion at 25.0% predicted contained 42.2 pt range on a Monday. (b) Market Tide OTM bullish all day, rising from +$4.7M to +$55.2M peak — most persistent reliable signal. (c) Periscope Charm Override (+345M at 6600, +100M at 6615, +60-80M at 6620) correctly invalidated naive ALL-NEGATIVE signal. (d) 6600-6610 quadruple convergence (gamma + OI + charm + dark pool) anchored settlement within 10 pts. (e) SPX Net Flow anti-signal validated (NCP -$60.6M while SPX rallied 30+ pts = institutional hedging). (f) Positive vanna (+1.4K) with declining VIX provided mechanical upward drift supporting PCS.
+3. What missed: (a) MODERATE confidence was slightly conservative — 100% base rate across 13 sessions + 25% VIX1D inversion justified HIGH. (b) SPY ETF Tide deterioration was correctly identified as a risk but over-weighted in afternoon analysis — never translated to SPX weakness because Market Tide OTM persisted bullish. (c) CL futures showed +61.28% (data error — implausible price) — correctly identified and excluded from analysis rather than being treated as real signal.
+4. Optimal trade: Actual defined-risk PCS at 6530-6545 short puts was the optimal tradeable structure. In hindsight, short puts at 6550-6560 (10-12Δ) would have captured more premium with 50-60 pts cushion still structurally safe — the conservative placement was process-correct given the regime uncertainty.
+5. Lessons proposed: (a) VIX1D extreme inversion on Mondays overrides Rule 3F Monday range calibration — VIX1D containment dominates day-of-week range tendency. (b) Periscope Charm Override is now 4-session validated (March 24, March 25, April 1, April 6) — should be MANDATORY check on VIX 24+ days before applying ALL-NEGATIVE morning-only protocol. (c) Quadruple convergence (gamma + OI + charm + dark pool) is the highest-confidence settlement predictor in the system. (d) Market Tide OTM is more reliable than All-In for 0DTE directional reads — when they diverge, trust OTM. (e) QQQ bearish divergence at 10% weight is correctly calibrated but should not prevent HIGH confidence when VIX1D extreme inversion exceeds 20% AND historical base rate exceeds 90%.
 
 Correct output:
-${JSON.stringify({
-  mode: 'review',
-  structure: 'PUT CREDIT SPREAD',
-  confidence: 'HIGH',
-  suggestedDelta: 10,
-  reasoning:
-    'PCS was the correct structure — VIX1D extreme inversion (23.5% below VIX) predicted a contained ~25 pt range on VIX 25.35, SPX-specific flow was strongly bullish all day (NCP +$114M, NPP -$179M at 2:55 PM), and all four PCS positions expired worthless at settlement ~6595.',
-  chartConfidence: {
-    marketTide: {
-      signal: 'BULLISH',
-      confidence: 'MODERATE',
-      note: 'All-In NCP positive all day (peaked +$136M at 10:50 AM, faded to +$14M by 2:55 PM). OTM NCP turned bearish after 1:20 PM. Divergence between All-In (bullish) and OTM (bearish afternoon) reduced conviction.',
-    },
-    spxNetFlow: {
-      signal: 'BULLISH',
-      confidence: 'HIGH',
-      note: 'The strongest signal of the day. NCP rose to +$120M by 10:10 AM and stayed +$60-114M all session. NPP deepened relentlessly from -$1.9M to -$179.3M by 2:55 PM. This NCP/NPP divergence (+$114M vs -$179M = $293M spread) represents massive institutional put selling and call buying in SPX.',
-    },
-    spyNetFlow: {
-      signal: 'CONFIRMS',
-      confidence: 'MODERATE',
-      note: 'SPY NCP stayed positive (+$7.8-13.9M range), NPP deepened to -$20M by 2:55 PM. Bullish divergence confirmed the SPX-specific signal.',
-    },
-    qqqNetFlow: {
-      signal: 'CONTRADICTS',
-      confidence: 'LOW',
-      note: 'QQQ NCP turned negative by 2:00 PM (-$4.8M), NPP positive (+$2.2M). Bearish divergence. Correctly discounted per Rule 2 at 10% weight.',
-    },
-    periscope: {
-      signal: 'FAVORABLE',
-      confidence: 'MODERATE',
-      note: 'Late-day: MASSIVE orange positive gamma at 6590 (~+10,000) — the settlement magnet. Negative gamma flanking at 6585 and 6595. All PCS short puts (6535-6550) were in zero-gamma territory — completely safe.',
-    },
-    netCharm: {
-      signal: 'DECAYING',
-      confidence: 'LOW',
-      note: 'Naive charm pattern classified ALL-NEGATIVE — would have predicted trending day with morning-only trading. However, the naive pattern was OVERRIDDEN by Periscope Charm. The all-expiry charm at 6595 was +439.3M (strengthening) — this multi-day anchor was the real structural floor.',
-    },
-    aggregateGex: {
-      signal: 'NEGATIVE',
-      confidence: 'MODERATE',
-      note: 'OI Net Gamma -42K to -46.2K (mildly negative, Rule 16: tighten CCS exits by 30 min). Volume GEX deeply negative at -521.7K. However, the VIX1D extreme inversion correctly predicted that the negative GEX would NOT produce a trending day.',
-    },
-    periscopeCharm: {
-      signal: 'CONFIRMS',
-      confidence: 'HIGH',
-      note: 'CRITICAL OVERRIDE APPLIED: Periscope Charm showed +100M at 6605 and +70-80M at 6545 — invalidating the naive ALL-NEGATIVE trending day signal. The day was range-bound, not trending. The 6605 ceiling held. The 6545 floor was never tested. Periscope Charm was the most valuable structural tool of the day.',
-    },
-  },
-  observations: [
-    'VIX1D EXTREME INVERSION VALIDATED: VIX1D at 19.4 was 23.5% below VIX 25.35. The actual session range was ~25 pts (6585-6610), consuming only 28% of the 91-pt straddle cone. RV/IV at 0.53 confirmed IV-rich conditions. This is now the 4th validated session.',
-    "SPX NET FLOW WAS THE DOMINANT SIGNAL: The +$293M NCP/NPP spread at 2:55 PM was the session's strongest directional indicator. This flow never reversed or converged all day, making this a textbook hold-to-settlement PCS day.",
-    "PERISCOPE CHARM OVERRIDE CORRECTLY APPLIED: Naive charm was ALL-NEGATIVE, predicting a trending day. Periscope Charm showed +100M at 6605 and +70-80M at 6545 — real MM charm anchors that held as the session's ceiling and floor. The day was range-bound, not trending. Validated for the 2nd time.",
-    '6590 ORANGE GAMMA BAR = SETTLEMENT MAGNET: The recently-flipped +10,000 positive gamma at 6590 was the dominant late-day feature. After SPX dipped to 6585, the 6590 wall pulled price back to 6595 settlement.',
-    '6550/6515 STOP CLOSURE WAS PROCESS-CORRECT: The mechanical stop was triggered and the closure recommendation was correct risk management. The estimated cost was ~$100-200 on a position that would have expired worthless 25 minutes later. Per Lesson 21: never optimize stops based on individual recovery outcomes.',
-  ],
-  strikeGuidance: {
-    adjustments: [
-      'All strikes were correctly placed below the lower cone boundary (6575.60)',
-      'The 6545 short put coincided with the Periscope Charm +70-80M floor — this was the strongest structural anchor and should be the preferred strike on similar days',
-      'The 6550 short put was the most exposed (closest to cone) — the mechanical stop was appropriate',
-      'For future sessions with this VIX1D inversion profile: short puts at the lower cone boundary ±5 pts are well-protected. The 6535-6545 range is the sweet spot.',
-    ],
-    straddleCone: {
-      lower: 6576,
-      upper: 6666,
-      priceRelation:
-        'Settlement at 6595 was 19 pts above lower cone and 71 pts below upper cone — well inside the expected range. The actual ~25 pt range consumed only 28% of the cone.',
-    },
-    putStrikeNote:
-      'All four short puts (6535-6550) were in zero-gamma territory. They were 35-60 pts below ATM. Strike placement was excellent: the 6545 had additional Periscope Charm protection, and the 6535/6540 were behind multiple layers of defense.',
-    callStrikeNote:
-      'No CCS entered. The gamma desert above 6610 meant any CCS at 6620+ would have been in clear air. An IC call leg at 6650+ would have had 55+ pts of cushion and expired worthless — structurally feasible but flow did not support it.',
-  },
-  managementRules: {
-    profitTarget:
-      'Max profit achieved on 3 held positions. The 6550/6515 was closed early per mechanical stop. Optimal: 50% by 1:00 PM, then hold remaining to settlement if Periscope Charm anchors are intact.',
-    stopConditions: [
-      'The 6590 mechanical stop for the 6550/6515 spread was CORRECTLY triggered at ~3:05 PM ET. Process-correct, minor outcome cost.',
-      'The 6575 lower cone stop was never triggered (SPX low was ~6585).',
-      'Flow-based stop (NCP/NPP convergence) was never triggered — spread widened all day.',
-    ],
-    timeRules:
-      'Rule 16 mildly negative GEX called for tightening CCS exits by 30 min — not directly applicable since no CCS was held. For PCS, the VIX1D extreme inversion + Periscope Charm anchors justified holding to settlement.',
-    flowReversalSignal:
-      'No flow reversal occurred. SPX NCP/NPP divergence widened monotonically from +$93M spread at 10:00 AM to +$293M spread at 2:55 PM. Textbook no-reversal session.',
-  },
-  entryPlan: null,
-  risks: [
-    'The primary risk was the afternoon dip to 6585 (7 pts above the lower straddle cone) combined with deeply negative Volume GEX (-521.7K). The Periscope Charm anchors at 6545 and the all-expiry +439.3M charm at 6595 held.',
-    'The naive ALL-NEGATIVE charm pattern, if taken at face value without Periscope, would have recommended morning-only trading — costing significant premium on a day where holding was optimal.',
-  ],
-  hedge: {
-    recommendation: 'NO HEDGE',
-    description:
-      'No hedge was needed. The VIX1D extreme inversion, bullish SPX flow, and 35-60 pts of cushion made hedging unnecessary.',
-    rationale:
-      'With VIX1D at 19.4 predicting a contained ~35 pt range (actual: ~25 pts), short puts 35-60 pts below ATM were structurally safe.',
-    estimatedCost: '$0 — no hedge warranted',
-  },
-  periscopeNotes:
-    'GAMMA: Dominant orange positive gamma at 6590 (~+10,000) was the settlement magnet. Negative gamma flanking at 6585 and 6595. Small positive at 6600. Above 6610: gamma desert. All PCS short puts in zero-gamma territory. CHARM: Positive charm at 6605 (~+100M) served as the charm ceiling. Negative charm at 6585-6590 but massive positive gamma at 6590 counteracted this. Previous midday confirmed +70-80M at 6545. The all-expiry charm at 6595 was +439.3M.',
-  structureRationale:
-    'PUT CREDIT SPREAD was correct: (1) SPX Net Flow $293M spread widened all day. (2) Market Tide confirmed bullish morning. (3) SPY confirmed. (4) QQQ contradicted, correctly discounted. (5) VIX1D extreme inversion overrode stop zone, predicted contained range — validated by 25-pt realized range vs 91-pt cone. (6) Periscope Charm Override correctly invalidated naive ALL-NEGATIVE charm. An IC was structurally available but flow unanimity favored PCS.',
-  review: {
-    wasCorrect: true,
-    whatWorked:
-      'The PCS structure was exactly right — all four positions expired worthless at settlement ~6595 with 45-60 pts of cushion. Key signals: (1) VIX1D extreme inversion at 23.5% below VIX predicted contained range. (2) SPX NCP/NPP $293M spread — strongest bullish flow of recent sessions. (3) Periscope Charm Override correctly invalidating naive ALL-NEGATIVE charm. (4) The 6590 orange gamma bar acting as late-day settlement magnet. (5) Strike placement below the lower straddle cone with Periscope Charm protection at 6545.',
-    whatMissed:
-      'The 6550/6515 stop closure at 3:35 PM ET was the only management cost — estimated ~$100-200 on a position that expired worthless 25 minutes later. This was process-correct per Lessons 1, 21, and 56, but future similar setups with only 25 minutes remaining and Periscope Charm +70-80M at the short put could consider a narrower time threshold.',
-    optimalTrade:
-      'The actual PCS positions at 6535-6550 short puts were the optimal tradeable trade. An IC adding short calls at 6650+ would have been marginally better in hindsight (capturing an additional credit with 71 pts of upside cushion), but required accepting call-side risk that the strongly bullish flow did not support. Given real-time information, PCS-only was the highest risk-adjusted return structure. The 10-12Δ delta was appropriate.',
-    lessonsLearned: [
-      "VIX1D EXTREME INVERSION IS THE MOST RELIABLE REGIME SIGNAL FOR 0DTE PREMIUM SELLING: This is now the 4th validated session. When VIX1D is 20%+ below VIX, the market's own 1-day vol pricing tells you today will be calm. Target PCS at 10-12Δ with hold-to-settlement confidence.",
-      'PERISCOPE CHARM OVERRIDE IS ESSENTIAL ON VIX 25+ DAYS: Naive charm showed ALL-NEGATIVE but Periscope showed +100M at 6605 and +70-80M at 6545. ALWAYS check Periscope Charm before applying the all-negative morning-only protocol. Validated on March 24 and March 25.',
-      'ORANGE GAMMA BARS NEAR ATM IN THE FINAL 90 MINUTES PREDICT SETTLEMENT: The 6590 orange bar (~+10,000) pulled SPX from 6585 to 6595. Track orange bars after 2:30 PM ET as settlement zone indicators.',
-      'SPX NCP/NPP SPREAD > $200M = HOLD-TO-SETTLEMENT PCS DAY: The $293M spread widened monotonically. On these days, override 50% profit targets and hold to settlement or 90%+.',
-      'MECHANICAL STOPS WITH 25 MIN REMAINING AND 45+ PTS CUSHION MAY BE OVER-CONSERVATIVE: Consider a modified rule — in the final 30 minutes with 40+ pts cushion AND Periscope Charm +50M+ at the short strike, override mechanical stops unless the lower straddle cone itself is breached.',
-    ],
-  },
-  imageIssues: [],
-})}
+${JSON.stringify(REVIEW_OUTPUT)}
 </calibration_example>`;
 
 // ============================================================
