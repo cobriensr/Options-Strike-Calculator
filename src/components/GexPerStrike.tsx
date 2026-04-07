@@ -134,9 +134,7 @@ function GexTooltip({
             {formatNum(data.callGammaOi)}
           </span>
           {' / '}
-          <span style={{ color: theme.red }}>
-            {formatNum(data.putGammaOi)}
-          </span>
+          <span style={{ color: theme.red }}>{formatNum(data.putGammaOi)}</span>
         </span>
 
         {/* Charm */}
@@ -154,9 +152,7 @@ function GexTooltip({
             {formatNum(data.callCharmOi)}
           </span>
           {' / '}
-          <span style={{ color: CHARM_NEG }}>
-            {formatNum(data.putCharmOi)}
-          </span>
+          <span style={{ color: CHARM_NEG }}>{formatNum(data.putCharmOi)}</span>
         </span>
 
         {/* DEX */}
@@ -168,13 +164,9 @@ function GexTooltip({
           {formatNum(data.netDelta)}
         </span>
         <span className="text-[10px]">
-          <span style={{ color: DEX_POS }}>
-            {formatNum(data.callDeltaOi)}
-          </span>
+          <span style={{ color: DEX_POS }}>{formatNum(data.callDeltaOi)}</span>
           {' / '}
-          <span style={{ color: DEX_NEG }}>
-            {formatNum(data.putDeltaOi)}
-          </span>
+          <span style={{ color: DEX_NEG }}>{formatNum(data.putDeltaOi)}</span>
         </span>
 
         {/* Vanna */}
@@ -192,9 +184,7 @@ function GexTooltip({
             {formatNum(data.callVannaOi)}
           </span>
           {' / '}
-          <span style={{ color: VANNA_NEG }}>
-            {formatNum(data.putVannaOi)}
-          </span>
+          <span style={{ color: VANNA_NEG }}>{formatNum(data.putVannaOi)}</span>
         </span>
       </div>
 
