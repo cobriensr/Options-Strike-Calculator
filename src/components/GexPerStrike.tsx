@@ -52,6 +52,27 @@ function formatNum(n: number): string {
   return n.toFixed(0);
 }
 
+/**
+ * Format a flow-pressure ratio for display.
+ *
+ * The raw metric is `|vol| / |oi| × 100`. In normal regimes this sits
+ * between 0 and ~200%, but when the visible window has near-balanced OI
+ * gamma (call walls canceling put walls), the denominator collapses and
+ * the ratio can spike into the thousands. Showing "7269%" is technically
+ * correct but not readable.
+ *
+ * Display rule:
+ *   - ≤100%: show as percentage ("85%")
+ *   - >100%: show as multiplier ("72.7×")
+ *
+ * This preserves the "how much bigger" intuition without requiring the
+ * reader to mentally divide a four-digit percentage by 100.
+ */
+function formatFlowPressure(pct: number): string {
+  if (pct <= 100) return `${pct.toFixed(0)}%`;
+  return `${(pct / 100).toFixed(1)}\u00D7`;
+}
+
 function formatTime(iso: string | null): string {
   if (!iso) return '';
   try {
@@ -894,7 +915,7 @@ export default memo(function GexPerStrike({
             },
             {
               label: 'FLOW PRESSURE',
-              value: `${summary.flowPressurePct.toFixed(0)}%`,
+              value: formatFlowPressure(summary.flowPressurePct),
               color:
                 summary.flowSign === 'reinforcing'
                   ? theme.green

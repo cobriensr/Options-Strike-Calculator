@@ -878,6 +878,74 @@ describe('GexPerStrike: flow pressure calculation', () => {
     );
     expect(screen.getByText('neutral')).toBeInTheDocument();
   });
+
+  it('shows percentage format when ratio is ≤ 100%', () => {
+    // vol = 50B, oi = 200B → 25% reinforcing
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netGamma: 200_000_000_000,
+            netGammaVol: 50_000_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    const flowCard = screen.getByText('FLOW PRESSURE').parentElement;
+    expect(flowCard?.textContent).toContain('25%');
+  });
+
+  it('shows multiplier format when ratio is > 100%', () => {
+    // vol = 800B, oi = 11B → 7272.7% → "72.7×"
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netGamma: 11_000_000_000,
+            netGammaVol: 800_000_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    const flowCard = screen.getByText('FLOW PRESSURE').parentElement;
+    // Should show "72.7×" not "7273%"
+    expect(flowCard?.textContent).toMatch(/72\.7×/);
+    expect(flowCard?.textContent).not.toMatch(/7273%/);
+  });
+
+  it('shows 100% exactly (boundary case)', () => {
+    // vol == oi exactly
+    render(
+      <GexPerStrike
+        strikes={[
+          makeStrike({
+            strike: 5795,
+            price: 5795,
+            netGamma: 100_000_000_000,
+            netGammaVol: 100_000_000_000,
+          }),
+        ]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+      />,
+    );
+    const flowCard = screen.getByText('FLOW PRESSURE').parentElement;
+    expect(flowCard?.textContent).toContain('100%');
+  });
 });
 
 // ============================================================
