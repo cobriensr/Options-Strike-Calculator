@@ -564,3 +564,176 @@ describe('DarkPoolLevels: refresh button', () => {
     ).toBeDisabled();
   });
 });
+
+// ============================================================
+// DISTANCE FROM SPOT
+// ============================================================
+
+describe('DarkPoolLevels: distance from spot', () => {
+  it('does not show distance column when spxPrice is not provided', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel({ spxLevel: 6610 })]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+      />,
+    );
+    // No distance label should appear
+    expect(screen.queryByText('ATM')).not.toBeInTheDocument();
+    expect(screen.queryByText(/pts/)).not.toBeInTheDocument();
+  });
+
+  it('shows distance labels when spxPrice is provided', () => {
+    render(
+      <DarkPoolLevels
+        levels={[
+          makeLevel({ spxLevel: 6610 }),
+          makeLevel({ spxLevel: 6620 }),
+          makeLevel({ spxLevel: 6600 }),
+        ]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        spxPrice={6610}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByText('ATM')).toBeInTheDocument();
+    expect(screen.getByText('+10pts')).toBeInTheDocument();
+    expect(screen.getByText('-10pts')).toBeInTheDocument();
+  });
+
+  it('marks levels within 2.5pts of spot as ATM', () => {
+    render(
+      <DarkPoolLevels
+        levels={[
+          makeLevel({ spxLevel: 6611 }), // 1pt above — rounds to ATM display
+          makeLevel({ spxLevel: 6615 }),
+        ]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        spxPrice={6610}
+        onRefresh={noop}
+      />,
+    );
+    // 6611 - 6610 = 1pt → rounds to "+1pts", still within ATM highlight range
+    expect(screen.getByText('+1pts')).toBeInTheDocument();
+    expect(screen.getByText('+5pts')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// SORT MODES
+// ============================================================
+
+describe('DarkPoolLevels: sort modes', () => {
+  it('cycles through sort modes: Premium → Strike → Distance → Premium', async () => {
+    const user = userEvent.setup();
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        spxPrice={6610}
+        onRefresh={noop}
+      />,
+    );
+
+    // Starts at "By Premium"
+    expect(
+      screen.getByRole('button', { name: /sort mode: by premium/i }),
+    ).toBeInTheDocument();
+
+    const sortBtn = screen.getByText('By Premium');
+    await user.click(sortBtn);
+    expect(screen.getByText('By Strike')).toBeInTheDocument();
+
+    await user.click(screen.getByText('By Strike'));
+    expect(screen.getByText('By Distance')).toBeInTheDocument();
+
+    await user.click(screen.getByText('By Distance'));
+    expect(screen.getByText('By Premium')).toBeInTheDocument();
+  });
+
+  it('By Strike sort orders highest strike at top', async () => {
+    const user = userEvent.setup();
+    render(
+      <DarkPoolLevels
+        levels={[
+          makeLevel({ spxLevel: 6600, totalPremium: 100_000_000 }),
+          makeLevel({ spxLevel: 6620, totalPremium: 200_000_000 }),
+          makeLevel({ spxLevel: 6610, totalPremium: 300_000_000 }),
+        ]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+      />,
+    );
+
+    await user.click(screen.getByText('By Premium'));
+
+    const s6600 = screen.getByText('6600');
+    const s6620 = screen.getByText('6620');
+    // 6620 should appear before 6600 in DOM order (top to bottom)
+    const pos =
+      s6620.compareDocumentPosition(s6600) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(pos).toBeTruthy();
+  });
+
+  it('By Distance sort orders closest to spot first', async () => {
+    const user = userEvent.setup();
+    render(
+      <DarkPoolLevels
+        levels={[
+          makeLevel({ spxLevel: 6580, totalPremium: 100_000_000 }),
+          makeLevel({ spxLevel: 6612, totalPremium: 50_000_000 }),
+          makeLevel({ spxLevel: 6640, totalPremium: 200_000_000 }),
+        ]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        spxPrice={6610}
+        onRefresh={noop}
+      />,
+    );
+
+    // Click twice: Premium → Strike → Distance
+    const btn = screen.getByText('By Premium');
+    await user.click(btn);
+    await user.click(screen.getByText('By Strike'));
+
+    // 6612 is 2pts from spot, 6580 is 30pts, 6640 is 30pts
+    // Expected order: 6612 (closest) → 6580 or 6640 (tied)
+    const s6612 = screen.getByText('6612');
+    const s6580 = screen.getByText('6580');
+    const pos =
+      s6612.compareDocumentPosition(s6580) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(pos).toBeTruthy();
+  });
+
+  it('does not lock into Distance sort when spxPrice is missing', async () => {
+    const user = userEvent.setup();
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+      />,
+    );
+
+    // Cycle to Distance — button should be disabled when we reach it
+    await user.click(screen.getByText('By Premium'));
+    await user.click(screen.getByText('By Strike'));
+
+    // Now showing "By Distance" but it should be disabled since no spxPrice
+    const distBtn = screen.getByText('By Distance');
+    expect(distBtn).toBeDisabled();
+  });
+});

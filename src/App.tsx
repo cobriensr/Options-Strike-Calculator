@@ -688,6 +688,7 @@ export default function StrikeCalculator() {
                     loading={darkPool.loading}
                     error={darkPool.error}
                     updatedAt={darkPool.updatedAt}
+                    spxPrice={results?.spot ?? spxVal ?? null}
                     onRefresh={darkPool.refresh}
                   />
                 </ErrorBoundary>

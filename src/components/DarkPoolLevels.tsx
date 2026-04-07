@@ -1,12 +1,14 @@
 /**
  * DarkPoolLevels — dashboard widget showing institutional dark pool
- * strike levels ranked by aggregate premium.
+ * strike levels accumulated throughout the day.
  *
- * Displays SPX price levels where large ($5M+) SPY dark pool blocks
- * have accumulated, sorted by total premium. Larger premium = stronger
- * institutional support/resistance. Auto-refreshes every 60 seconds.
+ * Displays SPX price levels where large SPY dark pool blocks have
+ * printed, sorted by total premium (ranked), strike (ladder), or
+ * distance from spot. The running-total design shows premium
+ * accumulating at each level over the session — larger bars = more
+ * institutional interest at that price.
  *
- * User can adjust how many levels are visible with +/- controls.
+ * Auto-refreshes every 60 seconds during market hours.
  */
 
 import { memo, useMemo, useState, useCallback } from 'react';
@@ -19,11 +21,14 @@ const MIN_VISIBLE = 5;
 const MAX_VISIBLE = 50;
 const STEP = 5;
 
+type SortMode = 'premium' | 'strike' | 'distance';
+
 interface Props {
   levels: DarkPoolLevel[];
   loading: boolean;
   error: string | null;
   updatedAt: string | null;
+  spxPrice?: number | null;
   onRefresh: () => void;
 }
 
@@ -48,32 +53,59 @@ function formatTime(iso: string | null): string {
   }
 }
 
+function formatDist(level: number, price: number): string {
+  const diff = Math.round(level - price);
+  if (diff === 0) return 'ATM';
+  return `${diff > 0 ? '+' : ''}${diff}pts`;
+}
+
+const SORT_LABELS: Record<SortMode, string> = {
+  premium: 'By Premium',
+  strike: 'By Strike',
+  distance: 'By Distance',
+};
+
 export default memo(function DarkPoolLevels({
   levels,
   loading,
   error,
   updatedAt,
+  spxPrice,
   onRefresh,
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
-  const [sortBy, setSortBy] = useState<'premium' | 'time'>('premium');
+  const [sortBy, setSortBy] = useState<SortMode>('premium');
+
+  // Cycle: premium → strike → distance → premium
+  const cycleSort = useCallback(() => {
+    setSortBy((s) => {
+      if (s === 'premium') return 'strike';
+      if (s === 'strike') return 'distance';
+      return 'premium';
+    });
+  }, []);
 
   const sorted = useMemo(() => {
-    if (sortBy === 'time') {
-      return [...levels].sort((a, b) => {
-        const tA = a.latestTime ?? '';
-        const tB = b.latestTime ?? '';
-        return tB.localeCompare(tA);
-      });
+    if (sortBy === 'strike') {
+      // Price-ladder order: highest strike at top, lowest at bottom
+      return [...levels].sort((a, b) => b.spxLevel - a.spxLevel);
     }
-    return levels; // API already returns by premium desc
-  }, [levels, sortBy]);
+    if (sortBy === 'distance' && spxPrice != null) {
+      return [...levels].sort(
+        (a, b) =>
+          Math.abs(a.spxLevel - spxPrice) - Math.abs(b.spxLevel - spxPrice),
+      );
+    }
+    // Default: API returns by premium desc
+    return levels;
+  }, [levels, sortBy, spxPrice]);
 
   const filtered = useMemo(
     () => sorted.slice(0, visibleCount),
     [sorted, visibleCount],
   );
 
+  // Max premium for bar scaling — always use the visible set
   const maxPremium = useMemo(
     () =>
       filtered.length > 0
@@ -90,14 +122,12 @@ export default memo(function DarkPoolLevels({
     () => setVisibleCount((v) => Math.min(v + STEP, MAX_VISIBLE)),
     [],
   );
-  const toggleSort = useCallback(
-    () => setSortBy((s) => (s === 'premium' ? 'time' : 'premium')),
-    [],
-  );
 
   const totalLevels = levels.length;
-
   const badge = totalLevels > 0 ? `${filtered.length} of ${totalLevels}` : null;
+
+  // Distance sort is only meaningful when we know spot
+  const canSortByDistance = spxPrice != null;
 
   const headerRight = (
     <div className="flex items-center gap-2">
@@ -115,11 +145,12 @@ export default memo(function DarkPoolLevels({
         &#x21bb;
       </button>
       <button
-        onClick={toggleSort}
-        aria-label={`Sort by ${sortBy === 'premium' ? 'latest time' : 'premium'}`}
+        onClick={cycleSort}
+        aria-label={`Sort mode: ${SORT_LABELS[sortBy]} — click to cycle`}
+        disabled={sortBy === 'distance' && !canSortByDistance}
         className="text-accent hover:text-primary border-edge cursor-pointer rounded border px-1.5 py-0.5 font-sans text-[10px] font-semibold transition-colors"
       >
-        {sortBy === 'premium' ? 'By Premium' : 'By Latest'}
+        {SORT_LABELS[sortBy]}
       </button>
       <div className="border-edge flex items-center gap-0.5 rounded border">
         <button
@@ -203,6 +234,7 @@ export default memo(function DarkPoolLevels({
         <thead className="sr-only">
           <tr>
             <th>SPX Level</th>
+            {spxPrice != null && <th>Distance</th>}
             <th>Premium</th>
             <th>Blocks</th>
             <th>Time</th>
@@ -214,6 +246,7 @@ export default memo(function DarkPoolLevels({
               key={level.spxLevel}
               level={level}
               maxPremium={maxPremium}
+              spxPrice={spxPrice ?? null}
             />
           ))}
         </tbody>
@@ -225,21 +258,47 @@ export default memo(function DarkPoolLevels({
 function LevelRow({
   level,
   maxPremium,
+  spxPrice,
 }: Readonly<{
   level: DarkPoolLevel;
   maxPremium: number;
+  spxPrice: number | null;
 }>) {
   const barWidth = Math.max((level.totalPremium / maxPremium) * 100, 2);
+  const isAtm = spxPrice != null && Math.abs(level.spxLevel - spxPrice) < 2.5;
+  const distLabel = spxPrice != null ? formatDist(level.spxLevel, spxPrice) : null;
+
+  // Color the distance label: above spot = green, below = red, at = accent
+  const distColor = (() => {
+    if (spxPrice == null) return theme.textMuted;
+    if (isAtm) return theme.accent;
+    return level.spxLevel > spxPrice ? theme.green : theme.red;
+  })();
 
   return (
-    <tr className="flex items-center gap-2 py-1.5">
+    <tr
+      className="flex items-center gap-2 py-1.5"
+      style={
+        isAtm ? { backgroundColor: 'rgba(255,255,255,0.04)' } : undefined
+      }
+    >
       {/* SPX Level */}
       <td
         className="w-[52px] shrink-0 text-right font-mono text-sm font-bold"
-        style={{ color: theme.text }}
+        style={{ color: isAtm ? theme.accent : theme.text }}
       >
         {level.spxLevel}
       </td>
+
+      {/* Distance from spot (only when spxPrice is known) */}
+      {spxPrice != null && (
+        <td
+          className="w-[46px] shrink-0 text-right font-mono text-[10px]"
+          style={{ color: distColor }}
+        >
+          {distLabel}
+        </td>
+      )}
 
       {/* Premium bar */}
       <td className="min-w-0 flex-1">
