@@ -190,7 +190,10 @@ function analyzeEntry(
 
     let high = -Infinity,
       low = Infinity;
-    for (let i = entryIndex; i < spxCandles.length; i++) {
+    // Entry price is the close of the entryIndex candle, so that candle's
+    // high/low are pre-entry. Scan starts at entryIndex + 1 to match the
+    // semantics of src/utils/settlement.ts::computeSettlement (FE-MATH-003).
+    for (let i = entryIndex + 1; i < spxCandles.length; i++) {
       if (spxCandles[i]!.high > high) high = spxCandles[i]!.high;
       if (spxCandles[i]!.low < low) low = spxCandles[i]!.low;
     }

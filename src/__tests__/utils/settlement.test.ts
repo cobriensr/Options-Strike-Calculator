@@ -14,6 +14,39 @@ function candle(high: number, low: number, close: number): HistoryCandle {
   };
 }
 
+/**
+ * Creates a sequence of candles simulating an intraday session.
+ * Price starts at `start` and trends toward `end` within a `range`.
+ */
+function makeCandleSeries(
+  count: number,
+  opts: {
+    startPrice?: number;
+    endPrice?: number;
+    highOverride?: number;
+    lowOverride?: number;
+  } = {},
+): HistoryCandle[] {
+  const start = opts.startPrice ?? 5800;
+  const end = opts.endPrice ?? start;
+  const candles: HistoryCandle[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const fraction = count > 1 ? i / (count - 1) : 0;
+    const price = start + (end - start) * fraction;
+    candles.push({
+      datetime: Date.now() + i * 60000,
+      time: `${10 + Math.floor(i / 60)}:${String(i % 60).padStart(2, '0')}`,
+      open: price - 2,
+      high: opts.highOverride ?? price + 5,
+      low: opts.lowOverride ?? price - 5,
+      close: i === count - 1 ? (opts.endPrice ?? price) : price,
+    });
+  }
+
+  return candles;
+}
+
 describe('computeSettlement', () => {
   it('returns survived=true when price stays within strikes', () => {
     const candles = [
@@ -206,19 +239,139 @@ describe('computeSettlement', () => {
     expect(result!.delta).toBe(15);
   });
 
-  it('uses only candles from entryIndex onward', () => {
+  it('passes through the call and put strike values unchanged', () => {
+    const candles = [candle(5870, 5830, 5850), candle(5880, 5820, 5860)];
+
+    const result = computeSettlement(candles, 0, 5865, 5835, 10);
+
+    expect(result).not.toBeNull();
+    expect(result!.callStrike).toBe(5865);
+    expect(result!.putStrike).toBe(5835);
+  });
+
+  it('uses only candles strictly after entryIndex', () => {
+    // Pre-entry candle at index 0 (wild range) must be ignored, AND
+    // the entry candle at index 1 must also be ignored because its
+    // high/low are pre-entry relative to spot = candle.close (FE-MATH-003).
     const candles = [
-      candle(5950, 5750, 5850), // index 0: extreme range (should be ignored)
-      candle(5870, 5830, 5850), // index 1: entry
-      candle(5880, 5820, 5860), // index 2: settlement
+      candle(5950, 5750, 5850), // index 0: extreme pre-entry range
+      candle(5870, 5830, 5850), // index 1: entry candle (also excluded)
+      candle(5880, 5820, 5860), // index 2: first post-entry candle
     ];
 
     const result = computeSettlement(candles, 1, 5900, 5800, 10);
 
     expect(result).not.toBeNull();
-    // remainingHigh from index 1 onward = 5880, not 5950
+    // Only candle 2 contributes: high=5880, low=5820
     expect(result!.remainingHigh).toBe(5880);
     expect(result!.remainingLow).toBe(5820);
     expect(result!.survived).toBe(true);
+  });
+
+  // ── settledSafe boundary tests (ported from legacy test file) ────────
+
+  it('settledSafe = false when settlement equals call strike', () => {
+    const candles = makeCandleSeries(10, {
+      startPrice: 5800,
+      endPrice: 5850,
+    });
+    const result = computeSettlement(candles, 0, 5850, 5700, 10);
+    expect(result).not.toBeNull();
+    // settlement = callStrike, condition is settlement < callStrike → false
+    expect(result!.settledSafe).toBe(false);
+  });
+
+  it('settledSafe = false when settlement equals put strike', () => {
+    const candles = makeCandleSeries(10, {
+      startPrice: 5800,
+      endPrice: 5750,
+    });
+    const result = computeSettlement(candles, 0, 5900, 5750, 10);
+    expect(result).not.toBeNull();
+    // settlement = putStrike, condition is settlement > putStrike → false
+    expect(result!.settledSafe).toBe(false);
+  });
+
+  it('uses the last candle close as settlement regardless of intermediate prices', () => {
+    const candles = [
+      candle(5810, 5790, 5800),
+      candle(5815, 5795, 5805),
+      candle(5820, 5800, 5812),
+    ];
+    const result = computeSettlement(candles, 0, 5900, 5700, 10);
+    expect(result).not.toBeNull();
+    expect(result!.settlement).toBe(5812);
+  });
+
+  it('handles both sides breached simultaneously across the session', () => {
+    const candles = makeCandleSeries(10, {
+      startPrice: 5800,
+      endPrice: 5800,
+      highOverride: 5870,
+      lowOverride: 5730,
+    });
+    const result = computeSettlement(candles, 0, 5850, 5750, 10);
+    expect(result).not.toBeNull();
+    expect(result!.survived).toBe(false);
+    expect(result!.callBreached).toBe(true);
+    expect(result!.putBreached).toBe(true);
+  });
+
+  it('can survive despite settling near a strike', () => {
+    // Entry candle (excluded per FE-MATH-003) + two post-entry candles.
+    // Both post-entry highs/lows are within the strikes, settlement lands
+    // 1 pt below the call strike — safe.
+    const candles = [
+      candle(5805, 5795, 5800), // entry candle (excluded)
+      candle(5810, 5790, 5820), // post-entry 1
+      candle(5810, 5790, 5849), // post-entry 2 / settlement
+    ];
+    const result = computeSettlement(candles, 0, 5850, 5700, 10);
+    expect(result).not.toBeNull();
+    expect(result!.survived).toBe(true); // remainingHigh = 5810 < 5850
+    expect(result!.settledSafe).toBe(true); // 5849 < 5850
+    expect(result!.callCushion).toBe(Math.round((5850 - 5810) * 100) / 100);
+  });
+
+  // ── FE-MATH-003: entry candle is excluded from the breach scan ───────
+
+  it('FE-MATH-003: excludes entry candle high/low from breach scan', () => {
+    // The entry candle itself has extreme high/low that WOULD trigger a
+    // breach if included. Post-entry candles are calm. Under the old
+    // inclusive behavior this reported a false breach. Under the fix
+    // (exclusive of entry candle) no breach is reported.
+    const candles = [
+      candle(5955, 5640, 5800), // index 0: entry — wild wick, close = 5800
+      candle(5810, 5790, 5805), // index 1: calm post-entry
+      candle(5815, 5795, 5810), // index 2: calm settlement
+    ];
+    // Call strike 5850 would be breached by the 5955 wick
+    // Put strike 5750 would be breached by the 5640 wick
+    // Both breaches happened BEFORE entry (which is the close = 5800).
+    const result = computeSettlement(candles, 0, 5850, 5750, 10);
+    expect(result).not.toBeNull();
+    expect(result!.callBreached).toBe(false);
+    expect(result!.putBreached).toBe(false);
+    expect(result!.survived).toBe(true);
+    expect(result!.remainingHigh).toBe(5815); // max of candles 1 & 2
+    expect(result!.remainingLow).toBe(5790); // min of candles 1 & 2
+  });
+
+  it('FE-MATH-003: entry candle can be wild even when subsequent bars dominate', () => {
+    // Sanity: even in the easy case where post-entry candles dominate,
+    // the entry candle's wick is still excluded.
+    const candles = [
+      candle(5900, 5700, 5800), // index 0: entry with wick
+      candle(5815, 5795, 5810), // index 1
+      candle(5820, 5790, 5815), // index 2
+    ];
+    const result = computeSettlement(candles, 0, 5900, 5700, 10);
+    expect(result).not.toBeNull();
+    // remainingHigh = max(5815, 5820) = 5820 (NOT 5900 from entry candle)
+    // remainingLow  = min(5795, 5790) = 5790 (NOT 5700 from entry candle)
+    expect(result!.remainingHigh).toBe(5820);
+    expect(result!.remainingLow).toBe(5790);
+    expect(result!.callCushion).toBe(80); // 5900 - 5820
+    expect(result!.putCushion).toBe(90); // 5790 - 5700
   });
 });

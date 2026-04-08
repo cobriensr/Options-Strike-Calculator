@@ -198,9 +198,15 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    // From entry (index 2) onward: high = 5830, low = 5805 → range = 25 pts
-    expect(screen.getByText(/ranged\s+25\s+pts/)).toBeInTheDocument();
-    expect(screen.getByText(/5805\s+–\s+5830/)).toBeInTheDocument();
+    // Entry at index 2 (close = 5815). The entry candle's high/low
+    // (5820/5805) are pre-entry and excluded from the breach scan
+    // (FE-MATH-003). The remaining scan is indices 3..5:
+    //   3: high=5825, low=5808
+    //   4: high=5830, low=5810
+    //   5: high=5828, low=5812
+    // → remainingHigh = 5830, remainingLow = 5808, range = 22 pts
+    expect(screen.getByText(/ranged\s+22\s+pts/)).toBeInTheDocument();
+    expect(screen.getByText(/5808\s+–\s+5830/)).toBeInTheDocument();
   });
 
   it('shows "Safe by X pts" for survived rows', () => {
@@ -257,8 +263,10 @@ describe('SettlementCheck', () => {
         })}
       />,
     );
-    // putSnapped=5820, remainingLow=5805, putCushion=-15, settlement=5818 < 5820 → loss
-    expect(screen.getByText(/Put breached by 15 pts/)).toBeInTheDocument();
+    // Entry candle (index 2) excluded per FE-MATH-003. Scan is indices 3..5
+    // → remainingLow = 5808. putSnapped=5820, putCushion = 5808 - 5820 = -12.
+    // settlement = 5818 < 5820 → loss (not settledSafe).
+    expect(screen.getByText(/Put breached by 12 pts/)).toBeInTheDocument();
     expect(
       screen.getAllByText(/settled at 5818/).length,
     ).toBeGreaterThanOrEqual(1);
@@ -375,10 +383,12 @@ describe('SettlementCheck', () => {
         allDeltas={makeAllDeltas()}
       />,
     );
-    // 15Δ: callCushion = 5840 - 5830 = +10, putCushion = 5805 - 5760 = +45
-    // Display: put side = −45, call side = +10
+    // Entry candle excluded per FE-MATH-003. Scan of indices 3..5:
+    // remainingHigh = 5830, remainingLow = 5808.
+    // 15Δ: callCushion = 5840 - 5830 = +10, putCushion = 5808 - 5760 = +48.
+    // Display: put side = −48, call side = +10.
     expect(screen.getByText('+10')).toBeInTheDocument();
-    const negatives = screen.getAllByText(/\u221245/);
+    const negatives = screen.getAllByText(/\u221248/);
     expect(negatives.length).toBeGreaterThanOrEqual(1);
   });
 
