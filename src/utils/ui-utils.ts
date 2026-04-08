@@ -2,10 +2,32 @@
  * Alpha-tint a CSS color using color-mix().
  * Accepts a CSS color value (including var() references) and a hex alpha string
  * (e.g. '18' for ~9% opacity) matching the old `color + 'HH'` pattern.
+ *
+ * NOTE: This mixes *toward transparent* — the result is a partially transparent
+ * version of the input color, not a lighter shade on an opaque background.
+ * If you want a readable tinted panel/card, use `tintedSurface()` instead,
+ * which mixes toward a surface color so the result stays opaque.
  */
 export function tint(cssColor: string, hexAlpha: string): string {
   const pct = Math.round((Number.parseInt(hexAlpha, 16) / 255) * 100);
   return `color-mix(in srgb, ${cssColor} ${pct}%, transparent)`;
+}
+
+/**
+ * Mix an accent color *into* a base surface color to produce an opaque,
+ * readable tinted panel. Use this for alert backgrounds, badge panels, or
+ * any surface that needs to carry a semantic accent hue while keeping high
+ * contrast for text layered on top.
+ *
+ * Unlike `tint()`, this does not cut a transparency hole — the result is a
+ * solid color suitable for use behind foreground text.
+ */
+export function tintedSurface(
+  accent: string,
+  pct: number,
+  surface: string,
+): string {
+  return `color-mix(in srgb, ${accent} ${pct}%, ${surface})`;
 }
 
 /** Build a data URI for a dropdown chevron. Resolves CSS var if needed. */

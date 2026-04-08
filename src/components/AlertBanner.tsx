@@ -8,7 +8,7 @@
 
 import type { MarketAlert } from '../hooks/useAlertPolling';
 import { theme } from '../themes';
-import { tint } from '../utils/ui-utils';
+import { tintedSurface } from '../utils/ui-utils';
 
 interface AlertBannerProps {
   alerts: MarketAlert[];
@@ -19,42 +19,35 @@ function severityStyles(severity: MarketAlert['severity']) {
   switch (severity) {
     case 'warning':
       return {
-        backgroundColor: tint(theme.caution, 'E6'), // ~90%
-        borderColor: tint(theme.caution, '99'), // ~60%
-        color: theme.caution,
+        backgroundColor: tintedSurface(theme.caution, 16, theme.surface),
+        borderColor: tintedSurface(theme.caution, 70, theme.surface),
+        color: theme.text,
       };
     case 'critical':
       return {
-        backgroundColor: tint(theme.red, 'E6'), // ~90%
-        borderColor: tint(theme.red, '99'), // ~60%
-        color: theme.red,
+        backgroundColor: tintedSurface(theme.red, 16, theme.surface),
+        borderColor: tintedSurface(theme.red, 70, theme.surface),
+        color: theme.text,
       };
     case 'extreme':
       return {
-        backgroundColor: tint(theme.red, 'F2'), // ~95%
-        borderColor: tint(theme.red, 'CC'), // ~80%
-        color: theme.red,
+        backgroundColor: tintedSurface(theme.red, 28, theme.surface),
+        borderColor: theme.red,
+        color: theme.text,
       };
   }
 }
 
 function directionStyles(direction: MarketAlert['direction']) {
+  // Solid accent pill with opposite-polarity text (theme.bg is always the
+  // inverse of theme.text, so this reads in both light and dark themes).
   switch (direction) {
     case 'BEARISH':
-      return {
-        backgroundColor: tint(theme.red, 'D9'), // ~85%
-        color: theme.red,
-      };
+      return { backgroundColor: theme.red, color: theme.bg };
     case 'BULLISH':
-      return {
-        backgroundColor: tint(theme.green, 'D9'), // ~85%
-        color: theme.green,
-      };
+      return { backgroundColor: theme.green, color: theme.bg };
     case 'NEUTRAL':
-      return {
-        backgroundColor: tint(theme.textMuted, 'D9'), // ~85%
-        color: theme.textMuted,
-      };
+      return { backgroundColor: theme.textMuted, color: theme.bg };
   }
 }
 
@@ -87,7 +80,7 @@ export default function AlertBanner({
           <div
             key={alert.id}
             role="alert"
-            className={`mx-auto flex max-w-2xl items-start gap-3 rounded-lg border p-3 shadow-lg backdrop-blur-sm${isExtreme ? 'animate-pulse' : ''}`}
+            className={`mx-auto flex max-w-2xl items-start gap-3 rounded-lg border p-3 shadow-lg ${isExtreme ? 'animate-pulse' : ''}`}
             style={sev}
           >
             <div className="min-w-0 flex-1">
@@ -105,9 +98,7 @@ export default function AlertBanner({
                   {formatTime(alert.created_at)}
                 </span>
               </div>
-              <p className="font-sans text-xs leading-relaxed opacity-80">
-                {alert.body}
-              </p>
+              <p className="font-sans text-xs leading-relaxed">{alert.body}</p>
             </div>
             <button
               onClick={() => onAcknowledge(alert.id)}

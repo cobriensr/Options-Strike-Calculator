@@ -5,6 +5,7 @@ import {
   mkTd,
   fmtDollar,
   tinyLbl,
+  tintedSurface,
 } from '../../utils/ui-utils';
 
 describe('buildChevronUrl', () => {
@@ -107,5 +108,48 @@ describe('tinyLbl', () => {
     expect(tinyLbl).toContain('text-[10px]');
     expect(tinyLbl).toContain('font-bold');
     expect(tinyLbl).toContain('uppercase');
+  });
+});
+
+describe('tintedSurface', () => {
+  it('returns a color-mix expression in srgb', () => {
+    const result = tintedSurface('#ff0000', 20, '#ffffff');
+    expect(result).toMatch(/^color-mix\(in srgb,/);
+  });
+
+  it('mixes the accent toward the surface color (not transparent)', () => {
+    // This is the key behavioral difference from tint() — the second color
+    // in the mix must be the surface, not `transparent`. Without this
+    // guarantee the result would be a transparency cutout, not a readable
+    // opaque panel.
+    const result = tintedSurface('#ff0000', 20, '#ffffff');
+    expect(result).toContain('#ffffff');
+    expect(result).not.toContain('transparent');
+  });
+
+  it('preserves the percentage on the accent color', () => {
+    expect(tintedSurface('#ff0000', 16, '#242430')).toBe(
+      'color-mix(in srgb, #ff0000 16%, #242430)',
+    );
+  });
+
+  it('accepts CSS var() references for both accent and surface', () => {
+    const result = tintedSurface(
+      'var(--color-danger)',
+      28,
+      'var(--color-surface)',
+    );
+    expect(result).toBe(
+      'color-mix(in srgb, var(--color-danger) 28%, var(--color-surface))',
+    );
+  });
+
+  it('handles 0% and 100% without special-casing', () => {
+    expect(tintedSurface('#ff0000', 0, '#ffffff')).toBe(
+      'color-mix(in srgb, #ff0000 0%, #ffffff)',
+    );
+    expect(tintedSurface('#ff0000', 100, '#ffffff')).toBe(
+      'color-mix(in srgb, #ff0000 100%, #ffffff)',
+    );
   });
 });

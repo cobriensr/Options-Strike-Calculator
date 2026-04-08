@@ -64,34 +64,39 @@ describe('AlertBanner: alert content', () => {
     expect(screen.getByText('BEARISH')).toBeInTheDocument();
   });
 
-  it('shows BEARISH direction badge with danger color', () => {
+  it('shows BEARISH direction badge with danger background', () => {
     const alert = makeAlert({ direction: 'BEARISH' });
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const badge = screen.getByText('BEARISH');
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveAttribute('style');
-    expect(badge.style.color).toContain('var(--color-danger)');
+    // Direction is encoded via backgroundColor; text is inverse polarity
+    // (theme.bg) so the badge stays readable in both light and dark themes.
+    expect(badge.style.backgroundColor).toContain('var(--color-danger)');
+    expect(badge.style.color).toContain('var(--color-page)');
   });
 
-  it('shows BULLISH direction badge with success color', () => {
+  it('shows BULLISH direction badge with success background', () => {
     const alert = makeAlert({ direction: 'BULLISH' });
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const badge = screen.getByText('BULLISH');
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveAttribute('style');
-    expect(badge.style.color).toContain('var(--color-success)');
+    expect(badge.style.backgroundColor).toContain('var(--color-success)');
+    expect(badge.style.color).toContain('var(--color-page)');
   });
 
-  it('shows NEUTRAL direction badge with muted color', () => {
+  it('shows NEUTRAL direction badge with muted background', () => {
     const alert = makeAlert({ direction: 'NEUTRAL' });
     render(<AlertBanner alerts={[alert]} onAcknowledge={vi.fn()} />);
 
     const badge = screen.getByText('NEUTRAL');
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveAttribute('style');
-    expect(badge.style.color).toContain('var(--color-muted)');
+    expect(badge.style.backgroundColor).toContain('var(--color-muted)');
+    expect(badge.style.color).toContain('var(--color-page)');
   });
 });
 
@@ -216,7 +221,12 @@ describe('AlertBanner: severity styling', () => {
 
     const alertEl = screen.getByRole('alert');
     expect(alertEl).toHaveAttribute('style');
-    expect(alertEl.style.color).toContain('var(--color-caution)');
+    // Text stays at high-contrast primary; severity is encoded via the
+    // tinted background and border which mix the caution color into the
+    // surface color (so the card remains opaque and readable).
+    expect(alertEl.style.color).toContain('var(--color-primary)');
+    expect(alertEl.style.backgroundColor).toContain('var(--color-caution)');
+    expect(alertEl.style.borderColor).toContain('var(--color-caution)');
   });
 
   it('applies critical severity styles', () => {
@@ -225,7 +235,9 @@ describe('AlertBanner: severity styling', () => {
 
     const alertEl = screen.getByRole('alert');
     expect(alertEl).toHaveAttribute('style');
-    expect(alertEl.style.color).toContain('var(--color-danger)');
+    expect(alertEl.style.color).toContain('var(--color-primary)');
+    expect(alertEl.style.backgroundColor).toContain('var(--color-danger)');
+    expect(alertEl.style.borderColor).toContain('var(--color-danger)');
   });
 
   it('applies extreme severity styles with animate-pulse', () => {
@@ -234,7 +246,10 @@ describe('AlertBanner: severity styling', () => {
 
     const alertEl = screen.getByRole('alert');
     expect(alertEl).toHaveAttribute('style');
-    expect(alertEl.style.color).toContain('var(--color-danger)');
+    expect(alertEl.style.color).toContain('var(--color-primary)');
+    expect(alertEl.style.backgroundColor).toContain('var(--color-danger)');
+    // Extreme uses the solid accent as border (no mix) for maximum emphasis.
+    expect(alertEl.style.borderColor).toContain('var(--color-danger)');
     expect(alertEl.className).toContain('animate-pulse');
   });
 });
