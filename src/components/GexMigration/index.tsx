@@ -122,19 +122,22 @@ function headlineColor(label: TargetStrike['label']): string {
 }
 
 /**
- * Detects a zero-crossing inside the sparkline window: a strike that
- * flipped from net short gamma to net long (or vice versa) during the
- * last 20 min is "freshly flipped" and warrants a different end-dot tone
- * than a strike that stayed on one side the whole time. A flipped magnet
- * is newer and arguably less trustworthy than one that's been building
- * steadily, so the amber dot acts as a "watch this" hint without changing
- * the primary line color.
+ * Detects a "fresh positive magnet" — a strike whose sparkline dipped
+ * below zero somewhere inside the window but ended positive. That's a
+ * strike that was net-short gamma and flipped net-long during the last
+ * 20 min, which is exactly the kind of emerging magnet you want to trade
+ * on a directional buy.
+ *
+ * We intentionally ignore the opposite case (a dying magnet that fell
+ * from positive to negative): it's not a long-entry signal, and amber
+ * there would just add noise to the leaderboard.
  */
-function hasSignFlip(values: number[]): boolean {
+function hasRecoveredFromNegative(values: number[]): boolean {
   if (values.length < 2) return false;
-  const first = values[0]!;
-  const last = values.at(-1)!;
-  return (first < 0 && last > 0) || (first > 0 && last < 0);
+  const last = values.at(-1) ?? 0;
+  if (last <= 0) return false;
+  const min = Math.min(...values);
+  return min < 0;
 }
 
 // ── Sub-components ───────────────────────────────────────
@@ -463,10 +466,12 @@ function MigrationSparklines({ strikes }: { strikes: StrikeMigration[] }) {
       {top.map((s, i) => {
         const pct = s.twentyMinPctDelta ?? 0;
         const color = signColor(pct);
-        // Amber dot if the series crossed zero within the window — this
-        // strike is a fresh flip, not a steady builder. Otherwise dot
-        // matches the line color.
-        const dotColor = hasSignFlip(s.sparkline) ? theme.caution : color;
+        // Amber dot if the strike was net-short gamma at some point in
+        // the window and has now flipped net-long — a fresh magnet you
+        // can actually trade. Steady builders keep the line color.
+        const dotColor = hasRecoveredFromNegative(s.sparkline)
+          ? theme.caution
+          : color;
         return (
           <div
             key={s.strike}
