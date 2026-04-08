@@ -196,6 +196,35 @@ def test_preprocess_one_hot_encodes_categoricals():
     assert len(charm_cols) > 0, "Should have one-hot encoded charm columns"
 
 
+def test_preprocess_caps_pca_for_small_samples():
+    """PCA must enforce ~8 samples/dim to avoid curse-of-dimensionality.
+
+    Regression test for a CI failure where 41 samples with 120 features
+    produced 19 PCA components (2.16 samples/dim), which collapsed
+    clustering silhouettes and caused best_k=2 to isolate a single outlier.
+    """
+    # 40 samples should yield at most 5 components (40 // 8 = 5)
+    df = _make_clustering_df(40)
+    X_pca, labels, _ = preprocess(df)
+    assert X_pca.shape[1] <= 5, (
+        f"Expected ≤5 components for 40 samples, got {X_pca.shape[1]}"
+    )
+    assert X_pca.shape[1] >= 3, (
+        f"Expected ≥3 components (floor), got {X_pca.shape[1]}"
+    )
+    assert len(labels) == X_pca.shape[1]
+
+
+def test_preprocess_pca_scales_with_sample_count():
+    """Larger datasets should get proportionally more components (up to 15)."""
+    # 80 samples → 80 // 8 = 10 components (still under cap of 15)
+    df = _make_clustering_df(80)
+    X_pca, _, _ = preprocess(df)
+    assert X_pca.shape[1] == 10, (
+        f"Expected exactly 10 components for 80 samples, got {X_pca.shape[1]}"
+    )
+
+
 def test_run_clustering_returns_all_ks():
     """run_clustering should return results for every k in range."""
     rng = np.random.default_rng(42)
@@ -236,6 +265,7 @@ from clustering import (
     outcome_association_test,
     permutation_test,
     print_results,
+    split_half_validation,
     stability_check,
 )
 
@@ -359,6 +389,42 @@ def test_permutation_test_random_data_high_p():
     assert 0.0 <= p <= 1.0
     # Random data usually has p > 0.05; allow some tolerance
     assert p > 0.01, f"Expected p > 0.01 for random data, got {p}"
+
+
+def test_split_half_validation_well_separated_clusters():
+    """Clean two-cluster data should yield finite, similar train/test sils."""
+    X = np.array([[-5, -5, -5]] * 20 + [[5, 5, 5]] * 20, dtype=float)
+    result = split_half_validation(X, k=2)
+    assert np.isfinite(result["train_silhouette"])
+    assert np.isfinite(result["holdout_silhouette"])
+    assert result["train_silhouette"] > 0.5
+    assert result["holdout_silhouette"] > 0.5
+
+
+def test_split_half_validation_singleton_cluster_returns_nan():
+    """1-vs-N outlier cluster must not crash silhouette_score.
+
+    Regression test for a CI failure where best_k=2 produced a 1/40
+    split. A random 50/50 split left the minority cluster entirely in
+    one half, collapsing the other half's predictions to a single label
+    and raising ``ValueError: Number of labels is 1``.
+    """
+    # 40 tightly packed points + 1 distant outlier → forces a 1/40 split
+    X = np.vstack(
+        [
+            np.zeros((40, 3)) + np.random.default_rng(0).normal(0, 0.01, (40, 3)),
+            np.array([[100.0, 100.0, 100.0]]),
+        ]
+    )
+    # Should not raise — degenerate splits return NaN
+    result = split_half_validation(X, k=2)
+    assert "train_silhouette" in result
+    assert "holdout_silhouette" in result
+    assert "optimism" in result
+    # At least one silhouette should be NaN because a random half misses the outlier
+    assert np.isnan(result["train_silhouette"]) or np.isnan(
+        result["holdout_silhouette"]
+    )
 
 
 def test_outcome_association_prints(capsys):

@@ -199,12 +199,27 @@ def preprocess(df: pd.DataFrame) -> tuple[np.ndarray, list[str], pd.DataFrame]:
         f"  Features: {n_features}, Null cells: {n_nulls}/{n_cells} ({n_nulls / n_cells:.1%})"
     )
 
+    # Sample-aware PCA component cap.
+    #
+    # Enforces a floor of ~8 samples per PCA dimension to prevent
+    # curse-of-dimensionality in small-sample clustering. With only a few
+    # samples per dim, KMeans silhouettes collapse and the "best" partition
+    # degenerates to isolating single-point outliers. Scales from 3
+    # components (very small samples) to 15 (large samples).
+    #
+    # This replaces the earlier `n_components=0.85` variance target, which
+    # kept too many noisy PCs when feature count was high relative to
+    # sample count.
+    n_samples = len(df_feat)
+    hard_limit = min(n_samples, df_feat.shape[1])
+    n_components = min(hard_limit, max(3, min(n_samples // 8, 15)))
+
     # Impute → Standardize → PCA via Pipeline (avoids data leakage)
     pipeline = Pipeline(
         [
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
-            ("pca", PCA(n_components=0.85, random_state=42)),
+            ("pca", PCA(n_components=n_components, random_state=42)),
         ],
         memory=None,
     )
@@ -213,8 +228,10 @@ def preprocess(df: pd.DataFrame) -> tuple[np.ndarray, list[str], pd.DataFrame]:
 
     n_components = X_pca.shape[1]
     variance_explained = pca.explained_variance_ratio_.sum()
+    samples_per_dim = n_samples / n_components if n_components > 0 else 0.0
     print(
-        f"  PCA: {n_features} features -> {n_components} components ({variance_explained:.1%} variance)"
+        f"  PCA: {n_features} features -> {n_components} components "
+        f"({variance_explained:.1%} variance, {samples_per_dim:.1f} samples/dim)"
     )
 
     # Feature loadings for interpretation
@@ -493,7 +510,13 @@ def permutation_test(X: np.ndarray, k: int, n_permutations: int = 100) -> float:
 
 
 def split_half_validation(X: np.ndarray, k: int, *, random_state: int = 42) -> dict:
-    """Split-half validation: cluster on 50%, evaluate on held-out 50%."""
+    """Split-half validation: cluster on 50%, evaluate on held-out 50%.
+
+    Returns NaN silhouettes when the split yields a degenerate labeling
+    (fewer than 2 unique labels on either half). This happens with highly
+    imbalanced clusters where a random split may miss the minority cluster
+    entirely — the silhouette is mathematically undefined in that case.
+    """
     rng = np.random.default_rng(random_state)
     n = len(X)
     indices = rng.permutation(n)
@@ -509,13 +532,25 @@ def split_half_validation(X: np.ndarray, k: int, *, random_state: int = 42) -> d
     train_labels = km.fit_predict(X_train)
     test_labels = km.predict(X_test)
 
-    train_sil = silhouette_score(X_train, train_labels) if k > 1 else 0.0
-    test_sil = silhouette_score(X_test, test_labels) if k > 1 else 0.0
+    # silhouette_score requires 2 <= n_labels <= n_samples - 1. Guard against
+    # degenerate splits (e.g. all test points collapse to a single centroid
+    # when the minority cluster is absent from the training half).
+    def _safe_silhouette(X_split: np.ndarray, labels: np.ndarray) -> float:
+        if k <= 1:
+            return 0.0
+        n_unique = len(np.unique(labels))
+        if n_unique < 2 or n_unique >= len(labels):
+            return float("nan")
+        return float(silhouette_score(X_split, labels))
+
+    train_sil = _safe_silhouette(X_train, train_labels)
+    test_sil = _safe_silhouette(X_test, test_labels)
+    optimism = float(train_sil - test_sil)  # NaN propagates correctly
 
     return {
-        "train_silhouette": float(train_sil),
-        "holdout_silhouette": float(test_sil),
-        "optimism": float(train_sil - test_sil),
+        "train_silhouette": train_sil,
+        "holdout_silhouette": test_sil,
+        "optimism": optimism,
     }
 
 
@@ -783,7 +818,14 @@ def main() -> None:
     print(f"  Train silhouette:   {sh['train_silhouette']:.3f}")
     print(f"  Holdout silhouette: {sh['holdout_silhouette']:.3f}")
     print(f"  Optimism gap:       {sh['optimism']:.3f}")
-    if sh["optimism"] > 0.15:
+    if np.isnan(sh["holdout_silhouette"]) or np.isnan(sh["train_silhouette"]):
+        print(
+            "  WARNING: Split-half validation is undefined for this clustering."
+        )
+        print(
+            "  A random half likely missed the minority cluster — check cluster sizes."
+        )
+    elif sh["optimism"] > 0.15:
         print("  WARNING: Large optimism gap — clusters may not generalize well.")
 
     # Permutation test
@@ -859,7 +901,11 @@ def main() -> None:
             "davies_bouldin": round(float(best_r["kmeans_db"]), 3),
             "cluster_sizes": best_r["kmeans_sizes"],
             "stability": round(float(stability), 3),
-            "split_half_holdout_sil": round(sh["holdout_silhouette"], 3),
+            "split_half_holdout_sil": (
+                None
+                if np.isnan(sh["holdout_silhouette"])
+                else round(sh["holdout_silhouette"], 3)
+            ),
             "gmm_bic": round(float(best_r["gmm_bic"]), 1),
             "permutation_p": round(float(p_value), 3),
             "chi_squared": chi2_results,
