@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-08T04:03:09+00:00",
+  "generated_at": "2026-04-08T04:27:32+00:00",
   "dataset": {
     "total_days": 41,
     "labeled_days": 38,
@@ -197,7 +197,7 @@
       "'dp_support_resistance_ratio' is 30% null in last 10 days"
     ],
     "failures": [],
-    "run_time": "2026-04-08 04:02:25"
+    "run_time": "2026-04-08 04:26:49"
   },
   "pipeline_sections": [
     "health",
@@ -510,20 +510,33 @@
   "clustering": {
     "best_k": 2,
     "algorithm": "KMeans",
-    "silhouette": 0.572,
-    "calinski_harabasz": 8.9,
-    "davies_bouldin": 0.3,
+    "silhouette": 0.68,
+    "calinski_harabasz": 17.4,
+    "davies_bouldin": 0.216,
     "cluster_sizes": [
-      1,
-      40
+      35,
+      1
     ],
-    "stability": 0.976,
+    "stability": 0.972,
     "split_half_holdout_sil": null,
-    "gmm_bic": 924.5,
-    "permutation_p": 0.0,
-    "chi_squared": {},
-    "n_samples": 41,
-    "n_pca_components": 5,
+    "gmm_bic": 670.7,
+    "permutation_p": 0.54,
+    "chi_squared": {
+      "range_category": {
+        "chi2": 0.92,
+        "p": 0.6326
+      },
+      "settlement_direction": {
+        "chi2": 0.0,
+        "p": 1.0
+      },
+      "recommended_structure": {
+        "chi2": 0.92,
+        "p": 0.6326
+      }
+    },
+    "n_samples": 36,
+    "n_pca_components": 4,
     "n_features": 120
   },
   "plots": {
@@ -541,7 +554,7 @@
       {
         "name": "clusters_pca",
         "generated": true,
-        "file_size_kb": 109.3
+        "file_size_kb": 108.7
       },
       {
         "name": "cone_consumption",
