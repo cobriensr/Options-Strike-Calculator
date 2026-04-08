@@ -44,7 +44,7 @@ const CENTROID_SPARKLINE_HEIGHT = 36;
  * written for real-time trading recall, not as comprehensive docs.
  */
 const MODE_DESCRIPTIONS: Record<GexMode, string> = {
-  oi: "standing dealer inventory — slow structural magnet, best for end-of-day pins",
+  oi: 'standing dealer inventory — slow structural magnet, best for end-of-day pins',
   vol: "today's fresh volume — fast flow view, best for building intraday magnets",
   dir: 'directionalized MM bid/ask split — shows which side is pushing',
 };
@@ -144,8 +144,7 @@ function Sparkline({
     <svg
       width={width}
       height={height}
-      role="img"
-      aria-label="Sparkline"
+      aria-hidden="true"
       className="overflow-visible"
     >
       <polyline
