@@ -110,6 +110,17 @@ function signColor(pct: number | null): string {
   return pct > 0 ? theme.green : theme.red;
 }
 
+/**
+ * Color for the big headline strike number. Always bright so the eye snaps
+ * to it — confidence is conveyed via the chip/arrow beside it, not by
+ * dimming the primary numeral.
+ */
+function headlineColor(label: TargetStrike['label']): string {
+  if (label === 'CALL WALL') return theme.green;
+  if (label === 'PUT WALL') return theme.red;
+  return theme.text;
+}
+
 // ── Sub-components ───────────────────────────────────────
 
 /**
@@ -231,11 +242,51 @@ function ActiveModeCaption({ mode }: { mode: GexMode }) {
   );
 }
 
+/**
+ * Persistent confidence chip — always rendered when there's a target.
+ * Critical magnets get a red-filled `CRITICAL · HIGH` treatment; non-critical
+ * magnets get a smaller tinted chip whose color tracks the confidence level.
+ * Keeping this chip always-on stabilizes the tile's visual rhythm as the
+ * signal evolves through the session.
+ */
+function ConfidenceChip({ target }: { target: TargetStrike }) {
+  if (target.critical) {
+    return (
+      <span
+        className="rounded font-mono text-[9px] font-semibold tracking-wide"
+        style={{
+          background: 'rgba(239, 68, 68, 0.12)',
+          color: theme.red,
+          border: '1px solid rgba(239, 68, 68, 0.4)',
+          padding: '2px 6px',
+        }}
+      >
+        CRITICAL · {target.signalConf}
+      </span>
+    );
+  }
+
+  const color = confidenceColor(target.signalConf);
+  return (
+    <span
+      className="rounded font-mono text-[9px] font-semibold tracking-wide"
+      style={{
+        color,
+        border: `1px solid ${color}`,
+        background: 'rgba(255,255,255,0.02)',
+        padding: '2px 6px',
+      }}
+    >
+      {target.signalConf} {confidenceArrow(target.signalConf)}
+    </span>
+  );
+}
+
 function TargetStrikeTile({ target }: { target: TargetStrike | null }) {
   if (!target) {
     return (
       <div
-        className="rounded-lg border p-4 text-center"
+        className="rounded-lg border p-3 text-center"
         style={{
           background: 'rgba(255,255,255,0.02)',
           borderColor: 'rgba(255,255,255,0.04)',
@@ -260,11 +311,9 @@ function TargetStrikeTile({ target }: { target: TargetStrike | null }) {
     );
   }
 
-  const confColor = confidenceColor(target.signalConf);
-
   return (
     <div
-      className="rounded-lg border p-4"
+      className="rounded-lg border p-3"
       style={{
         background: 'rgba(255,255,255,0.02)',
         borderColor: target.critical
@@ -272,53 +321,33 @@ function TargetStrikeTile({ target }: { target: TargetStrike | null }) {
           : 'rgba(255,255,255,0.06)',
       }}
     >
-      <div className="flex items-center justify-between">
-        <div
+      <div
+        className="font-mono text-[10px] tracking-wider"
+        style={{ color: theme.textMuted }}
+      >
+        TARGET STRIKE
+      </div>
+
+      <div className="mt-1 flex items-baseline gap-2">
+        <span
+          className="font-mono text-3xl leading-none font-bold"
+          style={{ color: headlineColor(target.label) }}
+        >
+          {target.strike}
+        </span>
+        <span
           className="font-mono text-[10px] tracking-wider"
-          style={{ color: theme.textMuted }}
+          style={{ color: theme.textSecondary }}
         >
-          TARGET STRIKE
-        </div>
-        {target.critical && (
-          <span
-            className="rounded border px-1.5 py-0.5 font-mono text-[9px] tracking-wide"
-            style={{
-              color: theme.red,
-              borderColor: theme.red,
-            }}
-          >
-            CRITICAL
-          </span>
-        )}
+          {target.label}
+        </span>
       </div>
 
-      <div
-        className="mt-2 text-center font-mono text-3xl font-bold"
-        style={{ color: confColor }}
-      >
-        {target.strike}
-      </div>
-      <div
-        className="mt-1 text-center font-mono text-[10px] tracking-wider"
-        style={{ color: theme.textSecondary }}
-      >
-        {target.label}
+      <div className="mt-2">
+        <ConfidenceChip target={target} />
       </div>
 
-      {target.critical && (
-        <div
-          className="mt-2 rounded text-center font-mono text-[9px] tracking-wide"
-          style={{
-            background: 'rgba(239, 68, 68, 0.1)',
-            color: theme.red,
-            padding: '2px 6px',
-          }}
-        >
-          CRITICAL · {target.signalConf}
-        </div>
-      )}
-
-      <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-[10px]">
+      <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 font-mono text-[10px]">
         <div>
           <div style={{ color: theme.textMuted }}>5-MIN Δ (NOW)</div>
           <div
@@ -350,7 +379,7 @@ function TargetStrikeTile({ target }: { target: TargetStrike | null }) {
           <div style={{ color: theme.textMuted }}>SIGNAL CONF</div>
           <div
             className="mt-0.5 text-base font-bold"
-            style={{ color: confColor }}
+            style={{ color: confidenceColor(target.signalConf) }}
           >
             {target.signalConf} {confidenceArrow(target.signalConf)}
           </div>
@@ -421,7 +450,7 @@ function MigrationSparklines({ strikes }: { strikes: StrikeMigration[] }) {
             className="grid grid-cols-[56px_1fr_56px] items-center gap-2 font-mono text-[10px]"
           >
             <span style={{ color: theme.textMuted }}>
-              #{i + 1}{' '}
+              {String(i + 1).padStart(2, '0')}{' '}
               <span style={{ color: theme.textSecondary }}>{s.strike}</span>
             </span>
             <Sparkline values={s.sparkline} color={color} />
@@ -506,8 +535,8 @@ export const GexMigration = memo(function GexMigration({
 
   const snapshotCount = snapshots.length;
   // Buffer-fill indicator — how many of the expected 21 snapshots we have.
-  // Labeled explicitly so it's not just a bare fraction like "0/21".
-  const bufferLabel = `Buffer ${snapshotCount}/${MIGRATION_BUFFER_SIZE}`;
+  // Rendered inline with the GEX MIGRATION section header so it sits next
+  // to the data it actually describes (20-min sparkline trend).
   const bufferTooltip = `${snapshotCount} of ${MIGRATION_BUFFER_SIZE} 1-min snapshots loaded. Full 20-minute migration trend needs all ${MIGRATION_BUFFER_SIZE}; fewer means the sparklines and 20-MIN deltas are based on a partial window.`;
   const asOfTime = result.asOf ? formatTime(result.asOf) : '';
 
@@ -518,13 +547,6 @@ export const GexMigration = memo(function GexMigration({
       collapsible
       headerRight={
         <div className="flex items-center gap-2">
-          <span
-            className="font-mono text-[10px]"
-            style={{ color: theme.textMuted }}
-            title={bufferTooltip}
-          >
-            {bufferLabel}
-          </span>
           <ModeToggle mode={mode} onChange={setMode} />
           <button
             type="button"
@@ -582,11 +604,24 @@ export const GexMigration = memo(function GexMigration({
           </div>
 
           <div>
-            <div
-              className="mb-2 font-mono text-[10px] tracking-wider"
-              style={{ color: theme.textMuted }}
-            >
-              GEX MIGRATION · 20MIN
+            <div className="mb-2 flex items-center justify-between">
+              <div
+                className="font-mono text-[10px] tracking-wider"
+                style={{ color: theme.textMuted }}
+              >
+                GEX MIGRATION · 20MIN
+              </div>
+              <span
+                className="rounded border px-1.5 py-0.5 font-mono text-[9px] tracking-wide"
+                style={{
+                  color: theme.textMuted,
+                  borderColor: 'rgba(255,255,255,0.1)',
+                  background: 'rgba(255,255,255,0.04)',
+                }}
+                title={bufferTooltip}
+              >
+                {snapshotCount}/{MIGRATION_BUFFER_SIZE}
+              </span>
             </div>
             <MigrationSparklines strikes={result.allStrikes} />
           </div>
