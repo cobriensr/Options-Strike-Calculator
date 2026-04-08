@@ -10,7 +10,10 @@
  *   - Volume-based gamma, charm, vanna (for vol vs OI reinforcement)
  *   - Directionalized gamma (bid/ask breakdown)
  *
- * Runs every 5 minutes during market hours (13-21 UTC, Mon-Fri).
+ * Runs every minute during market hours (13-21 UTC, Mon-Fri) to power
+ * the GEX migration component (5-min Δ and 20-min trend per strike).
+ * ON CONFLICT DO NOTHING protects against duplicate writes if UW returns
+ * the same snapshot timestamp on consecutive fetches.
  * Total API calls per invocation: 1 (0DTE only)
  *
  * Environment: UW_API_KEY, CRON_SECRET
