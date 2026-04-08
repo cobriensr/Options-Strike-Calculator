@@ -489,4 +489,47 @@ describe('calcThetaCurve', () => {
     const curve = calcThetaCurve(spot, 0.01, 500, 'put');
     expect(curve).toHaveLength(0);
   });
+
+  // ── FE-MATH-006: marketHours parameter ─────────────────────────
+
+  it('FE-MATH-006: defaults to a 6.5h grid (13 entries)', () => {
+    const curve = calcThetaCurve(spot, sigma, strikeDistance, 'put');
+    expect(curve).toHaveLength(13);
+    expect(curve[0]!.hoursRemaining).toBe(6.5);
+    expect(curve.at(-1)!.hoursRemaining).toBe(0.5);
+  });
+
+  it('FE-MATH-006: produces a 3.5h grid for half-day sessions', () => {
+    const curve = calcThetaCurve(spot, sigma, strikeDistance, 'put', 3.5);
+    expect(curve).toHaveLength(7); // 3.5, 3, 2.5, 2, 1.5, 1, 0.5
+    expect(curve[0]!.hoursRemaining).toBe(3.5);
+    expect(curve.at(-1)!.hoursRemaining).toBe(0.5);
+  });
+
+  it('FE-MATH-006: half-day curve still starts at 100% premium', () => {
+    const curve = calcThetaCurve(spot, sigma, strikeDistance, 'put', 3.5);
+    expect(curve[0]!.premiumPct).toBeCloseTo(100, 0);
+  });
+
+  it('FE-MATH-006: half-day curve covers a strictly shorter range', () => {
+    // The half-day grid runs 3.5..0.5 in 0.5h steps. The first entry of
+    // the full-day grid (6.5h remaining) does not appear at all in the
+    // half-day grid, because the half-day session is only 3.5h long.
+    const halfDay = calcThetaCurve(spot, sigma, strikeDistance, 'put', 3.5);
+    const hoursInHalfDay = halfDay.map((p) => p.hoursRemaining);
+    expect(hoursInHalfDay).not.toContain(6.5);
+    expect(hoursInHalfDay).not.toContain(6);
+    expect(hoursInHalfDay).not.toContain(5.5);
+    expect(hoursInHalfDay).not.toContain(5);
+    expect(hoursInHalfDay).not.toContain(4.5);
+    expect(hoursInHalfDay).not.toContain(4);
+    // First entry is the open of the half-day session
+    expect(hoursInHalfDay[0]).toBe(3.5);
+  });
+
+  it('FE-MATH-006: returns empty array when marketHours is too small', () => {
+    // With marketHours <= 0.5 the grid would be empty.
+    expect(calcThetaCurve(spot, sigma, strikeDistance, 'put', 0.5)).toEqual([]);
+    expect(calcThetaCurve(spot, sigma, strikeDistance, 'put', 0)).toEqual([]);
+  });
 });

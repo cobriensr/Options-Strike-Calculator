@@ -43,6 +43,7 @@ function makeResults(): CalculationResults {
     T: 0.003,
     hoursRemaining: 4.87,
     spot: 5700,
+    marketHours: 6.5,
   };
 }
 

@@ -16,6 +16,7 @@ function makeResults(
     sigma: 0.15,
     T: 0.025,
     hoursRemaining: 6.5,
+    marketHours: 6.5,
     allDeltas: [
       {
         delta: 5,

@@ -232,6 +232,13 @@ export interface CalculationResults {
   readonly spot: number;
   /** VIX level (when available) — used for regime-dependent kurtosis */
   readonly vix?: number;
+  /**
+   * Total length of the trading session for the selected date in hours.
+   * 6.5 on a normal NYSE day; 3.5 on a half-day (Black Friday, Christmas Eve,
+   * day before July 4th). Derived from `earlyCloseHourET` so consumers like
+   * `ThetaDecayChart` and `calcThetaCurve` can scale their grids correctly.
+   */
+  readonly marketHours: number;
 }
 
 // ============================================================

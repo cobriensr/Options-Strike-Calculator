@@ -128,4 +128,99 @@ describe('ThetaDecayChart', () => {
       screen.getByText(/premium remaining for 10-delta/i),
     ).toBeInTheDocument();
   });
+
+  // ── FE-MATH-006: marketHours prop ──────────────────────────────
+
+  it('FE-MATH-006: defaults to 6.5h scale when marketHours prop is omitted', () => {
+    // hoursRemaining = 6 is in range for a 6.5h day → marker visible
+    const { container } = render(
+      <ThetaDecayChart {...defaultProps({ hoursRemaining: 6 })} />,
+    );
+    const circles = container.querySelectorAll('circle');
+    const amberCircle = Array.from(circles).find(
+      (c) => c.getAttribute('fill') === '#f59e0b',
+    );
+    expect(amberCircle).toBeInTheDocument();
+  });
+
+  it('FE-MATH-006: hides now marker when hoursRemaining exceeds half-day session', () => {
+    // 3.5h half-day session: hoursRemaining = 4 is OUT of range.
+    // Under the old hardcoded-6.5 logic this would have shown the marker.
+    const halfDayCurve = [
+      { hoursRemaining: 3.5, premiumPct: 100, thetaPerHour: 0 },
+      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 20 },
+      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 20 },
+      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 18 },
+      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 16 },
+      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 14 },
+      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 9 },
+    ];
+    vi.mocked(calcThetaCurve).mockReturnValue(halfDayCurve);
+    const { container } = render(
+      <ThetaDecayChart
+        {...defaultProps({ hoursRemaining: 4, marketHours: 3.5 })}
+      />,
+    );
+    const circles = container.querySelectorAll('circle');
+    const amberCircle = Array.from(circles).find(
+      (c) => c.getAttribute('fill') === '#f59e0b',
+    );
+    expect(amberCircle).toBeUndefined();
+  });
+
+  it('FE-MATH-006: shows now marker for hoursRemaining within half-day session', () => {
+    // hoursRemaining = 2 is in range for a 3.5h half-day session
+    const halfDayCurve = [
+      { hoursRemaining: 3.5, premiumPct: 100, thetaPerHour: 0 },
+      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 20 },
+      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 20 },
+      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 18 },
+      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 16 },
+      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 14 },
+      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 9 },
+    ];
+    vi.mocked(calcThetaCurve).mockReturnValue(halfDayCurve);
+    const { container } = render(
+      <ThetaDecayChart
+        {...defaultProps({ hoursRemaining: 2, marketHours: 3.5 })}
+      />,
+    );
+    const circles = container.querySelectorAll('circle');
+    const amberCircle = Array.from(circles).find(
+      (c) => c.getAttribute('fill') === '#f59e0b',
+    );
+    expect(amberCircle).toBeInTheDocument();
+  });
+
+  it('FE-MATH-006: entry window label uses 1 PM close for half-day', () => {
+    // formatETRange uses closeHour = 9.5 + marketHours.
+    // For marketHours = 3.5, closeHour = 13 (1 PM).
+    // The half-day curve's "best run" of high theta is roughly 3.0..1.0h
+    // remaining → ET clock 10a..12p (closeHour 13 - hoursRemaining).
+    const halfDayCurve = [
+      { hoursRemaining: 3.5, premiumPct: 100, thetaPerHour: 0 },
+      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 20 },
+      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 20 },
+      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 18 },
+      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 16 },
+      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 14 },
+      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 9 },
+    ];
+    vi.mocked(calcThetaCurve).mockReturnValue(halfDayCurve);
+    render(
+      <ThetaDecayChart
+        {...defaultProps({ hoursRemaining: 2, marketHours: 3.5 })}
+      />,
+    );
+    // Entry window should be in the morning (9a..12p range) since the
+    // closeHour is 1 PM. Specifically, the high-theta run is hours 3..1
+    // → 10a..12p ET. Verify the label contains a "p" suffix from the
+    // 12p endpoint and starts with the morning hour.
+    const entryLabels = screen.getAllByText(/\d+[ap]\u2013\d+[ap]/);
+    expect(entryLabels.length).toBeGreaterThanOrEqual(1);
+    // Confirm at least one label uses an early-afternoon hour (12p)
+    // which can only happen with the half-day close calculation.
+    const labelsText = entryLabels.map((el) => el.textContent ?? '').join(' ');
+    expect(labelsText).toMatch(/12p/);
+  });
 });

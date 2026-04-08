@@ -107,13 +107,20 @@ export function useCalculation(
     if (timezone === 'CT') h24 += 1;
 
     // Compute hours remaining using actual close time (early close or standard)
-    const closeMinutes = earlyCloseHourET ? earlyCloseHourET * 60 : 16 * 60;
+    const closeHourET = earlyCloseHourET ?? 16;
+    const closeMinutes = closeHourET * 60;
     const totalMinutes = h24 * 60 + m;
     const hoursRemaining = (closeMinutes - totalMinutes) / 60;
 
     if (hoursRemaining <= 0) {
       return { results: null, errors };
     }
+
+    // NYSE always opens at 9:30 ET. Half-days only shorten the close.
+    // 6.5 on a normal day, 3.5 on a half-day. Exposed in CalculationResults
+    // so theta-curve consumers (ThetaDecayChart, calcThetaCurve) can scale
+    // their grids correctly. (FE-MATH-006)
+    const marketHours = closeHourET - 9.5;
 
     const T = calcTimeToExpiry(hoursRemaining);
     const allDeltas = calcAllDeltas(
@@ -132,6 +139,7 @@ export function useCalculation(
       hoursRemaining,
       spot,
       vix,
+      marketHours,
     };
 
     return { results, errors };

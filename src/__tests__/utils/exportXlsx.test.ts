@@ -17,10 +17,11 @@ function makeResults(
   spot = 6850,
   sigma = 0.2,
   hoursRemaining = 4,
+  marketHours = 6.5,
 ): CalculationResults {
   const T = calcTimeToExpiry(hoursRemaining);
   const allDeltas = calcAllDeltas(spot, sigma, T, 0.03, 10);
-  return { allDeltas, sigma, T, hoursRemaining, spot };
+  return { allDeltas, sigma, T, hoursRemaining, spot, marketHours };
 }
 
 function getWorkbook(): XLSX.WorkBook {

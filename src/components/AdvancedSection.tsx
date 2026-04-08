@@ -450,6 +450,7 @@ export default function AdvancedSection({
                 sigma={ref.putSigma}
                 strikeDistance={results.spot - ref.putSnapped}
                 hoursRemaining={results.hoursRemaining}
+                marketHours={results.marketHours}
               />
             );
           })()}

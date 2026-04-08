@@ -312,22 +312,38 @@ export function buildIronCondor(
  * - Enter too early: sit through high-range morning with low theta
  * - Enter too late: premium already decayed, gamma risk > theta edge
  * - Sweet spot: where thetaPerHour is maximized (premium is decaying fastest)
+ *
+ * `marketHours` defaults to 6.5 (a normal NYSE session). On NYSE half-days
+ * (Black Friday, day before July 4th, Christmas Eve) the session is 3.5h
+ * — pass `marketHours = 3.5` to anchor the curve to the correct open
+ * premium and generate a 3.5h grid. Callers can derive the right value
+ * from `useCalculation`'s `results.marketHours` field. (FE-MATH-006)
  */
 export function calcThetaCurve(
   spot: number,
   sigma: number,
   strikeDistance: number,
   type: 'put' | 'call',
+  marketHours: number = 6.5,
 ): ReadonlyArray<{
   hoursRemaining: number;
   premiumPct: number;
   thetaPerHour: number;
 }> {
-  const strike = type === 'put' ? spot - strikeDistance : spot + strikeDistance;
-  const hours = [6.5, 6, 5.5, 5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1, 0.5];
+  if (marketHours <= 0.5) return [];
 
-  // Premium at market open (6.5h) is the reference (100%)
-  const openT = calcTimeToExpiry(6.5);
+  const strike = type === 'put' ? spot - strikeDistance : spot + strikeDistance;
+
+  // Build the hours grid: marketHours, marketHours-0.5, ..., 0.5
+  // For a normal day this is [6.5, 6, 5.5, ..., 0.5] (13 entries).
+  // For a half-day this is [3.5, 3, 2.5, ..., 0.5] (7 entries).
+  const hours: number[] = [];
+  for (let h = marketHours; h >= 0.5; h -= 0.5) {
+    hours.push(h);
+  }
+
+  // Premium at market open (marketHours remaining) is the reference (100%)
+  const openT = calcTimeToExpiry(marketHours);
   const openPremium = blackScholesPrice(spot, strike, sigma, openT, type);
   if (openPremium <= 0) return [];
 
@@ -338,7 +354,7 @@ export function calcThetaCurve(
   }> = [];
 
   let prevPremium = openPremium;
-  let prevHours = 6.5;
+  let prevHours = marketHours;
 
   for (const h of hours) {
     const T = calcTimeToExpiry(h);

@@ -298,6 +298,7 @@ describe('AdvancedSection', () => {
     hoursRemaining: 4.5,
     spot: 6000,
     vix: 18,
+    marketHours: 6.5,
     ...overrides,
   });
 

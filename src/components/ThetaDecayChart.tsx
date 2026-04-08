@@ -6,14 +6,28 @@ interface ThetaDecayChartProps {
   sigma: number;
   strikeDistance: number;
   hoursRemaining: number;
+  /**
+   * Total session length in hours (6.5 normal day, 3.5 NYSE half-day).
+   * Defaults to 6.5 to preserve callers that don't yet pass it.
+   * Drives the x-scale, the interpolation bounds, and the ET clock-time
+   * labels at the bottom of the chart. (FE-MATH-006)
+   */
+  marketHours?: number;
 }
 
 const VIEW_W = 300;
 const VIEW_H = 60;
+// NYSE always opens at 9:30 ET. Used to convert hoursRemaining → ET clock time.
+const OPEN_HOUR_ET = 9.5;
 
-/** Map hoursRemaining (6.5 → 0.5) to SVG x (0 → VIEW_W) */
-function xScale(h: number): number {
-  return ((6.5 - h) / 6) * VIEW_W;
+/**
+ * Map hoursRemaining to SVG x (0 → VIEW_W).
+ * Curve goes from `marketHours` (left/open) to 0.5h (right/close).
+ */
+function xScale(h: number, marketHours: number): number {
+  const span = marketHours - 0.5;
+  if (span <= 0) return 0;
+  return ((marketHours - h) / span) * VIEW_W;
 }
 
 /** Map premiumPct (100 → 0) to SVG y (0 → VIEW_H) */
@@ -25,8 +39,9 @@ function yScale(pct: number): number {
 function interpolatePremium(
   curve: ReadonlyArray<{ hoursRemaining: number; premiumPct: number }>,
   h: number,
+  marketHours: number,
 ): number | null {
-  if (h > 6.5 || h < 0.5) return null;
+  if (h > marketHours || h < 0.5) return null;
   for (let i = 0; i < curve.length - 1; i++) {
     const a = curve[i]!;
     const b = curve[i + 1]!;
@@ -46,6 +61,7 @@ function calcEntryWindow(
     hoursRemaining: number;
     thetaPerHour: number;
   }>,
+  marketHours: number,
 ): string {
   if (curve.length === 0) return '\u2014';
   const mean = curve.reduce((sum, p) => sum + p.thetaPerHour, 0) / curve.length;
@@ -82,12 +98,24 @@ function calcEntryWindow(
   const startH = curve[bestStart]!.hoursRemaining;
   const endH = curve[bestEnd]!.hoursRemaining;
 
-  return formatETRange(startH, endH);
+  return formatETRange(startH, endH, marketHours);
 }
 
-/** Convert hoursRemaining pair to ET clock time range string */
-function formatETRange(startH: number, endH: number): string {
-  return formatETHour(16 - startH) + '\u2013' + formatETHour(16 - endH);
+/**
+ * Convert hoursRemaining pair to ET clock time range string.
+ * The session always starts at 9:30 ET (OPEN_HOUR_ET) and ends
+ * `marketHours` later, so the ET clock at any hoursRemaining `h`
+ * is `(OPEN_HOUR_ET + marketHours) − h` = closeHour − h.
+ */
+function formatETRange(
+  startH: number,
+  endH: number,
+  marketHours: number,
+): string {
+  const closeHour = OPEN_HOUR_ET + marketHours;
+  return (
+    formatETHour(closeHour - startH) + '\u2013' + formatETHour(closeHour - endH)
+  );
 }
 
 /** Format a 24h ET hour as "10a", "12p", "1p", etc. */
@@ -104,13 +132,16 @@ export default function ThetaDecayChart({
   sigma,
   strikeDistance,
   hoursRemaining,
+  marketHours = 6.5,
 }: Readonly<ThetaDecayChartProps>) {
   const gradientId = useId();
-  const curve = calcThetaCurve(spot, sigma, strikeDistance, 'put');
+  const curve = calcThetaCurve(spot, sigma, strikeDistance, 'put', marketHours);
   if (curve.length === 0) return null;
 
   const linePoints = curve
-    .map((p) => xScale(p.hoursRemaining) + ',' + yScale(p.premiumPct))
+    .map(
+      (p) => xScale(p.hoursRemaining, marketHours) + ',' + yScale(p.premiumPct),
+    )
     .join(' ');
 
   const first = curve[0]!;
@@ -118,21 +149,24 @@ export default function ThetaDecayChart({
   const areaD =
     'M' +
     curve
-      .map((p) => xScale(p.hoursRemaining) + ',' + yScale(p.premiumPct))
+      .map(
+        (p) =>
+          xScale(p.hoursRemaining, marketHours) + ',' + yScale(p.premiumPct),
+      )
       .join(' L') +
     ' L' +
-    xScale(last.hoursRemaining) +
+    xScale(last.hoursRemaining, marketHours) +
     ',' +
     VIEW_H +
     ' L' +
-    xScale(first.hoursRemaining) +
+    xScale(first.hoursRemaining, marketHours) +
     ',' +
     VIEW_H +
     ' Z';
 
-  const showNow = hoursRemaining >= 0.5 && hoursRemaining <= 6.5;
-  const premNow = interpolatePremium(curve, hoursRemaining);
-  const nowX = showNow ? xScale(hoursRemaining) : 0;
+  const showNow = hoursRemaining >= 0.5 && hoursRemaining <= marketHours;
+  const premNow = interpolatePremium(curve, hoursRemaining, marketHours);
+  const nowX = showNow ? xScale(hoursRemaining, marketHours) : 0;
   const nowY = showNow && premNow !== null ? yScale(premNow) : 0;
 
   let peakTheta = 0;
@@ -144,7 +178,7 @@ export default function ThetaDecayChart({
     }
   }
 
-  const entryWindow = calcEntryWindow(curve);
+  const entryWindow = calcEntryWindow(curve, marketHours);
 
   return (
     <div className="border-edge mt-3.5 border-t pt-3.5">

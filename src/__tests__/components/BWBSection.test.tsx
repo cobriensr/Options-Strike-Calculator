@@ -63,6 +63,7 @@ function makeResults(
     T: 0.03,
     hoursRemaining: 7,
     spot: 5700,
+    marketHours: 6.5,
     ...overrides,
   };
 }

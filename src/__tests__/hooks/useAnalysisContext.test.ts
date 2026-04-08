@@ -55,6 +55,7 @@ function makeParams(
       T: 0.03,
       hoursRemaining: 7,
       spot: 5700,
+      marketHours: 6.5,
     } as CalculationResults,
     dSpot: '570',
     dVix: '18.5',
