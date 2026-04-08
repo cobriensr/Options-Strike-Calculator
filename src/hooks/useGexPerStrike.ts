@@ -5,11 +5,21 @@
  * backwards/forwards through previous snapshots without leaving the page.
  * Owner-only — skips polling for public visitors.
  *
- * Behavior:
- *   - Live mode (no selectedDate, market open, no scrub): polls every 60s.
- *   - Explicit date (today or past): fetches once (data is in DB).
- *   - Scrub mode (any date, scrubTimestamp set): fetches that exact snapshot
- *     once and pauses polling. `scrubLive()` clears scrub and resumes polling.
+ * Effect dispatch (in priority order):
+ *   1. Not owner          → no fetch.
+ *   2. Scrubbed           → fetch the exact snapshot once, no polling.
+ *   3. Past date          → fetch once with the requested time, no polling.
+ *   4. Today, market open → fetch + poll every POLL_INTERVALS.GEX_STRIKE.
+ *   5. Today, market closed → fetch once, no polling.
+ *
+ * Live-ness has TWO independent signals:
+ *   - The dispatch ladder above decides whether the panel is *trying* to be
+ *     live (i.e., whether `setInterval` is running).
+ *   - A wall-clock freshness check (STALE_THRESHOLD_MS) decides whether the
+ *     displayed snapshot is *actually* live. This catches the case where the
+ *     user has dialed `selectedTime` to a past minute — polling keeps firing
+ *     but each fetch returns the same stale snapshot, so the badge correctly
+ *     flips from LIVE to BACKTEST without disabling the polling machinery.
  *
  * The server returns `timestamps[]` (every snapshot for the day, ascending),
  * which the hook caches so prev/next can step through them without an extra
@@ -20,6 +30,21 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { useIsOwner } from './useIsOwner';
+
+/**
+ * A snapshot is considered "live" only if its timestamp is within this many
+ * milliseconds of the wall clock. Generous enough to absorb a missed poll
+ * (POLL_INTERVALS.GEX_STRIKE is 60s) without flickering, tight enough to
+ * catch the "user dialed selectedTime to a past minute" case.
+ */
+const STALE_THRESHOLD_MS = 2 * 60 * 1000;
+
+/**
+ * Cadence for the wall-clock re-render ticker. Half the freshness threshold
+ * so the badge flips within ~30s of going stale, but light enough that the
+ * resulting re-renders are negligible.
+ */
+const WALL_CLOCK_TICK_MS = 30 * 1000;
 
 export interface GexStrikeLevel {
   strike: number;
@@ -102,9 +127,21 @@ export function useGexPerStrike(
   const [timestamp, setTimestamp] = useState<string | null>(null);
   const [timestamps, setTimestamps] = useState<string[]>([]);
   const [scrubTimestamp, setScrubTimestamp] = useState<string | null>(null);
+  // Wall-clock state — refreshed every WALL_CLOCK_TICK_MS by a separate
+  // effect. The freshness check below reads `nowMs` rather than calling
+  // `Date.now()` inline so the re-render dependency is explicit and testable
+  // under fake timers.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const mountedRef = useRef(true);
 
-  const hasExplicitDate = selectedDate != null;
+  // Computed each render. `todayET` recomputes naturally as the wall clock
+  // crosses midnight Eastern, so the panel flips from LIVE → BACKTEST at the
+  // session boundary without needing an explicit state update.
+  const todayET = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+  const isToday = !selectedDate || selectedDate === todayET;
+  const isScrubbed = scrubTimestamp != null;
 
   const fetchData = useCallback(
     async (tsOverride?: string | null) => {
@@ -166,45 +203,70 @@ export function useGexPerStrike(
       return;
     }
 
-    // Scrubbing: fetch exact snapshot, pause polling.
+    // Scrubbing: fetch the exact pinned snapshot, no polling. The user is
+    // explicitly inspecting one moment in time.
     if (scrubTimestamp != null) {
       setLoading(true);
       fetchData(scrubTimestamp);
       return;
     }
 
-    // Explicit date (today or past): fetch latest for that date once.
-    if (hasExplicitDate) {
+    // Past date: one-shot fetch with the requested time, no polling — there's
+    // nothing new to poll for, the day's data is fully written.
+    if (!isToday) {
       setLoading(true);
       fetchData();
       return;
     }
 
-    // Live mode — only poll while the market is open.
+    // Today, market closed: one-shot fetch. Same reasoning — no fresh
+    // snapshots are being produced, polling would just hit the cache.
     if (!marketOpen) {
-      setLoading(false);
+      setLoading(true);
+      fetchData();
       return;
     }
 
+    // Today, market open, not scrubbed → live polling. Each poll re-uses
+    // `selectedTime` if set, so a user who has dialed back to a past minute
+    // gets that same snapshot returned every cycle (slightly wasteful, but
+    // preserves their selection — the wall-clock check below labels it
+    // BACKTEST). When `selectedTime` matches the current minute, polling
+    // delivers fresh snapshots and the LIVE badge stays green.
     fetchData();
     const id = setInterval(() => fetchData(), POLL_INTERVALS.GEX_STRIKE);
     return () => clearInterval(id);
-  }, [isOwner, marketOpen, hasExplicitDate, scrubTimestamp, fetchData]);
+  }, [isOwner, marketOpen, isToday, scrubTimestamp, fetchData]);
 
-  const isScrubbed = scrubTimestamp != null;
-
-  // "Live" means the displayed snapshot is the current one and the market is
-  // actively producing new snapshots. After the close (or on a past date) the
-  // panel is showing the most recent snapshot for that day, but the data is
-  // not flowing — that's a backtest view, not a live view.
+  // Wall-clock ticker — only runs when freshness could plausibly flip. In
+  // BACKTEST or scrubbed states the badge is permanently labeled, so we'd
+  // just be re-rendering for nothing. The ticker re-snaps `nowMs` so the
+  // freshness comparison below picks up the new wall-clock value without
+  // calling `Date.now()` inline (which sonarjs flags and which makes the
+  // re-render dependency invisible).
   //
-  // `today` is computed inline (not memoized) so the panel correctly flips
-  // from live → backtest at midnight Eastern without needing a state update.
-  const todayET = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-  const isToday = !selectedDate || selectedDate === todayET;
-  const isLive = !isScrubbed && marketOpen && isToday;
+  // Timing caveat: between mount and the first tick, `nowMs` is whatever
+  // `Date.now()` returned at mount. So a snapshot that's exactly at the
+  // freshness boundary at mount can briefly read as fresh for up to
+  // WALL_CLOCK_TICK_MS past its actual staleness — total worst-case
+  // "fresh badge on stale data" is STALE_THRESHOLD_MS + WALL_CLOCK_TICK_MS
+  // (currently 2m30s). Acceptable because the threshold is already 2x the
+  // poll interval.
+  useEffect(() => {
+    if (!isToday || !marketOpen || isScrubbed) return;
+    const id = setInterval(() => setNowMs(Date.now()), WALL_CLOCK_TICK_MS);
+    return () => clearInterval(id);
+  }, [isToday, marketOpen, isScrubbed]);
+
+  // The displayed snapshot is "live" only when (1) we're in a state where
+  // polling is active AND (2) the snapshot itself is recent. The second
+  // clause catches the dial-back case: polling keeps firing, but each poll
+  // returns the same stale snapshot, so the wall-clock comparison flips the
+  // badge to BACKTEST while leaving the polling machinery alone.
+  const isFresh =
+    timestamp != null &&
+    nowMs - new Date(timestamp).getTime() < STALE_THRESHOLD_MS;
+  const isLive = !isScrubbed && marketOpen && isToday && isFresh;
 
   // The "current" timestamp for nav math is whatever is on screen. When not
   // scrubbed that's the latest in the list (`timestamp` from the server).

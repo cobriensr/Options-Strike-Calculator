@@ -56,8 +56,16 @@ function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
 
 // ── Lifecycle ─────────────────────────────────────────────
 
+// Fixed wall-clock anchor for the suite. Most snapshot mocks use timestamps
+// in the 19:58-20:00 UTC range, so anchoring `Date.now()` at 20:00:00 keeps
+// them within the hook's 2-minute freshness threshold and makes `isLive`
+// assertions deterministic. Tests that exercise staleness can advance the
+// clock past this anchor.
+const TEST_NOW = new Date('2026-04-02T20:00:00.000Z');
+
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(TEST_NOW);
   mockFetch.mockReset().mockResolvedValue({
     ok: true,
     json: async () => ({ strikes: [], timestamp: null }),
@@ -196,12 +204,18 @@ describe('useGexPerStrike: gating', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('does not fetch when market is closed', async () => {
+  it('fetches once but does not poll when market is closed', async () => {
+    // After-hours: still show today's latest snapshot (BACKTEST mode), but
+    // no point polling — no fresh snapshots are being written.
     renderHook(() => useGexPerStrike(false));
 
-    await act(async () => {});
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
 
-    expect(mockFetch).not.toHaveBeenCalled();
+    // Verify polling does NOT activate
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE * 5);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it('sets loading to false when not owner', async () => {
@@ -594,5 +608,128 @@ describe('useGexPerStrike: live vs backtest vs scrubbed', () => {
 
     await waitFor(() => expect(result.current.isScrubbed).toBe(true));
     expect(result.current.isLive).toBe(false);
+  });
+});
+
+// ============================================================
+// LIVE POLLING + WALL-CLOCK FRESHNESS
+// ============================================================
+
+describe('useGexPerStrike: live polling and freshness', () => {
+  it('polls every POLL_INTERVAL when market open, today, not scrubbed', async () => {
+    const ts = ['2026-04-02T19:59:30Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:30Z', ts));
+
+    renderHook(() => useGexPerStrike(true));
+
+    // Initial fetch on mount
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    // One poll interval later → another fetch
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE);
+    });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+
+    // And another
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE);
+    });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+  });
+
+  it('polls today even when an explicit (today) date is passed', async () => {
+    // Production always passes vix.selectedDate, so this is the realistic
+    // production code path. Verifies the polling branch isn't gated on the
+    // old `hasExplicitDate` short-circuit.
+    const ts = ['2026-04-02T19:59:30Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:30Z', ts));
+
+    renderHook(() => useGexPerStrike(true, '2026-04-02'));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE);
+    });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not poll on a past date (backtest mode)', async () => {
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2020-01-02T15:00:00Z', ['2020-01-02T15:00:00Z']),
+    );
+
+    renderHook(() => useGexPerStrike(true, '2020-01-02'));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE * 5);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll while scrubbed', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    const callsAfterScrub = mockFetch.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE * 5);
+    });
+    expect(mockFetch.mock.calls.length).toBe(callsAfterScrub);
+  });
+
+  it('isLive=true when displayed snapshot is within freshness threshold', async () => {
+    // Snapshot is 30s old at TEST_NOW (20:00:00) — within 2-min threshold.
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:59:30Z', ['2026-04-02T19:59:30Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.isLive).toBe(true));
+  });
+
+  it('isLive=false when displayed snapshot is older than freshness threshold', async () => {
+    // Snapshot is 5 minutes old at TEST_NOW (20:00:00) — beyond 2-min threshold.
+    // This is the dial-back case: user picked a past time, panel shows that
+    // snapshot, polling keeps refetching the same one, but the badge correctly
+    // shows BACKTEST because the data isn't actually live.
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:55:00Z', ['2026-04-02T19:55:00Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps.length).toBe(1));
+
+    expect(result.current.isLive).toBe(false);
+    expect(result.current.isScrubbed).toBe(false);
+  });
+
+  it('isLive flips from true to false as the wall clock advances past staleness', async () => {
+    // Start fresh: snapshot is 30s old at TEST_NOW.
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:59:30Z', ['2026-04-02T19:59:30Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.isLive).toBe(true));
+
+    // Advance 3 minutes. Polling fires (refetches the same stale snapshot)
+    // and the wall-clock ticker fires (re-snapping `nowMs`). The freshness
+    // check should now flip to false because (now - timestamp) > 2 min.
+    await act(async () => {
+      vi.advanceTimersByTime(3 * 60 * 1000);
+    });
+
+    await waitFor(() => expect(result.current.isLive).toBe(false));
+    expect(result.current.isScrubbed).toBe(false);
   });
 });
