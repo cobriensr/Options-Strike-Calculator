@@ -24,6 +24,7 @@ import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useGexMigration } from './hooks/useGexMigration';
+import { useVolumePerStrike } from './hooks/useVolumePerStrike';
 import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
@@ -44,6 +45,7 @@ import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import GexPerStrike from './components/GexPerStrike';
 import { GexMigration } from './components/GexMigration';
+import { VolumePerStrike } from './components/VolumePerStrike';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { useToast } from './hooks/useToast';
@@ -162,6 +164,10 @@ export default function StrikeCalculator() {
     vix.selectedDate,
   );
   const gexMigration = useGexMigration(
+    market.data.quotes?.marketOpen ?? false,
+    vix.selectedDate,
+  );
+  const volumePerStrike = useVolumePerStrike(
     market.data.quotes?.marketOpen ?? false,
     vix.selectedDate,
   );
@@ -715,6 +721,15 @@ export default function StrikeCalculator() {
                     loading={gexMigration.loading}
                     error={gexMigration.error}
                     onRefresh={gexMigration.refresh}
+                  />
+                </ErrorBoundary>
+                <ErrorBoundary label="0DTE Volume Magnets">
+                  <VolumePerStrike
+                    snapshots={volumePerStrike.snapshots}
+                    loading={volumePerStrike.loading}
+                    error={volumePerStrike.error}
+                    onRefresh={volumePerStrike.refresh}
+                    spot={results?.spot ?? spxVal ?? null}
                   />
                 </ErrorBoundary>
               </>
