@@ -113,6 +113,29 @@ describe('build-features handler', () => {
     expect(res._json).toMatchObject({ skipped: true });
   });
 
+  it('skips isPostClose on a market holiday', async () => {
+    // Good Friday 2026-04-03 at 5:30 PM ET (21:30 UTC) — a weekday inside the
+    // post-close window. Without the holiday check in isPostClose, the cron
+    // would run against an empty day and drop a low-completeness phantom row
+    // into training_features (the bug this test guards against).
+    const HOLIDAY_POST_CLOSE = new Date('2026-04-03T21:30:00.000Z');
+    vi.setSystemTime(HOLIDAY_POST_CLOSE);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      skipped: true,
+      reason: 'Outside time window',
+    });
+  });
+
   // ── Backfill mode ─────────────────────────────────────────
 
   it('backfill mode processes all flow_data dates', async () => {

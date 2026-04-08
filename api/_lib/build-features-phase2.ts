@@ -12,6 +12,50 @@ import { fetchMaxPain } from './max-pain.js';
 import logger from './logger.js';
 
 /**
+ * Check whether `dateStr` falls inside the Unusual Whales 30-trading-day
+ * rolling history window. UW returns HTTP 403 with
+ * `historic_data_access_missing` for max_pain and options_volume lookups on
+ * dates older than that window; pre-flighting lets us skip the fetch entirely
+ * and avoid noisy warn logs during blanket backfills.
+ *
+ * The calculation is a calendar-day approximation:
+ *   calendar days ≈ ceil(trading days * 7/5) + safety buffer
+ * For 30 trading days, 44 calendar days covers the window with a small
+ * over-inclusion margin. Erring generous is safe — at worst we issue one
+ * extra API call whose 403 is still caught by the surrounding try-block.
+ *
+ * Exported for direct unit testing.
+ */
+export function isWithinUWWindow(
+  dateStr: string,
+  today: Date = new Date(),
+  days = 30,
+): boolean {
+  const parsed = new Date(`${dateStr}T12:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return false;
+
+  // Compare using UTC midnights so DST transitions don't shift the boundary.
+  const targetDay = Date.UTC(
+    parsed.getUTCFullYear(),
+    parsed.getUTCMonth(),
+    parsed.getUTCDate(),
+  );
+  const todayDay = Date.UTC(
+    today.getUTCFullYear(),
+    today.getUTCMonth(),
+    today.getUTCDate(),
+  );
+
+  // Future dates are always "within window" — UW will simply return no data
+  // rather than a historic_data_access_missing 403.
+  if (targetDay >= todayDay) return true;
+
+  const daysAgo = Math.round((todayDay - targetDay) / (24 * 60 * 60 * 1000));
+  const calendarWindow = Math.ceil((days * 7) / 5) + 2;
+  return daysAgo <= calendarWindow;
+}
+
+/**
  * Engineer Phase 2 features: previous day, realized vol, events,
  * VIX term structure, max pain, dark pool, options volume.
  * Mutates `features` in place.
@@ -178,7 +222,12 @@ export async function engineerPhase2Features(
   // Max pain (from Unusual Whales API)
   try {
     const apiKey = process.env.UW_API_KEY;
-    if (apiKey) {
+    if (apiKey && !isWithinUWWindow(dateStr)) {
+      logger.info(
+        { date: dateStr },
+        'Max pain: skipping UW fetch (outside 30-trading-day rolling window)',
+      );
+    } else if (apiKey) {
       const maxPainEntries = await fetchMaxPain(apiKey, dateStr);
       const sorted = maxPainEntries
         .filter((e) => e.expiry >= dateStr)
@@ -257,7 +306,12 @@ export async function engineerPhase2Features(
   // Options volume & premium (from Unusual Whales API)
   try {
     const apiKey = process.env.UW_API_KEY;
-    if (apiKey) {
+    if (apiKey && !isWithinUWWindow(dateStr)) {
+      logger.info(
+        { date: dateStr },
+        'Options volume: skipping UW fetch (outside 30-trading-day rolling window)',
+      );
+    } else if (apiKey) {
       const ovRes = await fetch(
         `https://api.unusualwhales.com/api/stock/SPX/options-volume?limit=1&date=${dateStr}`,
         {

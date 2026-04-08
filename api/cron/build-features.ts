@@ -28,6 +28,7 @@ import {
   getETDayOfWeek,
   getETDateStr,
 } from '../../src/utils/timezone.js';
+import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import type {
   FeatureRow,
   SnapshotRow,
@@ -51,6 +52,13 @@ function isPostClose(): boolean {
   const now = new Date();
   const day = getETDayOfWeek(now);
   if (day === 0 || day === 6) return false;
+
+  // Skip market holidays — getMarketCloseHourET returns null for closed days.
+  // Without this check, a holiday like Good Friday 2026-04-03 would still
+  // land in the post-close window and produce a phantom training_features
+  // row from empty UW API responses.
+  const dateStr = getETDateStr(now);
+  if (getMarketCloseHourET(dateStr) == null) return false;
 
   const { hour, minute } = getETTime(now);
   const totalMin = hour * 60 + minute;

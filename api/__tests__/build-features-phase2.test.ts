@@ -18,7 +18,10 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { engineerPhase2Features } from '../_lib/build-features-phase2.js';
+import {
+  engineerPhase2Features,
+  isWithinUWWindow,
+} from '../_lib/build-features-phase2.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
 import type { FeatureRow } from '../_lib/build-features-types.js';
 
@@ -40,10 +43,15 @@ describe('engineerPhase2Features', () => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
+    // Pin the clock so isWithinUWWindow's default `today` is near DATE_STR.
+    // Without this, the real system clock decides whether UW API fetches
+    // are skipped, and historical tests become flaky.
+    vi.setSystemTime(new Date('2026-03-25T14:00:00.000Z'));
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    vi.useRealTimers();
   });
 
   // ── Previous day features ─────────────────────────────────
@@ -1756,5 +1764,53 @@ describe('engineerPhase2Features', () => {
       expect(features.opt_call_volume).toBe(150000);
       expect(features.opt_vol_pcr).toBeCloseTo(200000 / 150000);
     });
+  });
+});
+
+// ── isWithinUWWindow helper ────────────────────────────────
+
+describe('isWithinUWWindow', () => {
+  // Pin a synthetic "today" so tests are deterministic regardless of
+  // when the suite runs.
+  const TODAY = new Date('2026-04-07T12:00:00.000Z');
+
+  it('returns true when dateStr is today', () => {
+    expect(isWithinUWWindow('2026-04-07', TODAY)).toBe(true);
+  });
+
+  it('returns true for a future date (UW returns empty, not 403)', () => {
+    expect(isWithinUWWindow('2026-05-01', TODAY)).toBe(true);
+  });
+
+  it('returns true when dateStr is roughly 25 trading days ago', () => {
+    // ~25 trading days ≈ 35 calendar days → 2026-04-07 minus 35 days ≈
+    // 2026-03-03. Well inside the 44-calendar-day approximation.
+    expect(isWithinUWWindow('2026-03-03', TODAY)).toBe(true);
+  });
+
+  it('returns false when dateStr is roughly 40 trading days ago', () => {
+    // ~40 trading days ≈ 56 calendar days → 2026-02-10. Outside the
+    // 44-day window, so UW would 403 and we should skip.
+    expect(isWithinUWWindow('2026-02-10', TODAY)).toBe(false);
+  });
+
+  it('returns true at the exact 30-trading-day calendar boundary', () => {
+    // 44 calendar days before 2026-04-07 = 2026-02-22. The helper uses
+    // ceil(30 * 7/5) + 2 = 44 calendar days, inclusive. Any date
+    // on-or-after 2026-02-22 should be within the window.
+    expect(isWithinUWWindow('2026-02-22', TODAY)).toBe(true);
+    // One calendar day outside the boundary should be excluded.
+    expect(isWithinUWWindow('2026-02-21', TODAY)).toBe(false);
+  });
+
+  it('returns false for an invalid date string', () => {
+    expect(isWithinUWWindow('not-a-date', TODAY)).toBe(false);
+  });
+
+  it('respects a custom `days` parameter', () => {
+    // 10 trading days ≈ ceil(14) + 2 = 16 calendar days.
+    // 2026-04-07 - 16 = 2026-03-22 (boundary, inclusive).
+    expect(isWithinUWWindow('2026-03-22', TODAY, 10)).toBe(true);
+    expect(isWithinUWWindow('2026-03-21', TODAY, 10)).toBe(false);
   });
 });
