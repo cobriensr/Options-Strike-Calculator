@@ -316,3 +316,52 @@ describe('spxToSpy', () => {
     expect(spxToSpy(5800)).toBe('580.00');
   });
 });
+
+// ── DELTA_OPTIONS ↔ DELTA_Z_SCORES invariant (FE-MATH-007) ─────
+//
+// The audit flagged `calcStrikes` for returning an error when given a
+// delta not in DELTA_Z_SCORES. In practice the TypeScript type system
+// (DeltaTarget = 5 | 8 | 10 | 12 | 15 | 20) and the UI's sole iteration
+// point (DELTA_OPTIONS) make that error path unreachable except via the
+// deliberate type-bypass test above (which uses a ts-expect-error
+// directive to exercise the defensive runtime branch). Instead of
+// widening the API to support a speculative "custom delta" feature
+// that doesn't exist, we pin the real invariant: DELTA_OPTIONS and
+// DELTA_Z_SCORES must stay in perfect lockstep. If anyone ever adds a
+// delta to one and forgets the other, these tests fail loudly at
+// build time.
+
+describe('DELTA_OPTIONS ↔ DELTA_Z_SCORES invariant', () => {
+  it('every DELTA_OPTIONS entry has a finite DELTA_Z_SCORES value', () => {
+    for (const delta of DELTA_OPTIONS) {
+      const z = DELTA_Z_SCORES[delta];
+      expect(z).toBeDefined();
+      expect(Number.isFinite(z)).toBe(true);
+      // z-score for an OTM delta must be strictly positive
+      expect(z).toBeGreaterThan(0);
+    }
+  });
+
+  it('every DELTA_Z_SCORES key appears in DELTA_OPTIONS', () => {
+    // Catches drift in the other direction: a DELTA_Z_SCORES entry that
+    // isn't in DELTA_OPTIONS would be silently ignored by the iterator
+    // at calcAllDeltas.
+    const zKeys = Object.keys(DELTA_Z_SCORES)
+      .map(Number)
+      .sort((a, b) => a - b);
+    const options = [...DELTA_OPTIONS].sort((a, b) => a - b);
+    expect(zKeys).toEqual(options);
+  });
+
+  it('DELTA_Z_SCORES are monotonically decreasing with delta', () => {
+    // Higher delta = closer to ATM = smaller z-score. If someone ever
+    // adds a new delta with a z-score that breaks this monotonicity,
+    // the skew math breaks silently. This test pins the invariant.
+    const sortedDeltas = [...DELTA_OPTIONS].sort((a, b) => a - b);
+    for (let i = 1; i < sortedDeltas.length; i++) {
+      const prev = sortedDeltas[i - 1]!;
+      const curr = sortedDeltas[i]!;
+      expect(DELTA_Z_SCORES[curr]).toBeLessThan(DELTA_Z_SCORES[prev]);
+    }
+  });
+});
