@@ -121,6 +121,22 @@ function headlineColor(label: TargetStrike['label']): string {
   return theme.text;
 }
 
+/**
+ * Detects a zero-crossing inside the sparkline window: a strike that
+ * flipped from net short gamma to net long (or vice versa) during the
+ * last 20 min is "freshly flipped" and warrants a different end-dot tone
+ * than a strike that stayed on one side the whole time. A flipped magnet
+ * is newer and arguably less trustworthy than one that's been building
+ * steadily, so the amber dot acts as a "watch this" hint without changing
+ * the primary line color.
+ */
+function hasSignFlip(values: number[]): boolean {
+  if (values.length < 2) return false;
+  const first = values[0]!;
+  const last = values.at(-1)!;
+  return (first < 0 && last > 0) || (first > 0 && last < 0);
+}
+
 // ── Sub-components ───────────────────────────────────────
 
 /**
@@ -133,11 +149,14 @@ function Sparkline({
   width = SPARKLINE_WIDTH,
   height = SPARKLINE_HEIGHT,
   color,
+  dotColor,
 }: {
   values: number[];
   width?: number;
   height?: number;
   color: string;
+  /** End-point dot color. Defaults to the line color when unspecified. */
+  dotColor?: string;
 }) {
   if (values.length < 2) {
     return <svg width={width} height={height} aria-hidden="true" />;
@@ -174,7 +193,7 @@ function Sparkline({
         strokeLinejoin="round"
         points={points}
       />
-      <circle cx={lastX} cy={lastY} r="2.5" fill={color} />
+      <circle cx={lastX} cy={lastY} r="2.5" fill={dotColor ?? color} />
     </svg>
   );
 }
@@ -419,7 +438,7 @@ function UrgencyLeaderboard({ strikes }: { strikes: StrikeMigration[] }) {
             className="grid grid-cols-[48px_1fr_52px] items-center gap-2 font-mono text-[10px]"
           >
             <span style={{ color: theme.textSecondary }}>{s.strike}</span>
-            <div className="relative h-2 overflow-hidden rounded-sm bg-white/[0.03]">
+            <div className="relative h-1.5 overflow-hidden rounded-sm bg-white/[0.03]">
               <div
                 className="absolute top-0 left-0 h-full rounded-sm"
                 style={{ width: `${widthPct}%`, background: color }}
@@ -444,6 +463,10 @@ function MigrationSparklines({ strikes }: { strikes: StrikeMigration[] }) {
       {top.map((s, i) => {
         const pct = s.twentyMinPctDelta ?? 0;
         const color = signColor(pct);
+        // Amber dot if the series crossed zero within the window — this
+        // strike is a fresh flip, not a steady builder. Otherwise dot
+        // matches the line color.
+        const dotColor = hasSignFlip(s.sparkline) ? theme.caution : color;
         return (
           <div
             key={s.strike}
@@ -453,7 +476,7 @@ function MigrationSparklines({ strikes }: { strikes: StrikeMigration[] }) {
               {String(i + 1).padStart(2, '0')}{' '}
               <span style={{ color: theme.textSecondary }}>{s.strike}</span>
             </span>
-            <Sparkline values={s.sparkline} color={color} />
+            <Sparkline values={s.sparkline} color={color} dotColor={dotColor} />
             <span className="text-right font-semibold" style={{ color }}>
               {formatPct(pct)}
             </span>
@@ -606,7 +629,7 @@ export const GexMigration = memo(function GexMigration({
           <div>
             <div className="mb-2 flex items-center justify-between">
               <div
-                className="font-mono text-[10px] tracking-wider"
+                className="font-mono text-[11px] tracking-wider"
                 style={{ color: theme.textMuted }}
               >
                 GEX MIGRATION · 20MIN
