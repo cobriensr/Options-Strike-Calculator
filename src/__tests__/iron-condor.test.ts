@@ -408,6 +408,38 @@ describe('buildIronCondor', () => {
     const ic = buildIronCondor(row, 0, spot, T);
     // 0-width means long = short strike, so all premiums cancel
     expect(ic.creditReceived).toBeCloseTo(0, 2);
+    // With creditReceived ≈ 0 and wingWidth = 0, the raw max-loss formula
+    // yields 0. Post-clamp it's still 0. Also pin the per-side fields.
+    expect(ic.maxLoss).toBeGreaterThanOrEqual(0);
+    expect(ic.putSpreadMaxLoss).toBeGreaterThanOrEqual(0);
+    expect(ic.callSpreadMaxLoss).toBeGreaterThanOrEqual(0);
+  });
+
+  it('FE-MATH-005: clamps all maxLoss fields to >= 0 for negative wingWidth', () => {
+    // Not reachable from production UI (WING_OPTIONS are all positive),
+    // but a direct caller passing a negative wingWidth would produce
+    // an inverted structure where the max-loss formula no longer makes
+    // sense. The three maxLoss fields must still be non-negative for
+    // honest display in the red "Max Loss" cells.
+    const row = makeDeltaRow();
+    const ic = buildIronCondor(row, -20, spot, T);
+    expect(ic.maxLoss).toBeGreaterThanOrEqual(0);
+    expect(ic.putSpreadMaxLoss).toBeGreaterThanOrEqual(0);
+    expect(ic.callSpreadMaxLoss).toBeGreaterThanOrEqual(0);
+  });
+
+  it('FE-MATH-005: standard wingWidth still reports the unclamped formula', () => {
+    // Sanity check: the clamp does not affect the normal case.
+    const row = makeDeltaRow();
+    const ic = buildIronCondor(row, wingWidth, spot, T);
+    expect(ic.maxLoss).toBeGreaterThan(0);
+    // maxLoss should equal wingWidth - creditReceived exactly (clamp inert)
+    expect(ic.maxLoss).toBeCloseTo(wingWidth - ic.creditReceived, 6);
+    expect(ic.putSpreadMaxLoss).toBeCloseTo(wingWidth - ic.putSpreadCredit, 6);
+    expect(ic.callSpreadMaxLoss).toBeCloseTo(
+      wingWidth - ic.callSpreadCredit,
+      6,
+    );
   });
 });
 

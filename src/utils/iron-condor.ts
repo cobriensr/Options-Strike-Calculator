@@ -197,7 +197,13 @@ export function buildIronCondor(
   // Combined IC
   const creditReceived = putSpreadCredit + callSpreadCredit;
   const maxProfit = creditReceived;
-  const maxLoss = wingWidthSpx - creditReceived;
+  // Clamp to 0 for consistency with the returnOnRisk guard below. Production
+  // UI constrains wingWidthSpx > 0 via WING_OPTIONS = [5, 10, ..., 50], but
+  // if a direct caller ever passes 0 (existing "zero-width spreads" test)
+  // or a negative value (reverse-IC-like structure), the max-loss formula
+  // is meaningless and a negative display in the red Max Loss cell would
+  // be dishonest. (FE-MATH-005)
+  const maxLoss = Math.max(0, wingWidthSpx - creditReceived);
   // Each side's breakeven uses only that side's credit
   const breakEvenLow = shortPut - putSpreadCredit;
   const breakEvenHigh = shortCall + callSpreadCredit;
@@ -215,7 +221,8 @@ export function buildIronCondor(
   );
 
   // Per-side: put credit spread
-  const putSpreadMaxLoss = wingWidthSpx - putSpreadCredit;
+  // Clamped to 0 per FE-MATH-005 — same rationale as the combined maxLoss above.
+  const putSpreadMaxLoss = Math.max(0, wingWidthSpx - putSpreadCredit);
   const putSpreadBE = shortPut - putSpreadCredit;
   const putSpreadRoR =
     putSpreadMaxLoss > 0 ? putSpreadCredit / putSpreadMaxLoss : 0;
@@ -228,7 +235,8 @@ export function buildIronCondor(
   );
 
   // Per-side: call credit spread
-  const callSpreadMaxLoss = wingWidthSpx - callSpreadCredit;
+  // Clamped to 0 per FE-MATH-005 — same rationale as the combined maxLoss above.
+  const callSpreadMaxLoss = Math.max(0, wingWidthSpx - callSpreadCredit);
   const callSpreadBE = shortCall + callSpreadCredit;
   const callSpreadRoR =
     callSpreadMaxLoss > 0 ? callSpreadCredit / callSpreadMaxLoss : 0;
