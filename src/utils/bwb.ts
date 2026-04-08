@@ -69,7 +69,13 @@ export function buildPutBWB(
 
   const netCredit = 2 * shortPremium - longNearPremium - longFarPremium;
   const maxProfit = narrowWidth + netCredit;
-  const maxLoss = wideWidth - narrowWidth - netCredit;
+  // Clamp to 0 so the field never reports a negative "loss": for symmetric
+  // or inverted wings with positive net credit, the deep-wing payoff is
+  // `narrow - wide + netCredit ≥ 0`, so there is no scenario that loses
+  // money. Production UI constrains `wideWidth > narrowWidth` via
+  // BWB_WIDE_MULTIPLIERS (>= 1.5), but the function is callable directly
+  // from tests and exports, so clamping is defensive. (FE-MATH-004)
+  const maxLoss = Math.max(0, wideWidth - narrowWidth - netCredit);
   const breakeven = 2 * shortStrike - longNearStrike - netCredit;
   const returnOnRisk = maxLoss > 0 ? netCredit / maxLoss : 0;
 
@@ -198,7 +204,8 @@ export function buildCallBWB(
 
   const netCredit = 2 * shortPremium - longNearPremium - longFarPremium;
   const maxProfit = narrowWidth + netCredit;
-  const maxLoss = wideWidth - narrowWidth - netCredit;
+  // See FE-MATH-004 note in buildPutBWB — same clamp semantics apply.
+  const maxLoss = Math.max(0, wideWidth - narrowWidth - netCredit);
   const breakeven = 2 * shortStrike - longNearStrike + netCredit;
   const returnOnRisk = maxLoss > 0 ? netCredit / maxLoss : 0;
 

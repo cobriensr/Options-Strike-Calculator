@@ -501,9 +501,10 @@ describe('BWB edge cases', () => {
     const bwb = buildPutBWB(d10, 25, 25, spot, T);
     expect(bwb.longFarStrike).toBeLessThan(bwb.shortStrike);
     expect(bwb.shortStrike).toBeLessThan(bwb.longNearStrike);
-    // Symmetric butterfly: maxLoss = wideWidth - narrowWidth - netCredit = -netCredit
-    // For a credit butterfly, maxLoss should still be small or zero
-    // The net credit fully offsets risk on the wide side
+    // Symmetric butterfly: deep-wing payoff = narrow - wide + netCredit = netCredit,
+    // so if the structure receives a credit the trade cannot lose. maxLoss
+    // is clamped to 0 per FE-MATH-004 (see dedicated tests in the
+    // "BWB branch edge cases" block below).
     expect(bwb.maxProfit).toBeGreaterThan(0);
   });
 
@@ -573,18 +574,18 @@ describe('BWB PoP uses base sigma', () => {
 });
 
 describe('BWB branch edge cases', () => {
-  it('returnOnRisk is 0 when maxLoss <= 0 (put BWB)', () => {
+  it('returnOnRisk is 0 when maxLoss is 0 (put BWB)', () => {
     if (!d10) return;
-    // Use equal wing widths with a deep OTM strike where netCredit > wideWidth - narrowWidth
-    // This is hard to achieve naturally, so we construct a DeltaRow with zero-cost wings
+    // Use equal wing widths with a deep OTM strike.
+    // When narrowWidth === wideWidth and netCredit > 0, the deep-wing
+    // payoff is positive (= netCredit), so there is no scenario where
+    // the trade loses money. Per FE-MATH-004, maxLoss is clamped to 0.
     const row: DeltaRow = {
       ...d10,
       putSnapped: spot - 100, // deep OTM
     };
-    // When narrowWidth === wideWidth, maxLoss = wideWidth - narrowWidth - netCredit = -netCredit
-    // If netCredit > 0, maxLoss < 0 => returnOnRisk = 0
     const bwb = buildPutBWB(row, 25, 25, spot, T);
-    if (bwb.maxLoss <= 0) {
+    if (bwb.maxLoss === 0) {
       expect(bwb.returnOnRisk).toBe(0);
     } else {
       // If maxLoss > 0, returnOnRisk = netCredit / maxLoss
@@ -592,14 +593,14 @@ describe('BWB branch edge cases', () => {
     }
   });
 
-  it('returnOnRisk is 0 when maxLoss <= 0 (call BWB)', () => {
+  it('returnOnRisk is 0 when maxLoss is 0 (call BWB)', () => {
     if (!d10) return;
     const row: DeltaRow = {
       ...d10,
       callSnapped: spot + 100, // deep OTM
     };
     const bwb = buildCallBWB(row, 25, 25, spot, T);
-    if (bwb.maxLoss <= 0) {
+    if (bwb.maxLoss === 0) {
       expect(bwb.returnOnRisk).toBe(0);
     } else {
       expect(bwb.returnOnRisk).toBeCloseTo(bwb.netCredit / bwb.maxLoss, 8);
@@ -628,5 +629,49 @@ describe('BWB branch edge cases', () => {
     const bwb = buildCallBWB(row, 20, 40, spot, T);
     expect(bwb.probabilityOfProfit).toBeGreaterThan(0);
     expect(bwb.probabilityOfProfit).toBeLessThan(1);
+  });
+
+  // ── FE-MATH-004: maxLoss clamped to 0 for non-losing structures ────
+
+  it('FE-MATH-004: clamps maxLoss to 0 for symmetric put butterfly with positive credit', () => {
+    if (!d10) return;
+    // Symmetric butterfly (narrowWidth === wideWidth). When netCredit > 0,
+    // the deep-wing payoff is `narrow - wide + netCredit = netCredit > 0`,
+    // so no scenario loses money. The old code returned a negative
+    // maxLoss (`-netCredit`), which displayed as "-$X" in the red Max Loss
+    // column. Post-clamp the field is exactly 0.
+    const bwb = buildPutBWB(d10, 25, 25, spot, T);
+    expect(bwb.maxLoss).toBeGreaterThanOrEqual(0);
+    if (bwb.netCredit > 0) {
+      expect(bwb.maxLoss).toBe(0);
+    }
+  });
+
+  it('FE-MATH-004: clamps maxLoss to 0 for symmetric call butterfly with positive credit', () => {
+    if (!d10) return;
+    const bwb = buildCallBWB(d10, 25, 25, spot, T);
+    expect(bwb.maxLoss).toBeGreaterThanOrEqual(0);
+    if (bwb.netCredit > 0) {
+      expect(bwb.maxLoss).toBe(0);
+    }
+  });
+
+  it('FE-MATH-004: clamps maxLoss to 0 when wide < narrow (inverted BWB)', () => {
+    if (!d10) return;
+    // Not reachable from production UI (BWB_WIDE_MULTIPLIERS >= 1.5), but
+    // the function must still return a sensible non-negative value if a
+    // direct caller passes an inverted structure.
+    const bwb = buildPutBWB(d10, 40, 20, spot, T);
+    expect(bwb.maxLoss).toBeGreaterThanOrEqual(0);
+  });
+
+  it('FE-MATH-004: standard BWB (wide > narrow) still reports positive maxLoss', () => {
+    if (!d10) return;
+    // Sanity check that the clamp does not affect the normal case.
+    const bwb = buildPutBWB(d10, 20, 40, spot, T);
+    expect(bwb.maxLoss).toBeGreaterThan(0);
+    // Verify the unclamped formula matches (i.e., clamp was not triggered)
+    const expected = bwb.wideWidth - bwb.narrowWidth - bwb.netCredit;
+    expect(bwb.maxLoss).toBeCloseTo(expected, 8);
   });
 });
