@@ -1164,4 +1164,16 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 48,
+    description:
+      'Add OTM delta flow columns to flow_data for zero_dte_greek_flow source',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE flow_data
+          ADD COLUMN IF NOT EXISTS otm_ncp DECIMAL(14,2),
+          ADD COLUMN IF NOT EXISTS otm_npp DECIMAL(14,2)
+      `,
+    ],
+  },
 ];

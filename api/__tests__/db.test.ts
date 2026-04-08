@@ -474,6 +474,7 @@ describe('db.ts', () => {
         { id: 45 },
         { id: 46 },
         { id: 47 },
+        { id: 48 },
       ]);
 
       const applied = await migrateDb();
@@ -539,11 +540,12 @@ describe('db.ts', () => {
         '#45: Create futures_snapshots table for computed intraday futures context',
         '#46: Create alert_config table with default alert thresholds',
         '#47: Create gex_strike_0dte table for per-minute 0DTE gamma exposure by strike',
+        '#48: Add OTM delta flow columns to flow_data for zero_dte_greek_flow source',
       ]);
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) = 153
-      expect(mockSql).toHaveBeenCalledTimes(153);
-      // Migrations #15-47 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(33);
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) = 155
+      expect(mockSql).toHaveBeenCalledTimes(155);
+      // Migrations #15-48 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(34);
     });
 
     it('propagates errors from migration SQL', async () => {
