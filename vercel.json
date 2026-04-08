@@ -46,6 +46,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-vol-0dte",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-zero-dte-flow",
       "schedule": "4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5"
     },

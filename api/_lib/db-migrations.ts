@@ -1176,4 +1176,33 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 49,
+    description:
+      'Create volume_per_strike_0dte table for per-minute 0DTE raw call/put volume by strike',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS volume_per_strike_0dte (
+          id           SERIAL PRIMARY KEY,
+          date         DATE NOT NULL,
+          timestamp    TIMESTAMPTZ NOT NULL,
+          strike       DECIMAL(10,2) NOT NULL,
+          call_volume  INTEGER NOT NULL DEFAULT 0,
+          put_volume   INTEGER NOT NULL DEFAULT 0,
+          call_oi      INTEGER NOT NULL DEFAULT 0,
+          put_oi       INTEGER NOT NULL DEFAULT 0,
+          created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(date, timestamp, strike)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_volume_per_strike_0dte_date
+        ON volume_per_strike_0dte(date)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_volume_per_strike_0dte_ts
+        ON volume_per_strike_0dte(timestamp DESC)
+      `,
+    ],
+  },
 ];
