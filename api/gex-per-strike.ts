@@ -2,17 +2,21 @@
  * GET /api/gex-per-strike
  *
  * Returns 0DTE per-strike GEX (gamma exposure) data for the dashboard.
- * Data is populated by the backfill-gex-0dte script. A dedicated cron
- * for live intraday population is planned (currently fetch-strike-exposure
- * writes to the separate strike_exposures table at 5-min intervals).
+ * Data is populated by the backfill-gex-0dte script and the
+ * fetch-gex-0dte cron (1-minute cadence during market hours).
  * The frontend polls this every 60 seconds.
  *
  * Query params:
  *   ?date=YYYY-MM-DD  — return data for a specific date (default: today ET)
+ *   ?time=HH:MM       — return latest snapshot at/before this CT wall-clock time
+ *   ?ts=<ISO>         — return the exact snapshot at this timestamp (used by
+ *                       the frontend scrub controls). Takes precedence over
+ *                       `time` when both are provided.
  *
- * Returns the latest available snapshot for the given date, with all
- * strikes sorted ascending. Each strike includes OI-based and
- * directionalized gamma, charm, delta, and vanna exposure.
+ * Returns the strikes for the resolved snapshot plus `timestamps` — every
+ * snapshot timestamp recorded for `date`, ascending. The frontend uses this
+ * list to step backwards/forwards through snapshots without round-tripping
+ * for a directory listing.
  *
  * Owner-gated — Greek exposure derives from UW API (OPRA compliance).
  */
@@ -44,12 +48,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               timeZone: 'America/New_York',
             });
 
+      // Optional exact-snapshot lookup (frontend scrub controls). ISO 8601
+      // timestamps only — anything else is rejected so we never feed arbitrary
+      // strings into the SQL parameter.
+      const tsParam = req.query.ts as string | undefined;
+      const hasTs =
+        tsParam && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(tsParam);
+
       // Optional time filter: "HH:MM" in CT → find closest snapshot at/before
       const timeParam = req.query.time as string | undefined;
       const hasTime = timeParam && /^\d{2}:\d{2}$/.test(timeParam);
 
       let tsRows;
-      if (hasTime) {
+      if (hasTs) {
+        // Verify the requested timestamp exists for this date so we never
+        // return data from a mismatched session.
+        tsRows = await sql`
+          SELECT timestamp AS latest_ts
+          FROM gex_strike_0dte
+          WHERE date = ${date} AND timestamp = ${tsParam}
+          LIMIT 1
+        `;
+      } else if (hasTime) {
         // Convert CT time to UTC via Postgres timezone conversion
         const localTs = `${date} ${timeParam}:00`;
         tsRows = await sql`
@@ -60,7 +80,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `;
       }
 
-      // Fall back to latest snapshot if time filter matched nothing (e.g. backfill has one snapshot/day)
+      // Fall back to latest snapshot if no filter matched (e.g. backfill has
+      // one snapshot/day, or scrub ts no longer exists)
       if (!tsRows?.[0]?.latest_ts) {
         tsRows = await sql`
           SELECT MAX(timestamp) AS latest_ts
@@ -69,10 +90,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `;
       }
 
+      // List of every snapshot timestamp for the day — powers scrub navigation.
+      // Cheap query; even a 1-min cron over an 8h session is ~480 rows.
+      const timestampRows = await sql`
+        SELECT DISTINCT timestamp
+        FROM gex_strike_0dte
+        WHERE date = ${date}
+        ORDER BY timestamp ASC
+      `;
+      const timestamps = timestampRows.map((r) => String(r.timestamp));
+
       const latestTs = tsRows[0]?.latest_ts;
       if (!latestTs) {
         res.setHeader('Cache-Control', 'no-store');
-        return res.status(200).json({ strikes: [], date, timestamp: null });
+        return res
+          .status(200)
+          .json({ strikes: [], date, timestamp: null, timestamps });
       }
 
       // Fetch all strikes at that timestamp
@@ -162,7 +195,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
 
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ strikes, date, timestamp: latestTs });
+      return res
+        .status(200)
+        .json({ strikes, date, timestamp: latestTs, timestamps });
     } catch (err) {
       Sentry.captureException(err);
       logger.error({ err }, 'gex-per-strike fetch error');

@@ -377,3 +377,158 @@ describe('useGexPerStrike: backtest mode', () => {
     expect(url).toContain('time=10%3A30');
   });
 });
+
+// ============================================================
+// SCRUB CONTROLS
+// ============================================================
+
+function mockSnapshot(timestamp: string, timestamps: string[]) {
+  return {
+    ok: true,
+    json: async () => ({
+      strikes: [makeStrike()],
+      timestamp,
+      timestamps,
+    }),
+  };
+}
+
+describe('useGexPerStrike: scrub controls', () => {
+  it('exposes timestamps from the API response', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+    expect(result.current.isLive).toBe(true);
+  });
+
+  it('canScrubPrev is true when at least one earlier snapshot exists', async () => {
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:59:00Z', [
+        '2026-04-02T19:58:00Z',
+        '2026-04-02T19:59:00Z',
+      ]),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+
+    await waitFor(() => expect(result.current.canScrubPrev).toBe(true));
+    // canScrubNext is false on live with no scrub set
+    expect(result.current.canScrubNext).toBe(false);
+  });
+
+  it('scrubPrev steps backwards and pauses polling', async () => {
+    const ts = [
+      '2026-04-02T19:57:00Z',
+      '2026-04-02T19:58:00Z',
+      '2026-04-02T19:59:00Z',
+    ];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    const callsBeforeScrub = mockFetch.mock.calls.length;
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+
+    // Scrub fetch fires immediately with the new ?ts param
+    await waitFor(() =>
+      expect(mockFetch.mock.calls.length).toBe(callsBeforeScrub + 1),
+    );
+    const scrubUrl = mockFetch.mock.calls[callsBeforeScrub]?.[0] as string;
+    expect(scrubUrl).toContain('ts=2026-04-02T19%3A58%3A00Z');
+    expect(result.current.isLive).toBe(false);
+
+    // Polling should now be paused — interval ticks should not fire fetches
+    const callsAfterScrub = mockFetch.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE * 3);
+    });
+    expect(mockFetch.mock.calls.length).toBe(callsAfterScrub);
+  });
+
+  it('scrubNext from a scrubbed position resumes live at the end', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    // Scrub back one
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isLive).toBe(false));
+
+    // Forward — should snap back to live
+    act(() => {
+      result.current.scrubNext();
+    });
+    await waitFor(() => expect(result.current.isLive).toBe(true));
+  });
+
+  it('scrubLive clears scrub and resumes polling', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isLive).toBe(false));
+
+    act(() => {
+      result.current.scrubLive();
+    });
+    await waitFor(() => expect(result.current.isLive).toBe(true));
+
+    // Polling resumes — next interval tick should fire a fetch
+    const callsAfterResume = mockFetch.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE);
+    });
+    expect(mockFetch.mock.calls.length).toBeGreaterThan(callsAfterResume);
+  });
+
+  it('scrubPrev is a no-op when no history exists', async () => {
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', []));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual([]));
+
+    const callsBefore = mockFetch.mock.calls.length;
+    act(() => {
+      result.current.scrubPrev();
+    });
+    // No fetch should fire — still live, scrubTimestamp stays null
+    await act(async () => {});
+    expect(result.current.isLive).toBe(true);
+    expect(mockFetch.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('clears scrub state when selectedDate changes', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result, rerender } = renderHook(
+      ({ date }: { date?: string }) => useGexPerStrike(true, date),
+      { initialProps: { date: undefined as string | undefined } },
+    );
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isLive).toBe(false));
+
+    rerender({ date: '2026-04-01' });
+    await waitFor(() => expect(result.current.isLive).toBe(true));
+  });
+});

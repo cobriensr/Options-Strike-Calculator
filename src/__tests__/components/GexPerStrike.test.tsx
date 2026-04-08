@@ -6,6 +6,17 @@ import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 
 const noop = vi.fn();
 
+// Default scrub props — most tests don't care about scrub state, so they get
+// "live with no history" defaults. Tests that exercise scrub controls override.
+const defaultScrubProps = {
+  isLive: true,
+  canScrubPrev: false,
+  canScrubNext: false,
+  onScrubPrev: noop,
+  onScrubNext: noop,
+  onScrubLive: noop,
+};
+
 // ── Helpers ───────────────────────────────────────────────
 
 function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
@@ -55,6 +66,7 @@ describe('GexPerStrike: loading state', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText(/loading gex/i)).toBeInTheDocument();
@@ -68,6 +80,7 @@ describe('GexPerStrike: loading state', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(
@@ -89,6 +102,7 @@ describe('GexPerStrike: error state', () => {
         error="Failed to load GEX data"
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('Failed to load GEX data')).toBeInTheDocument();
@@ -108,6 +122,7 @@ describe('GexPerStrike: empty state', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText(/no 0dte gex data available/i)).toBeInTheDocument();
@@ -131,6 +146,7 @@ describe('GexPerStrike: rendering strikes', () => {
         error={null}
         timestamp="2026-04-02T15:00:00Z"
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('5800')).toBeInTheDocument();
@@ -149,6 +165,7 @@ describe('GexPerStrike: rendering strikes', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('2 of 2')).toBeInTheDocument();
@@ -168,6 +185,7 @@ describe('GexPerStrike: overlay toggles', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('CHARM')).toBeInTheDocument();
@@ -183,6 +201,7 @@ describe('GexPerStrike: overlay toggles', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('OI')).toBeInTheDocument();
@@ -204,6 +223,7 @@ describe('GexPerStrike: legend', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('+Gamma')).toBeInTheDocument();
@@ -219,6 +239,7 @@ describe('GexPerStrike: legend', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('Charm')).toBeInTheDocument();
@@ -234,6 +255,7 @@ describe('GexPerStrike: legend', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -260,6 +282,7 @@ describe('GexPerStrike: summary cards', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('TOTAL NET GEX')).toBeInTheDocument();
@@ -273,6 +296,7 @@ describe('GexPerStrike: summary cards', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('NET CHARM')).toBeInTheDocument();
@@ -286,6 +310,7 @@ describe('GexPerStrike: summary cards', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('NET VANNA')).toBeInTheDocument();
@@ -299,6 +324,7 @@ describe('GexPerStrike: summary cards', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('GEX FLIP')).toBeInTheDocument();
@@ -312,6 +338,7 @@ describe('GexPerStrike: summary cards', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('FLOW PRESSURE')).toBeInTheDocument();
@@ -325,6 +352,7 @@ describe('GexPerStrike: summary cards', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('CHARM BURN/MIN')).toBeInTheDocument();
@@ -344,6 +372,7 @@ describe('GexPerStrike: accessibility', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(
@@ -359,6 +388,7 @@ describe('GexPerStrike: accessibility', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(
@@ -380,6 +410,7 @@ describe('GexPerStrike: header controls', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(
@@ -397,6 +428,7 @@ describe('GexPerStrike: header controls', () => {
         error={null}
         timestamp={null}
         onRefresh={onRefresh}
+        {...defaultScrubProps}
       />,
     );
     await user.click(screen.getByRole('button', { name: /refresh gex/i }));
@@ -411,6 +443,7 @@ describe('GexPerStrike: header controls', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByRole('button', { name: /refresh gex/i })).toBeDisabled();
@@ -424,6 +457,7 @@ describe('GexPerStrike: header controls', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(
@@ -433,6 +467,216 @@ describe('GexPerStrike: header controls', () => {
       screen.getByRole('button', { name: /show more/i }),
     ).toBeInTheDocument();
     expect(screen.getByText('15')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// SCRUB CONTROLS
+// ============================================================
+
+describe('GexPerStrike: scrub controls', () => {
+  it('renders prev/next/live buttons', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T19:00:00Z"
+        onRefresh={noop}
+        isLive={true}
+        canScrubPrev={true}
+        canScrubNext={false}
+        onScrubPrev={noop}
+        onScrubNext={noop}
+        onScrubLive={noop}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /previous snapshot/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /next snapshot/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows LIVE pill (not button) when on the latest snapshot', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T19:00:00Z"
+        onRefresh={noop}
+        isLive={true}
+        canScrubPrev={true}
+        canScrubNext={false}
+        onScrubPrev={noop}
+        onScrubNext={noop}
+        onScrubLive={noop}
+      />,
+    );
+    // LIVE label is shown but not as a clickable button
+    expect(screen.getByText('LIVE')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /resume live/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows LIVE button when scrubbed', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T18:30:00Z"
+        onRefresh={noop}
+        isLive={false}
+        canScrubPrev={true}
+        canScrubNext={true}
+        onScrubPrev={noop}
+        onScrubNext={noop}
+        onScrubLive={noop}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /resume live/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('disables prev when canScrubPrev is false', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T19:00:00Z"
+        onRefresh={noop}
+        isLive={true}
+        canScrubPrev={false}
+        canScrubNext={false}
+        onScrubPrev={noop}
+        onScrubNext={noop}
+        onScrubLive={noop}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /previous snapshot/i }),
+    ).toBeDisabled();
+  });
+
+  it('disables next when canScrubNext is false (on live)', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T19:00:00Z"
+        onRefresh={noop}
+        isLive={true}
+        canScrubPrev={true}
+        canScrubNext={false}
+        onScrubPrev={noop}
+        onScrubNext={noop}
+        onScrubLive={noop}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /next snapshot/i }),
+    ).toBeDisabled();
+  });
+
+  it('calls onScrubPrev when prev button clicked', async () => {
+    const onScrubPrev = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T19:00:00Z"
+        onRefresh={noop}
+        isLive={true}
+        canScrubPrev={true}
+        canScrubNext={false}
+        onScrubPrev={onScrubPrev}
+        onScrubNext={noop}
+        onScrubLive={noop}
+      />,
+    );
+    await user.click(
+      screen.getByRole('button', { name: /previous snapshot/i }),
+    );
+    expect(onScrubPrev).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onScrubNext when next button clicked', async () => {
+    const onScrubNext = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T18:30:00Z"
+        onRefresh={noop}
+        isLive={false}
+        canScrubPrev={true}
+        canScrubNext={true}
+        onScrubPrev={noop}
+        onScrubNext={onScrubNext}
+        onScrubLive={noop}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /next snapshot/i }));
+    expect(onScrubNext).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onScrubLive when LIVE button clicked while scrubbed', async () => {
+    const onScrubLive = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T18:30:00Z"
+        onRefresh={noop}
+        isLive={false}
+        canScrubPrev={true}
+        canScrubNext={true}
+        onScrubPrev={noop}
+        onScrubNext={noop}
+        onScrubLive={onScrubLive}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /resume live/i }));
+    expect(onScrubLive).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables both scrub buttons while loading', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={true}
+        error={null}
+        timestamp="2026-04-02T19:00:00Z"
+        onRefresh={noop}
+        isLive={false}
+        canScrubPrev={true}
+        canScrubNext={true}
+        onScrubPrev={noop}
+        onScrubNext={noop}
+        onScrubLive={noop}
+      />,
+    );
+    // Loading state renders the loading view, not the chart, so the scrub
+    // controls should still be present in the header but disabled.
+    expect(
+      screen.getByRole('button', { name: /previous snapshot/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: /next snapshot/i }),
+    ).toBeDisabled();
   });
 });
 
@@ -449,6 +693,7 @@ describe('GexPerStrike: time display', () => {
         error={null}
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     // 19:00 UTC = 2:00 PM CT
@@ -463,6 +708,7 @@ describe('GexPerStrike: time display', () => {
         error={null}
         timestamp="not-a-valid-iso-date"
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     // Component should still render without crashing
@@ -485,6 +731,7 @@ describe('GexPerStrike: mode switching', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     // formatNum(200B) = "200.00B"
@@ -508,6 +755,7 @@ describe('GexPerStrike: mode switching', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -537,6 +785,7 @@ describe('GexPerStrike: mode switching', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -562,6 +811,7 @@ describe('GexPerStrike: mode switching', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -586,6 +836,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -610,6 +861,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -633,6 +885,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -656,6 +909,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -679,6 +933,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -702,6 +957,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -726,6 +982,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -758,6 +1015,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -779,6 +1037,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -805,6 +1064,7 @@ describe('GexPerStrike: tooltip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -834,6 +1094,7 @@ describe('GexPerStrike: flow pressure calculation', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('reinforcing')).toBeInTheDocument();
@@ -854,6 +1115,7 @@ describe('GexPerStrike: flow pressure calculation', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('opposing')).toBeInTheDocument();
@@ -874,6 +1136,7 @@ describe('GexPerStrike: flow pressure calculation', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('neutral')).toBeInTheDocument();
@@ -895,6 +1158,7 @@ describe('GexPerStrike: flow pressure calculation', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     const flowCard = screen.getByText('FLOW PRESSURE').parentElement;
@@ -917,6 +1181,7 @@ describe('GexPerStrike: flow pressure calculation', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     const flowCard = screen.getByText('FLOW PRESSURE').parentElement;
@@ -941,6 +1206,7 @@ describe('GexPerStrike: flow pressure calculation', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     const flowCard = screen.getByText('FLOW PRESSURE').parentElement;
@@ -967,6 +1233,7 @@ describe('GexPerStrike: charm burn rate', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('selling pressure')).toBeInTheDocument();
@@ -986,6 +1253,7 @@ describe('GexPerStrike: charm burn rate', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     expect(screen.getByText('buying pressure')).toBeInTheDocument();
@@ -1017,6 +1285,7 @@ describe('GexPerStrike: GEX flip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     // The "GEX FLIP" card should show 5800 as its value
@@ -1037,6 +1306,7 @@ describe('GexPerStrike: GEX flip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     const flipCard = screen.getByText('GEX FLIP').parentElement;
@@ -1058,6 +1328,7 @@ describe('GexPerStrike: GEX flip', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
     const flipCard = screen.getByText('GEX FLIP').parentElement;
@@ -1087,6 +1358,7 @@ describe('GexPerStrike: overlay behavior', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -1111,6 +1383,7 @@ describe('GexPerStrike: overlay behavior', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -1135,6 +1408,7 @@ describe('GexPerStrike: overlay behavior', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -1166,6 +1440,7 @@ describe('GexPerStrike: strike ordering', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 
@@ -1196,6 +1471,7 @@ describe('GexPerStrike: ATM centering', () => {
         error={null}
         timestamp={null}
         onRefresh={noop}
+        {...defaultScrubProps}
       />,
     );
 

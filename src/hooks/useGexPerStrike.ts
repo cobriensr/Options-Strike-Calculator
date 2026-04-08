@@ -1,12 +1,19 @@
 /**
- * useGexPerStrike — polls /api/gex-per-strike every 60 seconds.
+ * useGexPerStrike — fetches /api/gex-per-strike for the GexPerStrike widget.
  *
- * Returns per-strike 0DTE GEX data for the GexPerStrike widget.
+ * Returns per-strike 0DTE GEX data plus scrub controls so the user can step
+ * backwards/forwards through previous snapshots without leaving the page.
  * Owner-only — skips polling for public visitors.
  *
  * Behavior:
- *   - Live mode (no selectedDate): polls every 60s while marketOpen.
+ *   - Live mode (no selectedDate, market open, no scrub): polls every 60s.
  *   - Explicit date (today or past): fetches once (data is in DB).
+ *   - Scrub mode (any date, scrubTimestamp set): fetches that exact snapshot
+ *     once and pauses polling. `scrubLive()` clears scrub and resumes polling.
+ *
+ * The server returns `timestamps[]` (every snapshot for the day, ascending),
+ * which the hook caches so prev/next can step through them without an extra
+ * round trip.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -58,7 +65,22 @@ export interface UseGexPerStrikeReturn {
   strikes: GexStrikeLevel[];
   loading: boolean;
   error: string | null;
+  /** Timestamp currently being displayed (latest if live, scrub ts if scrubbing) */
   timestamp: string | null;
+  /** All snapshot timestamps for the active date, ascending */
+  timestamps: string[];
+  /** True when showing the latest available snapshot (polling active if market open) */
+  isLive: boolean;
+  /** True when there is at least one earlier snapshot the user can scrub to */
+  canScrubPrev: boolean;
+  /** True when the user is currently scrubbed and can step forward */
+  canScrubNext: boolean;
+  /** Step one snapshot earlier */
+  scrubPrev: () => void;
+  /** Step one snapshot later (clears scrub when at the latest) */
+  scrubNext: () => void;
+  /** Clear scrub and resume live polling */
+  scrubLive: () => void;
   refresh: () => void;
 }
 
@@ -72,44 +94,52 @@ export function useGexPerStrike(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [timestamp, setTimestamp] = useState<string | null>(null);
+  const [timestamps, setTimestamps] = useState<string[]>([]);
+  const [scrubTimestamp, setScrubTimestamp] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
   const hasExplicitDate = selectedDate != null;
 
-  const fetchData = useCallback(async () => {
-    try {
-      const qs = new URLSearchParams();
-      if (selectedDate) qs.set('date', selectedDate);
-      if (selectedTime) qs.set('time', selectedTime);
-      const params = qs.size > 0 ? `?${qs}` : '';
-      const res = await fetch(`/api/gex-per-strike${params}`, {
-        credentials: 'same-origin',
-        signal: AbortSignal.timeout(5_000),
-      });
+  const fetchData = useCallback(
+    async (tsOverride?: string | null) => {
+      try {
+        const qs = new URLSearchParams();
+        if (selectedDate) qs.set('date', selectedDate);
+        if (tsOverride) qs.set('ts', tsOverride);
+        else if (selectedTime) qs.set('time', selectedTime);
+        const params = qs.size > 0 ? `?${qs}` : '';
+        const res = await fetch(`/api/gex-per-strike${params}`, {
+          credentials: 'same-origin',
+          signal: AbortSignal.timeout(5_000),
+        });
 
-      if (!mountedRef.current) return;
+        if (!mountedRef.current) return;
 
-      if (!res.ok) {
-        if (res.status !== 401) setError('Failed to load GEX data');
-        return;
+        if (!res.ok) {
+          if (res.status !== 401) setError('Failed to load GEX data');
+          return;
+        }
+
+        const data = (await res.json()) as {
+          strikes: GexStrikeLevel[];
+          timestamp: string | null;
+          timestamps?: string[];
+        };
+
+        if (!mountedRef.current) return;
+
+        setStrikes(data.strikes);
+        setTimestamp(data.timestamp);
+        setTimestamps(data.timestamps ?? []);
+        setError(null);
+      } catch (err) {
+        if (mountedRef.current) setError(getErrorMessage(err));
+      } finally {
+        if (mountedRef.current) setLoading(false);
       }
-
-      const data = (await res.json()) as {
-        strikes: GexStrikeLevel[];
-        timestamp: string | null;
-      };
-
-      if (!mountedRef.current) return;
-
-      setStrikes(data.strikes);
-      setTimestamp(data.timestamp);
-      setError(null);
-    } catch (err) {
-      if (mountedRef.current) setError(getErrorMessage(err));
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }, [selectedDate, selectedTime]);
+    },
+    [selectedDate, selectedTime],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -118,30 +148,96 @@ export function useGexPerStrike(
     };
   }, []);
 
+  // Reset scrub state whenever the active date changes — the previous date's
+  // scrub timestamp is meaningless against a different day's snapshot list.
+  useEffect(() => {
+    setScrubTimestamp(null);
+  }, [selectedDate]);
+
   useEffect(() => {
     if (!isOwner) {
       setLoading(false);
       return;
     }
 
-    // Explicit date (today or past): fetch once, no polling.
+    // Scrubbing: fetch exact snapshot, pause polling.
+    if (scrubTimestamp != null) {
+      setLoading(true);
+      fetchData(scrubTimestamp);
+      return;
+    }
+
+    // Explicit date (today or past): fetch latest for that date once.
     if (hasExplicitDate) {
       setLoading(true);
       fetchData();
       return;
     }
 
-    // No date selected: poll only while market is open
+    // Live mode — only poll while the market is open.
     if (!marketOpen) {
       setLoading(false);
       return;
     }
 
     fetchData();
-
-    const id = setInterval(fetchData, POLL_INTERVALS.GEX_STRIKE);
+    const id = setInterval(() => fetchData(), POLL_INTERVALS.GEX_STRIKE);
     return () => clearInterval(id);
-  }, [isOwner, marketOpen, hasExplicitDate, fetchData]);
+  }, [isOwner, marketOpen, hasExplicitDate, scrubTimestamp, fetchData]);
 
-  return { strikes, loading, error, timestamp, refresh: fetchData };
+  const isLive = scrubTimestamp == null;
+
+  // The "current" timestamp for nav math is whatever is on screen. When live,
+  // that's the latest in the list (`timestamp` from the server). When scrubbed,
+  // it's the scrub ts.
+  const activeTs = scrubTimestamp ?? timestamp;
+  const activeIdx = activeTs ? timestamps.indexOf(activeTs) : -1;
+  const canScrubPrev = activeIdx > 0;
+  const canScrubNext = !isLive && timestamps.length > 0;
+
+  const scrubPrev = useCallback(() => {
+    setScrubTimestamp((current) => {
+      // If currently live, "previous" means one step back from the latest.
+      if (current == null) {
+        if (timestamps.length < 2) return current;
+        return timestamps.at(-2) ?? current;
+      }
+      const idx = timestamps.indexOf(current);
+      if (idx <= 0) return current;
+      return timestamps[idx - 1] ?? current;
+    });
+  }, [timestamps]);
+
+  const scrubNext = useCallback(() => {
+    setScrubTimestamp((current) => {
+      if (current == null) return null;
+      const idx = timestamps.indexOf(current);
+      // Unknown ts, or the next step would land on (or past) the latest →
+      // resume live so polling restarts. We never let scrubTimestamp pin to
+      // the newest value; that's what `null` (live) means.
+      if (idx < 0 || idx >= timestamps.length - 2) return null;
+      return timestamps[idx + 1] ?? null;
+    });
+  }, [timestamps]);
+
+  const scrubLive = useCallback(() => setScrubTimestamp(null), []);
+
+  const refresh = useCallback(() => {
+    fetchData(scrubTimestamp ?? undefined);
+  }, [fetchData, scrubTimestamp]);
+
+  return {
+    strikes,
+    loading,
+    error,
+    timestamp,
+    timestamps,
+    isLive,
+    canScrubPrev,
+    canScrubNext,
+    scrubPrev,
+    scrubNext,
+    scrubLive,
+    refresh,
+  };
 }

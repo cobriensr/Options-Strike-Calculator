@@ -88,6 +88,7 @@ describe('GET /api/gex-per-strike', () => {
 
   it('uses date query param when provided', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: '2026-03-28T15:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([{ timestamp: '2026-03-28T15:00:00Z' }]);
     mockSql.mockResolvedValueOnce([makeDbRow()]);
 
     const res = mockResponse();
@@ -103,6 +104,7 @@ describe('GET /api/gex-per-strike', () => {
 
   it('uses time param to filter snapshot timestamp', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: '2026-03-28T15:30:00Z' }]);
+    mockSql.mockResolvedValueOnce([{ timestamp: '2026-03-28T15:30:00Z' }]);
     mockSql.mockResolvedValueOnce([makeDbRow()]);
 
     const res = mockResponse();
@@ -115,12 +117,13 @@ describe('GET /api/gex-per-strike', () => {
     );
 
     expect(res._status).toBe(200);
-    // Verify both queries were executed (timestamp lookup + strike fetch)
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // 3 queries: time-filter lookup + timestamps list + strike fetch
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   it('rejects invalid date format', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
     await handler(
@@ -136,6 +139,7 @@ describe('GET /api/gex-per-strike', () => {
 
   it('returns empty strikes when no data for date', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -144,13 +148,16 @@ describe('GET /api/gex-per-strike', () => {
     const body = res._json as {
       strikes: unknown[];
       timestamp: unknown;
+      timestamps: unknown[];
     };
     expect(body.strikes).toEqual([]);
     expect(body.timestamp).toBeNull();
+    expect(body.timestamps).toEqual([]);
   });
 
   it('returns strikes with computed netGamma and netCharm', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-02T15:00:00Z' }]);
     mockSql.mockResolvedValueOnce([makeDbRow()]);
 
     const res = mockResponse();
@@ -190,6 +197,7 @@ describe('GET /api/gex-per-strike', () => {
 
   it('converts string DB values to numbers', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-02T15:00:00Z' }]);
     mockSql.mockResolvedValueOnce([makeDbRow()]);
 
     const res = mockResponse();
@@ -212,6 +220,7 @@ describe('GET /api/gex-per-strike', () => {
 
   it('sets Cache-Control: no-store header', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -242,10 +251,104 @@ describe('GET /api/gex-per-strike', () => {
       ) => cb({ setTransactionName }),
     );
     mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
 
     expect(setTransactionName).toHaveBeenCalledWith('GET /api/gex-per-strike');
+  });
+
+  it('returns timestamps array for scrub navigation', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T20:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([
+      { timestamp: '2026-04-02T19:58:00Z' },
+      { timestamp: '2026-04-02T19:59:00Z' },
+      { timestamp: '2026-04-02T20:00:00Z' },
+    ]);
+    mockSql.mockResolvedValueOnce([makeDbRow()]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { timestamps: string[]; timestamp: string };
+    expect(body.timestamps).toEqual([
+      '2026-04-02T19:58:00Z',
+      '2026-04-02T19:59:00Z',
+      '2026-04-02T20:00:00Z',
+    ]);
+    expect(body.timestamp).toBe('2026-04-02T20:00:00Z');
+  });
+
+  it('honors ?ts param for exact-snapshot lookup', async () => {
+    // First query: ts equality lookup
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T19:30:00Z' }]);
+    // Second query: timestamps list
+    mockSql.mockResolvedValueOnce([
+      { timestamp: '2026-04-02T19:30:00Z' },
+      { timestamp: '2026-04-02T20:00:00Z' },
+    ]);
+    // Third query: strikes
+    mockSql.mockResolvedValueOnce([makeDbRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-04-02', ts: '2026-04-02T19:30:00Z' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as { timestamp: string };
+    expect(body.timestamp).toBe('2026-04-02T19:30:00Z');
+    // 3 queries total: ts lookup + timestamps + strikes
+    expect(mockSql).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back to latest when ?ts param does not match a snapshot', async () => {
+    // ts lookup returns no rows
+    mockSql.mockResolvedValueOnce([]);
+    // Fallback latest query
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T20:00:00Z' }]);
+    // Timestamps list
+    mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-02T20:00:00Z' }]);
+    // Strikes
+    mockSql.mockResolvedValueOnce([makeDbRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-04-02', ts: '2026-04-02T05:00:00Z' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as { timestamp: string };
+    expect(body.timestamp).toBe('2026-04-02T20:00:00Z');
+  });
+
+  it('rejects malformed ?ts and falls through to latest', async () => {
+    // hasTs is false, hasTime is false → straight to latest
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T20:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-02T20:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([makeDbRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-04-02', ts: 'not-an-iso-timestamp' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    // Only the latest+timestamps+strikes queries — no ts equality query
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 });

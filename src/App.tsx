@@ -23,6 +23,7 @@ import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
+import { useGexMigration } from './hooks/useGexMigration';
 import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
@@ -42,6 +43,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import GexPerStrike from './components/GexPerStrike';
+import { GexMigration } from './components/GexMigration';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { useToast } from './hooks/useToast';
@@ -169,6 +171,10 @@ export default function StrikeCalculator() {
     market.data.quotes?.marketOpen ?? false,
     vix.selectedDate,
     selectedTime,
+  );
+  const gexMigration = useGexMigration(
+    market.data.quotes?.marketOpen ?? false,
+    vix.selectedDate,
   );
   const { results, errors } = useCalculation(
     dSpot,
@@ -705,6 +711,20 @@ export default function StrikeCalculator() {
                     error={gexStrike.error}
                     timestamp={gexStrike.timestamp}
                     onRefresh={gexStrike.refresh}
+                    isLive={gexStrike.isLive}
+                    canScrubPrev={gexStrike.canScrubPrev}
+                    canScrubNext={gexStrike.canScrubNext}
+                    onScrubPrev={gexStrike.scrubPrev}
+                    onScrubNext={gexStrike.scrubNext}
+                    onScrubLive={gexStrike.scrubLive}
+                  />
+                </ErrorBoundary>
+                <ErrorBoundary label="0DTE GEX Migration">
+                  <GexMigration
+                    snapshots={gexMigration.snapshots}
+                    loading={gexMigration.loading}
+                    error={gexMigration.error}
+                    onRefresh={gexMigration.refresh}
                   />
                 </ErrorBoundary>
               </>

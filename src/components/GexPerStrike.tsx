@@ -39,6 +39,18 @@ interface Props {
   error: string | null;
   timestamp: string | null;
   onRefresh: () => void;
+  /** True when displaying the latest snapshot (poll active if market open) */
+  isLive: boolean;
+  /** True when there is at least one earlier snapshot to scrub to */
+  canScrubPrev: boolean;
+  /** True when the user is scrubbed and can step forward */
+  canScrubNext: boolean;
+  /** Step one snapshot earlier */
+  onScrubPrev: () => void;
+  /** Step one snapshot later */
+  onScrubNext: () => void;
+  /** Clear scrub and resume live */
+  onScrubLive: () => void;
 }
 
 // ── Formatters ───────────────────────────────────────────
@@ -292,6 +304,12 @@ export default memo(function GexPerStrike({
   error,
   timestamp,
   onRefresh,
+  isLive,
+  canScrubPrev,
+  canScrubNext,
+  onScrubPrev,
+  onScrubNext,
+  onScrubLive,
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
   const [viewMode, setViewMode] = useState<ViewMode>('oi');
@@ -410,10 +428,57 @@ export default memo(function GexPerStrike({
 
   const headerRight = (
     <div className="flex items-center gap-2">
-      {timestamp && (
-        <span className="text-muted font-sans text-[10px]">
-          {formatTime(timestamp)}
+      {/* Snapshot scrub controls */}
+      <div className="border-edge flex items-center gap-0.5 rounded border">
+        <button
+          onClick={onScrubPrev}
+          disabled={loading || !canScrubPrev}
+          aria-label="Previous snapshot"
+          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
+        >
+          &#x25C0;
+        </button>
+        {timestamp && (
+          <span
+            className="min-w-[44px] text-center font-mono text-[10px]"
+            style={{ color: isLive ? theme.green : theme.accent }}
+          >
+            {formatTime(timestamp)}
+          </span>
+        )}
+        <button
+          onClick={onScrubNext}
+          disabled={loading || !canScrubNext}
+          aria-label="Next snapshot"
+          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
+        >
+          &#x25B6;
+        </button>
+      </div>
+      {isLive ? (
+        <span
+          className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider"
+          style={{
+            color: theme.green,
+            background: 'rgba(0,230,118,0.08)',
+            border: '1px solid rgba(0,230,118,0.25)',
+          }}
+        >
+          LIVE
         </span>
+      ) : (
+        <button
+          onClick={onScrubLive}
+          aria-label="Resume live snapshot"
+          className="cursor-pointer rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider transition-colors"
+          style={{
+            color: theme.accent,
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.12)',
+          }}
+        >
+          LIVE
+        </button>
       )}
       <button
         onClick={onRefresh}
