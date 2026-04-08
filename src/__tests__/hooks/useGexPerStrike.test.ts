@@ -372,7 +372,13 @@ describe('useGexPerStrike: backtest mode', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('passes time param when selectedTime provided', async () => {
+  it('does not include a time param — the hook ignores selectedTime entirely', async () => {
+    // This is the regression guard for the "panel appears frozen while
+    // polling" bug. Coupling the hook to `selectedTime` made every poll
+    // re-fetch the same stale snapshot, because `selectedTime` defaults to
+    // the minute the page loaded at and doesn't auto-advance. The fix is to
+    // never send `?time=` from this hook — past-time inspection is handled
+    // by the scrub controls, not the calculator's time picker.
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -381,14 +387,14 @@ describe('useGexPerStrike: backtest mode', () => {
       }),
     });
 
-    renderHook(() => useGexPerStrike(false, '2026-03-28', '10:30'));
+    renderHook(() => useGexPerStrike(false, '2026-03-28'));
 
     await act(async () => {});
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const url = mockFetch.mock.calls[0]?.[0] as string;
     expect(url).toContain('date=2026-03-28');
-    expect(url).toContain('time=10%3A30');
+    expect(url).not.toContain('time=');
   });
 });
 
@@ -654,6 +660,46 @@ describe('useGexPerStrike: live polling and freshness', () => {
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
   });
 
+  it('advances the displayed timestamp when polling fetches fresh data', async () => {
+    // REGRESSION GUARD: the previous "fix" coupled the hook to `selectedTime`,
+    // so every poll refetched the same stale snapshot. Fetch counts advanced
+    // but the displayed `timestamp` never did, so the panel appeared frozen
+    // to the user. This test asserts that the user-facing state actually
+    // advances — not just that polling fires.
+    mockFetch.mockResolvedValueOnce(
+      mockSnapshot('2026-04-02T19:58:00Z', [
+        '2026-04-02T19:57:00Z',
+        '2026-04-02T19:58:00Z',
+      ]),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true, '2026-04-02'));
+
+    await waitFor(() =>
+      expect(result.current.timestamp).toBe('2026-04-02T19:58:00Z'),
+    );
+
+    // Next poll: cron wrote a newer snapshot. The displayed timestamp must
+    // advance and the new entry must appear in `timestamps[]` so the scrub
+    // controls stay in sync.
+    mockFetch.mockResolvedValueOnce(
+      mockSnapshot('2026-04-02T19:59:00Z', [
+        '2026-04-02T19:57:00Z',
+        '2026-04-02T19:58:00Z',
+        '2026-04-02T19:59:00Z',
+      ]),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE);
+    });
+
+    await waitFor(() =>
+      expect(result.current.timestamp).toBe('2026-04-02T19:59:00Z'),
+    );
+    expect(result.current.timestamps).toContain('2026-04-02T19:59:00Z');
+  });
+
   it('does not poll on a past date (backtest mode)', async () => {
     mockFetch.mockResolvedValue(
       mockSnapshot('2020-01-02T15:00:00Z', ['2020-01-02T15:00:00Z']),
@@ -699,9 +745,10 @@ describe('useGexPerStrike: live polling and freshness', () => {
 
   it('isLive=false when displayed snapshot is older than freshness threshold', async () => {
     // Snapshot is 5 minutes old at TEST_NOW (20:00:00) — beyond 2-min threshold.
-    // This is the dial-back case: user picked a past time, panel shows that
-    // snapshot, polling keeps refetching the same one, but the badge correctly
-    // shows BACKTEST because the data isn't actually live.
+    // In production this shouldn't happen because polling fetches latest
+    // every 60s, but the freshness check is defense-in-depth: if polling
+    // silently fails (network error, backgrounded-tab throttling), the badge
+    // still correctly reports BACKTEST instead of lying.
     mockFetch.mockResolvedValue(
       mockSnapshot('2026-04-02T19:55:00Z', ['2026-04-02T19:55:00Z']),
     );

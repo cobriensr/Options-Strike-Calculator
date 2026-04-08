@@ -126,6 +126,23 @@ describe('useGexMigration: polling', () => {
     expect(mockFetch.mock.calls.length).toBeGreaterThan(initialCalls);
   });
 
+  it('polls today even when an explicit (today) date is passed', async () => {
+    // Production always passes vix.selectedDate, so this is the realistic
+    // production code path. Regression guard against the old
+    // `hasExplicitDate` short-circuit that made polling unreachable.
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+
+    renderHook(() => useGexMigration(true, today));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE);
+    });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+  });
+
   it('cleans up interval on unmount', async () => {
     const { unmount } = renderHook(() => useGexMigration(true));
     await act(async () => {});
@@ -152,10 +169,16 @@ describe('useGexMigration: gating', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('does not fetch when market is closed', async () => {
+  it('fetches once but does not poll when market is closed', async () => {
+    // After-hours BACKTEST view of today — still show the day's migration
+    // data, but no point polling when no fresh snapshots are being written.
     renderHook(() => useGexMigration(false));
-    await act(async () => {});
-    expect(mockFetch).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE * 5);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it('sets loading to false when not owner', async () => {

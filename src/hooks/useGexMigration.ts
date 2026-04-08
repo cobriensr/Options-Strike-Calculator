@@ -9,9 +9,11 @@
  *
  * Owner-only — skips polling for public visitors.
  *
- * Behavior:
- *   - Live mode (no selectedDate): polls every 60s while marketOpen.
- *   - Explicit date (today or past): fetches once (data is in DB).
+ * Effect dispatch (in priority order):
+ *   1. Not owner          → no fetch.
+ *   2. Past date          → one-shot fetch for that date, no polling.
+ *   3. Today, market open → fetch + poll every POLL_INTERVALS.GEX_STRIKE.
+ *   4. Today, market closed → one-shot fetch (BACKTEST view of today).
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -42,7 +44,12 @@ export function useGexMigration(
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
-  const hasExplicitDate = selectedDate != null;
+  // Computed each render — flips the "today vs. past" branch naturally at
+  // midnight Eastern without needing a state update.
+  const todayET = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+  const isToday = !selectedDate || selectedDate === todayET;
 
   const fetchData = useCallback(async () => {
     try {
@@ -87,24 +94,29 @@ export function useGexMigration(
       return;
     }
 
-    // Explicit date (today or past): fetch once, no polling.
-    if (hasExplicitDate) {
+    // Past date: fetch once, no polling — the day's snapshots are fully
+    // written, there's nothing to poll for.
+    if (!isToday) {
       setLoading(true);
       fetchData();
       return;
     }
 
-    // No date selected: poll only while market is open
+    // Today, market closed: one-shot fetch, no polling — no new snapshots
+    // are being written.
     if (!marketOpen) {
-      setLoading(false);
+      setLoading(true);
+      fetchData();
       return;
     }
 
+    // Today, market open → live polling. Each poll fetches the latest 21
+    // snapshots for today, so the migration sparklines and urgency
+    // leaderboard actually advance minute-by-minute.
     fetchData();
-
     const id = setInterval(fetchData, POLL_INTERVALS.GEX_STRIKE);
     return () => clearInterval(id);
-  }, [isOwner, marketOpen, hasExplicitDate, fetchData]);
+  }, [isOwner, marketOpen, isToday, fetchData]);
 
   return { snapshots, loading, error, refresh: fetchData };
 }

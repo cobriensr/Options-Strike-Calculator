@@ -4,9 +4,18 @@
  * Returns dark pool strike levels for the DarkPoolLevels widget.
  * Owner-only — skips polling for public visitors.
  *
- * Behavior:
- *   - Live mode (no selectedDate): polls every 60s while marketOpen.
- *   - Explicit date (today or past): fetches once (data is in DB).
+ * Effect dispatch (in priority order):
+ *   1. Not owner          → no fetch.
+ *   2. Past date          → one-shot fetch for that date, no polling.
+ *   3. Today, market open → fetch + poll every POLL_INTERVALS.DARK_POOL.
+ *   4. Today, market closed → one-shot fetch (BACKTEST view of today).
+ *
+ * This hook deliberately does NOT take `selectedTime` from the calculator.
+ * The time picker in `useAppState` is an "as-of" control for Black-Scholes
+ * math, not a scrub control for the dark pool panel. Coupling here would
+ * make polling refetch the same stale snapshot every cycle (since
+ * `selectedTime` defaults to the minute the page loaded at and doesn't
+ * auto-advance), causing the panel to appear frozen.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -34,7 +43,6 @@ export interface UseDarkPoolLevelsReturn {
 export function useDarkPoolLevels(
   marketOpen: boolean,
   selectedDate?: string,
-  selectedTime?: string,
 ): UseDarkPoolLevelsReturn {
   const isOwner = useIsOwner();
   const [levels, setLevels] = useState<DarkPoolLevel[]>([]);
@@ -43,13 +51,18 @@ export function useDarkPoolLevels(
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
-  const hasExplicitDate = selectedDate != null;
+  // Computed each render — recomputes naturally across midnight Eastern so
+  // the "today vs. past" branch flips at the session boundary without
+  // needing a state update.
+  const todayET = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+  const isToday = !selectedDate || selectedDate === todayET;
 
   const fetchLevels = useCallback(async () => {
     try {
       const qs = new URLSearchParams();
       if (selectedDate) qs.set('date', selectedDate);
-      if (selectedTime) qs.set('time', selectedTime);
       const params = qs.size > 0 ? `?${qs}` : '';
       const res = await fetch(`/api/darkpool-levels${params}`, {
         credentials: 'same-origin',
@@ -81,7 +94,7 @@ export function useDarkPoolLevels(
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [selectedDate, selectedTime]);
+  }, [selectedDate]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -96,24 +109,28 @@ export function useDarkPoolLevels(
       return;
     }
 
-    // Explicit date (today or past): fetch once, no polling.
-    if (hasExplicitDate) {
+    // Past date: fetch once, no polling — the day's data is fully written.
+    if (!isToday) {
       setLoading(true);
       fetchLevels();
       return;
     }
 
-    // No date selected: poll only while market is open
+    // Today, market closed: one-shot fetch, no polling — no fresh data is
+    // being produced, polling would just hit the cache.
     if (!marketOpen) {
-      setLoading(false);
+      setLoading(true);
+      fetchLevels();
       return;
     }
 
+    // Today, market open → live polling. Each poll fetches latest for today
+    // (no `?time=` param) so the "Updated HH:MM" display actually advances
+    // as the dark pool cron writes new blocks.
     fetchLevels();
-
     const id = setInterval(fetchLevels, POLL_INTERVALS.DARK_POOL);
     return () => clearInterval(id);
-  }, [isOwner, marketOpen, hasExplicitDate, fetchLevels]);
+  }, [isOwner, marketOpen, isToday, fetchLevels]);
 
   return { levels, loading, error, updatedAt, refresh: fetchLevels };
 }

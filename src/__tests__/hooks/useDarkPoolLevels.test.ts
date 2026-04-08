@@ -154,6 +154,53 @@ describe('useDarkPoolLevels: polling', () => {
 
     expect(mockFetch.mock.calls.length).toBe(callsAfterMount);
   });
+
+  it('advances the displayed updatedAt when polling fetches fresh data', async () => {
+    // REGRESSION GUARD: the previous bug was that the hook coupled to
+    // `selectedTime`, so every poll refetched the same stale snapshot. Fetch
+    // counts still incremented, but the displayed `updatedAt` never changed,
+    // so the panel looked frozen to the user. This test asserts that the
+    // user-facing state actually advances — not just that polling fires.
+    //
+    // Use today's date (computed at runtime) so the `isToday` branch in the
+    // dispatch ladder activates polling. A hardcoded past date would fall
+    // into the one-shot BACKTEST branch and never poll.
+    const todayET = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        levels: [makeLevel({ updatedAt: `${todayET}T19:58:00Z` })],
+        date: todayET,
+      }),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true, todayET));
+
+    await waitFor(() =>
+      expect(result.current.updatedAt).toBe(`${todayET}T19:58:00Z`),
+    );
+
+    // Next poll: the cron has written a newer block. The displayed
+    // updatedAt must advance.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        levels: [makeLevel({ updatedAt: `${todayET}T19:59:00Z` })],
+        date: todayET,
+      }),
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL);
+    });
+
+    await waitFor(() =>
+      expect(result.current.updatedAt).toBe(`${todayET}T19:59:00Z`),
+    );
+  });
 });
 
 // ============================================================
@@ -171,12 +218,17 @@ describe('useDarkPoolLevels: gating', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('does not fetch when market is closed', async () => {
+  it('fetches once but does not poll when market is closed', async () => {
+    // After-hours BACKTEST view of today — still show the day's data, but
+    // no point polling when no fresh blocks are being written.
     renderHook(() => useDarkPoolLevels(false));
 
-    await act(async () => {});
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
 
-    expect(mockFetch).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL * 5);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it('sets loading to false when not owner', async () => {
@@ -327,19 +379,21 @@ describe('useDarkPoolLevels: backtest mode', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('passes time param when selectedTime provided', async () => {
+  it('does not include a time param — the hook ignores selectedTime entirely', async () => {
+    // Regression guard for the "panel appears frozen while polling" bug.
+    // See useGexPerStrike.test.ts for the full explanation.
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({ levels: [makeLevel()], date: '2026-03-28' }),
     });
 
-    renderHook(() => useDarkPoolLevels(false, '2026-03-28', '10:30'));
+    renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
 
     await act(async () => {});
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const url = mockFetch.mock.calls[0]?.[0] as string;
     expect(url).toContain('date=2026-03-28');
-    expect(url).toContain('time=10%3A30');
+    expect(url).not.toContain('time=');
   });
 });

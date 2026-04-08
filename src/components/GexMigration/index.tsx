@@ -36,6 +36,14 @@ const CENTROID_SPARKLINE_WIDTH = 200;
 const CENTROID_SPARKLINE_HEIGHT = 36;
 
 /**
+ * Expected snapshot count — the API returns up to 21 one-minute snapshots
+ * covering the 20-minute migration window (21 samples = 20 intervals for
+ * the trend calculation). Shown as a buffer-fill indicator in the header:
+ * early in the session the buffer may be 3/21, by 20 minutes in it's full.
+ */
+const MIGRATION_BUFFER_SIZE = 21;
+
+/**
  * Short inline descriptions shown as the active-mode caption at the top
  * of the panel. Same text is used for the toggle button `title` tooltips
  * so hover previews for the OTHER modes match what you'd see after clicking.
@@ -497,20 +505,25 @@ export const GexMigration = memo(function GexMigration({
   );
 
   const snapshotCount = snapshots.length;
-  const subtitle = `${snapshotCount}/21`;
+  // Buffer-fill indicator — how many of the expected 21 snapshots we have.
+  // Labeled explicitly so it's not just a bare fraction like "0/21".
+  const bufferLabel = `Buffer ${snapshotCount}/${MIGRATION_BUFFER_SIZE}`;
+  const bufferTooltip = `${snapshotCount} of ${MIGRATION_BUFFER_SIZE} 1-min snapshots loaded. Full 20-minute migration trend needs all ${MIGRATION_BUFFER_SIZE}; fewer means the sparklines and 20-MIN deltas are based on a partial window.`;
   const asOfTime = result.asOf ? formatTime(result.asOf) : '';
 
   return (
     <SectionBox
       label="0DTE GEX Migration"
       badge={asOfTime || null}
+      collapsible
       headerRight={
         <div className="flex items-center gap-2">
           <span
             className="font-mono text-[10px]"
             style={{ color: theme.textMuted }}
+            title={bufferTooltip}
           >
-            {subtitle}
+            {bufferLabel}
           </span>
           <ModeToggle mode={mode} onChange={setMode} />
           <button
@@ -521,7 +534,7 @@ export const GexMigration = memo(function GexMigration({
             title="Refresh"
             aria-label="Refresh migration data"
           >
-            \u21bb
+            {'\u21bb'}
           </button>
         </div>
       }

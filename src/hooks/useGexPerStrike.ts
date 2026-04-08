@@ -8,18 +8,24 @@
  * Effect dispatch (in priority order):
  *   1. Not owner          → no fetch.
  *   2. Scrubbed           → fetch the exact snapshot once, no polling.
- *   3. Past date          → fetch once with the requested time, no polling.
+ *   3. Past date          → fetch latest for that date once, no polling.
  *   4. Today, market open → fetch + poll every POLL_INTERVALS.GEX_STRIKE.
  *   5. Today, market closed → fetch once, no polling.
+ *
+ * This hook deliberately does NOT take `selectedTime` from the calculator.
+ * The time picker in `useAppState` is an "as-of" control for the Black-Scholes
+ * math, not a scrub control for the GEX panel — the scrub buttons are. Coupling
+ * this hook to `selectedTime` would make polling refetch the same stale
+ * snapshot every cycle (since `selectedTime` defaults to the minute the page
+ * loaded at and doesn't auto-advance), causing the panel to appear frozen.
  *
  * Live-ness has TWO independent signals:
  *   - The dispatch ladder above decides whether the panel is *trying* to be
  *     live (i.e., whether `setInterval` is running).
  *   - A wall-clock freshness check (STALE_THRESHOLD_MS) decides whether the
- *     displayed snapshot is *actually* live. This catches the case where the
- *     user has dialed `selectedTime` to a past minute — polling keeps firing
- *     but each fetch returns the same stale snapshot, so the badge correctly
- *     flips from LIVE to BACKTEST without disabling the polling machinery.
+ *     displayed snapshot is *actually* live. This is defense-in-depth — it
+ *     catches the case where polling silently fails (network error,
+ *     backgrounded tab throttling) and prevents the badge from lying.
  *
  * The server returns `timestamps[]` (every snapshot for the day, ascending),
  * which the hook caches so prev/next can step through them without an extra
@@ -34,8 +40,7 @@ import { useIsOwner } from './useIsOwner';
 /**
  * A snapshot is considered "live" only if its timestamp is within this many
  * milliseconds of the wall clock. Generous enough to absorb a missed poll
- * (POLL_INTERVALS.GEX_STRIKE is 60s) without flickering, tight enough to
- * catch the "user dialed selectedTime to a past minute" case.
+ * (POLL_INTERVALS.GEX_STRIKE is 60s) without flickering.
  */
 const STALE_THRESHOLD_MS = 2 * 60 * 1000;
 
@@ -118,7 +123,6 @@ export interface UseGexPerStrikeReturn {
 export function useGexPerStrike(
   marketOpen: boolean,
   selectedDate?: string,
-  selectedTime?: string,
 ): UseGexPerStrikeReturn {
   const isOwner = useIsOwner();
   const [strikes, setStrikes] = useState<GexStrikeLevel[]>([]);
@@ -149,7 +153,6 @@ export function useGexPerStrike(
         const qs = new URLSearchParams();
         if (selectedDate) qs.set('date', selectedDate);
         if (tsOverride) qs.set('ts', tsOverride);
-        else if (selectedTime) qs.set('time', selectedTime);
         const params = qs.size > 0 ? `?${qs}` : '';
         const res = await fetch(`/api/gex-per-strike${params}`, {
           credentials: 'same-origin',
@@ -181,7 +184,7 @@ export function useGexPerStrike(
         if (mountedRef.current) setLoading(false);
       }
     },
-    [selectedDate, selectedTime],
+    [selectedDate],
   );
 
   useEffect(() => {
@@ -227,12 +230,10 @@ export function useGexPerStrike(
       return;
     }
 
-    // Today, market open, not scrubbed → live polling. Each poll re-uses
-    // `selectedTime` if set, so a user who has dialed back to a past minute
-    // gets that same snapshot returned every cycle (slightly wasteful, but
-    // preserves their selection — the wall-clock check below labels it
-    // BACKTEST). When `selectedTime` matches the current minute, polling
-    // delivers fresh snapshots and the LIVE badge stays green.
+    // Today, market open, not scrubbed → live polling. Each poll fetches
+    // the latest snapshot for the day (no `?time=` param), so the displayed
+    // timestamp actually advances as the cron writes new snapshots. Users
+    // who want to inspect a past moment use the scrub controls below.
     fetchData();
     const id = setInterval(() => fetchData(), POLL_INTERVALS.GEX_STRIKE);
     return () => clearInterval(id);

@@ -153,24 +153,13 @@ export default function StrikeCalculator() {
   );
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
 
-  // Build "HH:MM" 24h time string for time-aware data queries (backtest mode)
-  const selectedTime = useMemo(() => {
-    if (!vix.selectedDate) return undefined;
-    let h = Number.parseInt(timeHour, 10);
-    if (timeAmPm === 'PM' && h !== 12) h += 12;
-    if (timeAmPm === 'AM' && h === 12) h = 0;
-    return `${String(h).padStart(2, '0')}:${timeMinute}`;
-  }, [vix.selectedDate, timeHour, timeMinute, timeAmPm]);
-
   const darkPool = useDarkPoolLevels(
     market.data.quotes?.marketOpen ?? false,
     vix.selectedDate,
-    selectedTime,
   );
   const gexStrike = useGexPerStrike(
     market.data.quotes?.marketOpen ?? false,
     vix.selectedDate,
-    selectedTime,
   );
   const gexMigration = useGexMigration(
     market.data.quotes?.marketOpen ?? false,
