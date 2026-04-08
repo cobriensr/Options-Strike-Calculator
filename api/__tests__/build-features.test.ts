@@ -310,6 +310,190 @@ describe('build-features handler', () => {
     expect(res._json).toMatchObject({ dates: 1 });
   });
 
+  // ── Single-date param ─────────────────────────────────────
+
+  it('processes only the date in ?date= when provided', async () => {
+    prefillHandlerPreamble();
+    // No flow_data SELECT or COUNT(*) — single-date mode short-circuits.
+    // All buildFeaturesForDate / extractLabelsForDate calls default to [].
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-07' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ dates: 1 });
+  });
+
+  it('?date= bypasses the post-close time window', async () => {
+    // Outside post-close, but date param should override the time check
+    vi.setSystemTime(OUTSIDE_WINDOW_TIME);
+    prefillHandlerPreamble();
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-07' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Should NOT have been skipped
+    expect(res._status).toBe(200);
+    expect(res._json).not.toMatchObject({ skipped: true });
+  });
+
+  it('?date= takes precedence over backfill=true', async () => {
+    prefillHandlerPreamble();
+    // If backfill were taking precedence, the next call would be the
+    // SELECT DISTINCT date FROM flow_data — and the test would need to
+    // mock it. Single-date mode skips that query entirely.
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-07', backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ dates: 1 });
+  });
+
+  it('returns 400 for invalid ?date= format', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: 'not-a-date' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toEqual({
+      error: 'Invalid date param, expected YYYY-MM-DD',
+    });
+  });
+
+  // ── COALESCE upsert pattern (data preservation) ───────────
+
+  it('upsertFeatures uses COALESCE on every column to preserve existing values', async () => {
+    // Regression test for a destructive UPSERT that nulled out historical
+    // features whenever a fail-soft helper returned undefined for an API
+    // that no longer served the date (e.g. UW 30-day rolling window).
+    prefillHandlerPreamble();
+
+    // Drive the handler through one full date so upsertFeatures runs.
+    // Single-date mode keeps the SQL sequence minimal: just the per-date
+    // queries inside buildFeaturesForDate / extractLabelsForDate.
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-07' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Find the SQL call that issued the training_features INSERT.
+    const upsertCall = mockSql.mock.calls.find((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      return (
+        Array.isArray(strings) &&
+        strings.some(
+          (s: string) =>
+            typeof s === 'string' &&
+            s.includes('INSERT INTO training_features'),
+        )
+      );
+    });
+    expect(upsertCall).toBeDefined();
+
+    const sql = (upsertCall![0] as TemplateStringsArray).join(' ');
+
+    // Sentinel columns from each fragile feature group must use COALESCE.
+    // If someone reverts the pattern for any of these, the test fails loudly.
+    expect(sql).toContain(
+      'max_pain_0dte = COALESCE(EXCLUDED.max_pain_0dte, training_features.max_pain_0dte)',
+    );
+    expect(sql).toContain(
+      'opt_call_volume = COALESCE(EXCLUDED.opt_call_volume, training_features.opt_call_volume)',
+    );
+    expect(sql).toContain(
+      'vix = COALESCE(EXCLUDED.vix, training_features.vix)',
+    );
+    expect(sql).toContain(
+      'feature_completeness = COALESCE(EXCLUDED.feature_completeness, training_features.feature_completeness)',
+    );
+
+    // Catch the inverse: no naked `column = EXCLUDED.column` should remain
+    // anywhere in the SET clause (sentinel: vix would be `vix = EXCLUDED.vix`).
+    expect(sql).not.toMatch(/\bvix = EXCLUDED\.vix\b/);
+    expect(sql).not.toMatch(/\bmax_pain_0dte = EXCLUDED\.max_pain_0dte\b/);
+  });
+
+  it('upsertLabels uses COALESCE on every column to preserve existing values', async () => {
+    // extractLabelsForDate returns null when no analysis exists, and the
+    // handler then skips upsertLabels — so we need to make the `analyses`
+    // SELECT return a valid row regardless of its position in the call
+    // sequence. mockImplementation matches by SQL content instead of
+    // counting calls (which would break whenever buildFeaturesForDate is
+    // refactored).
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const joined = strings.join(' ');
+      if (joined.includes('FROM analyses')) {
+        return Promise.resolve([
+          {
+            id: 1,
+            full_response: JSON.stringify({
+              review: { wasCorrect: true },
+              structure: 'CALL CREDIT SPREAD',
+              confidence: 'HIGH',
+              chartConfidence: {},
+            }),
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-07' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const upsertCall = mockSql.mock.calls.find((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      return (
+        Array.isArray(strings) &&
+        strings.some(
+          (s: string) =>
+            typeof s === 'string' && s.includes('INSERT INTO day_labels'),
+        )
+      );
+    });
+    expect(upsertCall).toBeDefined();
+
+    const sql = (upsertCall![0] as TemplateStringsArray).join(' ');
+
+    expect(sql).toContain(
+      'structure_correct = COALESCE(EXCLUDED.structure_correct, day_labels.structure_correct)',
+    );
+    expect(sql).toContain(
+      'settlement_direction = COALESCE(EXCLUDED.settlement_direction, day_labels.settlement_direction)',
+    );
+    expect(sql).not.toMatch(
+      /\bstructure_correct = EXCLUDED\.structure_correct\b/,
+    );
+  });
+
   // ── Config ────────────────────────────────────────────────
 
   it('exports config with maxDuration: 300', () => {
