@@ -1,12 +1,9 @@
 {
-  "generated_at": "2026-04-08T04:27:32+00:00",
+  "generated_at": "2026-04-08T05:35:55+00:00",
   "dataset": {
     "total_days": 41,
     "labeled_days": 38,
-    "date_range": [
-      "2026-02-09",
-      "2026-04-07"
-    ],
+    "date_range": ["2026-02-09", "2026-04-07"],
     "overall_accuracy": 0.921
   },
   "structure_accuracy": {
@@ -189,15 +186,10 @@
     }
   ],
   "health": {
-    "status": "WARN",
-    "warnings": [
-      "Feature completeness below 90% on 2 of last 10 days",
-      "Completeness trending down: 78.80% vs 99.20% (delta 20.40%)",
-      "Recent label coverage (80%) is lower than overall (93%)",
-      "'dp_support_resistance_ratio' is 30% null in last 10 days"
-    ],
+    "status": "PASS",
+    "warnings": [],
     "failures": [],
-    "run_time": "2026-04-08 04:26:49"
+    "run_time": "2026-04-08 00:35:50"
   },
   "pipeline_sections": [
     "health",
@@ -211,120 +203,53 @@
   ],
   "phase2": {
     "per_model": {
-      "Logistic Reg (L2)": {
-        "accuracy": 0.4286,
-        "log_loss": 8.9858,
+      "DecisionTree": {
+        "accuracy": 0.28,
+        "log_loss": 6.7493,
         "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.533,
-          "PUT CREDIT SPREAD": 0.364,
-          "IRON CONDOR": 0.0
-        }
-      },
-      "Random Forest (15)": {
-        "accuracy": 0.6429,
-        "log_loss": 0.8823,
-        "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.706,
-          "PUT CREDIT SPREAD": 0.545,
-          "IRON CONDOR": 0.0
-        }
-      },
-      "Naive Bayes": {
-        "accuracy": 0.7143,
-        "log_loss": 6.847,
-        "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.75,
-          "PUT CREDIT SPREAD": 0.667,
-          "IRON CONDOR": 0.0
-        }
-      },
-      "Decision Tree (d=2)": {
-        "accuracy": 0.2143,
-        "log_loss": 6.4539,
-        "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.333,
-          "PUT CREDIT SPREAD": 0.25,
-          "IRON CONDOR": 0.0
+          "CALL CREDIT SPREAD": 0.4,
+          "PUT CREDIT SPREAD": 0.0,
+          "IRON CONDOR": 0.3
         }
       },
       "XGBoost": {
-        "accuracy": 0.6429,
-        "log_loss": 0.8153,
+        "accuracy": 0.28,
+        "log_loss": 6.7493,
         "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.762,
-          "PUT CREDIT SPREAD": 0.286,
-          "IRON CONDOR": 0.0
+          "CALL CREDIT SPREAD": 0.4,
+          "PUT CREDIT SPREAD": 0.0,
+          "IRON CONDOR": 0.3
         }
       }
     },
-    "best_model": "Naive Bayes",
-    "best_accuracy": 0.7143,
-    "majority_baseline": 0.5714,
-    "walk_forward_folds": 14,
+    "best_model": "DecisionTree",
+    "best_accuracy": 0.28,
+    "majority_baseline": 0.44,
+    "walk_forward_folds": 25,
     "top_features": [
       {
-        "feature": "num__qqq_ncp_t1",
-        "importance": 0.0689
+        "feature": "vix",
+        "importance": 0.2
       },
       {
-        "feature": "num__neg_gamma_nearest_dist",
-        "importance": 0.0505
+        "feature": "vix1d",
+        "importance": 0.2
       },
       {
-        "feature": "num__prev_day_vix_change",
-        "importance": 0.0471
+        "feature": "gex_oi_t1",
+        "importance": 0.2
       },
       {
-        "feature": "num__gamma_asymmetry",
-        "importance": 0.0463
+        "feature": "gex_oi_t2",
+        "importance": 0.2
       },
       {
-        "feature": "num__gex_vol_t2",
-        "importance": 0.0451
-      },
-      {
-        "feature": "num__pcr_open",
-        "importance": 0.0428
-      },
-      {
-        "feature": "cat__prev_day_direction_DOWN",
-        "importance": 0.0349
-      },
-      {
-        "feature": "num__dp_top_cluster_dist",
-        "importance": 0.0339
-      },
-      {
-        "feature": "num__mt_ncp_t2",
-        "importance": 0.0332
-      },
-      {
-        "feature": "num__vix1d",
-        "importance": 0.0296
-      },
-      {
-        "feature": "num__charm_max_pos_dist",
-        "importance": 0.0289
-      },
-      {
-        "feature": "num__pcr_spike_count",
-        "importance": 0.0275
-      },
-      {
-        "feature": "num__mt_ncp_t1",
-        "importance": 0.0258
-      },
-      {
-        "feature": "num__zero_dte_ncp_t2",
-        "importance": 0.0239
-      },
-      {
-        "feature": "num__realized_vol_10d",
-        "importance": 0.0231
+        "feature": "sigma",
+        "importance": 0.2
       }
     ],
-    "n_labeled_days": 34,
-    "n_features": 119
+    "n_labeled_days": 45,
+    "n_features": 5
   },
   "eda": {
     "structure_accuracy": {
@@ -513,10 +438,7 @@
     "silhouette": 0.68,
     "calinski_harabasz": 17.4,
     "davies_bouldin": 0.216,
-    "cluster_sizes": [
-      35,
-      1
-    ],
+    "cluster_sizes": [35, 1],
     "stability": 0.972,
     "split_half_holdout_sil": null,
     "gmm_bic": 670.7,
