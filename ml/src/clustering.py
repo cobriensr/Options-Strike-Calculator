@@ -759,6 +759,38 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
     plt.close("all")
 
 
+def filter_by_completeness(
+    df: pd.DataFrame, threshold: float = 0.80
+) -> pd.DataFrame:
+    """Drop days with feature_completeness below the threshold.
+
+    Market holidays leak into training_features when the feature-builder
+    cron doesn't check the NYSE calendar — those days have near-zero
+    completeness (no options/GEX/dark pool data) and pollute distance-based
+    clustering by creating phantom "outlier" days driven by median
+    imputation of 70%+ missing features. This filter also catches days
+    with upstream data pipeline failures.
+
+    Mirrors the filter in ml/src/phase2_early.py so both pipelines see the
+    same cleaned input. No-op (with warning) if the column is absent.
+    """
+    if "feature_completeness" not in df.columns:
+        print("  WARNING: feature_completeness column missing — skipping filter")
+        return df
+
+    mask = df["feature_completeness"].astype(float) >= threshold
+    dropped = df[~mask]
+    filtered = df[mask]
+    if len(dropped) > 0:
+        dropped_dates = ", ".join(dropped.index.strftime("%Y-%m-%d"))
+        print(
+            f"  Dropped {len(dropped)} day(s) below {threshold:.0%} completeness "
+            f"(holidays / incomplete data): {dropped_dates}"
+        )
+        print(f"  {len(filtered)} days remain after completeness filter")
+    return filtered
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 
@@ -775,6 +807,8 @@ def main() -> None:
     print(
         f"  {len(df)} days loaded ({df.index.min():%Y-%m-%d} to {df.index.max():%Y-%m-%d})"
     )
+
+    df = filter_by_completeness(df)
 
     validate_dataframe(
         df,

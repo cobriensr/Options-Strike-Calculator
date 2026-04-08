@@ -225,6 +225,60 @@ def test_preprocess_pca_scales_with_sample_count():
     )
 
 
+def test_filter_by_completeness_drops_holiday_day():
+    """Days with feature_completeness < 0.80 should be filtered out.
+
+    Regression test for a CI failure where 2026-04-03 (Good Friday) was
+    written to training_features by a cron that didn't check the NYSE
+    calendar. The day had 26% feature completeness and was imputed into
+    a phantom PCA position that KMeans isolated as a singleton cluster.
+    """
+    dates = pd.date_range("2026-01-01", periods=10, freq="B")
+    df = pd.DataFrame(
+        {
+            "vix": np.linspace(15, 25, 10),
+            "feature_completeness": [
+                0.95, 0.92, 0.88, 0.26, 0.91, 0.93, 0.80, 0.75, 0.99, 0.90,
+            ],
+        },
+        index=dates,
+    )
+    filtered = filter_by_completeness(df)
+    # Two rows should be dropped: 0.26 and 0.75 (both below 0.80)
+    assert len(filtered) == 8
+    assert 0.26 not in filtered["feature_completeness"].values
+    assert 0.75 not in filtered["feature_completeness"].values
+    # 0.80 is inclusive — it must survive
+    assert 0.80 in filtered["feature_completeness"].values
+
+
+def test_filter_by_completeness_no_op_when_column_missing(capsys):
+    """If the column is absent, return the frame unchanged with a warning."""
+    df = pd.DataFrame(
+        {"vix": [15.0, 16.0, 17.0]},
+        index=pd.date_range("2026-01-01", periods=3, freq="B"),
+    )
+    filtered = filter_by_completeness(df)
+    assert len(filtered) == 3
+    assert filtered.equals(df)
+    captured = capsys.readouterr()
+    assert "feature_completeness column missing" in captured.out
+
+
+def test_filter_by_completeness_all_pass():
+    """If every day is above threshold, no rows are dropped."""
+    dates = pd.date_range("2026-01-01", periods=5, freq="B")
+    df = pd.DataFrame(
+        {
+            "vix": [15.0, 16.0, 17.0, 18.0, 19.0],
+            "feature_completeness": [0.95, 0.98, 1.00, 0.90, 0.85],
+        },
+        index=dates,
+    )
+    filtered = filter_by_completeness(df)
+    assert len(filtered) == 5
+
+
 def test_run_clustering_returns_all_ks():
     """run_clustering should return results for every k in range."""
     rng = np.random.default_rng(42)
@@ -262,6 +316,7 @@ def test_run_clustering_metrics_are_numeric():
 
 from clustering import (
     characterize_clusters,
+    filter_by_completeness,
     outcome_association_test,
     permutation_test,
     print_results,
