@@ -74,9 +74,12 @@ describe('PinRiskAnalysis', () => {
     expect(screen.getByText(/No open interest data/)).toBeInTheDocument();
   });
 
-  it('limits to top 8 strikes', () => {
+  it('limits to top 8 strikes when no strike is near spot', () => {
+    // All 12 strikes are well outside the pin zone (>0.5% from spot),
+    // so the near-spot inclusion path adds nothing and the global
+    // top-N cap is the only thing in play.
     const puts = Array.from({ length: 12 }, (_, i) =>
-      makeStrike(5600 + i * 10, 1000 * (12 - i)),
+      makeStrike(5000 + i * 10, 1000 * (12 - i)),
     );
     const calls = puts.map((p) => makeStrike(p.strike, 500));
     const chain = makeChain(puts, calls);
@@ -84,6 +87,34 @@ describe('PinRiskAnalysis', () => {
     const rows = screen.getAllByRole('row');
     // 1 header + 8 data rows
     expect(rows.length).toBe(9);
+  });
+
+  it('exceeds top 8 when near-spot pin candidates rank below top-N', () => {
+    // Eight far-from-spot high-OI strikes + two near-spot pin
+    // candidates with lower OI. Under the current implementation the
+    // near-spot strikes must be included regardless of global OI rank,
+    // so the rendered table has more than 8 data rows.
+    const puts = [
+      makeStrike(5000, 20000),
+      makeStrike(5010, 18000),
+      makeStrike(5020, 16000),
+      makeStrike(5030, 14000),
+      makeStrike(5040, 12000),
+      makeStrike(5050, 10000),
+      makeStrike(5060, 8000),
+      makeStrike(5070, 6000),
+      // Near-spot (within 0.5% of 5700) — lower OI but must still appear
+      makeStrike(5700, 3000),
+      makeStrike(5710, 2000),
+    ];
+    const chain = makeChain(puts, []);
+    render(<PinRiskAnalysis chain={chain} spot={5700} />);
+    const rows = screen.getAllByRole('row');
+    // 1 header + 8 top-by-OI + 2 near-spot = 11 rows
+    expect(rows.length).toBe(11);
+    // The near-spot candidates are actually in the rendered table
+    expect(screen.getByText('5700')).toBeInTheDocument();
+    expect(screen.getByText('5710')).toBeInTheDocument();
   });
 
   it('shows PIN label on near-spot strikes', () => {

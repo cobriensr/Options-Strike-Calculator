@@ -1,6 +1,6 @@
 import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
-import { getTopOIStrikes, formatOI } from '../utils/pin-risk';
+import { getTopOIStrikes, formatOI, PIN_ZONE_PCT } from '../utils/pin-risk';
 import type { ChainResponse } from '../types/api';
 
 interface Props {
@@ -21,9 +21,11 @@ export default function PinRiskAnalysis({ chain, spot }: Readonly<Props>) {
 
   const maxOI = topStrikes[0]?.totalOI ?? 1;
 
-  // Identify if any top OI strike is within 0.5% of spot (pin risk zone)
+  // Identify if any top OI strike is within the pin zone of spot.
+  // Threshold is shared with getTopOIStrikes so inclusion logic and
+  // styling always use the same number.
   const pinRiskStrikes = topStrikes.filter(
-    (s) => Math.abs(s.distFromSpot / spot) < 0.005,
+    (s) => Math.abs(s.distFromSpot / spot) < PIN_ZONE_PCT,
   );
   const hasPinRisk = pinRiskStrikes.length > 0;
 
@@ -107,7 +109,7 @@ export default function PinRiskAnalysis({ chain, spot }: Readonly<Props>) {
           </thead>
           <tbody>
             {topStrikes.map((s) => {
-              const isNearSpot = Math.abs(s.distFromSpot / spot) < 0.005;
+              const isNearSpot = Math.abs(s.distFromSpot / spot) < PIN_ZONE_PCT;
               const barColor =
                 s.side === 'put'
                   ? theme.red
