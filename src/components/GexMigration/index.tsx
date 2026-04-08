@@ -35,6 +35,20 @@ const SPARKLINE_HEIGHT = 28;
 const CENTROID_SPARKLINE_WIDTH = 200;
 const CENTROID_SPARKLINE_HEIGHT = 36;
 
+/**
+ * Short inline descriptions shown as the active-mode caption at the top
+ * of the panel. Same text is used for the toggle button `title` tooltips
+ * so hover previews for the OTHER modes match what you'd see after clicking.
+ *
+ * These are the "what is this and when do I use it" reminders — intentionally
+ * written for real-time trading recall, not as comprehensive docs.
+ */
+const MODE_DESCRIPTIONS: Record<GexMode, string> = {
+  oi: "standing dealer inventory — slow structural magnet, best for end-of-day pins",
+  vol: "today's fresh volume — fast flow view, best for building intraday magnets",
+  dir: 'directionalized MM bid/ask split — shows which side is pushing',
+};
+
 interface Props {
   snapshots: GexSnapshot[];
   loading: boolean;
@@ -154,22 +168,10 @@ function ModeToggle({
   mode: GexMode;
   onChange: (m: GexMode) => void;
 }) {
-  const options: Array<{ mode: GexMode; label: string; title: string }> = [
-    {
-      mode: 'oi',
-      label: 'OI',
-      title: 'Open interest — slow structural magnet view',
-    },
-    {
-      mode: 'vol',
-      label: 'VOL',
-      title: "Volume — today's fresh flow view",
-    },
-    {
-      mode: 'dir',
-      label: 'DIR',
-      title: 'Directionalized — MM-side bid/ask view',
-    },
+  const options: Array<{ mode: GexMode; label: string }> = [
+    { mode: 'oi', label: 'OI' },
+    { mode: 'vol', label: 'VOL' },
+    { mode: 'dir', label: 'DIR' },
   ];
 
   return (
@@ -179,7 +181,7 @@ function ModeToggle({
           key={opt.mode}
           type="button"
           onClick={() => onChange(opt.mode)}
-          title={opt.title}
+          title={`${opt.label} — ${MODE_DESCRIPTIONS[opt.mode]}`}
           aria-pressed={mode === opt.mode}
           className="cursor-pointer rounded px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide"
           style={{
@@ -192,6 +194,32 @@ function ModeToggle({
           {opt.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Always-visible single-line caption describing the currently-active mode.
+ * Sits at the top of the panel body so it's impossible to miss — no hover
+ * needed. Updates live as the toggle changes.
+ */
+function ActiveModeCaption({ mode }: { mode: GexMode }) {
+  return (
+    <div
+      className="flex items-center gap-2 font-mono text-[10px]"
+      data-testid="gex-migration-mode-caption"
+    >
+      <span
+        className="rounded border px-1.5 py-0.5 font-semibold tracking-wide"
+        style={{
+          color: theme.text,
+          borderColor: 'rgba(255,255,255,0.1)',
+          background: 'rgba(255,255,255,0.04)',
+        }}
+      >
+        {mode.toUpperCase()}
+      </span>
+      <span style={{ color: theme.textMuted }}>{MODE_DESCRIPTIONS[mode]}</span>
     </div>
   );
 }
@@ -528,6 +556,7 @@ export const GexMigration = memo(function GexMigration({
         </div>
       ) : (
         <div className="flex flex-col gap-4">
+          <ActiveModeCaption mode={mode} />
           <TargetStrikeTile target={result.targetStrike} />
 
           <div>

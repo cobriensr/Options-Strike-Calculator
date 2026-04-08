@@ -141,6 +141,64 @@ describe('GexMigration', () => {
     );
   });
 
+  it('renders an always-visible active mode caption', () => {
+    render(
+      <GexMigration
+        snapshots={buildRampSnapshots(6620, 100, 1500)}
+        loading={false}
+        error={null}
+        onRefresh={vi.fn()}
+      />,
+    );
+    const caption = screen.getByTestId('gex-migration-mode-caption');
+    expect(caption).toBeInTheDocument();
+    // OI is default → description should mention standing dealer inventory
+    expect(caption).toHaveTextContent(/OI/);
+    expect(caption).toHaveTextContent(/standing dealer inventory/i);
+  });
+
+  it('updates the mode caption when the toggle changes', () => {
+    render(
+      <GexMigration
+        snapshots={buildRampSnapshots(6620, 100, 1500)}
+        loading={false}
+        error={null}
+        onRefresh={vi.fn()}
+      />,
+    );
+    const caption = screen.getByTestId('gex-migration-mode-caption');
+    expect(caption).toHaveTextContent(/standing dealer inventory/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'VOL' }));
+    expect(caption).toHaveTextContent(/today's fresh volume/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'DIR' }));
+    expect(caption).toHaveTextContent(/directionalized mm bid\/ask/i);
+  });
+
+  it('toggle buttons have title tooltips matching the mode descriptions', () => {
+    render(
+      <GexMigration
+        snapshots={buildRampSnapshots(6620, 100, 1500)}
+        loading={false}
+        error={null}
+        onRefresh={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'OI' })).toHaveAttribute(
+      'title',
+      expect.stringContaining('standing dealer inventory'),
+    );
+    expect(screen.getByRole('button', { name: 'VOL' })).toHaveAttribute(
+      'title',
+      expect.stringContaining("today's fresh volume"),
+    );
+    expect(screen.getByRole('button', { name: 'DIR' })).toHaveAttribute(
+      'title',
+      expect.stringContaining('directionalized'),
+    );
+  });
+
   it('renders the target strike when a magnet qualifies', () => {
     render(
       <GexMigration
