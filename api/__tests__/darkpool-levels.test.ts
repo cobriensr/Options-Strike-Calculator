@@ -40,6 +40,11 @@ function makeDbRow(overrides = {}) {
     total_shares: 2000000,
     latest_time: '2026-04-02T16:30:00Z',
     updated_at: '2026-04-02T16:35:00Z',
+    // The real query now attaches MAX(updated_at) OVER () to every row.
+    // Tests that care about meta.lastUpdated override this; others inherit
+    // the default, which matches a single-row result where the max equals
+    // the row's own updated_at.
+    max_updated_at: '2026-04-02T16:35:00Z',
     ...overrides,
   };
 }
@@ -213,5 +218,50 @@ describe('GET /api/darkpool-levels', () => {
       .levels[0]!;
     expect(level.latestTime).toBe('2026-04-02T18:00:00Z');
     expect(level.updatedAt).toBe('2026-04-02T18:05:00Z');
+  });
+
+  // Regression: the badge on the dark pool panel used to derive its
+  // timestamp from levels[0].updatedAt (the highest-premium row). On
+  // days where the top row is a big anchor level that gets its only
+  // prints early, that timestamp freezes while the cron is still
+  // writing lower-ranked levels. The endpoint now surfaces
+  // MAX(updated_at) across all rows via a window column, so the badge
+  // reflects the cron's actual last successful write.
+  it('returns meta.lastUpdated from the max_updated_at window column', async () => {
+    // Top row is a stale anchor level; a smaller level was UPSERTed
+    // much more recently, and its updated_at is what the window emits.
+    mockSql.mockResolvedValue([
+      makeDbRow({
+        spx_approx: 6575,
+        total_premium: '1300000000',
+        updated_at: '2026-04-02T13:30:00Z',
+        max_updated_at: '2026-04-02T19:58:00Z',
+      }),
+      makeDbRow({
+        spx_approx: 6555,
+        total_premium: '248000000',
+        updated_at: '2026-04-02T19:58:00Z',
+        max_updated_at: '2026-04-02T19:58:00Z',
+      }),
+    ]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      meta: { lastUpdated: string | null };
+    };
+    expect(body.meta.lastUpdated).toBe('2026-04-02T19:58:00Z');
+  });
+
+  it('returns meta.lastUpdated as null when no rows match', async () => {
+    mockSql.mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    const body = res._json as { meta: { lastUpdated: string | null } };
+    expect(body.meta.lastUpdated).toBeNull();
   });
 });

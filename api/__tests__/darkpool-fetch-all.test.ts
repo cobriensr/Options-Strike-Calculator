@@ -345,6 +345,105 @@ describe('fetchAllDarkPoolTrades', () => {
 
     vi.unstubAllGlobals();
   });
+
+  // Regression: guard against UW returning trades outside the requested
+  // ET date. Without this guard, the first cron run of the day walks
+  // backward through prior sessions and contaminates today's aggregates.
+  it('drops trades whose ET date does not match the requested date', async () => {
+    // Apr 7 18:00 UTC = Apr 7 14:00 ET, Apr 8 14:30 UTC = Apr 8 10:30 ET
+    const apr7Trade = makeTrade({
+      tracking_id: 7,
+      executed_at: '2026-04-07T18:00:00Z',
+    });
+    const apr8TradeEarly = makeTrade({
+      tracking_id: 81,
+      executed_at: '2026-04-08T14:30:00Z',
+    });
+    const apr8TradeLate = makeTrade({
+      tracking_id: 82,
+      executed_at: '2026-04-08T19:00:00Z',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [apr8TradeLate, apr8TradeEarly, apr7Trade],
+          }),
+      }),
+    );
+
+    const result = await fetchAllDarkPoolTrades('key', '2026-04-08');
+
+    expect(result).toHaveLength(2);
+    expect(result.map((t) => t.tracking_id).sort()).toEqual([81, 82]);
+
+    vi.unstubAllGlobals();
+  });
+
+  // Regression: when the oldest trade on the current page already
+  // crosses the date boundary, pagination must exit instead of issuing
+  // another `older_than` request that walks further into prior sessions.
+  it('stops pagination early when oldest trade is before the requested date', async () => {
+    // Page 1: 500 trades, oldest is Apr 7 afternoon ET. Without the
+    // early-exit guard, `batch.length === 500` would trigger a page 2
+    // request that walks back into Apr 7 / Apr 6 and beyond.
+    const page1 = Array.from({ length: 500 }, (_, i) => {
+      // First 100 are today (Apr 8), remaining 400 are Apr 7.
+      const isApr8 = i < 100;
+      const hour = isApr8 ? 14 : 19;
+      const minute = isApr8 ? 30 - Math.floor(i / 2) : 59 - Math.floor(i / 10);
+      const day = isApr8 ? '08' : '07';
+      return makeTrade({
+        tracking_id: 1000 + i,
+        executed_at: `2026-04-${day}T${String(hour).padStart(2, '0')}:${String(Math.max(minute, 0)).padStart(2, '0')}:00Z`,
+      });
+    });
+
+    // A poisoned page 2 that would succeed if the early-exit guard
+    // failed to fire — this makes `toHaveBeenCalledTimes(1)` a positive
+    // proof that early-exit is what stopped pagination (not an accidental
+    // throw from `undefined.ok` on a missing mock response).
+    const poisonedPage2 = [
+      makeTrade({
+        tracking_id: 9999,
+        executed_at: '2026-04-06T14:00:00Z', // Apr 6 — even further back
+      }),
+    ];
+
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: page1 }),
+      })
+      .mockResolvedValue({
+        // Default response for any further calls — if early-exit fails
+        // to fire and the loop fetches page 2, this response is served.
+        ok: true,
+        json: () => Promise.resolve({ data: poisonedPage2 }),
+      });
+
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await fetchAllDarkPoolTrades('key', '2026-04-08');
+
+    // Only one fetch: the early-exit guard prevented page 2 from firing.
+    // If this assertion fails, the poisoned page would have been fetched
+    // and the 9999 trade would leak through.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    // The 400 Apr 7 trades were filtered out by the final date guard,
+    // and the poisoned Apr 6 trade must never appear.
+    expect(result).toHaveLength(100);
+    for (const trade of result) {
+      expect(trade.executed_at.startsWith('2026-04-08')).toBe(true);
+      expect(trade.tracking_id).not.toBe(9999);
+    }
+
+    vi.unstubAllGlobals();
+  });
 });
 
 // =============================================================

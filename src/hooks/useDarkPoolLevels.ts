@@ -79,6 +79,7 @@ export function useDarkPoolLevels(
       const data = (await res.json()) as {
         levels: DarkPoolLevel[];
         date: string;
+        meta?: { lastUpdated: string | null };
       };
 
       if (!mountedRef.current) return;
@@ -86,7 +87,13 @@ export function useDarkPoolLevels(
       setLevels(data.levels);
       setError(null);
 
-      if (data.levels.length > 0) {
+      // Prefer the server's MAX(updated_at) — it reflects the cron's
+      // last successful write across *any* level. Falling back to
+      // levels[0].updatedAt means the badge can freeze when the top
+      // row is a big anchor level that never gets new prints.
+      if (data.meta?.lastUpdated != null) {
+        setUpdatedAt(data.meta.lastUpdated);
+      } else if (data.levels.length > 0) {
         setUpdatedAt(data.levels[0]!.updatedAt);
       }
     } catch (err) {

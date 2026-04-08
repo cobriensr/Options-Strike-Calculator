@@ -220,6 +220,39 @@ describe('fetchDarkPoolBlocks', () => {
 
     vi.unstubAllGlobals();
   });
+
+  // Regression: same cross-date contamination guard as the paginated
+  // fetcher. UW's date parameter can be loose, so we never trust it
+  // alone — the final filter must drop trades whose ET date doesn't
+  // match the requested date.
+  it('drops trades whose ET date does not match the requested date', async () => {
+    const apr7Trade = makeTrade({
+      tracking_id: 7,
+      executed_at: '2026-04-07T18:00:00Z',
+    });
+    const apr8Trade = makeTrade({
+      tracking_id: 8,
+      executed_at: '2026-04-08T14:30:00Z',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [apr8Trade, apr7Trade],
+          }),
+      }),
+    );
+
+    const result = await fetchDarkPoolBlocks('test-key', '2026-04-08');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.tracking_id).toBe(8);
+
+    vi.unstubAllGlobals();
+  });
 });
 
 // =============================================================

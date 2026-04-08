@@ -43,10 +43,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const timeParam = req.query.time as string | undefined;
       const hasTime = timeParam && /^\d{2}:\d{2}$/.test(timeParam);
 
+      // Include MAX(updated_at) as a window column so the client can
+      // show a "last updated" timestamp that reflects the cron's actual
+      // last successful write, not the highest-premium row's updated_at.
+      // The latter can freeze for hours when a big anchor level gets
+      // its only prints early and never receives more, even though the
+      // cron is still happily writing lower-ranked levels every minute.
       const rows = hasTime
         ? await sql`
             SELECT spx_approx, total_premium, trade_count, total_shares,
-                   latest_time, updated_at
+                   latest_time, updated_at,
+                   MAX(updated_at) OVER () AS max_updated_at
             FROM dark_pool_levels
             WHERE date = ${date}
               AND latest_time <= (${`${date} ${timeParam}:00`}::timestamp AT TIME ZONE 'America/Chicago')
@@ -54,7 +61,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           `
         : await sql`
             SELECT spx_approx, total_premium, trade_count, total_shares,
-                   latest_time, updated_at
+                   latest_time, updated_at,
+                   MAX(updated_at) OVER () AS max_updated_at
             FROM dark_pool_levels
             WHERE date = ${date}
             ORDER BY total_premium DESC
@@ -69,8 +77,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         updatedAt: r.updated_at,
       }));
 
+      const lastUpdated = rows[0]?.max_updated_at ?? null;
+
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ levels, date });
+      return res.status(200).json({ levels, date, meta: { lastUpdated } });
     } catch (err) {
       Sentry.captureException(err);
       logger.error({ err }, 'darkpool-levels fetch error');

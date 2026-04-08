@@ -104,7 +104,7 @@ describe('useDarkPoolLevels: fetching', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('sets updatedAt from first level', async () => {
+  it('sets updatedAt from first level (legacy fallback)', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -117,6 +117,34 @@ describe('useDarkPoolLevels: fetching', () => {
 
     await waitFor(() =>
       expect(result.current.updatedAt).toBe('2026-04-02T17:00:00Z'),
+    );
+  });
+
+  // REGRESSION GUARD: the displayed updatedAt badge used to be derived
+  // from levels[0].updatedAt (the highest-premium row's timestamp). On
+  // days where the top row is a big anchor level that gets its only
+  // prints early and never receives more, that timestamp freezes while
+  // the cron is still happily writing lower-ranked levels every minute.
+  // The server now returns meta.lastUpdated = MAX(updated_at) across all
+  // rows, which reflects the cron's actual last successful write. The
+  // hook must prefer meta.lastUpdated when present.
+  it('prefers meta.lastUpdated over levels[0].updatedAt when both are present', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        // Top row has a STALE updatedAt (hours behind) — simulating a
+        // frozen anchor level.
+        levels: [makeLevel({ updatedAt: '2026-04-02T13:30:00Z' })],
+        date: '2026-04-02',
+        // The cron's actual last successful write is much more recent.
+        meta: { lastUpdated: '2026-04-02T19:58:00Z' },
+      }),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+
+    await waitFor(() =>
+      expect(result.current.updatedAt).toBe('2026-04-02T19:58:00Z'),
     );
   });
 });

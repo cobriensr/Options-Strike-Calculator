@@ -13,6 +13,7 @@
  * Uses the existing UW_API_KEY.
  */
 import logger from './logger.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -93,15 +94,23 @@ export async function fetchDarkPoolBlocks(
     // represent confirmed execution at the stated price, so they
     // can inflate premium at price levels where no real institutional
     // conviction existed.
-    return trades.filter(
-      (t) =>
-        !t.canceled &&
-        !t.ext_hour_sold_codes &&
-        (t.trade_settlement === 'regular' ||
-          t.trade_settlement === 'regular_settlement') &&
-        t.sale_cond_codes !== 'average_price_trade' &&
-        t.trade_code !== 'derivative_priced',
-    );
+    //
+    // Also enforce a hard ET-date guard when a date is specified: UW's
+    // date filter can be loose, so we never trust it alone.
+    return trades.filter((t) => {
+      if (t.canceled) return false;
+      if (t.ext_hour_sold_codes) return false;
+      if (
+        t.trade_settlement !== 'regular' &&
+        t.trade_settlement !== 'regular_settlement'
+      ) {
+        return false;
+      }
+      if (t.sale_cond_codes === 'average_price_trade') return false;
+      if (t.trade_code === 'derivative_priced') return false;
+      if (date && getETDateStr(new Date(t.executed_at)) !== date) return false;
+      return true;
+    });
   } catch (err) {
     logger.error({ err }, 'Failed to fetch dark pool data');
     return [];
@@ -161,6 +170,16 @@ export async function fetchAllDarkPoolTrades(
       const oldest = batch.at(-1);
       if (!oldest) break;
 
+      // Defense in depth: if the oldest trade in this page has already
+      // crossed the requested ET date boundary, stop paginating. UW's
+      // `date` parameter can be loose when combined with `older_than`,
+      // and without this guard the loop walks backward into prior sessions
+      // and pollutes today's aggregates with yesterday's tape.
+      if (date) {
+        const oldestEtDate = getETDateStr(new Date(oldest.executed_at));
+        if (oldestEtDate < date) break;
+      }
+
       const oldestTs = Math.floor(
         new Date(oldest.executed_at).getTime() / 1000,
       );
@@ -178,16 +197,23 @@ export async function fetchAllDarkPoolTrades(
     logger.error({ err, fetched: all.length }, 'Dark pool pagination error');
   }
 
-  // Apply the same quality filters
-  return all.filter(
-    (t) =>
-      !t.canceled &&
-      !t.ext_hour_sold_codes &&
-      (t.trade_settlement === 'regular' ||
-        t.trade_settlement === 'regular_settlement') &&
-      t.sale_cond_codes !== 'average_price_trade' &&
-      t.trade_code !== 'derivative_priced',
-  );
+  // Apply the same quality filters, plus a hard ET-date guard.
+  // The date guard is defense in depth against UW's date/older_than
+  // interaction so a contaminated page still can't reach the DB.
+  return all.filter((t) => {
+    if (t.canceled) return false;
+    if (t.ext_hour_sold_codes) return false;
+    if (
+      t.trade_settlement !== 'regular' &&
+      t.trade_settlement !== 'regular_settlement'
+    ) {
+      return false;
+    }
+    if (t.sale_cond_codes === 'average_price_trade') return false;
+    if (t.trade_code === 'derivative_priced') return false;
+    if (date && getETDateStr(new Date(t.executed_at)) !== date) return false;
+    return true;
+  });
 }
 
 // ── Clustering ──────────────────────────────────────────────
