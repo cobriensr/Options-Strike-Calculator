@@ -31,7 +31,6 @@ from symbol_manager import (
 )
 
 if TYPE_CHECKING:
-    from alert_engine import AlertEngine
     from trade_processor import TradeProcessor
 
 
@@ -49,13 +48,11 @@ class DatabentoClient:
 
     def __init__(
         self,
-        alert_engine: AlertEngine,
         trade_processor: TradeProcessor,
     ) -> None:
         self._client: db.Live | None = None
         self._vxm_client: db.Live | None = None
         self._dx_client: db.Live | None = None
-        self._alert_engine = alert_engine
         self._trade_processor = trade_processor
         self._connected = False
         self._last_bar_ts = 0.0
@@ -296,8 +293,6 @@ class DatabentoClient:
         except Exception as exc:
             log.error("Failed to upsert bar for %s: %s", symbol, exc)
 
-        self._alert_engine.on_bar(symbol, ts.timestamp(), float(close), volume)
-
     def subscribe_es_options(self, es_price: float) -> None:
         """Subscribe to ES options Trades for ATM +/-10 strikes.
 
@@ -429,9 +424,6 @@ class DatabentoClient:
         except Exception as exc:
             log.error("Failed to upsert VXM bar for %s: %s", symbol, exc)
 
-        # Feed to alert engine for backwardation checks
-        self._alert_engine.on_bar(symbol, ts.timestamp(), float(close), volume)
-
     def _on_error(self, exc: Exception) -> None:
         """Handle streaming errors."""
         log.error("Databento stream error: %s", exc)
@@ -529,9 +521,6 @@ class DatabentoClient:
         except Exception as exc:
             log.error("Failed to upsert bar for %s: %s", symbol, exc)
 
-        # Feed to alert engine
-        self._alert_engine.on_bar(symbol, ts.timestamp(), float(close), volume)
-
         # Check if we need to subscribe to ES options (first ES bar)
         if symbol == "ES" and self._options_subscription_pending:
             self.subscribe_es_options(float(close))
@@ -581,9 +570,6 @@ class DatabentoClient:
             size=record.size,
             side_char=side_char,
         )
-
-        # Check for unusual options volume after each trade
-        self._alert_engine.check_es_options_volume()
 
     def _handle_stat(self, record: Any) -> None:
         """Process a Statistics record (OI, settlement, IV, delta)."""

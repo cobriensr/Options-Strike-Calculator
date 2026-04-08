@@ -1,7 +1,16 @@
 """Futures data sidecar entry point.
 
-Streams multi-symbol futures OHLCV-1m bars + ES options trades via Databento,
-writes to Neon Postgres, evaluates alert conditions, sends Twilio SMS.
+Streams multi-symbol futures OHLCV-1m bars + ES options trades via
+Databento and writes them to Neon Postgres. Downstream Vercel crons
+and the frontend consume the data (futures_bars, futures_options_daily,
+futures_options_trades) for overnight calculations, ML features, and
+the futures dashboard panel.
+
+The sidecar previously also ran a Twilio-backed alert engine
+(es_momentum, vx_backwardation, es_nq_divergence, zn_flight_safety,
+cl_spike, es_options_volume). That whole path was removed on
+2026-04-08 — see the audit note under SIDE-001. The sidecar is now a
+pure data relay; all intelligence lives in Vercel crons and the UI.
 
 Runs 24/7 on Railway as a persistent process.
 """
@@ -17,7 +26,6 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from alert_engine import AlertEngine
 from config import settings
 from databento_client import DatabentoClient
 from db import drain_pool, is_db_healthy, verify_connection
@@ -68,11 +76,9 @@ def main() -> None:
 
     # Initialize components
     trade_processor = TradeProcessor()
-    alert_engine = AlertEngine(trade_processor=trade_processor)
 
     # Create the Databento client
     _client = DatabentoClient(
-        alert_engine=alert_engine,
         trade_processor=trade_processor,
     )
 
