@@ -207,3 +207,35 @@ export interface PreMarketData {
   straddleConeLower: number | null;
   savedAt: string | null;
 }
+
+// ============================================================
+// VOLUME PER STRIKE (0DTE)
+// ============================================================
+
+/**
+ * A single per-strike row inside a volume snapshot.
+ *
+ * Raw contract counts aggregated from UW /option-contracts, filtered
+ * strictly to today's 0DTE via the `expiry=TODAY` query param. Each row
+ * is a cumulative day-total at the snapshot timestamp — the frontend
+ * computes 5-min and 20-min deltas by diffing adjacent snapshots.
+ */
+export interface VolumePerStrikeRow {
+  readonly strike: number;
+  readonly callVolume: number;
+  readonly putVolume: number;
+  readonly callOi: number;
+  readonly putOi: number;
+}
+
+/** A point-in-time snapshot of per-strike 0DTE volume. */
+export interface VolumePerStrikeSnapshot {
+  readonly timestamp: string;
+  readonly strikes: readonly VolumePerStrikeRow[];
+}
+
+/** API response shape for GET /api/volume-per-strike-0dte. */
+export interface VolumePerStrikeResponse {
+  readonly snapshots: readonly VolumePerStrikeSnapshot[];
+  readonly date: string;
+}
