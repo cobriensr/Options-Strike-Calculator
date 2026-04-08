@@ -101,6 +101,24 @@ function explicitSeries(
   });
 }
 
+/**
+ * Build a series that hits HIGH signal thresholds (5m ≥ 100%, 20m ≥ 200%).
+ * Slow ramp to 200 over first 15 snapshots, then burst to 600 in last 5:
+ *   5-min ago = series[15] = 200, now = 600 → +200% (≥100 HIGH threshold)
+ *   20-min ago = series[0] = 100, now = 600 → +500% (≥200 HIGH threshold)
+ */
+function highConfValues(): number[] {
+  const values: number[] = [];
+  for (let i = 0; i < 21; i++) {
+    if (i <= 15) {
+      values.push(100 + (i / 15) * 100); // 100 → 200 linear
+    } else {
+      values.push(200 + ((i - 15) / 5) * 400); // 200 → 600 linear
+    }
+  }
+  return values;
+}
+
 // ── pctChange ───────────────────────────────────────────────
 
 describe('pctChange', () => {
@@ -277,7 +295,7 @@ describe('buildStrikeMigrations', () => {
     // Strike 6620 exists in all 21 snapshots (ramping 100 → 1500)
     // Strike 6625 only exists in the latest snapshot with value 500
     const base = rampSeries(6620, 100, 1500);
-    base[base.length - 1]!.strikes.push(makeStrike(6625, { callGammaOi: 500 }));
+    base.at(-1)!.strikes.push(makeStrike(6625, { callGammaOi: 500 }));
     const mig = buildStrikeMigrations(base, 'oi');
     const m6625 = mig.find((m) => m.strike === 6625)!;
     expect(m6625.now).toBe(500);
@@ -348,22 +366,6 @@ describe('selectTargetStrike', () => {
     expect(target!.label).toBe('PUT WALL');
     expect(target!.distFromSpot).toBeLessThan(0);
   });
-
-  // Build a series that hits HIGH thresholds (5m ≥ 100%, 20m ≥ 200%).
-  // Slow ramp to 200 over first 15 snapshots, then burst to 600 in last 5:
-  //   5-min ago = series[15] = 200, now = 600 → +200% (≥100 HIGH threshold)
-  //   20-min ago = series[0] = 100, now = 600 → +500% (≥200 HIGH threshold)
-  function highConfValues(): number[] {
-    const values: number[] = [];
-    for (let i = 0; i < 21; i++) {
-      if (i <= 15) {
-        values.push(100 + (i / 15) * 100); // 100 → 200 linear
-      } else {
-        values.push(200 + ((i - 15) / 5) * 400); // 200 → 600 linear
-      }
-    }
-    return values;
-  }
 
   it('marks as critical when within 5pts of spot AND signal is HIGH', () => {
     // Strike 6615 = at spot (6615 spot) → 0pt distance
