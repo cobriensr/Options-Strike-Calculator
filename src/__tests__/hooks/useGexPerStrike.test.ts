@@ -526,9 +526,73 @@ describe('useGexPerStrike: scrub controls', () => {
     act(() => {
       result.current.scrubPrev();
     });
-    await waitFor(() => expect(result.current.isLive).toBe(false));
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
 
+    // Switching to a different date must clear scrub state — the previous
+    // date's snapshot list no longer applies. After the rerender we are no
+    // longer scrubbed; isLive may still be false because '2026-04-01' is a
+    // past date (backtest mode), but isScrubbed must be false.
     rerender({ date: '2026-04-01' });
-    await waitFor(() => expect(result.current.isLive).toBe(true));
+    await waitFor(() => expect(result.current.isScrubbed).toBe(false));
+  });
+});
+
+// ============================================================
+// LIVE / BACKTEST / SCRUBBED STATE
+// ============================================================
+
+describe('useGexPerStrike: live vs backtest vs scrubbed', () => {
+  it('isLive=true when market open, no scrub, today (no date passed)', async () => {
+    const ts = ['2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+    expect(result.current.isLive).toBe(true);
+    expect(result.current.isScrubbed).toBe(false);
+  });
+
+  it('isLive=false when market is closed (BACKTEST view of today)', async () => {
+    const ts = ['2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    // Pass today's date so we hit the explicit-date branch but with today.
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    const { result } = renderHook(() => useGexPerStrike(false, today));
+
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+    // Market closed → not live, but also not scrubbed → BACKTEST.
+    expect(result.current.isLive).toBe(false);
+    expect(result.current.isScrubbed).toBe(false);
+  });
+
+  it('isLive=false when viewing a historical date (BACKTEST)', async () => {
+    const ts = ['2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    // Past date — even with marketOpen=true, this is a backtest view.
+    const { result } = renderHook(() => useGexPerStrike(true, '2020-01-02'));
+
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+    expect(result.current.isLive).toBe(false);
+    expect(result.current.isScrubbed).toBe(false);
+  });
+
+  it('isScrubbed=true after stepping backwards', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+    expect(result.current.isLive).toBe(false);
   });
 });

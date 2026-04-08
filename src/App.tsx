@@ -712,6 +712,7 @@ export default function StrikeCalculator() {
                     timestamp={gexStrike.timestamp}
                     onRefresh={gexStrike.refresh}
                     isLive={gexStrike.isLive}
+                    isScrubbed={gexStrike.isScrubbed}
                     canScrubPrev={gexStrike.canScrubPrev}
                     canScrubNext={gexStrike.canScrubNext}
                     onScrubPrev={gexStrike.scrubPrev}

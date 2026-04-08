@@ -27,6 +27,25 @@ import { Sentry } from './_lib/sentry.js';
 import { rejectIfNotOwner } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
+/**
+ * Normalize a Postgres TIMESTAMPTZ value to an ISO 8601 string.
+ *
+ * The Neon serverless driver returns TIMESTAMPTZ columns as JavaScript Date
+ * objects (when using the SQL template) or already-ISO strings (older paths).
+ * Both forms must serialize identically across the response so the frontend
+ * can compare `timestamp` against entries in `timestamps[]` for scrub navigation.
+ */
+function toIso(value: unknown): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  // Already a string from the driver — trust it but coerce a Date round-trip
+  // when it parses, so Postgres-formatted "2026-04-07 19:54:00+00" gets
+  // canonicalized to ISO 8601 too.
+  const str = String(value);
+  const parsed = new Date(str);
+  return Number.isNaN(parsed.getTime()) ? str : parsed.toISOString();
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/gex-per-strike');
@@ -98,9 +117,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE date = ${date}
         ORDER BY timestamp ASC
       `;
-      const timestamps = timestampRows.map((r) => String(r.timestamp));
+      // Normalize to ISO 8601. Neon's serverless driver returns TIMESTAMPTZ
+      // columns as JavaScript Date objects; `String(date)` produces a localized
+      // string while JSON.stringify produces ISO 8601. The frontend uses
+      // `timestamps.indexOf(timestamp)` to compute scrub bounds, so the two
+      // payload fields must use identical formatting or the scrub controls
+      // silently disable themselves.
+      const timestamps = timestampRows
+        .map((r) => toIso(r.timestamp))
+        .filter((s): s is string => s != null);
 
-      const latestTs = tsRows[0]?.latest_ts;
+      const latestTs = toIso(tsRows[0]?.latest_ts);
       if (!latestTs) {
         res.setHeader('Cache-Control', 'no-store');
         return res

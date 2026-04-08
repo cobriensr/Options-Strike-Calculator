@@ -10,6 +10,7 @@ const noop = vi.fn();
 // "live with no history" defaults. Tests that exercise scrub controls override.
 const defaultScrubProps = {
   isLive: true,
+  isScrubbed: false,
   canScrubPrev: false,
   canScrubNext: false,
   onScrubPrev: noop,
@@ -484,6 +485,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
         isLive={true}
+        isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
         onScrubPrev={noop}
@@ -508,6 +510,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
         isLive={true}
+        isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
         onScrubPrev={noop}
@@ -520,6 +523,7 @@ describe('GexPerStrike: scrub controls', () => {
     expect(
       screen.queryByRole('button', { name: /resume live/i }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText('BACKTEST')).not.toBeInTheDocument();
   });
 
   it('shows LIVE button when scrubbed', () => {
@@ -531,6 +535,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T18:30:00Z"
         onRefresh={noop}
         isLive={false}
+        isScrubbed={true}
         canScrubPrev={true}
         canScrubNext={true}
         onScrubPrev={noop}
@@ -541,6 +546,33 @@ describe('GexPerStrike: scrub controls', () => {
     expect(
       screen.getByRole('button', { name: /resume live/i }),
     ).toBeInTheDocument();
+    expect(screen.queryByText('BACKTEST')).not.toBeInTheDocument();
+  });
+
+  it('shows BACKTEST pill when not live and not scrubbed', () => {
+    // After-hours, or viewing a past day. Neither isLive nor isScrubbed.
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp="2026-04-02T19:00:00Z"
+        onRefresh={noop}
+        isLive={false}
+        isScrubbed={false}
+        canScrubPrev={true}
+        canScrubNext={false}
+        onScrubPrev={noop}
+        onScrubNext={noop}
+        onScrubLive={noop}
+      />,
+    );
+    expect(screen.getByText('BACKTEST')).toBeInTheDocument();
+    // The clickable resume-live button only appears while scrubbed
+    expect(
+      screen.queryByRole('button', { name: /resume live/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('LIVE')).not.toBeInTheDocument();
   });
 
   it('disables prev when canScrubPrev is false', () => {
@@ -552,6 +584,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
         isLive={true}
+        isScrubbed={false}
         canScrubPrev={false}
         canScrubNext={false}
         onScrubPrev={noop}
@@ -573,6 +606,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
         isLive={true}
+        isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
         onScrubPrev={noop}
@@ -596,6 +630,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
         isLive={true}
+        isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
         onScrubPrev={onScrubPrev}
@@ -620,6 +655,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T18:30:00Z"
         onRefresh={noop}
         isLive={false}
+        isScrubbed={true}
         canScrubPrev={true}
         canScrubNext={true}
         onScrubPrev={noop}
@@ -642,6 +678,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T18:30:00Z"
         onRefresh={noop}
         isLive={false}
+        isScrubbed={true}
         canScrubPrev={true}
         canScrubNext={true}
         onScrubPrev={noop}
@@ -662,6 +699,7 @@ describe('GexPerStrike: scrub controls', () => {
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
         isLive={false}
+        isScrubbed={true}
         canScrubPrev={true}
         canScrubNext={true}
         onScrubPrev={noop}

@@ -39,8 +39,15 @@ interface Props {
   error: string | null;
   timestamp: string | null;
   onRefresh: () => void;
-  /** True when displaying the latest snapshot (poll active if market open) */
+  /**
+   * True when the displayed snapshot is genuinely live: not scrubbed, market
+   * open, viewing today. Mutually exclusive with `isScrubbed`. When neither
+   * `isLive` nor `isScrubbed` is true the panel is in BACKTEST mode (after
+   * hours, or viewing a past day).
+   */
   isLive: boolean;
+  /** True when the user has stepped backwards from the latest snapshot */
+  isScrubbed: boolean;
   /** True when there is at least one earlier snapshot to scrub to */
   canScrubPrev: boolean;
   /** True when the user is scrubbed and can step forward */
@@ -305,6 +312,7 @@ export default memo(function GexPerStrike({
   timestamp,
   onRefresh,
   isLive,
+  isScrubbed,
   canScrubPrev,
   canScrubNext,
   onScrubPrev,
@@ -426,6 +434,16 @@ export default memo(function GexPerStrike({
   const badge =
     totalStrikes > 0 ? `${filtered.length} of ${totalStrikes}` : null;
 
+  // Three mutually exclusive header states:
+  //   isLive          → green LIVE pill (data is flowing right now)
+  //   isScrubbed      → clickable LIVE button (resume to latest)
+  //   otherwise       → amber BACKTEST pill (after hours / past day)
+  const timestampColor = isLive
+    ? theme.green
+    : isScrubbed
+      ? theme.accent
+      : theme.caution;
+
   const headerRight = (
     <div className="flex items-center gap-2">
       {/* Snapshot scrub controls */}
@@ -441,7 +459,7 @@ export default memo(function GexPerStrike({
         {timestamp && (
           <span
             className="min-w-[44px] text-center font-mono text-[10px]"
-            style={{ color: isLive ? theme.green : theme.accent }}
+            style={{ color: timestampColor }}
           >
             {formatTime(timestamp)}
           </span>
@@ -455,7 +473,7 @@ export default memo(function GexPerStrike({
           &#x25B6;
         </button>
       </div>
-      {isLive ? (
+      {isLive && (
         <span
           className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider"
           style={{
@@ -466,7 +484,8 @@ export default memo(function GexPerStrike({
         >
           LIVE
         </span>
-      ) : (
+      )}
+      {isScrubbed && (
         <button
           onClick={onScrubLive}
           aria-label="Resume live snapshot"
@@ -479,6 +498,18 @@ export default memo(function GexPerStrike({
         >
           LIVE
         </button>
+      )}
+      {!isLive && !isScrubbed && (
+        <span
+          className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider"
+          style={{
+            color: theme.caution,
+            background: 'rgba(255,193,7,0.08)',
+            border: '1px solid rgba(255,193,7,0.25)',
+          }}
+        >
+          BACKTEST
+        </span>
       )}
       <button
         onClick={onRefresh}

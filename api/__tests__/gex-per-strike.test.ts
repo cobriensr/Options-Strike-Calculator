@@ -169,7 +169,8 @@ describe('GET /api/gex-per-strike', () => {
       timestamp: string;
     };
     expect(body.strikes).toHaveLength(1);
-    expect(body.timestamp).toBe('2026-04-02T15:00:00Z');
+    // toIso normalizes via Date.toISOString — appends milliseconds
+    expect(body.timestamp).toBe('2026-04-02T15:00:00.000Z');
 
     const strike = body.strikes[0]!;
     expect(strike.strike).toBe(5800);
@@ -273,12 +274,13 @@ describe('GET /api/gex-per-strike', () => {
 
     expect(res._status).toBe(200);
     const body = res._json as { timestamps: string[]; timestamp: string };
+    // Timestamps are normalized to canonical Date.toISOString form
     expect(body.timestamps).toEqual([
-      '2026-04-02T19:58:00Z',
-      '2026-04-02T19:59:00Z',
-      '2026-04-02T20:00:00Z',
+      '2026-04-02T19:58:00.000Z',
+      '2026-04-02T19:59:00.000Z',
+      '2026-04-02T20:00:00.000Z',
     ]);
-    expect(body.timestamp).toBe('2026-04-02T20:00:00Z');
+    expect(body.timestamp).toBe('2026-04-02T20:00:00.000Z');
   });
 
   it('honors ?ts param for exact-snapshot lookup', async () => {
@@ -303,7 +305,7 @@ describe('GET /api/gex-per-strike', () => {
 
     expect(res._status).toBe(200);
     const body = res._json as { timestamp: string };
-    expect(body.timestamp).toBe('2026-04-02T19:30:00Z');
+    expect(body.timestamp).toBe('2026-04-02T19:30:00.000Z');
     // 3 queries total: ts lookup + timestamps + strikes
     expect(mockSql).toHaveBeenCalledTimes(3);
   });
@@ -329,7 +331,7 @@ describe('GET /api/gex-per-strike', () => {
 
     expect(res._status).toBe(200);
     const body = res._json as { timestamp: string };
-    expect(body.timestamp).toBe('2026-04-02T20:00:00Z');
+    expect(body.timestamp).toBe('2026-04-02T20:00:00.000Z');
   });
 
   it('rejects malformed ?ts and falls through to latest', async () => {
@@ -350,5 +352,38 @@ describe('GET /api/gex-per-strike', () => {
     expect(res._status).toBe(200);
     // Only the latest+timestamps+strikes queries — no ts equality query
     expect(mockSql).toHaveBeenCalledTimes(3);
+  });
+
+  it('normalizes Date objects from the driver to ISO 8601 strings', async () => {
+    // Neon's serverless driver returns TIMESTAMPTZ columns as Date objects.
+    // The frontend's scrub controls compare `timestamp` against `timestamps[]`
+    // via indexOf, so both fields must serialize to the same canonical form.
+    const d1 = new Date('2026-04-02T19:58:00Z');
+    const d2 = new Date('2026-04-02T19:59:00Z');
+    const d3 = new Date('2026-04-02T20:00:00Z');
+    mockSql.mockResolvedValueOnce([{ latest_ts: d3 }]);
+    mockSql.mockResolvedValueOnce([
+      { timestamp: d1 },
+      { timestamp: d2 },
+      { timestamp: d3 },
+    ]);
+    mockSql.mockResolvedValueOnce([makeDbRow({ timestamp: d3 })]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { timestamp: string; timestamps: string[] };
+    expect(body.timestamp).toBe('2026-04-02T20:00:00.000Z');
+    expect(body.timestamps).toEqual([
+      '2026-04-02T19:58:00.000Z',
+      '2026-04-02T19:59:00.000Z',
+      '2026-04-02T20:00:00.000Z',
+    ]);
+    // Critical assertion: the displayed `timestamp` is findable in the
+    // `timestamps[]` list. Without normalization the formats diverged
+    // (Date.toString() vs JSON Date) and indexOf returned -1, silently
+    // disabling the scrub buttons.
+    expect(body.timestamps.indexOf(body.timestamp)).toBeGreaterThanOrEqual(0);
   });
 });

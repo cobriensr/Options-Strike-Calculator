@@ -69,8 +69,14 @@ export interface UseGexPerStrikeReturn {
   timestamp: string | null;
   /** All snapshot timestamps for the active date, ascending */
   timestamps: string[];
-  /** True when showing the latest available snapshot (polling active if market open) */
+  /**
+   * True when the displayed snapshot is genuinely live: not scrubbed, market
+   * is open, and we're viewing today's data. False during after-hours or when
+   * looking at a historical date — those are backtest views.
+   */
   isLive: boolean;
+  /** True when the user has explicitly stepped backwards from the latest snapshot */
+  isScrubbed: boolean;
   /** True when there is at least one earlier snapshot the user can scrub to */
   canScrubPrev: boolean;
   /** True when the user is currently scrubbed and can step forward */
@@ -185,15 +191,28 @@ export function useGexPerStrike(
     return () => clearInterval(id);
   }, [isOwner, marketOpen, hasExplicitDate, scrubTimestamp, fetchData]);
 
-  const isLive = scrubTimestamp == null;
+  const isScrubbed = scrubTimestamp != null;
 
-  // The "current" timestamp for nav math is whatever is on screen. When live,
-  // that's the latest in the list (`timestamp` from the server). When scrubbed,
-  // it's the scrub ts.
+  // "Live" means the displayed snapshot is the current one and the market is
+  // actively producing new snapshots. After the close (or on a past date) the
+  // panel is showing the most recent snapshot for that day, but the data is
+  // not flowing — that's a backtest view, not a live view.
+  //
+  // `today` is computed inline (not memoized) so the panel correctly flips
+  // from live → backtest at midnight Eastern without needing a state update.
+  const todayET = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+  const isToday = !selectedDate || selectedDate === todayET;
+  const isLive = !isScrubbed && marketOpen && isToday;
+
+  // The "current" timestamp for nav math is whatever is on screen. When not
+  // scrubbed that's the latest in the list (`timestamp` from the server).
+  // When scrubbed it's the scrub ts.
   const activeTs = scrubTimestamp ?? timestamp;
   const activeIdx = activeTs ? timestamps.indexOf(activeTs) : -1;
   const canScrubPrev = activeIdx > 0;
-  const canScrubNext = !isLive && timestamps.length > 0;
+  const canScrubNext = isScrubbed && timestamps.length > 0;
 
   const scrubPrev = useCallback(() => {
     setScrubTimestamp((current) => {
@@ -233,6 +252,7 @@ export function useGexPerStrike(
     timestamp,
     timestamps,
     isLive,
+    isScrubbed,
     canScrubPrev,
     canScrubNext,
     scrubPrev,
