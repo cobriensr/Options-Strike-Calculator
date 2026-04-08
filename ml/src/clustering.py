@@ -126,6 +126,15 @@ GREEK_FEATURES = GREEK_FEATURES_CORE + ["charm_oi_t1", "charm_oi_t2"]
 
 CHARM_PATTERN_COL = "charm_pattern"
 
+# Minimum members required for a cluster to be considered a "real" regime.
+# Set to 5 because the smallest meaningful trading regime is roughly one
+# trading week — anything smaller tends to be a geometrically clean but
+# statistically meaningless singleton/outlier split (e.g. a 1/40 partition
+# whose silhouette is high only because one point is isolated). When the
+# best-k selector finds that every k produces a cluster smaller than this,
+# it refuses to pick a k and falls back to k=1 (no valid clustering).
+MIN_CLUSTER_SIZE = 5
+
 ALL_NUMERIC_FEATURES = (
     VOLATILITY_FEATURES
     + REGIME_FEATURES
@@ -297,8 +306,64 @@ def run_clustering(X: np.ndarray, k_range: range) -> dict:
     return results
 
 
+def _avg_silhouette(row: dict) -> float:
+    """Average silhouette across KMeans / GMM / Hierarchical for a results row."""
+    return (row["kmeans_sil"] + row["gmm_sil"] + row["hier_sil"]) / 3
+
+
+def select_best_k(
+    results: dict,
+    min_cluster_size: int = MIN_CLUSTER_SIZE,
+) -> tuple[int, str | None]:
+    """Pick the best k from clustering results, rejecting tiny-cluster partitions.
+
+    A k is considered *valid* only if every cluster it produces has at least
+    ``min_cluster_size`` members (inspected on the KMeans partition). Of the
+    valid k values, the one with the highest average silhouette across
+    KMeans / GMM / Hierarchical is selected.
+
+    Returns:
+        (best_k, rejection_reason)
+
+        If at least one k is valid, ``best_k`` is that k (in 2..N) and
+        ``rejection_reason`` is ``None``.
+
+        If no k is valid, ``best_k`` is ``1`` and ``rejection_reason`` is a
+        human-readable string listing every k and why it was rejected — for
+        example ``"k=2 rejected (min size 1 < 5), k=3 rejected (min size 2 < 5)"``.
+        Callers should treat k=1 as "no valid clustering" and skip downstream
+        validation that assumes multiple clusters.
+    """
+    valid: list[tuple[int, float]] = []
+    rejections: list[str] = []
+
+    for k in sorted(results.keys()):
+        row = results[k]
+        sizes = row["kmeans_sizes"]
+        min_size = min(sizes) if sizes else 0
+        if min_size >= min_cluster_size:
+            valid.append((k, _avg_silhouette(row)))
+        else:
+            rejections.append(
+                f"k={k} rejected (min size {min_size} < {min_cluster_size})"
+            )
+
+    if valid:
+        best_k, _ = max(valid, key=lambda pair: pair[1])
+        return best_k, None
+
+    reason = ", ".join(rejections) if rejections else "no candidate k values"
+    return 1, reason
+
+
 def print_results(results: dict) -> int:
-    """Print clustering results and return best k."""
+    """Print clustering results and return best k.
+
+    Best-k selection delegates to :func:`select_best_k`, which refuses to
+    choose any k whose smallest cluster is below :data:`MIN_CLUSTER_SIZE`.
+    When no valid k exists, returns ``1`` (caller should treat as
+    "no valid clustering" and skip cluster-dependent validation).
+    """
     print(f"\n{'=' * 70}")
     print("  CLUSTERING RESULTS")
     print(f"{'=' * 70}\n")
@@ -310,21 +375,21 @@ def print_results(results: dict) -> int:
         f"  {'':->3s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->10s}  {'':->8s}  {'':->12s}  {'':->20s}"
     )
 
-    best_k = 2
-    best_sil = -1
-
     for k, r in sorted(results.items()):
         sizes = str(r["kmeans_sizes"])
         print(
             f"  {k:3d}  {r['kmeans_sil']:10.3f}  {r['gmm_sil']:10.3f}  {r['hier_sil']:10.3f}  {r['kmeans_ch']:10.1f}  {r['kmeans_db']:8.3f}  {r['gmm_bic']:12.1f}  {sizes:>20s}"
         )
 
-        avg_sil = (r["kmeans_sil"] + r["gmm_sil"] + r["hier_sil"]) / 3
-        if avg_sil > best_sil:
-            best_sil = avg_sil
-            best_k = k
-
-    print(f"\n  Best k by average silhouette: {best_k} (avg sil = {best_sil:.3f})")
+    best_k, rejection_reason = select_best_k(results)
+    if rejection_reason is None:
+        best_sil = _avg_silhouette(results[best_k])
+        print(f"\n  Best k by average silhouette: {best_k} (avg sil = {best_sil:.3f})")
+    else:
+        print(
+            f"\n  No valid k (every partition had a cluster smaller than "
+            f"{MIN_CLUSTER_SIZE}). Falling back to k=1."
+        )
     return best_k
 
 
@@ -759,9 +824,7 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
     plt.close("all")
 
 
-def filter_by_completeness(
-    df: pd.DataFrame, threshold: float = 0.80
-) -> pd.DataFrame:
+def filter_by_completeness(df: pd.DataFrame, threshold: float = 0.80) -> pd.DataFrame:
     """Drop days with feature_completeness below the threshold.
 
     Market holidays leak into training_features when the feature-builder
@@ -827,11 +890,76 @@ def main() -> None:
     print(f"\nRunning clustering (k={k_range.start}..{k_range.stop - 1}) ...")
     results = run_clustering(X_pca, k_range)
 
-    best_k = args.k if args.k else print_results(results)
+    # Always print the comparison table.
+    print_results(results)
 
-    if best_k not in results:
-        print(f"  k={best_k} not in results, using k=2")
-        best_k = 2
+    # Resolve best_k. A user-supplied --k overrides the guard, but is still
+    # validated to exist in results. Otherwise select_best_k applies the
+    # MIN_CLUSTER_SIZE guard and may return 1 (no valid clustering).
+    rejection_reason: str | None = None
+    if args.k is not None:
+        if args.k in results:
+            best_k = args.k
+        else:
+            print(f"  k={args.k} not in results, using k=2")
+            best_k = 2
+    else:
+        best_k, rejection_reason = select_best_k(results)
+
+    if best_k == 1:
+        # No valid k — print prominent warning and skip cluster-dependent
+        # validation. Findings are still recorded so downstream consumers see
+        # the fallback explicitly.
+        print(f"\n{'=' * 70}")
+        print("  NO VALID CLUSTERING")
+        print(f"{'=' * 70}")
+        print(
+            f"  No k in {k_range.start}..{k_range.stop - 1} produced clusters "
+            f"with minimum size >= {MIN_CLUSTER_SIZE}."
+        )
+        print()
+        print(f"  Rejection details: {rejection_reason}")
+        print()
+        print(
+            "  Falling back to k=1 (no clustering). Insufficient regime separation in"
+        )
+        print("  the current dataset. Wait for more data before trusting clustering")
+        print("  output for downstream decisions.")
+        print(f"{'=' * 70}\n")
+
+        # Summary (k=1 fallback flavor)
+        print(f"\n{'=' * 70}")
+        print("  SUMMARY")
+        print(f"{'=' * 70}")
+        print(f"  Days: {n_samples}")
+        print(
+            f"  Features used: {X_pca.shape[1]} PCA components from "
+            f"{len(df_feat.columns)} features"
+        )
+        print("  Best k: 1 (fallback — no valid clustering)")
+        print()
+
+        save_section_findings(
+            "clustering",
+            {
+                "best_k": 1,
+                "algorithm": "KMeans",
+                "fallback_reason": rejection_reason,
+                "silhouette": None,
+                "calinski_harabasz": None,
+                "davies_bouldin": None,
+                "cluster_sizes": None,
+                "stability": None,
+                "split_half_holdout_sil": None,
+                "gmm_bic": None,
+                "permutation_p": None,
+                "chi_squared": {},
+                "n_samples": n_samples,
+                "n_pca_components": int(X_pca.shape[1]),
+                "n_features": len(df_feat.columns),
+            },
+        )
+        return
 
     # Use K-Means labels for profiling (most interpretable)
     best_labels = results[best_k]["kmeans_labels"]
@@ -853,9 +981,7 @@ def main() -> None:
     print(f"  Holdout silhouette: {sh['holdout_silhouette']:.3f}")
     print(f"  Optimism gap:       {sh['optimism']:.3f}")
     if np.isnan(sh["holdout_silhouette"]) or np.isnan(sh["train_silhouette"]):
-        print(
-            "  WARNING: Split-half validation is undefined for this clustering."
-        )
+        print("  WARNING: Split-half validation is undefined for this clustering.")
         print(
             "  A random half likely missed the minority cluster — check cluster sizes."
         )
@@ -930,6 +1056,7 @@ def main() -> None:
         {
             "best_k": best_k,
             "algorithm": "KMeans",
+            "fallback_reason": None,
             "silhouette": round(float(best_r["kmeans_sil"]), 3),
             "calinski_harabasz": round(float(best_r["kmeans_ch"]), 1),
             "davies_bouldin": round(float(best_r["kmeans_db"]), 3),

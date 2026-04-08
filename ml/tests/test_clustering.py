@@ -209,9 +209,7 @@ def test_preprocess_caps_pca_for_small_samples():
     assert X_pca.shape[1] <= 5, (
         f"Expected ≤5 components for 40 samples, got {X_pca.shape[1]}"
     )
-    assert X_pca.shape[1] >= 3, (
-        f"Expected ≥3 components (floor), got {X_pca.shape[1]}"
-    )
+    assert X_pca.shape[1] >= 3, f"Expected ≥3 components (floor), got {X_pca.shape[1]}"
     assert len(labels) == X_pca.shape[1]
 
 
@@ -238,7 +236,16 @@ def test_filter_by_completeness_drops_holiday_day():
         {
             "vix": np.linspace(15, 25, 10),
             "feature_completeness": [
-                0.95, 0.92, 0.88, 0.26, 0.91, 0.93, 0.80, 0.75, 0.99, 0.90,
+                0.95,
+                0.92,
+                0.88,
+                0.26,
+                0.91,
+                0.93,
+                0.80,
+                0.75,
+                0.99,
+                0.90,
             ],
         },
         index=dates,
@@ -315,11 +322,13 @@ def test_run_clustering_metrics_are_numeric():
 # ── Additional clustering function tests ──────────────────────
 
 from clustering import (
+    MIN_CLUSTER_SIZE,
     characterize_clusters,
     filter_by_completeness,
     outcome_association_test,
     permutation_test,
     print_results,
+    select_best_k,
     split_half_validation,
     stability_check,
 )
@@ -505,3 +514,109 @@ def test_outcome_association_prints(capsys):
     assert has_chi2 or has_structure, (
         f"Expected chi-squared or structure correctness output, got:\n{captured.out}"
     )
+
+
+# ── select_best_k / min-cluster-size guard tests ──────────────
+
+
+def _row(
+    *,
+    sizes: list[int],
+    kmeans_sil: float,
+    gmm_sil: float,
+    hier_sil: float,
+) -> dict:
+    """Build a minimal results-row dict for select_best_k tests."""
+    n = sum(sizes)
+    # Labels don't matter for select_best_k, but include a realistic shape
+    # so callers that iterate results can still peek at labels if needed.
+    labels: list[int] = []
+    for cluster_id, size in enumerate(sizes):
+        labels.extend([cluster_id] * size)
+    return {
+        "kmeans_sil": kmeans_sil,
+        "gmm_sil": gmm_sil,
+        "hier_sil": hier_sil,
+        "kmeans_ch": 100.0,
+        "kmeans_db": 1.0,
+        "gmm_bic": -150.0,
+        "kmeans_sizes": sizes,
+        "kmeans_labels": np.array(labels[:n]),
+    }
+
+
+def test_min_cluster_size_constant_is_5():
+    """Regression: the module-level guard value must stay at 5."""
+    assert MIN_CLUSTER_SIZE == 5
+
+
+def test_select_best_k_picks_highest_silhouette_when_all_valid():
+    """With every k valid, select_best_k returns the one with the best avg sil."""
+    results = {
+        2: _row(sizes=[15, 15], kmeans_sil=0.40, gmm_sil=0.38, hier_sil=0.41),
+        3: _row(sizes=[10, 10, 10], kmeans_sil=0.55, gmm_sil=0.53, hier_sil=0.57),
+        4: _row(sizes=[8, 8, 7, 7], kmeans_sil=0.30, gmm_sil=0.28, hier_sil=0.32),
+    }
+    best_k, reason = select_best_k(results)
+    assert best_k == 3
+    assert reason is None
+
+
+def test_select_best_k_skips_singleton_and_picks_next():
+    """A singleton cluster at k=2 must be rejected; best valid k is picked."""
+    results = {
+        2: _row(sizes=[1, 40], kmeans_sil=0.90, gmm_sil=0.88, hier_sil=0.92),
+        3: _row(sizes=[15, 13, 13], kmeans_sil=0.45, gmm_sil=0.43, hier_sil=0.47),
+        4: _row(sizes=[12, 10, 10, 9], kmeans_sil=0.30, gmm_sil=0.28, hier_sil=0.32),
+    }
+    best_k, reason = select_best_k(results)
+    # k=2 rejected (singleton); k=3 and k=4 are valid; k=3 has higher avg sil.
+    assert best_k == 3
+    assert reason is None
+
+
+def test_select_best_k_returns_1_when_no_valid_k():
+    """If every k has a cluster < MIN_CLUSTER_SIZE, fall back to k=1 with reason."""
+    results = {
+        2: _row(sizes=[1, 40], kmeans_sil=0.90, gmm_sil=0.88, hier_sil=0.92),
+        3: _row(sizes=[2, 20, 20], kmeans_sil=0.70, gmm_sil=0.68, hier_sil=0.72),
+        4: _row(sizes=[1, 14, 14, 14], kmeans_sil=0.60, gmm_sil=0.58, hier_sil=0.62),
+        5: _row(
+            sizes=[1, 10, 10, 10, 11],
+            kmeans_sil=0.55,
+            gmm_sil=0.53,
+            hier_sil=0.57,
+        ),
+        6: _row(
+            sizes=[1, 8, 8, 8, 8, 9],
+            kmeans_sil=0.50,
+            gmm_sil=0.48,
+            hier_sil=0.52,
+        ),
+    }
+    best_k, reason = select_best_k(results)
+    assert best_k == 1
+    assert reason is not None
+    assert isinstance(reason, str)
+    assert "rejected" in reason
+    # Every k should be mentioned in the rejection string.
+    for k in (2, 3, 4, 5, 6):
+        assert f"k={k}" in reason
+
+
+def test_select_best_k_custom_threshold():
+    """A lower min_cluster_size should allow partitions that fail the default."""
+    # k=2 has a size-3 cluster: fails at MIN_CLUSTER_SIZE=5, passes at 3.
+    results = {
+        2: _row(sizes=[3, 37], kmeans_sil=0.80, gmm_sil=0.78, hier_sil=0.82),
+        3: _row(sizes=[15, 13, 12], kmeans_sil=0.50, gmm_sil=0.48, hier_sil=0.52),
+    }
+    # Default threshold: k=2 rejected, k=3 wins.
+    best_k_default, reason_default = select_best_k(results)
+    assert best_k_default == 3
+    assert reason_default is None
+
+    # Relaxed threshold: k=2 is now valid and has the higher avg silhouette.
+    best_k_lax, reason_lax = select_best_k(results, min_cluster_size=3)
+    assert best_k_lax == 2
+    assert reason_lax is None
