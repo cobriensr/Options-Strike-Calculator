@@ -142,6 +142,29 @@ describe('TradingScheduleSection', () => {
     expect(screen.queryByText('Active')).not.toBeInTheDocument();
   });
 
+  // ── Holiday + half-day (CROSS-003) ─────────────────────
+
+  it('shows no Active badge on full-day holidays (MLK Day, a Monday)', () => {
+    // 2026-01-19 is MLK Day (a Monday). Pre-refactor, the component's
+    // local isTradingDay() only checked Mon-Fri and would show the 10:00 CT
+    // credit-spreads phase as active — a latent bug. After the refactor
+    // to use currentSessionStage (holiday-aware), no phase should be active.
+    // 10:00 CT in January = CST = UTC-6, so 10:00 CT = 16:00 UTC.
+    vi.setSystemTime(new Date(Date.UTC(2026, 0, 19, 16, 0, 0)));
+    render(<TradingScheduleSection />);
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+  });
+
+  it('shows no Active badge on NYSE half-days (Black Friday)', () => {
+    // 2026-11-27 is Black Friday (half-day, 1 PM ET / noon CT close).
+    // The five-phase schedule assumes a 3:00 PM CT close, so half-days
+    // return the 'half-day' stage and no phase shows as active.
+    // 10:00 CT in November = CST = UTC-6, so 10:00 CT = 16:00 UTC.
+    vi.setSystemTime(new Date(Date.UTC(2026, 10, 27, 16, 0, 0)));
+    render(<TradingScheduleSection />);
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+  });
+
   // ── Timer updates ──────────────────────────────────────
 
   it('updates active phase when the interval fires', () => {

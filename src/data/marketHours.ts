@@ -83,6 +83,51 @@ export function isHalfDay(date: string): boolean {
 }
 
 /**
+ * User's intraday trading schedule stage for the given moment.
+ *
+ * Reflects the five-phase workflow from `user_trading_schedule.md`:
+ *   1. opening-range  8:30-9:00 CT   — establishing opening range, no trades
+ *   2. credit-spreads 9:00-11:30 CT  — sell 0DTE credit spreads
+ *   3. directional    11:30-1:00 CT  — buy 7DTE ~50Δ directional
+ *   4. bwb            1:00-2:30 CT   — open 0DTE broken wing butterfly
+ *   5. flat           2:55-3:00 CT   — close all non-0DTE positions
+ *
+ * Plus surrounding states:
+ *   - pre-market   before 8:30 CT on a trading day
+ *   - late-bwb     2:30-2:55 CT gap (managing BWB, no new positions)
+ *   - post-close   after 3:00 CT on a trading day
+ *   - half-day     NYSE early-close day — the five-phase schedule runs past
+ *                  the noon CT close, so the helper returns this single
+ *                  stage rather than guessing which phases to compress.
+ *   - closed       Weekend or full-day NYSE holiday
+ */
+export type SessionStage =
+  | 'pre-market'
+  | 'opening-range'
+  | 'credit-spreads'
+  | 'directional'
+  | 'bwb'
+  | 'late-bwb'
+  | 'flat'
+  | 'post-close'
+  | 'half-day'
+  | 'closed';
+
+/**
+ * The five stages that correspond to active phases in the user's schedule.
+ * A consumer can use this to ask "is this an actionable stage?" — the other
+ * stage values (pre-market, late-bwb, post-close, half-day, closed) all
+ * indicate "do not open new positions."
+ */
+export const ACTIVE_SESSION_STAGES: ReadonlySet<SessionStage> = new Set([
+  'opening-range',
+  'credit-spreads',
+  'directional',
+  'bwb',
+  'flat',
+]);
+
+/**
  * Returns true if `date` is a US equity trading day — i.e., a weekday
  * (Mon-Fri) that is not a NYSE-closed holiday. Half-days ARE trading days
  * (just shorter), so this returns true for them.
@@ -125,4 +170,95 @@ export function isTradingDay(date: string): boolean {
   if (dow === 0 || dow === 6) return false;
 
   return true;
+}
+
+// ── Session-stage phase boundaries (Central Time minutes-of-day) ────
+
+const STAGE_BOUNDS = {
+  /** 8:30 CT — NYSE open (9:30 ET) */
+  openingRangeStart: 8 * 60 + 30,
+  /** 9:00 CT — end of opening-range observation */
+  creditSpreadsStart: 9 * 60,
+  /** 11:30 CT — end of credit-spread window */
+  directionalStart: 11 * 60 + 30,
+  /** 1:00 PM CT — end of directional window */
+  bwbStart: 13 * 60,
+  /** 2:30 PM CT — end of BWB-opening window */
+  lateBwbStart: 14 * 60 + 30,
+  /** 2:55 PM CT — beginning of the 5-minute flat window */
+  flatStart: 14 * 60 + 55,
+  /** 3:00 PM CT — NYSE close (4:00 PM ET), end of flat window */
+  postCloseStart: 15 * 60,
+} as const;
+
+/**
+ * Extract the CT calendar date (YYYY-MM-DD) and time-of-day minutes
+ * from a Date using Intl.DateTimeFormat. Chosen over the
+ * `new Date(toLocaleString(...))` shortcut because the latter parses
+ * a timezone-naive string back through the system's local timezone,
+ * which produces a Date object whose underlying UTC instant is wrong.
+ *
+ * Intl.DateTimeFormat.formatToParts is how timezone.ts does this.
+ */
+function getCTCalendarAndMinutes(instant: Date): {
+  dateStr: string;
+  minutes: number;
+} {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(instant);
+
+  const pick = (type: string): string =>
+    parts.find((p) => p.type === type)?.value ?? '';
+
+  const year = pick('year');
+  const month = pick('month');
+  const day = pick('day');
+  // hour12: false still returns '24' at midnight in some locales — normalize.
+  const rawHour = pick('hour');
+  const hour = rawHour === '24' ? 0 : Number(rawHour);
+  const minute = Number(pick('minute'));
+
+  return {
+    dateStr: `${year}-${month}-${day}`,
+    minutes: hour * 60 + minute,
+  };
+}
+
+/**
+ * Classify the current (or given) instant into one of the user's five
+ * trading phases or a surrounding state. See `SessionStage` for the
+ * full enum and `user_trading_schedule.md` for the workflow rationale.
+ *
+ * The returned stage is determined entirely by the CT wall-clock time
+ * and the calendar-day type (trading day / half-day / holiday).
+ *
+ * Half-days return `'half-day'` as a conservative default: the
+ * five-phase schedule runs past the noon CT close on half-days, and
+ * the user hasn't defined which phases should compress. Consumers
+ * that want to show a half-day-specific schedule should check
+ * `isHalfDay(date)` and render a different flow.
+ *
+ * @param now  Instant to classify. Defaults to `new Date()`.
+ */
+export function currentSessionStage(now: Date = new Date()): SessionStage {
+  const { dateStr, minutes } = getCTCalendarAndMinutes(now);
+
+  if (!isTradingDay(dateStr)) return 'closed';
+  if (isHalfDay(dateStr)) return 'half-day';
+
+  if (minutes < STAGE_BOUNDS.openingRangeStart) return 'pre-market';
+  if (minutes < STAGE_BOUNDS.creditSpreadsStart) return 'opening-range';
+  if (minutes < STAGE_BOUNDS.directionalStart) return 'credit-spreads';
+  if (minutes < STAGE_BOUNDS.bwbStart) return 'directional';
+  if (minutes < STAGE_BOUNDS.lateBwbStart) return 'bwb';
+  if (minutes < STAGE_BOUNDS.flatStart) return 'late-bwb';
+  if (minutes < STAGE_BOUNDS.postCloseStart) return 'flat';
+  return 'post-close';
 }

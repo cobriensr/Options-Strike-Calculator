@@ -2,30 +2,30 @@ import { memo, useEffect, useState } from 'react';
 import { SectionBox } from './ui';
 import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
+import { currentSessionStage, type SessionStage } from '../data/marketHours';
 
-/* ── phase definitions (all times CT) ─────────────────── */
+/* ── phase definitions (UI presentation only) ────────── */
 
 interface Phase {
-  startMin: number; // minutes since midnight CT
-  endMin: number;
+  /** Stage identifier from `currentSessionStage` — the single source of truth
+   *  for phase timing. UI metadata here is presentation-only. */
+  stage: SessionStage;
   timeLabel: string;
   title: string;
   subtitle: string;
   color: string;
 }
 
-const PHASES: Phase[] = [
+const PHASES: readonly Phase[] = [
   {
-    startMin: 8 * 60 + 30,
-    endMin: 9 * 60,
+    stage: 'opening-range',
     timeLabel: '8:30 – 9:00',
     title: 'Market Open',
     subtitle: 'Establishing opening range — do not trade',
     color: theme.red,
   },
   {
-    startMin: 9 * 60,
-    endMin: 11 * 60 + 30,
+    stage: 'credit-spreads',
     timeLabel: '9:00 – 11:30',
     title: 'Sell Credit Spreads',
     subtitle:
@@ -33,24 +33,21 @@ const PHASES: Phase[] = [
     color: theme.green,
   },
   {
-    startMin: 11 * 60 + 30,
-    endMin: 13 * 60,
+    stage: 'directional',
     timeLabel: '11:30 – 1:00',
     title: 'Buy Directional',
     subtitle: '7 DTE ~50Δ ATM put or call — close EOD',
     color: theme.accent,
   },
   {
-    startMin: 13 * 60,
-    endMin: 14 * 60 + 30,
+    stage: 'bwb',
     timeLabel: '1:00 – 2:30',
     title: 'Open BWB',
     subtitle: 'Open 0DTE broken wing butterfly around likely pin',
     color: theme.chartPurple,
   },
   {
-    startMin: 14 * 60 + 55,
-    endMin: 15 * 60,
+    stage: 'flat',
     timeLabel: '2:55 – 3:00',
     title: 'Go Flat',
     subtitle: 'Close all non-0DTE positions — no overnight risk',
@@ -58,29 +55,18 @@ const PHASES: Phase[] = [
   },
 ];
 
-/* ── time helpers ─────────────────────────────────────── */
-
-function getCTMinutes(): number {
-  const now = new Date();
-  const ct = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/Chicago' }),
-  );
-  return ct.getHours() * 60 + ct.getMinutes();
-}
-
-function isTradingDay(): boolean {
-  const now = new Date();
-  const ct = new Date(
-    now.toLocaleString('en-US', { timeZone: 'America/Chicago' }),
-  );
-  const day = ct.getDay();
-  return day >= 1 && day <= 5;
-}
-
+/**
+ * Returns the index of the currently-active phase in `PHASES`, or `-1`
+ * if no phase is active (pre-market, post-close, 2:30–2:55 late-bwb
+ * gap, weekend, full-day holiday, or NYSE half-day).
+ *
+ * Uses the shared `currentSessionStage` helper from `marketHours.ts`
+ * so holiday and half-day handling are centralized. (CROSS-003)
+ */
 function getActiveIndex(): number {
-  if (!isTradingDay()) return -1;
-  const mins = getCTMinutes();
-  return PHASES.findIndex((p) => mins >= p.startMin && mins < p.endMin);
+  const stage = currentSessionStage();
+  const idx = PHASES.findIndex((p) => p.stage === stage);
+  return idx; // -1 when stage is not one of the five displayed phases
 }
 
 /* ── component ────────────────────────────────────────── */
