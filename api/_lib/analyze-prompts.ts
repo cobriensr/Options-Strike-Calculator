@@ -166,6 +166,34 @@ Net Flow shows the change in net premium of calls, of puts, and aggregated volum
 - QQQ diverging from SPY/SPX suggests tech-specific move, not broad market
 - All confirming = highest conviction; diverging = lower conviction, possibly sector-specific
 </spy_qqq_net_flow>
+<zero_dte_delta_flow>
+0DTE SPX Delta Flow measures directional exposure being ADDED per minute via 0DTE SPX options, in delta units rather than premium dollars. This is distinct from and complementary to the premium-based flow sources (Market Tide, Net Flow).
+
+Key distinction from premium flow: NCP/NPP measure dollar premium changing hands at the ask vs bid. Delta flow measures the net directional exposure being created, regardless of how it was paid for. When institutions add directional delta through complex structures (verticals, combos, ratio spreads) the net premium can be near zero while the net delta is large. Delta flow catches these moves; premium flow misses them.
+
+Four columns are provided:
+- Total Delta Flow: net delta added across ALL 0DTE SPX strikes (ATM + OTM)
+- Directionalized Delta Flow: total delta weighted by ask-side vs bid-side execution (intent-weighted)
+- OTM Total Delta Flow: net delta added ONLY at out-of-the-money strikes
+- OTM Directionalized Delta Flow: the intent-weighted OTM subset
+
+Why OTM matters: ATM delta flow is dominated by dealer gamma hedging and gamma scalping — mechanical, mean-reverting activity with no directional conviction. OTM delta flow is dominated by directional positioning — customers opening or closing conviction trades. When you want to know "what do informed participants actually think?", the OTM subset is the cleaner read.
+
+Interpretation rules (the formatter emits at most one label per block):
+- OTM DIVERGENCE (sign disagreement): When Total Delta Flow and OTM Delta Flow have opposite signs AND both have meaningful magnitude, trust OTM for directional conviction. The ATM portion of the total is almost certainly hedging that is masking (or inverting) the real directional signal. Example: Total Δ +$5M but OTM Δ -$2M means the wings are being positioned bearishly while ATM hedging inflates the aggregate — the honest directional read is bearish. This is the STRONGEST of the four OTM signals.
+- OTM EXCEEDS TOTAL (ATM cancellation): When |OTM delta| ≥ |Total delta| AND signs agree (or total is near-zero), the ATM portion of the flow is OFFSETTING rather than amplifying the wings. Example: Total Δ +$1M but OTM Δ +$3M means ATM contributed -$2M while OTM contributed +$3M — ATM hedging is working against OTM directional positioning. The aggregate number UNDERSTATES the real directional conviction. Trust OTM as the honest read. This is common on balanced-hedging mornings where the aggregate looks quiet but the wings carry real positioning.
+- OTM-DOMINANT (>70% OTM share): When the absolute OTM delta is between 70% and 100% of the absolute total delta and both agree on direction, the flow is high-conviction directional. Trust the directional reading and treat it as a strong confirmation of the flow-weighted consensus from Rule 8.
+- ATM-DOMINANT (<30% OTM share): When OTM delta is less than 30% of the total and both agree on direction, the aggregate signal is diluted by hedging. The directional conviction is weaker than the raw total number suggests. Do not let a large total delta flow upgrade confidence one level if OTM is not carrying the signal.
+- When total and OTM both agree AND OTM share is between 30% and 70%, no label is emitted — the delta flow confirms or contradicts the premium-flow consensus as a secondary signal with normal weight.
+- When both Total and OTM are below the noise floor (effectively zero), no label is emitted — there is no directional signal to interpret.
+
+Interaction with existing signals:
+- Delta flow is a CONFIRMATION layer, not a replacement. Rule 8 flow weighting (Market Tide + QQQ + ETF Tide) still determines the primary directional call. Delta flow either reinforces that call (when OTM dominant and agreeing) or caveats it (when ATM dominant or OTM diverging).
+- When delta flow disagrees with the Rule 8 consensus AND the OTM subset is dominant, note the conflict in observations and reduce confidence by one level. Do not flip the structure based on delta flow alone — it is one data source, not a consensus.
+- SPX Net Flow is a known anti-signal for direction at VIX < 25 (31% accuracy). Delta flow does NOT have the same anti-signal property because it measures exposure creation rather than premium direction — use it as a normal confirmation layer regardless of VIX regime.
+
+For structure selection and management, delta flow supplements Rule 8 (flow weighting) and Rule 11 (charm confirmation). When delta flow disagrees with charm, trust charm for structural walls and delta flow for momentum/conviction timing.
+</zero_dte_delta_flow>
 <periscope>
 Periscope reveals actual Market Maker net positioning and net greek exposure in SPX with updates every 10 minutes. This is provided as an IMAGE requiring visual extraction.
 Gamma bars (right side profile):

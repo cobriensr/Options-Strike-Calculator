@@ -801,6 +801,10 @@ describe('db-strike-helpers', () => {
         ncp: 500000,
         npp: 300000,
         netVolume: 120000,
+        // OTM fields default to null (non-greek-flow rows don't have them).
+        // Specific OTM tests override these via the overrides arg.
+        otmNcp: null,
+        otmNpp: null,
         ...overrides,
       };
     }
@@ -961,6 +965,195 @@ describe('db-strike-helpers', () => {
       ])!;
 
       expect(result).toContain('-1.2M');
+    });
+
+    // ── OTM display + divergence (ENH-FIX-001) ─────────────────
+
+    it('omits OTM lines when otmNcp is null (backward compatibility)', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({ ncp: 1_000_000, npp: 500_000 }),
+      ])!;
+
+      expect(result).not.toContain('OTM Total Delta Flow');
+      expect(result).not.toContain('OTM Directionalized Delta Flow');
+      expect(result).not.toContain('OTM DIVERGENCE');
+      expect(result).not.toContain('OTM-DOMINANT');
+      expect(result).not.toContain('ATM-DOMINANT');
+    });
+
+    it('shows OTM values in Latest block when present', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: 5_000_000,
+          npp: -3_000_000,
+          otmNcp: 2_500_000,
+          otmNpp: -1_800_000,
+        }),
+      ])!;
+
+      expect(result).toContain('OTM Total Delta Flow: +2.5M');
+      expect(result).toContain('OTM Directionalized Delta Flow: -1.8M');
+    });
+
+    it('flags OTM DIVERGENCE when total is positive but OTM is negative', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: 5_000_000, // total bullish
+          npp: 4_000_000,
+          otmNcp: -2_000_000, // but OTM bearish
+          otmNpp: -1_500_000,
+        }),
+      ])!;
+
+      expect(result).toContain('OTM DIVERGENCE');
+      expect(result).toContain('Trust OTM for directional conviction');
+    });
+
+    it('flags OTM DIVERGENCE when total is negative but OTM is positive', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: -5_000_000, // total bearish
+          npp: -4_000_000,
+          otmNcp: 2_000_000, // but OTM bullish
+          otmNpp: 1_500_000,
+        }),
+      ])!;
+
+      expect(result).toContain('OTM DIVERGENCE');
+    });
+
+    it('flags OTM-DOMINANT when OTM share exceeds 70% (same-direction conviction)', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: 1_000_000,
+          npp: 800_000,
+          otmNcp: 800_000, // 80% of total
+          otmNpp: 650_000,
+        }),
+      ])!;
+
+      expect(result).toContain('OTM-DOMINANT');
+      expect(result).not.toContain('OTM DIVERGENCE');
+      expect(result).not.toContain('ATM-DOMINANT');
+    });
+
+    it('flags ATM-DOMINANT when OTM share is below 30% (hedging dilution)', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: 1_000_000,
+          npp: 800_000,
+          otmNcp: 200_000, // 20% of total
+          otmNpp: 150_000,
+        }),
+      ])!;
+
+      expect(result).toContain('ATM-DOMINANT');
+      expect(result).not.toContain('OTM-DOMINANT');
+      expect(result).not.toContain('OTM DIVERGENCE');
+    });
+
+    it('emits neither dominance label when OTM share is between 30% and 70%', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: 1_000_000,
+          npp: 800_000,
+          otmNcp: 500_000, // 50% of total
+          otmNpp: 400_000,
+        }),
+      ])!;
+
+      expect(result).not.toContain('OTM-DOMINANT');
+      expect(result).not.toContain('ATM-DOMINANT');
+      expect(result).not.toContain('OTM DIVERGENCE');
+    });
+
+    it('flags OTM EXCEEDS TOTAL when total ncp is zero but OTM has magnitude', () => {
+      // Pure cancellation case: ATM hedging exactly offsets OTM directional.
+      // The aggregate looks like "nothing happening" but OTM carries the signal.
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: 0,
+          npp: 0,
+          otmNcp: 500_000,
+          otmNpp: 300_000,
+        }),
+      ])!;
+
+      expect(result).toContain('OTM EXCEEDS TOTAL');
+      expect(result).not.toContain('OTM-DOMINANT');
+      expect(result).not.toContain('ATM-DOMINANT');
+    });
+
+    it('flags OTM EXCEEDS TOTAL when |otmNcp| > |ncp| with same sign (ATM cancellation)', () => {
+      // ATM hedging is partially offsetting OTM conviction. A naive
+      // "OTM share" ratio would report >70% (e.g., 300%) which is
+      // factually wrong. The OTM EXCEEDS TOTAL branch catches this.
+      // Reproducer for the bug the code-reviewer flagged.
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: 1_000_000, // total bullish but small
+          npp: 800_000,
+          otmNcp: 3_000_000, // OTM bullish and 3x bigger — ATM contributed -2M
+          otmNpp: 2_500_000,
+        }),
+      ])!;
+
+      expect(result).toContain('OTM EXCEEDS TOTAL');
+      // Must NOT emit the misleading "Over 70%" label for this case.
+      expect(result).not.toContain('OTM-DOMINANT');
+      expect(result).not.toContain('ATM-DOMINANT');
+      expect(result).not.toContain('OTM DIVERGENCE');
+    });
+
+    it('flags OTM EXCEEDS TOTAL for bearish cancellation (|otmNcp| > |ncp|, both negative)', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: -1_000_000,
+          npp: -800_000,
+          otmNcp: -3_000_000, // OTM bearish and bigger — ATM contributed +2M
+          otmNpp: -2_500_000,
+        }),
+      ])!;
+
+      expect(result).toContain('OTM EXCEEDS TOTAL');
+      expect(result).not.toContain('OTM-DOMINANT');
+      expect(result).not.toContain('OTM DIVERGENCE');
+    });
+
+    it('emits no labels when both total and OTM are below the noise floor', () => {
+      // Both values under NEAR_ZERO_DELTA ($100K) — nothing meaningful
+      // happening, the whole interpretation block should be skipped.
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          ncp: 50_000,
+          npp: 30_000,
+          otmNcp: 20_000,
+          otmNpp: 10_000,
+        }),
+      ])!;
+
+      expect(result).not.toContain('OTM-DOMINANT');
+      expect(result).not.toContain('ATM-DOMINANT');
+      expect(result).not.toContain('OTM DIVERGENCE');
+      expect(result).not.toContain('OTM EXCEEDS TOTAL');
+    });
+
+    it('includes OTM segment in time series rows when otmNcp is present', () => {
+      const result = formatGreekFlowForClaude([
+        makeFlowRow({
+          timestamp: '2026-03-24T14:30:00Z',
+          ncp: 1_000_000,
+          otmNcp: 600_000,
+        }),
+        makeFlowRow({
+          timestamp: '2026-03-24T14:35:00Z',
+          ncp: 1_500_000,
+          otmNcp: 900_000,
+        }),
+      ])!;
+
+      // Time series rows should include the OTM segment
+      expect(result).toMatch(/OTM Δ: \+[0-9.]+[KM]/);
     });
   });
 });

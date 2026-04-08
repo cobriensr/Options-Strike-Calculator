@@ -875,19 +875,23 @@ describe('db.ts', () => {
   // getFlowData
   // ============================================================
   describe('getFlowData', () => {
-    it('returns mapped flow data rows', async () => {
+    it('returns mapped flow data rows (non-greek-flow source has null OTM)', async () => {
       mockSql.mockResolvedValueOnce([
         {
           timestamp: '2026-03-24T14:00:00Z',
           ncp: '150000000',
           npp: '-120000000',
           net_volume: 5000,
+          otm_ncp: null,
+          otm_npp: null,
         },
         {
           timestamp: '2026-03-24T14:05:00Z',
           ncp: '160000000',
           npp: '-110000000',
           net_volume: -3000,
+          otm_ncp: null,
+          otm_npp: null,
         },
       ]);
 
@@ -899,8 +903,36 @@ describe('db.ts', () => {
         ncp: 150000000,
         npp: -120000000,
         netVolume: 5000,
+        otmNcp: null,
+        otmNpp: null,
       });
       expect(result[1]!.netVolume).toBe(-3000);
+      expect(result[1]!.otmNcp).toBeNull();
+    });
+
+    it('maps otm_ncp/otm_npp columns for zero_dte_greek_flow source (ENH-FIX-001)', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          timestamp: '2026-03-24T14:00:00Z',
+          ncp: '5000000',
+          npp: '-3000000',
+          net_volume: 120000,
+          otm_ncp: '2500000',
+          otm_npp: '-1800000',
+        },
+      ]);
+
+      const result = await getFlowData('2026-03-24', 'zero_dte_greek_flow');
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        timestamp: '2026-03-24T14:00:00Z',
+        ncp: 5_000_000,
+        npp: -3_000_000,
+        netVolume: 120_000,
+        otmNcp: 2_500_000,
+        otmNpp: -1_800_000,
+      });
     });
 
     it('returns empty array when no rows', async () => {

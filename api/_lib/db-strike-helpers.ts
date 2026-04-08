@@ -61,6 +61,10 @@ export interface FlowDataRow {
   ncp: number;
   npp: number;
   netVolume: number | null;
+  // OTM variants — only populated for the `zero_dte_greek_flow` source.
+  // Null for all other flow sources. See migration #48.
+  otmNcp: number | null;
+  otmNpp: number | null;
 }
 
 /**
@@ -587,8 +591,14 @@ export function formatGreekFlowForClaude(rows: FlowDataRow[]): string | null {
     `  Latest (${latestTime} ET):`,
     `    Total Delta Flow: ${formatDeltaVal(latest.ncp)}`,
     `    Directionalized Delta Flow: ${formatDeltaVal(latest.npp)}`,
-    `    Volume: ${latest.netVolume?.toLocaleString() ?? 'N/A'}`,
   );
+  if (latest.otmNcp != null) {
+    lines.push(
+      `    OTM Total Delta Flow: ${formatDeltaVal(latest.otmNcp)}`,
+      `    OTM Directionalized Delta Flow: ${formatDeltaVal(latest.otmNpp ?? 0)}`,
+    );
+  }
+  lines.push(`    Volume: ${latest.netVolume?.toLocaleString() ?? 'N/A'}`);
 
   // Direction
   const deltaDir =
@@ -621,6 +631,78 @@ export function formatGreekFlowForClaude(rows: FlowDataRow[]): string | null {
     );
   }
 
+  // OTM vs total (ATM-inclusive) divergence check.
+  // The total reading sums ATM + OTM delta flow. OTM alone is closer to
+  // directional conviction because ATM is dominated by hedging and gamma
+  // scalping. When OTM and total disagree, trust OTM.
+  //
+  // Four cases, evaluated in priority order:
+  //   1. Sign disagreement          → OTM DIVERGENCE (strongest signal)
+  //   2. |OTM| ≥ |total|            → OTM EXCEEDS TOTAL (ATM cancellation;
+  //                                    subsumes the near-zero-total edge case)
+  //   3. OTM share > 70% of |total| → OTM-DOMINANT (informed conviction)
+  //   4. OTM share < 30% of |total| → ATM-DOMINANT (hedging dilution)
+  //
+  // Thresholds are tunable after live observation.
+  //
+  // NEAR_ZERO_DELTA is the noise floor below which we treat a value as
+  // effectively zero. Typical UW 0DTE delta flow readings are in the
+  // millions; anything under $100K is rounding noise that would otherwise
+  // produce meaningless ratios if used as a denominator.
+  const NEAR_ZERO_DELTA = 100_000;
+  if (latest.otmNcp != null) {
+    const absNcp = Math.abs(latest.ncp);
+    const absOtm = Math.abs(latest.otmNcp);
+    const totalHasMagnitude = absNcp >= NEAR_ZERO_DELTA;
+    const otmHasMagnitude = absOtm >= NEAR_ZERO_DELTA;
+
+    // Skip entirely when both are noise.
+    if (totalHasMagnitude || otmHasMagnitude) {
+      // 1. Sign disagreement — both sides present, opposite directions.
+      if (
+        totalHasMagnitude &&
+        otmHasMagnitude &&
+        latest.ncp > 0 &&
+        latest.otmNcp < 0
+      ) {
+        lines.push(
+          '  OTM DIVERGENCE: Total delta positive but OTM delta negative. Informed participants are positioning bearishly in the wings while aggregate is lifted by ATM activity (likely hedging). Trust OTM for directional conviction.',
+        );
+      } else if (
+        totalHasMagnitude &&
+        otmHasMagnitude &&
+        latest.ncp < 0 &&
+        latest.otmNcp > 0
+      ) {
+        lines.push(
+          '  OTM DIVERGENCE: Total delta negative but OTM delta positive. Informed participants are positioning bullishly in the wings while ATM is dominated by hedging. Trust OTM for directional conviction.',
+        );
+      }
+      // 2. |OTM| ≥ |total| — ATM hedging is cancelling OTM directional
+      // exposure. This covers both the cancellation case (real total, but
+      // OTM is larger in absolute terms) AND the near-zero-total edge case
+      // (total is noise but OTM has real magnitude). In either case, the
+      // aggregate number understates the real directional conviction.
+      else if (otmHasMagnitude && absOtm >= absNcp) {
+        lines.push(
+          '  OTM EXCEEDS TOTAL: ATM hedging is offsetting OTM directional exposure — the aggregate reading understates the real directional conviction in the wings. Trust OTM as the honest directional read.',
+        );
+      }
+      // 3. Same direction, OTM carries most of the signal (conviction).
+      else if (totalHasMagnitude && absOtm / absNcp > 0.7) {
+        lines.push(
+          '  OTM-DOMINANT: Over 70% of total delta flow is coming from OTM strikes. This signals directional conviction, not ATM hedging. Trust the directional reading.',
+        );
+      }
+      // 4. Same direction, but the OTM share is diluted by ATM hedging.
+      else if (totalHasMagnitude && absOtm / absNcp < 0.3) {
+        lines.push(
+          '  ATM-DOMINANT: Less than 30% of total delta flow is coming from OTM strikes. The total reading is likely diluted by ATM hedging; directional conviction is weaker than the aggregate number suggests.',
+        );
+      }
+    }
+  }
+
   // Time series (last 6 data points)
   if (rows.length > 1) {
     const recentRows = rows.slice(-6);
@@ -632,8 +714,10 @@ export function formatGreekFlowForClaude(rows: FlowDataRow[]): string | null {
         minute: '2-digit',
         hour12: true,
       });
+      const otmSegment =
+        row.otmNcp != null ? ` | OTM Δ: ${formatDeltaVal(row.otmNcp)}` : '';
       lines.push(
-        `    ${time} ET — Total Δ: ${formatDeltaVal(row.ncp)} | Dir Δ: ${formatDeltaVal(row.npp)} | Vol: ${row.netVolume?.toLocaleString() ?? 'N/A'}`,
+        `    ${time} ET — Total Δ: ${formatDeltaVal(row.ncp)} | Dir Δ: ${formatDeltaVal(row.npp)}${otmSegment} | Vol: ${row.netVolume?.toLocaleString() ?? 'N/A'}`,
       );
     }
   }

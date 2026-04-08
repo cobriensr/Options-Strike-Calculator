@@ -14,6 +14,11 @@ import { getDb } from './db.js';
 /**
  * Get all flow data rows for a given date and source.
  * Returns rows ordered by timestamp ascending (oldest first).
+ *
+ * The otmNcp/otmNpp fields are only populated for the
+ * `zero_dte_greek_flow` source, where they represent OTM-only
+ * variants of the total delta flow. For all other sources they
+ * will be null. See migration #48 and fetch-greek-flow.ts.
  */
 export async function getFlowData(
   date: string,
@@ -24,11 +29,13 @@ export async function getFlowData(
     ncp: number;
     npp: number;
     netVolume: number;
+    otmNcp: number | null;
+    otmNpp: number | null;
   }>
 > {
   const sql = getDb();
   const rows = await sql`
-    SELECT timestamp, ncp, npp, net_volume
+    SELECT timestamp, ncp, npp, net_volume, otm_ncp, otm_npp
     FROM flow_data
     WHERE date = ${date} AND source = ${source}
     ORDER BY timestamp ASC
@@ -39,6 +46,8 @@ export async function getFlowData(
     ncp: Number(r.ncp),
     npp: Number(r.npp),
     netVolume: r.net_volume as number,
+    otmNcp: r.otm_ncp == null ? null : Number(r.otm_ncp),
+    otmNpp: r.otm_npp == null ? null : Number(r.otm_npp),
   }));
 }
 

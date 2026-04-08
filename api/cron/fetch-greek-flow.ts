@@ -14,7 +14,12 @@
  *
  * Stored in flow_data table with source = 'zero_dte_greek_flow'.
  * ncp column = total_delta_flow, npp column = dir_delta_flow,
- * net_volume column = volume.
+ * net_volume column = volume,
+ * otm_ncp column = otm_total_delta_flow, otm_npp column = otm_dir_delta_flow.
+ *
+ * The OTM variants capture directional conviction in the wings (informed
+ * positioning), while the total/non-OTM columns include ATM activity that
+ * is dominated by dealer hedging and gamma scalping. See migration #48.
  *
  * Total API calls per invocation: 1
  *
@@ -83,13 +88,20 @@ async function storeLatest(
 
   for (const [ts, tick] of sampled) {
     try {
-      // Store delta flow in ncp/npp columns for compatibility with flow_data table
-      // ncp = total_delta_flow, npp = dir_delta_flow, net_volume = volume
+      // Store delta flow in ncp/npp columns for compatibility with flow_data table.
+      // ncp = total_delta_flow, npp = dir_delta_flow, net_volume = volume.
+      // otm_ncp = otm_total_delta_flow, otm_npp = otm_dir_delta_flow
+      // (wings-only variants that better represent directional conviction).
       const result = await sql`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+        INSERT INTO flow_data (
+          date, timestamp, source,
+          ncp, npp, net_volume,
+          otm_ncp, otm_npp
+        )
         VALUES (
           ${today}, ${ts}, ${SOURCE},
-          ${tick.total_delta_flow}, ${tick.dir_delta_flow}, ${tick.volume}
+          ${tick.total_delta_flow}, ${tick.dir_delta_flow}, ${tick.volume},
+          ${tick.otm_total_delta_flow}, ${tick.otm_dir_delta_flow}
         )
         ON CONFLICT (date, timestamp, source) DO NOTHING
         RETURNING id
@@ -125,6 +137,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ...result,
         latestDelta: latest?.total_delta_flow,
         latestDirDelta: latest?.dir_delta_flow,
+        latestOtmDelta: latest?.otm_total_delta_flow,
+        latestOtmDirDelta: latest?.otm_dir_delta_flow,
       },
       'fetch-greek-flow completed',
     );

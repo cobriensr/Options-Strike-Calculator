@@ -196,6 +196,42 @@ describe('fetch-greek-flow handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
+  it('persists OTM delta flow fields via the INSERT (ENH-FIX-001)', async () => {
+    // Regression test for the pre-fix bug where otm_total_delta_flow and
+    // otm_dir_delta_flow arrived in the UW response but were never written
+    // to flow_data. See migration #48 and docs/superpowers/specs/
+    // analyze-prompt-enhancements-2026-04-08.md (ENH-FIX-001).
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      makeGreekFlowTick({
+        total_delta_flow: '5000000',
+        dir_delta_flow: '-3000000',
+        otm_total_delta_flow: '2500000',
+        otm_dir_delta_flow: '-1800000',
+      }),
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+
+    // Verify the INSERT targets the new OTM columns.
+    const [strings, ...values] = mockSql.mock.calls[0]!;
+    const sqlText = (strings as readonly string[]).join('?');
+    expect(sqlText).toContain('otm_ncp');
+    expect(sqlText).toContain('otm_npp');
+
+    // Verify the interpolated values include the OTM data from the fixture.
+    expect(values).toContain('2500000');
+    expect(values).toContain('-1800000');
+  });
+
   it('handles empty data (no ticks)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([]);
