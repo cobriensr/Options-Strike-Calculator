@@ -46,6 +46,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-spx-candles-1m",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-vol-0dte",
       "schedule": "* 13-21 * * 1-5"
     },

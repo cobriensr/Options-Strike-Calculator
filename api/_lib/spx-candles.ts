@@ -1,27 +1,46 @@
 /**
- * SPX Intraday Candles (Unusual Whales)
+ * SPX Intraday Candles (DB-first, UW live fallback)
  *
- * Fetches 5-minute OHLCV candles from the UW API and translates to
- * SPX-equivalent prices. Uses SPY as the source ticker because Cboe
- * prohibits external distribution of proprietary index prices (SPX,
- * VIX, RUT, etc.) via API — only their web platform is allowed.
- * SPY prices are multiplied by the SPX/SPY ratio to produce
- * approximate SPX candles.
+ * Primary path: reads pre-baked 1-minute OHLCV candles from the
+ * `spx_candles_1m` Postgres table. The `fetch-spx-candles-1m` cron
+ * populates that table every minute during market hours, translating
+ * UW SPY candles to SPX prices via the 10× ratio before insert. The
+ * backfill script `scripts/backfill-spx-candles-1m.mjs` seeds the last
+ * 30 days of history.
  *
- * Used on-demand at analysis time (not a cron) to give Claude price
- * structure context: higher lows, range compression, wide-range bars,
- * session high/low relative to the straddle cone.
+ * Fallback path: if the table has zero rows for the requested date
+ * (e.g., transition window before the cron has run, or a missed date),
+ * we fall back to the on-demand UW 5-minute endpoint. This is a
+ * degraded mode — 5m resolution instead of 1m — but keeps the analyze
+ * endpoint functional. The fallback should be dead code in steady state
+ * and is intentionally kept on the 5m endpoint so existing UW test
+ * fixtures continue to apply.
  *
- * Uses the same UW_API_KEY as all other UW integrations — no separate
- * OAuth dependency.
+ * Cboe prohibits external distribution of proprietary index prices
+ * (SPX, VIX, RUT, etc.) via API — only their web platform is allowed.
+ * Both paths therefore source SPY and multiply by the SPX/SPY ratio.
+ *
+ * Returns only regular-session candles (market_time = 'r'). Premarket
+ * candles are still read for the purpose of deriving `previousClose`
+ * (first 'pr' open, SPX-translated).
+ *
+ * Format-for-Claude commitment: `formatSPXCandlesForClaude()` consumes
+ * 1-minute candles for the full session with NO truncation. The owner
+ * has explicitly accepted the ~5x token cost increase in exchange for
+ * Claude seeing granular intraday price action. See
+ * `docs/superpowers/plans/gex-target-rebuild.md` Phase 3 and the
+ * "Full-session 1-minute candles in Claude analyze prompt"
+ * architectural commitment. Do NOT reintroduce truncation without
+ * re-confirming with the owner.
  */
+import { getDb } from './db.js';
 import logger from './logger.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
 // ── Types ───────────────────────────────────────────────────
 
-/** UW candle format from /stock/SPY/ohlc/5m */
+/** UW candle format from /stock/SPY/ohlc/5m (live fallback only) */
 interface UWCandle {
   open: string;
   high: string;
@@ -48,25 +67,141 @@ export interface SPXCandle {
   datetime: number; // epoch ms (start_time)
 }
 
+/** Row shape returned by the SELECT against spx_candles_1m. */
+interface SPXCandleDbRow {
+  timestamp: string | Date;
+  open: string | number;
+  high: string | number;
+  low: string | number;
+  close: string | number;
+  volume: string | number;
+  market_time: 'pr' | 'r' | 'po';
+}
+
+// ── Helpers ─────────────────────────────────────────────────
+
+function todayUtcDateString(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function toNumber(value: string | number): number {
+  return typeof value === 'number' ? value : Number.parseFloat(value);
+}
+
+function toEpochMs(value: string | Date): number {
+  return value instanceof Date ? value.getTime() : new Date(value).getTime();
+}
+
 // ── Fetch ───────────────────────────────────────────────────
 
 /**
- * Fetch today's 5-minute candles via SPY and translate to SPX prices.
+ * Fetch regular-session SPX candles for the given date.
  *
- * Cboe prohibits SPX index OHLC distribution via API, so we fetch SPY
- * candles and multiply by the SPX/SPY ratio. Returns candles ordered
- * by time ascending, or empty array on failure.
+ * DB-first: reads 1-minute rows from `spx_candles_1m`. If the table
+ * has zero rows for the requested date (both regular and premarket),
+ * falls back to the on-demand UW 5-minute endpoint as a degraded mode.
  *
- * Only returns regular-session candles (market_time === 'r').
+ * Returns candles ordered by time ascending, or empty array if both
+ * paths fail.
  *
- * @param apiKey - UW API key
- * @param date - Optional date string (YYYY-MM-DD)
- * @param spyToSpxRatio - SPX/SPY price ratio (default 10)
+ * `previousClose` is derived from the first premarket (`'pr'`) bar's
+ * open for the same date. If no premarket data exists, returns `null`.
+ * We do NOT fall through to the live UW path just to recover
+ * `previousClose` — only if BOTH regular-session and premarket queries
+ * return zero rows does the fallback path run.
+ *
+ * @param apiKey - UW API key (used only by the live fallback)
+ * @param date - Optional date string (YYYY-MM-DD). Defaults to today UTC.
+ * @param spyToSpxRatio - SPX/SPY price ratio for the live fallback path.
+ *   The primary DB read path ignores this parameter because the cron
+ *   (and backfill script) already translated SPY→SPX with a fixed 10×
+ *   ratio before writing. Kept in the signature for backward compat
+ *   with the fallback path. Default: 10.
  */
 export async function fetchSPXCandles(
   apiKey: string,
   date?: string,
   spyToSpxRatio = 10,
+): Promise<{
+  candles: SPXCandle[];
+  previousClose: number | null;
+}> {
+  const targetDate = date ?? todayUtcDateString();
+
+  // ── Primary: read from spx_candles_1m ──────────────────────
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT timestamp, open, high, low, close, volume, market_time
+      FROM spx_candles_1m
+      WHERE date = ${targetDate}
+        AND market_time IN ('r', 'pr')
+      ORDER BY timestamp ASC
+    `) as SPXCandleDbRow[];
+
+    if (rows.length > 0) {
+      const candles: SPXCandle[] = [];
+      let previousClose: number | null = null;
+
+      for (const row of rows) {
+        if (row.market_time === 'r') {
+          const open = toNumber(row.open);
+          const high = toNumber(row.high);
+          const low = toNumber(row.low);
+          const close = toNumber(row.close);
+          if (
+            Number.isNaN(open) ||
+            Number.isNaN(high) ||
+            Number.isNaN(low) ||
+            Number.isNaN(close)
+          ) {
+            continue;
+          }
+          candles.push({
+            open,
+            high,
+            low,
+            close,
+            volume: Number(row.volume) || 0,
+            datetime: toEpochMs(row.timestamp),
+          });
+        } else if (row.market_time === 'pr' && previousClose === null) {
+          // ORDER BY timestamp ASC guarantees the first pr row we see
+          // is the earliest premarket bar of the session.
+          const prOpen = toNumber(row.open);
+          if (!Number.isNaN(prOpen)) previousClose = prOpen;
+        }
+      }
+
+      return { candles, previousClose };
+    }
+
+    logger.warn(
+      { date: targetDate },
+      'spx_candles_1m empty for date; falling back to live UW 5m fetch',
+    );
+  } catch (err) {
+    logger.error(
+      { err },
+      'Failed to read spx_candles_1m; falling back to live UW 5m fetch',
+    );
+  }
+
+  // ── Fallback: live UW 5-minute endpoint ────────────────────
+  return fetchSPXCandlesLive(apiKey, date, spyToSpxRatio);
+}
+
+/**
+ * Live fallback: fetch 5-minute SPY candles from UW and translate to
+ * SPX. Degraded mode — only used when `spx_candles_1m` is empty for the
+ * requested date. Kept on the 5m endpoint (not 1m) so existing test
+ * fixtures continue to apply and so the fallback is clearly lower
+ * fidelity than the primary path.
+ */
+async function fetchSPXCandlesLive(
+  apiKey: string,
+  date: string | undefined,
+  spyToSpxRatio: number,
 ): Promise<{
   candles: SPXCandle[];
   previousClose: number | null;
@@ -146,15 +281,26 @@ export async function fetchSPXCandles(
 
 /**
  * Format SPX candles as structured text for Claude's context.
+ *
+ * IMPORTANT: this formatter consumes 1-minute candles (~390 per
+ * regular session) and emits the FULL session with NO truncation into
+ * Claude's prompt. The owner has explicitly accepted the token-cost
+ * trade-off in exchange for granular intraday visibility. See
+ * `docs/superpowers/plans/gex-target-rebuild.md` Phase 3 — do not
+ * reintroduce truncation without re-confirming with the owner.
+ *
  * Provides:
- *   - Session OHLC summary
+ *   - Session OHLC summary over the full session
  *   - Gap analysis (vs previous close)
- *   - Key structural features (higher lows, range compression, wide bars)
- *   - Approx VWAP
- *   - Last 12 candles as a compact table
+ *   - Key structural features tuned to 1m resolution:
+ *       - Higher lows / lower highs over the last 15 candles (~15 min)
+ *       - Range compression (last 15 vs first 15 candles)
+ *       - Wide-range bar detection (> 2x average range AND > 5 pts)
+ *   - Approx session VWAP (running sum, candle-period agnostic)
+ *   - Last 30 candles as a compact table (= last 30 minutes of detail)
  *   - Range consumed relative to straddle cone (if provided)
  *
- * @param candles - 5-min OHLCV candles (time ascending)
+ * @param candles - 1-min OHLCV candles (time ascending)
  * @param previousClose - Previous session close
  * @param coneUpper - Optional straddle cone upper boundary
  * @param coneLower - Optional straddle cone lower boundary
@@ -194,7 +340,7 @@ export function formatSPXCandlesForClaude(
     });
 
   lines.push(
-    `SPX Intraday Price Data (5-min candles):`,
+    `SPX Intraday Price Data (1-min candles, full session):`,
     `  Session: ${fmtTime(firstTime)} – ${fmtTime(latestTime)} ET`,
     `  Open: ${sessionOpen.toFixed(2)} | High: ${sessionHigh.toFixed(2)} | Low: ${sessionLow.toFixed(2)} | Last: ${sessionClose.toFixed(2)}`,
     `  Session Range: ${sessionRange.toFixed(1)} pts`,
@@ -224,9 +370,13 @@ export function formatSPXCandlesForClaude(
   // ── Structural analysis ─────────────────────────────────
   lines.push('');
 
-  // Higher lows / lower highs detection (last 6 candles)
-  if (candles.length >= 6) {
-    const recent = candles.slice(-6);
+  // Higher lows / lower highs detection (last 15 1-min candles).
+  // At 1m resolution, a 15-minute window is long enough to establish
+  // a pattern. Threshold stays at 2/3 of the window (was 4/6).
+  const TREND_WINDOW = 15;
+  const TREND_THRESHOLD = 10;
+  if (candles.length >= TREND_WINDOW) {
+    const recent = candles.slice(-TREND_WINDOW);
     let higherLows = 0;
     let lowerHighs = 0;
     for (let i = 1; i < recent.length; i++) {
@@ -234,20 +384,20 @@ export function formatSPXCandlesForClaude(
       if (recent[i]!.high < recent[i - 1]!.high) lowerHighs++;
     }
 
-    if (higherLows >= 4) {
+    if (higherLows >= TREND_THRESHOLD) {
       lines.push(
-        '  Pattern: HIGHER LOWS (4+ of last 6 candles) — uptrend intact, selling pressure not translating to lower prices',
+        `  Pattern: HIGHER LOWS (${TREND_THRESHOLD}+ of last ${TREND_WINDOW} candles) — uptrend intact, selling pressure not translating to lower prices`,
       );
-    } else if (lowerHighs >= 4) {
+    } else if (lowerHighs >= TREND_THRESHOLD) {
       lines.push(
-        '  Pattern: LOWER HIGHS (4+ of last 6 candles) — downtrend intact, buying pressure not translating to higher prices',
+        `  Pattern: LOWER HIGHS (${TREND_THRESHOLD}+ of last ${TREND_WINDOW} candles) — downtrend intact, buying pressure not translating to higher prices`,
       );
     }
 
-    // Range compression (last 6 vs first 6 candles)
-    if (candles.length >= 12) {
-      const early = candles.slice(0, 6);
-      const late = candles.slice(-6);
+    // Range compression (last 15 vs first 15 1-min candles)
+    if (candles.length >= TREND_WINDOW * 2) {
+      const early = candles.slice(0, TREND_WINDOW);
+      const late = candles.slice(-TREND_WINDOW);
       const earlyAvgRange =
         early.reduce((s, c) => s + (c.high - c.low), 0) / early.length;
       const lateAvgRange =
@@ -260,7 +410,9 @@ export function formatSPXCandlesForClaude(
     }
   }
 
-  // Wide-range bar detection (any candle > 2x average range)
+  // Wide-range bar detection (any candle > 2x average range AND > 5 pts).
+  // The 5-pt floor is still meaningful at 1m resolution because typical
+  // 1-min SPX ranges are 2–3 pts, so a > 5 pt bar is already exceptional.
   if (candles.length >= 4) {
     const avgRange =
       candles.reduce((s, c) => s + (c.high - c.low), 0) / candles.length;
@@ -278,7 +430,8 @@ export function formatSPXCandlesForClaude(
     }
   }
 
-  // Price relative to session VWAP approximation
+  // Price relative to session VWAP approximation. Running sum — works
+  // for any candle period, no change needed for 1m resolution.
   const totalVolume = candles.reduce((s, c) => s + c.volume, 0);
   if (totalVolume > 0) {
     const vwap =
@@ -292,11 +445,12 @@ export function formatSPXCandlesForClaude(
     );
   }
 
-  // ── Recent candle table (last 12) ─────────────────────────
-  const recentCandles = candles.slice(-12);
+  // ── Recent candle table (last 30 = 30 minutes of detail) ───
+  const RECENT_WINDOW = 30;
+  const recentCandles = candles.slice(-RECENT_WINDOW);
   lines.push(
     '',
-    '  Recent 5-min Candles:',
+    `  Recent 1-min Candles (last ${RECENT_WINDOW}):`,
     '    Time ET     | Open    | High    | Low     | Close   | Range | Vol',
   );
 
