@@ -373,8 +373,7 @@ describe('fetchDarkPoolBlocks', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () =>
-          Promise.resolve({ data: [openBoundary, closeBoundary] }),
+        json: () => Promise.resolve({ data: [openBoundary, closeBoundary] }),
       }),
     );
 
@@ -403,8 +402,7 @@ describe('fetchDarkPoolBlocks', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () =>
-          Promise.resolve({ data: [insideCdt, outsideCdt] }),
+        json: () => Promise.resolve({ data: [insideCdt, outsideCdt] }),
       }),
     );
 
