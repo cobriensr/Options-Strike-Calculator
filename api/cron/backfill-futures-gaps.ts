@@ -15,7 +15,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
-import { cronGuard } from '../_lib/api-helpers.js';
+import { checkDataQuality, cronGuard } from '../_lib/api-helpers.js';
 
 // ── Constants ───────────────────────────────────────────────
 
@@ -55,22 +55,25 @@ interface OhlcvRecord {
 
 // ── Databento fetch ─────────────────────────────────────────
 
-async function fetchBars(
-  symbol: string,
-  cfg: { continuous: string; dataset: string },
-  start: string,
-  end: string,
-  apiKey: string,
-): Promise<
-  Array<{
+interface FetchBarsResult {
+  bars: Array<{
     ts: string;
     open: number;
     high: number;
     low: number;
     close: number;
     volume: number;
-  }>
-> {
+  }>;
+  rejected: number;
+}
+
+async function fetchBars(
+  symbol: string,
+  cfg: { continuous: string; dataset: string },
+  start: string,
+  end: string,
+  apiKey: string,
+): Promise<FetchBarsResult> {
   const formBody = new URLSearchParams({
     dataset: cfg.dataset,
     symbols: cfg.continuous,
@@ -97,13 +100,13 @@ async function fetchBars(
       'Databento API error: %s',
       text.slice(0, 200),
     );
-    return [];
+    return { bars: [], rejected: 0 };
   }
 
   const text = await res.text();
-  if (!text.trim()) return [];
+  if (!text.trim()) return { bars: [], rejected: 0 };
 
-  return text
+  const parsed = text
     .trim()
     .split('\n')
     .filter((line) => line.length > 0)
@@ -115,27 +118,54 @@ async function fetchBars(
       low: Number(r.low) / NANODOLLAR,
       close: Number(r.close) / NANODOLLAR,
       volume: Number(r.volume),
-    }))
-    .filter((r) => {
-      // Filter overflow (INT64_MAX sentinel)
-      if (
-        Math.abs(r.open) > MAX_PRICE ||
-        Math.abs(r.high) > MAX_PRICE ||
-        Math.abs(r.low) > MAX_PRICE ||
-        Math.abs(r.close) > MAX_PRICE
-      ) {
-        return false;
+    }));
+
+  const bars: FetchBarsResult['bars'] = [];
+  let rejected = 0;
+
+  for (const r of parsed) {
+    // Filter overflow (INT64_MAX sentinel) — corrupted tick, not a silent
+    // Databento drift. Count it and log so gaps are visible.
+    if (
+      Math.abs(r.open) > MAX_PRICE ||
+      Math.abs(r.high) > MAX_PRICE ||
+      Math.abs(r.low) > MAX_PRICE ||
+      Math.abs(r.close) > MAX_PRICE
+    ) {
+      rejected += 1;
+      logger.warn(
+        { symbol, ts: r.ts, close: r.close, reason: 'overflow' },
+        'backfill-futures-gaps: rejected bar (overflow)',
+      );
+      continue;
+    }
+
+    // Filter spread/combo bars using per-symbol price bounds. A silent
+    // continue here used to hide Databento tick-scale shifts — log with
+    // structured fields so cascading ML-pipeline gaps become visible.
+    const bounds = PRICE_BOUNDS[symbol];
+    if (bounds) {
+      const [lo, hi] = bounds;
+      if (r.close < lo || r.close > hi || r.low < lo * 0.5) {
+        rejected += 1;
+        logger.warn(
+          {
+            symbol,
+            ts: r.ts,
+            close: r.close,
+            low: r.low,
+            bounds: [lo, hi],
+          },
+          'backfill-futures-gaps: rejected bar (out of bounds)',
+        );
+        continue;
       }
-      // Filter spread/combo bars using per-symbol price bounds
-      const bounds = PRICE_BOUNDS[symbol];
-      if (bounds) {
-        const [lo, hi] = bounds;
-        if (r.close < lo || r.close > hi || r.low < lo * 0.5) {
-          return false;
-        }
-      }
-      return true;
-    });
+    }
+
+    bars.push(r);
+  }
+
+  return { bars, rejected };
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -168,14 +198,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const endStr = end.toISOString().slice(0, 10);
 
   const results: Array<{ symbol: string; inserted: number }> = [];
+  const rejectedBySymbol: Record<string, number> = {};
   const errors: string[] = [];
 
   for (const [symbol, cfg] of Object.entries(SYMBOLS)) {
     try {
-      const bars = await fetchBars(symbol, cfg, startStr, endStr, apiKey);
+      const { bars, rejected } = await fetchBars(
+        symbol,
+        cfg,
+        startStr,
+        endStr,
+        apiKey,
+      );
+      rejectedBySymbol[symbol] = rejected;
 
       if (bars.length === 0) {
         results.push({ symbol, inserted: 0 });
+        // Even when nothing passed the filter, surface the quality signal so
+        // a total Databento drift (all bars rejected) alerts via Sentry.
+        await checkDataQuality({
+          job: 'backfill-futures-gaps',
+          table: 'futures_bars',
+          date: endStr,
+          sourceFilter: `symbol=${symbol}`,
+          total: rejected,
+          nonzero: 0,
+        });
         continue;
       }
 
@@ -201,20 +249,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       results.push({ symbol, inserted });
+
+      // NOTE: We do NOT call checkDataQuality here. Reaching this point
+      // means bars.length > 0 AND at least one batch landed, so
+      // inserted > 0 by construction. checkDataQuality's "all-zero"
+      // alert condition (nonzero === 0) can never trigger from this
+      // branch. The drift signal we care about — "Databento returned
+      // data but every bar was filtered out" — is handled by the
+      // bars.length === 0 branch above with (total: rejected, nonzero: 0).
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       errors.push(`${symbol}: ${msg}`);
+      rejectedBySymbol[symbol] = rejectedBySymbol[symbol] ?? 0;
       logger.warn({ symbol, err }, 'Gap-fill failed for symbol');
     }
   }
 
   const totalInserted = results.reduce((sum, r) => sum + r.inserted, 0);
+  const totalRejected = Object.values(rejectedBySymbol).reduce(
+    (sum, n) => sum + n,
+    0,
+  );
 
   logger.info(
     {
       startStr,
       endStr,
       totalInserted,
+      totalRejected,
+      rejectedBySymbol,
       symbols: results,
       errors: errors.length,
     },
@@ -225,6 +288,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     job: 'backfill-futures-gaps',
     range: `${startStr} to ${endStr}`,
     totalInserted,
+    totalRejected,
+    rejected: rejectedBySymbol,
     symbols: results,
     errors: errors.length > 0 ? errors : undefined,
     durationMs: Date.now() - startTime,
