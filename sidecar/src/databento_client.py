@@ -625,13 +625,18 @@ class DatabentoClient:
                         },
                     )
 
+        # Keep _last_close_before_disconnect current so the sanity check
+        # above has fresh data to compare against on the next reconnect.
+        # This must run BEFORE the DB upsert (and outside its try block)
+        # so a transient DB blip doesn't leave the baseline stale until
+        # the next successful upsert. The sanity check above already
+        # consulted the prior baseline, so updating it now is safe.
+        self._last_close_before_disconnect[symbol] = float(close)
+
         # Write to DB
         try:
             upsert_futures_bar(symbol, ts, open_, high, low, close, volume)
             self._last_bar_ts = time.time()
-            # Keep _last_close_before_disconnect current so the
-            # sanity check above has fresh data to compare against.
-            self._last_close_before_disconnect[symbol] = float(close)
             log.debug(
                 "Bar: %s %s O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
                 symbol,

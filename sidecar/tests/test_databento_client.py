@@ -329,6 +329,28 @@ class TestReconnectGap:
         assert "ES" in client._last_close_before_disconnect
         assert client._last_close_before_disconnect["ES"] == pytest.approx(5800.0)
 
+    def test_last_close_updates_even_if_db_upsert_raises(
+        self, client: DatabentoClient
+    ) -> None:
+        """Reviewer follow-up: a transient DB blip must NOT leave the
+        baseline stale. The in-memory _last_close_before_disconnect
+        invariant ("the most recent close we observed for this symbol")
+        is decoupled from DB availability — otherwise a single failed
+        upsert would silently degrade the next reconnect's sanity check.
+        """
+        # Make the lazy-imported upsert_futures_bar raise.
+        rec = _make_bar_record(iid=1, close_raw=5825_000_000_000)
+        with patch(
+            "db.upsert_futures_bar",
+            side_effect=RuntimeError("simulated DB blip"),
+        ):
+            client._handle_ohlcv(rec)
+
+        # Even though the DB write failed, the in-memory baseline must
+        # reflect the bar we just received.
+        assert "ES" in client._last_close_before_disconnect
+        assert client._last_close_before_disconnect["ES"] == pytest.approx(5825.0)
+
 
 class TestFirstBarAfterReconnectSanity:
     def test_small_price_move_does_not_warn(
