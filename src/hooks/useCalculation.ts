@@ -7,10 +7,86 @@ import {
   calcAllDeltas,
   to24Hour,
 } from '../utils/calculator';
+import { convertCTToET } from '../utils/timezone';
 
 export interface UseCalculationReturn {
   results: CalculationResults | null;
   errors: Record<string, string>;
+}
+
+/**
+ * Discriminated result of `computeMarketTime`. The valid branch carries
+ * every derived quantity downstream consumers need (totalMinutes,
+ * closeMinutes, hoursRemaining), so callers never have to redo the math.
+ */
+type MarketTimeResult =
+  | {
+      readonly valid: true;
+      readonly totalMinutes: number;
+      readonly closeMinutes: number;
+      readonly hoursRemaining: number;
+    }
+  | { readonly valid: false; readonly error: string };
+
+/**
+ * Single source of truth for the calculator's time math. Combines:
+ *  1. 12h → 24h conversion
+ *  2. CT → ET conversion (TZ-aware via Intl, not a fixed +1 offset)
+ *  3. market-hours validation (with early-close support)
+ *  4. hours-remaining computation
+ *
+ * Centralizing this prevents the validation block and the computation
+ * block from drifting apart (FE-STATE-003) and lets FE-STATE-004's TZ
+ * fix live in exactly one place.
+ *
+ * Error strings are preserved verbatim from the previous inline
+ * implementation so no user-visible UI text changes.
+ */
+export function computeMarketTime(
+  timeHour: string,
+  timeMinute: string,
+  timeAmPm: AmPm,
+  timezone: Timezone,
+  earlyCloseHourET?: number,
+): MarketTimeResult {
+  const h = Number.parseInt(timeHour);
+  const m = Number.parseInt(timeMinute);
+  if (Number.isNaN(h) || Number.isNaN(m)) {
+    return { valid: false, error: 'Select a valid hour and minute' };
+  }
+
+  const h24Local = to24Hour(h, timeAmPm);
+  const etTime =
+    timezone === 'CT'
+      ? convertCTToET(h24Local, m)
+      : { hour: h24Local, minute: m };
+
+  // Early close days: market closes at 1:00 PM ET instead of 4:00 PM ET
+  const closeMinutes = earlyCloseHourET ? earlyCloseHourET * 60 : 16 * 60;
+  const totalMinutes = etTime.hour * 60 + etTime.minute;
+
+  if (totalMinutes < 9 * 60 + 30) {
+    return {
+      valid: false,
+      error: 'Before market open; use 9:30 AM ET or later',
+    };
+  }
+  if (totalMinutes >= closeMinutes) {
+    const closeLabel = earlyCloseHourET
+      ? `${earlyCloseHourET > 12 ? earlyCloseHourET - 12 : earlyCloseHourET}:00 PM ET`
+      : '4:00 PM ET';
+    return {
+      valid: false,
+      error: `After market close; use before ${closeLabel}`,
+    };
+  }
+
+  return {
+    valid: true,
+    totalMinutes,
+    closeMinutes,
+    hoursRemaining: (closeMinutes - totalMinutes) / 60,
+  };
 }
 
 export function useCalculation(
@@ -47,26 +123,17 @@ export function useCalculation(
       errors['spot'] = 'Must be a positive number (e.g. 550)';
     const spot = spyInput * effectiveRatio;
 
-    const h = Number.parseInt(timeHour);
-    const m = Number.parseInt(timeMinute);
-    if (Number.isNaN(h) || Number.isNaN(m)) {
-      errors['time'] = 'Select a valid hour and minute';
-    } else {
-      let h24 = to24Hour(h, timeAmPm);
-      if (timezone === 'CT') h24 += 1;
-
-      // Early close days: market closes at 1:00 PM ET instead of 4:00 PM ET
-      const closeMinutes = earlyCloseHourET ? earlyCloseHourET * 60 : 16 * 60; // 4:00 PM ET default
-      const totalMinutes = h24 * 60 + m;
-
-      if (totalMinutes < 9 * 60 + 30) {
-        errors['time'] = 'Before market open; use 9:30 AM ET or later';
-      } else if (totalMinutes >= closeMinutes) {
-        const closeLabel = earlyCloseHourET
-          ? `${earlyCloseHourET > 12 ? earlyCloseHourET - 12 : earlyCloseHourET}:00 PM ET`
-          : '4:00 PM ET';
-        errors['time'] = `After market close; use before ${closeLabel}`;
-      }
+    // Single source of truth for all time math: 12h→24h, CT→ET (TZ-aware),
+    // market-hours validation, and hours-remaining. (FE-STATE-003 / 004)
+    const marketTime = computeMarketTime(
+      timeHour,
+      timeMinute,
+      timeAmPm,
+      timezone,
+      earlyCloseHourET,
+    );
+    if (!marketTime.valid) {
+      errors['time'] = marketTime.error;
     }
 
     let sigma: number | null = null;
@@ -98,19 +165,16 @@ export function useCalculation(
       !dSpot ||
       Number.isNaN(spyInput) ||
       spyInput <= 0 ||
-      sigma == null
+      sigma == null ||
+      !marketTime.valid
     ) {
       return { results: null, errors };
     }
 
-    let h24 = to24Hour(h, timeAmPm);
-    if (timezone === 'CT') h24 += 1;
-
-    // Compute hours remaining using actual close time (early close or standard)
+    // After the guard above, marketTime is the valid branch — reuse the
+    // already-computed hoursRemaining instead of redoing the time math.
+    const { hoursRemaining } = marketTime;
     const closeHourET = earlyCloseHourET ?? 16;
-    const closeMinutes = closeHourET * 60;
-    const totalMinutes = h24 * 60 + m;
-    const hoursRemaining = (closeMinutes - totalMinutes) / 60;
 
     if (hoursRemaining <= 0) {
       return { results: null, errors };

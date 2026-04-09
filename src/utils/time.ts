@@ -1,5 +1,6 @@
 import { MARKET, DEFAULTS, IV_MODES } from '../constants';
 import type { TimeValidation, IVResult, IVMode } from '../types';
+import { convertCTToET } from './timezone';
 
 /**
  * Parses the day of week from 'YYYY-MM-DD' (UTC to avoid timezone shift).
@@ -122,6 +123,11 @@ export function to24Hour(hour: number, ampm: 'AM' | 'PM'): number {
 /**
  * Converts UI time inputs (12-hour + timezone) to ET hour and minute.
  * Single source of truth for this conversion — used by App.tsx and hooks.
+ *
+ * For CT inputs, uses the live IANA zone data via `convertCTToET()` rather
+ * than a hard-coded `+1` offset. The hard-coded offset was correct by
+ * accident (ET and CT share US DST rules today), but would silently break
+ * if the rules ever diverge or if a non-US zone were ever added. (FE-STATE-004)
  */
 export function toETTime(
   timeHour: string,
@@ -130,7 +136,10 @@ export function toETTime(
   timezone: 'ET' | 'CT',
 ): { etHour: number; etMinute: number } {
   const h24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
-  const etHour = timezone === 'CT' ? h24 + 1 : h24;
   const etMinute = Number.parseInt(timeMinute) || 0;
-  return { etHour, etMinute };
+  if (timezone === 'CT') {
+    const { hour, minute } = convertCTToET(h24, etMinute);
+    return { etHour: hour, etMinute: minute };
+  }
+  return { etHour: h24, etMinute };
 }
