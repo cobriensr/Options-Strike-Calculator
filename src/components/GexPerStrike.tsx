@@ -39,6 +39,10 @@ interface Props {
   error: string | null;
   timestamp: string | null;
   onRefresh: () => void;
+  /** Panel-local viewed date (YYYY-MM-DD in ET) — decoupled from the calculator. */
+  selectedDate: string;
+  /** Called when the user picks a different date from the header input. */
+  onDateChange: (date: string) => void;
   /**
    * True when the displayed snapshot is genuinely live: not scrubbed, market
    * open, viewing today. Mutually exclusive with `isScrubbed`. When neither
@@ -311,6 +315,8 @@ export default memo(function GexPerStrike({
   error,
   timestamp,
   onRefresh,
+  selectedDate,
+  onDateChange,
   isLive,
   isScrubbed,
   canScrubPrev,
@@ -446,6 +452,16 @@ export default memo(function GexPerStrike({
 
   const headerRight = (
     <div className="flex items-center gap-2">
+      {/* Panel-local date picker — decoupled from the calculator's as-of
+          date. Picking a past date puts the panel in BACKTEST mode; the
+          existing Live pill resets to today when clicked. */}
+      <input
+        type="date"
+        value={selectedDate}
+        onChange={(e) => onDateChange(e.target.value)}
+        aria-label="GEX per strike date"
+        className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
+      />
       {/* Snapshot scrub controls */}
       <div className="border-edge flex items-center gap-0.5 rounded border">
         <button

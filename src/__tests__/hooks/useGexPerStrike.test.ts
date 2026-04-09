@@ -113,10 +113,15 @@ describe('useGexPerStrike: fetching', () => {
     await act(async () => {});
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch).toHaveBeenCalledWith('/api/gex-per-strike', {
-      credentials: 'same-origin',
-      signal: expect.any(AbortSignal),
-    });
+    // The hook now always sends the date so the server doesn't have to
+    // infer ET. `TEST_NOW = 2026-04-02T20:00:00Z` → todayET = 2026-04-02.
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/gex-per-strike?date=2026-04-02',
+      {
+        credentials: 'same-origin',
+        signal: expect.any(AbortSignal),
+      },
+    );
   });
 
   it('returns strikes from API response', async () => {
@@ -537,10 +542,7 @@ describe('useGexPerStrike: scrub controls', () => {
     const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
     mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
 
-    const { result, rerender } = renderHook(
-      ({ date }: { date?: string }) => useGexPerStrike(true, date),
-      { initialProps: { date: undefined as string | undefined } },
-    );
+    const { result } = renderHook(() => useGexPerStrike(true));
     await waitFor(() => expect(result.current.timestamps).toEqual(ts));
 
     act(() => {
@@ -549,10 +551,14 @@ describe('useGexPerStrike: scrub controls', () => {
     await waitFor(() => expect(result.current.isScrubbed).toBe(true));
 
     // Switching to a different date must clear scrub state — the previous
-    // date's snapshot list no longer applies. After the rerender we are no
-    // longer scrubbed; isLive may still be false because '2026-04-01' is a
-    // past date (backtest mode), but isScrubbed must be false.
-    rerender({ date: '2026-04-01' });
+    // date's snapshot list no longer applies. `selectedDate` is now panel-
+    // local state, so we drive the change through the exposed setter
+    // rather than re-rendering with a new prop. isLive may still be false
+    // because '2026-04-01' is a past date (backtest mode), but isScrubbed
+    // must be false.
+    act(() => {
+      result.current.setSelectedDate('2026-04-01');
+    });
     await waitFor(() => expect(result.current.isScrubbed).toBe(false));
   });
 });
@@ -778,5 +784,135 @@ describe('useGexPerStrike: live polling and freshness', () => {
 
     await waitFor(() => expect(result.current.isLive).toBe(false));
     expect(result.current.isScrubbed).toBe(false);
+  });
+});
+
+// ============================================================
+// PANEL-LOCAL DATE STATE
+// ============================================================
+
+describe('useGexPerStrike: panel-local selectedDate', () => {
+  it('defaults selectedDate to today when no initialDate is passed', async () => {
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:59:00Z', ['2026-04-02T19:59:00Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+
+    // TEST_NOW = 2026-04-02T20:00:00Z → todayET = 2026-04-02
+    expect(result.current.selectedDate).toBe('2026-04-02');
+    await waitFor(() => {
+      expect(mockFetch.mock.calls[0]![0]).toContain('date=2026-04-02');
+    });
+  });
+
+  it('seeds selectedDate from initialDate when provided', async () => {
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-01T19:59:00Z', ['2026-04-01T19:59:00Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true, '2026-04-01'));
+
+    expect(result.current.selectedDate).toBe('2026-04-01');
+    await waitFor(() => {
+      expect(mockFetch.mock.calls[0]![0]).toContain('date=2026-04-01');
+    });
+  });
+
+  it('setSelectedDate triggers a refetch for the new date', async () => {
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:59:00Z', ['2026-04-02T19:59:00Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      result.current.setSelectedDate('2026-03-28');
+    });
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const latestCallUrl = mockFetch.mock.calls.at(-1)![0] as string;
+      expect(latestCallUrl).toContain('date=2026-03-28');
+    });
+    expect(result.current.selectedDate).toBe('2026-03-28');
+  });
+
+  it('setSelectedDate to a past date stops polling (backtest mode)', async () => {
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:59:00Z', ['2026-04-02T19:59:00Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    // One poll interval confirms polling IS running before we switch dates
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE);
+    });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+
+    // Switch to a past date — dispatch ladder should drop into the
+    // one-shot past-date branch and stop the interval.
+    act(() => {
+      result.current.setSelectedDate('2020-01-02');
+    });
+    await waitFor(() => expect(result.current.isLive).toBe(false));
+
+    const callsAfterSwitch = mockFetch.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_STRIKE * 3);
+    });
+    // No additional fetches: polling stopped.
+    expect(mockFetch.mock.calls.length).toBe(callsAfterSwitch);
+  });
+
+  // Regression: scrubLive must reset *both* the scrub state AND the date.
+  // Without the date reset, a user who picked a past date then clicked
+  // "Live" would stay on backtest mode, breaking the mental model of
+  // "Live" as the single way back to the present.
+  it('scrubLive resets selectedDate back to today when viewing a past date', async () => {
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2020-01-02T15:00:00Z', ['2020-01-02T15:00:00Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true, '2020-01-02'));
+    await waitFor(() => expect(result.current.timestamps.length).toBe(1));
+    expect(result.current.selectedDate).toBe('2020-01-02');
+    expect(result.current.isLive).toBe(false);
+
+    // Now click "Live". Date should snap back to today (2026-04-02 per
+    // TEST_NOW) and polling should resume.
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:59:30Z', ['2026-04-02T19:59:30Z']),
+    );
+    act(() => {
+      result.current.scrubLive();
+    });
+
+    await waitFor(() => expect(result.current.selectedDate).toBe('2026-04-02'));
+    await waitFor(() => expect(result.current.isLive).toBe(true));
+  });
+
+  it('scrubLive with already-today date only clears scrub state', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    act(() => {
+      result.current.scrubLive();
+    });
+
+    await waitFor(() => expect(result.current.isScrubbed).toBe(false));
+    // Date was already today, should be unchanged.
+    expect(result.current.selectedDate).toBe('2026-04-02');
   });
 });

@@ -19,6 +19,13 @@
  * snapshot every cycle (since `selectedTime` defaults to the minute the page
  * loaded at and doesn't auto-advance), causing the panel to appear frozen.
  *
+ * The hook also owns its own `selectedDate` state, decoupled from the
+ * calculator's `vix.selectedDate`. The GEX panel is a live/backtest browsing
+ * tool — picking a past date in GEX should not re-anchor the Black-Scholes
+ * math in the calculator, and vice versa. The `initialDate` parameter only
+ * seeds the initial value; after that, `setSelectedDate` from the return is
+ * the only way to change it.
+ *
  * Live-ness has TWO independent signals:
  *   - The dispatch ladder above decides whether the panel is *trying* to be
  *     live (i.e., whether `setInterval` is running).
@@ -99,6 +106,10 @@ export interface UseGexPerStrikeReturn {
   timestamp: string | null;
   /** All snapshot timestamps for the active date, ascending */
   timestamps: string[];
+  /** The date currently being viewed (YYYY-MM-DD in ET), panel-local state */
+  selectedDate: string;
+  /** Change the viewed date. Clears scrub state as a side effect. */
+  setSelectedDate: (date: string) => void;
   /**
    * True when the displayed snapshot is genuinely live: not scrubbed, market
    * is open, and we're viewing today's data. False during after-hours or when
@@ -115,14 +126,25 @@ export interface UseGexPerStrikeReturn {
   scrubPrev: () => void;
   /** Step one snapshot later (clears scrub when at the latest) */
   scrubNext: () => void;
-  /** Clear scrub and resume live polling */
+  /**
+   * Resume live mode. Clears scrub state AND resets `selectedDate` to today
+   * if viewing a past date — the "Live" control is the single way back to
+   * the present across both scrub and backtest dimensions.
+   */
   scrubLive: () => void;
   refresh: () => void;
 }
 
+/** Compute today's ET date as YYYY-MM-DD. */
+function getTodayET(): string {
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+}
+
 export function useGexPerStrike(
   marketOpen: boolean,
-  selectedDate?: string,
+  initialDate?: string,
 ): UseGexPerStrikeReturn {
   const isOwner = useIsOwner();
   const [strikes, setStrikes] = useState<GexStrikeLevel[]>([]);
@@ -131,6 +153,14 @@ export function useGexPerStrike(
   const [timestamp, setTimestamp] = useState<string | null>(null);
   const [timestamps, setTimestamps] = useState<string[]>([]);
   const [scrubTimestamp, setScrubTimestamp] = useState<string | null>(null);
+  // Panel-local date state. `initialDate` only seeds this once at mount;
+  // after that, `setSelectedDate` (exposed in the return) is the only way
+  // to change it. Production does not pass `initialDate` and lets the hook
+  // default to today. Tests pass a fixed date to exercise the branches
+  // deterministically.
+  const [selectedDate, setSelectedDate] = useState<string>(
+    () => initialDate ?? getTodayET(),
+  );
   // Wall-clock state — refreshed every WALL_CLOCK_TICK_MS by a separate
   // effect. The freshness check below reads `nowMs` rather than calling
   // `Date.now()` inline so the re-render dependency is explicit and testable
@@ -138,20 +168,20 @@ export function useGexPerStrike(
   const [nowMs, setNowMs] = useState(() => Date.now());
   const mountedRef = useRef(true);
 
-  // Computed each render. `todayET` recomputes naturally as the wall clock
-  // crosses midnight Eastern, so the panel flips from LIVE → BACKTEST at the
-  // session boundary without needing an explicit state update.
-  const todayET = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-  const isToday = !selectedDate || selectedDate === todayET;
+  // `todayET` recomputes each render so the panel flips from LIVE → BACKTEST
+  // at the midnight-ET session boundary without needing an explicit state
+  // update. The `isToday` comparison then drives the dispatch ladder.
+  const todayET = getTodayET();
+  const isToday = selectedDate === todayET;
   const isScrubbed = scrubTimestamp != null;
 
   const fetchData = useCallback(
     async (tsOverride?: string | null) => {
       try {
         const qs = new URLSearchParams();
-        if (selectedDate) qs.set('date', selectedDate);
+        // Always send the date so the server doesn't have to guess ET.
+        // The hook always has a concrete date in state (never undefined).
+        qs.set('date', selectedDate);
         if (tsOverride) qs.set('ts', tsOverride);
         const params = qs.size > 0 ? `?${qs}` : '';
         const res = await fetch(`/api/gex-per-strike${params}`, {
@@ -302,7 +332,18 @@ export function useGexPerStrike(
     });
   }, [timestamps]);
 
-  const scrubLive = useCallback(() => setScrubTimestamp(null), []);
+  const scrubLive = useCallback(() => {
+    // Reset to live mode on both axes: clear scrub AND snap date back to
+    // today. If the user was on a past date, this also kicks the dispatch
+    // ladder into live polling via the `isToday` check. If they were
+    // already on today with just scrub active, the date setter is a no-op
+    // (state equality).
+    setScrubTimestamp(null);
+    setSelectedDate((cur) => {
+      const today = getTodayET();
+      return cur === today ? cur : today;
+    });
+  }, []);
 
   const refresh = useCallback(() => {
     fetchData(scrubTimestamp ?? undefined);
@@ -314,6 +355,8 @@ export function useGexPerStrike(
     error,
     timestamp,
     timestamps,
+    selectedDate,
+    setSelectedDate,
     isLive,
     isScrubbed,
     canScrubPrev,

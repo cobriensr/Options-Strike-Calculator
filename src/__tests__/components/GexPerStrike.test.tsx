@@ -1,14 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import GexPerStrike from '../../components/GexPerStrike';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 
 const noop = vi.fn();
 
-// Default scrub props — most tests don't care about scrub state, so they get
-// "live with no history" defaults. Tests that exercise scrub controls override.
+// Default non-content props — most tests don't care about scrub state or the
+// date picker, so they get "live with no history, today" defaults. Tests that
+// exercise scrub controls or the date input override these.
 const defaultScrubProps = {
+  selectedDate: '2026-04-02',
+  onDateChange: noop,
   isLive: true,
   isScrubbed: false,
   canScrubPrev: false,
@@ -484,6 +487,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={true}
         isScrubbed={false}
         canScrubPrev={true}
@@ -509,6 +514,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={true}
         isScrubbed={false}
         canScrubPrev={true}
@@ -534,6 +541,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T18:30:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={false}
         isScrubbed={true}
         canScrubPrev={true}
@@ -558,6 +567,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={false}
         isScrubbed={false}
         canScrubPrev={true}
@@ -583,6 +594,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={true}
         isScrubbed={false}
         canScrubPrev={false}
@@ -605,6 +618,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={true}
         isScrubbed={false}
         canScrubPrev={true}
@@ -629,6 +644,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={true}
         isScrubbed={false}
         canScrubPrev={true}
@@ -654,6 +671,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T18:30:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={false}
         isScrubbed={true}
         canScrubPrev={true}
@@ -677,6 +696,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T18:30:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={false}
         isScrubbed={true}
         canScrubPrev={true}
@@ -698,6 +719,8 @@ describe('GexPerStrike: scrub controls', () => {
         error={null}
         timestamp="2026-04-02T19:00:00Z"
         onRefresh={noop}
+        selectedDate="2026-04-02"
+        onDateChange={noop}
         isLive={false}
         isScrubbed={true}
         canScrubPrev={true}
@@ -1519,5 +1542,57 @@ describe('GexPerStrike: ATM centering', () => {
     // Far strikes should be excluded
     expect(screen.queryByText('5650')).not.toBeInTheDocument();
     expect(screen.queryByText('5795')).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// DATE PICKER
+// ============================================================
+
+describe('GexPerStrike: date picker', () => {
+  it('renders a date input seeded from selectedDate prop', () => {
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+        {...defaultScrubProps}
+        selectedDate="2026-03-28"
+      />,
+    );
+
+    const input = screen.getByLabelText(
+      /gex per strike date/i,
+    ) as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+    expect(input.type).toBe('date');
+    expect(input.value).toBe('2026-03-28');
+  });
+
+  it('calls onDateChange when the user picks a new date', () => {
+    const onDateChange = vi.fn();
+
+    render(
+      <GexPerStrike
+        strikes={[makeStrike()]}
+        loading={false}
+        error={null}
+        timestamp={null}
+        onRefresh={noop}
+        {...defaultScrubProps}
+        selectedDate="2026-04-02"
+        onDateChange={onDateChange}
+      />,
+    );
+
+    // Date inputs don't emit per-keystroke change events the way text
+    // inputs do — browsers fire a single change when the user commits a
+    // full date. fireEvent.change simulates that commit directly.
+    const input = screen.getByLabelText(/gex per strike date/i);
+    fireEvent.change(input, { target: { value: '2026-03-28' } });
+
+    expect(onDateChange).toHaveBeenCalledWith('2026-03-28');
   });
 });
