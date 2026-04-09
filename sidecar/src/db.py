@@ -127,7 +127,14 @@ def get_conn(
         conn.rollback()
         raise
     finally:
-        pool.putconn(conn)
+        # Don't let putconn() failures mask the real exception. During
+        # shutdown the pool may already be closed, in which case putconn
+        # raises PoolError("connection pool is closed") — that's benign
+        # and shouldn't replace whatever the caller was actually raising.
+        try:
+            pool.putconn(conn)
+        except Exception as exc:
+            log.debug("pool.putconn failed (likely shutdown): %s", exc)
 
 
 def verify_connection() -> None:
