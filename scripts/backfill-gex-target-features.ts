@@ -160,11 +160,14 @@ async function processDay(date: string, totals: Totals): Promise<void> {
   // if it had been running continuously.
   let tsRows: TimestampRow[];
   try {
+    // Note: ORDER BY must reference the SELECT-list expression
+    // (`ts`), not the raw `timestamp` column — Postgres rejects
+    // SELECT DISTINCT + ORDER BY on a non-selected column.
     tsRows = (await sql`
       SELECT DISTINCT timestamp::text AS ts
       FROM gex_strike_0dte
       WHERE date = ${date}
-      ORDER BY timestamp ASC
+      ORDER BY ts ASC
     `) as TimestampRow[];
   } catch (err) {
     console.warn(
