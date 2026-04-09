@@ -31,6 +31,7 @@ from databento_client import DatabentoClient
 from db import drain_pool, is_db_healthy, verify_connection
 from health import start_health_server
 from logger_setup import log
+from sentry_setup import capture_exception, init_sentry
 from trade_processor import TradeProcessor
 
 # Global references for shutdown
@@ -63,6 +64,10 @@ def main() -> None:
     global _client
 
     log.info("Futures relay sidecar starting")
+
+    # Initialize Sentry first so any later failures get reported.
+    # No-op locally if SENTRY_DSN is unset. Never raises.
+    init_sentry()
 
     # Verify required env vars
     required = ["DATABENTO_API_KEY", "DATABASE_URL"]
@@ -124,11 +129,7 @@ def connect_with_retry(client: DatabentoClient) -> None:
         except KeyboardInterrupt:
             break
         except Exception as exc:
-            log.error(
-                "Connection attempt failed: %s (backoff: %.1fs)",
-                exc,
-                backoff,
-            )
+            capture_exception(exc, context={"backoff_s": backoff})
             # Clean up on error too
             try:
                 client.stop()
