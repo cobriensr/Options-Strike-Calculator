@@ -115,6 +115,9 @@ const mockMarket = {
   isStale: false,
   isVeryStale: false,
   staleAgeSec: null,
+  // FE-STATE-002 tri-state session.
+  session: 'closed' as const,
+  marketOpen: false,
 };
 
 describe('MarketRegimeSection', () => {

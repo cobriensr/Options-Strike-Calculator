@@ -22,6 +22,9 @@ const mockMarket = {
   isStale: false,
   isVeryStale: false,
   staleAgeSec: null,
+  // FE-STATE-002 tri-state session.
+  session: 'closed' as const,
+  marketOpen: false,
 };
 
 function renderSection(overrides: Record<string, unknown> = {}) {

@@ -24,6 +24,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { useIsOwner } from './useIsOwner';
+import { isTradingDay, isHalfDay } from '../data/marketHours';
 import type { QuotesResponse, IntradayResponse } from '../types/api';
 import {
   fetchJson,
@@ -37,6 +38,106 @@ import type { MarketData } from './useMarketData.fetchers';
 // ============================================================
 
 export type { MarketData } from './useMarketData.fetchers';
+
+/**
+ * FE-STATE-002 — tri-state (well, quad-state) US equity session label.
+ *
+ * Exposed as a primitive string union so consumers can write
+ * `session === 'regular'` without forcing a re-render when an unrelated
+ * state field changes (React best-practices: rerender-derived-state).
+ *
+ * Phases (ET wall clock, NYSE calendar):
+ *   - `pre-market`  04:00 ≤ t < 09:30   on a trading day
+ *   - `regular`     09:30 ≤ t < 16:00   on a full trading day
+ *                   09:30 ≤ t < 13:00   on a half-day
+ *   - `after-hours` 16:00 ≤ t < 20:00   on a full trading day
+ *                   13:00 ≤ t < 20:00   on a half-day
+ *   - `closed`      everything else (overnight, weekends, full holidays)
+ *
+ * The 04:00 / 20:00 ET brackets match CBOE extended hours; the site
+ * owner starts his prep workflow at 08:30 CT (09:30 ET) so pre-market
+ * polling is what unlocks the prep workflow.
+ */
+export type MarketSession =
+  | 'pre-market'
+  | 'regular'
+  | 'after-hours'
+  | 'closed';
+
+// ============================================================
+// SESSION DERIVATION (client-side, UTC → ET)
+// ============================================================
+
+/**
+ * Extract the ET calendar date (YYYY-MM-DD) and time-of-day minutes
+ * from a Date using Intl.DateTimeFormat. Mirrors
+ * `getCTCalendarAndMinutes` in `src/data/marketHours.ts` but uses the
+ * ET zone directly — MarketSession is defined in ET brackets, and
+ * doing the conversion twice (ET → CT → ET) just to share the helper
+ * would introduce a DST corner case for no benefit.
+ */
+function getETCalendarAndMinutes(instant: Date): {
+  dateStr: string;
+  minutes: number;
+} {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(instant);
+
+  const pick = (type: string): string =>
+    parts.find((p) => p.type === type)?.value ?? '';
+
+  const year = pick('year');
+  const month = pick('month');
+  const day = pick('day');
+  const rawHour = pick('hour');
+  const hour = rawHour === '24' ? 0 : Number(rawHour);
+  const minute = Number(pick('minute'));
+
+  return {
+    dateStr: `${year}-${month}-${day}`,
+    minutes: hour * 60 + minute,
+  };
+}
+
+// ET minute boundaries for the session classifier.
+const ET_PRE_MARKET_START = 4 * 60; //  04:00 ET
+const ET_REGULAR_START = 9 * 60 + 30; //  09:30 ET
+const ET_REGULAR_END_FULL = 16 * 60; //  16:00 ET
+const ET_REGULAR_END_HALF = 13 * 60; //  13:00 ET (half-days)
+const ET_AFTER_HOURS_END = 20 * 60; //  20:00 ET
+
+/**
+ * Classify an instant into a `MarketSession`. Pure function, safe to
+ * call from React render because it takes `now` as a parameter — the
+ * hook gates `Date.now()` behind a timer per React purity rules.
+ *
+ * Half-days are handled explicitly (13:00 ET close instead of 16:00 ET)
+ * via `isHalfDay`. `currentSessionStage` from `marketHours.ts` doesn't
+ * help here: it returns a blanket `'half-day'` with no sub-phase and
+ * has no `after-hours` concept, so we compute ET minutes directly.
+ */
+export function computeMarketSession(now: Date): MarketSession {
+  const { dateStr, minutes } = getETCalendarAndMinutes(now);
+
+  if (!isTradingDay(dateStr)) return 'closed';
+
+  const regularEnd = isHalfDay(dateStr)
+    ? ET_REGULAR_END_HALF
+    : ET_REGULAR_END_FULL;
+
+  if (minutes < ET_PRE_MARKET_START) return 'closed';
+  if (minutes < ET_REGULAR_START) return 'pre-market';
+  if (minutes < regularEnd) return 'regular';
+  if (minutes < ET_AFTER_HOURS_END) return 'after-hours';
+  return 'closed';
+}
 
 export interface MarketDataState {
   data: MarketData;
@@ -76,6 +177,24 @@ export interface MarketDataState {
    * FE-STATE-001.
    */
   staleAgeSec: number | null;
+  /**
+   * Current US equity session, derived client-side from ET wall-clock
+   * time. Updates on a timer as phase boundaries pass (08:30 CT prep
+   * transition, RTH open/close, 20:00 ET extended-hours close).
+   *
+   * Exposed as a primitive string union so consumers can write
+   * `session === 'regular'` without triggering false re-renders
+   * (rerender-derived-state). FE-STATE-002.
+   */
+  session: MarketSession;
+  /**
+   * Convenience alias — true iff `session === 'regular'`. Preserved for
+   * backward compatibility with consumers that historically checked
+   * `marketOpen` before the tri-state session type existed. New code
+   * should prefer `session` directly since it carries strictly more
+   * information (pre-market vs after-hours vs closed). FE-STATE-002.
+   */
+  marketOpen: boolean;
 }
 
 // ============================================================
@@ -109,6 +228,17 @@ const VERY_STALE_THRESHOLD_MS = 180_000;
  */
 const STALENESS_TICK_MS = 5_000;
 
+/**
+ * How often to re-evaluate `session` against the wall clock. 15 seconds
+ * gives at most a 15s lag around phase boundaries (8:30 CT prep flip,
+ * 9:30 ET regular-hours flip, 16:00 ET close, 20:00 ET extended-hours
+ * end) — imperceptible to the trader and cheap even at the top of the
+ * component tree. Runs unconditionally (unlike the staleness tick) so
+ * `closed` → `pre-market` transitions actually fire without needing a
+ * manual refresh.
+ */
+const SESSION_TICK_MS = 15_000;
+
 export function useMarketData(): MarketDataState {
   const [data, setData] = useState<MarketData>({
     quotes: null,
@@ -135,6 +265,14 @@ export function useMarketData(): MarketDataState {
   // call impure APIs. `null` means either the market is closed (tick
   // suspended) or the first tick hasn't fired yet.
   const [nowForStaleness, setNowForStaleness] = useState<number | null>(null);
+  // FE-STATE-002: tri-state session. Initialized lazily from the current
+  // wall clock so the first render has a meaningful value (otherwise the
+  // first render would hard-code `'closed'` and the mount effect would
+  // flip it, causing a gratuitous second render). The lazy initializer
+  // only runs on mount per React docs — safe to call `new Date()` here.
+  const [session, setSession] = useState<MarketSession>(() =>
+    computeMarketSession(new Date()),
+  );
   // Track if the owner cookie is present (any endpoint returned 200,
   // or the sc-hint cookie exists from a prior auth session).
   const isOwnerRef = useRef(useIsOwner());
@@ -185,12 +323,26 @@ export function useMarketData(): MarketDataState {
     fetchAll();
   }, [fetchAll]);
 
-  // Auto-refresh during market hours (only if owner is authenticated)
-  // Quotes refresh every cycle; intraday also refreshes until opening range is complete.
+  // Auto-refresh polling (only if owner is authenticated).
+  //
+  // FE-STATE-002 gate split:
+  //   - QUOTES poll runs in pre-market / regular / after-hours. The SPX/VIX
+  //     underlier has real extended-hours prints and the trader's 08:30 CT
+  //     prep workflow depends on seeing them before RTH opens — this is the
+  //     whole point of FE-STATE-002.
+  //   - INTRADAY (opening-range) poll only makes sense during RTH because
+  //     the opening range is a strictly 09:30-10:00 ET concept. Also gated
+  //     on `!openingRangeComplete` so we stop fetching it once the 30-min
+  //     window has closed.
+  //
+  // Effect dependency is the primitive `session` string so cheap equality
+  // keeps re-runs minimal (rerender-dependencies).
   const openingRangeComplete = data.intraday?.openingRange?.complete ?? false;
 
   useEffect(() => {
-    if (isOwnerRef.current && data.quotes?.marketOpen) {
+    // Gate: session !== 'closed' — poll underlier whenever it can have
+    // meaningful prints (pre-market / regular / after-hours).
+    if (isOwnerRef.current && session !== 'closed') {
       const backoff = consecutiveFailsRef.current >= 3 ? 2 : 1;
       const interval = REFRESH_INTERVAL_MS * backoff;
       intervalRef.current = setInterval(() => {
@@ -206,8 +358,10 @@ export function useMarketData(): MarketDataState {
           }),
         ];
 
-        // Keep refreshing intraday until the 30-min opening range is complete
-        if (!openingRangeComplete) {
+        // Opening-range refresh: RTH-only. The 30-min opening range is a
+        // strictly 09:30-10:00 ET concept — fetching it in pre-market or
+        // after-hours would return stale or empty data and waste quota.
+        if (session === 'regular' && !openingRangeComplete) {
           fetches.push(
             fetchJson<IntradayResponse>('/api/intraday').then((result) => {
               if ('data' in result) {
@@ -236,18 +390,41 @@ export function useMarketData(): MarketDataState {
         intervalRef.current = null;
       }
     };
-  }, [data.quotes?.marketOpen, openingRangeComplete]);
+  }, [session, openingRangeComplete]);
 
-  // FE-STATE-001: wall-clock tick that drives staleness re-evaluation.
-  // Only runs while the market is open (outside market hours polling has
-  // stopped, `quotesLastUpdated` is no longer updating, and a stale badge
-  // would be pure noise). Fires once immediately on open so the first
-  // render after market-open has a meaningful clock value, then every
-  // STALENESS_TICK_MS thereafter. Setter lives inside the effect so
-  // `Date.now()` is only called from outside the render path — this
-  // keeps the hook pure per React's idempotence rule.
+  // FE-STATE-002: wall-clock tick that advances `session` across phase
+  // boundaries. Runs unconditionally — we need `closed` → `pre-market`
+  // to fire at 08:30 CT even though at 08:29 CT the session IS closed.
+  // The setter only triggers a re-render when the value actually changes
+  // (React bails out on Object.is equality for primitive state), so this
+  // is cheap in steady state.
   useEffect(() => {
-    if (data.quotes?.marketOpen !== true) {
+    const id = setInterval(() => {
+      setSession((prev) => {
+        const next = computeMarketSession(new Date());
+        return next === prev ? prev : next;
+      });
+    }, SESSION_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  // FE-STATE-001 + FE-STATE-002: wall-clock tick that drives staleness
+  // re-evaluation. Runs while the session is NOT closed — that covers
+  // pre-market / regular / after-hours so stale-badge semantics match
+  // the extended polling gate above. Outside those windows polling has
+  // intentionally stopped, `quotesLastUpdated` is no longer updating,
+  // and a stale badge would be pure noise overnight.
+  //
+  // Fires once immediately so the first render after a session flip has
+  // a meaningful clock value, then every STALENESS_TICK_MS thereafter.
+  // Setter lives inside the effect so `Date.now()` is only called from
+  // outside the render path — this keeps the hook pure per React's
+  // idempotence rule.
+  useEffect(() => {
+    // Gate: session !== 'closed' — matches the polling gate so the
+    // staleness badge is only meaningful while we're actually trying
+    // to fetch quotes.
+    if (session === 'closed') {
       setNowForStaleness(null);
       return;
     }
@@ -256,22 +433,27 @@ export function useMarketData(): MarketDataState {
       setNowForStaleness(Date.now());
     }, STALENESS_TICK_MS);
     return () => clearInterval(id);
-  }, [data.quotes?.marketOpen]);
+  }, [session]);
 
   const hasData =
     data.quotes != null || data.intraday != null || data.yesterday != null;
 
-  // FE-STATE-001: derived staleness flags. Only meaningful when:
-  //   (a) market is open (polling is expected to run), AND
+  // FE-STATE-001 + FE-STATE-002: derived staleness flags. Only meaningful
+  // when:
+  //   (a) session is not closed (polling is expected to run), AND
   //   (b) quotes have been fetched at least once, AND
   //   (c) the tick has populated `nowForStaleness`.
   // All three conditions null-out the flags so consumers get `false`
-  // rather than a positive stale signal during startup or after-hours.
+  // rather than a positive stale signal during startup or overnight.
+  //
+  // Gate: session !== 'closed' — staleness has to apply in pre-market /
+  // after-hours too, otherwise the 08:30 CT prep workflow would never
+  // see a degraded-polling warning.
   let isStale = false;
   let isVeryStale = false;
   let staleAgeSec: number | null = null;
   if (
-    data.quotes?.marketOpen === true &&
+    session !== 'closed' &&
     quotesLastUpdated != null &&
     nowForStaleness != null
   ) {
@@ -280,6 +462,12 @@ export function useMarketData(): MarketDataState {
     isVeryStale = ageMs >= VERY_STALE_THRESHOLD_MS;
     staleAgeSec = Math.max(0, Math.round(ageMs / 1000));
   }
+
+  // FE-STATE-002: backward-compat `marketOpen` alias. Historically
+  // consumers checked `data.quotes?.marketOpen` or the hook-level
+  // `marketOpen` to gate RTH-only UI. Preserving this means existing
+  // call sites that haven't been migrated to `session` keep working.
+  const marketOpen = session === 'regular';
 
   return {
     data,
@@ -292,5 +480,7 @@ export function useMarketData(): MarketDataState {
     isStale,
     isVeryStale,
     staleAgeSec,
+    session,
+    marketOpen,
   };
 }

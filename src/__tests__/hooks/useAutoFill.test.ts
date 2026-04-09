@@ -139,6 +139,9 @@ function createMarket(quotes: QuotesResponse | null = null): MarketDataState {
     isStale: false,
     isVeryStale: false,
     staleAgeSec: null,
+    // FE-STATE-002 tri-state session.
+    session: 'closed',
+    marketOpen: false,
   };
 }
 

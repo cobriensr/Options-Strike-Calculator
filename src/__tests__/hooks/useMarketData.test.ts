@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { useMarketData } from '../../hooks/useMarketData';
+import {
+  useMarketData,
+  computeMarketSession,
+} from '../../hooks/useMarketData';
 
 /**
  * Tests for the useMarketData React hook.
@@ -141,8 +144,31 @@ function mockFetchResponses(
   });
 }
 
+// FE-STATE-002: instants used to drive the client-side session classifier.
+// `useMarketData` derives `session` from wall-clock time via
+// `computeMarketSession`, so each test needs a deterministic `new Date()`
+// via `vi.setSystemTime`. These constants name a few useful ET moments.
+//
+// Sanity: DST starts 2026-03-08, ends 2026-11-01, so 2026-04-09 is EDT
+// (UTC-4). All trading-day instants below are on days that are NOT NYSE
+// holidays per `src/data/marketHours.ts`.
+//
+//   Thu 2026-04-09 14:00 UTC → 10:00 EDT → `regular`
+//   Thu 2026-04-09 12:00 UTC → 08:00 EDT → `pre-market`
+//   Thu 2026-04-09 22:00 UTC → 18:00 EDT → `after-hours`
+//   Sat 2026-04-11 14:00 UTC → 10:00 EDT → `closed` (weekend)
+const REGULAR_HOURS = new Date(Date.UTC(2026, 3, 9, 14, 0, 0));
+const PRE_MARKET = new Date(Date.UTC(2026, 3, 9, 12, 0, 0));
+const AFTER_HOURS = new Date(Date.UTC(2026, 3, 9, 22, 0, 0));
+const SESSION_CLOSED_WEEKEND = new Date(Date.UTC(2026, 3, 11, 14, 0, 0));
+
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  // Default to a closed session so tests that don't advance timers never
+  // accidentally trigger the auto-refresh interval. Tests that need
+  // polling to run override this with `vi.setSystemTime(REGULAR_HOURS)`
+  // (or similar) before `renderHook`.
+  vi.setSystemTime(SESSION_CLOSED_WEEKEND);
 });
 
 afterEach(() => {
@@ -381,6 +407,8 @@ describe('useMarketData: fetchJson edge cases', () => {
 
 describe('useMarketData: auto-refresh', () => {
   it('auto-refreshes quotes every 60s when market is open', async () => {
+    // FE-STATE-002: session derives from wall-clock, not the response body.
+    vi.setSystemTime(REGULAR_HOURS);
     const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
     const fetchMock = mockFetchResponses({
       quotes: {
@@ -413,6 +441,9 @@ describe('useMarketData: auto-refresh', () => {
   });
 
   it('does not auto-refresh when market is closed', async () => {
+    // FE-STATE-002: `closed` session (default weekend time) gates polling
+    // off regardless of what the /api/quotes response says about
+    // `marketOpen`.
     const fetchMock = mockFetchResponses();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
@@ -425,11 +456,12 @@ describe('useMarketData: auto-refresh', () => {
       vi.advanceTimersByTime(120_000);
     });
 
-    // No additional calls since marketOpen is false
+    // No additional calls since session is 'closed'.
     expect(fetchMock.mock.calls.length).toBe(initialCalls);
   });
 
   it('cleans up interval on unmount', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
     const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
     const fetchMock = mockFetchResponses({
       quotes: {
@@ -602,6 +634,8 @@ describe('useMarketData: needsAuth transition (line 185)', () => {
 
 describe('useMarketData: interval intraday refresh (lines 220-223)', () => {
   it('refreshes intraday during interval when openingRange is not complete', async () => {
+    // FE-STATE-002: intraday refresh is gated on session === 'regular'.
+    vi.setSystemTime(REGULAR_HOURS);
     const mockIntradayIncomplete = {
       ...mockIntraday,
       openingRange: { ...mockIntraday.openingRange, complete: false },
@@ -657,6 +691,8 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
   const mockQuotesClosed = { ...mockQuotes, marketOpen: false };
 
   it('isStale is false on initial mount (no fetches yet)', async () => {
+    // Default beforeEach sets a closed session, which is what this test
+    // wants: no polling, no staleness tick, staleness stays false.
     globalThis.fetch = mockFetchResponses() as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     expect(result.current.isStale).toBe(false);
@@ -664,12 +700,12 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     expect(result.current.quotesLastUpdated).toBeNull();
     // Let the mount fetch settle so the trailing setData/setLoading
     // state updates don't leak past the test boundary and trigger
-    // React's "update not wrapped in act" warning. Default fixture
-    // uses marketOpen=false so this can't flip the staleness flag.
+    // React's "update not wrapped in act" warning.
     await waitFor(() => expect(result.current.loading).toBe(false));
   });
 
   it('populates quotesLastUpdated when quotes fetch succeeds', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
@@ -683,6 +719,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
   });
 
   it('transitions to isStale after 90s elapse while market is open', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
@@ -715,6 +752,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
   });
 
   it('transitions to isVeryStale after 180s elapse while market is open', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
@@ -745,6 +783,9 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     // a long time passes. The staleness flags should remain false
     // because polling has intentionally stopped — showing "STALE" for
     // 17 hours every overnight is pure noise.
+    //
+    // FE-STATE-002: rely on the default beforeEach `SESSION_CLOSED_WEEKEND`
+    // so the client-side session classifier returns 'closed'.
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesClosed },
     }) as unknown as typeof fetch;
@@ -763,6 +804,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
   });
 
   it('resets isStale after a fresh successful quotes fetch', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
@@ -804,6 +846,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     // once 90s pass since the last quotes success. This is the Decision 4
     // "quotes-specific staleness" behavior — events/movers freshness
     // should never mask a stale quotes warning.
+    vi.setSystemTime(REGULAR_HOURS);
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
@@ -827,5 +870,305 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     // lastUpdated may have advanced (events are still fetching), but
     // quotesLastUpdated is pinned, so isStale fires.
     expect(result.current.isStale).toBe(true);
+  });
+});
+
+// ============================================================
+// FE-STATE-002: TRI-STATE MARKET SESSION
+// ============================================================
+
+describe('computeMarketSession: pure classifier', () => {
+  // All instants assume 2026 post-DST dates (DST starts 2026-03-08).
+  // Trading day references:
+  //   Thu 2026-04-09  normal full trading day (EDT)
+  //   Fri 2026-11-27  NYSE early-close half-day (EST)  13:00 ET close
+  //   Sat 2026-04-11  weekend
+  //   Mon 2026-01-19  MLK Day full-day holiday (EST)
+  //
+  // Each case feeds a specific UTC instant → asserts the ET-derived
+  // session label. The session classifier is the single source of
+  // truth for the polling gates, so this block exercises it directly.
+
+  it('returns "closed" before 04:00 ET on a trading day', () => {
+    // Thu 2026-04-09 03:30 EDT = 07:30 UTC
+    expect(
+      computeMarketSession(new Date(Date.UTC(2026, 3, 9, 7, 30, 0))),
+    ).toBe('closed');
+  });
+
+  it('returns "pre-market" at 08:00 ET on a trading day', () => {
+    // Thu 2026-04-09 08:00 EDT = 12:00 UTC — the 08:30 CT prep window
+    expect(computeMarketSession(new Date(Date.UTC(2026, 3, 9, 12, 0, 0)))).toBe(
+      'pre-market',
+    );
+  });
+
+  it('returns "pre-market" at 09:29 ET (one minute before open)', () => {
+    // Thu 2026-04-09 09:29 EDT = 13:29 UTC
+    expect(
+      computeMarketSession(new Date(Date.UTC(2026, 3, 9, 13, 29, 0))),
+    ).toBe('pre-market');
+  });
+
+  it('returns "regular" at 09:30 ET (opening bell)', () => {
+    // Thu 2026-04-09 09:30 EDT = 13:30 UTC
+    expect(
+      computeMarketSession(new Date(Date.UTC(2026, 3, 9, 13, 30, 0))),
+    ).toBe('regular');
+  });
+
+  it('returns "regular" at 10:00 ET on a trading day', () => {
+    // Thu 2026-04-09 10:00 EDT = 14:00 UTC
+    expect(computeMarketSession(new Date(Date.UTC(2026, 3, 9, 14, 0, 0)))).toBe(
+      'regular',
+    );
+  });
+
+  it('returns "after-hours" at 16:00 ET (closing bell)', () => {
+    // Thu 2026-04-09 16:00 EDT = 20:00 UTC
+    expect(computeMarketSession(new Date(Date.UTC(2026, 3, 9, 20, 0, 0)))).toBe(
+      'after-hours',
+    );
+  });
+
+  it('returns "after-hours" at 18:00 ET on a trading day', () => {
+    // Thu 2026-04-09 18:00 EDT = 22:00 UTC
+    expect(computeMarketSession(new Date(Date.UTC(2026, 3, 9, 22, 0, 0)))).toBe(
+      'after-hours',
+    );
+  });
+
+  it('returns "closed" at 20:00 ET (extended hours end)', () => {
+    // Thu 2026-04-09 20:00 EDT = 24:00 UTC (midnight)
+    expect(computeMarketSession(new Date(Date.UTC(2026, 3, 10, 0, 0, 0)))).toBe(
+      'closed',
+    );
+  });
+
+  it('returns "closed" on weekends', () => {
+    // Sat 2026-04-11 10:00 EDT = 14:00 UTC
+    expect(
+      computeMarketSession(new Date(Date.UTC(2026, 3, 11, 14, 0, 0))),
+    ).toBe('closed');
+  });
+
+  it('returns "closed" on full-day NYSE holidays', () => {
+    // Mon 2026-01-19 MLK Day 10:00 EST = 15:00 UTC
+    expect(
+      computeMarketSession(new Date(Date.UTC(2026, 0, 19, 15, 0, 0))),
+    ).toBe('closed');
+  });
+
+  it('half-day: 12:30 ET is still "regular" (before 13:00 ET early close)', () => {
+    // Fri 2026-11-27 Black Friday early-close. In November we are on EST (UTC-5).
+    // 12:30 EST = 17:30 UTC.
+    expect(
+      computeMarketSession(new Date(Date.UTC(2026, 10, 27, 17, 30, 0))),
+    ).toBe('regular');
+  });
+
+  it('half-day: 13:30 ET is "after-hours" (past 13:00 ET early close)', () => {
+    // Fri 2026-11-27 13:30 EST = 18:30 UTC.
+    expect(
+      computeMarketSession(new Date(Date.UTC(2026, 10, 27, 18, 30, 0))),
+    ).toBe('after-hours');
+  });
+
+  it('half-day: 16:00 ET is still "after-hours" (before 20:00 ET extended close)', () => {
+    // Fri 2026-11-27 16:00 EST = 21:00 UTC. On a full day this is the
+    // 16:00 open → close transition; on a half-day the after-hours
+    // window continues all the way to 20:00 ET.
+    expect(
+      computeMarketSession(new Date(Date.UTC(2026, 10, 27, 21, 0, 0))),
+    ).toBe('after-hours');
+  });
+});
+
+describe('useMarketData: FE-STATE-002 session gating', () => {
+  const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
+
+  it('exposes session === "regular" during RTH', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
+    globalThis.fetch = mockFetchResponses() as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.session).toBe('regular');
+    // Backward-compat alias: marketOpen === true iff session === 'regular'.
+    expect(result.current.marketOpen).toBe(true);
+  });
+
+  it('exposes session === "pre-market" during pre-market hours', async () => {
+    vi.setSystemTime(PRE_MARKET);
+    globalThis.fetch = mockFetchResponses() as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.session).toBe('pre-market');
+    // marketOpen remains false in pre-market — it's a strict RTH alias.
+    expect(result.current.marketOpen).toBe(false);
+  });
+
+  it('exposes session === "after-hours" during extended hours', async () => {
+    vi.setSystemTime(AFTER_HOURS);
+    globalThis.fetch = mockFetchResponses() as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.session).toBe('after-hours');
+    expect(result.current.marketOpen).toBe(false);
+  });
+
+  it('exposes session === "closed" on weekends', async () => {
+    // Default beforeEach already sets SESSION_CLOSED_WEEKEND.
+    globalThis.fetch = mockFetchResponses() as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.session).toBe('closed');
+    expect(result.current.marketOpen).toBe(false);
+  });
+
+  it('polls the quotes endpoint during pre-market (unlocks 08:30 CT prep)', async () => {
+    vi.setSystemTime(PRE_MARKET);
+    const fetchMock = mockFetchResponses();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Initial mount: 5 calls (quotes + intraday + yesterday + events + movers)
+    const initialCalls = fetchMock.mock.calls.length;
+    expect(initialCalls).toBe(5);
+
+    // Advance past the refresh interval — pre-market should still poll
+    // quotes because the trader's prep workflow depends on seeing SPX.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    // The incremental poll must be quotes (the only gate that opens in
+    // pre-market). Assert it's NOT the intraday endpoint — that's
+    // RTH-only and would waste a quota call if it fired in pre-market.
+    const intervalUrls = fetchMock.mock.calls
+      .slice(initialCalls)
+      .map((call: [string, ...unknown[]]) => call[0]);
+    expect(intervalUrls).toContain('/api/quotes');
+    expect(intervalUrls).not.toContain('/api/intraday');
+  });
+
+  it('polls the quotes endpoint during after-hours', async () => {
+    vi.setSystemTime(AFTER_HOURS);
+    const fetchMock = mockFetchResponses();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const initialCalls = fetchMock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    const intervalUrls = fetchMock.mock.calls
+      .slice(initialCalls)
+      .map((call: [string, ...unknown[]]) => call[0]);
+    expect(intervalUrls).toContain('/api/quotes');
+    expect(intervalUrls).not.toContain('/api/intraday');
+  });
+
+  it('does NOT poll the opening-range (intraday) endpoint in pre-market', async () => {
+    // Same as the pre-market poll test but with intraday.openingRange
+    // explicitly marked incomplete — this is the condition under which
+    // the RTH interval WOULD re-fetch intraday. Pre-market must skip it.
+    vi.setSystemTime(PRE_MARKET);
+    const mockIntradayIncomplete = {
+      ...mockIntraday,
+      openingRange: { ...mockIntraday.openingRange, complete: false },
+    };
+    const fetchMock = mockFetchResponses({
+      intraday: {
+        status: 200,
+        body: mockIntradayIncomplete as unknown as Record<string, unknown>,
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const initialCalls = fetchMock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    const intervalUrls = fetchMock.mock.calls
+      .slice(initialCalls)
+      .map((call: [string, ...unknown[]]) => call[0]);
+    // Quotes poll runs in pre-market (extended hours gate opens it).
+    expect(intervalUrls).toContain('/api/quotes');
+    // Intraday is RTH-only and must NOT fire in pre-market even though
+    // the opening range is incomplete.
+    expect(intervalUrls).not.toContain('/api/intraday');
+  });
+
+  it('polls the intraday endpoint during RTH when opening range is incomplete', async () => {
+    // Mirror of the pre-market gate: in regular hours the RTH-only
+    // gate opens and intraday IS refreshed alongside quotes.
+    vi.setSystemTime(REGULAR_HOURS);
+    const mockIntradayIncomplete = {
+      ...mockIntraday,
+      openingRange: { ...mockIntraday.openingRange, complete: false },
+    };
+    const fetchMock = mockFetchResponses({
+      quotes: {
+        status: 200,
+        body: mockQuotesOpen as unknown as Record<string, unknown>,
+      },
+      intraday: {
+        status: 200,
+        body: mockIntradayIncomplete as unknown as Record<string, unknown>,
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const initialCalls = fetchMock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    const intervalUrls = fetchMock.mock.calls
+      .slice(initialCalls)
+      .map((call: [string, ...unknown[]]) => call[0]);
+    expect(intervalUrls).toContain('/api/quotes');
+    expect(intervalUrls).toContain('/api/intraday');
+  });
+
+  it('does not poll anything in a "closed" session', async () => {
+    // Default beforeEach has SESSION_CLOSED_WEEKEND set.
+    const fetchMock = mockFetchResponses();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const initialCalls = fetchMock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(initialCalls);
+    expect(result.current.session).toBe('closed');
   });
 });
