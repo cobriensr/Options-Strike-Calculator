@@ -13,9 +13,32 @@
  * Uses the existing UW_API_KEY.
  */
 import logger from './logger.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
+import { getCTTime, getETDateStr } from '../../src/utils/timezone.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
+
+// ── Intraday-window guard ───────────────────────────────────
+
+/**
+ * Regular-hours US equity session in Central Time:
+ * 08:30 inclusive → 15:00 exclusive (minutes-of-day 510..900).
+ *
+ * `ext_hour_sold_codes` catches trades that UW flags as extended-hours,
+ * but it does NOT catch regular-session-flagged trades whose `executed_at`
+ * falls outside normal RTH — e.g. 06:15 CT pre-open block prints with
+ * `ext_hour_sold_codes: null`. Per trader preference, those distort the
+ * intraday volume profile and must be dropped before aggregation.
+ */
+const INTRADAY_START_MIN_CT = 8 * 60 + 30; // 08:30 CT
+const INTRADAY_END_MIN_CT = 15 * 60; // 15:00 CT (exclusive)
+
+function isIntradayCT(executedAt: string): boolean {
+  const d = new Date(executedAt);
+  if (Number.isNaN(d.getTime())) return false;
+  const { hour, minute } = getCTTime(d);
+  const mins = hour * 60 + minute;
+  return mins >= INTRADAY_START_MIN_CT && mins < INTRADAY_END_MIN_CT;
+}
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -95,6 +118,16 @@ export async function fetchDarkPoolBlocks(
     // can inflate premium at price levels where no real institutional
     // conviction existed.
     //
+    // `contingent_trade` prints are pre-arranged swap resets / basket
+    // unwinds that clear on the tape at session-unrelated prices; they
+    // distort the per-level volume profile and must be dropped
+    // unconditionally. (If UW exposes further pre-arranged codes like
+    // `cross_trade` or `form_t` in the future, add them here.)
+    //
+    // The intraday-window guard drops anything that falls outside
+    // 08:30–15:00 CT — `ext_hour_sold_codes` alone misses
+    // regular-session-flagged trades that print pre-open or after 15:00.
+    //
     // Also enforce a hard ET-date guard when a date is specified: UW's
     // date filter can be loose, so we never trust it alone.
     return trades.filter((t) => {
@@ -107,7 +140,9 @@ export async function fetchDarkPoolBlocks(
         return false;
       }
       if (t.sale_cond_codes === 'average_price_trade') return false;
+      if (t.sale_cond_codes === 'contingent_trade') return false;
       if (t.trade_code === 'derivative_priced') return false;
+      if (!isIntradayCT(t.executed_at)) return false;
       if (date && getETDateStr(new Date(t.executed_at)) !== date) return false;
       return true;
     });
@@ -200,6 +235,8 @@ export async function fetchAllDarkPoolTrades(
   // Apply the same quality filters, plus a hard ET-date guard.
   // The date guard is defense in depth against UW's date/older_than
   // interaction so a contaminated page still can't reach the DB.
+  // See `fetchDarkPoolBlocks` for the rationale on each filter —
+  // the two chains must stay in sync.
   return all.filter((t) => {
     if (t.canceled) return false;
     if (t.ext_hour_sold_codes) return false;
@@ -210,7 +247,9 @@ export async function fetchAllDarkPoolTrades(
       return false;
     }
     if (t.sale_cond_codes === 'average_price_trade') return false;
+    if (t.sale_cond_codes === 'contingent_trade') return false;
     if (t.trade_code === 'derivative_priced') return false;
+    if (!isIntradayCT(t.executed_at)) return false;
     if (date && getETDateStr(new Date(t.executed_at)) !== date) return false;
     return true;
   });

@@ -94,17 +94,21 @@ describe('fetchAllDarkPoolTrades', () => {
   });
 
   it('paginates until empty batch', async () => {
+    // All timestamps inside 08:30–15:00 CT (14:30–21:00 UTC in CST)
+    // so the new intraday-window filter doesn't drop any.
     const page1Trades = Array.from({ length: 500 }, (_, i) =>
       makeTrade({
         tracking_id: 1000 + i,
-        executed_at: `2025-01-15T${String(15 - Math.floor(i / 60)).padStart(2, '0')}:${String(59 - (i % 60)).padStart(2, '0')}:00Z`,
+        // Minute i within the window 14:30→20:59 UTC (8:30→14:59 CT)
+        // 390 minutes of window, we only need 500 but allow duplicates.
+        executed_at: `2025-01-15T${String(14 + Math.floor((30 + (i % 389)) / 60)).padStart(2, '0')}:${String((30 + (i % 389)) % 60).padStart(2, '0')}:00Z`,
       }),
     );
 
     const page2Trades = [
       makeTrade({
         tracking_id: 2000,
-        executed_at: '2025-01-15T14:00:00Z',
+        executed_at: '2025-01-15T15:00:00Z', // 09:00 CT, inside window
       }),
     ];
 
@@ -281,6 +285,21 @@ describe('fetchAllDarkPoolTrades', () => {
       makeTrade({
         trade_settlement: 'cash_settlement',
         tracking_id: 6,
+      }),
+      // BE-DARKPOOL-001: contingent_trade must be dropped
+      makeTrade({
+        sale_cond_codes: 'contingent_trade',
+        tracking_id: 7,
+      }),
+      // BE-DARKPOOL-002: pre-session trade (06:15 CT) must be dropped
+      makeTrade({
+        executed_at: '2025-01-15T12:15:00Z',
+        tracking_id: 8,
+      }),
+      // BE-DARKPOOL-002: post-close trade (15:30 CT) must be dropped
+      makeTrade({
+        executed_at: '2025-01-15T21:30:00Z',
+        tracking_id: 9,
       }),
     ];
 

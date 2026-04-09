@@ -253,6 +253,168 @@ describe('fetchDarkPoolBlocks', () => {
 
     vi.unstubAllGlobals();
   });
+
+  // BE-DARKPOOL-001: contingent_trade prints are pre-arranged swap
+  // resets and must be dropped unconditionally.
+  it('drops trades with sale_cond_codes === "contingent_trade"', async () => {
+    const regularTrade = makeTrade({
+      tracking_id: 10,
+      sale_cond_codes: 'regular',
+    });
+    const contingentTrade = makeTrade({
+      tracking_id: 11,
+      sale_cond_codes: 'contingent_trade',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [regularTrade, contingentTrade],
+          }),
+      }),
+    );
+
+    const result = await fetchDarkPoolBlocks('test-key');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.tracking_id).toBe(10);
+
+    vi.unstubAllGlobals();
+  });
+
+  // BE-DARKPOOL-002: regular-hours window guard — 08:30–15:00 CT.
+  // Covers inside/outside/boundary conditions.
+  it('keeps trades inside the 08:30–15:00 CT intraday window', async () => {
+    // 2026-04-09T14:30:00Z → 09:30 CT (CDT), inside
+    const tradeInside = makeTrade({
+      tracking_id: 42,
+      executed_at: '2026-04-09T14:30:00Z',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ data: [tradeInside] }),
+      }),
+    );
+
+    const result = await fetchDarkPoolBlocks('test-key');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.tracking_id).toBe(42);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('drops pre-session trades with null ext_hour_sold_codes', async () => {
+    // 06:15 CT pre-open — during CST (Jan) 06:15 CT = 12:15 UTC.
+    // UW has been observed to emit these with ext_hour_sold_codes=null,
+    // which is the exact failure mode the audit flagged.
+    const preSessionTrade = makeTrade({
+      tracking_id: 100,
+      executed_at: '2025-01-15T12:15:00Z',
+      ext_hour_sold_codes: null,
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ data: [preSessionTrade] }),
+      }),
+    );
+
+    const result = await fetchDarkPoolBlocks('test-key');
+
+    expect(result).toHaveLength(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('drops post-close trades after 15:00 CT', async () => {
+    // 15:30 CT post-close during CST → 21:30 UTC
+    const postCloseTrade = makeTrade({
+      tracking_id: 101,
+      executed_at: '2025-01-15T21:30:00Z',
+      ext_hour_sold_codes: null,
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ data: [postCloseTrade] }),
+      }),
+    );
+
+    const result = await fetchDarkPoolBlocks('test-key');
+
+    expect(result).toHaveLength(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the 08:30 CT boundary (inclusive) and drops 15:00 CT (exclusive)', async () => {
+    // CST (Jan): 08:30 CT = 14:30 UTC, 15:00 CT = 21:00 UTC
+    const openBoundary = makeTrade({
+      tracking_id: 830,
+      executed_at: '2025-01-15T14:30:00Z',
+    });
+    const closeBoundary = makeTrade({
+      tracking_id: 1500,
+      executed_at: '2025-01-15T21:00:00Z',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: [openBoundary, closeBoundary] }),
+      }),
+    );
+
+    const result = await fetchDarkPoolBlocks('test-key');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.tracking_id).toBe(830);
+
+    vi.unstubAllGlobals();
+  });
+
+  // DST boundary sanity check: during CDT (April), 08:30 CT = 13:30 UTC
+  // (not 14:30 UTC as during CST). The helper must not hard-code UTC.
+  it('honors the intraday window across the CST/CDT boundary', async () => {
+    // CDT: 13:30 UTC = 08:30 CT (keep); 13:29 UTC = 08:29 CT (drop)
+    const insideCdt = makeTrade({
+      tracking_id: 200,
+      executed_at: '2026-04-09T13:30:00Z',
+    });
+    const outsideCdt = makeTrade({
+      tracking_id: 201,
+      executed_at: '2026-04-09T13:29:00Z',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: [insideCdt, outsideCdt] }),
+      }),
+    );
+
+    const result = await fetchDarkPoolBlocks('test-key');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.tracking_id).toBe(200);
+
+    vi.unstubAllGlobals();
+  });
 });
 
 // =============================================================
