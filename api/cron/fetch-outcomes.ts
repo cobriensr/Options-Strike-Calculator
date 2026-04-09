@@ -23,7 +23,7 @@ import {
   cronGuard,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { saveOutcome, getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
@@ -295,6 +295,8 @@ async function enrichAnalysisEmbeddings(
       { err: error_ },
       'fetch-outcomes: analysis embedding enrichment failed',
     );
+    metrics.increment('fetch_outcomes.embedding_enrich_error');
+    Sentry.captureException(error_);
   }
 }
 

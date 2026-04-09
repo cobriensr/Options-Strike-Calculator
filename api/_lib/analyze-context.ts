@@ -55,6 +55,7 @@ import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
 import type { PreMarketData } from '../pre-market.js';
 import { formatOvernightForClaude } from './overnight-gap.js';
 import { schwabFetch } from './api-helpers.js';
+import { metrics } from './sentry.js';
 import type { ImageMediaType } from './analyze-prompts.js';
 import { formatFuturesForClaude } from './futures-context.js';
 
@@ -238,6 +239,7 @@ export async function buildAnalysisContext(
       }
     } catch (error_) {
       logger.error({ err: error_ }, 'Failed to fetch positions for analysis');
+      metrics.increment('analyze_context.positions_fetch_error');
     }
   }
   // Always fetch previous recommendation (works for both live and backtest)
@@ -246,6 +248,7 @@ export async function buildAnalysisContext(
       previousRec = await getPreviousRecommendation(analysisDate, mode);
     } catch (error_) {
       logger.error({ err: error_ }, 'Failed to fetch previous recommendation');
+      metrics.increment('analyze_context.prev_recommendation_error');
     }
   }
   // Use DB positions if available, fall back to manually provided currentPosition
@@ -403,6 +406,7 @@ export async function buildAnalysisContext(
     }
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch flow data for analysis');
+    metrics.increment('analyze_context.parallel_fetch_error');
   }
 
   // On-demand IV term structure fetch (not from DB — direct UW API call)
@@ -428,10 +432,12 @@ export async function buildAnalysisContext(
           { status: ivRes.status },
           'IV term structure API returned non-OK',
         );
+        metrics.increment('analyze_context.iv_term_api_error');
       }
     }
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch IV term structure');
+    metrics.increment('analyze_context.iv_term_fetch_error');
   }
 
   // Realized vol + IV rank from daily vol_realized table
@@ -484,6 +490,7 @@ export async function buildAnalysisContext(
     }
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch vol realized data');
+    metrics.increment('analyze_context.vol_realized_db_error');
   }
 
   // On-demand pre-market data (ES overnight + straddle cone from manual input)
