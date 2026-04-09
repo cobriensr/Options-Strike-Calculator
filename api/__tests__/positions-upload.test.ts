@@ -447,7 +447,9 @@ describe('POST /api/positions (CSV upload)', () => {
 import { buildFullSummary } from '../_lib/csv-parser.js';
 
 describe('pairForDisplay — unpaired short leg (via buildFullSummary)', () => {
-  it('displays short as unpaired when long is more than 50 points away', () => {
+  it('displays short as unpaired when long is more than 200 points away', () => {
+    // 250pt distance — beyond the MAX_RECOGNIZED_SPREAD_WIDTH sanity cap,
+    // so these are treated as unrelated legs (not a valid spread).
     const parsed: ReturnType<typeof parseFullCSV> = {
       openLegs: [
         {
@@ -464,8 +466,8 @@ describe('pairForDisplay — unpaired short leg (via buildFullSummary)', () => {
         },
         {
           putCall: 'PUT',
-          symbol: 'SPX_5700P',
-          strike: 5700,
+          symbol: 'SPX_5550P',
+          strike: 5550,
           expiration: '2026-03-27',
           quantity: 5,
           averagePrice: 0.3,
@@ -489,7 +491,7 @@ describe('pairForDisplay — unpaired short leg (via buildFullSummary)', () => {
     expect(summary).toContain('Short 5800P (unpaired)');
   });
 
-  it('pairs short with long when within 50 points', () => {
+  it('pairs short with long when within 200 points', () => {
     const parsed: ReturnType<typeof parseFullCSV> = {
       openLegs: [
         {
@@ -531,7 +533,8 @@ describe('pairForDisplay — unpaired short leg (via buildFullSummary)', () => {
     expect(summary).toContain('Short 5800P / Long 5780P');
   });
 
-  it('displays call short as unpaired when long is more than 50 points away', () => {
+  it('displays call short as unpaired when long is more than 200 points away', () => {
+    // 250pt distance — beyond the MAX_RECOGNIZED_SPREAD_WIDTH sanity cap.
     const parsed: ReturnType<typeof parseFullCSV> = {
       openLegs: [
         {
@@ -548,8 +551,8 @@ describe('pairForDisplay — unpaired short leg (via buildFullSummary)', () => {
         },
         {
           putCall: 'CALL',
-          symbol: 'SPX_5960C',
-          strike: 5960,
+          symbol: 'SPX_6150C',
+          strike: 6150,
           expiration: '2026-03-27',
           quantity: 5,
           averagePrice: 0.3,

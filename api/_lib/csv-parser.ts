@@ -20,6 +20,29 @@
 
 import type { PositionLeg } from './db.js';
 
+// ── Constants ───────────────────────────────────────────────
+
+/**
+ * Sanity cap on recognized spread width (points). Not a business rule:
+ * just a guard against parser noise pairing legs that aren't actually
+ * related. 200pt is wide enough to accept legitimate crash protection
+ * (e.g. 100pt PCS hedges) while still rejecting random strike collisions.
+ */
+const MAX_RECOGNIZED_SPREAD_WIDTH = 200;
+
+/**
+ * Thinkorswim CSV label strings. Extracted to a single location so that
+ * if TOS changes their export format we have one place to update, and
+ * the label dependencies are discoverable by grep.
+ */
+const TOS_LABELS = {
+  STARTING_BALANCE: 'Cash balance at the start of business day',
+  NET_LIQ_PREFIX: 'Net Liquidating Value,',
+  SPX_PNL_PREFIX: 'SPX,',
+  TRADE_HISTORY_SECTION: 'Account Trade History',
+  OPTIONS_HEADER_PREFIX: 'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price',
+} as const;
+
 // ── Types ───────────────────────────────────────────────────
 
 export interface ParsedTrade {
@@ -137,7 +160,7 @@ function findHeaderRow(
 
 function parseOptionsSection(lines: string[]): PositionLeg[] {
   const headerIdx = lines.findIndex((line) =>
-    line.startsWith('Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price'),
+    line.startsWith(TOS_LABELS.OPTIONS_HEADER_PREFIX),
   );
   if (headerIdx < 0) return [];
 
@@ -196,7 +219,7 @@ function parseOptionsSection(lines: string[]): PositionLeg[] {
 
 function parseTradeHistory(lines: string[]): ParsedTrade[] {
   const sectionIdx = lines.findIndex(
-    (line) => line.trim() === 'Account Trade History',
+    (line) => line.trim() === TOS_LABELS.TRADE_HISTORY_SECTION,
   );
   if (sectionIdx < 0) return [];
 
@@ -274,7 +297,13 @@ function parseTradeHistory(lines: string[]): ParsedTrade[] {
 
 function identifyClosedSpreads(trades: ParsedTrade[]): ClosedSpread[] {
   const opens = trades.filter((t) => t.posEffect === 'TO OPEN');
-  const closes = trades.filter((t) => t.posEffect === 'TO CLOSE');
+  // Sort closes by exec time ascending so FIFO matching picks the earliest
+  // unmatched close for each open spread. Without this, two identical opens
+  // at different times could match the wrong close (the first in array order
+  // rather than the first in time order).
+  const closes = trades
+    .filter((t) => t.posEffect === 'TO CLOSE')
+    .sort((a, b) => a.execTime.localeCompare(b.execTime));
 
   if (closes.length === 0) return [];
 
@@ -308,7 +337,7 @@ function identifyClosedSpreads(trades: ParsedTrade[]): ClosedSpread[] {
         continue;
 
       const width = Math.abs(b.strike - a.strike);
-      if (width > 0 && width <= 50) {
+      if (width > 0 && width <= MAX_RECOGNIZED_SPREAD_WIDTH) {
         usedOpenIndices.add(i);
         usedOpenIndices.add(j);
         openSpreads.push({
@@ -379,7 +408,7 @@ function parsePnLSection(lines: string[]): {
   ytdPnl: number | null;
 } {
   for (const line of lines) {
-    if (line.startsWith('SPX,')) {
+    if (line.startsWith(TOS_LABELS.SPX_PNL_PREFIX)) {
       const fields = parseCSVLine(line);
       const dayPnl = fields[4] ? parseDollarValue(fields[4]) : null;
       const ytdPnl = fields[5] ? parseDollarValue(fields[5]) : null;
@@ -396,7 +425,7 @@ function parseAccountSummary(lines: string[]): {
   netLiquidatingValue: number | null;
 } {
   for (const line of lines) {
-    if (line.startsWith('Net Liquidating Value,')) {
+    if (line.startsWith(TOS_LABELS.NET_LIQ_PREFIX)) {
       const fields = parseCSVLine(line);
       const val = fields[1] ? parseDollarValue(fields[1]) : null;
       return { netLiquidatingValue: val && !Number.isNaN(val) ? val : null };
@@ -407,7 +436,7 @@ function parseAccountSummary(lines: string[]): {
 
 function parseStartingBalance(lines: string[]): number | null {
   for (const line of lines) {
-    if (line.includes('Cash balance at the start of business day')) {
+    if (line.includes(TOS_LABELS.STARTING_BALANCE)) {
       const fields = parseCSVLine(line);
       const val = fields.at(-1);
       if (val) {
@@ -876,7 +905,7 @@ function pairForDisplay(
       for (let i = 0; i < longs.length; i++) {
         if (usedLongs.has(i)) continue;
         const dist = Math.abs(longs[i]!.strike - short.strike);
-        if (dist < bestDist && dist <= 50) {
+        if (dist < bestDist && dist <= MAX_RECOGNIZED_SPREAD_WIDTH) {
           bestDist = dist;
           bestIdx = i;
         }
@@ -936,7 +965,7 @@ function computeSideMaxRisk(legs: PositionLeg[]): number {
     for (let i = 0; i < longs.length; i++) {
       if (usedLongs.has(i)) continue;
       const dist = Math.abs(longs[i]!.strike - short.strike);
-      if (dist < bestDist && dist <= 50) {
+      if (dist < bestDist && dist <= MAX_RECOGNIZED_SPREAD_WIDTH) {
         bestDist = dist;
         bestIdx = i;
       }
