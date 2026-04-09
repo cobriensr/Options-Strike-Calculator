@@ -29,6 +29,15 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import {
+  loadSnapshotHistory,
+  writeFeatureRows,
+  type WriteFeatureRowsResult,
+} from '../_lib/gex-target-features.js';
+
+// Snapshot window required for multi-horizon feature extraction: the
+// 60-minute horizon needs 60 prior snapshots plus the current one.
+const FEATURE_HISTORY_SIZE = 61;
 
 const ATM_RANGE = 200; // ±200 pts from ATM
 
@@ -224,12 +233,76 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    // ── GexTarget features (Phase 4A) ────────────────────────
+    //
+    // Feature writes are non-blocking: any failure here is logged to
+    // Sentry and the cron still returns 200 with the raw snapshot
+    // counts populated. We deliberately do NOT short-circuit on feature
+    // errors — the raw data pipeline must remain resilient to scoring
+    // bugs.
+    let featureStatus: WriteFeatureRowsResult | { error: true } | null = null;
+    if (result.stored > 0) {
+      const timestamp = new Date(rows[0]!.time).toISOString();
+      try {
+        const snapshots = await loadSnapshotHistory(
+          today,
+          timestamp,
+          FEATURE_HISTORY_SIZE,
+        );
+        if (snapshots.length < 2) {
+          logger.info(
+            { snapshots: snapshots.length, date: today, timestamp },
+            'fetch-gex-0dte: skipping feature writes (history < 2 snapshots)',
+          );
+        } else {
+          const featureResult = await writeFeatureRows(
+            snapshots,
+            today,
+            timestamp,
+          );
+          featureStatus = featureResult;
+          logger.info(
+            {
+              date: today,
+              timestamp,
+              historyCount: snapshots.length,
+              featuresWritten: featureResult.written,
+              featuresSkipped: featureResult.skipped,
+              modes: featureResult.modes,
+            },
+            'fetch-gex-0dte: gex_target_features written',
+          );
+        }
+      } catch (featureErr) {
+        featureStatus = { error: true };
+        Sentry.setTag('cron.job', 'fetch-gex-0dte');
+        Sentry.setTag('feature.phase', 'write');
+        Sentry.captureException(featureErr);
+        logger.error(
+          { err: featureErr, date: today, timestamp },
+          'fetch-gex-0dte: feature write threw unexpectedly',
+        );
+      }
+    }
+
+    const featureJson =
+      featureStatus === null
+        ? null
+        : 'error' in featureStatus
+          ? { error: true }
+          : {
+              written: featureStatus.written,
+              skipped: featureStatus.skipped,
+              modes: featureStatus.modes,
+            };
+
     return res.status(200).json({
       job: 'fetch-gex-0dte',
       success: true,
       price,
       stored: result.stored,
       skipped: result.skipped,
+      features: featureJson,
       durationMs: Date.now() - startTime,
     });
   } catch (err) {

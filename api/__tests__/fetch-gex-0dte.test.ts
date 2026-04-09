@@ -24,8 +24,33 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
+// Phase 4A: mock the feature helper so cron tests exercise only the
+// raw snapshot path by default. Specific tests override these mocks to
+// cover the feature-write branches.
+const mockLoadSnapshotHistory = vi.fn();
+const mockWriteFeatureRows = vi.fn();
+vi.mock('../_lib/gex-target-features.js', () => ({
+  loadSnapshotHistory: (...args: unknown[]) => mockLoadSnapshotHistory(...args),
+  writeFeatureRows: (...args: unknown[]) => mockWriteFeatureRows(...args),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
+  metrics: {
+    schwabCall: vi.fn(() => () => {}),
+    tokenRefresh: vi.fn(),
+    rateLimited: vi.fn(),
+    uwRateLimit: vi.fn(),
+  },
+}));
+
 import handler from '../cron/fetch-gex-0dte.js';
 import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
@@ -87,6 +112,18 @@ describe('fetch-gex-0dte handler', () => {
         return Array.from({ length: rowCount }, (_v, i) => ({ id: i + 1 }));
       },
     );
+    // Default: no snapshot history → feature helper is a no-op. Specific
+    // tests override these to drive the write path.
+    mockLoadSnapshotHistory.mockResolvedValue([]);
+    mockWriteFeatureRows.mockResolvedValue({
+      written: 0,
+      skipped: 0,
+      modes: {
+        oi: { written: 0, skipped: 0 },
+        vol: { written: 0, skipped: 0 },
+        dir: { written: 0, skipped: 0 },
+      },
+    });
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -417,5 +454,151 @@ describe('fetch-gex-0dte handler', () => {
     expect(p[19]).toBe(row.put_vanna_oi);
     expect(p[20]).toBe(row.call_vanna_vol);
     expect(p[21]).toBe(row.put_vanna_vol);
+  });
+
+  // ── Feature writes (Phase 4A) ─────────────────────────────
+
+  it('loads snapshot history and writes features after a successful raw insert', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const fakeSnapshots = [
+      { timestamp: '2026-03-24T14:29:00.000Z', price: 5800, strikes: [] },
+      { timestamp: '2026-03-24T14:30:00.000Z', price: 5800.5, strikes: [] },
+    ];
+    mockLoadSnapshotHistory.mockResolvedValueOnce(fakeSnapshots);
+    mockWriteFeatureRows.mockResolvedValueOnce({
+      written: 27,
+      skipped: 3,
+      modes: {
+        oi: { written: 10, skipped: 0 },
+        vol: { written: 9, skipped: 1 },
+        dir: { written: 8, skipped: 2 },
+      },
+    });
+
+    stubFetch([makeStrikeRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    // Helper was invoked with (today, timestamp, FEATURE_HISTORY_SIZE)
+    expect(mockLoadSnapshotHistory).toHaveBeenCalledTimes(1);
+    const [loadDate, loadTs, loadSize] = mockLoadSnapshotHistory.mock.calls[0]!;
+    expect(loadDate).toBe('2026-03-24');
+    expect(loadTs).toBe('2026-03-24T14:30:00.000Z');
+    expect(loadSize).toBe(61);
+
+    expect(mockWriteFeatureRows).toHaveBeenCalledTimes(1);
+    const [writeSnapshots, writeDate, writeTs] =
+      mockWriteFeatureRows.mock.calls[0]!;
+    expect(writeSnapshots).toBe(fakeSnapshots);
+    expect(writeDate).toBe('2026-03-24');
+    expect(writeTs).toBe('2026-03-24T14:30:00.000Z');
+
+    expect(res._json).toMatchObject({
+      success: true,
+      stored: 1,
+      features: {
+        written: 27,
+        skipped: 3,
+        modes: {
+          oi: { written: 10, skipped: 0 },
+          vol: { written: 9, skipped: 1 },
+          dir: { written: 8, skipped: 2 },
+        },
+      },
+    });
+  });
+
+  it('skips writeFeatureRows when snapshot history is too short (<2)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    mockLoadSnapshotHistory.mockResolvedValueOnce([
+      { timestamp: '2026-03-24T14:30:00.000Z', price: 5800.5, strikes: [] },
+    ]);
+    stubFetch([makeStrikeRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(mockLoadSnapshotHistory).toHaveBeenCalledTimes(1);
+    expect(mockWriteFeatureRows).not.toHaveBeenCalled();
+    // features left null when the helper wasn't called (short history)
+    expect((res._json as { features: unknown }).features).toBeNull();
+    // But the raw snapshot fields are still populated
+    expect(res._json).toMatchObject({
+      success: true,
+      stored: 1,
+      skipped: 0,
+    });
+  });
+
+  it('does NOT run feature helpers when the raw insert stored 0 rows', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // ON CONFLICT → every row dropped → stored = 0 → feature helpers skipped
+    mockQuery.mockResolvedValueOnce([]);
+    stubFetch([makeStrikeRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: 0, skipped: 1 });
+    expect(mockLoadSnapshotHistory).not.toHaveBeenCalled();
+    expect(mockWriteFeatureRows).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 with features.error when the feature helper throws', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    mockLoadSnapshotHistory.mockResolvedValueOnce([
+      { timestamp: '2026-03-24T14:29:00.000Z', price: 5800, strikes: [] },
+      { timestamp: '2026-03-24T14:30:00.000Z', price: 5800.5, strikes: [] },
+    ]);
+    mockWriteFeatureRows.mockRejectedValueOnce(new Error('scoring boom'));
+    stubFetch([makeStrikeRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    // Raw snapshot response fields must still be populated
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      success: true,
+      stored: 1,
+      skipped: 0,
+      features: { error: true },
+    });
+
+    // Sentry received the feature-phase tag
+    expect(Sentry.setTag).toHaveBeenCalledWith('feature.phase', 'write');
+    expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'fetch-gex-0dte: feature write threw unexpectedly',
+    );
   });
 });
