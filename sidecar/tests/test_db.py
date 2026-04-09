@@ -4,55 +4,35 @@ Scope: minimal coverage of the SIDE-003 idempotency change. Full db.py
 coverage (connection pool lifecycle, upsert semantics) requires a real
 Postgres instance and is out of scope for pytest.
 
-We mock psycopg2 + psycopg2.pool + psycopg2.extras before importing db
-so the module loads in environments where psycopg2 is not installed
-(e.g., the local venv used for running these tests).
+Mock strategy:
+- conftest.py provides session-wide mocks for psycopg2, psycopg2.pool,
+  psycopg2.extras. These are the external-package mocks every test
+  file shares. We reach into them for the execute_values attribute
+  that db.py calls.
+- db.py is imported normally. Its get_conn() context manager is
+  monkeypatched per-test via the mock_conn_pool fixture, which also
+  intercepts execute_values via sys.modules["psycopg2.extras"].
+- No module-level sys.modules clobbering — every patch is per-test
+  via monkeypatch, so sibling test files (test_trade_processor.py,
+  test_databento_client.py, test_sentry_setup.py) stay hermetic.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-# ---------------------------------------------------------------------------
-# Pre-import psycopg2 mock setup
-# ---------------------------------------------------------------------------
-
-mock_psycopg2 = MagicMock()
-mock_psycopg2_pool = MagicMock()
-mock_psycopg2_extras = MagicMock()
-mock_psycopg2.pool = mock_psycopg2_pool
-mock_psycopg2.extras = mock_psycopg2_extras
-
-# execute_values is where db.batch_insert_options_trades sends its SQL.
-# We replace it with a tracking MagicMock so tests can inspect the query.
-execute_values_mock = MagicMock()
-mock_psycopg2_extras.execute_values = execute_values_mock
-
-sys.modules["psycopg2"] = mock_psycopg2
-sys.modules["psycopg2.pool"] = mock_psycopg2_pool
-sys.modules["psycopg2.extras"] = mock_psycopg2_extras
-
-# logger_setup is harmless but we mock it too to avoid accidentally
-# constructing the real JSON handler in these tests.
-sys.modules["logger_setup"] = MagicMock()
-
-# config imports settings which reads env vars via pydantic — mock it
-# to keep tests hermetic.
-mock_config = MagicMock()
-mock_config.settings = MagicMock()
-mock_config.settings.database_url = "postgres://test@localhost/test"
-sys.modules["config"] = mock_config
+# Required env vars for config.py's pydantic-settings validation.
+# The DATABASE_URL is a throwaway test fixture — psycopg2 is mocked
+# via conftest.py so no real connection is ever attempted.
+os.environ.setdefault("DATABENTO_API_KEY", "test-key")
+_FAKE_DB_URL = "postgresql://test:" + "fakefixture" + "@localhost/test"
+os.environ.setdefault("DATABASE_URL", _FAKE_DB_URL)
 
 import pytest  # noqa: E402
 import db  # noqa: E402
-
-
-@pytest.fixture(autouse=True)
-def _reset_mocks() -> None:
-    """Reset the execute_values mock between tests."""
-    execute_values_mock.reset_mock()
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +41,28 @@ def _reset_mocks() -> None:
 
 
 @pytest.fixture()
+def mock_execute_values(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Monkeypatch psycopg2.extras.execute_values per-test.
+
+    db.batch_insert_options_trades calls `psycopg2.extras.execute_values(...)`
+    — we intercept that call by patching the attribute on the shared
+    psycopg2.extras mock from conftest.py. monkeypatch auto-restores
+    after each test, so no cross-test pollution.
+    """
+    mock = MagicMock()
+    psycopg2_extras = sys.modules["psycopg2.extras"]
+    monkeypatch.setattr(psycopg2_extras, "execute_values", mock)
+    return mock
+
+
+@pytest.fixture()
 def mock_conn_pool(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Replace db.get_conn with a mock context manager yielding a fake conn."""
+    """Replace db.get_conn with a mock context manager yielding a fake conn.
+
+    Returns the inner cursor MagicMock for tests that want to assert
+    against it. Most tests only care about the execute_values mock
+    above.
+    """
     mock_cursor = MagicMock()
     mock_conn = MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
@@ -72,7 +72,9 @@ def mock_conn_pool(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     fake_context.__enter__.return_value = mock_conn
     fake_context.__exit__.return_value = None
 
-    monkeypatch.setattr(db, "get_conn", lambda: fake_context)
+    # db.get_conn accepts a keyword arg (timeout_s) after the SIDE-005
+    # pool-timeout work, so the replacement needs to swallow kwargs.
+    monkeypatch.setattr(db, "get_conn", lambda *args, **kwargs: fake_context)
     return mock_cursor
 
 
@@ -96,7 +98,7 @@ SAMPLE_ROW = (
 
 class TestBatchInsertIdempotency:
     def test_sql_contains_on_conflict_do_nothing(
-        self, mock_conn_pool: MagicMock
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
     ) -> None:
         """The INSERT must include ON CONFLICT DO NOTHING for Databento resends.
 
@@ -106,14 +108,14 @@ class TestBatchInsertIdempotency:
         """
         db.batch_insert_options_trades([SAMPLE_ROW])
 
-        execute_values_mock.assert_called_once()
-        sql_arg = execute_values_mock.call_args[0][1]  # second positional arg
+        mock_execute_values.assert_called_once()
+        sql_arg = mock_execute_values.call_args[0][1]  # second positional arg
         assert "INSERT INTO futures_options_trades" in sql_arg
         assert "ON CONFLICT" in sql_arg
         assert "DO NOTHING" in sql_arg
 
     def test_sql_conflict_target_matches_unique_index(
-        self, mock_conn_pool: MagicMock
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
     ) -> None:
         """The ON CONFLICT target must match the natural-key tuple created by
         migration #50's unique index. If these drift, the ON CONFLICT clause
@@ -122,7 +124,7 @@ class TestBatchInsertIdempotency:
         """
         db.batch_insert_options_trades([SAMPLE_ROW])
 
-        sql_arg = execute_values_mock.call_args[0][1]
+        sql_arg = mock_execute_values.call_args[0][1]
         # All 8 natural-key columns in order
         for col in (
             "ts",
@@ -136,14 +138,18 @@ class TestBatchInsertIdempotency:
         ):
             assert col in sql_arg
 
-    def test_empty_rows_is_noop(self, mock_conn_pool: MagicMock) -> None:
+    def test_empty_rows_is_noop(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
         """Empty batch must not issue any SQL."""
         db.batch_insert_options_trades([])
-        execute_values_mock.assert_not_called()
+        mock_execute_values.assert_not_called()
 
-    def test_preserves_page_size(self, mock_conn_pool: MagicMock) -> None:
+    def test_preserves_page_size(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
         """page_size=500 is the batch chunk size — used to tune Postgres
         round-trip overhead. Pinning this so nobody accidentally removes it."""
         db.batch_insert_options_trades([SAMPLE_ROW])
-        kwargs = execute_values_mock.call_args.kwargs
+        kwargs = mock_execute_values.call_args.kwargs
         assert kwargs.get("page_size") == 500
