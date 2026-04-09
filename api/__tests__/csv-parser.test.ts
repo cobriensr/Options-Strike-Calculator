@@ -200,11 +200,6 @@ Net Liquidating Value,"267,572.57"
   });
 
   it('full end-to-end: all non-SPX-row labels parse in a single CSV', () => {
-    // Note: `parsePnLSection` finds the FIRST line starting with "SPX,"
-    // which in a real TOS export may be an Options-section row. That is
-    // a known quirk of the parser (not in scope for this audit fix), so
-    // this fixture omits the Options section and tests the other three
-    // labels (starting balance, net liq, PnL SPX row) together.
     const csv = `This document was exported from the paperMoney platform.
 
 Cash Balance
@@ -223,5 +218,51 @@ Net Liquidating Value,"201,000.00"
     expect(parsed.dayPnl).toBe(500);
     expect(parsed.ytdPnl).toBe(1500);
     expect(parsed.netLiquidatingValue).toBe(201_000);
+  });
+
+  it('regression: SPX collision — Options section before Profits and Losses', () => {
+    // Real TOS exports usually have the Options position section BEFORE
+    // Profits and Losses. Option position rows also start with "SPX,".
+    // Pre-fix, parsePnLSection would scan the whole file, match the
+    // option row first, and parse fields[4]=strike (e.g. 5700) as a
+    // dollar value — returning 5700 as dayPnl when the trader is
+    // actually flat at +500. This corrupted Claude's analyze context
+    // on every CSV upload with an open SPX position.
+    //
+    // Fix: parsePnLSection now anchors its SPX search to lines AFTER
+    // the "Profits and Losses" section header.
+    const csv = `This document was exported from the paperMoney platform.
+
+Position Statement
+Instrument,Qty,Days,Trade Price,Mark,Mrk Chng,P/L Open,P/L Day,BP Effect
+SPX,100% SPX INDEX,,,,,,,
+SPX,.SPXW260407C5700,APR 07 26,5700,CALL,-1,12.50,8.20,430.00,-15.00,
+SPX,.SPXW260407P5650,APR 07 26,5650,PUT,-1,10.00,6.40,360.00,-8.00,
+
+Profits and Losses
+Symbol,Description,Qty,Trade Price,P/L Day,P/L YTD,Mark Value
+SPX,SPX INDEX,,,"500.00","1,500.00",
+
+Account Summary
+Net Liquidating Value,"201,000.00"
+`;
+    const parsed = parseFullCSV(csv);
+    // CRITICAL: dayPnl must be 500 (the real PnL row), NOT 5700 (the
+    // strike on the first option row). Pre-fix this returned 5700.
+    expect(parsed.dayPnl).toBe(500);
+    expect(parsed.ytdPnl).toBe(1500);
+    expect(parsed.netLiquidatingValue).toBe(201_000);
+  });
+
+  it('returns null dayPnl when the "Profits and Losses" section is missing entirely', () => {
+    // Without the section anchor, an Options-only CSV (no PnL section)
+    // must NOT mistakenly return a strike as dayPnl.
+    const csv = `Position Statement
+Instrument,Qty,Days,Trade Price,Mark,Mrk Chng,P/L Open,P/L Day,BP Effect
+SPX,.SPXW260407C5700,APR 07 26,5700,CALL,-1,12.50,8.20,430.00,-15.00,
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.dayPnl).toBeNull();
+    expect(parsed.ytdPnl).toBeNull();
   });
 });

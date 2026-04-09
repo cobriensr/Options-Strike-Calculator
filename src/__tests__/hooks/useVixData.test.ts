@@ -229,14 +229,18 @@ describe('useVixData', () => {
     });
   });
 
-  it('converts CT to ET (+1 hour) for smart OHLC', async () => {
+  it('converts CT to ET via DST-safe helper for smart OHLC', async () => {
+    // At steady state (outside the spring-forward DST window), the
+    // CT→ET offset is +60 minutes. 12 PM CT → 1 PM ET → etH >= 13 →
+    // pick close. The hook now uses `convertCTToET` from
+    // src/utils/timezone instead of a hardcoded `+1`, so this test
+    // exercises the steady-state path through the shared helper.
     const setVixInput = vi.fn();
     mockedLoadCached.mockReturnValue({
       data: mockVixMap,
       source: 'test',
     });
 
-    // 12 PM CT = 1 PM ET → >= 13 → close
     const { result } = renderWith({
       setVixInput,
       timeHour: '12',
@@ -256,6 +260,15 @@ describe('useVixData', () => {
       expect(setVixInput).toHaveBeenCalledWith('19.20');
     });
   });
+
+  // NOTE: DST-window behavior is exercised directly in
+  // src/__tests__/utils/timezone.test.ts against the `convertCTToET`
+  // helper. useVixData just consumes that helper, so a DST test here
+  // would be redundant AND hard to write without `vi.useFakeTimers`
+  // interfering with React Testing Library's `waitFor`. The fix for
+  // FE-STATE-004 follow-up in useVixData is the swap from `+ 1` to
+  // `convertCTToET(ctH24, 0).hour` at both effect sites — verified
+  // by the steady-state CT→ET test above and the helper's own tests.
 
   // --------------------------------------------------------
   // Explicit OHLC field selection

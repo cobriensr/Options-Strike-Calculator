@@ -39,6 +39,7 @@ const TOS_LABELS = {
   STARTING_BALANCE: 'Cash balance at the start of business day',
   NET_LIQ_PREFIX: 'Net Liquidating Value,',
   SPX_PNL_PREFIX: 'SPX,',
+  PNL_SECTION: 'Profits and Losses',
   TRADE_HISTORY_SECTION: 'Account Trade History',
   OPTIONS_HEADER_PREFIX: 'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price',
 } as const;
@@ -407,7 +408,23 @@ function parsePnLSection(lines: string[]): {
   dayPnl: number | null;
   ytdPnl: number | null;
 } {
-  for (const line of lines) {
+  // Anchor the SPX search to AFTER the "Profits and Losses" section
+  // header. Without this anchor, the parser would find the first `SPX,`
+  // line in the file — which on any real TOS export with open SPX
+  // option positions is an Options-section row (e.g. "SPX,<opt-code>,
+  // <exp>,5700,CALL,-1,..."). Parsing fields[4]=strike and fields[5]=
+  // type as dollar values would silently return the strike (5700) as
+  // dayPnl, which then flows into the Claude analyze context as a
+  // false daily P&L. See csv-parser.test.ts for the regression fixture.
+  const sectionStart = lines.findIndex((line) =>
+    line.startsWith(TOS_LABELS.PNL_SECTION),
+  );
+  if (sectionStart === -1) return { dayPnl: null, ytdPnl: null };
+
+  for (let i = sectionStart + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    // Blank line or a new section header terminates the P&L block
+    if (line.trim() === '') continue;
     if (line.startsWith(TOS_LABELS.SPX_PNL_PREFIX)) {
       const fields = parseCSVLine(line);
       const dayPnl = fields[4] ? parseDollarValue(fields[4]) : null;

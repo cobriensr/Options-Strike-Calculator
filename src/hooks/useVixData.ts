@@ -8,6 +8,7 @@ import {
   loadStaticVixData,
 } from '../utils/vixStorage';
 import { to24Hour } from '../utils/calculator';
+import { convertCTToET } from '../utils/timezone';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -73,10 +74,14 @@ export function useVixData(
     if (entry) {
       setVixOHLC(entry);
       if (vixOHLCField === 'smart' && ivMode === IV_MODES.VIX) {
+        // DST-safe CT→ET conversion (see FE-STATE-004 + follow-up).
+        // The ~1-hour spring-forward window each March has a real
+        // 120-minute offset, not the steady-state 60, so we use
+        // convertCTToET instead of a hardcoded +1. Minute is passed
+        // as 0 because the VIX open/close pick is hour-granular.
+        const ctH24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
         const etH =
-          timezone === 'CT'
-            ? to24Hour(Number.parseInt(timeHour), timeAmPm) + 1
-            : to24Hour(Number.parseInt(timeHour), timeAmPm);
+          timezone === 'CT' ? convertCTToET(ctH24, 0).hour : ctH24;
         const v = etH < 13 ? entry.open : entry.close;
         if (v != null) setVixInput(v.toFixed(2));
       }
@@ -132,10 +137,11 @@ export function useVixData(
   useEffect(() => {
     if (!vixOHLC || ivMode !== IV_MODES.VIX) return;
     if (vixOHLCField === 'smart') {
+      // DST-safe CT→ET conversion — same pattern as the selectedDate
+      // effect above. See FE-STATE-004 for the DST window rationale.
+      const ctH24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
       const etH =
-        timezone === 'CT'
-          ? to24Hour(Number.parseInt(timeHour), timeAmPm) + 1
-          : to24Hour(Number.parseInt(timeHour), timeAmPm);
+        timezone === 'CT' ? convertCTToET(ctH24, 0).hour : ctH24;
       const v = etH < 13 ? vixOHLC.open : vixOHLC.close;
       if (v != null) setVixInput(v.toFixed(2));
     } else {
