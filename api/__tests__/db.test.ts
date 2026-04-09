@@ -477,6 +477,8 @@ describe('db.ts', () => {
         { id: 48 },
         { id: 49 },
         { id: 50 },
+        { id: 51 },
+        { id: 52 },
       ]);
 
       const applied = await migrateDb();
@@ -545,11 +547,13 @@ describe('db.ts', () => {
         '#48: Add OTM delta flow columns to flow_data for zero_dte_greek_flow source',
         '#49: Create volume_per_strike_0dte table for per-minute 0DTE raw call/put volume by strike',
         '#50: Dedupe existing futures_options_trades rows and add UNIQUE index for Databento resend idempotency (SIDE-003)',
+        '#51: Create gex_target_features table — three-layer (Layer 2 inputs + Layer 3 scoring outputs) per snapshot × strike × mode for the GexTarget rebuild',
+        '#52: Create spx_candles_1m table for pre-baked 1-minute SPX candles (GexTarget rebuild: Phase 3 populates from UW SPY→SPX conversion)',
       ]);
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) = 162
-      expect(mockSql).toHaveBeenCalledTimes(162);
-      // Migrations #15-50 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(36);
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) = 170
+      expect(mockSql).toHaveBeenCalledTimes(170);
+      // Migrations #15-52 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(38);
     });
 
     it('propagates errors from migration SQL', async () => {

@@ -1234,4 +1234,106 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 51,
+    description:
+      'Create gex_target_features table — three-layer (Layer 2 inputs + Layer 3 scoring outputs) per snapshot × strike × mode for the GexTarget rebuild',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS gex_target_features (
+          id                    SERIAL PRIMARY KEY,
+          date                  DATE NOT NULL,
+          timestamp             TIMESTAMPTZ NOT NULL,
+          mode                  TEXT NOT NULL CHECK (mode IN ('oi','vol','dir')),
+          math_version          TEXT NOT NULL,
+          strike                NUMERIC NOT NULL,
+
+          -- Identity / ranking metadata
+          rank_in_mode          SMALLINT NOT NULL,
+          rank_by_size          SMALLINT NOT NULL,
+          is_target             BOOLEAN NOT NULL,
+
+          -- Layer 2: calculated features (inputs to scoring)
+          gex_dollars           NUMERIC NOT NULL,
+          delta_gex_1m          NUMERIC,
+          delta_gex_5m          NUMERIC,
+          delta_gex_20m         NUMERIC,
+          delta_gex_60m         NUMERIC,
+          prev_gex_dollars_1m   NUMERIC,
+          prev_gex_dollars_5m   NUMERIC,
+          prev_gex_dollars_20m  NUMERIC,
+          prev_gex_dollars_60m  NUMERIC,
+          delta_pct_1m          NUMERIC,
+          delta_pct_5m          NUMERIC,
+          delta_pct_20m         NUMERIC,
+          delta_pct_60m         NUMERIC,
+          call_ratio            NUMERIC,
+          charm_net             NUMERIC,
+          delta_net             NUMERIC,
+          vanna_net             NUMERIC,
+          dist_from_spot        NUMERIC NOT NULL,
+          spot_price            NUMERIC NOT NULL,
+          minutes_after_noon_ct NUMERIC NOT NULL,
+          nearest_pos_wall_dist NUMERIC,
+          nearest_pos_wall_gex  NUMERIC,
+          nearest_neg_wall_dist NUMERIC,
+          nearest_neg_wall_gex  NUMERIC,
+
+          -- Layer 3: scoring outputs (what the UI displays)
+          flow_confluence       NUMERIC NOT NULL,
+          price_confirm         NUMERIC NOT NULL,
+          charm_score           NUMERIC NOT NULL,
+          dominance             NUMERIC NOT NULL,
+          clarity               NUMERIC NOT NULL,
+          proximity             NUMERIC NOT NULL,
+          final_score           NUMERIC NOT NULL,
+          tier                  TEXT NOT NULL CHECK (tier IN ('HIGH','MEDIUM','LOW','NONE')),
+          wall_side             TEXT NOT NULL CHECK (wall_side IN ('CALL','PUT','NEUTRAL')),
+
+          created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+          UNIQUE (date, timestamp, mode, strike, math_version)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gex_target_features_date_time
+          ON gex_target_features (date, timestamp)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gex_target_features_mode_target
+          ON gex_target_features (mode, is_target) WHERE is_target = TRUE
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gex_target_features_math_version
+          ON gex_target_features (math_version)
+      `,
+    ],
+  },
+  {
+    id: 52,
+    description:
+      'Create spx_candles_1m table for pre-baked 1-minute SPX candles (GexTarget rebuild: Phase 3 populates from UW SPY→SPX conversion)',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS spx_candles_1m (
+          id          SERIAL PRIMARY KEY,
+          date        DATE NOT NULL,
+          timestamp   TIMESTAMPTZ NOT NULL,
+          open        NUMERIC NOT NULL,
+          high        NUMERIC NOT NULL,
+          low         NUMERIC NOT NULL,
+          close       NUMERIC NOT NULL,
+          volume      BIGINT NOT NULL,
+          market_time TEXT NOT NULL CHECK (market_time IN ('pr','r','po')),
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+          UNIQUE (date, timestamp)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_spx_candles_1m_date_time
+          ON spx_candles_1m (date, timestamp)
+      `,
+    ],
+  },
 ];
