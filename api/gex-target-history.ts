@@ -1,0 +1,532 @@
+/**
+ * GET /api/gex-target-history
+ *
+ * Returns the GexTarget payload for one snapshot of `gex_target_features`,
+ * plus the per-day SPX 1-minute candles needed by the price-chart panel.
+ *
+ * The endpoint supports three input modes — chosen implicitly via query
+ * params so the frontend hook (`useGexTarget`) and the historical scrubber
+ * share the same code path:
+ *
+ *   1. **Live**           — `GET /api/gex-target-history` with no params.
+ *      Returns the latest snapshot of the most recent date that has any
+ *      rows in `gex_target_features`. NOT today, because at session start
+ *      today may have zero rows yet.
+ *
+ *   2. **Live for date**  — `?date=YYYY-MM-DD`. Returns the latest
+ *      snapshot of the requested trading date (ET).
+ *
+ *   3. **Scrubbed**       — `?date=YYYY-MM-DD&ts=<ISO>`. Returns the
+ *      exact `(date, ts)` snapshot. If `ts` is missing or doesn't exist
+ *      in the snapshot list for the requested date, falls back silently
+ *      to the latest snapshot for that date.
+ *
+ * `availableDates` is ALWAYS populated on every request — it is the
+ * data-availability check from Appendix E #8 of the GexTarget rebuild
+ * plan. The frontend uses this to render the historical UX (date picker
+ * gating, "no data yet" placeholders, etc.) without a separate round-trip.
+ *
+ * Owner-gated — Greek exposure derives from UW API (OPRA compliance).
+ */
+
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { getDb } from './_lib/db.js';
+import { Sentry } from './_lib/sentry.js';
+import { rejectIfNotOwner, checkBot } from './_lib/api-helpers.js';
+import logger from './_lib/logger.js';
+import { fetchSPXCandles, type SPXCandle } from './_lib/spx-candles.js';
+import type {
+  StrikeScore,
+  TargetScore,
+  Tier,
+  WallSide,
+  Mode,
+} from '../src/utils/gex-target.js';
+
+// ── Response shape ─────────────────────────────────────────────
+
+/**
+ * Payload returned by `GET /api/gex-target-history`.
+ *
+ * Every field except `availableDates` may be empty/null when the
+ * requested date has no rows in `gex_target_features`. `availableDates`
+ * is always populated so the frontend can render the historical UX
+ * without a separate round-trip.
+ */
+export interface GexTargetHistoryResponse {
+  /**
+   * Every distinct trading date currently present in
+   * `gex_target_features`, sorted ascending. Used by the frontend to
+   * gate the date picker, render "no data" placeholders, and decide
+   * whether to fall back to a different date.
+   */
+  availableDates: string[];
+
+  /**
+   * The trading date the response is for (YYYY-MM-DD, ET). Null only
+   * when `availableDates` is empty.
+   */
+  date: string | null;
+
+  /**
+   * Every snapshot timestamp recorded for `date`, sorted ascending
+   * (ISO 8601 UTC). Empty array when the date has no data yet.
+   */
+  timestamps: string[];
+
+  /**
+   * The snapshot the response is for. Defaults to the last entry of
+   * `timestamps` (latest snapshot of the day). Null when no data.
+   */
+  timestamp: string | null;
+
+  /** Spot price at the returned snapshot. Null when no data. */
+  spot: number | null;
+
+  /** OI-mode TargetScore for the returned snapshot. Null when no data. */
+  oi: TargetScore | null;
+
+  /** VOL-mode TargetScore for the returned snapshot. Null when no data. */
+  vol: TargetScore | null;
+
+  /** DIR-mode TargetScore for the returned snapshot. Null when no data. */
+  dir: TargetScore | null;
+
+  /**
+   * Regular-session SPX 1-minute candles for `date`, ascending. Empty
+   * array if `fetchSPXCandles` returns nothing or throws (the endpoint
+   * never fails the whole request just because the price chart data is
+   * unavailable).
+   */
+  candles: SPXCandle[];
+
+  /** Previous session close (SPX), or null if not available. */
+  previousClose: number | null;
+}
+
+// ── Row shape from gex_target_features ────────────────────────
+
+/**
+ * Numeric column as returned by the Neon driver — NUMERIC arrives as a
+ * string to preserve precision, but tests / older driver paths can also
+ * surface a JS number, so we accept either.
+ */
+type Numeric = string | number;
+
+/** Same as `Numeric`, but explicitly nullable for nullable columns. */
+type NumericOrNull = Numeric | null;
+
+/**
+ * Raw row shape returned by `SELECT * FROM gex_target_features`. Numeric
+ * columns arrive as strings from the Neon serverless driver — every
+ * read is funneled through `Number(...)` in `rowToStrikeScore` so the
+ * `StrikeScore` type contract is preserved.
+ *
+ * The four `nearest_*_wall_*` columns exist on the row but are
+ * intentionally NOT mapped into `StrikeScore` — they're stored for the
+ * Appendix B futures-validation experiments and aren't part of the
+ * Phase 1 `MagnetFeatures` contract.
+ */
+interface GexTargetFeatureRow {
+  date: string | Date;
+  timestamp: string | Date;
+  mode: string;
+  math_version: string;
+  strike: Numeric;
+
+  rank_in_mode: Numeric;
+  rank_by_size: Numeric;
+  is_target: boolean;
+
+  gex_dollars: Numeric;
+
+  delta_gex_1m: NumericOrNull;
+  delta_gex_5m: NumericOrNull;
+  delta_gex_20m: NumericOrNull;
+  delta_gex_60m: NumericOrNull;
+
+  prev_gex_dollars_1m: NumericOrNull;
+  prev_gex_dollars_5m: NumericOrNull;
+  prev_gex_dollars_20m: NumericOrNull;
+  prev_gex_dollars_60m: NumericOrNull;
+
+  delta_pct_1m: NumericOrNull;
+  delta_pct_5m: NumericOrNull;
+  delta_pct_20m: NumericOrNull;
+  delta_pct_60m: NumericOrNull;
+
+  call_ratio: Numeric;
+  charm_net: Numeric;
+  delta_net: Numeric;
+  vanna_net: Numeric;
+  dist_from_spot: Numeric;
+  spot_price: Numeric;
+  minutes_after_noon_ct: Numeric;
+
+  flow_confluence: Numeric;
+  price_confirm: Numeric;
+  charm_score: Numeric;
+  dominance: Numeric;
+  clarity: Numeric;
+  proximity: Numeric;
+
+  final_score: Numeric;
+  tier: string;
+  wall_side: string;
+}
+
+// ── Helpers ────────────────────────────────────────────────────
+
+/**
+ * Normalize a Postgres TIMESTAMPTZ / DATE value to its canonical string.
+ *
+ * The Neon serverless driver returns these columns as JavaScript Date
+ * objects when using the SQL template tag and as strings via the older
+ * `query()` path. The two forms must serialize identically across the
+ * response so the frontend can compare `timestamp` against entries in
+ * `timestamps[]` for scrub navigation.
+ */
+function toIso(value: unknown): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  const str = String(value);
+  const parsed = new Date(str);
+  return Number.isNaN(parsed.getTime()) ? str : parsed.toISOString();
+}
+
+/**
+ * Normalize a Postgres DATE value to a YYYY-MM-DD string.
+ *
+ * The Neon driver returns DATE columns as JavaScript Date objects (in
+ * UTC midnight). `toISOString().slice(0, 10)` gives back the same
+ * YYYY-MM-DD that was originally inserted.
+ */
+function toDateString(value: unknown): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  const str = String(value);
+  // If the driver already gave us "YYYY-MM-DD" or a longer ISO string,
+  // slicing is safe and avoids a Date round-trip that could shift the
+  // day across timezones.
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
+  const parsed = new Date(str);
+  return Number.isNaN(parsed.getTime())
+    ? null
+    : parsed.toISOString().slice(0, 10);
+}
+
+/**
+ * Coerce a numeric DB column to a JS number. The Neon driver returns
+ * NUMERIC columns as strings to preserve precision; the StrikeScore
+ * contract expects numbers, so every numeric column goes through this.
+ */
+function num(value: Numeric): number {
+  return typeof value === 'number' ? value : Number(value);
+}
+
+/**
+ * Same as `num`, but preserves null. Used for the per-horizon delta /
+ * prev / pct columns which are explicitly nullable in the schema.
+ */
+function numOrNull(value: NumericOrNull): number | null {
+  if (value === null || value === undefined) return null;
+  return typeof value === 'number' ? value : Number(value);
+}
+
+/**
+ * Reconstruct a `StrikeScore` from one `gex_target_features` row.
+ *
+ * This is the inverse of `pushRowParams` in `api/_lib/gex-target-features.ts`.
+ * The two functions must stay in sync. The Phase 1.5 awareness here is
+ * that `MagnetFeatures` does NOT have a singular `prevGexDollars` field
+ * anymore — only the four per-horizon variants. Don't accidentally
+ * reintroduce the old field name.
+ */
+function rowToStrikeScore(row: GexTargetFeatureRow): StrikeScore {
+  const strike = num(row.strike);
+  return {
+    strike,
+    features: {
+      strike,
+      spot: num(row.spot_price),
+      distFromSpot: num(row.dist_from_spot),
+      gexDollars: num(row.gex_dollars),
+      deltaGex_1m: numOrNull(row.delta_gex_1m),
+      deltaGex_5m: numOrNull(row.delta_gex_5m),
+      deltaGex_20m: numOrNull(row.delta_gex_20m),
+      deltaGex_60m: numOrNull(row.delta_gex_60m),
+      prevGexDollars_1m: numOrNull(row.prev_gex_dollars_1m),
+      prevGexDollars_5m: numOrNull(row.prev_gex_dollars_5m),
+      prevGexDollars_20m: numOrNull(row.prev_gex_dollars_20m),
+      prevGexDollars_60m: numOrNull(row.prev_gex_dollars_60m),
+      deltaPct_1m: numOrNull(row.delta_pct_1m),
+      deltaPct_5m: numOrNull(row.delta_pct_5m),
+      deltaPct_20m: numOrNull(row.delta_pct_20m),
+      deltaPct_60m: numOrNull(row.delta_pct_60m),
+      callRatio: num(row.call_ratio),
+      charmNet: num(row.charm_net),
+      deltaNet: num(row.delta_net),
+      vannaNet: num(row.vanna_net),
+      minutesAfterNoonCT: num(row.minutes_after_noon_ct),
+    },
+    components: {
+      flowConfluence: num(row.flow_confluence),
+      priceConfirm: num(row.price_confirm),
+      charmScore: num(row.charm_score),
+      dominance: num(row.dominance),
+      clarity: num(row.clarity),
+      proximity: num(row.proximity),
+    },
+    finalScore: num(row.final_score),
+    tier: row.tier as Tier,
+    wallSide: row.wall_side as WallSide,
+    rankByScore: Number(row.rank_in_mode),
+    rankBySize: Number(row.rank_by_size),
+    isTarget: Boolean(row.is_target),
+  };
+}
+
+/**
+ * Group up to 30 rows for one snapshot into the three per-mode
+ * `TargetScore` objects the frontend consumes. Returns null for any
+ * mode that has no rows in the snapshot.
+ *
+ * Within each mode, rows are sorted by `rank_in_mode` ASC so the
+ * leaderboard order matches what the live scoring pipeline produced.
+ * The `target` is the row marked `is_target = true` (which, by Phase 1
+ * convention, is also the rank-1 row when its tier is not `NONE`).
+ */
+function groupRowsByMode(rows: GexTargetFeatureRow[]): {
+  oi: TargetScore | null;
+  vol: TargetScore | null;
+  dir: TargetScore | null;
+} {
+  const buckets: Record<Mode, GexTargetFeatureRow[]> = {
+    oi: [],
+    vol: [],
+    dir: [],
+  };
+
+  for (const row of rows) {
+    if (row.mode === 'oi' || row.mode === 'vol' || row.mode === 'dir') {
+      buckets[row.mode].push(row);
+    }
+  }
+
+  const buildScore = (modeRows: GexTargetFeatureRow[]): TargetScore | null => {
+    if (modeRows.length === 0) return null;
+    // Sort by rank_in_mode ASC so the leaderboard mirrors the live
+    // scoring pipeline's output ordering. We do this even if the SQL
+    // result already came back ordered, because callers can pass us
+    // unordered rows from a wider SELECT *.
+    const sorted = [...modeRows].sort(
+      (a, b) => Number(a.rank_in_mode) - Number(b.rank_in_mode),
+    );
+    const leaderboard = sorted.map(rowToStrikeScore);
+    const target = leaderboard.find((s) => s.isTarget) ?? null;
+    return { target, leaderboard };
+  };
+
+  return {
+    oi: buildScore(buckets.oi),
+    vol: buildScore(buckets.vol),
+    dir: buildScore(buckets.dir),
+  };
+}
+
+/**
+ * Best-effort SPX candle fetch. Wrapping the call in its own try/catch
+ * means the price chart panel can be empty without taking down the
+ * entire endpoint — the leaderboard / target / scoring data is still
+ * useful even when UW is down or the candles cron has missed a date.
+ */
+async function safeFetchCandles(
+  date: string,
+): Promise<{ candles: SPXCandle[]; previousClose: number | null }> {
+  const apiKey = process.env.UW_API_KEY ?? '';
+  try {
+    return await fetchSPXCandles(apiKey, date);
+  } catch (err) {
+    logger.warn(
+      { err, date },
+      'gex-target-history: fetchSPXCandles failed; returning empty candles',
+    );
+    return { candles: [], previousClose: null };
+  }
+}
+
+// ── Handler ────────────────────────────────────────────────────
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  return Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/gex-target-history');
+
+    if (req.method !== 'GET') {
+      return res.status(405).json({ error: 'GET only' });
+    }
+
+    const botCheck = await checkBot(req);
+    if (botCheck.isBot) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (rejectIfNotOwner(req, res)) return;
+
+    // Validate the optional `date` param up front. An obviously
+    // malformed value is a 400 — silently swapping in today would
+    // mask client-side bugs and is harder to debug.
+    const dateParam = req.query.date as string | undefined;
+    if (dateParam !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(400).json({ error: 'Invalid date' });
+    }
+
+    // Validate the optional `ts` param shape. An invalid `ts` is NOT a
+    // 400 — we silently fall back to the latest snapshot for the day
+    // so a stale scrubber URL still produces useful data.
+    const tsParam = req.query.ts as string | undefined;
+    const hasTs =
+      tsParam !== undefined &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(tsParam);
+
+    try {
+      const sql = getDb();
+
+      // ── 1. availableDates: every distinct trading date with rows ──
+      const datesRows = (await sql`
+        SELECT DISTINCT date
+        FROM gex_target_features
+        ORDER BY date ASC
+      `) as Array<{ date: string | Date }>;
+
+      const availableDates = datesRows
+        .map((r) => toDateString(r.date))
+        .filter((d): d is string => d != null);
+
+      // Empty database — return the empty payload shape so the frontend
+      // can render its "no data yet" state without crashing.
+      if (availableDates.length === 0) {
+        const empty: GexTargetHistoryResponse = {
+          availableDates: [],
+          date: null,
+          timestamps: [],
+          timestamp: null,
+          spot: null,
+          oi: null,
+          vol: null,
+          dir: null,
+          candles: [],
+          previousClose: null,
+        };
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json(empty);
+      }
+
+      // ── 2. Resolve the target date ────────────────────────────────
+      // Use the requested date if provided; otherwise pick the most
+      // recent available date. We deliberately do NOT clamp to today
+      // because at session start today's row count may be zero.
+      const date = dateParam ?? availableDates.at(-1)!;
+
+      // ── 3. List timestamps for the resolved date ──────────────────
+      const timestampRows = (await sql`
+        SELECT DISTINCT timestamp
+        FROM gex_target_features
+        WHERE date = ${date}
+        ORDER BY timestamp ASC
+      `) as Array<{ timestamp: string | Date }>;
+
+      const timestamps = timestampRows
+        .map((r) => toIso(r.timestamp))
+        .filter((s): s is string => s != null);
+
+      // No rows for the resolved date (e.g., requested a date that's in
+      // availableDates from a stale cache, or the date param doesn't
+      // match anything). Always include candles + availableDates so the
+      // frontend can keep its other panels populated.
+      if (timestamps.length === 0) {
+        const { candles, previousClose } = await safeFetchCandles(date);
+        const empty: GexTargetHistoryResponse = {
+          availableDates,
+          date,
+          timestamps: [],
+          timestamp: null,
+          spot: null,
+          oi: null,
+          vol: null,
+          dir: null,
+          candles,
+          previousClose,
+        };
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json(empty);
+      }
+
+      // ── 4. Resolve the target timestamp ───────────────────────────
+      // If the caller passed a valid `ts` and it exists in the day's
+      // snapshot list, use it. Otherwise fall back to the latest
+      // snapshot. The frontend treats this fallback as the "live" path.
+      let timestamp: string;
+      if (hasTs && tsParam !== undefined) {
+        const normalizedTs = toIso(tsParam) ?? tsParam;
+        timestamp = timestamps.includes(normalizedTs)
+          ? normalizedTs
+          : timestamps.at(-1)!;
+      } else {
+        timestamp = timestamps.at(-1)!;
+      }
+
+      // ── 5. Fetch the 30 feature rows for this snapshot ────────────
+      const featureRows = (await sql`
+        SELECT
+          date, timestamp, mode, math_version, strike,
+          rank_in_mode, rank_by_size, is_target,
+          gex_dollars,
+          delta_gex_1m, delta_gex_5m, delta_gex_20m, delta_gex_60m,
+          prev_gex_dollars_1m, prev_gex_dollars_5m,
+          prev_gex_dollars_20m, prev_gex_dollars_60m,
+          delta_pct_1m, delta_pct_5m, delta_pct_20m, delta_pct_60m,
+          call_ratio, charm_net, delta_net, vanna_net,
+          dist_from_spot, spot_price, minutes_after_noon_ct,
+          flow_confluence, price_confirm, charm_score,
+          dominance, clarity, proximity,
+          final_score, tier, wall_side
+        FROM gex_target_features
+        WHERE date = ${date} AND timestamp = ${timestamp}
+        ORDER BY mode ASC, rank_in_mode ASC
+      `) as GexTargetFeatureRow[];
+
+      // ── 6. Reconstruct the three per-mode TargetScore objects ─────
+      const grouped = groupRowsByMode(featureRows);
+
+      // Spot is the same for every row in a snapshot — read it from any
+      // row. Null only when the snapshot has zero rows (race condition
+      // between the timestamp listing and the SELECT *).
+      const spot =
+        featureRows.length > 0 ? num(featureRows[0]!.spot_price) : null;
+
+      // ── 7. Fetch SPX candles (best-effort) ────────────────────────
+      const { candles, previousClose } = await safeFetchCandles(date);
+
+      // ── 8. Respond ───────────────────────────────────────────────
+      const response: GexTargetHistoryResponse = {
+        availableDates,
+        date,
+        timestamps,
+        timestamp,
+        spot,
+        oi: grouped.oi,
+        vol: grouped.vol,
+        dir: grouped.dir,
+        candles,
+        previousClose,
+      };
+
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json(response);
+    } catch (err) {
+      Sentry.captureException(err);
+      logger.error({ err }, 'gex-target-history fetch error');
+      return res.status(500).json({ error: 'Internal error' });
+    }
+  });
+}

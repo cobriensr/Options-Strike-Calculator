@@ -67,6 +67,7 @@ initBotId({
     { path: '/api/ml/prediction', method: 'GET' },
     { path: '/api/bwb-anchor', method: 'GET' },
     { path: '/api/futures/snapshot', method: 'GET' },
+    { path: '/api/gex-target-history', method: 'GET' },
   ],
 });
 

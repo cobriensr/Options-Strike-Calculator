@@ -26,6 +26,7 @@ import { cronGuard } from '../_lib/api-helpers.js';
 import {
   getETTime,
   getETDayOfWeek,
+  getETDayOfWeekFromDateStr,
   getETDateStr,
 } from '../../src/utils/timezone.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
@@ -256,9 +257,11 @@ async function buildFeaturesForDate(
     }
   }
 
-  // Day of week from date string
-  const d = new Date(`${dateStr}T12:00:00-05:00`);
-  const dow = Number.isNaN(d.getTime()) ? null : d.getDay();
+  // Day of week from date string. The dateStr is already an ET calendar
+  // date, so the weekday is a pure property of that date — no TZ math
+  // needed. The TZ-aware helper handles DST and any host TZ uniformly,
+  // unlike the previous hardcoded -05:00 offset.
+  const dow = getETDayOfWeekFromDateStr(dateStr);
   features.day_of_week = dow;
   features.is_friday = dow === 5;
 

@@ -388,6 +388,111 @@ describe('build-features handler', () => {
     expect(res._json).toMatchObject({ dates: 1 });
   });
 
+  // ── Day-of-week TZ-aware computation (BE-CRON-003) ────────
+
+  /**
+   * Locate the day_of_week and is_friday values in a training_features
+   * INSERT call built by tagged-template SQL. The interpolations in
+   * upsertFeatures() are positional and date is always the first value;
+   * the snapshot block puts day_of_week at position 20 and is_friday at
+   * 21 (1-indexed within the value tuple). args[0] is the strings array
+   * itself, so the interpolation indices map 1:1 to args[1..N]. If the
+   * column order in upsertFeatures() ever changes, the next test failure
+   * will pinpoint exactly where to update these offsets.
+   */
+  function findDowValuesInFeatureUpsert(call: unknown[]): {
+    day_of_week: unknown;
+    is_friday: unknown;
+  } {
+    const strings = call[0] as TemplateStringsArray;
+    if (!strings.some((s) => s.includes('INSERT INTO training_features'))) {
+      throw new Error('Not a training_features upsert call');
+    }
+    return {
+      day_of_week: call[20],
+      is_friday: call[21],
+    };
+  }
+
+  it('writes correct day_of_week and is_friday for a Thursday (2026-04-09)', async () => {
+    // 2026-04-09 is a Thursday → dow=4, is_friday=false. The TZ-aware
+    // helper computes this from the ET calendar date directly, no
+    // hardcoded -05:00 offset (BE-CRON-003).
+    let captured: { day_of_week: unknown; is_friday: unknown } | null = null;
+    mockSql.mockImplementation((strings: TemplateStringsArray, ...rest) => {
+      if (strings.some((s) => s.includes('INSERT INTO training_features'))) {
+        captured = findDowValuesInFeatureUpsert([strings, ...rest]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-09' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(captured).not.toBeNull();
+    expect(captured!.day_of_week).toBe(4);
+    expect(captured!.is_friday).toBe(false);
+  });
+
+  it('writes correct day_of_week for the spring-forward DST Sunday (2026-03-08)', async () => {
+    // 2026-03-08 is the second Sunday of March 2026 (DST starts).
+    // dow must be 0 (Sunday) regardless of EST/EDT. A regression that
+    // re-hardcodes -05:00 to mean EST would still get this right by
+    // accident — but the surrounding-day asserts in the timezone unit
+    // tests guarantee continuity across the boundary.
+    let captured: { day_of_week: unknown; is_friday: unknown } | null = null;
+    mockSql.mockImplementation((strings: TemplateStringsArray, ...rest) => {
+      if (strings.some((s) => s.includes('INSERT INTO training_features'))) {
+        captured = findDowValuesInFeatureUpsert([strings, ...rest]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-03-08' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(captured).not.toBeNull();
+    expect(captured!.day_of_week).toBe(0);
+    expect(captured!.is_friday).toBe(false);
+  });
+
+  it('writes is_friday=true for a Friday date (2026-04-10)', async () => {
+    // 2026-04-10 is a Friday → dow=5, is_friday=true. Locks in the
+    // is_friday derivation from the new TZ-aware helper.
+    let captured: { day_of_week: unknown; is_friday: unknown } | null = null;
+    mockSql.mockImplementation((strings: TemplateStringsArray, ...rest) => {
+      if (strings.some((s) => s.includes('INSERT INTO training_features'))) {
+        captured = findDowValuesInFeatureUpsert([strings, ...rest]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-10' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(captured).not.toBeNull();
+    expect(captured!.day_of_week).toBe(5);
+    expect(captured!.is_friday).toBe(true);
+  });
+
   it('returns 400 for invalid ?date= format', async () => {
     const req = mockRequest({
       method: 'GET',
