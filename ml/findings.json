@@ -1,9 +1,12 @@
 {
-  "generated_at": "2026-04-09T02:40:27+00:00",
+  "generated_at": "2026-04-09T05:59:51+00:00",
   "dataset": {
     "total_days": 42,
     "labeled_days": 38,
-    "date_range": ["2026-02-09", "2026-04-08"],
+    "date_range": [
+      "2026-02-09",
+      "2026-04-08"
+    ],
     "overall_accuracy": 0.921
   },
   "structure_accuracy": {
@@ -195,7 +198,7 @@
       "'dp_support_resistance_ratio' is 30% null in last 10 days"
     ],
     "failures": [],
-    "run_time": "2026-04-09 02:39:29"
+    "run_time": "2026-04-09 05:59:03"
   },
   "pipeline_sections": [
     "health",
