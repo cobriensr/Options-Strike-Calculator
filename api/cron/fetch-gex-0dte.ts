@@ -99,44 +99,68 @@ async function storeStrikes(
 
   const sql = getDb();
 
-  try {
-    const results = await sql.transaction((txn) =>
-      filtered.map(
-        (row) => txn`
-          INSERT INTO gex_strike_0dte (
-            date, timestamp, strike, price,
-            call_gamma_oi, put_gamma_oi,
-            call_gamma_vol, put_gamma_vol,
-            call_gamma_ask, call_gamma_bid,
-            put_gamma_ask, put_gamma_bid,
-            call_charm_oi, put_charm_oi,
-            call_charm_vol, put_charm_vol,
-            call_delta_oi, put_delta_oi,
-            call_vanna_oi, put_vanna_oi,
-            call_vanna_vol, put_vanna_vol
-          )
-          VALUES (
-            ${today}, ${timestamp}, ${row.strike}, ${row.price},
-            ${row.call_gamma_oi}, ${row.put_gamma_oi},
-            ${row.call_gamma_vol}, ${row.put_gamma_vol},
-            ${row.call_gamma_ask}, ${row.call_gamma_bid},
-            ${row.put_gamma_ask}, ${row.put_gamma_bid},
-            ${row.call_charm_oi}, ${row.put_charm_oi},
-            ${row.call_charm_vol}, ${row.put_charm_vol},
-            ${row.call_delta_oi}, ${row.put_delta_oi},
-            ${row.call_vanna_oi}, ${row.put_vanna_oi},
-            ${row.call_vanna_vol}, ${row.put_vanna_vol}
-          )
-          ON CONFLICT (date, timestamp, strike) DO NOTHING
-          RETURNING id
-        `,
-      ),
-    );
+  // Single multi-row INSERT: one HTTP round-trip instead of one-per-row.
+  // Builds a parameterized statement of the form:
+  //   INSERT INTO ... VALUES ($1,$2,...,$22),($23,$24,...,$44),...
+  // with a flat params array aligned to COLUMNS_PER_ROW.
+  const COLUMNS_PER_ROW = 22;
+  const params: unknown[] = [];
+  const valuesClauses: string[] = [];
 
-    let stored = 0;
-    for (const result of results) {
-      if (result.length > 0) stored++;
+  for (const row of filtered) {
+    const base = params.length;
+    const placeholders: string[] = [];
+    for (let i = 1; i <= COLUMNS_PER_ROW; i++) {
+      placeholders.push(`$${base + i}`);
     }
+    valuesClauses.push(`(${placeholders.join(',')})`);
+    params.push(
+      today,
+      timestamp,
+      row.strike,
+      row.price,
+      row.call_gamma_oi,
+      row.put_gamma_oi,
+      row.call_gamma_vol,
+      row.put_gamma_vol,
+      row.call_gamma_ask,
+      row.call_gamma_bid,
+      row.put_gamma_ask,
+      row.put_gamma_bid,
+      row.call_charm_oi,
+      row.put_charm_oi,
+      row.call_charm_vol,
+      row.put_charm_vol,
+      row.call_delta_oi,
+      row.put_delta_oi,
+      row.call_vanna_oi,
+      row.put_vanna_oi,
+      row.call_vanna_vol,
+      row.put_vanna_vol,
+    );
+  }
+
+  const insertSql = `
+    INSERT INTO gex_strike_0dte (
+      date, timestamp, strike, price,
+      call_gamma_oi, put_gamma_oi,
+      call_gamma_vol, put_gamma_vol,
+      call_gamma_ask, call_gamma_bid,
+      put_gamma_ask, put_gamma_bid,
+      call_charm_oi, put_charm_oi,
+      call_charm_vol, put_charm_vol,
+      call_delta_oi, put_delta_oi,
+      call_vanna_oi, put_vanna_oi,
+      call_vanna_vol, put_vanna_vol
+    )
+    VALUES ${valuesClauses.join(',')}
+    ON CONFLICT (date, timestamp, strike) DO NOTHING
+    RETURNING id
+  `;
+
+  try {
+    const result = (await sql.query(insertSql, params)) as Array<{ id: number }>;
+    const stored = result.length;
     return { stored, skipped: filtered.length - stored };
   } catch (err) {
     logger.warn({ err }, 'Batch gex_strike_0dte insert failed');

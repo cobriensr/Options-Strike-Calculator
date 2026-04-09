@@ -4,10 +4,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockTransaction = vi.fn();
+const mockQuery = vi.fn();
 const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
   transaction: typeof mockTransaction;
+  query: typeof mockQuery;
 };
 mockSql.transaction = mockTransaction;
+mockSql.query = mockQuery;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -71,12 +74,17 @@ describe('fetch-gex-0dte handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Default tagged-template response covers the post-insert data-quality
+    // SELECT (handler lines ~181-198) which reads { total, nonzero }.
+    mockSql.mockResolvedValue([{ total: 0, nonzero: 0 }]);
     mockSql.transaction = mockTransaction;
-    mockTransaction.mockImplementation(
-      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
-        const txnFn = () => ({});
-        const queries = fn(txnFn);
-        return queries.map(() => [{ id: 1 }]);
+    mockSql.query = mockQuery;
+    // Default: every submitted row gets an id back (all inserted, no conflicts)
+    mockQuery.mockImplementation(
+      async (_text: string, params: unknown[] = []) => {
+        const COLUMNS_PER_ROW = 22;
+        const rowCount = Math.floor(params.length / COLUMNS_PER_ROW);
+        return Array.from({ length: rowCount }, (_v, i) => ({ id: i + 1 }));
       },
     );
     process.env = { ...originalEnv };
@@ -166,7 +174,8 @@ describe('fetch-gex-0dte handler', () => {
       stored: 1,
       skipped: 0,
     });
-    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it('returns correct response for empty API data', async () => {
@@ -187,18 +196,14 @@ describe('fetch-gex-0dte handler', () => {
       stored: false,
       reason: 'No 0DTE strike data',
     });
+    expect(mockQuery).not.toHaveBeenCalled();
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    mockTransaction.mockImplementationOnce(
-      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
-        const txnFn = () => ({});
-        const queries = fn(txnFn);
-        return queries.map(() => []);
-      },
-    );
+    // Simulate ON CONFLICT DO NOTHING hitting every row: RETURNING id yields []
+    mockQuery.mockResolvedValueOnce([]);
     stubFetch([makeStrikeRow()]);
 
     const res = mockResponse();
@@ -275,7 +280,7 @@ describe('fetch-gex-0dte handler', () => {
 
   it('handles batch insert errors gracefully', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    mockTransaction.mockRejectedValueOnce(new Error('DB batch insert failed'));
+    mockQuery.mockRejectedValueOnce(new Error('DB batch insert failed'));
     stubFetch([makeStrikeRow()]);
 
     const res = mockResponse();
@@ -297,5 +302,120 @@ describe('fetch-gex-0dte handler', () => {
       expect.objectContaining({ err: expect.any(Error) }),
       'Batch gex_strike_0dte insert failed',
     );
+  });
+
+  // ── Multi-row INSERT (BE-CRON-005) ────────────────────────
+
+  it('issues a single multi-row INSERT for many strikes (no N+1)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // Build 150 strikes in the ±200 window around price 5800.5
+    const rows = Array.from({ length: 150 }, (_v, i) =>
+      makeStrikeRow({ strike: String(5700 + i), price: '5800.5' }),
+    );
+    stubFetch(rows);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ success: true, stored: 150, skipped: 0 });
+    // Exactly one INSERT call — not 150
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).not.toHaveBeenCalled();
+
+    // Params array length = rowCount * 22 columns
+    const [text, params] = mockQuery.mock.calls[0]!;
+    expect(typeof text).toBe('string');
+    expect(text).toMatch(/INSERT INTO gex_strike_0dte/);
+    expect(text).toMatch(/ON CONFLICT \(date, timestamp, strike\) DO NOTHING/);
+    expect(Array.isArray(params)).toBe(true);
+    expect((params as unknown[]).length).toBe(150 * 22);
+    // Placeholder count matches params: ensure the final placeholder is $3300
+    expect(text).toContain('$3300');
+  });
+
+  it('does NOT issue an INSERT when filtered rows are empty', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // All strikes far outside ±200 window from ATM
+    const rows = [
+      makeStrikeRow({ strike: '6500', price: '5800.5' }),
+      makeStrikeRow({ strike: '5000', price: '5800.5' }),
+    ];
+    stubFetch(rows);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ success: true, stored: 0, skipped: 0 });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it('pins column order: params match the documented 22-column layout', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const row = makeStrikeRow({ strike: '5800', price: '5800.5' });
+    stubFetch([row]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+
+    const [, params] = mockQuery.mock.calls[0]!;
+    const p = params as unknown[];
+    // Column order must match the old one-row-at-a-time INSERT:
+    // date, timestamp, strike, price,
+    // call_gamma_oi, put_gamma_oi,
+    // call_gamma_vol, put_gamma_vol,
+    // call_gamma_ask, call_gamma_bid,
+    // put_gamma_ask, put_gamma_bid,
+    // call_charm_oi, put_charm_oi,
+    // call_charm_vol, put_charm_vol,
+    // call_delta_oi, put_delta_oi,
+    // call_vanna_oi, put_vanna_oi,
+    // call_vanna_vol, put_vanna_vol
+    expect(p).toHaveLength(22);
+    expect(p[0]).toBe('2026-03-24'); // today (from cronGuard on MARKET_TIME)
+    expect(p[1]).toBe(new Date(row.time).toISOString()); // timestamp
+    expect(p[2]).toBe(row.strike);
+    expect(p[3]).toBe(row.price);
+    expect(p[4]).toBe(row.call_gamma_oi);
+    expect(p[5]).toBe(row.put_gamma_oi);
+    expect(p[6]).toBe(row.call_gamma_vol);
+    expect(p[7]).toBe(row.put_gamma_vol);
+    expect(p[8]).toBe(row.call_gamma_ask);
+    expect(p[9]).toBe(row.call_gamma_bid);
+    expect(p[10]).toBe(row.put_gamma_ask);
+    expect(p[11]).toBe(row.put_gamma_bid);
+    expect(p[12]).toBe(row.call_charm_oi);
+    expect(p[13]).toBe(row.put_charm_oi);
+    expect(p[14]).toBe(row.call_charm_vol);
+    expect(p[15]).toBe(row.put_charm_vol);
+    expect(p[16]).toBe(row.call_delta_oi);
+    expect(p[17]).toBe(row.put_delta_oi);
+    expect(p[18]).toBe(row.call_vanna_oi);
+    expect(p[19]).toBe(row.put_vanna_oi);
+    expect(p[20]).toBe(row.call_vanna_vol);
+    expect(p[21]).toBe(row.put_vanna_vol);
   });
 });
