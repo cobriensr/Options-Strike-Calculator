@@ -250,6 +250,31 @@ How to read: OI Net Gamma positive = dealers net long gamma (suppression mode, w
 Volume GEX positive while OI GEX negative means today's trading partially offsets the negative regime — but don't extend management past OI-based time limits.
 Periscope answers WHERE the gamma walls are (per-strike, 0DTE). Aggregate GEX answers WHETHER those walls will hold (all expirations, macro regime). See Rule 16 for the full regime adjustment framework.
 </aggregate_gex>
+<zero_gamma>
+The 0DTE Zero-Gamma Level (also called the gamma flip, GEX flip, or volatility trigger) is the SPX strike at which cumulative dealer gamma across today's 0DTE strikes crosses from negative to positive. It is derived from the same per-strike profile that produces the gamma walls (see <periscope> and "SPX 0DTE Per-Strike Greek Profile"), not a separate data source. The flip is reported in points distance AND in straddle-cone fractions, so "proximity to regime change" reads in the same units as the existing cone-consumption framing.
+
+How to read the four output lines:
+- Zero-gamma strike: the interpolated SPX level where cumulative dealer gamma sums to zero. When this is "NOT OBSERVED", the entire strike range is single-regime (the flip is outside the visible strikes — treat the whole session as one regime).
+- Spot distance: signed distance from spot to the flip, in SPX points.
+- Cone fraction: the unsigned distance normalized by the straddle cone half-width. 0.5 = half a cone away, 1.0 = one full half-width away, 2.0+ = far from the regime boundary.
+- Current regime: read directly from cumulative gamma at spot (NOT from spot-minus-flip sign). POSITIVE = dealers net long gamma, mean-reverting hedging, suppression and pinning regime. NEGATIVE = dealers net short gamma, momentum hedging, acceleration and breakout regime.
+
+Interpretation rules (apply when this section is present):
+- POSITIVE regime + cone fraction > 1.0: Strong suppression regime, flip is beyond the expected daily move. Ideal for IRON CONDOR and premium selling at normal delta ceilings. The market is deep inside the "walls hold" regime.
+- POSITIVE regime + cone fraction 0.5 to 1.0: Transitional suppression. Still favorable for premium selling, but a single impulse move can flip the regime. Keep structures intact but tighten time-based exits by 15-30 minutes beyond the standard Rule 16 timings.
+- POSITIVE regime + cone fraction < 0.5: Knife-edge. Spot is within half an expected move of the flip. Reduce size by one tier, prefer directional spreads over IC, and set stops at the zero-gamma strike itself — a flip to negative regime invalidates the premium-selling thesis immediately.
+- NEGATIVE regime + cone fraction > 1.0: Deep acceleration regime. Avoid IC. Prefer directional CREDIT SPREADS aligned with flow (Rule 8 consensus). Hedges become mandatory for large size. Management timing follows the deeply-negative branch of Rule 16.
+- NEGATIVE regime + cone fraction < 1.0: Acceleration regime but flip is reachable. Any rally toward the flip is a POTENTIAL regime change from momentum to suppression — use the flip strike as a target for CCS-aligned directional trades, and watch for regime flip as confirmation of trend exhaustion.
+- UNKNOWN regime or missing data: ignore this section and fall back to <aggregate_gex> and <periscope> for regime determination.
+
+Distorted profile handling:
+When "Crossings detected: 2" or higher appears, the cumulative gamma profile is bumpy rather than clean (ATM dislocations, wide strike gaps, unusual institutional positioning). The reported flip strike is the crossing closest to spot and is still directionally useful, but reduce the conviction weight you place on it by one level (HIGH → MODERATE, MODERATE → LOW). A bumpy profile means the regime boundary is not a single clean line — treat the entire region near spot as "mixed regime" and prefer smaller, more defensive structures.
+
+Relationship to other GEX signals:
+- Aggregate GEX (Rule 16) tells you WHETHER walls will hold across all expirations. Zero-gamma tells you WHERE the 0DTE regime boundary specifically sits.
+- When Aggregate GEX says POSITIVE regime but 0DTE zero-gamma says NEGATIVE at spot, today's 0DTE-specific gamma is unusually short even though the macro book is long. This is common on high-premium Fridays and earnings weeks — trust the 0DTE zero-gamma for same-session management, and use Aggregate GEX for the multi-day structural context.
+- When Periscope shows a dominant gamma wall AND the zero-gamma flip sits on the same side of spot as the wall, the wall is structurally reinforced (regime and level agree). When the wall is on the opposite side of the flip from spot, the wall is weaker than it looks — take profit earlier.
+</zero_gamma>
 <vanna>
 Aggregate Vanna Exposure shows how dealer delta exposure changes when implied volatility moves. This is provided as structured API data from the Aggregate GEX Panel.
 Key concepts:

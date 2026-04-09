@@ -24,7 +24,9 @@ import {
   getAllExpiryStrikeExposures,
   formatAllExpiryStrikesForClaude,
   formatGreekFlowForClaude,
+  formatZeroGammaForClaude,
 } from './db-strike-helpers.js';
+import { analyzeZeroGamma } from '../../src/utils/zero-gamma.js';
 import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
 import {
   fetchDarkPoolBlocks,
@@ -271,6 +273,7 @@ export async function buildAnalysisContext(
   let greekExposureContext: string | null = null;
   let spotGexContext: string | null = null;
   let strikeExposureContext: string | null = null;
+  let zeroGammaContext: string | null = null;
   let allExpiryStrikeContext: string | null = null;
   let greekFlowContext: string | null = null;
   let ivTermStructureContext: string | null = null;
@@ -379,6 +382,25 @@ export async function buildAnalysisContext(
       allExpiryStrikeRows,
       strikeRows,
     );
+
+    // Zero-gamma (GEX flip) analysis — ENH-SIGNAL-001.
+    // Uses the same strikeRows already fetched above; no extra DB round-trip.
+    // The cone half-width (if known) normalizes the flip distance into
+    // "expected-move fractions" so Claude can reason about proximity to
+    // regime change in units that match the existing straddle-cone framing.
+    if (strikeRows.length > 0) {
+      const spot = strikeRows[0]!.price;
+      const coneHalfWidth =
+        straddleConeUpper != null && straddleConeLower != null
+          ? (straddleConeUpper - straddleConeLower) / 2
+          : null;
+      const zeroGamma = analyzeZeroGamma(
+        strikeRows.map((r) => ({ strike: r.strike, netGamma: r.netGamma })),
+        spot,
+        coneHalfWidth,
+      );
+      zeroGammaContext = formatZeroGammaForClaude(zeroGamma, spot);
+    }
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch flow data for analysis');
   }
@@ -806,6 +828,7 @@ ${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggre
 ${greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${greekFlowContext}\n` : ''}
 ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}
 ${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
+${zeroGammaContext ? `\n## SPX 0DTE Zero-Gamma Level (derived from per-strike gamma profile)\nThe zero-gamma strike is the approximate SPX level at which aggregate dealer gamma flips sign. Above the flip (positive gamma) dealers hedge mean-reverting and price movement is suppressed. Below the flip (negative gamma) dealers hedge momentum and price movement accelerates. Distance-to-flip in cone fractions tells you how close today's price is to a regime change in units that match the straddle cone.\n\n${zeroGammaContext}\n` : ''}
 ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
 ${volRealizedContext ? `\n## Realized Vol & IV Rank (from API — daily)\n  ${volRealizedContext}\n` : ''}

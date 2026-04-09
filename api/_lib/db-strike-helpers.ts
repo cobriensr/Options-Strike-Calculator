@@ -1,6 +1,7 @@
 // ── Per-Strike Greek Exposure (0DTE naive gamma/charm profile) ──
 
 import { getDb } from './db.js';
+import type { ZeroGammaAnalysis } from '../../src/utils/zero-gamma.js';
 
 /**
  * Sentinel value for all-expiry aggregate rows in strike_exposures.
@@ -735,4 +736,76 @@ function formatDeltaVal(value: number): string {
   if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
   if (abs === 0) return '0';
   return `${sign}${abs.toFixed(0)}`;
+}
+
+/**
+ * Format a zero-gamma analysis result for Claude's context.
+ *
+ * Returns `null` when the analysis carries no actionable data (no flip
+ * strike AND unknown regime) so the caller can cleanly omit the section
+ * from the prompt rather than ship an empty block.
+ *
+ * See ENH-SIGNAL-001 in
+ * `docs/superpowers/specs/analyze-prompt-enhancements-2026-04-08.md`.
+ */
+export function formatZeroGammaForClaude(
+  analysis: ZeroGammaAnalysis,
+  spot: number,
+): string | null {
+  // Nothing actionable → skip the whole section.
+  if (
+    analysis.zeroGammaStrike == null &&
+    analysis.currentRegime === 'unknown'
+  ) {
+    return null;
+  }
+
+  const lines: string[] = [];
+
+  if (analysis.zeroGammaStrike != null && analysis.distancePoints != null) {
+    const flipStr = analysis.zeroGammaStrike.toFixed(0);
+    const distAbs = Math.abs(analysis.distancePoints).toFixed(0);
+    const direction = analysis.distancePoints >= 0 ? 'above' : 'below';
+    lines.push(
+      `  Zero-gamma strike: ${flipStr}`,
+      `  Spot distance:     ${distAbs} pts ${direction} flip`,
+    );
+    if (analysis.distanceConeFraction != null) {
+      lines.push(
+        `  Cone fraction:     ${analysis.distanceConeFraction.toFixed(2)} (${analysis.distanceConeFraction < 1 ? 'inside' : 'beyond'} expected-move half-width)`,
+      );
+    }
+  } else {
+    // No crossing observed in the strike range — the flip is outside
+    // the data we have. That's itself a signal: single-regime day.
+    lines.push(
+      '  Zero-gamma strike: NOT OBSERVED (no cumulative-gamma crossing in the strike range — single-regime day)',
+    );
+  }
+
+  // Regime line.
+  if (analysis.currentRegime === 'positive') {
+    lines.push(
+      '  Current regime:    POSITIVE GAMMA (dealers net long; hedging is mean-reverting → suppression / pinning)',
+    );
+  } else if (analysis.currentRegime === 'negative') {
+    lines.push(
+      '  Current regime:    NEGATIVE GAMMA (dealers net short; hedging is momentum-accelerating → breakouts and trend days)',
+    );
+  } else {
+    lines.push('  Current regime:    UNKNOWN (insufficient strike data)');
+  }
+
+  // Flag distorted profiles (multiple crossings) so Claude weights the
+  // flip strike itself with lower conviction.
+  if (analysis.crossingCount >= 2) {
+    lines.push(
+      `  Crossings detected: ${analysis.crossingCount} (DISTORTED PROFILE — the reported flip is the crossing closest to spot; gamma structure is bumpy rather than clean)`,
+    );
+  }
+
+  // Spot context for anchoring.
+  lines.push(`  Spot (at snapshot): ${spot.toFixed(2)}`);
+
+  return lines.join('\n');
 }
