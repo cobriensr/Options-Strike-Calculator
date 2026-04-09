@@ -11,7 +11,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
+import { metrics, Sentry } from '../_lib/sentry.js';
 import { schwabFetch, cronGuard } from '../_lib/api-helpers.js';
 import { getETTime } from '../../src/utils/timezone.js';
 
@@ -192,6 +192,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } catch (err) {
       logger.warn({ err }, 'Could not fetch SPX open from Schwab');
+      metrics.increment('compute_es_overnight.schwab_fallback');
+      Sentry.captureException(err);
     }
 
     if (!cashOpen) cashOpen = Number.parseFloat(String(overnight.globex_close));

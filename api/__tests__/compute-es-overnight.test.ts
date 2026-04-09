@@ -15,6 +15,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/api-helpers.js', async (importOriginal) => {

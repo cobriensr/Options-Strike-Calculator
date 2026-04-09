@@ -20,7 +20,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { metrics, Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronGuard, withRetry } from '../_lib/api-helpers.js';
 import {
@@ -105,6 +105,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-darkpool');
     Sentry.captureException(err);
+    metrics.increment('fetch_darkpool.batch_insert_error');
     logger.error({ err }, 'fetch-darkpool error');
     return res.status(500).json({ error: 'Internal error' });
   }

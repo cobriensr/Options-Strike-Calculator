@@ -14,6 +14,7 @@
 import OpenAI from 'openai';
 import { getDb } from './db.js';
 import logger from './logger.js';
+import { metrics, Sentry } from './sentry.js';
 
 // ============================================================
 // OPENAI CLIENT (lazy singleton, same pattern as db.ts)
@@ -57,6 +58,8 @@ export async function generateEmbedding(
     return response.data[0]?.embedding ?? null;
   } catch (err) {
     logger.error({ err }, 'Embedding generation failed');
+    metrics.increment('embeddings.generation_error');
+    Sentry.captureException(err);
     return null;
   }
 }

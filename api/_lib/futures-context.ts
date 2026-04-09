@@ -8,6 +8,7 @@
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import logger from './logger.js';
+import { metrics, Sentry } from './sentry.js';
 
 type Sql = NeonQueryFunction<false, false>;
 
@@ -107,6 +108,8 @@ export async function formatFuturesForClaude(
     `) as unknown as FuturesSnapshot[];
   } catch (err) {
     logger.debug({ err }, 'futures_snapshots table not available — skipping');
+    metrics.increment('futures_context.fetch_error');
+    Sentry.captureException(err);
     return null;
   }
 
@@ -134,6 +137,8 @@ export async function formatFuturesForClaude(
       { err },
       'futures_options_daily table not available — skipping',
     );
+    metrics.increment('futures_context.fetch_error');
+    Sentry.captureException(err);
   }
 
   // Compute derived signals
