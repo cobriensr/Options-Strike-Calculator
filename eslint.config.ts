@@ -13,6 +13,7 @@ export default [
       'coverage',
       'ml/.venv',
       '.claude/skills',
+      '.claude/worktrees',
       'sidecar',
       'playwright-report',
     ],

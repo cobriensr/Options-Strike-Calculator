@@ -1,0 +1,414 @@
+/**
+ * useGexTarget — fetches /api/gex-target-history for the GexTarget widget.
+ *
+ * Returns the three parallel per-mode `TargetScore` payloads (OI / VOL / DIR),
+ * plus the SPX 1-minute candles and scrub controls the panel needs to render
+ * its five sub-panels. Owner-only — skips polling for public visitors.
+ *
+ * **Three-mode contract.** The Phase 5 endpoint computes and returns all
+ * three modes for every snapshot. This hook passes them through as three
+ * separate fields (`oi`, `vol`, `dir`) rather than picking one based on a
+ * "current mode" parameter. The component is responsible for deciding which
+ * mode to render. Switching modes is therefore a pure UI toggle with no
+ * refetch, which matters both for ML fidelity (we always have all three)
+ * and for test reuse (mode toggle is not a hook concern).
+ *
+ * Effect dispatch (in priority order — mirrors `useGexPerStrike`):
+ *   1. Not owner          → no fetch.
+ *   2. Scrubbed           → fetch the exact snapshot once, no polling.
+ *   3. Past date          → fetch latest for that date once, no polling.
+ *   4. Today, market open → fetch + poll every POLL_INTERVALS.GEX_TARGET.
+ *   5. Today, market closed → fetch once, no polling.
+ *
+ * Like `useGexPerStrike`, this hook owns its own `selectedDate` state —
+ * the GexTarget panel is a live/backtest browsing tool, and picking a past
+ * date here should NOT re-anchor the calculator's Black-Scholes math. The
+ * `initialDate` parameter only seeds the state once at mount; after that,
+ * the returned `setSelectedDate` is the only way to change it. Production
+ * passes no `initialDate`; tests pass a fixed date for deterministic
+ * branch coverage.
+ *
+ * Live-ness has TWO independent signals:
+ *   - The dispatch ladder decides whether the panel is *trying* to be
+ *     live (i.e., whether `setInterval` is running).
+ *   - A wall-clock freshness check (STALE_THRESHOLD_MS) decides whether
+ *     the displayed snapshot is *actually* live. This is defense-in-depth
+ *     — it catches the case where polling silently fails (network error,
+ *     backgrounded tab throttling) and prevents the badge from lying.
+ *
+ * The server returns `timestamps[]` (every snapshot for the day, ascending)
+ * and `availableDates[]` (every date with rows in `gex_target_features`).
+ * Both are cached so the scrubber and the date picker can operate without
+ * extra round-trips.
+ */
+
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { POLL_INTERVALS } from '../constants';
+import { getErrorMessage } from '../utils/error';
+import { useIsOwner } from './useIsOwner';
+import type { TargetScore } from '../utils/gex-target';
+
+/**
+ * A snapshot is considered "live" only if its timestamp is within this many
+ * milliseconds of the wall clock. Generous enough to absorb a missed poll
+ * (POLL_INTERVALS.GEX_TARGET is 60s) without flickering.
+ */
+const STALE_THRESHOLD_MS = 2 * 60 * 1000;
+
+/**
+ * Cadence for the wall-clock re-render ticker. Half the freshness threshold
+ * so the badge flips within ~30s of going stale, but light enough that the
+ * resulting re-renders are negligible.
+ */
+const WALL_CLOCK_TICK_MS = 30 * 1000;
+
+/**
+ * SPX 1-minute candle as returned by the /api/gex-target-history endpoint.
+ * Mirrors the shape defined server-side in `api/_lib/spx-candles.ts` — kept
+ * as a local frontend copy so the hook doesn't cross the `src/` → `api/`
+ * import boundary.
+ */
+export interface SPXCandle {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  /** Epoch ms (start_time of the 1-minute bar). */
+  datetime: number;
+}
+
+/**
+ * Response payload shape from `GET /api/gex-target-history`. Local copy of
+ * the server-side `GexTargetHistoryResponse` interface — keeping the two in
+ * sync is part of Phase 6 maintenance. See `api/gex-target-history.ts` for
+ * the canonical definition and per-field semantics.
+ */
+interface GexTargetHistoryResponse {
+  availableDates: string[];
+  date: string | null;
+  timestamps: string[];
+  timestamp: string | null;
+  spot: number | null;
+  oi: TargetScore | null;
+  vol: TargetScore | null;
+  dir: TargetScore | null;
+  candles: SPXCandle[];
+  previousClose: number | null;
+}
+
+export interface UseGexTargetReturn {
+  // ── Three-mode parallel results ────────────────────────────────────
+  /** OI-mode TargetScore for the displayed snapshot, or null when empty. */
+  oi: TargetScore | null;
+  /** VOL-mode TargetScore for the displayed snapshot, or null when empty. */
+  vol: TargetScore | null;
+  /** DIR-mode TargetScore for the displayed snapshot, or null when empty. */
+  dir: TargetScore | null;
+
+  // ── Snapshot context ──────────────────────────────────────────────
+  /** Spot price at the displayed snapshot, or null when no data. */
+  spot: number | null;
+  /** Timestamp currently being displayed (latest if live, scrub ts if scrubbing). */
+  timestamp: string | null;
+  /** All snapshot timestamps for the active date, ascending. */
+  timestamps: string[];
+  /** Regular-session SPX 1-minute candles for the active date, ascending. */
+  candles: SPXCandle[];
+  /** Previous session close (SPX), or null if not available. */
+  previousClose: number | null;
+
+  // ── Date browsing (panel-local) ───────────────────────────────────
+  /** The date currently being viewed (YYYY-MM-DD in ET), panel-local state. */
+  selectedDate: string;
+  /** Change the viewed date. Clears scrub state as a side effect. */
+  setSelectedDate: (date: string) => void;
+  /** Every distinct trading date present in `gex_target_features`, ascending. */
+  availableDates: string[];
+
+  // ── Live / scrubbed state ─────────────────────────────────────────
+  /**
+   * True when the displayed snapshot is genuinely live: not scrubbed, market
+   * is open, we're viewing today's data, AND the snapshot is within the
+   * freshness threshold. False during after-hours or when looking at a
+   * historical date — those are backtest views.
+   */
+  isLive: boolean;
+  /** True when the user has explicitly stepped backwards from the latest snapshot. */
+  isScrubbed: boolean;
+  /** True when there is at least one earlier snapshot the user can scrub to. */
+  canScrubPrev: boolean;
+  /** True when the user is currently scrubbed and can step forward. */
+  canScrubNext: boolean;
+  /** Step one snapshot earlier. */
+  scrubPrev: () => void;
+  /** Step one snapshot later (clears scrub when at the latest). */
+  scrubNext: () => void;
+  /**
+   * Resume live mode. Clears scrub state AND resets `selectedDate` to today
+   * if viewing a past date — the "Live" control is the single way back to
+   * the present across both scrub and backtest dimensions.
+   */
+  scrubLive: () => void;
+
+  // ── Status ────────────────────────────────────────────────────────
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+}
+
+/** Compute today's ET date as YYYY-MM-DD. */
+function getTodayET(): string {
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+}
+
+export function useGexTarget(
+  marketOpen: boolean,
+  initialDate?: string,
+): UseGexTargetReturn {
+  const isOwner = useIsOwner();
+
+  // ── Per-snapshot data ─────────────────────────────────────────────
+  const [oi, setOi] = useState<TargetScore | null>(null);
+  const [vol, setVol] = useState<TargetScore | null>(null);
+  const [dir, setDir] = useState<TargetScore | null>(null);
+  const [spot, setSpot] = useState<number | null>(null);
+  const [timestamp, setTimestamp] = useState<string | null>(null);
+  const [timestamps, setTimestamps] = useState<string[]>([]);
+  const [candles, setCandles] = useState<SPXCandle[]>([]);
+  const [previousClose, setPreviousClose] = useState<number | null>(null);
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+
+  // ── Status ────────────────────────────────────────────────────────
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // ── Scrub / date state ────────────────────────────────────────────
+  const [scrubTimestamp, setScrubTimestamp] = useState<string | null>(null);
+  // Panel-local date state. `initialDate` only seeds this once at mount;
+  // after that, `setSelectedDate` (exposed in the return) is the only way
+  // to change it. Production does not pass `initialDate` and lets the hook
+  // default to today. Tests pass a fixed date to exercise the branches
+  // deterministically.
+  const [selectedDate, setSelectedDate] = useState<string>(
+    () => initialDate ?? getTodayET(),
+  );
+
+  // Wall-clock state — refreshed every WALL_CLOCK_TICK_MS by a separate
+  // effect. The freshness check below reads `nowMs` rather than calling
+  // `Date.now()` inline so the re-render dependency is explicit and testable
+  // under fake timers.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const mountedRef = useRef(true);
+
+  // `todayET` recomputes each render so the panel flips from LIVE → BACKTEST
+  // at the midnight-ET session boundary without needing an explicit state
+  // update. The `isToday` comparison then drives the dispatch ladder.
+  const todayET = getTodayET();
+  const isToday = selectedDate === todayET;
+  const isScrubbed = scrubTimestamp != null;
+
+  const fetchData = useCallback(
+    async (tsOverride?: string | null) => {
+      try {
+        const qs = new URLSearchParams();
+        // Always send the date so the server doesn't have to infer ET.
+        // The hook always has a concrete date in state (never undefined).
+        qs.set('date', selectedDate);
+        if (tsOverride) qs.set('ts', tsOverride);
+        const res = await fetch(`/api/gex-target-history?${qs}`, {
+          credentials: 'same-origin',
+          signal: AbortSignal.timeout(5_000),
+        });
+
+        if (!mountedRef.current) return;
+
+        if (!res.ok) {
+          // 401 is the owner check — silently swallow so guest visitors
+          // don't see a scary error. Everything else is a real failure.
+          if (res.status !== 401) setError('Failed to load GexTarget data');
+          return;
+        }
+
+        const data = (await res.json()) as GexTargetHistoryResponse;
+
+        if (!mountedRef.current) return;
+
+        // Three parallel modes — always written as a triple so a successful
+        // fetch never leaves a stale mix of old/new across the three fields.
+        setOi(data.oi);
+        setVol(data.vol);
+        setDir(data.dir);
+        setSpot(data.spot);
+        setTimestamp(data.timestamp);
+        setTimestamps(data.timestamps ?? []);
+        setCandles(data.candles ?? []);
+        setPreviousClose(data.previousClose);
+        setAvailableDates(data.availableDates ?? []);
+        setError(null);
+      } catch (err) {
+        if (mountedRef.current) setError(getErrorMessage(err));
+      } finally {
+        if (mountedRef.current) setLoading(false);
+      }
+    },
+    [selectedDate],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Reset scrub state whenever the active date changes — the previous date's
+  // scrub timestamp is meaningless against a different day's snapshot list.
+  useEffect(() => {
+    setScrubTimestamp(null);
+  }, [selectedDate]);
+
+  useEffect(() => {
+    if (!isOwner) {
+      setLoading(false);
+      return;
+    }
+
+    // Scrubbing: fetch the exact pinned snapshot, no polling. The user is
+    // explicitly inspecting one moment in time.
+    if (scrubTimestamp != null) {
+      setLoading(true);
+      fetchData(scrubTimestamp);
+      return;
+    }
+
+    // Past date: one-shot fetch, no polling — there's nothing new to poll
+    // for, the day's data is fully written.
+    if (!isToday) {
+      setLoading(true);
+      fetchData();
+      return;
+    }
+
+    // Today, market closed: one-shot fetch. Same reasoning — no fresh
+    // snapshots are being produced, polling would just hit the cache.
+    if (!marketOpen) {
+      setLoading(true);
+      fetchData();
+      return;
+    }
+
+    // Today, market open, not scrubbed → live polling. Each poll fetches
+    // the latest snapshot for the day (no `?ts=` param), so the displayed
+    // timestamp actually advances as the cron writes new snapshots.
+    fetchData();
+    const id = setInterval(() => fetchData(), POLL_INTERVALS.GEX_TARGET);
+    return () => clearInterval(id);
+  }, [isOwner, marketOpen, isToday, scrubTimestamp, fetchData]);
+
+  // Wall-clock ticker — only runs when freshness could plausibly flip. In
+  // BACKTEST or scrubbed states the badge is permanently labeled, so we'd
+  // just be re-rendering for nothing. The ticker re-snaps `nowMs` so the
+  // freshness comparison below picks up the new wall-clock value without
+  // calling `Date.now()` inline (which sonarjs flags and which makes the
+  // re-render dependency invisible).
+  //
+  // Timing caveat: between mount and the first tick, `nowMs` is whatever
+  // `Date.now()` returned at mount. So a snapshot that's exactly at the
+  // freshness boundary at mount can briefly read as fresh for up to
+  // WALL_CLOCK_TICK_MS past its actual staleness — total worst-case
+  // "fresh badge on stale data" is STALE_THRESHOLD_MS + WALL_CLOCK_TICK_MS
+  // (currently 2m30s). Acceptable because the threshold is already 2x the
+  // poll interval.
+  useEffect(() => {
+    if (!isToday || !marketOpen || isScrubbed) return;
+    const id = setInterval(() => setNowMs(Date.now()), WALL_CLOCK_TICK_MS);
+    return () => clearInterval(id);
+  }, [isToday, marketOpen, isScrubbed]);
+
+  // The displayed snapshot is "live" only when (1) we're in a state where
+  // polling is active AND (2) the snapshot itself is recent. The second
+  // clause catches the dial-back case: polling keeps firing, but each poll
+  // returns the same stale snapshot, so the wall-clock comparison flips the
+  // badge to BACKTEST while leaving the polling machinery alone.
+  const isFresh =
+    timestamp != null &&
+    nowMs - new Date(timestamp).getTime() < STALE_THRESHOLD_MS;
+  const isLive = !isScrubbed && marketOpen && isToday && isFresh;
+
+  // The "current" timestamp for nav math is whatever is on screen. When not
+  // scrubbed that's the latest in the list (`timestamp` from the server).
+  // When scrubbed it's the scrub ts.
+  const activeTs = scrubTimestamp ?? timestamp;
+  const activeIdx = activeTs ? timestamps.indexOf(activeTs) : -1;
+  const canScrubPrev = activeIdx > 0;
+  const canScrubNext = isScrubbed && timestamps.length > 0;
+
+  const scrubPrev = useCallback(() => {
+    setScrubTimestamp((current) => {
+      // If currently live, "previous" means one step back from the latest.
+      if (current == null) {
+        if (timestamps.length < 2) return current;
+        return timestamps.at(-2) ?? current;
+      }
+      const idx = timestamps.indexOf(current);
+      if (idx <= 0) return current;
+      return timestamps[idx - 1] ?? current;
+    });
+  }, [timestamps]);
+
+  const scrubNext = useCallback(() => {
+    setScrubTimestamp((current) => {
+      if (current == null) return null;
+      const idx = timestamps.indexOf(current);
+      // Unknown ts, or the next step would land on (or past) the latest →
+      // resume live so polling restarts. We never let scrubTimestamp pin to
+      // the newest value; that's what `null` (live) means.
+      if (idx < 0 || idx >= timestamps.length - 2) return null;
+      return timestamps[idx + 1] ?? null;
+    });
+  }, [timestamps]);
+
+  const scrubLive = useCallback(() => {
+    // Reset to live mode on both axes: clear scrub AND snap date back to
+    // today. If the user was on a past date, this also kicks the dispatch
+    // ladder into live polling via the `isToday` check. If they were
+    // already on today with just scrub active, the date setter is a no-op
+    // (state equality).
+    setScrubTimestamp(null);
+    setSelectedDate((cur) => {
+      const today = getTodayET();
+      return cur === today ? cur : today;
+    });
+  }, []);
+
+  const refresh = useCallback(() => {
+    fetchData(scrubTimestamp ?? undefined);
+  }, [fetchData, scrubTimestamp]);
+
+  return {
+    oi,
+    vol,
+    dir,
+    spot,
+    timestamp,
+    timestamps,
+    candles,
+    previousClose,
+    selectedDate,
+    setSelectedDate,
+    availableDates,
+    isLive,
+    isScrubbed,
+    canScrubPrev,
+    canScrubNext,
+    scrubPrev,
+    scrubNext,
+    scrubLive,
+    loading,
+    error,
+    refresh,
+  };
+}
