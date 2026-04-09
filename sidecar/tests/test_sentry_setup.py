@@ -7,27 +7,30 @@ Sentry when initialized.
 
 from __future__ import annotations
 
-import os
 import sys
 from unittest.mock import MagicMock
 
-# Mock logger_setup before importing sentry_setup — otherwise importing
-# logger_setup tries to construct the real JSON handler, which is fine
-# but we want to spy on log calls in some tests.
-mock_logger_module = MagicMock()
-mock_log = MagicMock()
-mock_logger_module.log = mock_log
-sys.modules["logger_setup"] = mock_logger_module
+import pytest
+import sentry_setup
 
-import pytest  # noqa: E402
-import sentry_setup  # noqa: E402
+
+# Shared mock_log that tests inspect. Installed per-test via the
+# _reset_state fixture by monkeypatching sentry_setup.log directly —
+# NOT by clobbering sys.modules["logger_setup"], which would break
+# sibling test files that depend on the real logger_setup module.
+mock_log = MagicMock()
 
 
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts with Sentry uninitialized and the mock log reset."""
     monkeypatch.setattr(sentry_setup, "_sentry_enabled", False)
+    # Monkeypatch sentry_setup.log (the module-level `log` symbol
+    # that capture_exception and capture_message call) with our
+    # MagicMock. monkeypatch auto-restores after each test, so no
+    # cross-file pollution.
     mock_log.reset_mock()
+    monkeypatch.setattr(sentry_setup, "log", mock_log)
     # Ensure env vars don't leak across tests
     monkeypatch.delenv("SENTRY_DSN", raising=False)
     monkeypatch.delenv("RAILWAY_ENVIRONMENT", raising=False)
