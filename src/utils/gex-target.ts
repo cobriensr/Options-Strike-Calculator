@@ -55,9 +55,33 @@ export type WallSide = 'CALL' | 'PUT' | 'NEUTRAL';
 export type Tier = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
 
 /**
- * Raw per-strike features extracted from a snapshot sequence for one
- * mode. Every field is computed by the feature extractor (Subagent 1B)
- * and passed into the scorers below.
+ * Per-strike features extracted from a snapshot sequence for one mode.
+ * This is the **Layer 2** (calculated features) record in the three-layer
+ * data architecture: raw snapshots → features → scoring outputs. Every
+ * field is produced by `extractFeatures` and persisted to the
+ * `gex_target_features` table alongside the Layer 3 composite scores,
+ * so the ML pipeline can query any transformation in isolation.
+ *
+ * The four delta horizons carry **three parallel representations**:
+ *
+ * 1. `deltaGex_*`  — signed dollar delta vs the prior snapshot at that
+ *    offset. Preserved for reconstruction and absolute-magnitude queries.
+ * 2. `prevGexDollars_*` — the prior-snapshot value at that offset.
+ *    Preserved so a later re-score can compute Δ% with a different
+ *    normalization if needed.
+ * 3. `deltaPct_*` — the percentage delta, normalized by the **same**
+ *    horizon's prior (not a shared baseline). This is what
+ *    `flowConfluence` actually reads. Persisting the percentages
+ *    directly lets the ML pipeline train thresholds on them without
+ *    reconstructing from the dollar deltas + priors.
+ *
+ * Each horizon's Δ% is normalized against **its own** prior value:
+ *
+ *     deltaPct_5m = deltaGex_5m / |prevGexDollars_5m|
+ *
+ * NOT against `prevGexDollars_1m`. Using a shared 1-minute baseline
+ * would corrupt every horizon above 1m and produce a meaningless
+ * "percentage" that the ML pipeline could not threshold.
  */
 export interface MagnetFeatures {
   strike: number;
@@ -65,11 +89,26 @@ export interface MagnetFeatures {
   distFromSpot: number;
   /** Signed GEX in dollars; positive = net long gamma, negative = short. */
   gexDollars: number;
-  /** Signed Δ vs the 1-minute-prior snapshot, or null if unavailable. */
+  // ── Layer 2: per-horizon deltas (three parallel representations) ──
+  /** Signed Δ$ vs the 1-minute-prior snapshot, or null if unavailable. */
   deltaGex_1m: number | null;
   deltaGex_5m: number | null;
   deltaGex_20m: number | null;
   deltaGex_60m: number | null;
+  /** The 1-minute-prior snapshot's gexDollars, or null if unavailable. */
+  prevGexDollars_1m: number | null;
+  prevGexDollars_5m: number | null;
+  prevGexDollars_20m: number | null;
+  prevGexDollars_60m: number | null;
+  /**
+   * Signed Δ% vs the prior snapshot at the same horizon. `deltaPct_5m`
+   * uses `prevGexDollars_5m` as its denominator, NOT `prevGexDollars_1m`.
+   * Null when the horizon's prior is null or zero (can't divide).
+   */
+  deltaPct_1m: number | null;
+  deltaPct_5m: number | null;
+  deltaPct_20m: number | null;
+  deltaPct_60m: number | null;
   /** (callVol - putVol) / (callVol + putVol), in [-1, 1]. */
   callRatio: number;
   /** Net charm (dDelta/dt) at the strike, signed. Scored in v1. */
@@ -80,8 +119,6 @@ export interface MagnetFeatures {
   vannaNet: number;
   /** 0 at noon CT, 180 at 3pm CT. Clamped into [0, 180] by the extractor. */
   minutesAfterNoonCT: number;
-  /** Prior-snapshot gexDollars, used for Δ% conversion in flowConfluence. */
-  prevGexDollars: number | null;
 }
 
 /**
@@ -191,46 +228,40 @@ const PROXIMITY_SIGMA = 15;
 /**
  * Compute the flow-confluence component for a strike.
  *
- * Multi-horizon weighted Δ% of `gexDollars` relative to its prior
- * snapshot. Positive horizons contribute positive score (gamma growing);
- * negative horizons contribute negative score (gamma fading). The
- * weights favour the 1-minute horizon heavily, so fresh flow dominates.
+ * Multi-horizon weighted Δ% of `gexDollars`, read directly from the
+ * feature record. Each horizon's Δ% is already normalized against its
+ * own prior (see `MagnetFeatures` doc) — this scorer is purely the
+ * weighting and `tanh` squash layer on top, with **no measurement**.
+ * That separation lets the ML pipeline query the raw Δ% values out of
+ * `gex_target_features` and test any threshold against outcome labels
+ * without reconstructing from dollar deltas.
  *
- * Null horizons (missing snapshot history) are dropped and the
- * remaining weights are renormalized so they sum to 1. This lets the
- * scorer work during the first ~60 minutes of a session when the 20m
- * and 60m horizons haven't filled in yet.
+ * Null horizons (missing snapshot history, or a horizon whose prior was
+ * zero) are dropped and the remaining weights are renormalized so they
+ * sum to 1. This lets the scorer work during the first ~60 minutes of a
+ * session when the 20m and 60m horizons haven't filled in yet.
  *
- * Returns `0` when:
- * - `prevGexDollars` is null or exactly 0 (can't compute Δ%)
- * - Every horizon is null (no flow data at all)
+ * Returns `0` when every horizon is null (no flow data at all).
  *
  * Output range: `[-1, 1]`, via `tanh(weighted_pct / 0.30)`.
  */
 export function flowConfluence(features: MagnetFeatures): number {
-  const { prevGexDollars } = features;
-
-  // Require a non-zero prior size to compute a percentage change.
-  if (prevGexDollars === null || prevGexDollars === 0) {
-    return 0;
-  }
-
-  const deltas: Array<number | null> = [
-    features.deltaGex_1m,
-    features.deltaGex_5m,
-    features.deltaGex_20m,
-    features.deltaGex_60m,
+  const pcts: Array<number | null> = [
+    features.deltaPct_1m,
+    features.deltaPct_5m,
+    features.deltaPct_20m,
+    features.deltaPct_60m,
   ];
 
-  // Collect the (delta, weight) pairs for horizons that actually have
+  // Collect the (pct, weight) pairs for horizons that actually have
   // data. The null filter is why this scorer works on partial-window
   // sessions — the remaining weights renormalize below.
-  const available: Array<{ delta: number; weight: number }> = [];
-  for (let i = 0; i < deltas.length; i++) {
-    const delta = deltas[i];
+  const available: Array<{ pct: number; weight: number }> = [];
+  for (let i = 0; i < pcts.length; i++) {
+    const pct = pcts[i];
     const weight = FLOW_WEIGHTS[i];
-    if (delta !== null && delta !== undefined && weight !== undefined) {
-      available.push({ delta, weight });
+    if (pct !== null && pct !== undefined && weight !== undefined) {
+      available.push({ pct, weight });
     }
   }
 
@@ -245,12 +276,10 @@ export function flowConfluence(features: MagnetFeatures): number {
     return 0;
   }
 
-  const absPrev = Math.abs(prevGexDollars);
   let weightedPct = 0;
   for (const a of available) {
-    const pct = a.delta / absPrev;
     const renormWeight = a.weight / totalWeight;
-    weightedPct += pct * renormWeight;
+    weightedPct += a.pct * renormWeight;
   }
 
   return Math.tanh(weightedPct / SCALE_FLOW_PCT);
@@ -679,37 +708,58 @@ function computeMinutesAfterNoonCT(isoTimestamp: string): number {
 }
 
 /**
- * Look up the delta in gexDollars for this strike between the latest
- * snapshot and the one `offset` positions before it. Returns `null`
- * when the history is too short to reach back that far, or when the
- * prior snapshot is missing the strike entirely (new listing mid-day).
+ * One horizon's three parallel representations: the prior-snapshot
+ * gexDollars, the signed dollar delta vs that prior, and the Δ%
+ * normalized against that same prior.
+ *
+ * `pct` is null when `prior` is null or exactly 0 (division would
+ * produce a useless value). `delta` is null only when `prior` is null.
  */
-function computeHorizonDelta(
+interface HorizonValues {
+  prior: number | null;
+  delta: number | null;
+  pct: number | null;
+}
+
+/**
+ * Look up the prior-snapshot gexDollars for this strike at `offset`
+ * positions before the latest snapshot, then derive the signed dollar
+ * delta and the Δ% normalized against that same prior.
+ *
+ * Each horizon uses its own prior — **no shared baseline**. A 20-minute
+ * horizon's Δ% is `(latest - prior_20m) / |prior_20m|`, not
+ * `(latest - prior_20m) / |prior_1m|`. Using a shared baseline would
+ * produce a meaningless ratio that the ML pipeline could not threshold.
+ *
+ * Returns all-null when the history is too short to reach back that
+ * far, or when the prior snapshot is missing the strike entirely (new
+ * listing mid-day). `flowConfluence` handles the null case by dropping
+ * that horizon and renormalizing the remaining weights.
+ */
+function computeHorizon(
   snapshots: GexSnapshot[],
   offset: number,
   strike: number,
   mode: Mode,
   latestGexDollars: number,
-): number | null {
+): HorizonValues {
   const latestIdx = snapshots.length - 1;
   const priorIdx = latestIdx - offset;
   if (priorIdx < 0) {
-    return null;
+    return { prior: null, delta: null, pct: null };
   }
   const priorSnapshot = snapshots[priorIdx];
   if (!priorSnapshot) {
-    return null;
+    return { prior: null, delta: null, pct: null };
   }
   const priorRow = findStrikeRow(priorSnapshot, strike);
   if (!priorRow) {
-    return null;
+    return { prior: null, delta: null, pct: null };
   }
-  const priorGexDollars = computeGexDollars(
-    priorRow,
-    mode,
-    priorSnapshot.price,
-  );
-  return latestGexDollars - priorGexDollars;
+  const prior = computeGexDollars(priorRow, mode, priorSnapshot.price);
+  const delta = latestGexDollars - prior;
+  const pct = prior !== 0 ? delta / Math.abs(prior) : null;
+  return { prior, delta, pct };
 }
 
 // ── Feature extraction ────────────────────────────────────────────────
@@ -750,28 +800,32 @@ export function extractFeatures(
   const gexDollars = computeGexDollars(latestRow, mode, spot);
   const { horizonOffsets } = GEX_TARGET_CONFIG;
 
-  const deltaGex_1m = computeHorizonDelta(
+  // Compute all four horizons in one pass. Each horizon call returns
+  // the triple (prior, delta, pct) — storing all three in
+  // MagnetFeatures preserves the Layer 2 (calculated inputs) state so
+  // the ML pipeline can query any transformation without reconstructing.
+  const h1m = computeHorizon(
     snapshots,
     horizonOffsets.h1m,
     strike,
     mode,
     gexDollars,
   );
-  const deltaGex_5m = computeHorizonDelta(
+  const h5m = computeHorizon(
     snapshots,
     horizonOffsets.h5m,
     strike,
     mode,
     gexDollars,
   );
-  const deltaGex_20m = computeHorizonDelta(
+  const h20m = computeHorizon(
     snapshots,
     horizonOffsets.h20m,
     strike,
     mode,
     gexDollars,
   );
-  const deltaGex_60m = computeHorizonDelta(
+  const h60m = computeHorizon(
     snapshots,
     horizonOffsets.h60m,
     strike,
@@ -779,37 +833,28 @@ export function extractFeatures(
     gexDollars,
   );
 
-  // prevGexDollars: the 1-minute-prior snapshot's gexDollars for this
-  // strike, used by flowConfluence to convert $ deltas into %. Null when
-  // there is no prior snapshot OR when the prior snapshot omits the
-  // strike — in both cases flowConfluence degrades gracefully to 0.
-  let prevGexDollars: number | null = null;
-  const priorIdx = snapshots.length - 1 - horizonOffsets.h1m;
-  if (priorIdx >= 0) {
-    const priorSnapshot = snapshots[priorIdx];
-    if (priorSnapshot) {
-      const priorRow = findStrikeRow(priorSnapshot, strike);
-      if (priorRow) {
-        prevGexDollars = computeGexDollars(priorRow, mode, priorSnapshot.price);
-      }
-    }
-  }
-
   return {
     strike,
     spot,
     distFromSpot: strike - spot,
     gexDollars,
-    deltaGex_1m,
-    deltaGex_5m,
-    deltaGex_20m,
-    deltaGex_60m,
+    deltaGex_1m: h1m.delta,
+    deltaGex_5m: h5m.delta,
+    deltaGex_20m: h20m.delta,
+    deltaGex_60m: h60m.delta,
+    prevGexDollars_1m: h1m.prior,
+    prevGexDollars_5m: h5m.prior,
+    prevGexDollars_20m: h20m.prior,
+    prevGexDollars_60m: h60m.prior,
+    deltaPct_1m: h1m.pct,
+    deltaPct_5m: h5m.pct,
+    deltaPct_20m: h20m.pct,
+    deltaPct_60m: h60m.pct,
     callRatio: computeCallRatio(latestRow),
     charmNet: computeCharmNet(latestRow, mode),
     deltaNet: computeDeltaNet(latestRow),
     vannaNet: computeVannaNet(latestRow, mode),
     minutesAfterNoonCT: computeMinutesAfterNoonCT(latest.timestamp),
-    prevGexDollars,
   };
 }
 

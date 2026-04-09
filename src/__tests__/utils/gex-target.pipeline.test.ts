@@ -232,15 +232,159 @@ describe('extractFeatures', () => {
     expect(features.minutesAfterNoonCT).toBe(180);
   });
 
-  it('reads the 1-minute-prior gexDollars into prevGexDollars for flowConfluence', () => {
-    // t-1 has gamma=1e6, t has gamma=2e6. prevGexDollars should equal
-    // the t-1 value under the same mode conversion.
+  it('reads the 1-minute-prior gexDollars into prevGexDollars_1m', () => {
+    // t-1 has gamma=1e6, t has gamma=2e6. prevGexDollars_1m should
+    // equal the t-1 value under the same mode conversion.
     const snapshots = makeHistory(2, 5000, (i) => [
       makeRow({ strike: 5000, callGammaOi: (i + 1) * 1e6 }),
     ]);
     const features = extractFeatures(snapshots, 'oi', 5000);
     // t-1 = 1e6 × 5000 × 100 = 5e11.
-    expect(features.prevGexDollars).toBeCloseTo(5e11, -1);
+    expect(features.prevGexDollars_1m).toBeCloseTo(5e11, -1);
+  });
+
+  it('normalizes each horizon Δ% against its OWN prior, not against prevGexDollars_1m', () => {
+    // This is the Phase 1.5 regression guard against the original
+    // flowConfluence bug: every horizon's Δ% used to divide by the
+    // 1-minute-prior baseline, which garbled the 5m/20m/60m percentages.
+    //
+    // Build a history where the priors at each horizon are very
+    // different from each other, so a single shared baseline would
+    // produce obviously-wrong percentages. Then assert that each
+    // horizon's stored Δ% reflects its OWN prior.
+    //
+    // Strike 5000, callGammaOi evolves:
+    //   t-60: 1e6  → prior_60m
+    //   t-20: 2e6  → prior_20m
+    //   t-5:  4e6  → prior_5m
+    //   t-1:  8e6  → prior_1m
+    //   t:    10e6 → latest
+    //
+    // In OI mode: gexDollars = gamma × spot × 100 = gamma × 5000 × 100
+    // = gamma × 5e5. So:
+    //   prior_60m  = 1e6  × 5e5 = 5e11
+    //   prior_20m  = 2e6  × 5e5 = 1e12
+    //   prior_5m   = 4e6  × 5e5 = 2e12
+    //   prior_1m   = 8e6  × 5e5 = 4e12
+    //   latest     = 10e6 × 5e5 = 5e12
+    //
+    // Per-horizon deltas:
+    //   Δ_60m = 5e12 - 5e11 = 4.5e12
+    //   Δ_20m = 5e12 - 1e12 = 4.0e12
+    //   Δ_5m  = 5e12 - 2e12 = 3.0e12
+    //   Δ_1m  = 5e12 - 4e12 = 1.0e12
+    //
+    // Correct per-horizon percentages (Δ / |own prior|):
+    //   pct_60m = 4.5e12 / 5e11 = 9.0  (900% growth over 60 min)
+    //   pct_20m = 4.0e12 / 1e12 = 4.0  (400% growth over 20 min)
+    //   pct_5m  = 3.0e12 / 2e12 = 1.5  (150% growth over 5 min)
+    //   pct_1m  = 1.0e12 / 4e12 = 0.25 (25% growth over 1 min)
+    //
+    // WRONG (shared 1m baseline) would give:
+    //   pct_20m_wrong = 4.0e12 / 4e12 = 1.0  (not 4.0)
+    //   pct_60m_wrong = 4.5e12 / 4e12 = 1.125 (not 9.0)
+    // — meaningless ratios that would be unusable as ML thresholds.
+    //
+    // Build 61 snapshots so every horizon is reachable. Only 5 of them
+    // need specific values at the horizon positions; fill the rest with
+    // interpolated "plausible" values so the timestamps advance cleanly.
+    const gammas = new Map<number, number>();
+    gammas.set(0, 1e6); // t-60
+    gammas.set(40, 2e6); // t-20 (index 40 of 61, latest = 60)
+    gammas.set(55, 4e6); // t-5
+    gammas.set(59, 8e6); // t-1
+    gammas.set(60, 10e6); // t (latest)
+
+    // Fill in the gaps with monotone interpolation so the series is
+    // well-behaved. The exact gap values don't matter — only the
+    // prior values at the four horizon positions.
+    const snapshots = makeHistory(61, 5000, (i) => {
+      let gamma: number;
+      if (gammas.has(i)) {
+        gamma = gammas.get(i) ?? 0;
+      } else if (i < 40) {
+        // linearly interpolate between t-60 (1e6) and t-20 (2e6)
+        gamma = 1e6 + ((2e6 - 1e6) * i) / 40;
+      } else if (i < 55) {
+        // between t-20 and t-5
+        gamma = 2e6 + ((4e6 - 2e6) * (i - 40)) / 15;
+      } else if (i < 59) {
+        // between t-5 and t-1
+        gamma = 4e6 + ((8e6 - 4e6) * (i - 55)) / 4;
+      } else {
+        gamma = 8e6 + ((10e6 - 8e6) * (i - 59)) / 1;
+      }
+      return [makeRow({ strike: 5000, callGammaOi: gamma })];
+    });
+
+    const features = extractFeatures(snapshots, 'oi', 5000);
+
+    // Verify the stored priors match what we put in.
+    expect(features.prevGexDollars_1m).toBeCloseTo(8e6 * 5e5, -5);
+    expect(features.prevGexDollars_5m).toBeCloseTo(4e6 * 5e5, -5);
+    expect(features.prevGexDollars_20m).toBeCloseTo(2e6 * 5e5, -5);
+    expect(features.prevGexDollars_60m).toBeCloseTo(1e6 * 5e5, -5);
+
+    // Each Δ% should be normalized against its OWN prior, producing
+    // the four DIFFERENT percentages listed above. This is the key
+    // assertion — if any of these were normalized against
+    // prevGexDollars_1m (4e12), they'd be wildly different.
+    expect(features.deltaPct_1m).toBeCloseTo(0.25, 4);
+    expect(features.deltaPct_5m).toBeCloseTo(1.5, 3);
+    expect(features.deltaPct_20m).toBeCloseTo(4.0, 3);
+    expect(features.deltaPct_60m).toBeCloseTo(9.0, 3);
+  });
+
+  it('sets deltaPct_* to null when the corresponding prior is null (missing history)', () => {
+    // Only 6 snapshots available → 20m and 60m horizons unreachable.
+    const snapshots = makeHistory(6, 5000, (i) => [
+      makeRow({ strike: 5000, callGammaOi: (i + 1) * 1e6 }),
+    ]);
+    const features = extractFeatures(snapshots, 'oi', 5000);
+    expect(features.deltaPct_1m).not.toBeNull();
+    expect(features.deltaPct_5m).not.toBeNull();
+    expect(features.deltaPct_20m).toBeNull();
+    expect(features.deltaPct_60m).toBeNull();
+    expect(features.prevGexDollars_20m).toBeNull();
+    expect(features.prevGexDollars_60m).toBeNull();
+  });
+
+  it('is invariant to the sign of the prior value (deltaPct uses |prior|)', () => {
+    // Build two mirror sequences. The assertion has to check BOTH
+    // magnitude AND sign to distinguish `delta / |prior|` (correct)
+    // from `delta / prior` (buggy but would produce the same magnitude).
+    //
+    // Growing call wall (positive → more positive):
+    //   prior = +5e11, delta = +5e11
+    //   correct: +5e11 / |+5e11| = +1.0
+    //   buggy:   +5e11 /  +5e11  = +1.0  ← same; doesn't distinguish
+    //
+    // Growing put wall (negative → more negative):
+    //   prior = -5e11, delta = -5e11
+    //   correct: -5e11 / |-5e11| = -1.0  ← negative (growing short)
+    //   buggy:   -5e11 /  -5e11  = +1.0  ← positive (WRONG: would
+    //                                      read as "flow growing long"
+    //                                      when it's actually a put
+    //                                      wall being added to)
+    //
+    // The growing-put-wall case is the one that distinguishes the two.
+    const growing = makeHistory(2, 5000, (i) => [
+      makeRow({ strike: 5000, callGammaOi: (i + 1) * 1e6 }),
+    ]);
+    const shrinking = makeHistory(2, 5000, (i) => [
+      makeRow({ strike: 5000, callGammaOi: -(i + 1) * 1e6 }),
+    ]);
+    const growingF = extractFeatures(growing, 'oi', 5000);
+    const shrinkingF = extractFeatures(shrinking, 'oi', 5000);
+
+    // Magnitudes match — both are full doublings.
+    expect(Math.abs(growingF.deltaPct_1m ?? 0)).toBeCloseTo(1.0, 4);
+    expect(Math.abs(shrinkingF.deltaPct_1m ?? 0)).toBeCloseTo(1.0, 4);
+
+    // Signs must distinguish growing-long from growing-short. This is
+    // the assertion that proves `delta / |prior|` vs `delta / prior`.
+    expect(growingF.deltaPct_1m).toBeGreaterThan(0);
+    expect(shrinkingF.deltaPct_1m).toBeLessThan(0);
   });
 });
 
@@ -345,12 +489,19 @@ function makeFeatures(overrides: Partial<MagnetFeatures> = {}): MagnetFeatures {
     deltaGex_5m: 0,
     deltaGex_20m: 0,
     deltaGex_60m: 0,
+    prevGexDollars_1m: 1e9,
+    prevGexDollars_5m: 1e9,
+    prevGexDollars_20m: 1e9,
+    prevGexDollars_60m: 1e9,
+    deltaPct_1m: 0,
+    deltaPct_5m: 0,
+    deltaPct_20m: 0,
+    deltaPct_60m: 0,
     callRatio: 0,
     charmNet: 0,
     deltaNet: 0,
     vannaNet: 0,
     minutesAfterNoonCT: 0,
-    prevGexDollars: 1e9,
     ...overrides,
   };
 }
@@ -368,20 +519,21 @@ function makePriceCtx(
 
 describe('scoreStrike', () => {
   it('returns HIGH tier with wallSide CALL for a strong growing call wall', () => {
-    // Every factor cranks in the same positive direction.
+    // Every factor cranks in the same positive direction. Each horizon
+    // is +50% growth, which with renormalized weights gives weighted_pct
+    // ≈ 0.50 → tanh(1.67) ≈ 0.93, comfortably HIGH.
     const features = makeFeatures({
       strike: 5000,
       spot: 5000,
       distFromSpot: 0,
       gexDollars: 10e9,
-      deltaGex_1m: 5e9,
-      deltaGex_5m: 5e9,
-      deltaGex_20m: 5e9,
-      deltaGex_60m: 5e9,
+      deltaPct_1m: 0.5,
+      deltaPct_5m: 0.5,
+      deltaPct_20m: 0.5,
+      deltaPct_60m: 0.5,
       callRatio: 1,
       charmNet: 5e8,
       minutesAfterNoonCT: 180,
-      prevGexDollars: 10e9,
     });
     const ctx = makePriceCtx({
       deltaSpot_1m: 3,
@@ -395,12 +547,11 @@ describe('scoreStrike', () => {
     expect(score.finalScore).toBeGreaterThan(0.5);
   });
 
-  it('returns HIGH tier with wallSide PUT for a strong growing put wall (negative gexDollars)', () => {
-    // For a PUT wall "growing", gexDollars is getting MORE negative,
-    // so deltaGex horizons are negative. flowConfluence uses Δ / |prev|
-    // so the score is negative → "flow is leaving". Combined with a
-    // falling spot and aligned charm, the composite ends up strongly
-    // negative, which still registers as HIGH tier (|finalScore|).
+  it('returns non-NONE tier with wallSide PUT for a strong growing put wall (negative gexDollars)', () => {
+    // For a PUT wall "growing", gexDollars is getting MORE negative, so
+    // the per-horizon Δ% is negative. flowConfluence produces a negative
+    // signed score → "flow is pushing short." Combined with a falling
+    // spot and aligned charm, the composite ends up negative.
     //
     // The wallSide is taken from the SIGN of gexDollars, not the sign
     // of finalScore, so it reads PUT regardless of which way the
@@ -410,18 +561,16 @@ describe('scoreStrike', () => {
       spot: 5000,
       distFromSpot: -10,
       gexDollars: -10e9,
-      deltaGex_1m: -5e9,
-      deltaGex_5m: -5e9,
-      deltaGex_20m: -5e9,
-      deltaGex_60m: -5e9,
+      deltaPct_1m: -0.5,
+      deltaPct_5m: -0.5,
+      deltaPct_20m: -0.5,
+      deltaPct_60m: -0.5,
       callRatio: -1,
       // charmNet sign × gexDollars sign = charmSign. (-1)*(-1) = +1,
-      // so use positive charmNet to get negative charmSign — but the
-      // charmScore is then negative, which aligns with the negative
-      // finalScore. Use positive to confirm this direction.
+      // so positive charmNet + negative gamma gives negative charmSign,
+      // which aligns with the intended "dying-toward-short" direction.
       charmNet: 5e8,
       minutesAfterNoonCT: 180,
-      prevGexDollars: -10e9,
     });
     const ctx = makePriceCtx({
       deltaSpot_1m: -3,
@@ -447,7 +596,6 @@ describe('scoreStrike', () => {
     // finalScore = 0.15 × -0.5 = -0.075. |-0.075| = 0.075 → NONE.
     const features = makeFeatures({
       gexDollars: 1e9,
-      prevGexDollars: 1e9,
       callRatio: 0,
     });
     const ctx = makePriceCtx();
@@ -490,12 +638,11 @@ describe('scoreStrike', () => {
       spot: 5000,
       distFromSpot: 0,
       gexDollars: 1e9,
-      deltaGex_1m: 0.0619e9,
-      deltaGex_5m: 0.0619e9,
-      deltaGex_20m: 0.0619e9,
-      deltaGex_60m: 0.0619e9,
+      deltaPct_1m: 0.0619,
+      deltaPct_5m: 0.0619,
+      deltaPct_20m: 0.0619,
+      deltaPct_60m: 0.0619,
       callRatio: 1,
-      prevGexDollars: 1e9,
     });
     const ctx = makePriceCtx();
     // Single-strike universe → peerMedian = peerMax → dominance = 0.5.

@@ -571,12 +571,19 @@ describe('integration: proximity veto for a far-out strike', () => {
       deltaGex_5m: null,
       deltaGex_20m: null,
       deltaGex_60m: null,
+      prevGexDollars_1m: null,
+      prevGexDollars_5m: null,
+      prevGexDollars_20m: null,
+      prevGexDollars_60m: null,
+      deltaPct_1m: null,
+      deltaPct_5m: null,
+      deltaPct_20m: null,
+      deltaPct_60m: null,
       callRatio: 0,
       charmNet: 0,
       deltaNet: 0,
       vannaNet: 0,
       minutesAfterNoonCT: 0,
-      prevGexDollars: null,
     };
     // The analytic value — this is what the proximity scorer must
     // compute for the far strike, regardless of any other factor.

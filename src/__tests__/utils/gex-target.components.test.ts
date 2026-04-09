@@ -29,12 +29,19 @@ function makeFeatures(overrides: Partial<MagnetFeatures> = {}): MagnetFeatures {
     deltaGex_5m: 0,
     deltaGex_20m: 0,
     deltaGex_60m: 0,
+    prevGexDollars_1m: 1e9,
+    prevGexDollars_5m: 1e9,
+    prevGexDollars_20m: 1e9,
+    prevGexDollars_60m: 1e9,
+    deltaPct_1m: 0,
+    deltaPct_5m: 0,
+    deltaPct_20m: 0,
+    deltaPct_60m: 0,
     callRatio: 0,
     charmNet: 0,
     deltaNet: 0,
     vannaNet: 0,
     minutesAfterNoonCT: 0,
-    prevGexDollars: 1e9,
     ...overrides,
   };
 }
@@ -51,18 +58,23 @@ function makePriceCtx(
 }
 
 // ── flowConfluence (C.3.1) ───────────────────────────────────
+//
+// Phase 1.5: flowConfluence now reads `deltaPct_*` directly from the
+// feature record. Each horizon's Δ% is pre-computed in `extractFeatures`
+// against its own prior (not a shared 1-minute baseline), so these unit
+// tests pass percentages in directly and never touch `deltaGex_*` or
+// `prevGexDollars_*`. The "per-horizon normalization is correct" property
+// is tested at the pipeline layer in `gex-target.pipeline.test.ts`.
 
 describe('flowConfluence', () => {
   it('scores between 0.6 and 0.9 when all four horizons agree positive with moderate magnitudes', () => {
-    // Every horizon = +25% of |prevGexDollars|.
-    // weighted_pct = 0.25 (since the weights renormalize to 1).
+    // Every horizon = +25%. weighted_pct = 0.25 (weights sum to 1).
     // tanh(0.25 / 0.30) = tanh(0.833) ≈ 0.683.
     const features = makeFeatures({
-      prevGexDollars: 1e9,
-      deltaGex_1m: 0.25e9,
-      deltaGex_5m: 0.25e9,
-      deltaGex_20m: 0.25e9,
-      deltaGex_60m: 0.25e9,
+      deltaPct_1m: 0.25,
+      deltaPct_5m: 0.25,
+      deltaPct_20m: 0.25,
+      deltaPct_60m: 0.25,
     });
     const score = flowConfluence(features);
     expect(score).toBeGreaterThan(0.6);
@@ -71,11 +83,10 @@ describe('flowConfluence', () => {
 
   it('scores between -0.9 and -0.6 when all four horizons agree negative with moderate magnitudes', () => {
     const features = makeFeatures({
-      prevGexDollars: 1e9,
-      deltaGex_1m: -0.25e9,
-      deltaGex_5m: -0.25e9,
-      deltaGex_20m: -0.25e9,
-      deltaGex_60m: -0.25e9,
+      deltaPct_1m: -0.25,
+      deltaPct_5m: -0.25,
+      deltaPct_20m: -0.25,
+      deltaPct_60m: -0.25,
     });
     const score = flowConfluence(features);
     expect(score).toBeLessThan(-0.6);
@@ -83,13 +94,12 @@ describe('flowConfluence', () => {
   });
 
   it('scores near zero when all horizons are positive but tiny (Δ% < 1%)', () => {
-    // Each horizon = +0.5% of prev. tanh(0.005/0.30) ≈ 0.0167.
+    // Each horizon = +0.5%. tanh(0.005/0.30) ≈ 0.0167.
     const features = makeFeatures({
-      prevGexDollars: 1e9,
-      deltaGex_1m: 0.005e9,
-      deltaGex_5m: 0.005e9,
-      deltaGex_20m: 0.005e9,
-      deltaGex_60m: 0.005e9,
+      deltaPct_1m: 0.005,
+      deltaPct_5m: 0.005,
+      deltaPct_20m: 0.005,
+      deltaPct_60m: 0.005,
     });
     const score = flowConfluence(features);
     expect(Math.abs(score)).toBeLessThan(0.05);
@@ -97,11 +107,10 @@ describe('flowConfluence', () => {
 
   it('scores near zero when horizon signs are mixed (1m+, 5m-, 20m+, 60m-)', () => {
     const features = makeFeatures({
-      prevGexDollars: 1e9,
-      deltaGex_1m: 0.2e9,
-      deltaGex_5m: -0.2e9,
-      deltaGex_20m: 0.2e9,
-      deltaGex_60m: -0.2e9,
+      deltaPct_1m: 0.2,
+      deltaPct_5m: -0.2,
+      deltaPct_20m: 0.2,
+      deltaPct_60m: -0.2,
     });
     const score = flowConfluence(features);
     // The 1m weight dominates (w ≈ 0.789), so this case isn't exactly
@@ -111,11 +120,10 @@ describe('flowConfluence', () => {
     // which is the "mixed signs damp the score" invariant under test.
     const allAgree = flowConfluence(
       makeFeatures({
-        prevGexDollars: 1e9,
-        deltaGex_1m: 0.2e9,
-        deltaGex_5m: 0.2e9,
-        deltaGex_20m: 0.2e9,
-        deltaGex_60m: 0.2e9,
+        deltaPct_1m: 0.2,
+        deltaPct_5m: 0.2,
+        deltaPct_20m: 0.2,
+        deltaPct_60m: 0.2,
       }),
     );
     expect(Math.abs(score)).toBeLessThan(allAgree);
@@ -123,20 +131,17 @@ describe('flowConfluence', () => {
   });
 
   it('renormalizes remaining weights when 20m and 60m are null', () => {
-    // Only 1m and 5m present, both = +25% of prev.
+    // Only 1m and 5m present, both = +25%.
     // Before renorm: w_1m = 0.789, w_5m = 0.158, total = 0.947.
     // After renorm: each weight is scaled up by 1/0.947, so weighted_pct
-    // still = 0.25 (because all deltas are equal).
+    // still = 0.25 (because all pcts are equal).
     const features = makeFeatures({
-      prevGexDollars: 1e9,
-      deltaGex_1m: 0.25e9,
-      deltaGex_5m: 0.25e9,
-      deltaGex_20m: null,
-      deltaGex_60m: null,
+      deltaPct_1m: 0.25,
+      deltaPct_5m: 0.25,
+      deltaPct_20m: null,
+      deltaPct_60m: null,
     });
     const score = flowConfluence(features);
-    // Same expected score as the "all four agree at 25%" case —
-    // renormalization is the whole point.
     expect(score).toBeCloseTo(Math.tanh(0.25 / 0.3), 10);
   });
 
@@ -144,65 +149,50 @@ describe('flowConfluence', () => {
     // Single-horizon case: weight renormalizes to 1, pct = 0.30.
     // tanh(0.30 / 0.30) = tanh(1) ≈ 0.7616.
     const features = makeFeatures({
-      prevGexDollars: 1e9,
-      deltaGex_1m: 0.3e9,
-      deltaGex_5m: null,
-      deltaGex_20m: null,
-      deltaGex_60m: null,
+      deltaPct_1m: 0.3,
+      deltaPct_5m: null,
+      deltaPct_20m: null,
+      deltaPct_60m: null,
     });
     const score = flowConfluence(features);
     expect(score).toBeCloseTo(Math.tanh(1), 10);
   });
 
-  it('returns 0 when prevGexDollars is null', () => {
-    const features = makeFeatures({
-      prevGexDollars: null,
-      deltaGex_1m: 1e9,
-      deltaGex_5m: 1e9,
-      deltaGex_20m: 1e9,
-      deltaGex_60m: 1e9,
-    });
-    expect(flowConfluence(features)).toBe(0);
-  });
-
-  it('returns 0 when prevGexDollars is exactly 0', () => {
-    const features = makeFeatures({
-      prevGexDollars: 0,
-      deltaGex_1m: 1e9,
-      deltaGex_5m: 1e9,
-      deltaGex_20m: 1e9,
-      deltaGex_60m: 1e9,
-    });
-    expect(flowConfluence(features)).toBe(0);
-  });
-
   it('returns 0 when all horizons are null', () => {
     const features = makeFeatures({
-      prevGexDollars: 1e9,
-      deltaGex_1m: null,
-      deltaGex_5m: null,
-      deltaGex_20m: null,
-      deltaGex_60m: null,
+      deltaPct_1m: null,
+      deltaPct_5m: null,
+      deltaPct_20m: null,
+      deltaPct_60m: null,
     });
     expect(flowConfluence(features)).toBe(0);
   });
 
-  it('is invariant to the sign of prevGexDollars (uses |prev|)', () => {
-    const pos = makeFeatures({
-      prevGexDollars: 1e9,
-      deltaGex_1m: 0.25e9,
-      deltaGex_5m: 0.25e9,
-      deltaGex_20m: 0.25e9,
-      deltaGex_60m: 0.25e9,
-    });
-    const neg = makeFeatures({
-      prevGexDollars: -1e9,
-      deltaGex_1m: 0.25e9,
-      deltaGex_5m: 0.25e9,
-      deltaGex_20m: 0.25e9,
-      deltaGex_60m: 0.25e9,
-    });
-    expect(flowConfluence(pos)).toBeCloseTo(flowConfluence(neg), 10);
+  it('weights the 1-minute horizon most heavily', () => {
+    // All horizons at 0 except 1m → weighted_pct collapses to just the
+    // 1m contribution × the 1m weight. Since the other horizons carry
+    // 0 Δ%, the 1m horizon is the only non-zero contributor; its
+    // renormalized weight is still 0.789 out of a sum of 1.0.
+    const onlyFastMoving = flowConfluence(
+      makeFeatures({
+        deltaPct_1m: 0.3,
+        deltaPct_5m: 0,
+        deltaPct_20m: 0,
+        deltaPct_60m: 0,
+      }),
+    );
+    // And the inverse: only the 60m carries flow.
+    const onlySlowMoving = flowConfluence(
+      makeFeatures({
+        deltaPct_1m: 0,
+        deltaPct_5m: 0,
+        deltaPct_20m: 0,
+        deltaPct_60m: 0.3,
+      }),
+    );
+    // The fast-moving case should land much higher because the 1m
+    // weight (0.789) dwarfs the 60m weight (0.014).
+    expect(onlyFastMoving).toBeGreaterThan(onlySlowMoving * 10);
   });
 });
 

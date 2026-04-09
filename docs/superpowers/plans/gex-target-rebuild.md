@@ -79,9 +79,29 @@ norm_weights = [0.789, 0.158, 0.039, 0.014]
 
 Adding or dropping a horizon in the future (e.g., adding 10m) re-derives the weights automatically. No re-tuning. The 1-minute horizon dominates heavily, which is the intended shape: recency is the primary signal, longer horizons are confirmation gates.
 
+### Three-layer data architecture
+
+The GexTarget pipeline is organized into three persisted layers so the ML pipeline can validate each transformation independently and train threshold discovery on the right representation:
+
+| Layer | What it is | Where it lives | Example query |
+|---|---|---|---|
+| **1. Raw** | Unaltered UW snapshot rows (per-strike gamma/charm/delta/vanna columns per 1-minute snapshot) | `gex_strike_0dte` (already exists, populated by `fetch-gex-0dte` cron) | "What did the dealer-exposure surface look like at 13:47 UTC on 2026-04-08?" |
+| **2. Features** | Calculated inputs to the scorer: distance from spot, per-horizon $ deltas, per-horizon **priors**, per-horizon **percentages** (normalized per horizon), charm_net, delta_net, vanna_net, call_ratio, minutes_after_noon_ct, nearest-wall metadata | `gex_target_features` columns labelled "Layer 2" in the Phase 2 schema | "At what delta_pct_1m threshold does the best strike become predictive of a pin by close?" |
+| **3. Outputs** | Scoring results: the six component scores, the composite final_score, tier, wall_side, is_target, rank_in_mode, rank_by_size | `gex_target_features` columns labelled "Layer 3" in the Phase 2 schema | "When the system picked a HIGH target, how often did price close within 5 pts of the strike?" |
+
+**Why three layers instead of one.** A single row per snapshot that stores only the final scores makes three common ML questions impossible:
+
+1. **Threshold discovery.** "Is 9% Δ% the actionable threshold, or is it 11%?" requires querying the raw Δ% directly. If only the tier is stored, the answer is garbled by the `tanh` squashing and the weighted composite.
+2. **Weight re-tuning.** Phase 10 will want to test alternative composite weights without re-fetching raw snapshots. Having Layer 2 features persisted means a new weighting is a SQL + Python recompute, not a cron re-run.
+3. **Model validation.** The ML pipeline trains on outcome labels (e.g., "did this pin by close?"). Joining labels against Layer 2 features tells you *which inputs* carry signal. Joining against Layer 3 scores tells you *whether the scoring correctly translated features into decisions*. Both questions matter, and they need separate columns.
+
+**Per-horizon normalization.** Each horizon's `delta_pct_*` value is normalized against **its own** prior — `delta_pct_20m = delta_gex_20m / |prev_gex_dollars_20m|`, not `/ |prev_gex_dollars_1m|`. Using a shared 1-minute baseline would produce a meaningless "percentage" for the 5m / 20m / 60m horizons and make threshold discovery impossible. See Appendix C.3.1 for the math.
+
+**What this does NOT change.** Layer 3 is still what the UI reads. The frontend hook, the component, and the backtest scrubber all consume the same `StrikeScore` / `TargetScore` shapes they always would. The three-layer split is a persistence concern, not a component concern — the ML pipeline queries the table directly, it doesn't go through the UI.
+
 ### Persisted features table
 
-Every snapshot writes 30 feature rows (10 strikes × 3 modes) to `gex_target_features`. The table carries both the raw scoring inputs (so re-scoring with a new math version is deterministic) and the derived component scores (so queries don't have to reconstruct what the UI was showing). A `math_version` column lets multiple math versions coexist in the table for head-to-head comparison.
+Every snapshot writes 30 feature rows (10 strikes × 3 modes) to `gex_target_features`. The table carries both the raw scoring inputs (Layer 2, so re-scoring with a new math version is deterministic) and the derived component scores (Layer 3, so queries don't have to reconstruct what the UI was showing). A `math_version` column lets multiple math versions coexist in the table for head-to-head comparison.
 
 ### Backfill from Day 1
 
@@ -232,6 +252,8 @@ The scoring math is the product. This is the highest-leverage, highest-risk piec
 
 **Schema for `gex_target_features`:**
 
+The columns are grouped by the three-layer data architecture (see the top-level "Three-layer data architecture" section of this plan doc). Layer 1 stays in `gex_strike_0dte`; this table holds Layer 2 (calculated features) and Layer 3 (scoring outputs) side-by-side so every snapshot's row is a complete audit trail.
+
 ```sql
 CREATE TABLE IF NOT EXISTS gex_target_features (
   id                  SERIAL PRIMARY KEY,
@@ -240,16 +262,36 @@ CREATE TABLE IF NOT EXISTS gex_target_features (
   mode                TEXT NOT NULL CHECK (mode IN ('oi','vol','dir')),
   math_version        TEXT NOT NULL,
   strike              NUMERIC NOT NULL,
+
+  -- ── Identity / ranking metadata ──────────────────────────────
   rank_in_mode        SMALLINT NOT NULL,   -- 1..10, ranked by score within this mode
   rank_by_size        SMALLINT NOT NULL,   -- 1..10, ranked by |GEX $|
   is_target           BOOLEAN NOT NULL,    -- true for the top-scoring strike in this mode
 
-  -- raw scoring inputs (enough to re-score deterministically)
-  gex_dollars         NUMERIC NOT NULL,
+  -- ── Layer 2: calculated features (inputs to scoring) ─────────
+  gex_dollars         NUMERIC NOT NULL,    -- current signed $ gamma exposure
+
+  -- Per-horizon dollar deltas (Δ vs prior snapshot at that offset)
   delta_gex_1m        NUMERIC,             -- null if no prior snapshot
   delta_gex_5m        NUMERIC,
   delta_gex_20m       NUMERIC,
   delta_gex_60m       NUMERIC,
+
+  -- Per-horizon priors (preserved for re-scoring under a different
+  -- math_version without re-fetching the raw snapshot history)
+  prev_gex_dollars_1m  NUMERIC,
+  prev_gex_dollars_5m  NUMERIC,
+  prev_gex_dollars_20m NUMERIC,
+  prev_gex_dollars_60m NUMERIC,
+
+  -- Per-horizon percentages — each horizon is normalized against its
+  -- OWN prior, NOT a shared 1-minute baseline. This is the
+  -- ML-queryable column for threshold discovery (Appendix F).
+  delta_pct_1m        NUMERIC,             -- delta_gex_1m / |prev_gex_dollars_1m|
+  delta_pct_5m        NUMERIC,             -- delta_gex_5m / |prev_gex_dollars_5m|
+  delta_pct_20m       NUMERIC,
+  delta_pct_60m       NUMERIC,
+
   call_ratio          NUMERIC,             -- flow clarity input, -1..1
   charm_net           NUMERIC,             -- scored in v1 (charmScore)
   delta_net           NUMERIC,             -- stored in v1, NOT scored — reserved for v2 (see Appendix I)
@@ -258,13 +300,13 @@ CREATE TABLE IF NOT EXISTS gex_target_features (
   spot_price          NUMERIC NOT NULL,
   minutes_after_noon_ct NUMERIC NOT NULL,  -- for charm time weight
 
-  -- nearest-wall metadata (for futures validation experiments — Appendix B)
+  -- Nearest-wall metadata (for futures validation experiments — Appendix B)
   nearest_pos_wall_dist NUMERIC,
   nearest_pos_wall_gex  NUMERIC,
   nearest_neg_wall_dist NUMERIC,
   nearest_neg_wall_gex  NUMERIC,
 
-  -- derived component scores
+  -- ── Layer 3: scoring outputs (what the UI displays) ──────────
   flow_confluence     NUMERIC NOT NULL,    -- -1..1
   price_confirm       NUMERIC NOT NULL,    -- -1..1
   charm_score         NUMERIC NOT NULL,    -- -1..1
@@ -272,7 +314,6 @@ CREATE TABLE IF NOT EXISTS gex_target_features (
   clarity             NUMERIC NOT NULL,    -- 0..1
   proximity           NUMERIC NOT NULL,    -- 0..1
 
-  -- composite + tier
   final_score         NUMERIC NOT NULL,    -- signed, unbounded in theory
   tier                TEXT NOT NULL CHECK (tier IN ('HIGH','MEDIUM','LOW','NONE')),
   wall_side           TEXT NOT NULL CHECK (wall_side IN ('CALL','PUT','NEUTRAL')),
@@ -665,22 +706,43 @@ export type WallSide = 'CALL' | 'PUT' | 'NEUTRAL';
 
 export type Tier = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
 
-/** Raw per-strike features extracted from a snapshot sequence for one mode. */
+/**
+ * Per-strike Layer 2 features. See the "Three-layer data architecture"
+ * section above for the raw → features → outputs contract. Each horizon
+ * carries three parallel representations — dollar delta, prior value,
+ * percentage — so the ML pipeline can query any transformation in
+ * isolation.
+ *
+ * Each horizon's Δ% is normalized against its OWN prior:
+ *   deltaPct_5m = deltaGex_5m / |prevGexDollars_5m|
+ * NOT against prevGexDollars_1m.
+ */
 export interface MagnetFeatures {
   strike: number;
   spot: number;
   distFromSpot: number;
   gexDollars: number;              // signed; positive = net long, negative = net short
-  deltaGex_1m: number | null;      // signed Δ vs 1-minute-prior snapshot
+  // Per-horizon dollar deltas
+  deltaGex_1m: number | null;      // signed Δ$ vs 1m-prior snapshot
   deltaGex_5m: number | null;
   deltaGex_20m: number | null;
   deltaGex_60m: number | null;
+  // Per-horizon priors (for deterministic re-scoring under a different
+  // math version later)
+  prevGexDollars_1m: number | null;
+  prevGexDollars_5m: number | null;
+  prevGexDollars_20m: number | null;
+  prevGexDollars_60m: number | null;
+  // Per-horizon percentages — normalized against each horizon's OWN prior
+  deltaPct_1m: number | null;      // deltaGex_1m / |prevGexDollars_1m|
+  deltaPct_5m: number | null;      // deltaGex_5m / |prevGexDollars_5m|
+  deltaPct_20m: number | null;
+  deltaPct_60m: number | null;
   callRatio: number;               // (callVol - putVol) / (callVol + putVol), in [-1, 1]
   charmNet: number;                // net charm at strike, signed — scored in v1
   deltaNet: number;                // net DEX at strike, signed — stored in v1, NOT scored (see Appendix I)
   vannaNet: number;                // net VEX at strike, signed — stored in v1, NOT scored (see Appendix I)
   minutesAfterNoonCT: number;      // 0 at noon, 180 at 3pm CT, clamped [0, 180]
-  prevGexDollars: number | null;   // for growth_pct computation
 }
 
 export interface ComponentScores {
@@ -720,35 +782,44 @@ Rationale: a strike that doesn't have meaningful standing gamma isn't worth anal
 
 **C.3.1 — `flowConfluence(features) → [-1, 1]`**
 
+**Phase 1.5 correction.** The Δ% values are pre-computed per horizon in `extractFeatures` using **each horizon's own prior** as the denominator, not a shared 1-minute baseline. `flowConfluence` reads `deltaPct_*` directly — it no longer does any measurement. Persisting the percentages as Layer 2 features lets the ML pipeline query thresholds against `delta_pct_*` columns without reconstructing.
+
+Scorer pseudocode:
+
 ```typescript
 weights = normalize([1, 1/5, 1/20, 1/60])  // precomputed constant
          = [0.789, 0.158, 0.039, 0.014]
 
-deltas = [deltaGex_1m, deltaGex_5m, deltaGex_20m, deltaGex_60m]
+pcts = [deltaPct_1m, deltaPct_5m, deltaPct_20m, deltaPct_60m]
 
-// Missing horizons (null) contribute 0 and their weight is redistributed
-// proportionally over the remaining horizons.
-available = deltas.map((d, i) => d == null ? null : { delta: d, weight: weights[i] })
+// Missing horizons (null) are dropped and their weight is
+// redistributed proportionally over the remaining horizons.
+available = pcts.map((p, i) => p == null ? null : { pct: p, weight: weights[i] })
             .filter(x => x != null)
 if (available.length === 0) return 0
 
 total_weight = sum(available.map(a => a.weight))
-renorm = available.map(a => ({ delta: a.delta, weight: a.weight / total_weight }))
+renorm = available.map(a => ({ pct: a.pct, weight: a.weight / total_weight }))
 
-// Signed weighted sum of Δ% values — requires prevGexDollars to convert $ to %.
-if (prevGexDollars == null || prevGexDollars === 0) return 0
-
-pct_deltas = renorm.map(r => ({
-  pct: r.delta / abs(prevGexDollars),  // Δ% of prior size
-  weight: r.weight
-}))
-
-weighted_pct = sum(pct_deltas.map(p => p.pct * p.weight))
+weighted_pct = sum(renorm.map(r => r.pct * r.weight))
 
 // Squash to [-1, 1] via tanh with a scale constant.
 // SCALE_FLOW_PCT = 0.30 → ±30% weighted Δ maps to ~tanh(1) ≈ 0.76
 return tanh(weighted_pct / 0.30)
 ```
+
+Feature-extractor pseudocode (lifted from `flowConfluence` in Phase 1.5):
+
+```typescript
+// For each horizon h in [1, 5, 20, 60]:
+prior_h = lookup gexDollars at snapshot (latest - h) for this strike
+delta_h = latest_gexDollars - prior_h               // null if prior null
+pct_h = (prior_h !== 0 && prior_h !== null)
+          ? delta_h / abs(prior_h)
+          : null
+```
+
+Every horizon uses its own prior — **no shared baseline**. A 20-minute horizon's Δ% is `(latest - prior_20m) / |prior_20m|`, not `(latest - prior_20m) / |prior_1m|`. Using a shared baseline would produce a meaningless ratio that the ML pipeline could not threshold against outcome labels.
 
 **C.3.2 — `priceConfirm(features) → [-1, 1]`**
 
