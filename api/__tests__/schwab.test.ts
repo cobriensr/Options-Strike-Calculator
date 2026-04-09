@@ -420,7 +420,13 @@ describe('schwab', () => {
       vi.unstubAllGlobals();
     });
 
-    it('proceeds with refresh when lock wait yields stale tokens', async () => {
+    it('retries lock acquisition when wait yields stale tokens (BE-CRON-001)', async () => {
+      // Scenario: a previous winner either crashed or had its lock TTL
+      // expire before it could write fresh tokens. A losing instance
+      // waits for lock release, finds the tokens are still stale, and
+      // must re-acquire the lock itself rather than falling through to
+      // an unlocked refresh (which would re-create the thundering herd
+      // the lock was designed to prevent).
       process.env.SCHWAB_CLIENT_ID = 'id';
       process.env.SCHWAB_CLIENT_SECRET = 'secret';
 
@@ -434,7 +440,7 @@ describe('schwab', () => {
         })
         // waitForLockRelease: lock released immediately
         .mockResolvedValueOnce(null)
-        // getStoredTokens after lock release: still stale
+        // getStoredTokens after lock release: still stale (winner crashed)
         .mockResolvedValueOnce({
           accessToken: 'still-old',
           refreshToken: 'ref-tok',
@@ -442,31 +448,103 @@ describe('schwab', () => {
           refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         });
 
-      // Lock NOT acquired
+      // Lock NOT acquired on first attempt, acquired on second.
+      // (mockResolvedValue supplies all subsequent calls, including
+      // the storeTokens write that happens after Schwab succeeds.)
       mockRedisSet.mockResolvedValueOnce(null).mockResolvedValue('OK');
       mockRedisDel.mockResolvedValue(1);
 
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              access_token: 'finally-fresh',
-              refresh_token: 'new-ref',
-              expires_in: 1800,
-              token_type: 'Bearer',
-              scope: 'api',
-              id_token: '',
-            }),
-        }),
-      );
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            access_token: 'finally-fresh',
+            refresh_token: 'new-ref',
+            expires_in: 1800,
+            token_type: 'Bearer',
+            scope: 'api',
+            id_token: '',
+          }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
 
       const result = await getAccessToken();
       expect('token' in result).toBe(true);
       if ('token' in result) {
         expect(result.token).toBe('finally-fresh');
       }
+
+      // Schwab's token endpoint should have been called exactly ONCE —
+      // not once per waiting instance. This is the BE-CRON-001
+      // thundering-herd guarantee: only a lock holder ever issues the
+      // refresh request. If the retry loop ever fell through to an
+      // unlocked refresh, a fix regression would show up as ≥2 fetch
+      // calls here.
+      const tokenCalls = fetchMock.mock.calls.filter((call) =>
+        String(call[0]).includes('/oauth/token'),
+      );
+      expect(tokenCalls).toHaveLength(1);
+
+      // releaseLock must have been called after the successful retry,
+      // so the next instance can proceed.
+      expect(mockRedisDel).toHaveBeenCalled();
+
+      vi.unstubAllGlobals();
+    });
+
+    it('throws token_error after exhausting lock attempts (BE-CRON-001)', async () => {
+      // Scenario: lock is contended and every time we wait for
+      // release + check stored tokens, they're still stale. After
+      // LOCK_MAX_ATTEMPTS (3) failed attempts, the function must
+      // throw rather than silently fall through to an unlocked
+      // refresh. The outer getAccessToken wraps the throw into a
+      // token_error so the caller gets a loud failure.
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      const stale = {
+        accessToken: 'stale',
+        refreshToken: 'ref-tok',
+        expiresAt: Date.now() + 30_000, // < BUFFER_MS (60_000) → treated as expired
+        refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      };
+
+      mockRedisGet
+        // getStoredTokens (initial)
+        .mockResolvedValueOnce(stale)
+        // waitForLockRelease poll 1 (attempt 1)
+        .mockResolvedValueOnce(null)
+        // getStoredTokens post-wait (attempt 1): still stale
+        .mockResolvedValueOnce(stale)
+        // waitForLockRelease poll 1 (attempt 2)
+        .mockResolvedValueOnce(null)
+        // getStoredTokens post-wait (attempt 2): still stale
+        .mockResolvedValueOnce(stale)
+        // waitForLockRelease poll 1 (attempt 3)
+        .mockResolvedValueOnce(null)
+        // getStoredTokens post-wait (attempt 3): still stale
+        .mockResolvedValueOnce(stale);
+
+      // Lock NEVER acquired — every set(NX) returns null.
+      mockRedisSet.mockResolvedValue(null);
+      mockRedisDel.mockResolvedValue(1);
+
+      // fetch should NEVER be called — we never acquire the lock, so
+      // we never issue a Schwab refresh request.
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error.type).toBe('token_error');
+        expect(result.error.message).toContain('exhausted');
+      }
+
+      // The critical assertion: Schwab's OAuth endpoint was NEVER
+      // called. If the loop ever fell through to an unlocked refresh,
+      // this count would be ≥1.
+      expect(fetchMock).not.toHaveBeenCalled();
 
       vi.unstubAllGlobals();
     });

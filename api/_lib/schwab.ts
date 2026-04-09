@@ -235,8 +235,38 @@ async function refreshAccessToken(
 }
 
 /**
+ * Maximum number of lock-acquisition attempts before giving up. Three
+ * handles the realistic failure modes (lose-race-then-read-fresh,
+ * lose-race-then-winner-crashed-so-retry) while guaranteeing the loop
+ * cannot spin forever if Schwab is genuinely down.
+ *
+ * BE-CRON-001: the previous implementation fell through and refreshed
+ * WITHOUT the lock when a waiting instance found stale tokens in Redis
+ * after the winner released (or had its lock expire). That re-created
+ * the thundering-herd scenario the lock was designed to prevent — N
+ * losing instances would all call Schwab in parallel during the narrow
+ * window after lock expiry but before the next winner wrote fresh
+ * tokens. The loop here guarantees only a lock holder ever issues
+ * the Schwab request.
+ */
+const LOCK_MAX_ATTEMPTS = 3;
+
+/**
  * Refresh with deduplication — both in-memory (same invocation)
  * and Redis-based (across invocations).
+ *
+ * Lock protocol:
+ *   1. Try to acquire the Redis SET-NX lock.
+ *   2. If acquired → do the Schwab refresh, store tokens, release lock.
+ *   3. If NOT acquired → wait for the current holder to finish, then
+ *      read the freshly-written token from Redis. If it's valid,
+ *      return it.
+ *   4. If the post-wait token is still stale (winner crashed or
+ *      Schwab returned nothing), go back to step 1 for another
+ *      attempt. Up to LOCK_MAX_ATTEMPTS loops.
+ *   5. After exhausting attempts, throw a token_error so the caller
+ *      gets a loud failure rather than silently refreshing without
+ *      coordination.
  */
 async function refreshAccessTokenOnce(
   refreshToken: string,
@@ -246,32 +276,47 @@ async function refreshAccessTokenOnce(
   if (refreshInFlight !== null) return refreshInFlight;
 
   refreshInFlight = (async () => {
-    const gotLock = await acquireLock();
+    for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
+      const gotLock = await acquireLock();
 
-    if (!gotLock) {
-      // Another invocation is refreshing — wait, then read fresh token
+      if (gotLock) {
+        // We own the refresh. Only a lock holder ever calls Schwab,
+        // so at most one cross-instance refresh is in flight at any
+        // given moment.
+        try {
+          const tokens = await refreshAccessToken(
+            refreshToken,
+            clientId,
+            clientSecret,
+          );
+          await storeTokens(tokens);
+          inMemoryTokenCache = {
+            accessToken: tokens.accessToken,
+            expiresAt: tokens.expiresAt,
+          };
+          return tokens;
+        } finally {
+          await releaseLock();
+        }
+      }
+
+      // Lost the race. Wait for the current holder to release (or for
+      // the lock's TTL to expire), then read what they wrote.
       await waitForLockRelease();
       const fresh = await getStoredTokens();
       if (fresh && Date.now() < fresh.expiresAt - BUFFER_MS) {
         return fresh;
       }
+
+      // Winner either crashed, timed out, or didn't write fresh
+      // tokens before their lock TTL expired. Loop and try to become
+      // the new winner ourselves. Do NOT fall through to an unlocked
+      // refresh — that re-creates the thundering-herd scenario.
     }
 
-    try {
-      const tokens = await refreshAccessToken(
-        refreshToken,
-        clientId,
-        clientSecret,
-      );
-      await storeTokens(tokens);
-      inMemoryTokenCache = {
-        accessToken: tokens.accessToken,
-        expiresAt: tokens.expiresAt,
-      };
-      return tokens;
-    } finally {
-      if (gotLock) await releaseLock();
-    }
+    throw new Error(
+      `Token refresh: exhausted ${LOCK_MAX_ATTEMPTS} lock attempts without acquiring the lock or reading a fresh token`,
+    );
   })().finally(() => {
     refreshInFlight = null;
   });
