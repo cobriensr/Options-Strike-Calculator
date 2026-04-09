@@ -103,10 +103,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // after calling Schwab on Thanksgiving/Christmas/etc. `force=true` bypasses
   // this so a trader can manually re-run on any calendar day.
   if (!force && !isTradingDay(dateStr)) {
-    logger.info(
-      { date: dateStr },
-      'fetch-outcomes: skipping non-trading day',
-    );
+    logger.info({ date: dateStr }, 'fetch-outcomes: skipping non-trading day');
     return res
       .status(200)
       .json({ skipped: true, reason: 'not_trading_day', date: dateStr });

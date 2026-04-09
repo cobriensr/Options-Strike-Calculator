@@ -159,7 +159,9 @@ async function storeStrikes(
   `;
 
   try {
-    const result = (await sql.query(insertSql, params)) as Array<{ id: number }>;
+    const result = (await sql.query(insertSql, params)) as Array<{
+      id: number;
+    }>;
     const stored = result.length;
     return { stored, skipped: filtered.length - stored };
   } catch (err) {

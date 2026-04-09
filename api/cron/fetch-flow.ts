@@ -149,7 +149,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // then store failure, else success with fetched/stored row counts.
     const buildStatus = (
       fetchResult: PromiseSettledResult<MarketTideRow[]>,
-      storeResult: PromiseSettledResult<{ stored: boolean; timestamp?: string }>,
+      storeResult: PromiseSettledResult<{
+        stored: boolean;
+        timestamp?: string;
+      }>,
     ): SourceStatus => {
       if (fetchResult.status === 'rejected') {
         return {
