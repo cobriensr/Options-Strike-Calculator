@@ -13,6 +13,7 @@
  * Uses the existing UW_API_KEY.
  */
 import logger from './logger.js';
+import { metrics, Sentry } from './sentry.js';
 import { getCTTime, getETDateStr } from '../../src/utils/timezone.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
@@ -148,6 +149,8 @@ export async function fetchDarkPoolBlocks(
     });
   } catch (err) {
     logger.error({ err }, 'Failed to fetch dark pool data');
+    metrics.increment('darkpool.fetch_error');
+    Sentry.captureException(err);
     return [];
   }
 }

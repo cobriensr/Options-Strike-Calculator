@@ -21,7 +21,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
@@ -175,6 +175,8 @@ async function storeStrikes(
     return { stored, skipped: filtered.length - stored };
   } catch (err) {
     logger.warn({ err }, 'Batch gex_strike_0dte insert failed');
+    metrics.increment('fetch_gex_0dte.batch_insert_error');
+    Sentry.captureException(err);
     return { stored: 0, skipped: filtered.length };
   }
 }

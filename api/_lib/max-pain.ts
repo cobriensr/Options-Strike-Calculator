@@ -13,6 +13,7 @@
  * Uses the existing UW_API_KEY.
  */
 import logger from './logger.js';
+import { metrics, Sentry } from './sentry.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -57,6 +58,12 @@ export async function fetchMaxPain(
         { status: res.status, body: text.slice(0, 200) },
         'Max pain API returned non-OK',
       );
+      metrics.increment('max_pain.fetch_error');
+      Sentry.captureException(
+        new Error(
+          `Max pain API returned non-OK: ${res.status} ${text.slice(0, 200)}`,
+        ),
+      );
       return [];
     }
 
@@ -64,6 +71,8 @@ export async function fetchMaxPain(
     return body.data ?? [];
   } catch (err) {
     logger.error({ err }, 'Failed to fetch max pain data');
+    metrics.increment('max_pain.fetch_error');
+    Sentry.captureException(err);
     return [];
   }
 }

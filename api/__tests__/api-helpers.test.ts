@@ -25,8 +25,13 @@ vi.mock('../_lib/sentry.js', () => ({
     uwRateLimit: vi.fn(),
     tokenRefresh: vi.fn(),
     schwabCall: vi.fn(() => vi.fn()),
+    increment: vi.fn(),
   },
-  Sentry: { setTag: vi.fn(), captureMessage: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureMessage: vi.fn(),
+    captureException: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({

@@ -35,6 +35,7 @@
  */
 import { getDb } from './db.js';
 import logger from './logger.js';
+import { metrics, Sentry } from './sentry.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -185,6 +186,8 @@ export async function fetchSPXCandles(
       { err },
       'Failed to read spx_candles_1m; falling back to live UW 5m fetch',
     );
+    metrics.increment('spx_candles.fetch_error');
+    Sentry.captureException(err);
   }
 
   // ── Fallback: live UW 5-minute endpoint ────────────────────
@@ -273,6 +276,8 @@ async function fetchSPXCandlesLive(
     return { candles: regularCandles, previousClose };
   } catch (err) {
     logger.error({ err }, 'Failed to fetch SPY candles from UW');
+    metrics.increment('spx_candles.fetch_error');
+    Sentry.captureException(err);
     return { candles: [], previousClose: null };
   }
 }

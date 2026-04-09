@@ -23,7 +23,7 @@ import { checkBotId } from 'botid/server';
 import { getAccessToken, redis } from './schwab.js';
 import { MARKET_MINUTES, TIMEOUTS, UW_BASE } from './constants.js';
 import logger from './logger.js';
-import { metrics } from './sentry.js';
+import { metrics, Sentry } from './sentry.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
   getETTime,
@@ -251,7 +251,10 @@ async function isRateLimited(
     const results = await pipe.exec();
     const count = results[0] as number;
     return count > maxPerMinute;
-  } catch {
+  } catch (err) {
+    logger.warn({ err }, 'Rate limiter Redis call failed; failing open');
+    metrics.increment('api_helpers.rate_limit_redis_error');
+    Sentry.captureException(err);
     return false; // fail open
   }
 }

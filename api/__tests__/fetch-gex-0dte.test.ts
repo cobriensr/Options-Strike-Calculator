@@ -45,6 +45,7 @@ vi.mock('../_lib/sentry.js', () => ({
     tokenRefresh: vi.fn(),
     rateLimited: vi.fn(),
     uwRateLimit: vi.fn(),
+    increment: vi.fn(),
   },
 }));
 
