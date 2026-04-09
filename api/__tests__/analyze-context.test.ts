@@ -151,6 +151,7 @@ vi.mock('../_lib/sentry.js', () => ({
     request: vi.fn(() => vi.fn()),
     schwabCall: vi.fn(() => vi.fn()),
     rateLimited: vi.fn(),
+    uwRateLimit: vi.fn(),
     tokenRefresh: vi.fn(),
     analyzeCall: vi.fn(),
     dbSave: vi.fn(),

@@ -512,6 +512,26 @@ export async function uwFetch<T>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+
+    // BE-CRON-002 follow-up: surface UW rate-limit hits to Sentry as a
+    // metric + scoped warning so we see budget pressure the moment it
+    // starts, instead of waiting for data to silently thin out. Endpoint
+    // is extracted with the query string stripped so identical routes
+    // group together in the metric.
+    if (res.status === 429) {
+      const endpoint = path.startsWith('http')
+        ? (() => {
+            try {
+              return new URL(path).pathname;
+            } catch {
+              return path;
+            }
+          })()
+        : (path.split('?')[0] ?? path);
+      const retryAfter = res.headers?.get?.('retry-after') ?? null;
+      metrics.uwRateLimit(endpoint, retryAfter);
+    }
+
     throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
   }
 

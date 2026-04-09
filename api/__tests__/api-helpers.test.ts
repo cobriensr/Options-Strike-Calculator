@@ -22,6 +22,7 @@ vi.mock('../_lib/schwab.js', () => ({
 vi.mock('../_lib/sentry.js', () => ({
   metrics: {
     rateLimited: vi.fn(),
+    uwRateLimit: vi.fn(),
     tokenRefresh: vi.fn(),
     schwabCall: vi.fn(() => vi.fn()),
   },
@@ -437,6 +438,7 @@ describe('api-helpers', () => {
         vi.fn().mockResolvedValue({
           ok: false,
           status: 429,
+          headers: { get: () => null },
           text: () => Promise.resolve('Rate limited'),
         }),
       );
@@ -465,6 +467,77 @@ describe('api-helpers', () => {
       vi.stubGlobal('fetch', mockFetch);
       await uwFetch('key123', 'https://custom.api.com/data');
       expect(mockFetch.mock.calls[0]![0]).toBe('https://custom.api.com/data');
+    });
+
+    // ── BE-CRON-002 follow-up: 429 observability ────────────
+    // We're at ~8% of UW's 120/min budget steady-state, so 429s should
+    // never fire. But if they ever do, we want immediate visibility —
+    // these tests pin the Sentry emission path.
+
+    it('emits uwRateLimit metric with stripped endpoint on 429', async () => {
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwRateLimit).mockClear();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          headers: { get: (h: string) => (h === 'retry-after' ? '30' : null) },
+          text: () => Promise.resolve('Rate limited'),
+        }),
+      );
+
+      await expect(
+        uwFetch('key123', '/stock/SPX/strike-greeks?date=2026-04-08'),
+      ).rejects.toThrow('UW API 429');
+
+      expect(mockedMetrics.uwRateLimit).toHaveBeenCalledTimes(1);
+      // Query string stripped so identical endpoints group together
+      expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
+        '/stock/SPX/strike-greeks',
+        '30',
+      );
+    });
+
+    it('passes retryAfter=null when the header is absent on 429', async () => {
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwRateLimit).mockClear();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          headers: { get: () => null },
+          text: () => Promise.resolve(''),
+        }),
+      );
+
+      await expect(uwFetch('key123', '/some/path')).rejects.toThrow(
+        'UW API 429',
+      );
+      expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
+        '/some/path',
+        null,
+      );
+    });
+
+    it('does NOT emit uwRateLimit on non-429 errors', async () => {
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwRateLimit).mockClear();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 500,
+          text: () => Promise.resolve('Internal error'),
+        }),
+      );
+
+      await expect(uwFetch('key123', '/path')).rejects.toThrow('UW API 500');
+      expect(mockedMetrics.uwRateLimit).not.toHaveBeenCalled();
     });
   });
 

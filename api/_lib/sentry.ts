@@ -66,6 +66,26 @@ function rateLimited(route: string) {
   Sentry.metrics.count('api.rate_limited', 1, { attributes: { route } });
 }
 
+/**
+ * Track an upstream Unusual Whales rate-limit (429) response. Emits
+ * both a metric (time-series counter, grouped by endpoint) AND a
+ * scoped warning message so the first one pages immediately instead
+ * of waiting for someone to notice the counter climb.
+ *
+ * Called from uwFetch. Follow-up to BE-CRON-002 — we're currently at
+ * ~8% of UW's 120/min budget, but if that ever drifts we want to see
+ * it immediately rather than after the data silently thins out.
+ */
+function uwRateLimit(endpoint: string, retryAfter: string | null) {
+  Sentry.metrics.count('uw.rate_limited', 1, { attributes: { endpoint } });
+  Sentry.withScope((scope) => {
+    scope.setTag('uw.endpoint', endpoint);
+    scope.setLevel('warning');
+    if (retryAfter) scope.setExtra('retry_after_s', retryAfter);
+    Sentry.captureMessage(`UW 429 on ${endpoint}`);
+  });
+}
+
 /** Track a Schwab token refresh failure. */
 function tokenRefresh(success: boolean) {
   Sentry.metrics.count('schwab.token_refresh', 1, {
@@ -113,6 +133,7 @@ export const metrics = {
   request,
   schwabCall,
   rateLimited,
+  uwRateLimit,
   tokenRefresh,
   analyzeCall,
   dbSave,
