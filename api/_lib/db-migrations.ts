@@ -1205,4 +1205,33 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 50,
+    description:
+      'Dedupe existing futures_options_trades rows and add UNIQUE index for Databento resend idempotency (SIDE-003)',
+    statements: (sql) => [
+      // Pre-dedup: delete any rows that share the full natural-key tuple
+      // with an earlier row (keeping MIN(id) per group). This is needed
+      // because any pre-existing Databento re-sends would block the
+      // UNIQUE index creation below. The natural key for a trade is the
+      // nanosecond-precision ts plus strike/option_type/price/size/side —
+      // Databento cannot legitimately emit two distinct trades with that
+      // exact combination.
+      sql`
+        DELETE FROM futures_options_trades
+        WHERE id NOT IN (
+          SELECT MIN(id)
+          FROM futures_options_trades
+          GROUP BY ts, underlying, expiry, strike, option_type, price, size, side
+        )
+      `,
+      // Now that duplicates are gone, create the unique index. Naming
+      // it so it's distinguishable from the existing non-unique indexes
+      // on this table.
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fot_identity_unique
+          ON futures_options_trades (ts, underlying, expiry, strike, option_type, price, size, side)
+      `,
+    ],
+  },
 ];

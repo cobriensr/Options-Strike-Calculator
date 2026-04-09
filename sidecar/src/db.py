@@ -146,6 +146,12 @@ def batch_insert_options_trades(rows: list[tuple]) -> None:
     """Batch insert ES options trades for efficiency.
 
     Each tuple: (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
+
+    Uses ON CONFLICT DO NOTHING against the unique index created by
+    migration #50 on `(ts, underlying, expiry, strike, option_type,
+    price, size, side)`. This makes the insert idempotent so Databento
+    re-sends (which happen after brief disconnects) don't accumulate
+    duplicate rows. See SIDE-003 in the audit for the full story.
     """
     if not rows:
         return
@@ -157,6 +163,8 @@ def batch_insert_options_trades(rows: list[tuple]) -> None:
                 INSERT INTO futures_options_trades
                     (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
                 VALUES %s
+                ON CONFLICT (ts, underlying, expiry, strike, option_type, price, size, side)
+                DO NOTHING
                 """,
                 rows,
                 page_size=500,

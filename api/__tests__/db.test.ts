@@ -476,6 +476,7 @@ describe('db.ts', () => {
         { id: 47 },
         { id: 48 },
         { id: 49 },
+        { id: 50 },
       ]);
 
       const applied = await migrateDb();
@@ -543,11 +544,12 @@ describe('db.ts', () => {
         '#47: Create gex_strike_0dte table for per-minute 0DTE gamma exposure by strike',
         '#48: Add OTM delta flow columns to flow_data for zero_dte_greek_flow source',
         '#49: Create volume_per_strike_0dte table for per-minute 0DTE raw call/put volume by strike',
+        '#50: Dedupe existing futures_options_trades rows and add UNIQUE index for Databento resend idempotency (SIDE-003)',
       ]);
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) = 159
-      expect(mockSql).toHaveBeenCalledTimes(159);
-      // Migrations #15-49 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(35);
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) = 162
+      expect(mockSql).toHaveBeenCalledTimes(162);
+      // Migrations #15-50 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(36);
     });
 
     it('propagates errors from migration SQL', async () => {
