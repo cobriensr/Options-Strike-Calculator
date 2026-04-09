@@ -17,6 +17,11 @@ const mockMarket = {
   needsAuth: false,
   refresh: async () => {},
   lastUpdated: null,
+  // FE-STATE-001 staleness fields.
+  quotesLastUpdated: null,
+  isStale: false,
+  isVeryStale: false,
+  staleAgeSec: null,
 };
 
 function renderSection(overrides: Record<string, unknown> = {}) {

@@ -421,13 +421,35 @@ export default function StrikeCalculator() {
               )}
               {!historySnapshot && !historyData.error && market.hasData && (
                 <StatusBadge
-                  label={market.data.quotes?.marketOpen ? 'LIVE' : 'CLOSED'}
+                  // FE-STATE-001: three-state live badge.
+                  //   Market closed             → CLOSED (muted)
+                  //   Market open, fresh        → LIVE   (green)
+                  //   Market open, stale  >=90s → STALE  (caution/yellow)
+                  //   Market open, stale >=180s → STALE  (red)
+                  // isVeryStale implies isStale, so the severity check
+                  // cascades from most-severe to least-severe.
+                  label={
+                    market.data.quotes?.marketOpen
+                      ? market.isStale
+                        ? 'STALE'
+                        : 'LIVE'
+                      : 'CLOSED'
+                  }
                   color={
                     market.data.quotes?.marketOpen
-                      ? theme.green
+                      ? market.isVeryStale
+                        ? theme.red
+                        : market.isStale
+                          ? theme.caution
+                          : theme.green
                       : theme.textMuted
                   }
                   dot
+                  title={
+                    market.isStale && market.staleAgeSec != null
+                      ? `Quotes ${market.staleAgeSec}s old${market.isVeryStale ? ' — 3+ missed polls' : ''}`
+                      : undefined
+                  }
                 />
               )}
               {!isOwner && (

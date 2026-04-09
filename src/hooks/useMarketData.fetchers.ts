@@ -113,6 +113,14 @@ export interface ProcessedResults {
   nextData: MarketData;
   anySuccess: boolean;
   anyAuthError: boolean;
+  /**
+   * True specifically when the /api/quotes endpoint returned fresh data.
+   * Tracked independently of `anySuccess` so downstream consumers can
+   * compute quote-specific freshness (FE-STATE-001: the stale-data badge
+   * must reflect SPX/VIX quote age, not the age of events/movers which
+   * have their own cadences and shouldn't suppress a stale-quote warning).
+   */
+  quotesSuccess: boolean;
 }
 
 /**
@@ -125,11 +133,13 @@ export function processEndpointResults(
 ): ProcessedResults {
   let anySuccess = false;
   let anyAuthError = false;
+  let quotesSuccess = false;
   const next = { ...prev };
 
   if ('data' in results.quotes) {
     next.quotes = results.quotes.data;
     anySuccess = true;
+    quotesSuccess = true;
   } else if (results.quotes.status === 401) {
     anyAuthError = true;
   }
@@ -161,5 +171,5 @@ export function processEndpointResults(
     anyAuthError = true;
   }
 
-  return { nextData: next, anySuccess, anyAuthError };
+  return { nextData: next, anySuccess, anyAuthError, quotesSuccess };
 }

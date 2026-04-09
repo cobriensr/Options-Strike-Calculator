@@ -134,6 +134,11 @@ function createMarket(quotes: QuotesResponse | null = null): MarketDataState {
     needsAuth: false,
     refresh: vi.fn(),
     lastUpdated: null,
+    // FE-STATE-001 staleness fields.
+    quotesLastUpdated: null,
+    isStale: false,
+    isVeryStale: false,
+    staleAgeSec: null,
   };
 }
 
