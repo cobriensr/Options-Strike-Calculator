@@ -3,11 +3,12 @@
  * snapshots into the top-ranked strikes, intraday "magnets" (highest call
  * and highest put volume), percent-delta series, and spot-relative distance.
  *
- * The design mirrors `gex-migration.ts`: the endpoint returns raw snapshot
- * rows and the frontend component picks a slice / metric at render time,
- * so mode switching is instant (no re-fetch). These functions are pure,
- * synchronous, tree-shakeable, and stateless — the Phase 4 React component
- * will call them inside a `useMemo`.
+ * The design mirrors the raw-snapshot pattern the codebase uses
+ * throughout for owner-gated per-minute 0DTE data: the endpoint returns
+ * raw snapshot rows and the frontend component picks a slice / metric at
+ * render time, so mode switching is instant (no re-fetch). These
+ * functions are pure, synchronous, tree-shakeable, and stateless — the
+ * component calls them inside a `useMemo`.
  *
  * The "magnet" concept is from Wonce's original Discord description:
  * "just plotting the most volume call and put strike" — the two strikes
@@ -108,12 +109,12 @@ export function rankByVolume(
  *   - the strike isn't present in the latest or reference snapshot
  *   - the reference (past) value is 0 (can't divide by zero)
  *
- * Formula (matches gex-migration.ts:pctChange exactly):
+ * Formula:
  *   ((now - past) / Math.abs(past)) * 100
  *
  * `Math.abs(past)` is used even though volume is always non-negative,
- * keeping the formula identical to `pctChange` in gex-migration.ts so
- * the codebase has one mental model for percent deltas.
+ * keeping a single signed/unsigned percent-delta formula the codebase
+ * can standardize on across modules.
  */
 export function computeVolumeDelta(
   snapshots: readonly VolumePerStrikeSnapshot[],
@@ -147,7 +148,7 @@ export function computeVolumeDelta(
 /**
  * Signed distance from spot in points. Positive = strike above spot
  * (call-side), negative = below spot (put-side). Matches the sign
- * convention used in ChainStrike / GexMigration elsewhere in the codebase.
+ * convention used in ChainStrike elsewhere in the codebase.
  */
 export function distFromSpot(strike: number, spot: number): number {
   return strike - spot;

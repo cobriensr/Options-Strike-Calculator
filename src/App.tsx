@@ -23,7 +23,6 @@ import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
-import { useGexMigration } from './hooks/useGexMigration';
 import { useVolumePerStrike } from './hooks/useVolumePerStrike';
 import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
@@ -44,7 +43,6 @@ import ErrorBoundary from './components/ErrorBoundary';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import GexPerStrike from './components/GexPerStrike';
-import { GexMigration } from './components/GexMigration';
 import { VolumePerStrike } from './components/VolumePerStrike';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
@@ -159,14 +157,10 @@ export default function StrikeCalculator() {
     market.data.quotes?.marketOpen ?? false,
     vix.selectedDate,
   );
-  const gexStrike = useGexPerStrike(
-    market.data.quotes?.marketOpen ?? false,
-    vix.selectedDate,
-  );
-  const gexMigration = useGexMigration(
-    market.data.quotes?.marketOpen ?? false,
-    vix.selectedDate,
-  );
+  // GEX Per Strike owns its own date state, decoupled from the calculator's
+  // vix.selectedDate. Picking a past date here is a backtest browsing
+  // action and must not re-anchor the Black-Scholes math elsewhere.
+  const gexStrike = useGexPerStrike(market.data.quotes?.marketOpen ?? false);
   const volumePerStrike = useVolumePerStrike(
     market.data.quotes?.marketOpen ?? false,
     vix.selectedDate,
@@ -706,6 +700,8 @@ export default function StrikeCalculator() {
                     error={gexStrike.error}
                     timestamp={gexStrike.timestamp}
                     onRefresh={gexStrike.refresh}
+                    selectedDate={gexStrike.selectedDate}
+                    onDateChange={gexStrike.setSelectedDate}
                     isLive={gexStrike.isLive}
                     isScrubbed={gexStrike.isScrubbed}
                     canScrubPrev={gexStrike.canScrubPrev}
@@ -713,14 +709,6 @@ export default function StrikeCalculator() {
                     onScrubPrev={gexStrike.scrubPrev}
                     onScrubNext={gexStrike.scrubNext}
                     onScrubLive={gexStrike.scrubLive}
-                  />
-                </ErrorBoundary>
-                <ErrorBoundary label="0DTE GEX Migration">
-                  <GexMigration
-                    snapshots={gexMigration.snapshots}
-                    loading={gexMigration.loading}
-                    error={gexMigration.error}
-                    onRefresh={gexMigration.refresh}
                   />
                 </ErrorBoundary>
                 <ErrorBoundary label="0DTE Volume Magnets">

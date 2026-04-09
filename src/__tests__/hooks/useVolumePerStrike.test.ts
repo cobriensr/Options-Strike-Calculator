@@ -130,9 +130,9 @@ describe('useVolumePerStrike: polling', () => {
   });
 
   it('polls today even when an explicit (today) date is passed', async () => {
-    // Matches the useGexMigration regression guard — production always
-    // passes vix.selectedDate, so we need to confirm the today branch
-    // still engages polling when selectedDate equals today.
+    // Regression guard: production always passes vix.selectedDate, so we
+    // need to confirm the today branch still engages polling when
+    // selectedDate equals today.
     const today = new Date().toLocaleDateString('en-CA', {
       timeZone: 'America/New_York',
     });

@@ -6,9 +6,9 @@
  * rankings and 5-min / 20-min deltas from these raw snapshots using pure
  * helpers in `src/utils/volume-per-strike.ts`.
  *
- * Mirrors the shape of useGexMigration intentionally — both hooks pull
- * per-minute 0DTE snapshots from owner-gated UW-sourced tables. The
- * component layer can compose them side-by-side without impedance.
+ * Mirrors the raw-snapshot polling shape used by other owner-gated
+ * per-minute 0DTE UW-sourced hooks in this codebase. The component
+ * layer can compose them side-by-side without impedance.
  *
  * Owner-only — skips polling for public visitors.
  *
