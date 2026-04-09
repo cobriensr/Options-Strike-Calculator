@@ -492,7 +492,7 @@ describe('db.ts', () => {
       // SELECT returns migration #1 as already applied
       mockSql.mockResolvedValueOnce([{ id: 1 }]);
       // Migration #2: CREATE EXTENSION + CREATE TABLE lessons + 3 indexes + CREATE TABLE lesson_reports + INSERT = 6+1
-      // Migration #3: DROP INDEX + ALTER TABLE + CREATE INDEX + INSERT = 3+1
+      // Migration #3: DROP INDEX + ALTER TABLE + CREATE INDEX + INSERT = 3+1 (atomic via statements/transaction per BE-CRON-010)
       mockSql.mockResolvedValue([]);
 
       const applied = await migrateDb();
@@ -551,9 +551,13 @@ describe('db.ts', () => {
         '#52: Create spx_candles_1m table for pre-baked 1-minute SPX candles (GexTarget rebuild: Phase 3 populates from UW SPY→SPX conversion)',
       ]);
       // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) = 170
+      // Migration #3 was converted from run: to statements: (BE-CRON-010);
+      // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
+      // toward the 170 total — the only delta is that they route through
+      // sql.transaction() instead of sequential awaits.
       expect(mockSql).toHaveBeenCalledTimes(170);
-      // Migrations #15-52 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(38);
+      // Migrations #3 and #15-52 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(39);
     });
 
     it('propagates errors from migration SQL', async () => {

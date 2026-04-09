@@ -104,17 +104,32 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   {
+    // BE-CRON-010 hardening: converted from legacy `run:` pattern to atomic
+    // `statements:` pattern so that a future failure of the ALTER (unlikely
+    // in current state — see below) cannot leave the lessons table without
+    // its HNSW index.
+    //
+    // Current state: migration #2 creates `embedding vector(2000)` directly
+    // and `api/_lib/embeddings.ts` generates 2000-dim vectors via OpenAI's
+    // `text-embedding-3-large` with `dimensions: 2000`. On any DB that
+    // reaches this migration, the column type either already matches
+    // vector(2000) (fresh DB) or held 3072-dim data before the operator
+    // truncated it (legacy DB). The ALTER is effectively a no-op in
+    // Postgres when the type already matches, and the whole sequence is
+    // idempotent via IF EXISTS / IF NOT EXISTS guards.
     id: 3,
     description:
       'Reduce lessons embedding from vector(3072) to vector(2000) for HNSW compatibility',
-    run: async (sql) => {
-      // Drop the HNSW index if it exists (migration #2 may have failed on index creation)
-      await sql`DROP INDEX IF EXISTS idx_lessons_embedding`;
-      // Change column type from vector(3072) to vector(2000)
-      await sql`ALTER TABLE lessons ALTER COLUMN embedding TYPE vector(2000)`;
-      // Re-create the HNSW index with the new dimension
-      await sql`CREATE INDEX IF NOT EXISTS idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops)`;
-    },
+    statements: (sql) => [
+      // Drop the HNSW index if it exists (migration #2 may have historically
+      // created an index at vector(3072) that is no longer valid).
+      sql`DROP INDEX IF EXISTS idx_lessons_embedding`,
+      // Change column type from vector(3072) to vector(2000). No-op in
+      // Postgres when the type already matches.
+      sql`ALTER TABLE lessons ALTER COLUMN embedding TYPE vector(2000)`,
+      // Re-create the HNSW index at the corrected dimension.
+      sql`CREATE INDEX IF NOT EXISTS idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops)`,
+    ],
   },
   {
     id: 4,
