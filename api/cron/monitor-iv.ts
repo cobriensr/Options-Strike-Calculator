@@ -73,7 +73,15 @@ async function fetchZeroDteIv(
 
 /**
  * Read the most recent SPX price from flow_ratio_monitor (preferred)
- * or fall back to flow_data (zero_dte_index source).
+ * or fall back to market_snapshots when zero_dte_index flow data exists.
+ *
+ * flow_ratio_monitor is refreshed every minute by the sibling cron and
+ * is always the preferred source. When it is missing, we use flow_data
+ * (zero_dte_index source) as a liveness check that 0DTE data exists for
+ * today, then pull the actual SPX price from market_snapshots.spx — the
+ * canonical intraday price feed populated by the calculator. Prior to
+ * this fix the fallback unconditionally returned null, which silently
+ * disabled the "small price move" half of the IV-spike alert rule.
  */
 async function getLatestSpxPrice(today: string): Promise<number | null> {
   const sql = getDb();
@@ -88,15 +96,31 @@ async function getLatestSpxPrice(today: string): Promise<number | null> {
     return Number(ratioRows[0]!.spx_price);
   }
 
-  // Fallback: flow_data from the 5-min zero-dte cron
+  // Fallback: confirm 0DTE flow data exists via flow_data (liveness check).
+  // flow_data has no price column, so we still need market_snapshots for
+  // the actual SPX value.
   const flowRows = await sql`
-    SELECT ncp FROM flow_data
+    SELECT 1 FROM flow_data
     WHERE date = ${today} AND source = 'zero_dte_index'
     ORDER BY timestamp DESC LIMIT 1
   `;
-  // flow_data doesn't store price directly; return null as last resort
-  if (flowRows.length > 0) return null;
+  if (flowRows.length === 0) return null;
 
+  // Pull the most recent SPX price from market_snapshots. Ordering by id
+  // DESC is the cheapest way to get the latest row for today since id is
+  // a SERIAL primary key (entry_time is TEXT like "9:35 AM" and is not
+  // chronologically sortable without parsing).
+  const snapshotRows = await sql`
+    SELECT spx FROM market_snapshots
+    WHERE date = ${today} AND spx IS NOT NULL
+    ORDER BY id DESC LIMIT 1
+  `;
+  if (snapshotRows.length > 0 && snapshotRows[0]!.spx != null) {
+    return Number(snapshotRows[0]!.spx);
+  }
+
+  // No price feed available. detectIvSpike degrades to IV-delta-only
+  // gating when spxPrice is null (see lines 178-184).
   return null;
 }
 

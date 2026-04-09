@@ -316,7 +316,7 @@ describe('monitor-iv handler', () => {
 
   // ── SPX price fallback ───────────────────────────────────
 
-  it('returns null spxPrice when neither monitor nor flow_data has price', async () => {
+  it('returns null spxPrice when flow_ratio_monitor empty and flow_data empty', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
       {
         date: '2026-03-24',
@@ -326,10 +326,11 @@ describe('monitor-iv handler', () => {
         percentile: '55',
       },
     ]);
-    // flow_ratio_monitor empty, flow_data empty
+    // flow_ratio_monitor empty → fall through to flow_data → also empty
+    // → short-circuit return null, never query market_snapshots.
     mockSql
       .mockResolvedValueOnce([]) // flow_ratio_monitor
-      .mockResolvedValueOnce([]) // flow_data fallback
+      .mockResolvedValueOnce([]) // flow_data liveness check
       .mockResolvedValueOnce([]) // storeIvReading INSERT
       .mockResolvedValueOnce([]); // detectIvSpike SELECT
 
@@ -341,6 +342,110 @@ describe('monitor-iv handler', () => {
       job: 'monitor-iv',
       spxPrice: null,
     });
+    // 4 calls = flow_ratio_monitor + flow_data + INSERT + detectIvSpike
+    // SELECT. No market_snapshots query because flow_data short-circuits
+    // the fallback when no 0DTE liveness row exists.
+    expect(mockSql).toHaveBeenCalledTimes(4);
+  });
+
+  it('fallback pulls SPX price from market_snapshots when flow_data has rows', async () => {
+    // Primary source (flow_ratio_monitor) is empty, but flow_data shows
+    // zero_dte_index is alive for today. The fix should then read the
+    // most recent market_snapshots.spx value instead of returning null.
+    vi.mocked(uwFetch).mockResolvedValue([
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.250',
+        implied_move_perc: '1.5',
+        percentile: '55',
+      },
+    ]);
+
+    mockSql
+      .mockResolvedValueOnce([]) // flow_ratio_monitor → empty
+      .mockResolvedValueOnce([{ '?column?': 1 }]) // flow_data liveness: row exists
+      .mockResolvedValueOnce([{ spx: '6612.50' }]) // market_snapshots latest
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
+      .mockResolvedValueOnce([]); // detectIvSpike SELECT prev
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'monitor-iv',
+      iv: 0.25,
+      spxPrice: 6612.5,
+    });
+  });
+
+  it('fallback returns null only when market_snapshots is also empty', async () => {
+    // flow_ratio_monitor empty, flow_data has rows, BUT market_snapshots
+    // is empty too (e.g. very early session before first snapshot).
+    // Should return null and the alert handler degrades to IV-only gating.
+    vi.mocked(uwFetch).mockResolvedValue([
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.250',
+        implied_move_perc: '1.5',
+        percentile: '55',
+      },
+    ]);
+
+    mockSql
+      .mockResolvedValueOnce([]) // flow_ratio_monitor empty
+      .mockResolvedValueOnce([{ '?column?': 1 }]) // flow_data has rows
+      .mockResolvedValueOnce([]) // market_snapshots empty
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
+      .mockResolvedValueOnce([]); // detectIvSpike SELECT prev
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'monitor-iv',
+      spxPrice: null,
+    });
+    // 5 calls = flow_ratio_monitor + flow_data + market_snapshots +
+    // INSERT + detectIvSpike SELECT. A regression that drops the
+    // market_snapshots query entirely would fail this assertion even
+    // though the mock sequence would still consume correctly.
+    expect(mockSql).toHaveBeenCalledTimes(5);
+  });
+
+  it('primary path (flow_ratio_monitor) short-circuits fallback', async () => {
+    // When flow_ratio_monitor has a price, market_snapshots must NOT be
+    // queried. Guarded with a strict mock sequence — an extra query would
+    // desynchronize downstream mocks and the test would fail.
+    vi.mocked(uwFetch).mockResolvedValue([
+      {
+        date: '2026-03-24',
+        days: 0,
+        volatility: '0.250',
+        implied_move_perc: '1.5',
+        percentile: '55',
+      },
+    ]);
+
+    mockSql
+      .mockResolvedValueOnce([{ spx_price: '6599.75' }]) // flow_ratio_monitor hit
+      .mockResolvedValueOnce([]) // storeIvReading INSERT
+      .mockResolvedValueOnce([]); // detectIvSpike SELECT prev
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'monitor-iv',
+      iv: 0.25,
+      spxPrice: 6599.75,
+    });
+    // Exactly 3 SQL calls: fallback path was never reached.
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   // ── Error handling ───────────────────────────────────────
