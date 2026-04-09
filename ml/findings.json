@@ -1,9 +1,12 @@
 {
-  "generated_at": "2026-04-08T05:35:55+00:00",
+  "generated_at": "2026-04-09T02:40:27+00:00",
   "dataset": {
-    "total_days": 41,
+    "total_days": 42,
     "labeled_days": 38,
-    "date_range": ["2026-02-09", "2026-04-07"],
+    "date_range": [
+      "2026-02-09",
+      "2026-04-08"
+    ],
     "overall_accuracy": 0.921
   },
   "structure_accuracy": {
@@ -186,10 +189,16 @@
     }
   ],
   "health": {
-    "status": "PASS",
-    "warnings": [],
+    "status": "WARN",
+    "warnings": [
+      "Day Labels: 2 business days stale (max 1)",
+      "Feature completeness below 90% on 2 of last 10 days",
+      "Completeness trending down: 77.60% vs 99.60% (delta 22.00%)",
+      "Recent label coverage (60%) is lower than overall (90%)",
+      "'dp_support_resistance_ratio' is 30% null in last 10 days"
+    ],
     "failures": [],
-    "run_time": "2026-04-08 00:35:50"
+    "run_time": "2026-04-09 02:39:29"
   },
   "pipeline_sections": [
     "health",
@@ -203,53 +212,120 @@
   ],
   "phase2": {
     "per_model": {
-      "DecisionTree": {
-        "accuracy": 0.28,
-        "log_loss": 6.7493,
+      "Logistic Reg (L2)": {
+        "accuracy": 0.5,
+        "log_loss": 4.2125,
         "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.4,
+          "CALL CREDIT SPREAD": 0.533,
+          "PUT CREDIT SPREAD": 0.5,
+          "IRON CONDOR": 0.0
+        }
+      },
+      "Random Forest (15)": {
+        "accuracy": 0.5714,
+        "log_loss": 0.8593,
+        "per_class_f1": {
+          "CALL CREDIT SPREAD": 0.667,
+          "PUT CREDIT SPREAD": 0.4,
+          "IRON CONDOR": 0.0
+        }
+      },
+      "Naive Bayes": {
+        "accuracy": 0.7857,
+        "log_loss": 4.2777,
+        "per_class_f1": {
+          "CALL CREDIT SPREAD": 0.824,
+          "PUT CREDIT SPREAD": 0.727,
+          "IRON CONDOR": 0.0
+        }
+      },
+      "Decision Tree (d=2)": {
+        "accuracy": 0.1429,
+        "log_loss": 9.0284,
+        "per_class_f1": {
+          "CALL CREDIT SPREAD": 0.308,
           "PUT CREDIT SPREAD": 0.0,
-          "IRON CONDOR": 0.3
+          "IRON CONDOR": 0.0
         }
       },
       "XGBoost": {
-        "accuracy": 0.28,
-        "log_loss": 6.7493,
+        "accuracy": 0.5714,
+        "log_loss": 0.8223,
         "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.4,
-          "PUT CREDIT SPREAD": 0.0,
-          "IRON CONDOR": 0.3
+          "CALL CREDIT SPREAD": 0.7,
+          "PUT CREDIT SPREAD": 0.25,
+          "IRON CONDOR": 0.0
         }
       }
     },
-    "best_model": "DecisionTree",
-    "best_accuracy": 0.28,
-    "majority_baseline": 0.44,
-    "walk_forward_folds": 25,
+    "best_model": "Naive Bayes",
+    "best_accuracy": 0.7857,
+    "majority_baseline": 0.5714,
+    "walk_forward_folds": 14,
     "top_features": [
       {
-        "feature": "vix",
-        "importance": 0.2
+        "feature": "num__qqq_ncp_t1",
+        "importance": 0.0688
       },
       {
-        "feature": "vix1d",
-        "importance": 0.2
+        "feature": "num__neg_gamma_nearest_dist",
+        "importance": 0.0515
       },
       {
-        "feature": "gex_oi_t1",
-        "importance": 0.2
+        "feature": "num__prev_day_vix_change",
+        "importance": 0.0468
       },
       {
-        "feature": "gex_oi_t2",
-        "importance": 0.2
+        "feature": "num__gamma_asymmetry",
+        "importance": 0.0464
       },
       {
-        "feature": "sigma",
-        "importance": 0.2
+        "feature": "num__gex_vol_t2",
+        "importance": 0.0447
+      },
+      {
+        "feature": "num__pcr_open",
+        "importance": 0.0425
+      },
+      {
+        "feature": "cat__prev_day_direction_DOWN",
+        "importance": 0.0335
+      },
+      {
+        "feature": "num__dp_top_cluster_dist",
+        "importance": 0.0332
+      },
+      {
+        "feature": "num__mt_ncp_t2",
+        "importance": 0.033
+      },
+      {
+        "feature": "num__mt_ncp_t1",
+        "importance": 0.0293
+      },
+      {
+        "feature": "num__vix1d",
+        "importance": 0.0293
+      },
+      {
+        "feature": "num__charm_max_pos_dist",
+        "importance": 0.0288
+      },
+      {
+        "feature": "num__realized_vol_10d",
+        "importance": 0.0277
+      },
+      {
+        "feature": "num__pcr_spike_count",
+        "importance": 0.0273
+      },
+      {
+        "feature": "num__zero_dte_ncp_t2",
+        "importance": 0.0237
       }
     ],
-    "n_labeled_days": 45,
-    "n_features": 5
+    "n_labeled_days": 34,
+    "n_features": 119
   },
   "eda": {
     "structure_accuracy": {
@@ -340,8 +416,8 @@
       },
       {
         "feature": "opening_range_pct_consumed",
-        "r": -0.426,
-        "p": 0.009
+        "r": -0.427,
+        "p": 0.007
       },
       {
         "feature": "prev_day_range_pts",
@@ -407,8 +483,8 @@
       },
       {
         "feature": "opening_range_pct_consumed",
-        "H": 6.97,
-        "p": 0.031
+        "H": 7.06,
+        "p": 0.029
       },
       {
         "feature": "oic_call_oi_change",
@@ -433,31 +509,19 @@
     ]
   },
   "clustering": {
-    "best_k": 2,
+    "best_k": 1,
     "algorithm": "KMeans",
-    "silhouette": 0.68,
-    "calinski_harabasz": 17.4,
-    "davies_bouldin": 0.216,
-    "cluster_sizes": [35, 1],
-    "stability": 0.972,
+    "fallback_reason": "k=2 rejected (min size 1 < 5), k=3 rejected (min size 1 < 5), k=4 rejected (min size 1 < 5), k=5 rejected (min size 1 < 5), k=6 rejected (min size 1 < 5)",
+    "silhouette": null,
+    "calinski_harabasz": null,
+    "davies_bouldin": null,
+    "cluster_sizes": null,
+    "stability": null,
     "split_half_holdout_sil": null,
-    "gmm_bic": 670.7,
-    "permutation_p": 0.54,
-    "chi_squared": {
-      "range_category": {
-        "chi2": 0.92,
-        "p": 0.6326
-      },
-      "settlement_direction": {
-        "chi2": 0.0,
-        "p": 1.0
-      },
-      "recommended_structure": {
-        "chi2": 0.92,
-        "p": 0.6326
-      }
-    },
-    "n_samples": 36,
+    "gmm_bic": null,
+    "permutation_p": null,
+    "chi_squared": {},
+    "n_samples": 37,
     "n_pca_components": 4,
     "n_features": 120
   },
@@ -471,17 +535,17 @@
       {
         "name": "clusters_heatmap",
         "generated": true,
-        "file_size_kb": 54.4
+        "file_size_kb": 45.6
       },
       {
         "name": "clusters_pca",
         "generated": true,
-        "file_size_kb": 108.7
+        "file_size_kb": 146.0
       },
       {
         "name": "cone_consumption",
         "generated": true,
-        "file_size_kb": 91.3
+        "file_size_kb": 91.5
       },
       {
         "name": "confidence_over_time",
@@ -491,27 +555,27 @@
       {
         "name": "correlations",
         "generated": true,
-        "file_size_kb": 387.9
+        "file_size_kb": 389.0
       },
       {
         "name": "dark_pool_vs_range",
         "generated": true,
-        "file_size_kb": 117.8
+        "file_size_kb": 118.6
       },
       {
         "name": "day_of_week",
         "generated": true,
-        "file_size_kb": 61.8
+        "file_size_kb": 62.2
       },
       {
         "name": "failure_heatmap",
         "generated": true,
-        "file_size_kb": 64.0
+        "file_size_kb": 64.2
       },
       {
         "name": "feature_importance_comparison",
         "generated": true,
-        "file_size_kb": 179.0
+        "file_size_kb": 178.0
       },
       {
         "name": "flow_reliability",
@@ -546,17 +610,17 @@
       {
         "name": "prev_day_transition",
         "generated": true,
-        "file_size_kb": 145.6
+        "file_size_kb": 146.2
       },
       {
         "name": "range_by_regime",
         "generated": true,
-        "file_size_kb": 121.7
+        "file_size_kb": 121.8
       },
       {
         "name": "stationarity",
         "generated": true,
-        "file_size_kb": 518.1
+        "file_size_kb": 522.3
       },
       {
         "name": "structure_confidence",
@@ -566,7 +630,7 @@
       {
         "name": "timeline",
         "generated": true,
-        "file_size_kb": 226.8
+        "file_size_kb": 223.5
       }
     ],
     "count": 21
@@ -600,49 +664,49 @@
   "pin_analysis": {
     "pin_accuracy_by_method": {
       "peak_gamma": {
-        "avg_distance": 16.7,
-        "median_distance": 12.9,
-        "within_10": 0.222,
-        "within_20": 0.778,
-        "n_days": 9
+        "avg_distance": 15.9,
+        "median_distance": 12.7,
+        "within_10": 0.3,
+        "within_20": 0.8,
+        "n_days": 10
       },
       "pos_peak": {
-        "avg_distance": 55.4,
-        "median_distance": 12.9,
-        "within_10": 0.222,
-        "within_20": 0.556,
-        "n_days": 9
+        "avg_distance": 50.7,
+        "median_distance": 12.2,
+        "within_10": 0.3,
+        "within_20": 0.6,
+        "n_days": 10
       },
       "pos_centroid": {
-        "avg_distance": 56.1,
-        "median_distance": 12.0,
-        "within_10": 0.333,
-        "within_20": 0.667,
-        "n_days": 9
+        "avg_distance": 52.7,
+        "median_distance": 12.6,
+        "within_10": 0.3,
+        "within_20": 0.6,
+        "n_days": 10
       },
       "prox_centroid": {
-        "avg_distance": 10.9,
-        "median_distance": 7.7,
-        "within_10": 0.667,
-        "within_20": 0.889,
-        "n_days": 9
+        "avg_distance": 11.2,
+        "median_distance": 8.8,
+        "within_10": 0.6,
+        "within_20": 0.9,
+        "n_days": 10
       },
       "charm_centroid": {
-        "avg_distance": 11.0,
-        "median_distance": 8.0,
-        "within_10": 0.667,
-        "within_20": 0.889,
-        "n_days": 9
+        "avg_distance": 11.3,
+        "median_distance": 8.8,
+        "within_10": 0.6,
+        "within_20": 0.9,
+        "n_days": 10
       },
       "gamma_centroid": {
-        "avg_distance": 12.1,
-        "median_distance": 11.8,
-        "within_10": 0.333,
-        "within_20": 0.889,
-        "n_days": 9
+        "avg_distance": 13.0,
+        "median_distance": 12.5,
+        "within_10": 0.3,
+        "within_20": 0.8,
+        "n_days": 10
       }
     },
     "asymmetry_correlation": null,
-    "n_days": 38
+    "n_days": 39
   }
 }
