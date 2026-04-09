@@ -27,6 +27,9 @@ vi.mock('../_lib/sentry.js', () => ({
     captureException: vi.fn(),
     captureMessage: vi.fn(),
   },
+  metrics: {
+    increment: vi.fn(),
+  },
 }));
 
 import handler from '../cron/fetch-spx-candles-1m.js';

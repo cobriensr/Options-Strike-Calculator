@@ -30,7 +30,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
@@ -102,6 +102,7 @@ function translateRows(rows: UWCandleRow[]): SPXCandleRow[] {
       Number.isNaN(low) ||
       Number.isNaN(close)
     ) {
+      metrics.increment('fetch_spx_candles_1m.ohlc_invalid');
       continue;
     }
 

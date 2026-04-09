@@ -25,7 +25,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
@@ -111,7 +111,10 @@ export function aggregateByStrike(
 
   for (const row of rows) {
     const parsed = parseOptionSymbol(row.option_symbol);
-    if (!parsed) continue;
+    if (!parsed) {
+      metrics.increment('fetch_vol_0dte.symbol_parse_error');
+      continue;
+    }
 
     const volume = Number(row.volume) || 0;
     const oi = Number(row.open_interest) || 0;

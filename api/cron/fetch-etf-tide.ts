@@ -15,7 +15,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   cronGuard,
@@ -68,10 +68,16 @@ function sampleTo5Min(
     const rounded = roundTo5Min(new Date(row.timestamp));
     const key = rounded.toISOString();
 
+    const ncpRaw = Number.parseFloat(row.net_call_premium);
+    const nppRaw = Number.parseFloat(row.net_put_premium);
+    if (Number.isNaN(ncpRaw) || Number.isNaN(nppRaw)) {
+      metrics.increment('fetch_etf_tide.invalid_candle');
+    }
+
     sampled.set(key, {
       timestamp: key,
-      ncp: Number.parseFloat(row.net_call_premium) || 0,
-      npp: Number.parseFloat(row.net_put_premium) || 0,
+      ncp: ncpRaw || 0,
+      npp: nppRaw || 0,
       netVolume: row.net_volume || 0,
     });
   }
@@ -137,6 +143,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           results[source] = { ...result, candles: candles.length };
         } catch (err) {
           logger.warn({ err, ticker, source }, 'Failed to fetch ETF Tide');
+          metrics.increment('fetch_etf_tide.fetch_error');
+          Sentry.captureException(err);
           results[source] = { stored: 0, skipped: 0, candles: 0 };
         }
       }),

@@ -28,7 +28,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   cronGuard,
@@ -110,6 +110,7 @@ async function storeLatest(
       else skipped++;
     } catch (err) {
       logger.warn({ err, ts }, 'Greek flow insert failed');
+      metrics.increment('fetch_greek_flow.store_error');
       skipped++;
     }
   }
