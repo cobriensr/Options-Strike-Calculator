@@ -14,6 +14,9 @@ interface Props {
   wingWidth: number;
   contracts: number;
   skewPct: number;
+  /** Hedge breakeven coverage target multiplier (audit FE-MATH-009). */
+  breakevenTarget?: number;
+  setBreakevenTarget?: (value: number) => void;
   showBWB: boolean;
   bwbNarrowWidth: number;
   bwbWideMultiplier: number;
@@ -27,6 +30,8 @@ export default function ResultsSection({
   wingWidth,
   contracts,
   skewPct,
+  breakevenTarget = 1.5,
+  setBreakevenTarget,
   showBWB,
   bwbNarrowWidth,
   bwbWideMultiplier,
@@ -97,6 +102,8 @@ export default function ResultsSection({
                   contracts={contracts}
                   effectiveRatio={effectiveRatio}
                   skewPct={skewPct}
+                  breakevenTarget={breakevenTarget}
+                  setBreakevenTarget={setBreakevenTarget}
                 />
               )}
 

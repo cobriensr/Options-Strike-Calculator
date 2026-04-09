@@ -6,6 +6,13 @@ export const MARKET = {
   HOURS_PER_DAY: 6.5,
   /** Standard US equity trading days per year */
   TRADING_DAYS_PER_YEAR: 252,
+  /**
+   * Calendar days per year. Used for annualizing T over a holding period
+   * that spans overnights (e.g. multi-day hedges held across calendar days,
+   * not just trading days). Intraday 0DTE theta still uses TRADING_DAYS_PER_YEAR.
+   * See audit FE-MATH-008.
+   */
+  CALENDAR_DAYS_PER_YEAR: 365,
   /** Total trading hours per year (6.5 × 252) */
   ANNUAL_TRADING_HOURS: 6.5 * 252, // 1638
   /** Market open hour in Eastern Time (24h) */
@@ -254,6 +261,8 @@ export const POLL_INTERVALS = {
   DARK_POOL: 60_000,
   /** GEX per strike refresh (useGexPerStrike) */
   GEX_STRIKE: 60_000,
+  /** GexTarget history refresh (useGexTarget) — matches the 1-min cron cadence */
+  GEX_TARGET: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */

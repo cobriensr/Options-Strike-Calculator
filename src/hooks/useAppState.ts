@@ -94,6 +94,12 @@ export function useAppState() {
   const [skewPct, setSkewPct] = useState(3);
   const [clusterMult, setClusterMult] = useState(1);
 
+  // Hedge breakeven coverage target — audit FE-MATH-009.
+  // Multiplier of spot-to-hedge-strike distance used to size hedge contracts.
+  // 1.0 = cost-neutral (hedge covers full IC loss only at 1× distance),
+  // 1.5 = default (moderate coverage), 3.0 = aggressive.
+  const [breakevenTarget, setBreakevenTarget] = useState(1.5);
+
   // BWB state
   const [showBWB, setShowBWB] = useState(false);
   const [bwbNarrowWidth, setBwbNarrowWidth] = useState(20);
@@ -163,6 +169,10 @@ export function useAppState() {
       clusterMult,
       setClusterMult,
 
+      // Hedge
+      breakevenTarget,
+      setBreakevenTarget,
+
       // BWB
       showBWB,
       setShowBWB,
@@ -203,6 +213,7 @@ export function useAppState() {
     contracts,
     skewPct,
     clusterMult,
+    breakevenTarget,
     showBWB,
     bwbNarrowWidth,
     bwbWideMultiplier,

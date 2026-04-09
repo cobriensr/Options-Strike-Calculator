@@ -19,6 +19,17 @@ interface Props {
   icRows?: IronCondorLegs[];
   hedgeDeltaIdx?: number;
   onHedgeDeltaChange?: (idx: number) => void;
+  breakevenTarget: number;
+  setBreakevenTarget: (value: number) => void;
+}
+
+const BE_TARGET_MIN = 1;
+const BE_TARGET_MAX = 3;
+const BE_TARGET_STEP = 0.1;
+
+function clampBeTarget(value: number): number {
+  if (Number.isNaN(value)) return 1.5;
+  return Math.min(BE_TARGET_MAX, Math.max(BE_TARGET_MIN, value));
 }
 
 export default function HedgeSection({
@@ -29,6 +40,8 @@ export default function HedgeSection({
   icRows,
   hedgeDeltaIdx,
   onHedgeDeltaChange,
+  breakevenTarget,
+  setBreakevenTarget,
 }: Readonly<Props>) {
   const [hedgeDelta, setHedgeDelta] = useState<HedgeDelta>(2);
   const [hedgeDte, setHedgeDte] = useState<number>(DEFAULTS.HEDGE_DTE);
@@ -48,6 +61,7 @@ export default function HedgeSection({
     icLongCall: ic.longCall,
     hedgeDelta,
     hedgeDte,
+    breakevenTarget,
   });
 
   const crashScenarios = hedge.scenarios.filter((s) => s.direction === 'crash');
@@ -123,6 +137,33 @@ export default function HedgeSection({
                 {d}d
               </button>
             ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label
+              htmlFor="hedge-be-target"
+              className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase"
+            >
+              Breakeven Target
+            </label>
+            <input
+              id="hedge-be-target"
+              type="number"
+              inputMode="decimal"
+              min={BE_TARGET_MIN}
+              max={BE_TARGET_MAX}
+              step={BE_TARGET_STEP}
+              value={breakevenTarget}
+              aria-label="Breakeven coverage target (multiplier of distance to hedge strike)"
+              onChange={(e) => {
+                const raw = Number.parseFloat(e.target.value);
+                setBreakevenTarget(clampBeTarget(raw));
+              }}
+              className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-16 rounded-lg border-[1.5px] px-2 py-1 text-center font-mono text-xs font-semibold transition-[border-color] duration-150 outline-none"
+            />
+            <span className="text-muted font-mono text-[11px]">
+              {breakevenTarget.toFixed(1)}
+              {'\u00D7'}
+            </span>
           </div>
         </div>
       </div>
@@ -291,10 +332,10 @@ export default function HedgeSection({
       )}
 
       <p className="text-muted mt-2 text-[11px] italic">
-        Hedge sized for breakeven at 1.5{'\u00D7'} distance to hedge strike. Buy{' '}
-        {hedge.recommendedPuts} put{hedge.recommendedPuts === 1 ? '' : 's'} +{' '}
-        {hedge.recommendedCalls} call{hedge.recommendedCalls === 1 ? '' : 's'}{' '}
-        at {hedgeDelta}
+        Hedge sized for breakeven at {breakevenTarget.toFixed(1)}
+        {'\u00D7'} distance to hedge strike. Buy {hedge.recommendedPuts} put
+        {hedge.recommendedPuts === 1 ? '' : 's'} + {hedge.recommendedCalls} call
+        {hedge.recommendedCalls === 1 ? '' : 's'} at {hedgeDelta}
         {'\u0394'} ({hedgeDte}DTE).
         {hedgeDte > 1
           ? ` Scenario P&L values hedge at ${hedgeDte - 1}DTE remaining (sell to close at EOD).`

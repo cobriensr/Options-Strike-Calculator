@@ -1056,3 +1056,120 @@ describe('stressedSigma: vol expansion under stress', () => {
     expect(largeCrash.hedgePutPnL).toBeGreaterThan(0);
   });
 });
+
+// ── FE-MATH-009: breakevenTarget parameter ─────────────────────
+// The hedge sizing algorithm now accepts a configurable multiplier for
+// the distance-to-hedge target. Lower value = aggressive coverage (hedge
+// pays off sooner, more contracts), higher value = conservative (fewer
+// contracts, hedge pays off only in bigger moves).
+
+describe('calcHedge: breakevenTarget parameter', () => {
+  it('defaults to STRESS.BREAKEVEN_TARGET (1.5) when not provided', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const base = {
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2 as HedgeDelta,
+    };
+
+    const hedgeDefault = calcHedge(base);
+    const hedgeExplicit = calcHedge({ ...base, breakevenTarget: 1.5 });
+
+    // Same contract counts, same daily cost
+    expect(hedgeDefault.recommendedPuts).toBe(hedgeExplicit.recommendedPuts);
+    expect(hedgeDefault.recommendedCalls).toBe(hedgeExplicit.recommendedCalls);
+    expect(hedgeDefault.dailyCostDollars).toBe(hedgeExplicit.dailyCostDollars);
+  });
+
+  it('recommended contracts differ meaningfully between 1.0 and 2.0 targets', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const base = {
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2 as HedgeDelta,
+    };
+
+    const aggressive = calcHedge({ ...base, breakevenTarget: 1 });
+    const conservative = calcHedge({ ...base, breakevenTarget: 2 });
+
+    // At 1.0× (aggressive), the target hedge payout is based on a SMALLER move,
+    // so each hedge contract contributes LESS at the target, and the sizing
+    // algorithm buys MORE contracts. At 2.0× (conservative), larger target move
+    // means more payout per contract, so fewer contracts are needed.
+    expect(aggressive.recommendedPuts).toBeGreaterThan(
+      conservative.recommendedPuts,
+    );
+    expect(aggressive.recommendedCalls).toBeGreaterThan(
+      conservative.recommendedCalls,
+    );
+  });
+
+  it('daily cost scales with breakevenTarget (aggressive costs more)', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const base = {
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2 as HedgeDelta,
+    };
+
+    const aggressive = calcHedge({ ...base, breakevenTarget: 1 });
+    const conservative = calcHedge({ ...base, breakevenTarget: 2 });
+
+    // More contracts at 1.0× ⇒ higher daily cost in dollars
+    expect(aggressive.dailyCostDollars).toBeGreaterThan(
+      conservative.dailyCostDollars,
+    );
+  });
+
+  it('strike placement is identical across breakevenTarget values', () => {
+    // breakevenTarget only affects sizing and scenarios, NOT strike selection.
+    const { spot, sigma, T, ic } = makeTestIC();
+    const base = {
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2 as HedgeDelta,
+    };
+
+    const h1 = calcHedge({ ...base, breakevenTarget: 1 });
+    const h2 = calcHedge({ ...base, breakevenTarget: 2 });
+
+    expect(h1.putStrikeSnapped).toBe(h2.putStrikeSnapped);
+    expect(h1.callStrikeSnapped).toBe(h2.callStrikeSnapped);
+  });
+});

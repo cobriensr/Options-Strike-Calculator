@@ -103,6 +103,8 @@ export default function StrikeCalculator() {
     setSkewPct,
     clusterMult,
     setClusterMult,
+    breakevenTarget,
+    setBreakevenTarget,
     showBWB,
     setShowBWB,
     bwbNarrowWidth,
@@ -818,6 +820,8 @@ export default function StrikeCalculator() {
                 wingWidth={wingWidth}
                 contracts={contracts}
                 skewPct={skewPct}
+                breakevenTarget={breakevenTarget}
+                setBreakevenTarget={setBreakevenTarget}
                 showBWB={showBWB}
                 bwbNarrowWidth={bwbNarrowWidth}
                 bwbWideMultiplier={bwbWideMultiplier}

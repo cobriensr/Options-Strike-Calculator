@@ -11,7 +11,13 @@ interface Props {
   contracts: number;
   effectiveRatio: number;
   skewPct: number;
+  /** Hedge breakeven coverage target multiplier (audit FE-MATH-009). */
+  breakevenTarget?: number;
+  setBreakevenTarget?: (value: number) => void;
 }
+
+/** No-op fallback when no setter is wired up (e.g. in isolated component tests). */
+const NOOP_SET_BE_TARGET = (): void => {};
 
 export default function IronCondorSection({
   results,
@@ -19,6 +25,8 @@ export default function IronCondorSection({
   contracts,
   effectiveRatio,
   skewPct,
+  breakevenTarget = 1.5,
+  setBreakevenTarget = NOOP_SET_BE_TARGET,
 }: Readonly<Props>) {
   const [hedgeDeltaIdx, setHedgeDeltaIdx] = useState(0);
 
@@ -104,6 +112,8 @@ export default function IronCondorSection({
               icRows={icRows}
               hedgeDeltaIdx={hedgeDeltaIdx}
               onHedgeDeltaChange={setHedgeDeltaIdx}
+              breakevenTarget={breakevenTarget}
+              setBreakevenTarget={setBreakevenTarget}
             />
           )}
 

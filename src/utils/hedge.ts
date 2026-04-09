@@ -193,6 +193,7 @@ export function calcHedge(params: {
   icLongCall: number;
   hedgeDelta: HedgeDelta;
   hedgeDte?: number;
+  breakevenTarget?: number;
 }): HedgeResult {
   const {
     spot,
@@ -204,6 +205,7 @@ export function calcHedge(params: {
     icMaxLossPts,
     hedgeDelta,
     hedgeDte = DEFAULTS.HEDGE_DTE,
+    breakevenTarget = STRESS.BREAKEVEN_TARGET,
   } = params;
   const z = HEDGE_Z_SCORES[hedgeDelta];
   const sqrtT = Math.sqrt(T);
@@ -226,9 +228,17 @@ export function calcHedge(params: {
   const putStrikeSnapped = snapToIncrement(putStrike);
   const callStrikeSnapped = snapToIncrement(callStrike);
 
-  // Price the hedge options at the specified DTE
-  // T_hedge = hedgeDte trading days, annualized
-  const tHedgeEntry = hedgeDte / MARKET.TRADING_DAYS_PER_YEAR;
+  // Price the hedge options at the specified DTE.
+  //
+  // DELIBERATE DIVERGENCE — audit FE-MATH-008:
+  // The hedge is held OVERNIGHT (buy EOD, sell next-day EOD), so calendar
+  // days pass during the holding period — not trading days. Annualizing
+  // hedgeDte with CALENDAR_DAYS_PER_YEAR (365) instead of TRADING_DAYS_PER_YEAR
+  // (252) gives an honest theta model; the 252-day base under-stated theta
+  // by ~10% on a 7-day hedge. The rest of the codebase (black-scholes,
+  // iron-condor) correctly uses the 252-day base for intraday 0DTE theta
+  // where only trading-session time is relevant.
+  const tHedgeEntry = hedgeDte / MARKET.CALENDAR_DAYS_PER_YEAR;
   const putPremium = blackScholesPrice(
     spot,
     putStrikeSnapped,
@@ -244,9 +254,10 @@ export function calcHedge(params: {
     'call',
   );
 
-  // T remaining at EOD close: (hedgeDte - 1) trading days
-  // This is the time value the hedge retains when sold to close
-  const tHedgeEod = Math.max(0, (hedgeDte - 1) / MARKET.TRADING_DAYS_PER_YEAR);
+  // T remaining at EOD close: (hedgeDte - 1) calendar days.
+  // Uses calendar-day annualization for the same reason as tHedgeEntry
+  // (see FE-MATH-008 comment above) — the EOD close is one overnight later.
+  const tHedgeEod = Math.max(0, (hedgeDte - 1) / MARKET.CALENDAR_DAYS_PER_YEAR);
 
   // IC max loss in dollars (total position)
   const icMaxLossDollars = icMaxLossPts * SPX_MULTIPLIER * icContracts;
@@ -255,11 +266,12 @@ export function calcHedge(params: {
   const distToPutHedge = spot - putStrikeSnapped;
   const distToCallHedge = callStrikeSnapped - spot;
 
-  // Target crash: BREAKEVEN_TARGET × distance to hedge strike
+  // Target crash: breakevenTarget × distance to hedge strike
+  // (defaults to STRESS.BREAKEVEN_TARGET = 1.5; can be overridden per-trade).
   // Size using NET payout (BS value at EOD minus entry premium) per contract,
   // since that's the actual P&L each contract generates at the target move
-  const targetPutSpot = spot - distToPutHedge * STRESS.BREAKEVEN_TARGET;
-  const targetCallSpot = spot + distToCallHedge * STRESS.BREAKEVEN_TARGET;
+  const targetPutSpot = spot - distToPutHedge * breakevenTarget;
+  const targetCallSpot = spot + distToCallHedge * breakevenTarget;
   const putValueAtTarget =
     tHedgeEod > 0
       ? blackScholesPrice(

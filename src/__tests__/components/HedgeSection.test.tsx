@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import HedgeSection from '../../components/HedgeSection';
 import type { CalculationResults, IronCondorLegs } from '../../types';
@@ -61,13 +62,50 @@ function makeIC(): IronCondorLegs {
   };
 }
 
-function renderHedge(overrides?: { contracts?: number; skew?: number }) {
-  return render(
+/**
+ * Wrapper that owns breakevenTarget state so input edits actually
+ * re-render the HedgeSection. An optional `onChange` spy observes
+ * every call the setter receives.
+ */
+function HedgeWrapper({
+  contracts,
+  skew,
+  initialBeTarget,
+  onBeTargetChange,
+}: {
+  contracts: number;
+  skew: number;
+  initialBeTarget: number;
+  onBeTargetChange?: (value: number) => void;
+}) {
+  const [beTarget, setBeTarget] = useState(initialBeTarget);
+  return (
     <HedgeSection
       results={makeResults()}
       ic={makeIC()}
+      contracts={contracts}
+      skew={skew}
+      breakevenTarget={beTarget}
+      setBreakevenTarget={(value) => {
+        setBeTarget(value);
+        onBeTargetChange?.(value);
+      }}
+    />
+  );
+}
+
+function renderHedge(overrides?: {
+  contracts?: number;
+  skew?: number;
+  breakevenTarget?: number;
+  setBreakevenTarget?: (value: number) => void;
+}) {
+  return render(
+    <HedgeWrapper
       contracts={overrides?.contracts ?? 10}
       skew={overrides?.skew ?? 0.03}
+      initialBeTarget={overrides?.breakevenTarget ?? 1.5}
+      onBeTargetChange={overrides?.setBreakevenTarget}
     />,
   );
 }
@@ -162,5 +200,67 @@ describe('HedgeSection', () => {
 
     const btn2 = screen.getByRole('button', { name: '2\u0394' });
     expect(btn2).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  // FE-MATH-009: breakeven coverage target is a user-tunable input
+  describe('breakeven target input', () => {
+    it('renders the breakeven target number input', () => {
+      renderHedge();
+      expect(screen.getByLabelText(/breakeven coverage/i)).toBeInTheDocument();
+    });
+
+    it('renders the supplied value (defaults to 1.5 via renderHedge)', () => {
+      renderHedge();
+      const input = screen.getByLabelText(
+        /breakeven coverage/i,
+      ) as HTMLInputElement;
+      expect(input.value).toBe('1.5');
+    });
+
+    it('reflects a non-default breakeven target', () => {
+      renderHedge({ breakevenTarget: 2 });
+      const input = screen.getByLabelText(
+        /breakeven coverage/i,
+      ) as HTMLInputElement;
+      expect(input.value).toBe('2');
+    });
+
+    it('propagates value changes via setBreakevenTarget', () => {
+      const setBreakevenTarget = vi.fn();
+      renderHedge({ breakevenTarget: 1.5, setBreakevenTarget });
+
+      const input = screen.getByLabelText(
+        /breakeven coverage/i,
+      ) as HTMLInputElement;
+      // fireEvent.change bypasses user-event's per-keystroke quirks with
+      // <input type="number"> in jsdom and sets the value in one shot.
+      fireEvent.change(input, { target: { value: '2' } });
+
+      expect(setBreakevenTarget).toHaveBeenCalledWith(2);
+    });
+
+    it('clamps values above the max (3.0) to 3.0', () => {
+      const setBreakevenTarget = vi.fn();
+      renderHedge({ breakevenTarget: 1.5, setBreakevenTarget });
+
+      const input = screen.getByLabelText(
+        /breakeven coverage/i,
+      ) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: '9' } });
+
+      expect(setBreakevenTarget).toHaveBeenCalledWith(3);
+    });
+
+    it('clamps values below the min (1.0) to 1.0', () => {
+      const setBreakevenTarget = vi.fn();
+      renderHedge({ breakevenTarget: 1.5, setBreakevenTarget });
+
+      const input = screen.getByLabelText(
+        /breakeven coverage/i,
+      ) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: '0' } });
+
+      expect(setBreakevenTarget).toHaveBeenCalledWith(1);
+    });
   });
 });
