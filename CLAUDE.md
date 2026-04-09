@@ -1,6 +1,6 @@
 # 0DTE SPX Strike Calculator
 
-Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway sidecar for ES futures data.
+Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python sidecar for Databento futures + ES options ingestion.
 
 ## Architecture
 
@@ -16,13 +16,16 @@ src/              React 19 SPA (Tailwind CSS 4, no router)
 api/              Vercel Serverless Functions
   _lib/           21+ shared modules (see "Backend Modules" below)
   auth/           Schwab OAuth flow (init.ts, callback.ts)
-  cron/           14 scheduled jobs (market data fetching, feature building, lesson curation)
+  cron/           29 scheduled jobs (market data fetching, feature building, lesson curation)
   journal/        Journal CRUD + DB init/migrate
   ml/             ML data export endpoint
 
-sidecar/          ES futures WebSocket relay (Railway, NOT Vercel)
-  src/            Own package.json, tsconfig.json, Dockerfile
-                  Uses `pg` driver (not @neondatabase/serverless)
+sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
+  src/            Python 3 service using databento SDK + psycopg2
+                  Ingests 7 futures symbols (ES, NQ, ZN, RTY, CL, GC, DX) + ES options
+                  Own requirements.txt, pyproject.toml, Dockerfile
+                  Uses psycopg2 (not @neondatabase/serverless) for Neon Postgres
+                  Sentry SDK for error tracking; VX deferred pending Databento availability
                   vercel.json ignoreCommand skips deploys for sidecar/, ml/, scripts/ changes
 
 scripts/          Backfill scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.)
@@ -175,7 +178,7 @@ Never edit `.env*` files with Claude. Never commit secrets.
 - **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, or `scripts/` change
 - **Long-running functions**: `api/analyze.ts` (800s), `api/cron/curate-lessons.ts` (780s), `api/cron/build-features.ts` (300s)
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
-- **Sidecar**: Deployed separately to Railway (own Dockerfile). Env vars (`TRADOVATE_*`, `DATABASE_URL`, Redis) are in Railway, not Vercel.
+- **Sidecar**: Python service deployed separately to Railway (own Dockerfile). Env vars (`DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`) are in Railway, not Vercel.
 
 ## Anthropic Integration
 
