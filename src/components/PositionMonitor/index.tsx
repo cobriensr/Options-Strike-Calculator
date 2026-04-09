@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { useIsOwner } from '../../hooks/useIsOwner';
 import { SectionBox } from '../ui';
+import { computeAggregatePortfolioRisk } from '../../utils/portfolio-risk';
 import { parseStatement, applyBSEstimates } from './statement-parser';
 import { formatPositionSummaryForClaude } from './position-helpers';
 import AccountOverview from './AccountOverview';
@@ -15,7 +16,21 @@ import type { DailyStatement } from './types';
 interface PositionMonitorProps {
   spotPrice: number;
   onPositionSummaryChange?: (summary: string | null) => void;
+  /**
+   * Aggregate portfolio risk threshold as % of NLV (FE-STATE-006).
+   * Warning banner fires when total effective max loss exceeds this.
+   * Defaults to 12% if not provided.
+   */
+  portfolioRiskThresholdPct?: number;
 }
+
+// ── Banner formatting helpers ──────────────────────────────
+const BANNER_CURRENCY_FMT = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
 
 // ── Self-contained time → T conversion ──────────────────
 
@@ -35,6 +50,7 @@ function timeToT(hour: number, minute: number): number | null {
 export default function PositionMonitor({
   spotPrice,
   onPositionSummaryChange,
+  portfolioRiskThresholdPct = 12,
 }: Readonly<PositionMonitorProps>) {
   const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
   // Snapshot spot price at upload time to avoid re-renders from
@@ -68,6 +84,43 @@ export default function PositionMonitor({
       return { ...rawStatement };
     }
   }, [rawStatement, uploadSpot, decayEnabled, simHour, simMinute]);
+
+  // FE-STATE-006 — aggregate portfolio risk gate.
+  //
+  // Summing across N open positions on every render is wasted work,
+  // so wrap the computation in `useMemo` with the minimal dep set
+  // (spreads, ICs, stopMultiplier, nlv, thresholdPct). Expose the raw
+  // number (for the banner readout) AND the primitive `isOverThreshold`
+  // boolean so downstream effects/consumers can subscribe to the
+  // boolean only (rerender-derived-state).
+  const spreads = statement?.spreads;
+  const ironCondors = statement?.ironCondors;
+  const nlv = statement?.accountSummary.netLiquidatingValue ?? 0;
+  const theoreticalMaxLoss = statement?.portfolioRisk.totalMaxLoss ?? 0;
+  const aggregateRisk = useMemo(
+    () =>
+      computeAggregatePortfolioRisk(
+        spreads ?? [],
+        ironCondors ?? [],
+        stopMultiplier,
+        nlv,
+        portfolioRiskThresholdPct,
+        theoreticalMaxLoss,
+      ),
+    [
+      spreads,
+      ironCondors,
+      stopMultiplier,
+      nlv,
+      portfolioRiskThresholdPct,
+      theoreticalMaxLoss,
+    ],
+  );
+  // Destructure so consumers can subscribe to the primitive boolean
+  // rather than the whole object (rerender-dependencies).
+  const aggregateIsOver = aggregateRisk.isOverThreshold;
+  const aggregateMaxLoss = aggregateRisk.effectiveMaxLoss;
+  const aggregatePctOfNlv = aggregateRisk.pctOfNlv;
 
   // Push parsed position summary to parent for Claude analysis context
   useEffect(() => {
@@ -239,6 +292,25 @@ export default function PositionMonitor({
       {/* Dashboard content */}
       {statement && !collapsed && (
         <div className="flex flex-col gap-5">
+          {/* FE-STATE-006 — Aggregate portfolio risk gate */}
+          {aggregateIsOver && (
+            <div
+              role="alert"
+              data-testid="portfolio-risk-banner"
+              className="border-danger bg-danger/10 text-danger flex items-start gap-3 rounded-lg border-2 px-4 py-3"
+            >
+              <span aria-hidden="true" className="text-xl leading-none">
+                {'\u26a0'}
+              </span>
+              <div className="flex-1 font-sans text-sm font-semibold">
+                Portfolio risk:{' '}
+                {BANNER_CURRENCY_FMT.format(Math.abs(aggregateMaxLoss))} (
+                {aggregatePctOfNlv.toFixed(1)}% of NLV) exceeds{' '}
+                {portfolioRiskThresholdPct}% threshold
+              </div>
+            </div>
+          )}
+
           {/* Data Quality Alerts */}
           <DataQualityAlerts warnings={statement.warnings} />
 

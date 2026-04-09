@@ -1,3 +1,4 @@
+import { computeEffectiveMaxLoss } from '../../utils/portfolio-risk';
 import type {
   AccountSummary,
   HedgePosition,
@@ -41,48 +42,6 @@ function heatColor(maxLoss: number, nlv: number): string {
   if (pct > 25) return 'text-danger';
   if (pct > 10) return 'text-caution';
   return 'text-success';
-}
-
-/**
- * Compute effective max loss using per-spread stop multiplier.
- * Each spread's effective loss = min(credit x multiplier, theoretical max loss).
- * For ICs, apply to each side independently (only one side can lose).
- */
-function computeEffectiveMaxLoss(
-  spreads: readonly Spread[],
-  ironCondors: readonly IronCondor[],
-  multiplier: number,
-): number {
-  let callSideRisk = 0;
-  let putSideRisk = 0;
-
-  // creditReceived and maxLoss are already total dollar values
-  // (per-contract credit * $100 multiplier * contracts), so no
-  // additional scaling needed.
-  for (const s of spreads) {
-    const effectiveLoss = Math.min(s.creditReceived * multiplier, s.maxLoss);
-    if (s.spreadType === 'CALL_CREDIT_SPREAD') {
-      callSideRisk += effectiveLoss;
-    } else {
-      putSideRisk += effectiveLoss;
-    }
-  }
-
-  for (const ic of ironCondors) {
-    const callEffective = Math.min(
-      ic.callSpread.creditReceived * multiplier,
-      ic.callSpread.maxLoss,
-    );
-    const putEffective = Math.min(
-      ic.putSpread.creditReceived * multiplier,
-      ic.putSpread.maxLoss,
-    );
-    callSideRisk += callEffective;
-    putSideRisk += putEffective;
-  }
-
-  // ICs can only lose on one side
-  return Math.max(callSideRisk, putSideRisk);
 }
 
 export default function PortfolioRiskSummary({

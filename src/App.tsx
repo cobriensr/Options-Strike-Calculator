@@ -111,6 +111,7 @@ export default function StrikeCalculator() {
     setBwbNarrowWidth,
     bwbWideMultiplier,
     setBwbWideMultiplier,
+    portfolioRiskThresholdPct,
     dSpot,
     dSpx,
     dVix,
@@ -798,6 +799,7 @@ export default function StrikeCalculator() {
                 <PositionMonitor
                   spotPrice={results?.spot ?? spxVal ?? 0}
                   onPositionSummaryChange={setCsvPositionSummary}
+                  portfolioRiskThresholdPct={portfolioRiskThresholdPct}
                 />
               </Suspense>
             </ErrorBoundary>

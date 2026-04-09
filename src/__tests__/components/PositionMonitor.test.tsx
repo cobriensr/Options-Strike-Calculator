@@ -590,6 +590,107 @@ describe('PositionMonitor', () => {
     expect(clickSpy).toHaveBeenCalledOnce();
   });
 
+  // ── FE-STATE-006 Aggregate Portfolio Risk Banner ────────
+
+  it('hides the aggregate risk banner when under the threshold', async () => {
+    // Default makeStatement: NLV 100_000, totalMaxLoss 920 ⇒ 0.92%
+    mockParseStatement.mockReturnValue(makeStatement());
+
+    render(<PositionMonitor spotPrice={5700} portfolioRiskThresholdPct={12} />);
+    await uploadFile();
+
+    expect(
+      screen.queryByTestId('portfolio-risk-banner'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the aggregate risk banner when over the threshold', async () => {
+    // Craft a statement whose theoretical total max loss exceeds 12% of NLV.
+    // NLV 10_000, totalMaxLoss 2_000 ⇒ 20% > 12% threshold.
+    const stmt = makeStatement({
+      accountSummary: {
+        netLiquidatingValue: 10_000,
+        stockBuyingPower: 20_000,
+        optionBuyingPower: 10_000,
+        equityCommissionsYtd: 0,
+      },
+      portfolioRisk: {
+        callSideRisk: 0,
+        putSideRisk: 2_000,
+        callHedgeValue: 0,
+        putHedgeValue: 0,
+        netCallRisk: 0,
+        netPutRisk: 2_000,
+        totalMaxLoss: 2_000,
+        totalCredit: 200,
+        totalContracts: 2,
+        spotPrice: 5700,
+        nearestShortStrikeDistance: 50,
+        nakedCount: 0,
+        breakevenLow: 5649.2,
+        breakevenHigh: null,
+        buyingPowerUsed: 2_000,
+        buyingPowerAvailable: 8_000,
+        buyingPowerUtilization: 0.2,
+        canAbsorbMaxLoss: true,
+        concentration: 1,
+      },
+    });
+    mockParseStatement.mockReturnValue(stmt);
+
+    render(<PositionMonitor spotPrice={5700} portfolioRiskThresholdPct={12} />);
+    await uploadFile();
+
+    const banner = screen.getByTestId('portfolio-risk-banner');
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveAttribute('role', 'alert');
+    // Format: "Portfolio risk: $2,000 (20.0% of NLV) exceeds 12% threshold"
+    expect(banner).toHaveTextContent(/Portfolio risk:\s*\$2,000/);
+    expect(banner).toHaveTextContent(/20\.0% of NLV/);
+    expect(banner).toHaveTextContent(/exceeds 12% threshold/);
+  });
+
+  it('respects a custom threshold prop', async () => {
+    // NLV 10_000, totalMaxLoss 2_000 ⇒ 20%. Threshold 25 ⇒ hidden.
+    const stmt = makeStatement({
+      accountSummary: {
+        netLiquidatingValue: 10_000,
+        stockBuyingPower: 20_000,
+        optionBuyingPower: 10_000,
+        equityCommissionsYtd: 0,
+      },
+      portfolioRisk: {
+        callSideRisk: 0,
+        putSideRisk: 2_000,
+        callHedgeValue: 0,
+        putHedgeValue: 0,
+        netCallRisk: 0,
+        netPutRisk: 2_000,
+        totalMaxLoss: 2_000,
+        totalCredit: 200,
+        totalContracts: 2,
+        spotPrice: 5700,
+        nearestShortStrikeDistance: 50,
+        nakedCount: 0,
+        breakevenLow: 5649.2,
+        breakevenHigh: null,
+        buyingPowerUsed: 2_000,
+        buyingPowerAvailable: 8_000,
+        buyingPowerUtilization: 0.2,
+        canAbsorbMaxLoss: true,
+        concentration: 1,
+      },
+    });
+    mockParseStatement.mockReturnValue(stmt);
+
+    render(<PositionMonitor spotPrice={5700} portfolioRiskThresholdPct={25} />);
+    await uploadFile();
+
+    expect(
+      screen.queryByTestId('portfolio-risk-banner'),
+    ).not.toBeInTheDocument();
+  });
+
   // ── Dashboard not shown when collapsed ──────────────────
 
   it('does not render child components when collapsed', async () => {

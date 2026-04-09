@@ -105,6 +105,12 @@ export function useAppState() {
   const [bwbNarrowWidth, setBwbNarrowWidth] = useState(20);
   const [bwbWideMultiplier, setBwbWideMultiplier] = useState(2);
 
+  // FE-STATE-006: aggregate portfolio risk threshold as % of NLV.
+  // Warning fires when total effective max loss exceeds this % of NLV.
+  // Default 12% is mid-range of audit's 10-15% suggestion.
+  const [portfolioRiskThresholdPct, setPortfolioRiskThresholdPct] =
+    useState(12);
+
   // Debounced values
   const dSpot = useDebounced(spotPrice);
   const dSpx = useDebounced(spxDirect);
@@ -181,6 +187,10 @@ export function useAppState() {
       bwbWideMultiplier,
       setBwbWideMultiplier,
 
+      // Portfolio risk gate (FE-STATE-006)
+      portfolioRiskThresholdPct,
+      setPortfolioRiskThresholdPct,
+
       // Debounced
       dSpot,
       dSpx,
@@ -217,6 +227,7 @@ export function useAppState() {
     showBWB,
     bwbNarrowWidth,
     bwbWideMultiplier,
+    portfolioRiskThresholdPct,
     dSpot,
     dSpx,
     dVix,
