@@ -65,6 +65,24 @@ class DatabentoClient:
         # flagged by the audit under SIDE-006.
         self._shutting_down = False
 
+        # SIDE-012: definition-lag drop tracking. When a trade arrives
+        # before its Definition record, _handle_trade silently dropped
+        # it. Now we count the drops and emit a periodic summary so
+        # operators can see if definition lag is systematic vs transient.
+        self._definition_lag_drops = 0
+        self._last_lag_summary_ts = 0.0
+
+        # SIDE-011: reconnect gap observability. When the SDK reconnects
+        # after a disconnect, we want to know (a) how long the gap was
+        # and (b) whether the price jumped discontinuously across it.
+        # This maps symbol -> last close seen before the disconnect, so
+        # the first bar after reconnect can sanity-check itself against
+        # the pre-disconnect level.
+        self._last_close_before_disconnect: dict[str, float] = {}
+        # Set by _on_reconnect() so the next bar handler for each
+        # symbol knows it should run the ATR-style sanity check.
+        self._reconnect_sanity_check_pending: set[str] = set()
+
         # Map raw symbol prefixes to internal names for resolving
         # SDK symbology_map values (e.g., "ESM5" -> "ES")
         self._prefix_to_internal: dict[str, str] = {}
@@ -449,14 +467,69 @@ class DatabentoClient:
         log.error("Databento stream error: %s", exc)
         self._connected = False
 
+    # Reconnect-gap thresholds (SIDE-011). The audit's original
+    # prescription was "fire Sentry breadcrumb, request backfill,
+    # validate first-bar price doesn't differ by >1 ATR". We don't
+    # have ATR values in the sidecar, so we use a 2% price-move
+    # proxy for the first-bar sanity check. Backfill is a future
+    # feature — the gap is logged with full structured context so
+    # a manual backfill query can be issued if needed.
+    RECONNECT_GAP_WARNING_S = 60.0
+    RECONNECT_FIRST_BAR_SANITY_PCT = 2.0
+
     def _on_reconnect(self, last_ts: int, new_start_ts: int) -> None:
-        """Called when the client reconnects after a disconnect."""
-        log.info(
-            "Databento reconnected: gap from %s to %s",
-            last_ts,
-            new_start_ts,
-        )
+        """Called when the client reconnects after a disconnect.
+
+        Computes the gap duration and reports to Sentry via the
+        capture_message helper if the gap exceeds
+        RECONNECT_GAP_WARNING_S. Also flags every currently-tracked
+        symbol for a first-bar price-jump sanity check on the next
+        OHLCV record, so discontinuous jumps across the gap get
+        logged for manual review. See SIDE-011.
+        """
         self._connected = True
+
+        # Databento passes timestamps as nanoseconds since epoch.
+        # Convert to seconds for the gap duration calculation.
+        try:
+            last_s = last_ts / 1e9
+            new_s = new_start_ts / 1e9
+            gap_s = max(0.0, new_s - last_s)
+        except Exception:
+            gap_s = 0.0
+
+        context = {
+            "last_ts_ns": last_ts,
+            "new_start_ts_ns": new_start_ts,
+            "gap_s": round(gap_s, 2),
+        }
+
+        if gap_s >= self.RECONNECT_GAP_WARNING_S:
+            # Significant gap — surface to Sentry as a warning event.
+            # The structured context includes the gap duration so the
+            # Sentry UI can filter and alert on long gaps.
+            from sentry_setup import capture_message
+
+            capture_message(
+                f"Databento reconnect gap {gap_s:.1f}s exceeds "
+                f"{self.RECONNECT_GAP_WARNING_S:.0f}s threshold",
+                level="warning",
+                context=context,
+            )
+        else:
+            log.info(
+                "Databento reconnected after %.1fs gap",
+                gap_s,
+                extra={"symbol": None},
+            )
+
+        # Arm the first-bar sanity check for every symbol that was
+        # being tracked before the disconnect. When the next bar
+        # arrives for each symbol, _handle_ohlcv will compare it to
+        # _last_close_before_disconnect and warn on discontinuity.
+        self._reconnect_sanity_check_pending = set(
+            self._last_close_before_disconnect.keys()
+        )
 
     def _resolve_symbol(self, record: Any) -> str | None:
         """Resolve a record's instrument_id to our internal symbol.
@@ -526,10 +599,39 @@ class DatabentoClient:
         # Normalize to minute boundary
         ts = ts.replace(second=0, microsecond=0)
 
+        # SIDE-011: first-bar-after-reconnect sanity check. If this
+        # symbol was armed for a sanity check by _on_reconnect, compare
+        # the new close to the last close seen before the disconnect
+        # and warn on discontinuous jumps that exceed the threshold.
+        if symbol in self._reconnect_sanity_check_pending:
+            self._reconnect_sanity_check_pending.discard(symbol)
+            prev_close = self._last_close_before_disconnect.get(symbol)
+            if prev_close is not None and prev_close > 0:
+                new_close = float(close)
+                pct_move = abs((new_close - prev_close) / prev_close) * 100
+                if pct_move >= self.RECONNECT_FIRST_BAR_SANITY_PCT:
+                    from sentry_setup import capture_message
+
+                    capture_message(
+                        f"{symbol} first-bar-after-reconnect price jump "
+                        f"{pct_move:.2f}% exceeds "
+                        f"{self.RECONNECT_FIRST_BAR_SANITY_PCT}% threshold",
+                        level="warning",
+                        context={
+                            "symbol": symbol,
+                            "prev_close": prev_close,
+                            "new_close": new_close,
+                            "pct_move": round(pct_move, 2),
+                        },
+                    )
+
         # Write to DB
         try:
             upsert_futures_bar(symbol, ts, open_, high, low, close, volume)
             self._last_bar_ts = time.time()
+            # Keep _last_close_before_disconnect current so the
+            # sanity check above has fresh data to compare against.
+            self._last_close_before_disconnect[symbol] = float(close)
             log.debug(
                 "Bar: %s %s O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
                 symbol,
@@ -556,6 +658,41 @@ class DatabentoClient:
             )
             self.subscribe_es_options(float(close))
 
+    # SIDE-012: emit a lag-drop summary at most once per this interval.
+    DEFINITION_LAG_SUMMARY_INTERVAL_S = 60.0
+
+    def _maybe_log_definition_lag_summary(self) -> None:
+        """Emit a periodic summary of definition-lag drops (SIDE-012).
+
+        Called from _handle_trade. If any trades have been dropped
+        since the last summary AND at least
+        DEFINITION_LAG_SUMMARY_INTERVAL_S seconds have passed, log a
+        structured warning (and forward to Sentry) then reset the
+        counter. This converts a previously-silent failure mode into
+        a visible one without spamming logs on every drop.
+        """
+        if self._definition_lag_drops == 0:
+            return
+        now = time.time()
+        if now - self._last_lag_summary_ts < self.DEFINITION_LAG_SUMMARY_INTERVAL_S:
+            return
+        drops = self._definition_lag_drops
+        self._definition_lag_drops = 0
+        self._last_lag_summary_ts = now
+
+        from sentry_setup import capture_message
+
+        capture_message(
+            f"Dropped {drops} ES option trades waiting for Definition records",
+            level="warning",
+            context={
+                "drops": drops,
+                "interval_s": round(
+                    self.DEFINITION_LAG_SUMMARY_INTERVAL_S, 1
+                ),
+            },
+        )
+
     def _handle_trade(self, record: Any) -> None:
         """Process an ES options trade record."""
         if self._shutting_down:
@@ -574,6 +711,11 @@ class DatabentoClient:
         iid = getattr(record, "instrument_id", 0)
         instrument_info = self._get_option_info(iid)
         if instrument_info is None:
+            # SIDE-012: the trade arrived before its Definition record.
+            # Count it and let the periodic summary surface the total.
+            # Previously this was a silent return with no visibility.
+            self._definition_lag_drops += 1
+            self._maybe_log_definition_lag_summary()
             return  # Not an option we're tracking
 
         strike = instrument_info["strike"]
