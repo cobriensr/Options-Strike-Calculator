@@ -5,11 +5,11 @@ PYTHON ?= .venv/bin/python
 
 .PHONY: lint format test test-cov test-html review clean help
 
-lint: ## Check code quality (ruff lint + format check)
-	$(PYTHON) -m ruff check src/ tests/
-	$(PYTHON) -m ruff format --check src/ tests/
+lint: ## Check and auto-fix code quality (ruff lint + format)
+	$(PYTHON) -m ruff check --fix src/ tests/
+	$(PYTHON) -m ruff format src/ tests/
 
-format: ## Auto-fix lint and formatting issues
+format: ## Auto-fix formatting and lint issues
 	$(PYTHON) -m ruff check --fix src/ tests/
 	$(PYTHON) -m ruff format src/ tests/
 
