@@ -41,6 +41,10 @@ const CLOSE_WINDOW_TIME = new Date('2026-03-24T21:00:00.000Z');
 const OUTSIDE_WINDOW_TIME = new Date('2026-03-24T14:00:00.000Z');
 // Saturday 2026-03-28 at 5:00 PM ET
 const WEEKEND_TIME = new Date('2026-03-28T21:00:00.000Z');
+// MLK Day 2026 (Monday 2026-01-19) at 5:00 PM ET = 22:00 UTC
+// — full NYSE holiday, inside the post-close window, to exercise the
+// trading-day gate AFTER the isAfterClose() time window passes.
+const HOLIDAY_CLOSE_WINDOW_TIME = new Date('2026-01-19T22:00:00.000Z');
 
 // Candle timestamps for 2026-03-24, starting 9:30 AM ET = 14:30 UTC
 function makeCandles() {
@@ -193,6 +197,61 @@ describe('fetch-outcomes handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toHaveProperty('settlement');
     expect(mockedSchwabFetch).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Trading-day gate (BE-CRON-009) ────────────────────────
+
+  it('skips with not_trading_day reason on a NYSE holiday (MLK Day 2026)', async () => {
+    vi.setSystemTime(HOLIDAY_CLOSE_WINDOW_TIME);
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({
+      skipped: true,
+      reason: 'not_trading_day',
+      date: '2026-01-19',
+    });
+    expect(mockedSchwabFetch).not.toHaveBeenCalled();
+    expect(mockSaveOutcome).not.toHaveBeenCalled();
+  });
+
+  it('force=true bypasses the trading-day gate and runs on a holiday', async () => {
+    vi.setSystemTime(HOLIDAY_CLOSE_WINDOW_TIME);
+    // Simulate Schwab returning candles dated for MLK Day (even though in
+    // reality Schwab wouldn't) — the point of this test is that the handler
+    // makes the call rather than short-circuiting.
+    const mlkBase = new Date('2026-01-19T14:30:00.000Z').getTime();
+    const mlkCandles = [
+      {
+        open: 5800,
+        high: 5810,
+        low: 5795,
+        close: 5805,
+        volume: 10,
+        datetime: mlkBase,
+      },
+    ];
+    mockedSchwabFetch.mockResolvedValueOnce(makeIntradayResponse(mlkCandles));
+    mockedSchwabFetch.mockResolvedValueOnce(makeQuotesResponse());
+    mockSaveOutcome.mockResolvedValueOnce(undefined);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { force: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockedSchwabFetch).toHaveBeenCalledTimes(2);
+    expect(res._json).toMatchObject({ date: '2026-01-19' });
   });
 
   // ── Successful fetch and save ─────────────────────────────

@@ -31,6 +31,7 @@ import {
   getETDayOfWeek,
   getETDateStr,
 } from '../../src/utils/timezone.js';
+import { isTradingDay } from '../../src/data/marketHours.js';
 import { buildAnalysisSummary, generateEmbedding } from '../_lib/embeddings.js';
 
 // ── Time window check ──────────────────────────────────────
@@ -97,6 +98,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   });
   if (!guard) return;
   const { today: dateStr } = guard;
+
+  // Holiday gate: skip NYSE-closed days so we don't silently report success
+  // after calling Schwab on Thanksgiving/Christmas/etc. `force=true` bypasses
+  // this so a trader can manually re-run on any calendar day.
+  if (!force && !isTradingDay(dateStr)) {
+    logger.info(
+      { date: dateStr },
+      'fetch-outcomes: skipping non-trading day',
+    );
+    return res
+      .status(200)
+      .json({ skipped: true, reason: 'not_trading_day', date: dateStr });
+  }
 
   const startTime = Date.now();
   const now = new Date();
