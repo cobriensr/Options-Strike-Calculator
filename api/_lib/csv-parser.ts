@@ -608,6 +608,92 @@ export function buildFullSummary(parsed: ParsedCSV, spxPrice?: number): string {
   return lines.join('\n');
 }
 
+// ── Helper: CSV-001 trade bucketing ──────────────────────────
+//
+// Parse a TOS trade-exec-time string into milliseconds-since-midnight.
+// TOS emits these observed shapes:
+//   - "HH:MM:SS"                  (e.g., "09:31:42")
+//   - "HH:MM:SS.fff"              (e.g., "09:31:42.140" — sub-second variant)
+//   - "HH:MM:SS AM/PM"            (rare 12-hour export format)
+//   - "M/D/YY HH:MM:SS[.fff]"     (the common format in real TOS exports —
+//                                  includes a date prefix before the time)
+//   - "M/D/YY HH:MM:SS AM/PM"     (combined date + 12-hour format)
+// The regex anchors only at the end of the string (no `^` start anchor)
+// so any optional date prefix before the time is ignored.
+// Returns 0 on unparseable input so callers can gracefully treat
+// unparseable rows as belonging to the earliest bucket (which is
+// strictly safer than dropping them).
+function tradeTimeToMs(tradeTime: string): number {
+  const match = tradeTime
+    .trim()
+    .match(/(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?\s*(AM|PM)?$/i);
+  if (!match) return 0;
+  let hours = Number.parseInt(match[1]!, 10);
+  const minutes = Number.parseInt(match[2]!, 10);
+  const seconds = Number.parseInt(match[3]!, 10);
+  // Pad/truncate the fractional-second portion to exactly 3 digits so
+  // ".05" becomes 50ms (not 5ms) and ".1234" becomes 123ms. The padEnd
+  // guarantees the string is always at least 3 chars long (e.g. '' → '000').
+  const msStr = (match[4] ?? '').padEnd(3, '0').slice(0, 3);
+  const ms = Number.parseInt(msStr, 10);
+  const ampm = match[5]?.toUpperCase();
+  if (ampm === 'PM' && hours < 12) hours += 12;
+  if (ampm === 'AM' && hours === 12) hours = 0;
+  return ((hours * 60 + minutes) * 60 + seconds) * 1000 + ms;
+}
+
+// Bucket size window. 1 second is generous enough to catch any
+// split-venue or sub-second dispatch offset TOS has been observed
+// to emit, but narrow enough that two genuinely distinct orders
+// placed by a human are almost never within it.
+const TRADE_BUCKET_WINDOW_MS = 1000;
+
+/**
+ * Group trades into buckets where each bucket holds the legs of one
+ * logical fill. See the comment block at the call site in
+ * `buildOpenSpreadsFromTrades` for the CSV-001 rationale.
+ *
+ * Bucket boundaries:
+ * - Start a new bucket when the current trade's timestamp is more
+ *   than `TRADE_BUCKET_WINDOW_MS` past the first trade of the
+ *   previous bucket (so each bucket spans at most 1 second total,
+ *   no transitive chaining).
+ * - Start a new bucket when the current trade's `spreadType` differs
+ *   from the first trade of the previous bucket — TOS tags each
+ *   logical order with a structure label (VERTICAL, BUTTERFLY,
+ *   IRON CONDOR, etc.) and two adjacent orders of different types
+ *   must never merge.
+ */
+function bucketTradesByTimeWindow(
+  allTrades: readonly ParsedTrade[],
+): ParsedTrade[][] {
+  const sorted = [...allTrades].sort(
+    (a, b) => tradeTimeToMs(a.execTime) - tradeTimeToMs(b.execTime),
+  );
+  const buckets: ParsedTrade[][] = [];
+  for (const trade of sorted) {
+    const t = tradeTimeToMs(trade.execTime);
+    const lastBucket = buckets.at(-1);
+    if (lastBucket != null) {
+      const firstInBucket = lastBucket[0]!;
+      const bucketStart = tradeTimeToMs(firstInBucket.execTime);
+      const withinWindow = t - bucketStart <= TRADE_BUCKET_WINDOW_MS;
+      // Case-normalize spreadType for the discriminator so hypothetical
+      // casing drift in a future TOS export format (e.g. "Vertical"
+      // vs "VERTICAL") does not split a single fill into two buckets.
+      const sameSpreadType =
+        firstInBucket.spreadType.toUpperCase() ===
+        trade.spreadType.toUpperCase();
+      if (withinWindow && sameSpreadType) {
+        lastBucket.push(trade);
+        continue;
+      }
+    }
+    buckets.push([trade]);
+  }
+  return buckets;
+}
+
 // ── Helper: build open spreads from trade history ────────────
 // Uses explicit VERTICAL trade pairs instead of flat leg matching,
 // so shared long strikes (e.g., 6525P +40 from two spreads) are
@@ -633,15 +719,26 @@ function buildOpenSpreadsFromTrades(
   const pairs: SpreadPair[] = [];
   const bflyLines: string[] = [];
 
-  // Group trades by time (trades with same execTime are one VERTICAL)
-  const tradesByTime = new Map<string, ParsedTrade[]>();
-  for (const t of allTrades) {
-    const existing = tradesByTime.get(t.execTime) ?? [];
-    existing.push(t);
-    tradesByTime.set(t.execTime, existing);
-  }
+  // Group trades into buckets where each bucket holds the legs of one
+  // logical fill. CSV-001 hardening: the original implementation bucketed
+  // by exact `execTime` string equality, which breaks when TOS logs two
+  // legs of the same vertical at sub-second offsets (e.g. 09:31:42.110 vs
+  // 09:31:42.140 — happens on split-venue fills). Those legs would land in
+  // separate singleton buckets, get skipped by the `legs.length < 2` guard,
+  // and silently drop the spread from the output — causing
+  // `buildFullSummary` to fall through to the flat-legs fallback path
+  // which can't distinguish shared long strikes and ends up confusing
+  // Claude into thinking there are naked legs.
+  //
+  // Fix: sort trades by parsed timestamp and sweep them into buckets
+  // where each bucket contains all trades within
+  // TRADE_BUCKET_WINDOW_MS of the bucket's first trade, AND with
+  // matching `spreadType` (so two unrelated orders of different types
+  // — e.g. a VERTICAL and a BUTTERFLY — never merge even if they land
+  // within the same second).
+  const buckets = bucketTradesByTimeWindow(allTrades);
 
-  for (const [time, legs] of tradesByTime) {
+  for (const legs of buckets) {
     if (legs.length < 2) continue;
 
     const openLegs = legs.filter((l) => l.posEffect === 'TO OPEN');
@@ -695,7 +792,12 @@ function buildOpenSpreadsFromTrades(
           qty: Math.abs(sell.quantity),
           credit: sell.netPrice,
           width: Math.abs(sell.strike - buy.strike),
-          openTime: time,
+          // Use the bucket's earliest leg time as the canonical open time.
+          // For same-millisecond buckets this matches the legacy behavior.
+          // For sub-second-offset buckets this picks the first leg, which
+          // is close enough — the two legs are within 1 second of each
+          // other by construction.
+          openTime: legs[0]!.execTime,
           closed: false,
         });
       }

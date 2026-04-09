@@ -680,3 +680,139 @@ Symbol,Description,P/L Open
     expect(parsed.closedSpreads).toHaveLength(4);
   });
 });
+
+// ── CSV-001: Sub-second trade bucketing (±1s window + spreadType guard) ─────
+//
+// Regression suite for the audit finding that sub-second offsets on two
+// legs of the same vertical would split them into singleton buckets,
+// drop the spread from buildOpenSpreadsFromTrades's output, and cause
+// buildFullSummary to fall through to the less accurate flat-legs path.
+// The fix (bucketTradesByTimeWindow) sorts trades by parsed timestamp,
+// buckets trades within 1 second of each other, and uses spreadType as
+// a secondary discriminator so two unrelated orders within the same
+// second never merge.
+describe('parseFullCSV — CSV-001 sub-second trade bucketing', () => {
+  // Helper: wrap an Account Trade History body in the full CSV skeleton
+  // so parseFullCSV can locate the section header.
+  function csvWithTradeHistory(rows: string): string {
+    return `This document was exported from the paperMoney platform.
+
+Account Statement for D-TEST since 4/9/26 through 4/9/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+4/9/26,00:00:00,BAL,,Cash balance at the start of business day,,,,100000.00
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+
+Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+${rows}
+
+Profits and Losses
+Symbol,Description,P/L Open
+`;
+  }
+
+  it('[classic] groups two legs of one vertical when they share the same execTime', () => {
+    // Baseline regression guard: the legacy exact-string path must
+    // still work. Parent row has execTime; child row is blank and
+    // inherits the parent's execTime via the parser's carry-forward.
+    const csv = csvWithTradeHistory(
+      `,4/9/26 09:30:00,VERTICAL,SELL,-5,TO OPEN,SPX,09 APR 26,6600,PUT,2.10,1.05,LMT
+,,,BUY,+5,TO OPEN,SPX,09 APR 26,6580,PUT,1.05,CREDIT,`,
+    );
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    // Expect the spread to appear in the trade-history-derived block.
+    expect(summary).toContain('PCS 6600/6580');
+    expect(summary).toContain('defined-risk spread');
+  });
+
+  it('[bug fix] groups two legs of one vertical with sub-second offsets (100ms apart)', () => {
+    // The audit scenario: TOS splits a vertical across venues and
+    // emits both legs as parent rows (non-empty execTime) with
+    // sub-second offsets. Without the fix, these land in separate
+    // singleton buckets and get dropped.
+    const csv = csvWithTradeHistory(
+      `,4/9/26 09:30:00.100,VERTICAL,SELL,-5,TO OPEN,SPX,09 APR 26,6600,PUT,2.10,1.05,LMT
+,4/9/26 09:30:00.200,VERTICAL,BUY,+5,TO OPEN,SPX,09 APR 26,6580,PUT,1.05,CREDIT,LMT`,
+    );
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('PCS 6600/6580');
+    expect(summary).toContain('defined-risk spread');
+  });
+
+  it('[bug fix] groups two legs of one vertical even at 950ms apart (inside the 1s window)', () => {
+    // Boundary test: 950ms offset is still within the 1000ms window.
+    const csv = csvWithTradeHistory(
+      `,4/9/26 09:30:00.000,VERTICAL,SELL,-5,TO OPEN,SPX,09 APR 26,6600,PUT,2.10,1.05,LMT
+,4/9/26 09:30:00.950,VERTICAL,BUY,+5,TO OPEN,SPX,09 APR 26,6580,PUT,1.05,CREDIT,LMT`,
+    );
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('PCS 6600/6580');
+  });
+
+  it('[guard] does NOT merge two distinct VERTICAL orders more than 1s apart', () => {
+    // Two legitimately separate verticals placed 2 seconds apart.
+    // They must NOT merge into a 4-leg bucket (which would then fall
+    // through both the 2-leg and 3-leg branches and silently drop).
+    const csv = csvWithTradeHistory(
+      `,4/9/26 09:30:00.000,VERTICAL,SELL,-5,TO OPEN,SPX,09 APR 26,6600,PUT,2.10,1.05,LMT
+,,,BUY,+5,TO OPEN,SPX,09 APR 26,6580,PUT,1.05,CREDIT,
+,4/9/26 09:30:02.000,VERTICAL,SELL,-5,TO OPEN,SPX,09 APR 26,6700,CALL,1.90,0.95,LMT
+,,,BUY,+5,TO OPEN,SPX,09 APR 26,6720,CALL,0.95,CREDIT,`,
+    );
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    // Both spreads should appear independently.
+    expect(summary).toContain('PCS 6600/6580');
+    expect(summary).toContain('CCS 6700/6720');
+    // The header reports the accurate count, not a merged 4-leg bucket.
+    expect(summary).toMatch(/2 defined-risk spreads/);
+  });
+
+  it('[guard] does NOT merge adjacent orders of DIFFERENT spreadType even within 1s', () => {
+    // A VERTICAL and a BUTTERFLY placed within 500ms of each other.
+    // The spreadType discriminator must keep them separate so we
+    // correctly report one vertical AND one butterfly.
+    const csv = csvWithTradeHistory(
+      `,4/9/26 09:30:00.000,VERTICAL,SELL,-5,TO OPEN,SPX,09 APR 26,6600,PUT,2.10,1.05,LMT
+,,,BUY,+5,TO OPEN,SPX,09 APR 26,6580,PUT,1.05,CREDIT,
+,4/9/26 09:30:00.500,BUTTERFLY,BUY,+2,TO OPEN,SPX,09 APR 26,6680,CALL,2.00,0.50,LMT
+,,,SELL,-4,TO OPEN,SPX,09 APR 26,6700,CALL,1.20,DEBIT,
+,,,BUY,+2,TO OPEN,SPX,09 APR 26,6720,CALL,0.70,DEBIT,`,
+    );
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('PCS 6600/6580');
+    expect(summary).toContain('BFLY 6680/6700/6720 CALL');
+  });
+
+  it('[bug fix] groups three legs of one butterfly with sub-second offsets', () => {
+    // Same failure mode as the vertical case, but for a butterfly.
+    const csv = csvWithTradeHistory(
+      `,4/9/26 09:30:00.100,BUTTERFLY,BUY,+2,TO OPEN,SPX,09 APR 26,6680,CALL,2.00,0.50,LMT
+,4/9/26 09:30:00.250,BUTTERFLY,SELL,-4,TO OPEN,SPX,09 APR 26,6700,CALL,1.20,DEBIT,LMT
+,4/9/26 09:30:00.400,BUTTERFLY,BUY,+2,TO OPEN,SPX,09 APR 26,6720,CALL,0.70,DEBIT,LMT`,
+    );
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('BFLY 6680/6700/6720 CALL');
+  });
+
+  it('[sanity] handles AM/PM formatted execTime strings correctly', () => {
+    // Defensive: exercise the 12-hour format branch of tradeTimeToMs
+    // even though the majority of TOS exports use 24-hour format.
+    const csv = csvWithTradeHistory(
+      `,4/9/26 9:30:00 AM,VERTICAL,SELL,-5,TO OPEN,SPX,09 APR 26,6600,PUT,2.10,1.05,LMT
+,,,BUY,+5,TO OPEN,SPX,09 APR 26,6580,PUT,1.05,CREDIT,`,
+    );
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('PCS 6600/6580');
+  });
+});
