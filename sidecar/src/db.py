@@ -6,6 +6,7 @@ not Vercel serverless. Connection pooling via psycopg2.pool.
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
@@ -18,6 +19,21 @@ import psycopg2.pool
 from logger_setup import log
 
 _pool: psycopg2.pool.ThreadedConnectionPool | None = None
+
+# Default timeout for borrowing a connection from the pool. If the pool
+# is saturated (all maxconn connections are in use), the borrow will
+# fail with PoolTimeoutError after this many seconds rather than
+# blocking the Databento callback thread forever. See SIDE-005.
+DEFAULT_GETCONN_TIMEOUT_S = 10.0
+
+# Log a warning when a borrow takes longer than this threshold. This
+# is the early-warning signal for pool saturation before the full
+# timeout kicks in.
+SLOW_GETCONN_WARNING_MS = 1000
+
+
+class PoolTimeoutError(RuntimeError):
+    """Raised when `get_conn` fails to borrow a connection in time."""
 
 
 def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
@@ -39,11 +55,71 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     return _pool
 
 
+def _getconn_with_timeout(
+    pool: psycopg2.pool.ThreadedConnectionPool,
+    timeout_s: float,
+) -> Any:
+    """Borrow a connection from the pool with a deadline.
+
+    psycopg2's `ThreadedConnectionPool.getconn()` doesn't support a
+    native timeout — it raises `PoolError` immediately if the pool is
+    exhausted, but only after consuming a lock. We poll it with a short
+    backoff so a transient saturation blip (e.g. one slow query) doesn't
+    immediately kill the caller.
+
+    Raises PoolTimeoutError if no connection becomes available within
+    `timeout_s` seconds. Callers that need to retry should catch this
+    exception and decide whether to back off or fail.
+    """
+    start = time.monotonic()
+    deadline = start + timeout_s
+    backoff_s = 0.005  # 5ms initial poll interval
+
+    while True:
+        try:
+            conn = pool.getconn()
+            elapsed_ms = (time.monotonic() - start) * 1000.0
+            if elapsed_ms > SLOW_GETCONN_WARNING_MS:
+                # Lazy import to avoid a circular dep and to keep
+                # sentry_setup optional (e.g., for unit tests that don't
+                # install sentry_sdk).
+                try:
+                    from sentry_setup import capture_message
+
+                    capture_message(
+                        "db pool getconn was slow",
+                        level="warning",
+                        context={"elapsed_ms": round(elapsed_ms, 1)},
+                    )
+                except Exception:
+                    log.warning("db pool getconn slow: %.1fms", elapsed_ms)
+            return conn
+        except psycopg2.pool.PoolError:
+            # Pool is exhausted. Sleep a bit and retry until the deadline.
+            if time.monotonic() >= deadline:
+                elapsed_ms = (time.monotonic() - start) * 1000.0
+                raise PoolTimeoutError(
+                    f"db pool saturated: could not borrow a connection "
+                    f"within {timeout_s:.1f}s (waited {elapsed_ms:.0f}ms)"
+                )
+            time.sleep(backoff_s)
+            backoff_s = min(backoff_s * 2, 0.2)  # cap at 200ms
+
+
 @contextmanager
-def get_conn() -> Generator[Any, None, None]:
-    """Borrow a connection from the pool, auto-return on exit."""
+def get_conn(
+    timeout_s: float = DEFAULT_GETCONN_TIMEOUT_S,
+) -> Generator[Any, None, None]:
+    """Borrow a connection from the pool, auto-return on exit.
+
+    Raises `PoolTimeoutError` if the pool is saturated for longer than
+    `timeout_s` seconds. Logs a warning (and reports to Sentry) if a
+    successful borrow took longer than `SLOW_GETCONN_WARNING_MS`
+    milliseconds, so operators see pool pressure building before it
+    turns into full timeouts. See SIDE-005.
+    """
     pool = get_pool()
-    conn = pool.getconn()
+    conn = _getconn_with_timeout(pool, timeout_s)
     try:
         yield conn
         conn.commit()

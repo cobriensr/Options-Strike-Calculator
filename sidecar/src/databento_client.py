@@ -59,6 +59,12 @@ class DatabentoClient:
         self._options_strikes = OptionsStrikeSet()
         self._lock = threading.Lock()
 
+        # Shutdown barrier: set True at the start of stop() so in-flight
+        # Databento callbacks can early-return before initiating a new DB
+        # write. Prevents the "callback mid-flight when pool drains" race
+        # flagged by the audit under SIDE-006.
+        self._shutting_down = False
+
         # Map raw symbol prefixes to internal names for resolving
         # SDK symbology_map values (e.g., "ESM5" -> "ES")
         self._prefix_to_internal: dict[str, str] = {}
@@ -252,6 +258,8 @@ class DatabentoClient:
 
     def _handle_ohlcv_from_client(self, record: Any, client: db.Live | None) -> None:
         """Process an OHLCV bar using a specific client's symbology map."""
+        if self._shutting_down:
+            return
         from db import upsert_futures_bar
 
         iid = getattr(record, "instrument_id", None)
@@ -386,10 +394,22 @@ class DatabentoClient:
     def _handle_vxm_ohlcv(self, record: Any) -> None:
         """Process a VX OHLCV-1m bar.
 
+        Note: VX is not yet available from Databento as of 2026-04-08 —
+        Databento is working on it. This method is wired up and ready
+        but the XCBF.PITCH subscription in _start_vxm_client will either
+        fail cleanly or emit zero records until VX goes live.
+
         VX.FUT (front month) and VX.FUT.1 (second month) each get
-        a unique instrument_id. We assign VX1 to the first seen and
-        VX2 to the second, then route through the normal bar handler.
+        a unique instrument_id. We currently assign VX1 to the first
+        seen and VX2 to the second — but this is order-dependent and
+        will break on a sidecar restart if Databento re-sends the
+        instruments in a different order. When VX goes live, this
+        mapping MUST be rewritten to use the contract month from the
+        Definition message (Databento provides `expiration` on
+        definition records). See SIDE-004 in the audit.
         """
+        if self._shutting_down:
+            return
         from db import upsert_futures_bar
 
         iid = getattr(record, "instrument_id", None)
@@ -482,6 +502,8 @@ class DatabentoClient:
 
     def _handle_ohlcv(self, record: Any) -> None:
         """Process an OHLCV-1m bar record."""
+        if self._shutting_down:
+            return
         from db import upsert_futures_bar
 
         symbol = self._resolve_symbol(record)
@@ -536,6 +558,8 @@ class DatabentoClient:
 
     def _handle_trade(self, record: Any) -> None:
         """Process an ES options trade record."""
+        if self._shutting_down:
+            return
         # Map Databento Side enum to our char
         side = getattr(record, "side", None)
         if side == Side.ASK:
@@ -573,6 +597,8 @@ class DatabentoClient:
 
     def _handle_stat(self, record: Any) -> None:
         """Process a Statistics record (OI, settlement, IV, delta)."""
+        if self._shutting_down:
+            return
         from db import upsert_options_daily
 
         stat_type = record.stat_type
@@ -738,8 +764,25 @@ class DatabentoClient:
         return self._option_definitions.get(instrument_id)
 
     def stop(self) -> None:
-        """Gracefully stop all Databento clients."""
+        """Gracefully stop all Databento clients.
+
+        Shutdown sequence (SIDE-006):
+        1. Set the shutdown barrier flag so in-flight callbacks
+           early-return before initiating new DB writes.
+        2. Brief pause to let any callbacks currently inside a
+           `with get_conn():` block finish their upsert + putconn.
+        3. Stop each Databento client (ignoring errors individually).
+        4. Flush the TradeProcessor buffer to capture any trades
+           that were buffered but not yet batch-inserted.
+        """
+        self._shutting_down = True
         self._connected = False
+        # Give in-flight callbacks up to 200ms to finish their current
+        # DB write. Short enough not to stall Railway's SIGTERM grace
+        # period (10 seconds by default), long enough to cover typical
+        # Neon query latencies on a warm connection (~5-50ms).
+        time.sleep(0.2)
+
         clients = [
             ("CME", self._client),
             ("VX", self._vxm_client),
