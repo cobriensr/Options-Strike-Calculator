@@ -19,6 +19,8 @@
  * the calibration template to describe the new picks.
  */
 
+import { metrics } from './sentry.js';
+
 // ============================================================
 // HELPERS
 // ============================================================
@@ -44,6 +46,7 @@ function fixMojibake(s: string): string {
     const fixed = Buffer.from(s, 'latin1').toString('utf8');
     return fixed.includes('\uFFFD') ? s : fixed;
   } catch {
+    metrics.increment('analyze_calibration.mojibake_repair_error');
     return s;
   }
 }

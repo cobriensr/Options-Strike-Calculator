@@ -14,7 +14,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
@@ -58,14 +58,23 @@ async function storeStrikes(
     const putOi = Number.parseInt(String(row.put_oi), 10) || 0;
     const strike = Number.parseFloat(String(row.strike));
 
-    const result = await sql`
-      INSERT INTO oi_per_strike (date, strike, call_oi, put_oi)
-      VALUES (${date}, ${strike}, ${callOi}, ${putOi})
-      ON CONFLICT (date, strike) DO NOTHING
-      RETURNING id
-    `;
-    if (result.length > 0) stored++;
-    else skipped++;
+    try {
+      const result = await sql`
+        INSERT INTO oi_per_strike (date, strike, call_oi, put_oi)
+        VALUES (${date}, ${strike}, ${callOi}, ${putOi})
+        ON CONFLICT (date, strike) DO NOTHING
+        RETURNING id
+      `;
+      if (result.length > 0) stored++;
+      else skipped++;
+    } catch (err) {
+      logger.warn(
+        { err, date, strike },
+        'fetch-oi-per-strike: insert failed for strike',
+      );
+      metrics.increment('fetch_oi_per_strike.insert_error');
+      skipped++;
+    }
   }
 
   return { stored, skipped };

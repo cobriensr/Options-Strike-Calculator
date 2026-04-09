@@ -15,6 +15,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { checkDataQuality, cronGuard } from '../_lib/api-helpers.js';
 
 // ── Constants ───────────────────────────────────────────────
@@ -262,6 +263,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       errors.push(`${symbol}: ${msg}`);
       rejectedBySymbol[symbol] = rejectedBySymbol[symbol] ?? 0;
       logger.warn({ symbol, err }, 'Gap-fill failed for symbol');
+      metrics.increment('backfill_futures_gaps.symbol_error');
+      Sentry.captureException(err);
     }
   }
 
