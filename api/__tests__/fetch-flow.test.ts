@@ -251,7 +251,7 @@ describe('fetch-flow handler', () => {
 
   // ── Error handling ────────────────────────────────────────
 
-  it('returns 500 when the UW API returns an error status', async () => {
+  it('returns 500 with structured sources when the UW API returns an error status (BE-CRON-007)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -269,12 +269,23 @@ describe('fetch-flow handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
+    // BE-CRON-007: total failure returns 500 so Vercel cron dashboard
+    // still flags the run, but the `sources` shape is included in the
+    // body so monitoring can pinpoint which stage failed.
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'All sources failed' });
+    expect(res._json).toMatchObject({
+      error: 'All sources failed',
+      stored: false,
+      partial: true,
+      sources: {
+        marketTide: { succeeded: false, stage: 'fetch' },
+        marketTideOtm: { succeeded: false, stage: 'fetch' },
+      },
+    });
     vi.unstubAllGlobals();
   });
 
-  it('returns 500 when fetch throws', async () => {
+  it('returns 500 with structured sources when fetch throws (BE-CRON-007)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -289,11 +300,27 @@ describe('fetch-flow handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'All sources failed' });
+    expect(res._json).toMatchObject({
+      error: 'All sources failed',
+      stored: false,
+      partial: true,
+      sources: {
+        marketTide: { succeeded: false, stage: 'fetch' },
+        marketTideOtm: { succeeded: false, stage: 'fetch' },
+      },
+    });
+    const body = res._json as {
+      sources: {
+        marketTide: { reason: string };
+        marketTideOtm: { reason: string };
+      };
+    };
+    expect(body.sources.marketTide.reason).toContain('Network error');
+    expect(body.sources.marketTideOtm.reason).toContain('Network error');
     vi.unstubAllGlobals();
   });
 
-  it('returns 500 when fetch times out (AbortError)', async () => {
+  it('returns 500 with structured sources when fetch times out (AbortError) (BE-CRON-007)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -312,7 +339,173 @@ describe('fetch-flow handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'All sources failed' });
+    expect(res._json).toMatchObject({
+      error: 'All sources failed',
+      stored: false,
+      partial: true,
+      sources: {
+        marketTide: { succeeded: false, stage: 'fetch' },
+        marketTideOtm: { succeeded: false, stage: 'fetch' },
+      },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  // ── BE-CRON-007: per-source status shape ─────────────────
+
+  it('BE-CRON-007 (a): both sources succeed → sources.*.succeeded true, partial false', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const row = makeTideRow();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [row] }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      stored: true,
+      partial: false,
+      sources: {
+        marketTide: { succeeded: true, fetched: 1, storedRows: 1 },
+        marketTideOtm: { succeeded: true, fetched: 1, storedRows: 1 },
+      },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('BE-CRON-007 (b): market_tide fetch rejects → marketTide.stage=fetch, marketTideOtm succeeds, partial true', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const row = makeTideRow();
+    // Route by URL: the all-in call has no `otm_only=true`; the OTM call does.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('otm_only=true')) {
+          return {
+            ok: true,
+            json: async () => ({ data: [row] }),
+          };
+        }
+        throw new Error('boom all-in');
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      partial: true,
+      sources: {
+        marketTide: { succeeded: false, stage: 'fetch' },
+        marketTideOtm: { succeeded: true, fetched: 1, storedRows: 1 },
+      },
+    });
+    const body = res._json as {
+      sources: { marketTide: { reason: string } };
+    };
+    expect(body.sources.marketTide.reason).toContain('boom all-in');
+    vi.unstubAllGlobals();
+  });
+
+  it('BE-CRON-007 (c): market_tide_otm store rejects → marketTideOtm.stage=store, partial true', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const row = makeTideRow();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [row] }),
+      }),
+    );
+
+    // Both fetches succeed. First INSERT (market_tide) succeeds, second
+    // INSERT (market_tide_otm) rejects. Data-quality SELECTs still run
+    // after, so keep them responding.
+    //
+    // mockReset() here wipes the `beforeEach` blanket default
+    // (`mockResolvedValue([{ total: 0, nonzero: 0 }])`) so we can set up
+    // a strict sequence of Once-handlers. If a future store call sneaks
+    // in (e.g. a third source added) it will receive `undefined` and
+    // surface as a test failure rather than silently landing.
+    mockSql.mockReset();
+    mockSql.mockResolvedValueOnce([]); // market_tide INSERT ok
+    mockSql.mockRejectedValueOnce(new Error('db write failed')); // market_tide_otm INSERT fails
+    // Data-quality SELECTs (2 of them) — return the expected shape
+    mockSql.mockResolvedValueOnce([{ total: 0, nonzero: 0 }]);
+    mockSql.mockResolvedValueOnce([{ total: 0, nonzero: 0 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      partial: true,
+      sources: {
+        marketTide: { succeeded: true, fetched: 1, storedRows: 1 },
+        marketTideOtm: { succeeded: false, stage: 'store' },
+      },
+    });
+    const body = res._json as {
+      sources: { marketTideOtm: { reason: string } };
+    };
+    expect(body.sources.marketTideOtm.reason).toContain('db write failed');
+    vi.unstubAllGlobals();
+  });
+
+  it('BE-CRON-007 (d): both fetches reject → 500 with structured sources, Vercel cron dashboard still sees failure', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new Error('total outage')),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Total failure returns 500 so Vercel cron dashboard still flags
+    // the failed run. The new `sources` shape is included in the body
+    // so monitoring can distinguish fetch vs store failures even on 500.
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({
+      error: 'All sources failed',
+      stored: false,
+      partial: true,
+      sources: {
+        marketTide: { succeeded: false, stage: 'fetch' },
+        marketTideOtm: { succeeded: false, stage: 'fetch' },
+      },
+    });
+    const body = res._json as {
+      sources: {
+        marketTide: { reason: string };
+        marketTideOtm: { reason: string };
+      };
+    };
+    expect(body.sources.marketTide.reason).toContain('total outage');
+    expect(body.sources.marketTideOtm.reason).toContain('total outage');
     vi.unstubAllGlobals();
   });
 });

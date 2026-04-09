@@ -21,6 +21,24 @@ import {
   checkDataQuality,
 } from '../_lib/api-helpers.js';
 
+// ── Per-source status (BE-CRON-007) ─────────────────────────
+//
+// Explicit response shape for each data source so external monitoring
+// can distinguish a real fetch/store failure from a legitimate
+// zero-row success. Emitted under `sources.marketTide` and
+// `sources.marketTideOtm` on BOTH 200 (partial or full success) and
+// 500 (total failure) responses, so callers always get the structured
+// shape regardless of HTTP status.
+//
+// Naming note: `storedRows` is a row count (0 or 1 per fetch), while
+// the top-level response field `stored` is a boolean ("did anything
+// land at all"). They live two nesting levels apart and mean different
+// things — do not conflate them.
+
+type SourceStatus =
+  | { succeeded: true; fetched: number; storedRows: number }
+  | { succeeded: false; stage: 'fetch' | 'store'; reason: string };
+
 // ── Fetch helper ────────────────────────────────────────────
 
 interface MarketTideRow {
@@ -127,6 +145,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       otmFetch.status === 'rejected' ||
       otmStore.status === 'rejected';
 
+    // Build per-source status (BE-CRON-007): fetch failure dominates,
+    // then store failure, else success with fetched/stored row counts.
+    const buildStatus = (
+      fetchResult: PromiseSettledResult<MarketTideRow[]>,
+      storeResult: PromiseSettledResult<{ stored: boolean; timestamp?: string }>,
+    ): SourceStatus => {
+      if (fetchResult.status === 'rejected') {
+        return {
+          succeeded: false,
+          stage: 'fetch',
+          reason: String(fetchResult.reason),
+        };
+      }
+      if (storeResult.status === 'rejected') {
+        return {
+          succeeded: false,
+          stage: 'store',
+          reason: String(storeResult.reason),
+        };
+      }
+      return {
+        succeeded: true,
+        fetched: fetchResult.value.length,
+        storedRows: storeResult.value.stored ? 1 : 0,
+      };
+    };
+
+    const marketTideStatus = buildStatus(allInFetch, allInStore);
+    const marketTideOtmStatus = buildStatus(otmFetch, otmStore);
+
     // Data quality check: alert if all values are zero
     for (const source of ['market_tide', 'market_tide_otm'] as const) {
       const rows = await getDb()`
@@ -157,16 +205,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-flow completed',
     );
 
-    if (!anyStored) {
-      return res.status(500).json({ error: 'All sources failed' });
-    }
-
-    return res.status(200).json({
+    // BE-CRON-007: return 500 only on TOTAL failure (no source landed
+    // anything). This preserves the Vercel cron dashboard failed-run
+    // signal for the worst case while letting partial failures report
+    // 200 with the new structured `sources` field so monitoring can
+    // still tell a zero-row success from a fetch error.
+    const responseBody = {
       stored: anyStored,
       partial,
       market_tide: allInResult,
       market_tide_otm: otmResult,
-    });
+      // BE-CRON-007: explicit per-source status for external monitoring.
+      // Included in both 200 and 500 responses.
+      sources: {
+        marketTide: marketTideStatus,
+        marketTideOtm: marketTideOtmStatus,
+      },
+    };
+
+    if (!anyStored) {
+      return res.status(500).json({
+        error: 'All sources failed',
+        ...responseBody,
+      });
+    }
+
+    return res.status(200).json(responseBody);
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-flow');
     Sentry.captureException(err);
