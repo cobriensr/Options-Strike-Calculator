@@ -17,11 +17,7 @@ import { createHash } from 'node:crypto';
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
-import type {
-  ToolUseBlock,
-  MessageParam,
-  Message,
-} from '@anthropic-ai/sdk/resources/messages/messages.js';
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages.js';
 import {
   rejectIfRateLimited,
   guardOwnerEndpoint,
@@ -41,15 +37,12 @@ import {
   SYSTEM_PROMPT_PART2,
 } from './_lib/analyze-prompts.js';
 import { getCalibrationExample } from './_lib/analyze-calibration.js';
-import { buildAnalysisContext, parseEntryTimeAsUtc } from './_lib/analyze-context.js';
+import { buildAnalysisContext } from './_lib/analyze-context.js';
 import {
   buildAnalysisSummary,
   generateEmbedding,
   saveAnalysisEmbedding,
 } from './_lib/embeddings.js';
-import { buildClaudeTools } from './_lib/claude-tools.js';
-import { executeDbTool } from './_lib/db-claude-tools.js';
-import { getETDateStr } from '../src/utils/timezone.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -87,14 +80,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const parsed = analyzeBodySchema.safeParse(req.body);
   if (respondIfInvalid(parsed, res, done)) return;
   const { images, context } = parsed.data;
-
-  // Derive date + time ceiling for DB tool queries — same logic as analyze-context.ts
-  const analysisDate =
-    (context.selectedDate as string | undefined) ?? getETDateStr(new Date());
-  const asOf = parseEntryTimeAsUtc(
-    (context.entryTime as string | undefined) ?? null,
-    analysisDate,
-  );
 
   // Build analysis context (fetches flow, GEX, candles, dark pool, etc.)
   const {
@@ -148,72 +133,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         : []),
     ];
 
-    // ── Tool-use pre-flight loop (non-streaming) ────────────────
-    // Claude may call DB tools before writing its final analysis.
-    // We resolve all tool_use turns first using non-streaming messages.create,
-    // then feed the augmented message history into the final streaming call.
-    // Max 6 turns prevents runaway loops; each tool result is logged.
-    const claudeTools = buildClaudeTools();
-    const db = getDb();
     const toolMessages: MessageParam[] = [
       { role: 'user' as const, content },
     ];
-    let toolTurns = 0;
-    const MAX_TOOL_TURNS = 6;
 
-    while (toolTurns < MAX_TOOL_TURNS) {
-      const toolCheck = (await anthropic.messages.create({
-        model: 'claude-opus-4-6',
-        max_tokens: 4096,
-        system: systemParts as Parameters<
-          typeof anthropic.messages.create
-        >[0]['system'],
-        tools: claudeTools,
-        tool_choice: { type: 'auto' },
-        messages: toolMessages,
-      } as unknown as Parameters<typeof anthropic.messages.create>[0])) as Message;
-
-      if (toolCheck.stop_reason !== 'tool_use') {
-        // No tool calls — model is ready to proceed to the final stream.
-        // If this non-streaming turn produced a final answer (stop_reason=end_turn),
-        // we discard it and re-run through the streaming path so the existing
-        // keepalive + fallback + parse logic all apply correctly.
-        logger.info(
-          { toolTurns, stopReason: toolCheck.stop_reason },
-          'analyze tool-loop complete',
-        );
-        break;
-      }
-
-      // Collect tool_use blocks and resolve them in parallel
-      const toolUseBlocks = toolCheck.content.filter(
-        (b): b is ToolUseBlock => b.type === 'tool_use',
-      );
-      logger.info(
-        { toolTurns, toolNames: toolUseBlocks.map((b) => b.name) },
-        'analyze tool calls',
-      );
-
-      const toolResults = await Promise.all(
-        toolUseBlocks.map((b) =>
-          executeDbTool(b, db, analysisDate, asOf),
-        ),
-      );
-
-      // Append assistant turn + tool results to the message history
-      toolMessages.push(
-        { role: 'assistant' as const, content: toolCheck.content },
-        { role: 'user' as const, content: toolResults },
-      );
-
-      toolTurns++;
-    }
-
-    if (toolTurns >= MAX_TOOL_TURNS) {
-      logger.warn({ MAX_TOOL_TURNS }, 'analyze tool-loop hit max turns');
-    }
-
-    // ── Final streaming call (with tool history threaded in) ───
+    // ── Final streaming call ───────────────────────────────────
     // Stream the response — Anthropic sends headers immediately with streaming,
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
     // The SDK handles transient retries (429, 5xx, connection errors) internally.
