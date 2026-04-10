@@ -46,6 +46,38 @@ import type {
 // ── Response shape ─────────────────────────────────────────────
 
 /**
+ * One snapshot's worth of scored targets in the bulk response.
+ *
+ * Returned as an element of `GexTargetBulkResponse.snapshots` when the
+ * caller passes `?all=true`. Each entry corresponds to one timestamp
+ * recorded for the resolved date.
+ */
+export interface BulkSnapshot {
+  timestamp: string;
+  spot: number | null;
+  oi: TargetScore | null;
+  vol: TargetScore | null;
+  dir: TargetScore | null;
+}
+
+/**
+ * Response shape for the `?all=true` bulk mode of
+ * `GET /api/gex-target-history`.
+ *
+ * Unlike the single-snapshot response, the top level does NOT contain
+ * `timestamp`, `spot`, `oi`, `vol`, or `dir` — those are inside each
+ * element of `snapshots` instead.
+ */
+interface GexTargetBulkResponse {
+  availableDates: string[];
+  date: string;
+  timestamps: string[];
+  candles: SPXCandle[];
+  previousClose: number | null;
+  snapshots: BulkSnapshot[];
+}
+
+/**
  * Payload returned by `GET /api/gex-target-history`.
  *
  * Every field except `availableDates` may be empty/null when the
@@ -473,6 +505,70 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           : timestamps.at(-1)!;
       } else {
         timestamp = timestamps.at(-1)!;
+      }
+
+      // ── 4b. Bulk mode (?all=true) ─────────────────────────────────
+      // When the caller passes `?all=true`, return every snapshot for
+      // the resolved date in one payload instead of a single-snapshot
+      // response. This branch shares steps 1–4 (availableDates, date
+      // resolution, timestamps, timestamp resolution) with the existing
+      // path and returns early so the single-snapshot path below is
+      // completely unchanged.
+      if (req.query.all === 'true') {
+        const allRows = (await sql`
+          SELECT
+            date, timestamp, mode, math_version, strike,
+            rank_in_mode, rank_by_size, is_target,
+            gex_dollars,
+            delta_gex_1m, delta_gex_5m, delta_gex_20m, delta_gex_60m,
+            prev_gex_dollars_1m, prev_gex_dollars_5m,
+            prev_gex_dollars_20m, prev_gex_dollars_60m,
+            delta_pct_1m, delta_pct_5m, delta_pct_20m, delta_pct_60m,
+            call_ratio, charm_net, delta_net, vanna_net,
+            dist_from_spot, spot_price, minutes_after_noon_ct,
+            flow_confluence, price_confirm, charm_score,
+            dominance, clarity, proximity,
+            final_score, tier, wall_side
+          FROM gex_target_features
+          WHERE date = ${date}
+          ORDER BY timestamp ASC, mode ASC, rank_in_mode ASC
+        `) as GexTargetFeatureRow[];
+
+        // Group rows by their normalized timestamp key.
+        const byTimestamp = new Map<string, GexTargetFeatureRow[]>();
+        for (const row of allRows) {
+          const key = toIso(row.timestamp) ?? String(row.timestamp);
+          const bucket = byTimestamp.get(key);
+          if (bucket) {
+            bucket.push(row);
+          } else {
+            byTimestamp.set(key, [row]);
+          }
+        }
+
+        // Build one BulkSnapshot per timestamp in ascending order.
+        const snapshots: BulkSnapshot[] = timestamps
+          .filter((ts) => byTimestamp.has(ts))
+          .map((ts) => {
+            const rows = byTimestamp.get(ts)!;
+            const grouped = groupRowsByMode(rows);
+            const spot = rows.length > 0 ? num(rows[0]!.spot_price) : null;
+            return { timestamp: ts, spot, ...grouped };
+          });
+
+        const { candles, previousClose } = await safeFetchCandles(date);
+
+        const bulkResponse: GexTargetBulkResponse = {
+          availableDates,
+          date,
+          timestamps,
+          candles,
+          previousClose,
+          snapshots,
+        };
+
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json(bulkResponse);
       }
 
       // ── 5. Fetch the 30 feature rows for this snapshot ────────────

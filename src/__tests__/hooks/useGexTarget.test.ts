@@ -10,7 +10,7 @@ import type {
   ComponentScores,
 } from '../../utils/gex-target';
 
-// ── Mocks ─────────────────────────────────────────────────
+// -- Mocks
 
 vi.mock('../../hooks/useIsOwner', () => ({
   useIsOwner: vi.fn(() => true),
@@ -29,6 +29,7 @@ const emptyResponse = {
   dir: null,
   candles: [],
   previousClose: null,
+  snapshots: [],
 };
 
 const mockFetch = vi.fn().mockResolvedValue({
@@ -37,7 +38,7 @@ const mockFetch = vi.fn().mockResolvedValue({
 });
 vi.stubGlobal('fetch', mockFetch);
 
-// ── Helpers ───────────────────────────────────────────────
+// -- Helpers
 
 function makeFeatures(overrides: Partial<MagnetFeatures> = {}): MagnetFeatures {
   return {
@@ -129,36 +130,72 @@ interface SnapshotOptions {
   date?: string;
 }
 
-function mockSnapshot(opts: SnapshotOptions) {
+/** Local copy for mockBulkSnapshot helper. */
+interface BulkSnapshot {
+  timestamp: string;
+  spot: number | null;
+  oi: TargetScore | null;
+  vol: TargetScore | null;
+  dir: TargetScore | null;
+}
+
+
+function mockBulkSnapshot(
+  opts: SnapshotOptions & {
+    extraSnapshots?: Array<{
+      timestamp: string;
+      oi?: TargetScore;
+      vol?: TargetScore;
+      dir?: TargetScore;
+    }>;
+  },
+) {
   const date = opts.date ?? opts.timestamp.slice(0, 10);
+  const snapshots: BulkSnapshot[] = [
+    ...(opts.extraSnapshots ?? []).map((s) => ({
+      timestamp: s.timestamp,
+      spot: 5795,
+      oi: s.oi ?? null,
+      vol: s.vol ?? null,
+      dir: s.dir ?? null,
+    })),
+    {
+      timestamp: opts.timestamp,
+      spot: opts.spot ?? 5795,
+      oi:
+        opts.oi ??
+        makeTargetScore({
+          target: makeStrike(),
+          leaderboard: [makeStrike()],
+        }),
+      vol:
+        opts.vol ??
+        makeTargetScore({
+          target: makeStrike({ strike: 5810 }),
+          leaderboard: [makeStrike({ strike: 5810 })],
+        }),
+      dir:
+        opts.dir ??
+        makeTargetScore({
+          target: makeStrike({ strike: 5820 }),
+          leaderboard: [makeStrike({ strike: 5820 })],
+        }),
+    },
+  ];
   return {
     ok: true,
     json: async () => ({
       availableDates: opts.availableDates ?? [date],
       date,
       timestamps: opts.timestamps,
-      timestamp: opts.timestamp,
-      spot: opts.spot ?? 5795,
-      oi: opts.oi ?? makeTargetScore(),
-      vol:
-        opts.vol ??
-        makeTargetScore({
-          target: makeStrike({ strike: 5810, finalScore: 0.45 }),
-          leaderboard: [makeStrike({ strike: 5810, finalScore: 0.45 })],
-        }),
-      dir:
-        opts.dir ??
-        makeTargetScore({
-          target: makeStrike({ strike: 5820, finalScore: 0.35 }),
-          leaderboard: [makeStrike({ strike: 5820, finalScore: 0.35 })],
-        }),
       candles: opts.candles ?? [makeCandle()],
       previousClose: opts.previousClose ?? 5780,
+      snapshots,
     }),
   };
 }
 
-// ── Lifecycle ─────────────────────────────────────────────
+// -- Lifecycle
 
 // Fixed wall-clock anchor for the suite. Most snapshot mocks use timestamps
 // in the 19:58-20:00 UTC range, so anchoring `Date.now()` at 20:00:00 keeps
@@ -221,9 +258,10 @@ describe('useGexTarget: fetching', () => {
     await act(async () => {});
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    // TEST_NOW = 2026-04-02T20:00:00Z → todayET = 2026-04-02.
+    // TEST_NOW = 2026-04-02T20:00:00Z -> todayET = 2026-04-02.
+    // Initial fetch is now a bulk request (?all=true).
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/gex-target-history?date=2026-04-02',
+      '/api/gex-target-history?date=2026-04-02&all=true',
       {
         credentials: 'same-origin',
         signal: expect.any(AbortSignal),
@@ -233,7 +271,7 @@ describe('useGexTarget: fetching', () => {
 
   it('populates the three-mode payload from the response', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:59:00Z',
         timestamps: ['2026-04-02T19:59:00Z'],
         oi: makeTargetScore({
@@ -258,7 +296,7 @@ describe('useGexTarget: fetching', () => {
     expect(result.current.oi?.target?.strike).toBe(5700);
     expect(result.current.vol?.target?.strike).toBe(5800);
     expect(result.current.dir?.target?.strike).toBe(5900);
-    // The three modes are independent — a good sanity check that the hook
+    // The three modes are independent -- a good sanity check that the hook
     // isn't accidentally mirroring one slot into another.
     expect(result.current.oi?.target?.strike).not.toBe(
       result.current.vol?.target?.strike,
@@ -268,7 +306,7 @@ describe('useGexTarget: fetching', () => {
   it('populates candles, previousClose, spot, and availableDates', async () => {
     const candles = [makeCandle(), makeCandle({ close: 5800 })];
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:59:00Z',
         timestamps: ['2026-04-02T19:59:00Z'],
         candles,
@@ -289,7 +327,7 @@ describe('useGexTarget: fetching', () => {
 
   it('sets timestamp from the API response', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:59:00Z',
         timestamps: ['2026-04-02T19:59:00Z'],
       }),
@@ -390,10 +428,14 @@ describe('useGexTarget: gating', () => {
 
   it('fetches once but does not poll when market is closed', async () => {
     // After-hours today: still show today's latest snapshot (BACKTEST mode),
-    // but no point polling — no fresh snapshots are being written.
+    // but no point polling -- no fresh snapshots are being written.
     renderHook(() => useGexTarget(false));
 
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    // Verify the initial fetch is a bulk request
+    const url = mockFetch.mock.calls[0]?.[0] as string;
+    expect(url).toContain('&all=true');
 
     await act(async () => {
       vi.advanceTimersByTime(POLL_INTERVALS.GEX_TARGET * 5);
@@ -459,7 +501,7 @@ describe('useGexTarget: error handling', () => {
 describe('useGexTarget: backtest mode', () => {
   it('fetches with date param when initialDate provided and does not poll', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-03-28T15:00:00Z',
         timestamps: ['2026-03-28T15:00:00Z'],
         date: '2026-03-28',
@@ -473,6 +515,7 @@ describe('useGexTarget: backtest mode', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const url = mockFetch.mock.calls[0]?.[0] as string;
     expect(url).toContain('?date=2026-03-28');
+    expect(url).toContain('&all=true');
 
     // No polling on a past date.
     await act(async () => {
@@ -483,7 +526,7 @@ describe('useGexTarget: backtest mode', () => {
 
   it('returns strikes from the backtest date and reports isLive=false', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-03-28T15:00:00Z',
         timestamps: ['2026-03-28T15:00:00Z'],
         date: '2026-03-28',
@@ -511,7 +554,7 @@ describe('useGexTarget: scrub controls', () => {
   it('exposes timestamps from the API response', async () => {
     const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
     mockFetch.mockResolvedValue(
-      mockSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: ts }),
+      mockBulkSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: ts }),
     );
 
     const { result } = renderHook(() => useGexTarget(true));
@@ -522,7 +565,7 @@ describe('useGexTarget: scrub controls', () => {
 
   it('canScrubPrev is true when at least one earlier snapshot exists', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:59:00Z',
         timestamps: ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'],
       }),
@@ -535,45 +578,95 @@ describe('useGexTarget: scrub controls', () => {
     expect(result.current.canScrubNext).toBe(false);
   });
 
-  it('scrubPrev steps backwards, fires a scrub fetch, and pauses polling', async () => {
-    const ts = [
-      '2026-04-02T19:57:00Z',
-      '2026-04-02T19:58:00Z',
-      '2026-04-02T19:59:00Z',
-    ];
+  it('scrubPrev updates state from cache without fetching', async () => {
+    // The bulk response includes TWO snapshots: an earlier one at 19:57 and
+    // the latest at 19:59. After mount, scrubbing back should serve the
+    // 19:58 timestamp instantly from the in-memory cache -- no extra fetch.
     mockFetch.mockResolvedValue(
-      mockSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: ts }),
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: [
+          '2026-04-02T19:57:00Z',
+          '2026-04-02T19:58:00Z',
+          '2026-04-02T19:59:00Z',
+        ],
+        oi: makeTargetScore({
+          target: makeStrike({ strike: 5800 }),
+          leaderboard: [makeStrike({ strike: 5800 })],
+        }),
+        extraSnapshots: [
+          {
+            timestamp: '2026-04-02T19:57:00Z',
+            oi: makeTargetScore({
+              target: makeStrike({ strike: 5750 }),
+              leaderboard: [makeStrike({ strike: 5750 })],
+            }),
+          },
+          {
+            timestamp: '2026-04-02T19:58:00Z',
+            oi: makeTargetScore({
+              target: makeStrike({ strike: 5750 }),
+              leaderboard: [makeStrike({ strike: 5750 })],
+            }),
+          },
+        ],
+      }),
     );
 
     const { result } = renderHook(() => useGexTarget(true));
-    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+    await waitFor(() =>
+      expect(result.current.oi?.target?.strike).toBe(5800),
+    );
 
-    const callsBeforeScrub = mockFetch.mock.calls.length;
+    const fetchCalls = mockFetch.mock.calls.length;
 
     act(() => {
       result.current.scrubPrev();
     });
 
-    // Scrub fetch fires immediately with the new ?ts param.
+    // State should flip to the cached 19:58 snapshot's oi (strike 5750)
     await waitFor(() =>
-      expect(mockFetch.mock.calls.length).toBe(callsBeforeScrub + 1),
+      expect(result.current.oi?.target?.strike).toBe(5750),
     );
-    const scrubUrl = mockFetch.mock.calls[callsBeforeScrub]?.[0] as string;
-    expect(scrubUrl).toContain('ts=2026-04-02T19%3A58%3A00Z');
-    expect(result.current.isLive).toBe(false);
 
-    // Polling should now be paused — interval ticks should not fire fetches.
-    const callsAfterScrub = mockFetch.mock.calls.length;
-    await act(async () => {
-      vi.advanceTimersByTime(POLL_INTERVALS.GEX_TARGET * 3);
+    // No new fetch should have fired -- served from cache
+    expect(mockFetch.mock.calls.length).toBe(fetchCalls);
+    expect(result.current.isLive).toBe(false);
+    expect(result.current.isScrubbed).toBe(true);
+  });
+
+  it('scrubPrev falls back to fetch on cache miss', async () => {
+    // Bulk response only has ONE snapshot (19:59). The timestamp list
+    // includes 19:58 but no bulk snapshot for it -- cache miss forces a fetch.
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'],
+        extraSnapshots: [],
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const fetchCalls = mockFetch.mock.calls.length;
+
+    act(() => {
+      result.current.scrubPrev();
     });
-    expect(mockFetch.mock.calls.length).toBe(callsAfterScrub);
+
+    // A new fetch should fire for the missing timestamp
+    await waitFor(() =>
+      expect(mockFetch.mock.calls.length).toBe(fetchCalls + 1),
+    );
+    const scrubUrl = mockFetch.mock.calls[fetchCalls]?.[0] as string;
+    expect(scrubUrl).toContain('ts=2026-04-02T19%3A58%3A00Z');
   });
 
   it('scrubNext from a scrubbed position resumes live at the end', async () => {
     const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
     mockFetch.mockResolvedValue(
-      mockSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: ts }),
+      mockBulkSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: ts }),
     );
 
     const { result } = renderHook(() => useGexTarget(true));
@@ -592,7 +685,7 @@ describe('useGexTarget: scrub controls', () => {
 
   it('scrubPrev is a no-op when no history exists', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: [] }),
+      mockBulkSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: [] }),
     );
 
     const { result } = renderHook(() => useGexTarget(true));
@@ -606,6 +699,47 @@ describe('useGexTarget: scrub controls', () => {
     expect(result.current.isScrubbed).toBe(false);
     expect(mockFetch.mock.calls.length).toBe(callsBefore);
   });
+
+  it('visibleCandles filters candles to the scrub timestamp', async () => {
+    // Three candles at 1-minute intervals. Two snapshots in the bulk cache:
+    // one at candle-2's time, one at candle-3's time (latest).
+    const dt1 = 1_743_606_000_000;
+    const dt2 = 1_743_606_060_000;
+    const dt3 = 1_743_606_120_000;
+    const ts1 = new Date(dt1).toISOString();
+    const ts2 = new Date(dt2).toISOString();
+    const ts3 = new Date(dt3).toISOString();
+
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: ts3,
+        timestamps: [ts1, ts2, ts3],
+        candles: [
+          makeCandle({ datetime: dt1 }),
+          makeCandle({ datetime: dt2 }),
+          makeCandle({ datetime: dt3 }),
+        ],
+        extraSnapshots: [{ timestamp: ts2 }],
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // In live mode all three candles are visible
+    expect(result.current.visibleCandles).toHaveLength(3);
+
+    // Scrub back to ts2 -- only candles 1 and 2 should be visible
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    expect(result.current.visibleCandles).toHaveLength(2);
+    expect(result.current.visibleCandles.every((c) => c.datetime <= dt2)).toBe(
+      true,
+    );
+  });
 });
 
 // ============================================================
@@ -616,7 +750,7 @@ describe('useGexTarget: scrubLive', () => {
   it('scrubLive clears scrub state and resumes polling', async () => {
     const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
     mockFetch.mockResolvedValue(
-      mockSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: ts }),
+      mockBulkSnapshot({ timestamp: '2026-04-02T19:59:00Z', timestamps: ts }),
     );
 
     const { result } = renderHook(() => useGexTarget(true));
@@ -641,7 +775,7 @@ describe('useGexTarget: scrubLive', () => {
 
   it('scrubLive resets selectedDate back to today when viewing a past date', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2020-01-02T15:00:00Z',
         timestamps: ['2020-01-02T15:00:00Z'],
         date: '2020-01-02',
@@ -653,10 +787,10 @@ describe('useGexTarget: scrubLive', () => {
     expect(result.current.selectedDate).toBe('2020-01-02');
     expect(result.current.isLive).toBe(false);
 
-    // Click "Live" — date should snap back to today (2026-04-02 per
+    // Click "Live" -- date should snap back to today (2026-04-02 per
     // TEST_NOW) and polling should resume.
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:59:30Z',
         timestamps: ['2026-04-02T19:59:30Z'],
       }),
@@ -676,9 +810,9 @@ describe('useGexTarget: scrubLive', () => {
 
 describe('useGexTarget: live polling and freshness', () => {
   it('isLive=true when displayed snapshot is within freshness threshold', async () => {
-    // Snapshot is 30s old at TEST_NOW (20:00:00) — within 2-min threshold.
+    // Snapshot is 30s old at TEST_NOW (20:00:00) -- within 2-min threshold.
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:59:30Z',
         timestamps: ['2026-04-02T19:59:30Z'],
       }),
@@ -689,11 +823,11 @@ describe('useGexTarget: live polling and freshness', () => {
   });
 
   it('isLive=false when displayed snapshot is older than freshness threshold', async () => {
-    // Snapshot is 5 minutes old at TEST_NOW — beyond 2-min threshold. This
+    // Snapshot is 5 minutes old at TEST_NOW -- beyond 2-min threshold. This
     // covers the defense-in-depth path where polling silently fails and
     // the badge must still correctly report BACKTEST instead of lying.
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:55:00Z',
         timestamps: ['2026-04-02T19:55:00Z'],
       }),
@@ -708,7 +842,7 @@ describe('useGexTarget: live polling and freshness', () => {
 
   it('isLive flips from true to false as the wall clock advances past staleness', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:59:30Z',
         timestamps: ['2026-04-02T19:59:30Z'],
       }),
@@ -730,7 +864,7 @@ describe('useGexTarget: live polling and freshness', () => {
 
   it('does not poll on a past date (backtest mode)', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2020-01-02T15:00:00Z',
         timestamps: ['2020-01-02T15:00:00Z'],
         date: '2020-01-02',
@@ -754,7 +888,7 @@ describe('useGexTarget: live polling and freshness', () => {
 describe('useGexTarget: refresh', () => {
   it('refresh() triggers a new fetch', async () => {
     mockFetch.mockResolvedValue(
-      mockSnapshot({
+      mockBulkSnapshot({
         timestamp: '2026-04-02T19:59:00Z',
         timestamps: ['2026-04-02T19:59:00Z'],
       }),

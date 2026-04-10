@@ -68,7 +68,7 @@ export const GexTarget = memo(function GexTarget({
     loading,
     error,
     refresh,
-    candles,
+    visibleCandles,
     previousClose,
   } = useGexTarget(marketOpen);
 
@@ -240,7 +240,7 @@ export const GexTarget = memo(function GexTarget({
 
           {/* Panel 4: price chart */}
           <PriceChart
-            candles={candles}
+            candles={visibleCandles}
             previousClose={previousClose}
             score={activeScore}
           />

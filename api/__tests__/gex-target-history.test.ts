@@ -48,8 +48,10 @@ import { fetchSPXCandles } from '../_lib/spx-candles.js';
 
 // ── Fixtures ──────────────────────────────────────────────
 
+type GexMode = 'oi' | 'vol' | 'dir';
+
 interface FeatureRowOverrides {
-  mode?: 'oi' | 'vol' | 'dir';
+  mode?: GexMode;
   rank?: number;
   isTarget?: boolean;
   tier?: 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
@@ -162,7 +164,7 @@ function makeFeatureRow(overrides: FeatureRowOverrides = {}) {
  */
 function makeFullSnapshotRows() {
   const rows: ReturnType<typeof makeFeatureRow>[] = [];
-  const modes: Array<'oi' | 'vol' | 'dir'> = ['oi', 'vol', 'dir'];
+  const modes: GexMode[] = ['oi', 'vol', 'dir'];
   for (const mode of modes) {
     for (let rank = 1; rank <= 10; rank++) {
       rows.push(
@@ -688,5 +690,232 @@ describe('GET /api/gex-target-history', () => {
     // The displayed timestamp must be findable in the timestamps list
     // for the frontend's scrub controls.
     expect(body.timestamps.indexOf(body.timestamp!)).toBeGreaterThanOrEqual(0);
+  });
+
+  // ── ?all=true bulk mode ───────────────────────────────────────
+  describe('?all=true bulk mode', () => {
+    /**
+     * Build a minimal set of feature rows for a given timestamp
+     * with one row per mode (oi/vol/dir) × 2 ranks = 6 rows per ts.
+     */
+    function makeTimestampRows(
+      ts: string,
+      spotPrice = 5790,
+    ): ReturnType<typeof makeFeatureRow>[] {
+      const modes: GexMode[] = ['oi', 'vol', 'dir'];
+      const rows: ReturnType<typeof makeFeatureRow>[] = [];
+      for (const mode of modes) {
+        for (let rank = 1; rank <= 2; rank++) {
+          rows.push(
+            makeFeatureRow({
+              mode,
+              rank,
+              isTarget: rank === 1,
+              strike: 5800 + rank * 5,
+              spotPrice,
+            }),
+          );
+          // Patch the timestamp in-place so rows belong to `ts`.
+          rows.at(-1)!.timestamp = ts;
+        }
+      }
+      return rows;
+    }
+
+    it('returns all snapshots for the date', async () => {
+      const ts1 = '2026-04-02T15:00:00Z';
+      const ts2 = '2026-04-02T15:05:00Z';
+
+      // availableDates
+      mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
+      // timestamps
+      mockSql.mockResolvedValueOnce([
+        { timestamp: ts1 },
+        { timestamp: ts2 },
+      ]);
+      // all-rows (bulk) query
+      mockSql.mockResolvedValueOnce([
+        ...makeTimestampRows(ts1),
+        ...makeTimestampRows(ts2),
+      ]);
+
+      vi.mocked(fetchSPXCandles).mockResolvedValue({
+        candles: [
+          {
+            open: 5790,
+            high: 5800,
+            low: 5785,
+            close: 5795,
+            volume: 1000,
+            datetime: 1743606000000,
+          },
+        ],
+        previousClose: null,
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-04-02', all: 'true' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        snapshots: Array<{
+          timestamp: string;
+          spot: number | null;
+          oi: unknown;
+          vol: unknown;
+          dir: unknown;
+        }>;
+        candles: unknown[];
+        previousClose: number | null;
+        availableDates: string[];
+        timestamps: string[];
+        date: string;
+      };
+      expect(body.snapshots).toHaveLength(2);
+      expect(body.snapshots[0]!.timestamp).toBe('2026-04-02T15:00:00.000Z');
+      expect(body.snapshots[1]!.timestamp).toBe('2026-04-02T15:05:00.000Z');
+    });
+
+    it('each snapshot has oi/vol/dir from its own rows', async () => {
+      const ts1 = '2026-04-02T15:00:00Z';
+      const ts2 = '2026-04-02T15:05:00Z';
+
+      mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
+      mockSql.mockResolvedValueOnce([
+        { timestamp: ts1 },
+        { timestamp: ts2 },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        ...makeTimestampRows(ts1),
+        ...makeTimestampRows(ts2),
+      ]);
+
+      vi.mocked(fetchSPXCandles).mockResolvedValue({
+        candles: [],
+        previousClose: null,
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-04-02', all: 'true' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        snapshots: Array<{
+          timestamp: string;
+          spot: number | null;
+          oi: { target: unknown; leaderboard: unknown[] } | null;
+          vol: { target: unknown; leaderboard: unknown[] } | null;
+          dir: { target: unknown; leaderboard: unknown[] } | null;
+        }>;
+      };
+      expect(body.snapshots[0]!.oi).not.toBeNull();
+      expect(body.snapshots[0]!.vol).not.toBeNull();
+      expect(body.snapshots[0]!.dir).not.toBeNull();
+    });
+
+    it('returns candles and previousClose at top level', async () => {
+      const ts1 = '2026-04-02T15:00:00Z';
+
+      mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
+      mockSql.mockResolvedValueOnce([{ timestamp: ts1 }]);
+      mockSql.mockResolvedValueOnce(makeTimestampRows(ts1));
+
+      vi.mocked(fetchSPXCandles).mockResolvedValue({
+        candles: [
+          {
+            open: 5790,
+            high: 5800,
+            low: 5785,
+            close: 5795,
+            volume: 1000,
+            datetime: 1743606000000,
+          },
+        ],
+        previousClose: 5780,
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-04-02', all: 'true' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        candles: unknown[];
+        previousClose: number | null;
+        snapshots: unknown[];
+      };
+      expect(body.candles).toHaveLength(1);
+      expect(body.previousClose).toBe(5780);
+    });
+
+    it('returns empty snapshots when no rows exist for the timestamps', async () => {
+      const ts1 = '2026-04-02T15:00:00Z';
+      const ts2 = '2026-04-02T15:05:00Z';
+
+      mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
+      mockSql.mockResolvedValueOnce([
+        { timestamp: ts1 },
+        { timestamp: ts2 },
+      ]);
+      // All-rows query returns empty — no feature rows for any timestamp.
+      mockSql.mockResolvedValueOnce([]);
+
+      vi.mocked(fetchSPXCandles).mockResolvedValue({
+        candles: [],
+        previousClose: null,
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-04-02', all: 'true' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as { snapshots: unknown[] };
+      expect(body.snapshots).toEqual([]);
+    });
+
+    it('falls back to single-snapshot path when all param is absent', async () => {
+      mockSql.mockResolvedValueOnce([{ date: '2026-04-08' }]);
+      mockSql.mockResolvedValueOnce([
+        { timestamp: '2026-04-08T18:00:00Z' },
+        { timestamp: '2026-04-08T19:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce(makeFullSnapshotRows());
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      expect(res._status).toBe(200);
+      const body = res._json as Record<string, unknown>;
+      // Single-snapshot path has top-level oi/vol/dir and a singular timestamp.
+      expect(body).toHaveProperty('oi');
+      expect(body).toHaveProperty('vol');
+      expect(body).toHaveProperty('dir');
+      expect(body).toHaveProperty('timestamp');
+      // Bulk-only field must not be present on the single-snapshot path.
+      expect(body).not.toHaveProperty('snapshots');
+    });
   });
 });

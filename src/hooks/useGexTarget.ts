@@ -13,12 +13,12 @@
  * refetch, which matters both for ML fidelity (we always have all three)
  * and for test reuse (mode toggle is not a hook concern).
  *
- * Effect dispatch (in priority order — mirrors `useGexPerStrike`):
+ * Effect dispatch:
  *   1. Not owner          → no fetch.
- *   2. Scrubbed           → fetch the exact snapshot once, no polling.
- *   3. Past date          → fetch latest for that date once, no polling.
- *   4. Today, market open → fetch + poll every POLL_INTERVALS.GEX_TARGET.
- *   5. Today, market closed → fetch once, no polling.
+ *   2. Date change        → bulk-load all snapshots (`?all=true`), populate cache.
+ *   3. Live polling       → setInterval fires `fetchData` when market is open,
+ *                           today, and not scrubbed; updates cache on each poll.
+ *   4. Scrub              → instant from cache; fallback single fetch on miss.
  *
  * Like `useGexPerStrike`, this hook owns its own `selectedDate` state —
  * the GexTarget panel is a live/backtest browsing tool, and picking a past
@@ -42,7 +42,7 @@
  * extra round-trips.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { useIsOwner } from './useIsOwner';
@@ -65,7 +65,7 @@ const WALL_CLOCK_TICK_MS = 30 * 1000;
 /**
  * SPX 1-minute candle as returned by the /api/gex-target-history endpoint.
  * Mirrors the shape defined server-side in `api/_lib/spx-candles.ts` — kept
- * as a local frontend copy so the hook doesn't cross the `src/` → `api/`
+ * as a local frontend copy so the hook doesn't cross the `src/` -> `api/`
  * import boundary.
  */
 export interface SPXCandle {
@@ -79,8 +79,34 @@ export interface SPXCandle {
 }
 
 /**
+ * Single snapshot as returned inside the bulk `?all=true` response.
+ * Local frontend copy -- mirrors the server-side shape without crossing the
+ * `src/` -> `api/` import boundary.
+ */
+interface BulkSnapshot {
+  timestamp: string;
+  spot: number | null;
+  oi: TargetScore | null;
+  vol: TargetScore | null;
+  dir: TargetScore | null;
+}
+
+/**
+ * Response payload shape from `GET /api/gex-target-history?all=true`. Local
+ * copy kept in sync with the server-side canonical definition.
+ */
+interface GexTargetBulkResponse {
+  availableDates: string[];
+  date: string | null;
+  timestamps: string[];
+  candles: SPXCandle[];
+  previousClose: number | null;
+  snapshots: BulkSnapshot[];
+}
+
+/**
  * Response payload shape from `GET /api/gex-target-history`. Local copy of
- * the server-side `GexTargetHistoryResponse` interface — keeping the two in
+ * the server-side `GexTargetHistoryResponse` interface -- keeping the two in
  * sync is part of Phase 6 maintenance. See `api/gex-target-history.ts` for
  * the canonical definition and per-field semantics.
  */
@@ -98,7 +124,7 @@ interface GexTargetHistoryResponse {
 }
 
 export interface UseGexTargetReturn {
-  // ── Three-mode parallel results ────────────────────────────────────
+  // -- Three-mode parallel results
   /** OI-mode TargetScore for the displayed snapshot, or null when empty. */
   oi: TargetScore | null;
   /** VOL-mode TargetScore for the displayed snapshot, or null when empty. */
@@ -106,7 +132,7 @@ export interface UseGexTargetReturn {
   /** DIR-mode TargetScore for the displayed snapshot, or null when empty. */
   dir: TargetScore | null;
 
-  // ── Snapshot context ──────────────────────────────────────────────
+  // -- Snapshot context
   /** Spot price at the displayed snapshot, or null when no data. */
   spot: number | null;
   /** Timestamp currently being displayed (latest if live, scrub ts if scrubbing). */
@@ -115,10 +141,15 @@ export interface UseGexTargetReturn {
   timestamps: string[];
   /** Regular-session SPX 1-minute candles for the active date, ascending. */
   candles: SPXCandle[];
+  /**
+   * Candles visible at the current scrub position -- filtered to <= scrubTimestamp.
+   * Equals `candles` when live (not scrubbed).
+   */
+  visibleCandles: SPXCandle[];
   /** Previous session close (SPX), or null if not available. */
   previousClose: number | null;
 
-  // ── Date browsing (panel-local) ───────────────────────────────────
+  // -- Date browsing (panel-local)
   /** The date currently being viewed (YYYY-MM-DD in ET), panel-local state. */
   selectedDate: string;
   /** Change the viewed date. Clears scrub state as a side effect. */
@@ -126,12 +157,12 @@ export interface UseGexTargetReturn {
   /** Every distinct trading date present in `gex_target_features`, ascending. */
   availableDates: string[];
 
-  // ── Live / scrubbed state ─────────────────────────────────────────
+  // -- Live / scrubbed state
   /**
    * True when the displayed snapshot is genuinely live: not scrubbed, market
    * is open, we're viewing today's data, AND the snapshot is within the
    * freshness threshold. False during after-hours or when looking at a
-   * historical date — those are backtest views.
+   * historical date -- those are backtest views.
    */
   isLive: boolean;
   /** True when the user has explicitly stepped backwards from the latest snapshot. */
@@ -146,12 +177,12 @@ export interface UseGexTargetReturn {
   scrubNext: () => void;
   /**
    * Resume live mode. Clears scrub state AND resets `selectedDate` to today
-   * if viewing a past date — the "Live" control is the single way back to
+   * if viewing a past date -- the "Live" control is the single way back to
    * the present across both scrub and backtest dimensions.
    */
   scrubLive: () => void;
 
-  // ── Status ────────────────────────────────────────────────────────
+  // -- Status
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -170,7 +201,7 @@ export function useGexTarget(
 ): UseGexTargetReturn {
   const isOwner = useIsOwner();
 
-  // ── Per-snapshot data ─────────────────────────────────────────────
+  // -- Per-snapshot data
   const [oi, setOi] = useState<TargetScore | null>(null);
   const [vol, setVol] = useState<TargetScore | null>(null);
   const [dir, setDir] = useState<TargetScore | null>(null);
@@ -181,11 +212,11 @@ export function useGexTarget(
   const [previousClose, setPreviousClose] = useState<number | null>(null);
   const [availableDates, setAvailableDates] = useState<string[]>([]);
 
-  // ── Status ────────────────────────────────────────────────────────
+  // -- Status
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // ── Scrub / date state ────────────────────────────────────────────
+  // -- Scrub / date state
   const [scrubTimestamp, setScrubTimestamp] = useState<string | null>(null);
   // Panel-local date state. `initialDate` only seeds this once at mount;
   // after that, `setSelectedDate` (exposed in the return) is the only way
@@ -196,14 +227,16 @@ export function useGexTarget(
     () => initialDate ?? getTodayET(),
   );
 
-  // Wall-clock state — refreshed every WALL_CLOCK_TICK_MS by a separate
+  // Wall-clock state -- refreshed every WALL_CLOCK_TICK_MS by a separate
   // effect. The freshness check below reads `nowMs` rather than calling
   // `Date.now()` inline so the re-render dependency is explicit and testable
   // under fake timers.
   const [nowMs, setNowMs] = useState(() => Date.now());
   const mountedRef = useRef(true);
+  /** Cache of every snapshot loaded for the current date (keyed by timestamp). */
+  const allSnapshotsRef = useRef<Map<string, BulkSnapshot>>(new Map());
 
-  // `todayET` recomputes each render so the panel flips from LIVE → BACKTEST
+  // `todayET` recomputes each render so the panel flips from LIVE -> BACKTEST
   // at the midnight-ET session boundary without needing an explicit state
   // update. The `isToday` comparison then drives the dispatch ladder.
   const todayET = getTodayET();
@@ -226,7 +259,7 @@ export function useGexTarget(
         if (!mountedRef.current) return;
 
         if (!res.ok) {
-          // 401 is the owner check — silently swallow so guest visitors
+          // 401 is the owner check -- silently swallow so guest visitors
           // don't see a scary error. Everything else is a real failure.
           if (res.status !== 401) setError('Failed to load GexTarget data');
           return;
@@ -236,7 +269,7 @@ export function useGexTarget(
 
         if (!mountedRef.current) return;
 
-        // Three parallel modes — always written as a triple so a successful
+        // Three parallel modes -- always written as a triple so a successful
         // fetch never leaves a stale mix of old/new across the three fields.
         setOi(data.oi);
         setVol(data.vol);
@@ -257,6 +290,56 @@ export function useGexTarget(
     [selectedDate],
   );
 
+  /**
+   * Bulk-loads every snapshot for `selectedDate` in a single request
+   * (`?all=true`). Called once per date change. Populates `allSnapshotsRef`
+   * so that scrubbing is served from the local cache without per-step fetches.
+   */
+  const fetchAllSnapshots = useCallback(async () => {
+    try {
+      const qs = new URLSearchParams();
+      qs.set('date', selectedDate);
+      qs.set('all', 'true');
+      const res = await fetch(`/api/gex-target-history?${qs}`, {
+        credentials: 'same-origin',
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!mountedRef.current) return;
+      if (!res.ok) {
+        if (res.status !== 401) setError('Failed to load GexTarget data');
+        return;
+      }
+      const data = (await res.json()) as GexTargetBulkResponse;
+      if (!mountedRef.current) return;
+
+      // Populate snapshot cache
+      const cache = new Map<string, BulkSnapshot>();
+      for (const snap of data.snapshots ?? []) {
+        cache.set(snap.timestamp, snap);
+      }
+      allSnapshotsRef.current = cache;
+
+      // Per-day fields
+      setCandles(data.candles ?? []);
+      setPreviousClose(data.previousClose);
+      setTimestamps(data.timestamps ?? []);
+      setAvailableDates(data.availableDates ?? []);
+
+      // Set state from latest snapshot
+      const latest = (data.snapshots ?? []).at(-1) ?? null;
+      setOi(latest?.oi ?? null);
+      setVol(latest?.vol ?? null);
+      setDir(latest?.dir ?? null);
+      setSpot(latest?.spot ?? null);
+      setTimestamp(latest?.timestamp ?? null);
+      setError(null);
+    } catch (err) {
+      if (mountedRef.current) setError(getErrorMessage(err));
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
+  }, [selectedDate]);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -264,51 +347,74 @@ export function useGexTarget(
     };
   }, []);
 
-  // Reset scrub state whenever the active date changes — the previous date's
+  // Reset scrub state whenever the active date changes -- the previous date's
   // scrub timestamp is meaningless against a different day's snapshot list.
   useEffect(() => {
     setScrubTimestamp(null);
   }, [selectedDate]);
 
+  // Effect 1 -- Bulk load (fires on date change).
+  // Clears the stale cache and fetches all snapshots for the new date in one
+  // request. This sets the initial state from the latest snapshot and
+  // pre-populates the cache for instant scrubbing.
   useEffect(() => {
     if (!isOwner) {
       setLoading(false);
       return;
     }
+    allSnapshotsRef.current = new Map(); // clear stale cache
+    setLoading(true);
+    void fetchAllSnapshots();
+  }, [isOwner, selectedDate, fetchAllSnapshots]);
 
-    // Scrubbing: fetch the exact pinned snapshot, no polling. The user is
-    // explicitly inspecting one moment in time.
-    if (scrubTimestamp != null) {
-      setLoading(true);
-      fetchData(scrubTimestamp);
-      return;
-    }
-
-    // Past date: one-shot fetch, no polling — there's nothing new to poll
-    // for, the day's data is fully written.
-    if (!isToday) {
-      setLoading(true);
-      fetchData();
-      return;
-    }
-
-    // Today, market closed: one-shot fetch. Same reasoning — no fresh
-    // snapshots are being produced, polling would just hit the cache.
-    if (!marketOpen) {
-      setLoading(true);
-      fetchData();
-      return;
-    }
-
-    // Today, market open, not scrubbed → live polling. Each poll fetches
-    // the latest snapshot for the day (no `?ts=` param), so the displayed
-    // timestamp actually advances as the cron writes new snapshots.
-    fetchData();
-    const id = setInterval(() => fetchData(), POLL_INTERVALS.GEX_TARGET);
+  // Effect 2 -- Live polling (fires when live conditions change).
+  // No immediate fetchData() call here -- the bulk load already set state
+  // from the latest snapshot. The interval refreshes state after one poll
+  // interval elapses.
+  useEffect(() => {
+    if (!isOwner || !isToday || !marketOpen || isScrubbed) return;
+    const id = setInterval(() => void fetchData(), POLL_INTERVALS.GEX_TARGET);
     return () => clearInterval(id);
-  }, [isOwner, marketOpen, isToday, scrubTimestamp, fetchData]);
+  }, [isOwner, isToday, marketOpen, isScrubbed, fetchData]);
 
-  // Wall-clock ticker — only runs when freshness could plausibly flip. In
+  // Effect 3 -- Scrub (instant from cache, fallback to fetch on cache miss).
+  // Also handles exiting scrub mode: restores the latest cached snapshot so
+  // `timestamp` is current and `isLive` evaluates correctly without an extra
+  // network round-trip.
+  useEffect(() => {
+    if (!isScrubbed) {
+      // Exiting scrub: restore the latest cached snapshot. Without this,
+      // `timestamp` would still hold the scrubbed value (or undefined from a
+      // cache-miss fallback fetch), making `isFresh` evaluate false and
+      // leaving `isLive` stuck at false even after scrubLive / scrubNext.
+      const latestTs = timestamps.at(-1);
+      if (latestTs) {
+        const latest = allSnapshotsRef.current.get(latestTs);
+        if (latest) {
+          setOi(latest.oi);
+          setVol(latest.vol);
+          setDir(latest.dir);
+          setSpot(latest.spot);
+          setTimestamp(latest.timestamp);
+        }
+      }
+      return;
+    }
+    if (scrubTimestamp == null) return;
+    const cached = allSnapshotsRef.current.get(scrubTimestamp);
+    if (cached) {
+      setOi(cached.oi);
+      setVol(cached.vol);
+      setDir(cached.dir);
+      setSpot(cached.spot);
+      setTimestamp(scrubTimestamp);
+      setLoading(false);
+    } else {
+      void fetchData(scrubTimestamp);
+    }
+  }, [isScrubbed, scrubTimestamp, fetchData, timestamps]);
+
+  // Wall-clock ticker -- only runs when freshness could plausibly flip. In
   // BACKTEST or scrubbed states the badge is permanently labeled, so we'd
   // just be re-rendering for nothing. The ticker re-snaps `nowMs` so the
   // freshness comparison below picks up the new wall-clock value without
@@ -318,7 +424,7 @@ export function useGexTarget(
   // Timing caveat: between mount and the first tick, `nowMs` is whatever
   // `Date.now()` returned at mount. So a snapshot that's exactly at the
   // freshness boundary at mount can briefly read as fresh for up to
-  // WALL_CLOCK_TICK_MS past its actual staleness — total worst-case
+  // WALL_CLOCK_TICK_MS past its actual staleness -- total worst-case
   // "fresh badge on stale data" is STALE_THRESHOLD_MS + WALL_CLOCK_TICK_MS
   // (currently 2m30s). Acceptable because the threshold is already 2x the
   // poll interval.
@@ -363,7 +469,7 @@ export function useGexTarget(
     setScrubTimestamp((current) => {
       if (current == null) return null;
       const idx = timestamps.indexOf(current);
-      // Unknown ts, or the next step would land on (or past) the latest →
+      // Unknown ts, or the next step would land on (or past) the latest ->
       // resume live so polling restarts. We never let scrubTimestamp pin to
       // the newest value; that's what `null` (live) means.
       if (idx < 0 || idx >= timestamps.length - 2) return null;
@@ -388,6 +494,14 @@ export function useGexTarget(
     fetchData(scrubTimestamp ?? undefined);
   }, [fetchData, scrubTimestamp]);
 
+  // Candles filtered to the scrub position for the price chart. When live
+  // (not scrubbed) the full session candles are returned unchanged.
+  const visibleCandles = useMemo(() => {
+    if (scrubTimestamp == null) return candles;
+    const limit = new Date(scrubTimestamp).getTime();
+    return candles.filter((c) => c.datetime <= limit);
+  }, [candles, scrubTimestamp]);
+
   return {
     oi,
     vol,
@@ -396,6 +510,7 @@ export function useGexTarget(
     timestamp,
     timestamps,
     candles,
+    visibleCandles,
     previousClose,
     selectedDate,
     setSelectedDate,

@@ -118,6 +118,7 @@ function makeHookResult(
     timestamp: new Date(Date.now() - 30_000).toISOString(),
     timestamps: [],
     candles: [],
+    visibleCandles: [],
     previousClose: 5780,
     selectedDate: '2026-04-07',
     setSelectedDate: vi.fn(),
