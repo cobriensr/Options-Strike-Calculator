@@ -221,15 +221,13 @@ export const StrikeBox = memo(function StrikeBox({
     const charmVals = leaderboard.map((s) => s.features.charmNet);
     const deltaVals = leaderboard.map((s) => s.features.deltaNet);
     const vannaVals = leaderboard.map((s) => s.features.vannaNet);
-    // Dealer net delta approximation: –(call_delta + put_delta).
-    // put_delta from UW is negative (put options have negative delta),
-    // so this gives: -(positive + negative) = net dealer directional exposure.
-    // Negative = dealer short delta (call-heavy, resistance); positive = long delta (support).
-    const cpVals = leaderboard.map((s) => {
-      const c = s.features.callDelta ?? 0;
-      const p = s.features.putDelta ?? 0;
-      return -(c + p);
-    });
+    // Approximate dealer net delta in contracts via net GEX dollars.
+    // GEX$ / (spot × 100) converts signed GEX dollars to a contract-scaled
+    // proxy: positive = net long gamma (dealer long delta / support);
+    // negative = net short gamma (dealer short delta / resistance).
+    const cpVals = leaderboard.map((s) =>
+      s.features.gexDollars / (s.features.spot * 100),
+    );
     return {
       charm: computeBarStats(charmVals),
       delta: computeBarStats(deltaVals),
@@ -288,7 +286,7 @@ export const StrikeBox = memo(function StrikeBox({
                 <th
                   className={thCls}
                   scope="col"
-                  title="Estimated dealer net delta: –(call_delta + put_delta). Negative = dealer short delta (resistance); positive = dealer long delta (support). Approximation only."
+                  title="Approx. dealer delta (contracts) = net GEX$ ÷ (spot × 100). Positive = net long gamma / dealer long delta (support); negative = net short gamma / dealer short delta (resistance). Approximation only."
                 >
                   est.&nbsp;Δ
                 </th>
@@ -315,13 +313,12 @@ export const StrikeBox = memo(function StrikeBox({
                       ? theme.green
                       : theme.red;
 
-                // est. Δ — bidirectional dealer net delta approximation.
-                // put_delta from UW is negative, so -(call + put) gives
-                // a signed value: negative = dealer short delta (call-heavy);
-                // positive = dealer long delta (put-heavy / support zone).
-                const callD = features.callDelta ?? 0;
-                const putD = features.putDelta ?? 0;
-                const estDealerDelta = -(callD + putD);
+                // est. Δ — approximate dealer delta in contracts via net GEX dollars.
+                // GEX$ / (spot × 100) gives a contract-scaled proxy matching
+                // the sign of net gamma: positive = long gamma/delta (support);
+                // negative = short gamma/delta (resistance).
+                const estDealerDelta =
+                  features.gexDollars / (features.spot * 100);
                 const halfW = BAR_MAX_W / 2;
                 const dealerBarW =
                   Math.tanh(Math.abs(estDealerDelta) / barStats.cp.scale) *
