@@ -44,6 +44,7 @@ import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import GexPerStrike from './components/GexPerStrike';
 import { VolumePerStrike } from './components/VolumePerStrike';
+import { GexTarget } from './components/GexTarget';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { useToast } from './hooks/useToast';
@@ -339,6 +340,7 @@ export default function StrikeCalculator() {
         ? [
             { id: 'sec-darkpool', label: 'Dark Pool' },
             { id: 'sec-gex', label: 'GEX' },
+            { id: 'sec-gex-target', label: 'GEX Target' },
           ]
         : []),
       ...(isOwner ? [{ id: 'sec-futures', label: 'Futures' }] : []),
@@ -743,6 +745,17 @@ export default function StrikeCalculator() {
                     error={volumePerStrike.error}
                     onRefresh={volumePerStrike.refresh}
                     spot={results?.spot ?? spxVal ?? null}
+                  />
+                </ErrorBoundary>
+              </>
+            )}
+
+            {isOwner && (market.hasData || !!historySnapshot) && (
+              <>
+                <span id="sec-gex-target" className="block scroll-mt-28" />
+                <ErrorBoundary label="GEX Target">
+                  <GexTarget
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </ErrorBoundary>
               </>

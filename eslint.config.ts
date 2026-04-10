@@ -14,6 +14,7 @@ export default [
       'ml/.venv',
       '.claude/skills',
       '.claude/worktrees',
+      '.clone',
       'sidecar',
       'playwright-report',
     ],
