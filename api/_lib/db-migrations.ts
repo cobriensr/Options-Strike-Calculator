@@ -1351,4 +1351,48 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 53,
+    description:
+      'Create greek_exposure_strike table for per-strike 0DTE greek exposure (raw UW + computed net values for ML pipeline)',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS greek_exposure_strike (
+          id                SERIAL PRIMARY KEY,
+          date              DATE NOT NULL,
+          expiry            DATE NOT NULL,
+          strike            DECIMAL(10,2) NOT NULL,
+          dte               INTEGER NOT NULL DEFAULT 0,
+          -- Layer 1: raw values from UW /greek-exposure/strike-expiry (greek × OI, no dollar weighting)
+          call_gex          DECIMAL(20,6),
+          put_gex           DECIMAL(20,6),
+          call_delta        DECIMAL(20,6),
+          put_delta         DECIMAL(20,6),
+          call_charm        DECIMAL(20,6),
+          put_charm         DECIMAL(20,6),
+          call_vanna        DECIMAL(20,6),
+          put_vanna         DECIMAL(20,6),
+          -- Layer 2: computed from raw (stored for ML pipeline access)
+          net_gex           DECIMAL(20,6),
+          net_delta         DECIMAL(20,6),
+          net_charm         DECIMAL(20,6),
+          net_vanna         DECIMAL(20,6),
+          abs_gex           DECIMAL(20,6),
+          call_gex_fraction DECIMAL(10,6),
+          updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+          created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+          UNIQUE (date, expiry, strike)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_greek_exposure_strike_date
+          ON greek_exposure_strike (date)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_greek_exposure_strike_expiry
+          ON greek_exposure_strike (date, expiry)
+      `,
+    ],
+  },
 ];

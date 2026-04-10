@@ -479,6 +479,7 @@ describe('db.ts', () => {
         { id: 50 },
         { id: 51 },
         { id: 52 },
+        { id: 53 },
       ]);
 
       const applied = await migrateDb();
@@ -549,15 +550,16 @@ describe('db.ts', () => {
         '#50: Dedupe existing futures_options_trades rows and add UNIQUE index for Databento resend idempotency (SIDE-003)',
         '#51: Create gex_target_features table — three-layer (Layer 2 inputs + Layer 3 scoring outputs) per snapshot × strike × mode for the GexTarget rebuild',
         '#52: Create spx_candles_1m table for pre-baked 1-minute SPX candles (GexTarget rebuild: Phase 3 populates from UW SPY→SPX conversion)',
+        '#53: Create greek_exposure_strike table for per-strike 0DTE greek exposure (raw UW + computed net values for ML pipeline)',
       ]);
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) = 170
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) = 174
       // Migration #3 was converted from run: to statements: (BE-CRON-010);
       // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
       // toward the 170 total — the only delta is that they route through
       // sql.transaction() instead of sequential awaits.
-      expect(mockSql).toHaveBeenCalledTimes(170);
+      expect(mockSql).toHaveBeenCalledTimes(174);
       // Migrations #3 and #15-52 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(39);
+      expect(mockSql.transaction).toHaveBeenCalledTimes(40);
     });
 
     it('propagates errors from migration SQL', async () => {
