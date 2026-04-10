@@ -220,10 +220,15 @@ export const StrikeBox = memo(function StrikeBox({
     const charmVals = leaderboard.map((s) => s.features.charmNet);
     const deltaVals = leaderboard.map((s) => s.features.deltaNet);
     const vannaVals = leaderboard.map((s) => s.features.vannaNet);
-    const cpVals = leaderboard.flatMap((s) => [
-      Math.abs(s.features.callDelta ?? 0),
-      Math.abs(s.features.putDelta ?? 0),
-    ]);
+    // Dealer net delta approximation: –(call_delta + put_delta).
+    // put_delta from UW is negative (put options have negative delta),
+    // so this gives: -(positive + negative) = net dealer directional exposure.
+    // Negative = dealer short delta (call-heavy, resistance); positive = long delta (support).
+    const cpVals = leaderboard.map((s) => {
+      const c = s.features.callDelta ?? 0;
+      const p = s.features.putDelta ?? 0;
+      return -(c + p);
+    });
     return {
       charm: computeBarStats(charmVals),
       delta: computeBarStats(deltaVals),
@@ -279,8 +284,12 @@ export const StrikeBox = memo(function StrikeBox({
                 <th className={thCls} scope="col">
                   GEX&nbsp;$
                 </th>
-                <th className={thCls} scope="col" title="Call/Put flow ratio">
-                  C/P
+                <th
+                  className={thCls}
+                  scope="col"
+                  title="Estimated dealer net delta: –(call_delta + put_delta). Negative = dealer short delta (resistance); positive = dealer long delta (support). Approximation only."
+                >
+                  est.&nbsp;Δ
                 </th>
                 <th className={thCls} scope="col" title="1m momentum">
                   HOT%
@@ -305,65 +314,61 @@ export const StrikeBox = memo(function StrikeBox({
                       ? theme.green
                       : theme.red;
 
-                // C/P — call/put delta exposure as bar + count
+                // est. Δ — bidirectional dealer net delta approximation.
+                // put_delta from UW is negative, so -(call + put) gives
+                // a signed value: negative = dealer short delta (call-heavy);
+                // positive = dealer long delta (put-heavy / support zone).
                 const callD = features.callDelta ?? 0;
                 const putD = features.putDelta ?? 0;
-                const callBarW =
-                  Math.tanh(Math.abs(callD) / barStats.cp.scale) * BAR_MAX_W;
-                const putBarW =
-                  Math.tanh(Math.abs(putD) / barStats.cp.scale) * BAR_MAX_W;
+                const estDealerDelta = -(callD + putD);
+                const halfW = BAR_MAX_W / 2;
+                const dealerBarW =
+                  Math.tanh(Math.abs(estDealerDelta) / barStats.cp.scale) *
+                  halfW;
+                const dealerColor =
+                  estDealerDelta >= 0 ? theme.green : theme.red;
+                const dealerSign = estDealerDelta >= 0 ? '+' : '−';
                 const cpLabel: ReactNode = (
-                  <div className="flex flex-col gap-0.5 leading-none">
-                    <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1">
+                    <div
+                      style={{
+                        width: BAR_MAX_W,
+                        height: BAR_H,
+                        position: 'relative',
+                      }}
+                    >
+                      {/* Centre tick */}
                       <div
                         style={{
-                          width: BAR_MAX_W,
+                          position: 'absolute',
+                          left: halfW - 0.5,
+                          width: 1,
                           height: BAR_H,
-                          position: 'relative',
+                          backgroundColor: theme.textMuted,
+                          opacity: 0.35,
                         }}
-                      >
-                        <div
-                          style={{
-                            width: callBarW,
-                            height: BAR_H,
-                            backgroundColor: theme.green,
-                            borderRadius: 2,
-                            opacity: callD === 0 ? 0.25 : 0.85,
-                          }}
-                        />
-                      </div>
-                      <span
-                        style={{ color: theme.green }}
-                        className="w-10 text-right text-[10px]"
-                      >
-                        {formatCount(features.callDelta)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
+                      />
+                      {/* Bar extends left (negative) or right (positive) from centre */}
                       <div
                         style={{
-                          width: BAR_MAX_W,
+                          position: 'absolute',
+                          left:
+                            estDealerDelta >= 0 ? halfW : halfW - dealerBarW,
+                          width: dealerBarW,
                           height: BAR_H,
-                          position: 'relative',
+                          backgroundColor: dealerColor,
+                          borderRadius: 2,
+                          opacity: estDealerDelta === 0 ? 0.25 : 0.85,
                         }}
-                      >
-                        <div
-                          style={{
-                            width: putBarW,
-                            height: BAR_H,
-                            backgroundColor: theme.red,
-                            borderRadius: 2,
-                            opacity: putD === 0 ? 0.25 : 0.85,
-                          }}
-                        />
-                      </div>
-                      <span
-                        style={{ color: theme.red }}
-                        className="w-10 text-right text-[10px]"
-                      >
-                        {formatCount(features.putDelta)}
-                      </span>
+                      />
                     </div>
+                    <span
+                      style={{ color: dealerColor }}
+                      className="w-12 text-right text-[10px]"
+                    >
+                      {dealerSign}
+                      {formatCount(estDealerDelta)}
+                    </span>
                   </div>
                 );
 
