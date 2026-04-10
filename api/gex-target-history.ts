@@ -176,6 +176,10 @@ interface GexTargetFeatureRow {
   call_gex_dollars: Numeric;
   /** Put-side GEX from the JOIN (display only). */
   put_gex_dollars: Numeric;
+  /** Call delta exposure from greek_exposure_strike JOIN (display only). */
+  call_delta: NumericOrNull;
+  /** Put delta exposure from greek_exposure_strike JOIN (display only). */
+  put_delta: NumericOrNull;
 
   delta_gex_1m: NumericOrNull;
   delta_gex_5m: NumericOrNull;
@@ -290,6 +294,8 @@ function rowToStrikeScore(row: GexTargetFeatureRow): StrikeScore {
       gexDollars: num(row.gex_dollars),
       callGexDollars: num(row.call_gex_dollars),
       putGexDollars: num(row.put_gex_dollars),
+      callDelta: numOrNull(row.call_delta),
+      putDelta: numOrNull(row.put_delta),
       deltaGex_1m: numOrNull(row.delta_gex_1m),
       deltaGex_5m: numOrNull(row.delta_gex_5m),
       deltaGex_20m: numOrNull(row.delta_gex_20m),
@@ -544,6 +550,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
               ELSE 0
             END AS put_gex_dollars,
+            ges.call_delta,
+            ges.put_delta,
             gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
             gtf.prev_gex_dollars_1m, gtf.prev_gex_dollars_5m,
             gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
@@ -558,6 +566,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ON  gso.date      = gtf.date
             AND gso.timestamp = gtf.timestamp
             AND gso.strike::numeric = gtf.strike::numeric
+          LEFT JOIN greek_exposure_strike ges
+            ON  ges.date   = gtf.date
+            AND ges.expiry = gtf.date
+            AND ges.strike::numeric = gtf.strike::numeric
           WHERE gtf.date = ${date}
           ORDER BY gtf.timestamp ASC, gtf.mode ASC, gtf.rank_in_mode ASC
         `) as GexTargetFeatureRow[];
@@ -622,6 +634,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
             ELSE 0
           END AS put_gex_dollars,
+          ges.call_delta,
+          ges.put_delta,
           gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
           gtf.prev_gex_dollars_1m, gtf.prev_gex_dollars_5m,
           gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
@@ -636,6 +650,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ON  gso.date      = gtf.date
           AND gso.timestamp = gtf.timestamp
           AND gso.strike::numeric = gtf.strike::numeric
+        LEFT JOIN greek_exposure_strike ges
+          ON  ges.date   = gtf.date
+          AND ges.expiry = gtf.date
+          AND ges.strike::numeric = gtf.strike::numeric
         WHERE gtf.date = ${date} AND gtf.timestamp = ${timestamp}
         ORDER BY gtf.mode ASC, gtf.rank_in_mode ASC
       `) as GexTargetFeatureRow[];

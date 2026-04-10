@@ -567,6 +567,8 @@ describe('integration: proximity veto for a far-out strike', () => {
       gexDollars: 0,
       callGexDollars: 0,
       putGexDollars: 0,
+      callDelta: 0,
+      putDelta: 0,
       deltaGex_1m: null,
       deltaGex_5m: null,
       deltaGex_20m: null,

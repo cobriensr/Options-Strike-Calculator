@@ -93,6 +93,10 @@ export interface MagnetFeatures {
   callGexDollars: number;
   /** Put-side GEX in dollars for the active mode (display only, not persisted). */
   putGexDollars: number;
+  /** Call-side delta exposure (Σ delta×OI across calls) from greek_exposure_strike. Display only, not persisted. Null when history data is unavailable. */
+  callDelta: number | null;
+  /** Put-side delta exposure (Σ delta×OI across puts) from greek_exposure_strike. Display only, not persisted. Null when history data is unavailable. */
+  putDelta: number | null;
   // ── Layer 2: per-horizon deltas (three parallel representations) ──
   /** Signed Δ$ vs the 1-minute-prior snapshot, or null if unavailable. */
   deltaGex_1m: number | null;
@@ -846,6 +850,8 @@ export function extractFeatures(
     gexDollars,
     callGexDollars,
     putGexDollars,
+    callDelta: null,
+    putDelta: null,
     deltaGex_1m: h1m.delta,
     deltaGex_5m: h5m.delta,
     deltaGex_20m: h20m.delta,

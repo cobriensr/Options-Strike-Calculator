@@ -68,6 +68,14 @@ function formatDist(dist: number): string {
   return `${sign}${dist.toFixed(0)}p`;
 }
 
+function formatCount(v: number | null): string {
+  if (v === null) return '\u2014';
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return `${(abs / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${(abs / 1e3).toFixed(1)}K`;
+  return abs.toFixed(0);
+}
+
 // ── Greek bar stats ───────────────────────────────────────────────────
 
 /**
@@ -212,10 +220,15 @@ export const StrikeBox = memo(function StrikeBox({
     const charmVals = leaderboard.map((s) => s.features.charmNet);
     const deltaVals = leaderboard.map((s) => s.features.deltaNet);
     const vannaVals = leaderboard.map((s) => s.features.vannaNet);
+    const cpVals = leaderboard.flatMap((s) => [
+      Math.abs(s.features.callDelta ?? 0),
+      Math.abs(s.features.putDelta ?? 0),
+    ]);
     return {
       charm: computeBarStats(charmVals),
       delta: computeBarStats(deltaVals),
       vanna: computeBarStats(vannaVals),
+      cp: computeBarStats(cpVals),
     };
   }, [leaderboard]);
 
@@ -292,15 +305,65 @@ export const StrikeBox = memo(function StrikeBox({
                       ? theme.green
                       : theme.red;
 
-                // C/P — show call and put GEX $ directly (already dollar-weighted from UW)
+                // C/P — call/put delta exposure as bar + count
+                const callD = features.callDelta ?? 0;
+                const putD = features.putDelta ?? 0;
+                const callBarW =
+                  Math.tanh(Math.abs(callD) / barStats.cp.scale) * BAR_MAX_W;
+                const putBarW =
+                  Math.tanh(Math.abs(putD) / barStats.cp.scale) * BAR_MAX_W;
                 const cpLabel: ReactNode = (
-                  <div className="flex flex-col leading-none">
-                    <span style={{ color: theme.green }} className="text-[10px]">
-                      C {formatGex(features.callGexDollars)}
-                    </span>
-                    <span style={{ color: theme.red }} className="text-[10px]">
-                      P {formatGex(features.putGexDollars)}
-                    </span>
+                  <div className="flex flex-col gap-0.5 leading-none">
+                    <div className="flex items-center gap-1">
+                      <div
+                        style={{
+                          width: BAR_MAX_W,
+                          height: BAR_H,
+                          position: 'relative',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: callBarW,
+                            height: BAR_H,
+                            backgroundColor: theme.green,
+                            borderRadius: 2,
+                            opacity: callD === 0 ? 0.25 : 0.85,
+                          }}
+                        />
+                      </div>
+                      <span
+                        style={{ color: theme.green }}
+                        className="w-10 text-right text-[10px]"
+                      >
+                        {formatCount(features.callDelta)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <div
+                        style={{
+                          width: BAR_MAX_W,
+                          height: BAR_H,
+                          position: 'relative',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: putBarW,
+                            height: BAR_H,
+                            backgroundColor: theme.red,
+                            borderRadius: 2,
+                            opacity: putD === 0 ? 0.25 : 0.85,
+                          }}
+                        />
+                      </div>
+                      <span
+                        style={{ color: theme.red }}
+                        className="w-10 text-right text-[10px]"
+                      >
+                        {formatCount(features.putDelta)}
+                      </span>
+                    </div>
                   </div>
                 );
 

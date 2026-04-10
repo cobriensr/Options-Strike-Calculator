@@ -98,6 +98,8 @@ function makeStrike(
       gexDollars,
       callGexDollars: gexDollars,
       putGexDollars: 0,
+      callDelta: null,
+      putDelta: null,
       deltaGex_1m: null,
       deltaGex_5m: null,
       deltaGex_20m: null,
