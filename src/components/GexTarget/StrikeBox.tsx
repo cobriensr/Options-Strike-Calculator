@@ -1,15 +1,15 @@
 /**
  * StrikeBox — Panel 5: dense sofbot-style leaderboard with greek bars.
  *
- * Shows up to 10 strikes with rank, rank-change arrow, strike price,
- * distance from spot, 1m delta%, CHEX/DEX/VEX greek bars, GEX $, C/P
- * flow ratio, and HOT% badge.
+ * Shows the top 5 strikes by GEX $ (largest |gexDollars|) with rank,
+ * rank-change arrow, strike price, distance from spot, 1m delta%,
+ * CHEX/DEX/VEX greek bars, GEX $, est. Δ, and HOT% badge.
  *
  * Rank-change tracking: a useState holds the previous render's rank map
  * so per-row ▲/▼/— arrows can be computed safely during render.
  *
  * Greek bar sizing uses tanh(|value| / scale) where scale = median
- * abs(value) across the 10-strike universe, recomputed on every render.
+ * abs(value) across the displayed 5-strike set, recomputed on every render.
  * Near-zero threshold = 5th percentile of abs(value); below it the bar
  * is rendered in muted gray.
  */
@@ -190,7 +190,21 @@ export interface StrikeBoxProps {
 export const StrikeBox = memo(function StrikeBox({
   leaderboard,
 }: StrikeBoxProps) {
-  // Track previous ranks via state so rank-change arrows can be computed
+  // Top 5 by GEX $ magnitude — sorted descending by |gexDollars|.
+  // rankBySize (already computed in scoreMode) is used for the RK column
+  // and rank-change tracking so arrows reflect GEX$ rank movement.
+  const top5 = useMemo(
+    () =>
+      [...leaderboard]
+        .sort(
+          (a, b) =>
+            Math.abs(b.features.gexDollars) - Math.abs(a.features.gexDollars),
+        )
+        .slice(0, 5),
+    [leaderboard],
+  );
+
+  // Track previous GEX$ ranks via state so rank-change arrows can be computed
   // safely during render. The effect fires after paint and updates prevRanks
   // for the next leaderboard change — this is the correct React pattern for
   // "previous value" comparisons (arrows show 'new' on first load, 'same'
@@ -201,20 +215,20 @@ export const StrikeBox = memo(function StrikeBox({
   );
   useEffect(() => {
     const m = new Map<number, number>();
-    for (const s of leaderboard) m.set(s.strike, s.rankByScore);
+    for (const s of top5) m.set(s.strike, s.rankBySize);
     setPrevRanks(m);
-  }, [leaderboard]);
+  }, [top5]);
 
   const rankChanges = useMemo<Map<number, RankChange>>(() => {
     const result = new Map<number, RankChange>();
-    for (const s of leaderboard) {
+    for (const s of top5) {
       const prevRank = prevRanks.get(s.strike);
       let change: RankChange;
       if (prevRank === undefined) {
         change = 'new';
-      } else if (s.rankByScore < prevRank) {
+      } else if (s.rankBySize < prevRank) {
         change = 'up';
-      } else if (s.rankByScore > prevRank) {
+      } else if (s.rankBySize > prevRank) {
         change = 'down';
       } else {
         change = 'same';
@@ -222,18 +236,18 @@ export const StrikeBox = memo(function StrikeBox({
       result.set(s.strike, change);
     }
     return result;
-  }, [leaderboard, prevRanks]);
+  }, [top5, prevRanks]);
 
-  // Compute per-greek bar stats once per render
+  // Compute per-greek bar stats once per render (scoped to the displayed top5)
   const barStats = useMemo(() => {
-    const charmVals = leaderboard.map((s) => s.features.charmNet);
-    const deltaVals = leaderboard.map((s) => s.features.deltaNet);
-    const vannaVals = leaderboard.map((s) => s.features.vannaNet);
+    const charmVals = top5.map((s) => s.features.charmNet);
+    const deltaVals = top5.map((s) => s.features.deltaNet);
+    const vannaVals = top5.map((s) => s.features.vannaNet);
     // Approximate dealer net delta in contracts via net GEX dollars.
     // GEX$ / (spot × 100) converts signed GEX dollars to a contract-scaled
     // proxy: positive = net long gamma (dealer long delta / support);
     // negative = net short gamma (dealer short delta / resistance).
-    const cpVals = leaderboard.map((s) =>
+    const cpVals = top5.map((s) =>
       s.features.gexDollars / (s.features.spot * 100),
     );
     return {
@@ -242,7 +256,7 @@ export const StrikeBox = memo(function StrikeBox({
       vanna: computeBarStats(vannaVals),
       cp: computeBarStats(cpVals),
     };
-  }, [leaderboard]);
+  }, [top5]);
 
   // Header cell style
   const thCls =
@@ -251,7 +265,7 @@ export const StrikeBox = memo(function StrikeBox({
 
   return (
     <SectionBox label="GEX STRIKE BOARD">
-      {leaderboard.length === 0 ? (
+      {top5.length === 0 ? (
         <p className="font-mono text-[11px]" style={{ color: theme.textMuted }}>
           No data
         </p>
@@ -304,7 +318,7 @@ export const StrikeBox = memo(function StrikeBox({
               </tr>
             </thead>
             <tbody>
-              {leaderboard.map((s, idx) => {
+              {top5.map((s, idx) => {
                 const { features } = s;
                 const rankChange = rankChanges.get(s.strike) ?? 'same';
 
@@ -433,7 +447,7 @@ export const StrikeBox = memo(function StrikeBox({
                       className={tdCls}
                       style={{ color: theme.textSecondary }}
                     >
-                      {s.rankByScore}
+                      {s.rankBySize}
                     </td>
 
                     {/* Rank change */}
