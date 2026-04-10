@@ -68,12 +68,13 @@ function formatDist(dist: number): string {
   return `${sign}${dist.toFixed(0)}p`;
 }
 
-function formatCount(v: number | null): string {
-  if (v === null) return '\u2014';
+/** Compact signed label for net values — no decimal, fits tight columns. */
+function formatNet(v: number): string {
   const abs = Math.abs(v);
-  if (abs >= 1e6) return `${(abs / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `${(abs / 1e3).toFixed(1)}K`;
-  return abs.toFixed(0);
+  const sign = v >= 0 ? '+' : '−';
+  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${sign}${Math.round(abs / 1e3)}K`;
+  return `${sign}${Math.round(abs)}`;
 }
 
 // ── Greek bar stats ───────────────────────────────────────────────────
@@ -327,7 +328,6 @@ export const StrikeBox = memo(function StrikeBox({
                   halfW;
                 const dealerColor =
                   estDealerDelta >= 0 ? theme.green : theme.red;
-                const dealerSign = estDealerDelta >= 0 ? '+' : '−';
                 const cpLabel: ReactNode = (
                   <div className="flex items-center gap-1">
                     <div
@@ -364,10 +364,9 @@ export const StrikeBox = memo(function StrikeBox({
                     </div>
                     <span
                       style={{ color: dealerColor }}
-                      className="w-12 text-right text-[10px]"
+                      className="w-10 text-right text-[10px]"
                     >
-                      {dealerSign}
-                      {formatCount(estDealerDelta)}
+                      {formatNet(estDealerDelta)}
                     </span>
                   </div>
                 );
