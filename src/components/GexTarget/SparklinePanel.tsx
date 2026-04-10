@@ -14,13 +14,10 @@ import type { StrikeScore } from '../../utils/gex-target';
 
 // ── Formatters ────────────────────────────────────────────────────────
 
-function formatGex(v: number): string {
-  const abs = Math.abs(v);
-  const sign = v >= 0 ? '+' : '-';
-  if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(1)}B`;
-  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(0)}K`;
-  return `${sign}${abs.toFixed(0)}`;
+function formatPct(v: number | null): string {
+  if (v === null) return '—';
+  const sign = v >= 0 ? '+' : '';
+  return `${sign}${(v * 100).toFixed(1)}%`;
 }
 
 // ── Sparkline ─────────────────────────────────────────────────────────
@@ -142,11 +139,18 @@ export const SparklinePanel = memo(function SparklinePanel({
               features.gexDollars,
             ];
 
+            const pct20m = features.deltaPct_20m;
+            const pctColor =
+              pct20m === null
+                ? theme.textMuted
+                : pct20m >= 0
+                  ? theme.green
+                  : theme.red;
+
             return (
               <div
                 key={s.strike}
                 className="flex items-center gap-2"
-                role="row"
                 aria-label={`Strike ${s.strike}`}
               >
                 {/* Strike label */}
@@ -160,14 +164,12 @@ export const SparklinePanel = memo(function SparklinePanel({
                 {/* Sparkline */}
                 <Sparkline points={pts} />
 
-                {/* Current GEX value */}
+                {/* 20m % change */}
                 <span
                   className="ml-auto font-mono text-[10px]"
-                  style={{
-                    color: features.gexDollars >= 0 ? theme.green : theme.red,
-                  }}
+                  style={{ color: pctColor }}
                 >
-                  {formatGex(features.gexDollars)}
+                  {formatPct(pct20m)}
                 </span>
               </div>
             );

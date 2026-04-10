@@ -1,125 +1,124 @@
 /**
  * PriceChart unit tests.
  *
- * lightweight-charts is an imperative library that uses browser DOM APIs not
- * available in jsdom. The entire module is mocked so tests verify React
- * behaviour (mounting, prop changes, cleanup) rather than chart internals.
+ * lightweight-charts is mocked so the imperative chart API calls can be
+ * observed without a DOM canvas. The mock exposes spy functions for
+ * `createChart`, `addSeries`, `setData`, `createPriceLine`, and
+ * `removePriceLine` so each test can assert exactly which calls were made.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, act } from '@testing-library/react';
+import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { PriceChart } from '../../components/GexTarget/PriceChart';
 import type { SPXCandle } from '../../hooks/useGexTarget';
-import type {
-  StrikeScore,
-  TargetScore,
-  MagnetFeatures,
-  ComponentScores,
-} from '../../utils/gex-target';
+import type { TargetScore, StrikeScore } from '../../utils/gex-target';
 
-// ── Mock lightweight-charts ────────────────────────────────────────────────
+// ── lightweight-charts mock ───────────────────────────────────────────
+// vi.mock factories are hoisted above all variable declarations, so mock
+// objects must be created with vi.hoisted() to be accessible in the factory.
 
-const mockRemovePriceLine = vi.fn();
-const mockCreatePriceLine = vi.fn(() => ({}));
-const mockSetData = vi.fn();
-const mockApplyOptions = vi.fn();
-const mockRemove = vi.fn();
+const {
+  mockCreatePriceLine,
+  mockRemovePriceLine,
+  mockRemove,
+  mockCandleSeries,
+  mockVwapSeries,
+  mockChart,
+} = vi.hoisted(() => {
+  const mockSetData = vi.fn();
+  const mockCreatePriceLine = vi.fn().mockReturnValue({});
+  const mockRemovePriceLine = vi.fn();
+  const mockApplyOptions = vi.fn();
+  const mockRemove = vi.fn();
 
-const mockCandleSeries = {
-  setData: mockSetData,
-  createPriceLine: mockCreatePriceLine,
-  removePriceLine: mockRemovePriceLine,
-};
+  const mockCandleSeries = {
+    setData: mockSetData,
+    createPriceLine: mockCreatePriceLine,
+    removePriceLine: mockRemovePriceLine,
+  };
 
-const mockVwapSeries = {
-  setData: mockSetData,
-};
+  const mockVwapSeries = { setData: mockSetData };
 
-const mockAddSeries = vi
-  .fn()
-  .mockReturnValueOnce(mockCandleSeries) // first call → candlestick series
-  .mockReturnValue(mockVwapSeries); // subsequent calls → line series
+  const mockChart = {
+    addSeries: vi.fn(),
+    applyOptions: mockApplyOptions,
+    remove: mockRemove,
+  };
 
-const mockChart = {
-  addSeries: mockAddSeries,
-  applyOptions: mockApplyOptions,
-  remove: mockRemove,
-};
+  return {
+    mockSetData,
+    mockCreatePriceLine,
+    mockRemovePriceLine,
+    mockApplyOptions,
+    mockRemove,
+    mockCandleSeries,
+    mockVwapSeries,
+    mockChart,
+  };
+});
 
 vi.mock('lightweight-charts', () => ({
-  createChart: vi.fn(() => mockChart),
+  createChart: vi.fn().mockReturnValue(mockChart),
   CrosshairMode: { Normal: 1 },
-  LineStyle: { Solid: 0, Dashed: 1 },
-  CandlestickSeries: {},
-  LineSeries: {},
+  LineStyle: { Dashed: 1, Solid: 0 },
+  CandlestickSeries: class CandlestickSeries {},
+  LineSeries: class LineSeries {},
 }));
 
-// ── Fixture helpers ────────────────────────────────────────────────────────
+// ── Fixtures ──────────────────────────────────────────────────────────
 
 function makeCandle(overrides: Partial<SPXCandle> = {}): SPXCandle {
   return {
-    open: 5790,
-    high: 5800,
-    low: 5780,
-    close: 5795,
+    open: 5800,
+    high: 5810,
+    low: 5790,
+    close: 5805,
     volume: 1000,
-    datetime: 1_700_000_000_000, // epoch ms
-    ...overrides,
-  };
-}
-
-function makeFeatures(overrides: Partial<MagnetFeatures> = {}): MagnetFeatures {
-  return {
-    strike: 5800,
-    spot: 5795,
-    distFromSpot: 5,
-    gexDollars: 1_000_000_000,
-    deltaGex_1m: 10_000_000,
-    deltaGex_5m: 50_000_000,
-    deltaGex_20m: 150_000_000,
-    deltaGex_60m: 300_000_000,
-    prevGexDollars_1m: 990_000_000,
-    prevGexDollars_5m: 950_000_000,
-    prevGexDollars_20m: 850_000_000,
-    prevGexDollars_60m: 700_000_000,
-    deltaPct_1m: 0.01,
-    deltaPct_5m: 0.053,
-    deltaPct_20m: 0.18,
-    deltaPct_60m: 0.43,
-    callRatio: 0.2,
-    charmNet: 1e7,
-    deltaNet: 5e8,
-    vannaNet: 1e7,
-    minutesAfterNoonCT: 60,
-    ...overrides,
-  };
-}
-
-function makeComponents(
-  overrides: Partial<ComponentScores> = {},
-): ComponentScores {
-  return {
-    flowConfluence: 0.6,
-    priceConfirm: 0.4,
-    charmScore: 0.3,
-    dominance: 0.7,
-    clarity: 0.8,
-    proximity: 0.9,
+    datetime: Date.now(),
     ...overrides,
   };
 }
 
 function makeStrike(
-  strike: number,
-  gexDollars: number,
+  strike = 5800,
+  gexDollars = 1_000_000_000,
   overrides: Partial<StrikeScore> = {},
 ): StrikeScore {
   return {
     strike,
-    features: makeFeatures({ strike, gexDollars }),
-    components: makeComponents(),
-    finalScore: 0.55,
-    tier: 'HIGH',
+    features: {
+      strike,
+      spot: 5795,
+      distFromSpot: strike - 5795,
+      gexDollars,
+      deltaGex_1m: null,
+      deltaGex_5m: null,
+      deltaGex_20m: null,
+      deltaGex_60m: null,
+      prevGexDollars_1m: null,
+      prevGexDollars_5m: null,
+      prevGexDollars_20m: null,
+      prevGexDollars_60m: null,
+      deltaPct_1m: null,
+      deltaPct_5m: null,
+      deltaPct_20m: null,
+      deltaPct_60m: null,
+      callRatio: 0.2,
+      charmNet: 0,
+      deltaNet: 0,
+      vannaNet: 0,
+      minutesAfterNoonCT: 60,
+    },
+    components: {
+      flowConfluence: 0,
+      priceConfirm: 0,
+      charmScore: 0,
+      dominance: 0.5,
+      clarity: 0.5,
+      proximity: 0.5,
+    },
+    finalScore: 0.5,
+    tier: 'MEDIUM',
     wallSide: 'CALL',
     rankByScore: 1,
     rankBySize: 1,
@@ -128,20 +127,18 @@ function makeStrike(
   };
 }
 
-function makeScore(strikes: StrikeScore[]): TargetScore {
+function makeScore(leaderboard: StrikeScore[]): TargetScore {
   return {
-    target: strikes[0] ?? null,
-    leaderboard: strikes,
+    target: leaderboard[0] ?? null,
+    leaderboard,
   };
 }
 
-// ── Reset mocks before each test ───────────────────────────────────────────
+// ── Setup ─────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Re-establish addSeries return sequence after clearAllMocks resets call counts
-  mockAddSeries
-    .mockReset()
+  mockChart.addSeries
     .mockReturnValueOnce(mockCandleSeries)
     .mockReturnValue(mockVwapSeries);
 });
@@ -155,6 +152,8 @@ describe('PriceChart: rendering', () => {
         candles={[makeCandle()]}
         previousClose={null}
         score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
       />,
     );
 
@@ -164,7 +163,13 @@ describe('PriceChart: rendering', () => {
 
   it('renders empty state when candles array is empty', () => {
     const { getByRole } = render(
-      <PriceChart candles={[]} previousClose={null} score={null} />,
+      <PriceChart
+        candles={[]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+      />,
     );
 
     // Container should still render even when there is no data
@@ -185,6 +190,8 @@ describe('PriceChart: score overlay', () => {
         candles={[makeCandle()]}
         previousClose={null}
         score={score}
+        openingCallStrike={null}
+        openingPutStrike={null}
       />,
     );
 
@@ -197,6 +204,8 @@ describe('PriceChart: score overlay', () => {
         candles={[makeCandle()]}
         previousClose={5200}
         score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
       />,
     );
 
@@ -204,12 +213,37 @@ describe('PriceChart: score overlay', () => {
       expect.objectContaining({ price: 5200 }),
     );
   });
+
+  it('calls createPriceLine for openingCallStrike and openingPutStrike', () => {
+    render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={5900}
+        openingPutStrike={5700}
+      />,
+    );
+
+    expect(mockCreatePriceLine).toHaveBeenCalledWith(
+      expect.objectContaining({ price: 5900 }),
+    );
+    expect(mockCreatePriceLine).toHaveBeenCalledWith(
+      expect.objectContaining({ price: 5700 }),
+    );
+  });
 });
 
 describe('PriceChart: cleanup', () => {
   it('calls chart.remove() on unmount', () => {
     const { unmount } = render(
-      <PriceChart candles={[]} previousClose={null} score={null} />,
+      <PriceChart
+        candles={[]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+      />,
     );
 
     unmount();
@@ -231,6 +265,8 @@ describe('PriceChart: overlay update on score change', () => {
         candles={[makeCandle()]}
         previousClose={null}
         score={score1}
+        openingCallStrike={null}
+        openingPutStrike={null}
       />,
     );
 
@@ -244,6 +280,8 @@ describe('PriceChart: overlay update on score change', () => {
           candles={[makeCandle()]}
           previousClose={null}
           score={score2}
+          openingCallStrike={null}
+          openingPutStrike={null}
         />,
       );
     });

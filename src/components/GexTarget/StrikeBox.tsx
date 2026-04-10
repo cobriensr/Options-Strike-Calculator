@@ -105,14 +105,12 @@ interface GreekBarProps {
   value: number;
   scale: number;
   nearZeroThreshold: number;
-  tooltip: string;
 }
 
 const GreekBar = memo(function GreekBar({
   value,
   scale,
   nearZeroThreshold,
-  tooltip,
 }: GreekBarProps) {
   const abs = Math.abs(value);
   const isNearZero = abs <= nearZeroThreshold;
@@ -128,11 +126,7 @@ const GreekBar = memo(function GreekBar({
   }
 
   return (
-    <div
-      style={{ width: BAR_MAX_W, height: BAR_H, position: 'relative' }}
-      title={tooltip}
-      aria-label={tooltip.split('\n')[0]}
-    >
+    <div style={{ width: BAR_MAX_W, height: BAR_H, position: 'relative' }}>
       <div
         style={{
           width,
@@ -298,30 +292,25 @@ export const StrikeBox = memo(function StrikeBox({
                       ? theme.green
                       : theme.red;
 
-                // C/P flow ratio display
+                // C/P — show call % stacked over put %, derived from callRatio
+                // callRatio = (callVol - putVol) / (callVol + putVol) ∈ [-1,1]
+                // → callPct = (1 + cr) / 2, putPct = (1 - cr) / 2
                 const cr = features.callRatio;
-                const cpAbsPct = `${Math.round(Math.abs(cr) * 100)}%`;
-                let cpLabel: ReactNode;
-                if (Math.abs(cr) < 0.01) {
-                  cpLabel = (
-                    <span style={{ color: theme.textMuted }}>&mdash;</span>
-                  );
-                } else if (cr > 0) {
-                  cpLabel = (
-                    <span style={{ color: theme.green }}>
-                      C&thinsp;{cpAbsPct}
+                const callPct = Math.round(((1 + cr) / 2) * 100);
+                const putPct = 100 - callPct;
+                const cpLabel: ReactNode = (
+                  <div className="flex flex-col leading-none">
+                    <span style={{ color: theme.green }} className="text-[10px]">
+                      C {callPct}%
                     </span>
-                  );
-                } else {
-                  cpLabel = (
-                    <span style={{ color: theme.red }}>
-                      P&thinsp;{cpAbsPct}
+                    <span style={{ color: theme.red }} className="text-[10px]">
+                      P {putPct}%
                     </span>
-                  );
-                }
+                  </div>
+                );
 
-                // HOT% — absolute 1m delta pct
-                const hotPct = `${Math.abs(deltaPct1m ?? 0).toFixed(0)}%`;
+                // HOT% — absolute 1m delta pct (deltaPct_1m is a fraction, ×100 for display)
+                const hotPct = `${(Math.abs(deltaPct1m ?? 0) * 100).toFixed(0)}%`;
 
                 // GEX color
                 const gexColor =
@@ -393,33 +382,30 @@ export const StrikeBox = memo(function StrikeBox({
                       {formatDeltaPct(features.deltaPct_1m)}
                     </td>
 
-                    {/* CHEX */}
-                    <td className={tdCls}>
+                    {/* CHEX — title on <td> so full cell triggers tooltip */}
+                    <td className={tdCls} title={charmTooltip}>
                       <GreekBar
                         value={features.charmNet}
                         scale={barStats.charm.scale}
                         nearZeroThreshold={barStats.charm.nearZeroThreshold}
-                        tooltip={charmTooltip}
                       />
                     </td>
 
                     {/* DEX */}
-                    <td className={tdCls}>
+                    <td className={tdCls} title={deltaTooltip}>
                       <GreekBar
                         value={features.deltaNet}
                         scale={barStats.delta.scale}
                         nearZeroThreshold={barStats.delta.nearZeroThreshold}
-                        tooltip={deltaTooltip}
                       />
                     </td>
 
                     {/* VEX */}
-                    <td className={tdCls}>
+                    <td className={tdCls} title={vannaTooltip}>
                       <GreekBar
                         value={features.vannaNet}
                         scale={barStats.vanna.scale}
                         nearZeroThreshold={barStats.vanna.nearZeroThreshold}
-                        tooltip={vannaTooltip}
                       />
                     </td>
 

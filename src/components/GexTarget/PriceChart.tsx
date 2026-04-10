@@ -41,6 +41,16 @@ export interface PriceChartProps {
   previousClose: number | null;
   /** The currently-active mode's TargetScore — overlay lines update when this changes. */
   score: TargetScore | null;
+  /**
+   * Strike with the highest call-volume dominance in the opening snapshot.
+   * Drawn as a fixed cyan line for the full session.
+   */
+  openingCallStrike: number | null;
+  /**
+   * Strike with the highest put-volume dominance in the opening snapshot.
+   * Drawn as a fixed orange line for the full session.
+   */
+  openingPutStrike: number | null;
 }
 
 // ── VWAP helper ───────────────────────────────────────────────────────────
@@ -94,6 +104,8 @@ export const PriceChart = memo(function PriceChart({
   candles,
   previousClose,
   score,
+  openingCallStrike,
+  openingPutStrike,
 }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -174,7 +186,7 @@ export const PriceChart = memo(function PriceChart({
     }
   }, [candles]);
 
-  // ── Overlay lines (GEX levels + previous close) ──────────────────────
+  // ── Overlay lines (GEX levels + opening walls + previous close) ────────
 
   useEffect(() => {
     if (!candleSeriesRef.current) return;
@@ -185,7 +197,7 @@ export const PriceChart = memo(function PriceChart({
     }
     priceLineRefs.current = [];
 
-    if (!score && previousClose === null) return;
+    if (!score && previousClose === null && openingCallStrike === null && openingPutStrike === null) return;
 
     const lines: IPriceLine[] = [];
 
@@ -211,21 +223,50 @@ export const PriceChart = memo(function PriceChart({
       });
     }
 
+    // Opening call wall (highest call-volume strike at open) — cyan dashed
+    if (openingCallStrike !== null) {
+      lines.push(
+        candleSeriesRef.current!.createPriceLine({
+          price: openingCallStrike,
+          color: '#00bcd4',
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `HC Vol ${openingCallStrike}`,
+        }),
+      );
+    }
+
+    // Opening put wall (highest put-volume strike at open) — orange dashed
+    if (openingPutStrike !== null) {
+      lines.push(
+        candleSeriesRef.current!.createPriceLine({
+          price: openingPutStrike,
+          color: '#ff9800',
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `HP Vol ${openingPutStrike}`,
+        }),
+      );
+    }
+
     // Previous close line
     if (previousClose !== null) {
-      const line = candleSeriesRef.current!.createPriceLine({
-        price: previousClose,
-        color: 'rgba(255,255,255,0.35)',
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: 'Prev Close',
-      });
-      lines.push(line);
+      lines.push(
+        candleSeriesRef.current!.createPriceLine({
+          price: previousClose,
+          color: 'rgba(255,255,255,0.35)',
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'Prev Close',
+        }),
+      );
     }
 
     priceLineRefs.current = lines;
-  }, [score, previousClose]);
+  }, [score, previousClose, openingCallStrike, openingPutStrike]);
 
   // ── Render ───────────────────────────────────────────────────────────
 

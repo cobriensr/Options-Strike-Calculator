@@ -120,6 +120,8 @@ function makeHookResult(
     candles: [],
     visibleCandles: [],
     previousClose: 5780,
+    openingCallStrike: null,
+    openingPutStrike: null,
     selectedDate: '2026-04-07',
     setSelectedDate: vi.fn(),
     availableDates: ['2026-04-07'],

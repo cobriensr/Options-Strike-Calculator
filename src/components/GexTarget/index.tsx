@@ -70,6 +70,8 @@ export const GexTarget = memo(function GexTarget({
     refresh,
     visibleCandles,
     previousClose,
+    openingCallStrike,
+    openingPutStrike,
   } = useGexTarget(marketOpen);
 
   // ── Mode selection ───────────────────────────────────────
@@ -230,9 +232,9 @@ export const GexTarget = memo(function GexTarget({
         )}
 
         {/* 5-panel layout */}
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_2fr]">
-          {/* Left column: panels 1-3 */}
-          <div className="flex flex-col gap-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-[200px_1fr]">
+          {/* Left column: panels 1-3 (narrower so price chart has room) */}
+          <div className="flex flex-col gap-2">
             <TargetTile score={activeScore} />
             <UrgencyPanel leaderboard={activeLeaderboard} />
             <SparklinePanel leaderboard={activeLeaderboard} />
@@ -243,6 +245,8 @@ export const GexTarget = memo(function GexTarget({
             candles={visibleCandles}
             previousClose={previousClose}
             score={activeScore}
+            openingCallStrike={openingCallStrike}
+            openingPutStrike={openingPutStrike}
           />
         </div>
 

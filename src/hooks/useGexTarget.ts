@@ -148,6 +148,18 @@ export interface UseGexTargetReturn {
   visibleCandles: SPXCandle[];
   /** Previous session close (SPX), or null if not available. */
   previousClose: number | null;
+  /**
+   * Strike with the highest call-volume dominance in the OI leaderboard of
+   * the first (opening) snapshot for the active date. Derived from the strike
+   * with the most positive `callRatio` = (callVol - putVol) / (callVol + putVol).
+   * Null until the bulk load resolves.
+   */
+  openingCallStrike: number | null;
+  /**
+   * Strike with the highest put-volume dominance (most negative `callRatio`)
+   * in the OI leaderboard of the first snapshot. Null until bulk load resolves.
+   */
+  openingPutStrike: number | null;
 
   // -- Date browsing (panel-local)
   /** The date currently being viewed (YYYY-MM-DD in ET), panel-local state. */
@@ -235,6 +247,8 @@ export function useGexTarget(
   const mountedRef = useRef(true);
   /** Cache of every snapshot loaded for the current date (keyed by timestamp). */
   const allSnapshotsRef = useRef<Map<string, BulkSnapshot>>(new Map());
+  const [openingCallStrike, setOpeningCallStrike] = useState<number | null>(null);
+  const [openingPutStrike, setOpeningPutStrike] = useState<number | null>(null);
 
   // `todayET` recomputes each render so the panel flips from LIVE -> BACKTEST
   // at the midnight-ET session boundary without needing an explicit state
@@ -324,6 +338,34 @@ export function useGexTarget(
       setPreviousClose(data.previousClose);
       setTimestamps(data.timestamps ?? []);
       setAvailableDates(data.availableDates ?? []);
+
+      // Opening strikes: from the first snapshot's OI leaderboard, find the
+      // strike with the most positive callRatio (call-dominant) and most
+      // negative callRatio (put-dominant). These stay fixed for the day so
+      // the price chart can draw static call/put wall reference lines.
+      const firstSnap = (data.snapshots ?? [])[0] ?? null;
+      if (firstSnap?.oi?.leaderboard && firstSnap.oi.leaderboard.length > 0) {
+        const board = firstSnap.oi.leaderboard;
+        let maxCallRatio = -Infinity;
+        let minCallRatio = Infinity;
+        let callStrike: number | null = null;
+        let putStrike: number | null = null;
+        for (const row of board) {
+          if (row.features.callRatio > maxCallRatio) {
+            maxCallRatio = row.features.callRatio;
+            callStrike = row.strike;
+          }
+          if (row.features.callRatio < minCallRatio) {
+            minCallRatio = row.features.callRatio;
+            putStrike = row.strike;
+          }
+        }
+        setOpeningCallStrike(callStrike);
+        setOpeningPutStrike(putStrike);
+      } else {
+        setOpeningCallStrike(null);
+        setOpeningPutStrike(null);
+      }
 
       // Set state from latest snapshot
       const latest = (data.snapshots ?? []).at(-1) ?? null;
@@ -512,6 +554,8 @@ export function useGexTarget(
     candles,
     visibleCandles,
     previousClose,
+    openingCallStrike,
+    openingPutStrike,
     selectedDate,
     setSelectedDate,
     availableDates,
