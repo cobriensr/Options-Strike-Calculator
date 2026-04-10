@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import {
-  useMarketData,
-  computeMarketSession,
-} from '../../hooks/useMarketData';
+import { useMarketData, computeMarketSession } from '../../hooks/useMarketData';
 
 /**
  * Tests for the useMarketData React hook.
@@ -891,9 +888,9 @@ describe('computeMarketSession: pure classifier', () => {
 
   it('returns "closed" before 04:00 ET on a trading day', () => {
     // Thu 2026-04-09 03:30 EDT = 07:30 UTC
-    expect(
-      computeMarketSession(new Date(Date.UTC(2026, 3, 9, 7, 30, 0))),
-    ).toBe('closed');
+    expect(computeMarketSession(new Date(Date.UTC(2026, 3, 9, 7, 30, 0)))).toBe(
+      'closed',
+    );
   });
 
   it('returns "pre-market" at 08:00 ET on a trading day', () => {

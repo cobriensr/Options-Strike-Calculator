@@ -58,11 +58,7 @@ export type { MarketData } from './useMarketData.fetchers';
  * owner starts his prep workflow at 08:30 CT (09:30 ET) so pre-market
  * polling is what unlocks the prep workflow.
  */
-export type MarketSession =
-  | 'pre-market'
-  | 'regular'
-  | 'after-hours'
-  | 'closed';
+export type MarketSession = 'pre-market' | 'regular' | 'after-hours' | 'closed';
 
 // ============================================================
 // SESSION DERIVATION (client-side, UTC → ET)

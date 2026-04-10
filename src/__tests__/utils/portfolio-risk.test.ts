@@ -36,15 +36,23 @@ function makeSpread(
   const isCall = spreadType === 'CALL_CREDIT_SPREAD';
   return {
     spreadType,
-    shortLeg: makeLeg({ strike: isCall ? 5720 : 5680, type: isCall ? 'CALL' : 'PUT' }),
-    longLeg: makeLeg({ strike: isCall ? 5730 : 5670, type: isCall ? 'CALL' : 'PUT' }),
+    shortLeg: makeLeg({
+      strike: isCall ? 5720 : 5680,
+      type: isCall ? 'CALL' : 'PUT',
+    }),
+    longLeg: makeLeg({
+      strike: isCall ? 5730 : 5670,
+      type: isCall ? 'CALL' : 'PUT',
+    }),
     contracts,
     wingWidth: 10,
     creditReceived,
     maxProfit: creditReceived,
     maxLoss,
     riskRewardRatio: maxLoss / creditReceived,
-    breakeven: isCall ? 5720 + creditReceived / 100 : 5680 - creditReceived / 100,
+    breakeven: isCall
+      ? 5720 + creditReceived / 100
+      : 5680 - creditReceived / 100,
     entryTime: null,
     entryNetPrice: null,
     currentValue: null,
@@ -218,10 +226,7 @@ describe('computeAggregatePortfolioRisk', () => {
     // Two ICs: each put wing 700 ⇒ combined put side 1400
     //          each call wing 600 ⇒ combined call side 1200
     // MAX = 1400; NLV 10_000 ⇒ 14% > 12% threshold
-    const ics = [
-      makeIC(50, 700, 60, 600),
-      makeIC(50, 700, 60, 600),
-    ];
+    const ics = [makeIC(50, 700, 60, 600), makeIC(50, 700, 60, 600)];
     const result = computeAggregatePortfolioRisk(
       [],
       ics,
@@ -236,14 +241,7 @@ describe('computeAggregatePortfolioRisk', () => {
   });
 
   it('returns isOverThreshold as a primitive boolean (effect-dep safe)', () => {
-    const result = computeAggregatePortfolioRisk(
-      [],
-      [],
-      0,
-      100_000,
-      12,
-      0,
-    );
+    const result = computeAggregatePortfolioRisk([], [], 0, 100_000, 12, 0);
     expect(typeof result.isOverThreshold).toBe('boolean');
   });
 });

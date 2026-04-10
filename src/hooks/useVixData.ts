@@ -80,8 +80,7 @@ export function useVixData(
         // convertCTToET instead of a hardcoded +1. Minute is passed
         // as 0 because the VIX open/close pick is hour-granular.
         const ctH24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
-        const etH =
-          timezone === 'CT' ? convertCTToET(ctH24, 0).hour : ctH24;
+        const etH = timezone === 'CT' ? convertCTToET(ctH24, 0).hour : ctH24;
         const v = etH < 13 ? entry.open : entry.close;
         if (v != null) setVixInput(v.toFixed(2));
       }
@@ -140,8 +139,7 @@ export function useVixData(
       // DST-safe CT→ET conversion — same pattern as the selectedDate
       // effect above. See FE-STATE-004 for the DST window rationale.
       const ctH24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
-      const etH =
-        timezone === 'CT' ? convertCTToET(ctH24, 0).hour : ctH24;
+      const etH = timezone === 'CT' ? convertCTToET(ctH24, 0).hour : ctH24;
       const v = etH < 13 ? vixOHLC.open : vixOHLC.close;
       if (v != null) setVixInput(v.toFixed(2));
     } else {

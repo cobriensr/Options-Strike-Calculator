@@ -15,10 +15,7 @@
  * conservative aggregate.
  */
 
-import type {
-  IronCondor,
-  Spread,
-} from '../components/PositionMonitor/types';
+import type { IronCondor, Spread } from '../components/PositionMonitor/types';
 
 /**
  * Compute effective max loss using per-spread stop multiplier.
@@ -117,8 +114,7 @@ export function computeAggregatePortfolioRisk(
       ? computeEffectiveMaxLoss(spreads, ironCondors, multiplier)
       : theoreticalMaxLoss;
 
-  const pctOfNlv =
-    nlv > 0 ? (Math.abs(effectiveMaxLoss) / nlv) * 100 : 0;
+  const pctOfNlv = nlv > 0 ? (Math.abs(effectiveMaxLoss) / nlv) * 100 : 0;
 
   const isOverThreshold = pctOfNlv > thresholdPct;
 
