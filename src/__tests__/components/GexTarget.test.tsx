@@ -31,6 +31,10 @@ vi.mock('../../components/GexTarget/StrikeBox', () => ({
   StrikeBox: () => <div data-testid="strike-box" />,
 }));
 
+vi.mock('../../components/GexTarget/PriceChart', () => ({
+  PriceChart: () => <div data-testid="price-chart" />,
+}));
+
 import { useGexTarget } from '../../hooks/useGexTarget';
 
 // ── Fixture helpers ────────────────────────────────────────

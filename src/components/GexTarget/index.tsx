@@ -17,6 +17,7 @@ import { TargetTile } from './TargetTile';
 import { UrgencyPanel } from './UrgencyPanel';
 import { SparklinePanel } from './SparklinePanel';
 import { StrikeBox } from './StrikeBox';
+import { PriceChart } from './PriceChart';
 import type { TargetScore, StrikeScore } from '../../utils/gex-target';
 
 // ── Types ─────────────────────────────────────────────────
@@ -67,6 +68,8 @@ export const GexTarget = memo(function GexTarget({
     loading,
     error,
     refresh,
+    candles,
+    previousClose,
   } = useGexTarget(marketOpen);
 
   // ── Mode selection ───────────────────────────────────────
@@ -235,10 +238,12 @@ export const GexTarget = memo(function GexTarget({
             <SparklinePanel leaderboard={activeLeaderboard} />
           </div>
 
-          {/* Panel 4: price chart placeholder */}
-          <div className="flex min-h-[300px] items-center justify-center rounded-lg border border-dashed border-[var(--color-edge)] text-sm text-[var(--color-muted)]">
-            Price chart — Phase 8
-          </div>
+          {/* Panel 4: price chart */}
+          <PriceChart
+            candles={candles}
+            previousClose={previousClose}
+            score={activeScore}
+          />
         </div>
 
         {/* Panel 5: full-width strike box */}
