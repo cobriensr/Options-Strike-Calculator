@@ -71,17 +71,17 @@ function StatsRow({ target }: Readonly<{ target: StrikeScore }>) {
   ];
 
   return (
-    <div className="mt-3 grid grid-cols-4 gap-2 border-t border-[var(--color-edge)] pt-3">
+    <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-[var(--color-edge)] pt-3">
       {stats.map(({ label, value }) => (
         <div key={label} className="flex flex-col gap-0.5">
           <span
-            className="text-[10px] tracking-wide uppercase"
+            className="text-[9px] tracking-wide uppercase"
             style={{ color: theme.textMuted }}
           >
             {label}
           </span>
           <span
-            className="font-mono text-[12px] font-medium"
+            className="font-mono text-[13px] font-semibold"
             style={{ color: theme.text }}
           >
             {value}

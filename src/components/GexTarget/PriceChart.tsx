@@ -75,10 +75,17 @@ function computeVWAP(
 
 // ── Chart options ─────────────────────────────────────────────────────────
 
+const ctTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Chicago',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
 const chartOptions: DeepPartial<ChartOptions> = {
   layout: {
     background: { color: 'transparent' },
-    textColor: 'var(--color-secondary)',
+    textColor: 'rgba(255,255,255,0.65)',
   },
   grid: {
     vertLines: { color: 'rgba(255,255,255,0.05)' },
@@ -89,6 +96,10 @@ const chartOptions: DeepPartial<ChartOptions> = {
     borderColor: 'rgba(255,255,255,0.1)',
     timeVisible: true,
     secondsVisible: false,
+  },
+  localization: {
+    timeFormatter: (utcSeconds: number) =>
+      ctTimeFormatter.format(new Date(utcSeconds * 1000)),
   },
   crosshair: { mode: CrosshairMode.Normal },
   handleScroll: { mouseWheel: true, pressedMouseMove: true },
@@ -121,7 +132,7 @@ export const PriceChart = memo(function PriceChart({
     const chart = createChart(containerRef.current, {
       ...chartOptions,
       width: containerRef.current.clientWidth,
-      height: 320,
+      height: containerRef.current.clientHeight || 320,
     });
     chartRef.current = chart;
 
@@ -161,7 +172,10 @@ export const PriceChart = memo(function PriceChart({
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      chartRef.current?.applyOptions({ width: entry.contentRect.width });
+      chartRef.current?.applyOptions({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      });
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
@@ -184,6 +198,8 @@ export const PriceChart = memo(function PriceChart({
     if (vwapSeriesRef.current) {
       vwapSeriesRef.current.setData(computeVWAP(candles));
     }
+
+    chartRef.current?.timeScale().fitContent();
   }, [candles]);
 
   // ── Overlay lines (GEX levels + opening walls + previous close) ────────
@@ -274,7 +290,7 @@ export const PriceChart = memo(function PriceChart({
     <SectionBox label="PRICE ACTION">
       <div
         ref={containerRef}
-        className="h-[320px] w-full"
+        className="h-full min-h-[280px] w-full"
         aria-label="SPX price chart"
         role="img"
       />

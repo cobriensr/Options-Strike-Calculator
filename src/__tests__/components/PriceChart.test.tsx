@@ -39,10 +39,15 @@ const {
 
   const mockVwapSeries = { setData: mockSetData };
 
+  const mockTimeScale = {
+    fitContent: vi.fn(),
+  };
+
   const mockChart = {
     addSeries: vi.fn(),
     applyOptions: mockApplyOptions,
     remove: mockRemove,
+    timeScale: vi.fn().mockReturnValue(mockTimeScale),
   };
 
   return {
