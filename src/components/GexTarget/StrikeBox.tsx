@@ -292,19 +292,14 @@ export const StrikeBox = memo(function StrikeBox({
                       ? theme.green
                       : theme.red;
 
-                // C/P — show call % stacked over put %, derived from callRatio
-                // callRatio = (callVol - putVol) / (callVol + putVol) ∈ [-1,1]
-                // → callPct = (1 + cr) / 2, putPct = (1 - cr) / 2
-                const cr = features.callRatio;
-                const callPct = Math.round(((1 + cr) / 2) * 100);
-                const putPct = 100 - callPct;
+                // C/P — show call and put GEX $ directly (already dollar-weighted from UW)
                 const cpLabel: ReactNode = (
                   <div className="flex flex-col leading-none">
                     <span style={{ color: theme.green }} className="text-[10px]">
-                      C {callPct}%
+                      C {formatGex(features.callGexDollars)}
                     </span>
                     <span style={{ color: theme.red }} className="text-[10px]">
-                      P {putPct}%
+                      P {formatGex(features.putGexDollars)}
                     </span>
                   </div>
                 );

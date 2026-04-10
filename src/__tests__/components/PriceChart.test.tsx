@@ -96,6 +96,8 @@ function makeStrike(
       spot: 5795,
       distFromSpot: strike - 5795,
       gexDollars,
+      callGexDollars: gexDollars,
+      putGexDollars: 0,
       deltaGex_1m: null,
       deltaGex_5m: null,
       deltaGex_20m: null,

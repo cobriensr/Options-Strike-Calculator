@@ -25,6 +25,8 @@ function makeFeatures(overrides: Partial<MagnetFeatures> = {}): MagnetFeatures {
     spot: 5000,
     distFromSpot: 0,
     gexDollars: 1e9,
+    callGexDollars: 1e9,
+    putGexDollars: 0,
     deltaGex_1m: 0,
     deltaGex_5m: 0,
     deltaGex_20m: 0,

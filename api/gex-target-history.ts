@@ -283,6 +283,10 @@ function rowToStrikeScore(row: GexTargetFeatureRow): StrikeScore {
       spot: num(row.spot_price),
       distFromSpot: num(row.dist_from_spot),
       gexDollars: num(row.gex_dollars),
+      // callGexDollars/putGexDollars are display-only and not persisted.
+      // Historical rows don't have the individual sides stored, so default to 0.
+      callGexDollars: 0,
+      putGexDollars: 0,
       deltaGex_1m: numOrNull(row.delta_gex_1m),
       deltaGex_5m: numOrNull(row.delta_gex_5m),
       deltaGex_20m: numOrNull(row.delta_gex_20m),

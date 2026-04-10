@@ -102,10 +102,10 @@ describe('extractFeatures', () => {
     expect(features.deltaGex_20m).not.toBeNull();
     expect(features.deltaGex_60m).not.toBeNull();
 
-    // Each minute adds 1e6 gamma × 5000 spot × 100 multiplier = 5e11.
-    // 1-minute delta should be ≈ 5e11; 60-minute ≈ 3e13.
-    expect(features.deltaGex_1m).toBeCloseTo(5e11, -1);
-    expect(features.deltaGex_60m).toBeCloseTo(60 * 5e11, -1);
+    // Each minute adds 1e6 to callGammaOi. UW values are already dollar-weighted,
+    // so gexDollars = callGammaOi directly. 1-minute delta ≈ 1e6; 60-minute ≈ 60e6.
+    expect(features.deltaGex_1m).toBeCloseTo(1e6, -1);
+    expect(features.deltaGex_60m).toBeCloseTo(60e6, -1);
   });
 
   it('leaves deltaGex_20m and deltaGex_60m null when history is only 5 snapshots', () => {
@@ -152,9 +152,9 @@ describe('extractFeatures', () => {
     const vol = extractFeatures(snapshots, 'vol', 5000);
     const dir = extractFeatures(snapshots, 'dir', 5000);
 
-    expect(oi.gexDollars).toBeCloseTo(1e6 * 5000 * 100, -1);
-    expect(vol.gexDollars).toBeCloseTo(2e6 * 5000 * 100, -1);
-    expect(dir.gexDollars).toBeCloseTo(3e6 * 5000 * 100, -1);
+    expect(oi.gexDollars).toBeCloseTo(1e6, -1);
+    expect(vol.gexDollars).toBeCloseTo(2e6, -1);
+    expect(dir.gexDollars).toBeCloseTo(3e6, -1);
 
     // And they must all be different.
     expect(oi.gexDollars).not.toBe(vol.gexDollars);
@@ -239,8 +239,8 @@ describe('extractFeatures', () => {
       makeRow({ strike: 5000, callGammaOi: (i + 1) * 1e6 }),
     ]);
     const features = extractFeatures(snapshots, 'oi', 5000);
-    // t-1 = 1e6 × 5000 × 100 = 5e11.
-    expect(features.prevGexDollars_1m).toBeCloseTo(5e11, -1);
+    // t-1: callGammaOi = 1e6 (UW values already dollar-weighted).
+    expect(features.prevGexDollars_1m).toBeCloseTo(1e6, -1);
   });
 
   it('normalizes each horizon Δ% against its OWN prior, not against prevGexDollars_1m', () => {
@@ -260,29 +260,28 @@ describe('extractFeatures', () => {
     //   t-1:  8e6  → prior_1m
     //   t:    10e6 → latest
     //
-    // In OI mode: gexDollars = gamma × spot × 100 = gamma × 5000 × 100
-    // = gamma × 5e5. So:
-    //   prior_60m  = 1e6  × 5e5 = 5e11
-    //   prior_20m  = 2e6  × 5e5 = 1e12
-    //   prior_5m   = 4e6  × 5e5 = 2e12
-    //   prior_1m   = 8e6  × 5e5 = 4e12
-    //   latest     = 10e6 × 5e5 = 5e12
+    // In OI mode: gexDollars = callGammaOi (UW values are already dollar-weighted).
+    //   prior_60m  = 1e6
+    //   prior_20m  = 2e6
+    //   prior_5m   = 4e6
+    //   prior_1m   = 8e6
+    //   latest     = 10e6
     //
     // Per-horizon deltas:
-    //   Δ_60m = 5e12 - 5e11 = 4.5e12
-    //   Δ_20m = 5e12 - 1e12 = 4.0e12
-    //   Δ_5m  = 5e12 - 2e12 = 3.0e12
-    //   Δ_1m  = 5e12 - 4e12 = 1.0e12
+    //   Δ_60m = 10e6 - 1e6 = 9e6
+    //   Δ_20m = 10e6 - 2e6 = 8e6
+    //   Δ_5m  = 10e6 - 4e6 = 6e6
+    //   Δ_1m  = 10e6 - 8e6 = 2e6
     //
     // Correct per-horizon percentages (Δ / |own prior|):
-    //   pct_60m = 4.5e12 / 5e11 = 9.0  (900% growth over 60 min)
-    //   pct_20m = 4.0e12 / 1e12 = 4.0  (400% growth over 20 min)
-    //   pct_5m  = 3.0e12 / 2e12 = 1.5  (150% growth over 5 min)
-    //   pct_1m  = 1.0e12 / 4e12 = 0.25 (25% growth over 1 min)
+    //   pct_60m = 9e6 / 1e6 = 9.0  (900% growth over 60 min)
+    //   pct_20m = 8e6 / 2e6 = 4.0  (400% growth over 20 min)
+    //   pct_5m  = 6e6 / 4e6 = 1.5  (150% growth over 5 min)
+    //   pct_1m  = 2e6 / 8e6 = 0.25 (25% growth over 1 min)
     //
     // WRONG (shared 1m baseline) would give:
-    //   pct_20m_wrong = 4.0e12 / 4e12 = 1.0  (not 4.0)
-    //   pct_60m_wrong = 4.5e12 / 4e12 = 1.125 (not 9.0)
+    //   pct_20m_wrong = 8e6 / 8e6 = 1.0  (not 4.0)
+    //   pct_60m_wrong = 9e6 / 8e6 = 1.125 (not 9.0)
     // — meaningless ratios that would be unusable as ML thresholds.
     //
     // Build 61 snapshots so every horizon is reachable. Only 5 of them
@@ -320,10 +319,10 @@ describe('extractFeatures', () => {
     const features = extractFeatures(snapshots, 'oi', 5000);
 
     // Verify the stored priors match what we put in.
-    expect(features.prevGexDollars_1m).toBeCloseTo(8e6 * 5e5, -5);
-    expect(features.prevGexDollars_5m).toBeCloseTo(4e6 * 5e5, -5);
-    expect(features.prevGexDollars_20m).toBeCloseTo(2e6 * 5e5, -5);
-    expect(features.prevGexDollars_60m).toBeCloseTo(1e6 * 5e5, -5);
+    expect(features.prevGexDollars_1m).toBeCloseTo(8e6, -1);
+    expect(features.prevGexDollars_5m).toBeCloseTo(4e6, -1);
+    expect(features.prevGexDollars_20m).toBeCloseTo(2e6, -1);
+    expect(features.prevGexDollars_60m).toBeCloseTo(1e6, -1);
 
     // Each Δ% should be normalized against its OWN prior, producing
     // the four DIFFERENT percentages listed above. This is the key
@@ -355,17 +354,17 @@ describe('extractFeatures', () => {
     // from `delta / prior` (buggy but would produce the same magnitude).
     //
     // Growing call wall (positive → more positive):
-    //   prior = +5e11, delta = +5e11
-    //   correct: +5e11 / |+5e11| = +1.0
-    //   buggy:   +5e11 /  +5e11  = +1.0  ← same; doesn't distinguish
+    //   prior = +1e6, delta = +1e6
+    //   correct: +1e6 / |+1e6| = +1.0
+    //   buggy:   +1e6 /  +1e6  = +1.0  ← same; doesn't distinguish
     //
     // Growing put wall (negative → more negative):
-    //   prior = -5e11, delta = -5e11
-    //   correct: -5e11 / |-5e11| = -1.0  ← negative (growing short)
-    //   buggy:   -5e11 /  -5e11  = +1.0  ← positive (WRONG: would
-    //                                      read as "flow growing long"
-    //                                      when it's actually a put
-    //                                      wall being added to)
+    //   prior = -1e6, delta = -1e6
+    //   correct: -1e6 / |-1e6| = -1.0  ← negative (growing short)
+    //   buggy:   -1e6 /  -1e6  = +1.0  ← positive (WRONG: would
+    //                                    read as "flow growing long"
+    //                                    when it's actually a put
+    //                                    wall being added to)
     //
     // The growing-put-wall case is the one that distinguishes the two.
     const growing = makeHistory(2, 5000, (i) => [
@@ -485,6 +484,8 @@ function makeFeatures(overrides: Partial<MagnetFeatures> = {}): MagnetFeatures {
     spot: 5000,
     distFromSpot: 0,
     gexDollars: 1e9,
+    callGexDollars: 1e9,
+    putGexDollars: 0,
     deltaGex_1m: 0,
     deltaGex_5m: 0,
     deltaGex_20m: 0,

@@ -89,6 +89,10 @@ export interface MagnetFeatures {
   distFromSpot: number;
   /** Signed GEX in dollars; positive = net long gamma, negative = short. */
   gexDollars: number;
+  /** Call-side GEX in dollars for the active mode (display only, not persisted). */
+  callGexDollars: number;
+  /** Put-side GEX in dollars for the active mode (display only, not persisted). */
+  putGexDollars: number;
   // ── Layer 2: per-horizon deltas (three parallel representations) ──
   /** Signed Δ$ vs the 1-minute-prior snapshot, or null if unavailable. */
   deltaGex_1m: number | null;
@@ -593,44 +597,44 @@ function findStrikeRow(
 }
 
 /**
- * Compute the signed "GEX dollars" scalar for a strike in a given mode.
+ * Compute the call-side GEX dollars for a strike in a given mode.
  *
- * The simplified convention used throughout v1 is
- *
- *     gexDollars = (callGamma + putGamma) × spot × 100
- *
- * i.e. dollar gamma per 1-point SPX move per contract, with 100× for
- * the options multiplier. This is deliberately NOT the industry-standard
- * `gamma × spot² × 0.01 × 100` because the absolute scale is irrelevant
- * to the rank — every strike in the universe uses the same formula, so
- * ranking, dominance, and proximity all produce identical answers. The
- * simpler formula keeps the unit test fixtures readable and avoids a
- * spurious `spot²` term in the delta-percent math.
- *
- * DIR mode sums all four directionalized columns (ask + bid on calls
- * and puts) because the directionalized cells are one-sided — ask puts
- * traded + bid calls traded is the "buying upside" signal, etc. Their
- * sum is still a valid magnitude for the ranking.
+ * The UW API returns values that are already dollar-weighted (they
+ * include the full gamma × OI × 100 shares × spot² × 0.01 calculation).
+ * So these fields are used directly without further scaling.
  */
-function computeGexDollars(
-  row: GexStrikeRow,
-  mode: Mode,
-  spot: number,
-): number {
-  let gamma: number;
+function computeCallGex(row: GexStrikeRow, mode: Mode): number {
   switch (mode) {
     case 'oi':
-      gamma = row.callGammaOi + row.putGammaOi;
-      break;
+      return row.callGammaOi;
     case 'vol':
-      gamma = row.callGammaVol + row.putGammaVol;
-      break;
+      return row.callGammaVol;
     case 'dir':
-      gamma =
-        row.callGammaAsk + row.callGammaBid + row.putGammaAsk + row.putGammaBid;
-      break;
+      return row.callGammaAsk + row.callGammaBid;
   }
-  return gamma * spot * 100;
+}
+
+/** Compute the put-side GEX dollars for a strike in a given mode. */
+function computePutGex(row: GexStrikeRow, mode: Mode): number {
+  switch (mode) {
+    case 'oi':
+      return row.putGammaOi;
+    case 'vol':
+      return row.putGammaVol;
+    case 'dir':
+      return row.putGammaAsk + row.putGammaBid;
+  }
+}
+
+/**
+ * Compute the signed net GEX dollars for a strike in a given mode.
+ *
+ * UW API values are already dollar-weighted — no further scaling needed.
+ * DIR mode sums all four directionalized columns (ask + bid on calls and
+ * puts) to get the net directionalized gamma magnitude.
+ */
+function computeGexDollars(row: GexStrikeRow, mode: Mode): number {
+  return computeCallGex(row, mode) + computePutGex(row, mode);
 }
 
 /**
@@ -756,7 +760,7 @@ function computeHorizon(
   if (!priorRow) {
     return { prior: null, delta: null, pct: null };
   }
-  const prior = computeGexDollars(priorRow, mode, priorSnapshot.price);
+  const prior = computeGexDollars(priorRow, mode);
   const delta = latestGexDollars - prior;
   const pct = prior !== 0 ? delta / Math.abs(prior) : null;
   return { prior, delta, pct };
@@ -797,7 +801,9 @@ export function extractFeatures(
   }
 
   const spot = latest.price;
-  const gexDollars = computeGexDollars(latestRow, mode, spot);
+  const gexDollars = computeGexDollars(latestRow, mode);
+  const callGexDollars = computeCallGex(latestRow, mode);
+  const putGexDollars = computePutGex(latestRow, mode);
   const { horizonOffsets } = GEX_TARGET_CONFIG;
 
   // Compute all four horizons in one pass. Each horizon call returns
@@ -838,6 +844,8 @@ export function extractFeatures(
     spot,
     distFromSpot: strike - spot,
     gexDollars,
+    callGexDollars,
+    putGexDollars,
     deltaGex_1m: h1m.delta,
     deltaGex_5m: h5m.delta,
     deltaGex_20m: h20m.delta,
@@ -878,7 +886,7 @@ export function pickUniverse(
 ): number[] {
   const withSize = latestSnapshot.strikes.map((row) => ({
     strike: row.strike,
-    absGex: Math.abs(computeGexDollars(row, mode, latestSnapshot.price)),
+    absGex: Math.abs(computeGexDollars(row, mode)),
   }));
 
   withSize.sort((a, b) => {

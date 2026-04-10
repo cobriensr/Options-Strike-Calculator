@@ -215,17 +215,15 @@ describe('integration: symmetric put wall forming below spot', () => {
         const rows: GexStrikeRow[] = [];
         // Put wall at 6770: put gamma grows in magnitude over time, so
         // putGammaOi scales exponentially. gexDollars = (callGamma +
-        // putGamma) × spot × 100, and putGamma here is huge and
-        // negative-sense (we model it as a positive-magnitude put OI
-        // that the caller reports as positive). UW's convention is
-        // that both call and put gamma are reported positive; the net
-        // sign comes from whether the strike is a call-wall or
-        // put-wall based on the order-book skew. For this test we
-        // instead drive the sign by placing a large NEGATIVE
-        // callGammaOi, which is the cleanest way to get a negative
-        // gexDollars inside the simplified scoring convention. That
-        // mirrors how the pipeline test uses negative gamma to rank by
-        // |gexDollars|.
+        // putGamma) and putGamma here is huge and negative-sense
+        // (we model it as a positive-magnitude put OI that the caller
+        // reports as positive). UW's convention is that both call and
+        // put gamma are reported positive; the net sign comes from
+        // whether the strike is a call-wall or put-wall based on the
+        // order-book skew. For this test we instead drive the sign by
+        // placing a large NEGATIVE callGammaOi, which is the cleanest
+        // way to get a negative gexDollars. That mirrors how the
+        // pipeline test uses negative gamma to rank by |gexDollars|.
         rows.push(
           makeRow({
             strike: 6770,
@@ -567,6 +565,8 @@ describe('integration: proximity veto for a far-out strike', () => {
       spot: 6780,
       distFromSpot: 50,
       gexDollars: 0,
+      callGexDollars: 0,
+      putGexDollars: 0,
       deltaGex_1m: null,
       deltaGex_5m: null,
       deltaGex_20m: null,
