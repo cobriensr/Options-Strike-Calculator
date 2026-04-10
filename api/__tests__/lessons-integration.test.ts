@@ -338,7 +338,8 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
     mockSql.mockReset().mockImplementation(async () => []);
     mockTransaction.mockReset().mockResolvedValue(undefined);
     mockSql.transaction = mockTransaction;
-    mockCreate.mockReset();
+    // Default: tool-loop exits immediately (no tool calls)
+    mockCreate.mockReset().mockResolvedValue({ stop_reason: 'end_turn', content: [] });
     mockStream.mockReset().mockReturnValue({ finalMessage: mockFinalMessage });
     mockFinalMessage.mockReset();
 

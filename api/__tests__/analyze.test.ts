@@ -45,6 +45,9 @@ vi.mock('../_lib/db-strike-helpers.js', () => ({
   getAllExpiryStrikeExposures: vi.fn().mockResolvedValue([]),
   formatAllExpiryStrikesForClaude: vi.fn().mockReturnValue(null),
   formatGreekFlowForClaude: vi.fn().mockReturnValue(null),
+  formatZeroGammaForClaude: vi.fn().mockReturnValue(null),
+  getNetGexHeatmap: vi.fn().mockResolvedValue([]),
+  formatNetGexHeatmapForClaude: vi.fn().mockReturnValue(null),
 }));
 
 vi.mock('../_lib/embeddings.js', () => ({
@@ -108,9 +111,16 @@ vi.mock('@anthropic-ai/sdk', () => {
     AuthenticationError,
   };
 
+  // mockCreate returns end_turn so the tool-use pre-flight loop exits immediately
+  const mockCreate = vi.fn().mockResolvedValue({
+    stop_reason: 'end_turn',
+    content: [],
+  });
+  (globalThis as Record<string, unknown>).__mockCreate = mockCreate;
+
   class MockAnthropic {
     get messages() {
-      return { stream: mockStream };
+      return { stream: mockStream, create: mockCreate };
     }
     static readonly BadRequestError = BadRequestError;
     static readonly AuthenticationError = AuthenticationError;
