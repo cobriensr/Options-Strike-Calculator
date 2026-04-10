@@ -170,7 +170,12 @@ interface GexTargetFeatureRow {
   rank_by_size: Numeric;
   is_target: boolean;
 
+  /** Raw net GEX from the JOIN — replaces the stale stored value. */
   gex_dollars: Numeric;
+  /** Call-side GEX from the JOIN (display only). */
+  call_gex_dollars: Numeric;
+  /** Put-side GEX from the JOIN (display only). */
+  put_gex_dollars: Numeric;
 
   delta_gex_1m: NumericOrNull;
   delta_gex_5m: NumericOrNull;
@@ -283,10 +288,8 @@ function rowToStrikeScore(row: GexTargetFeatureRow): StrikeScore {
       spot: num(row.spot_price),
       distFromSpot: num(row.dist_from_spot),
       gexDollars: num(row.gex_dollars),
-      // callGexDollars/putGexDollars are display-only and not persisted.
-      // Historical rows don't have the individual sides stored, so default to 0.
-      callGexDollars: 0,
-      putGexDollars: 0,
+      callGexDollars: num(row.call_gex_dollars),
+      putGexDollars: num(row.put_gex_dollars),
       deltaGex_1m: numOrNull(row.delta_gex_1m),
       deltaGex_5m: numOrNull(row.delta_gex_5m),
       deltaGex_20m: numOrNull(row.delta_gex_20m),
@@ -521,21 +524,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (req.query.all === 'true') {
         const allRows = (await sql`
           SELECT
-            date, timestamp, mode, math_version, strike,
-            rank_in_mode, rank_by_size, is_target,
-            gex_dollars,
-            delta_gex_1m, delta_gex_5m, delta_gex_20m, delta_gex_60m,
-            prev_gex_dollars_1m, prev_gex_dollars_5m,
-            prev_gex_dollars_20m, prev_gex_dollars_60m,
-            delta_pct_1m, delta_pct_5m, delta_pct_20m, delta_pct_60m,
-            call_ratio, charm_net, delta_net, vanna_net,
-            dist_from_spot, spot_price, minutes_after_noon_ct,
-            flow_confluence, price_confirm, charm_score,
-            dominance, clarity, proximity,
-            final_score, tier, wall_side
-          FROM gex_target_features
-          WHERE date = ${date}
-          ORDER BY timestamp ASC, mode ASC, rank_in_mode ASC
+            gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
+            gtf.rank_in_mode, gtf.rank_by_size, gtf.is_target,
+            CASE gtf.mode
+              WHEN 'oi'  THEN COALESCE(gso.call_gamma_oi::numeric  + gso.put_gamma_oi::numeric,  gtf.gex_dollars)
+              WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric + gso.put_gamma_vol::numeric, gtf.gex_dollars)
+              WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric + gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, gtf.gex_dollars)
+              ELSE gtf.gex_dollars
+            END AS gex_dollars,
+            CASE gtf.mode
+              WHEN 'oi'  THEN COALESCE(gso.call_gamma_oi::numeric,  0)
+              WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric, 0)
+              WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric, 0)
+              ELSE 0
+            END AS call_gex_dollars,
+            CASE gtf.mode
+              WHEN 'oi'  THEN COALESCE(gso.put_gamma_oi::numeric,  0)
+              WHEN 'vol' THEN COALESCE(gso.put_gamma_vol::numeric, 0)
+              WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
+              ELSE 0
+            END AS put_gex_dollars,
+            gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
+            gtf.prev_gex_dollars_1m, gtf.prev_gex_dollars_5m,
+            gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
+            gtf.delta_pct_1m, gtf.delta_pct_5m, gtf.delta_pct_20m, gtf.delta_pct_60m,
+            gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,
+            gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct,
+            gtf.flow_confluence, gtf.price_confirm, gtf.charm_score,
+            gtf.dominance, gtf.clarity, gtf.proximity,
+            gtf.final_score, gtf.tier, gtf.wall_side
+          FROM gex_target_features gtf
+          LEFT JOIN gex_strike_0dte gso
+            ON  gso.date      = gtf.date
+            AND gso.timestamp = gtf.timestamp
+            AND gso.strike::numeric = gtf.strike::numeric
+          WHERE gtf.date = ${date}
+          ORDER BY gtf.timestamp ASC, gtf.mode ASC, gtf.rank_in_mode ASC
         `) as GexTargetFeatureRow[];
 
         // Group rows by their normalized timestamp key.
@@ -578,21 +602,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // ── 5. Fetch the 30 feature rows for this snapshot ────────────
       const featureRows = (await sql`
         SELECT
-          date, timestamp, mode, math_version, strike,
-          rank_in_mode, rank_by_size, is_target,
-          gex_dollars,
-          delta_gex_1m, delta_gex_5m, delta_gex_20m, delta_gex_60m,
-          prev_gex_dollars_1m, prev_gex_dollars_5m,
-          prev_gex_dollars_20m, prev_gex_dollars_60m,
-          delta_pct_1m, delta_pct_5m, delta_pct_20m, delta_pct_60m,
-          call_ratio, charm_net, delta_net, vanna_net,
-          dist_from_spot, spot_price, minutes_after_noon_ct,
-          flow_confluence, price_confirm, charm_score,
-          dominance, clarity, proximity,
-          final_score, tier, wall_side
-        FROM gex_target_features
-        WHERE date = ${date} AND timestamp = ${timestamp}
-        ORDER BY mode ASC, rank_in_mode ASC
+          gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
+          gtf.rank_in_mode, gtf.rank_by_size, gtf.is_target,
+          CASE gtf.mode
+            WHEN 'oi'  THEN COALESCE(gso.call_gamma_oi::numeric  + gso.put_gamma_oi::numeric,  gtf.gex_dollars)
+            WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric + gso.put_gamma_vol::numeric, gtf.gex_dollars)
+            WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric + gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, gtf.gex_dollars)
+            ELSE gtf.gex_dollars
+          END AS gex_dollars,
+          CASE gtf.mode
+            WHEN 'oi'  THEN COALESCE(gso.call_gamma_oi::numeric,  0)
+            WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric, 0)
+            WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric, 0)
+            ELSE 0
+          END AS call_gex_dollars,
+          CASE gtf.mode
+            WHEN 'oi'  THEN COALESCE(gso.put_gamma_oi::numeric,  0)
+            WHEN 'vol' THEN COALESCE(gso.put_gamma_vol::numeric, 0)
+            WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
+            ELSE 0
+          END AS put_gex_dollars,
+          gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
+          gtf.prev_gex_dollars_1m, gtf.prev_gex_dollars_5m,
+          gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
+          gtf.delta_pct_1m, gtf.delta_pct_5m, gtf.delta_pct_20m, gtf.delta_pct_60m,
+          gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,
+          gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct,
+          gtf.flow_confluence, gtf.price_confirm, gtf.charm_score,
+          gtf.dominance, gtf.clarity, gtf.proximity,
+          gtf.final_score, gtf.tier, gtf.wall_side
+        FROM gex_target_features gtf
+        LEFT JOIN gex_strike_0dte gso
+          ON  gso.date      = gtf.date
+          AND gso.timestamp = gtf.timestamp
+          AND gso.strike::numeric = gtf.strike::numeric
+        WHERE gtf.date = ${date} AND gtf.timestamp = ${timestamp}
+        ORDER BY gtf.mode ASC, gtf.rank_in_mode ASC
       `) as GexTargetFeatureRow[];
 
       // ── 6. Reconstruct the three per-mode TargetScore objects ─────
