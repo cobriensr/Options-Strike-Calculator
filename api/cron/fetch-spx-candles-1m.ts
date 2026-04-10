@@ -9,8 +9,9 @@
  * SPY → SPX translation: Cboe prohibits external distribution of
  * proprietary index OHLC (SPX, VIX, RUT, etc.) via API — only their
  * web platform is allowed. We fetch SPY candles and multiply by the
- * SPX/SPY ratio (10×) to produce approximate SPX bars. This mirrors
- * the existing on-demand path in api/_lib/spx-candles.ts.
+ * live SPX/SPY ratio (fetched from Schwab each run) to produce accurate
+ * SPX bars. A hardcoded 10× multiplier was wrong once SPX passed ~6000;
+ * the dynamic ratio self-corrects regardless of index level.
  *
  * Role in the GexTarget rebuild:
  *   - Powers the Phase 4 price-chart panel (price vs gamma walls)
@@ -34,14 +35,20 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
+  schwabFetch,
   cronGuard,
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
 
-const SPY_TO_SPX_RATIO = 10;
-
 // ── Types ───────────────────────────────────────────────────
+
+/** Minimal Schwab quote shape needed for ratio calculation. */
+interface SchwabQuoteEntry {
+  quote?: {
+    lastPrice?: number;
+  };
+}
 
 /** UW 1-minute candle row from /stock/SPY/ohlc/1m. */
 interface UWCandleRow {
@@ -67,6 +74,46 @@ interface SPXCandleRow {
   market_time: 'pr' | 'r' | 'po';
 }
 
+// ── Ratio fetch ─────────────────────────────────────────────
+
+/**
+ * Fetch the live SPX/SPY ratio from Schwab.
+ *
+ * SPY × 10 was a valid approximation when SPX ≈ 5700. As SPX has moved
+ * higher the ratio has drifted (~11.6× at SPX 6800) making a hardcoded
+ * multiplier inaccurate by hundreds of points. Using the live ratio
+ * anchors each minute's SPY candle to the real SPX level at that moment.
+ *
+ * Returns null if Schwab is unavailable or returns invalid prices, in
+ * which case the caller skips storing candles rather than writing bad data.
+ */
+async function fetchSpxSpyRatio(): Promise<number | null> {
+  const result = await schwabFetch<Record<string, SchwabQuoteEntry>>(
+    '/quotes?symbols=SPY%2C%24SPX&fields=quote',
+  );
+
+  if (!result.ok) {
+    logger.warn(
+      { status: result.status },
+      'fetch-spx-candles-1m: Schwab quote fetch failed',
+    );
+    return null;
+  }
+
+  const spxPrice = result.data['$SPX']?.quote?.lastPrice;
+  const spyPrice = result.data['SPY']?.quote?.lastPrice;
+
+  if (!spxPrice || !spyPrice || spyPrice <= 0) {
+    logger.warn(
+      { spxPrice, spyPrice },
+      'fetch-spx-candles-1m: Missing or invalid SPX/SPY prices from Schwab',
+    );
+    return null;
+  }
+
+  return spxPrice / spyPrice;
+}
+
 // ── Fetch helper ────────────────────────────────────────────
 
 async function fetchSPYCandles1m(
@@ -84,17 +131,17 @@ async function fetchSPYCandles1m(
 // ── Transform helper ────────────────────────────────────────
 
 /**
- * Translate UW SPY rows into SPX-equivalent DB rows.
+ * Translate UW SPY rows into SPX-equivalent DB rows using the live ratio.
  * Filters out any row with NaN OHLC values (defensive).
  */
-function translateRows(rows: UWCandleRow[]): SPXCandleRow[] {
+function translateRows(rows: UWCandleRow[], ratio: number): SPXCandleRow[] {
   const translated: SPXCandleRow[] = [];
 
   for (const row of rows) {
-    const open = Number.parseFloat(row.open) * SPY_TO_SPX_RATIO;
-    const high = Number.parseFloat(row.high) * SPY_TO_SPX_RATIO;
-    const low = Number.parseFloat(row.low) * SPY_TO_SPX_RATIO;
-    const close = Number.parseFloat(row.close) * SPY_TO_SPX_RATIO;
+    const open = Number.parseFloat(row.open) * ratio;
+    const high = Number.parseFloat(row.high) * ratio;
+    const low = Number.parseFloat(row.low) * ratio;
+    const close = Number.parseFloat(row.close) * ratio;
 
     if (
       Number.isNaN(open) ||
@@ -169,13 +216,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const startTime = Date.now();
 
   try {
-    const rawRows = await withRetry(() => fetchSPYCandles1m(apiKey, today));
+    const [rawRows, ratio] = await Promise.all([
+      withRetry(() => fetchSPYCandles1m(apiKey, today)),
+      fetchSpxSpyRatio(),
+    ]);
+
+    if (ratio === null) {
+      metrics.increment('fetch_spx_candles_1m.ratio_unavailable');
+      return res
+        .status(200)
+        .json({ stored: false, reason: 'SPX/SPY ratio unavailable from Schwab' });
+    }
 
     if (rawRows.length === 0) {
       return res.status(200).json({ stored: false, reason: 'No 1m candles' });
     }
 
-    const translated = translateRows(rawRows);
+    const translated = translateRows(rawRows, ratio);
 
     if (translated.length === 0) {
       return res
@@ -223,6 +280,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       success: true,
       stored: result.stored,
       skipped: result.skipped,
+      ratio: Math.round(ratio * 10000) / 10000,
       durationMs: Date.now() - startTime,
     });
   } catch (err) {

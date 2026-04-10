@@ -32,12 +32,28 @@ vi.mock('../_lib/sentry.js', () => ({
   },
 }));
 
+vi.mock('../_lib/api-helpers.js', () => ({
+  uwFetch: vi.fn(),
+  schwabFetch: vi.fn(),
+  withRetry: vi.fn(),
+  cronGuard: vi.fn(),
+  checkDataQuality: vi.fn(),
+}));
+
 import handler from '../cron/fetch-spx-candles-1m.js';
 import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import {
+  uwFetch,
+  schwabFetch,
+  withRetry,
+  cronGuard,
+  checkDataQuality,
+} from '../_lib/api-helpers.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
+const TODAY = '2026-03-24';
 
 interface CandleOverrides {
   open?: string;
@@ -66,14 +82,15 @@ function makeCandleRow(overrides: CandleOverrides = {}) {
   };
 }
 
-function stubFetch(data: unknown[] = []) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ data }),
-    }),
-  );
+/** Default Schwab quote response with a ~11.65× ratio. */
+function makeSchwabQuotes(spxPrice = 6817.43, spyPrice = 585.0) {
+  return {
+    ok: true as const,
+    data: {
+      '$SPX': { quote: { lastPrice: spxPrice } },
+      SPY: { quote: { lastPrice: spyPrice } },
+    },
+  };
 }
 
 describe('fetch-spx-candles-1m handler', () => {
@@ -92,18 +109,30 @@ describe('fetch-spx-candles-1m handler', () => {
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
+    process.env.UW_API_KEY = 'uwkey';
+
+    // Default pass-through behaviors
+    vi.mocked(withRetry).mockImplementation((fn: () => Promise<unknown>) =>
+      fn(),
+    );
+    vi.mocked(cronGuard).mockReturnValue({ apiKey: 'uwkey', today: TODAY });
+    vi.mocked(schwabFetch).mockResolvedValue(makeSchwabQuotes());
+    vi.mocked(uwFetch).mockResolvedValue([]);
   });
 
   afterEach(() => {
     process.env = originalEnv;
     vi.useRealTimers();
-    vi.unstubAllGlobals();
   });
 
   // ── Auth guard ────────────────────────────────────────────
 
   it('returns 401 when CRON_SECRET header is missing', async () => {
-    process.env.UW_API_KEY = 'uwkey';
+    vi.mocked(cronGuard).mockImplementationOnce((_req, res) => {
+      res.status(401).json({ error: 'Unauthorized' });
+      return null;
+    });
+
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET', headers: {} }), res);
     expect(res._status).toBe(401);
@@ -112,8 +141,7 @@ describe('fetch-spx-candles-1m handler', () => {
   // ── Happy path ────────────────────────────────────────────
 
   it('fetches 1m candles, translates SPY→SPX, stores, and returns 200', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    stubFetch([makeCandleRow()]);
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
 
     const res = mockResponse();
     await handler(
@@ -134,9 +162,30 @@ describe('fetch-spx-candles-1m handler', () => {
     expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it('translates SPY prices to SPX via 10× ratio', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    stubFetch([
+  it('includes the ratio in the success response', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+    vi.mocked(schwabFetch).mockResolvedValue(makeSchwabQuotes(6817.43, 585.0));
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const json = res._json as Record<string, unknown>;
+    // ratio = 6817.43 / 585 ≈ 11.6537, rounded to 4 decimal places
+    expect(json.ratio).toBeCloseTo(6817.43 / 585.0, 4);
+  });
+
+  it('translates SPY prices to SPX using the live Schwab ratio', async () => {
+    const spxPrice = 6817.43;
+    const spyPrice = 585.0;
+    vi.mocked(schwabFetch).mockResolvedValue(makeSchwabQuotes(spxPrice, spyPrice));
+    vi.mocked(uwFetch).mockResolvedValue([
       makeCandleRow({
         open: '580.00',
         high: '581.50',
@@ -144,6 +193,8 @@ describe('fetch-spx-candles-1m handler', () => {
         close: '580.90',
       }),
     ]);
+
+    const ratio = spxPrice / spyPrice;
 
     let capturedRow: Record<string, unknown> | null = null;
     mockTransaction.mockImplementationOnce(
@@ -184,17 +235,16 @@ describe('fetch-spx-candles-1m handler', () => {
 
     expect(res._status).toBe(200);
     expect(capturedRow).not.toBeNull();
-    expect(capturedRow!.open).toBeCloseTo(5800.0, 5);
-    expect(capturedRow!.high).toBeCloseTo(5815.0, 5);
-    expect(capturedRow!.low).toBeCloseTo(5792.5, 5);
-    expect(capturedRow!.close).toBeCloseTo(5809.0, 5);
+    expect(capturedRow!.open).toBeCloseTo(580.0 * ratio, 4);
+    expect(capturedRow!.high).toBeCloseTo(581.5 * ratio, 4);
+    expect(capturedRow!.low).toBeCloseTo(579.25 * ratio, 4);
+    expect(capturedRow!.close).toBeCloseTo(580.9 * ratio, 4);
     expect(capturedRow!.volume).toBe(2480);
     expect(capturedRow!.market_time).toBe('r');
   });
 
   it('stores premarket and postmarket candles alongside regular', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    stubFetch([
+    vi.mocked(uwFetch).mockResolvedValue([
       makeCandleRow({
         start_time: '2026-03-24T13:00:00Z',
         market_time: 'pr',
@@ -229,11 +279,65 @@ describe('fetch-spx-candles-1m handler', () => {
     });
   });
 
+  // ── Schwab ratio fetch failure ────────────────────────────
+
+  it('returns stored: false when Schwab quote fetch fails', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false as const,
+      status: 503,
+      error: 'Service unavailable',
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      stored: false,
+      reason: 'SPX/SPY ratio unavailable from Schwab',
+    });
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(vi.mocked(metrics).increment).toHaveBeenCalledWith(
+      'fetch_spx_candles_1m.ratio_unavailable',
+    );
+  });
+
+  it('returns stored: false when Schwab returns missing price data', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true as const,
+      data: { '$SPX': {}, SPY: {} },
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      stored: false,
+      reason: 'SPX/SPY ratio unavailable from Schwab',
+    });
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
   // ── Empty / malformed data ────────────────────────────────
 
   it('returns stored: false when UW returns empty data', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    stubFetch([]);
+    vi.mocked(uwFetch).mockResolvedValue([]);
 
     const res = mockResponse();
     await handler(
@@ -253,13 +357,13 @@ describe('fetch-spx-candles-1m handler', () => {
   });
 
   it('filters out rows with NaN OHLC values', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    const validRow = makeCandleRow();
-    const badRow = makeCandleRow({
-      open: 'not-a-number',
-      start_time: '2026-03-24T14:31:00Z',
-    });
-    stubFetch([validRow, badRow]);
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeCandleRow(),
+      makeCandleRow({
+        open: 'not-a-number',
+        start_time: '2026-03-24T14:31:00Z',
+      }),
+    ]);
 
     const res = mockResponse();
     await handler(
@@ -281,8 +385,7 @@ describe('fetch-spx-candles-1m handler', () => {
   });
 
   it('returns stored: false when all rows are filtered as invalid', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    stubFetch([
+    vi.mocked(uwFetch).mockResolvedValue([
       makeCandleRow({ open: 'bad' }),
       makeCandleRow({ high: 'bad', start_time: '2026-03-24T14:31:00Z' }),
     ]);
@@ -307,7 +410,6 @@ describe('fetch-spx-candles-1m handler', () => {
   // ── Deduplication via ON CONFLICT ─────────────────────────
 
   it('counts skipped duplicates correctly', async () => {
-    process.env.UW_API_KEY = 'uwkey';
     // Simulate ON CONFLICT DO NOTHING — RETURNING returns empty arrays
     mockTransaction.mockImplementationOnce(
       async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
@@ -316,7 +418,7 @@ describe('fetch-spx-candles-1m handler', () => {
         return queries.map(() => []);
       },
     );
-    stubFetch([
+    vi.mocked(uwFetch).mockResolvedValue([
       makeCandleRow({ start_time: '2026-03-24T14:30:00Z' }),
       makeCandleRow({ start_time: '2026-03-24T14:31:00Z' }),
     ]);
@@ -339,7 +441,6 @@ describe('fetch-spx-candles-1m handler', () => {
   });
 
   it('counts partial deduplication (half new, half existing)', async () => {
-    process.env.UW_API_KEY = 'uwkey';
     // 2 rows: first returned [{id:1}], second returned [] (already existed)
     mockTransaction.mockImplementationOnce(
       async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
@@ -348,7 +449,7 @@ describe('fetch-spx-candles-1m handler', () => {
         return queries.map((_, i) => (i === 0 ? [{ id: 1 }] : []));
       },
     );
-    stubFetch([
+    vi.mocked(uwFetch).mockResolvedValue([
       makeCandleRow({ start_time: '2026-03-24T14:30:00Z' }),
       makeCandleRow({ start_time: '2026-03-24T14:31:00Z' }),
     ]);
@@ -372,16 +473,8 @@ describe('fetch-spx-candles-1m handler', () => {
 
   // ── Error handling ────────────────────────────────────────
 
-  it('returns 500 when UW API fails with 5xx', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 500,
-        text: async () => 'Server error',
-      }),
-    );
+  it('returns 500 when UW API throws', async () => {
+    vi.mocked(uwFetch).mockRejectedValue(new Error('UW API timeout'));
 
     const res = mockResponse();
     await handler(
@@ -406,9 +499,8 @@ describe('fetch-spx-candles-1m handler', () => {
   });
 
   it('handles batch insert errors gracefully', async () => {
-    process.env.UW_API_KEY = 'uwkey';
     mockTransaction.mockRejectedValueOnce(new Error('DB batch insert failed'));
-    stubFetch([makeCandleRow()]);
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
 
     const res = mockResponse();
     await handler(
@@ -433,22 +525,18 @@ describe('fetch-spx-candles-1m handler', () => {
 
   // ── Data quality check ────────────────────────────────────
 
-  it('runs data quality check when stored > 10 and fires when all-zero volume', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    // Generate 11 distinct candle rows (> 10 threshold)
+  it('runs data quality check when stored > 10', async () => {
     const rows = Array.from({ length: 11 }, (_, i) =>
       makeCandleRow({
         start_time: `2026-03-24T14:${String(30 + i).padStart(2, '0')}:00Z`,
       }),
     );
-    stubFetch(rows);
+    vi.mocked(uwFetch).mockResolvedValue(rows);
 
-    // mockSql is invoked as a tagged template for the post-insert QC query.
-    // Return total=11, nonzero=0 so checkDataQuality fires.
     mockSql.mockImplementation((strings: TemplateStringsArray) => {
       const query = strings.join('');
       if (query.includes('SELECT COUNT')) {
-        return Promise.resolve([{ total: 11, nonzero: 0 }]);
+        return Promise.resolve([{ total: 11, nonzero: 11 }]);
       }
       return Promise.resolve([]);
     });
@@ -468,22 +556,22 @@ describe('fetch-spx-candles-1m handler', () => {
       stored: 11,
       skipped: 0,
     });
-
-    // checkDataQuality → Sentry.captureMessage when nonzero === 0
-    expect(Sentry.captureMessage).toHaveBeenCalledWith(
-      expect.stringContaining('ALL values are zero'),
-      'warning',
+    expect(vi.mocked(checkDataQuality)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        job: 'fetch-spx-candles-1m',
+        table: 'spx_candles_1m',
+        date: TODAY,
+      }),
     );
   });
 
   it('skips data quality check when stored <= 10', async () => {
-    process.env.UW_API_KEY = 'uwkey';
     const rows = Array.from({ length: 10 }, (_, i) =>
       makeCandleRow({
         start_time: `2026-03-24T14:${String(30 + i).padStart(2, '0')}:00Z`,
       }),
     );
-    stubFetch(rows);
+    vi.mocked(uwFetch).mockResolvedValue(rows);
 
     const res = mockResponse();
     await handler(
@@ -499,7 +587,6 @@ describe('fetch-spx-candles-1m handler', () => {
       success: true,
       stored: 10,
     });
-    // QC should NOT have fired
-    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(vi.mocked(checkDataQuality)).not.toHaveBeenCalled();
   });
 });
