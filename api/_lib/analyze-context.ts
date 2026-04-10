@@ -85,6 +85,60 @@ export function numOrUndef(val: unknown): number | undefined {
   return typeof val === 'number' && Number.isFinite(val) ? val : undefined;
 }
 
+/**
+ * Parse an entryTime string ("2:55 PM CT" or "2:55 PM ET") on a given date
+ * into a UTC ISO string suitable for DB timestamp comparisons.
+ *
+ * Returns undefined if parsing fails — callers treat undefined as "no cutoff"
+ * and return all rows for the day (safe fallback for live runs).
+ */
+export function parseEntryTimeAsUtc(
+  entryTime: string | null,
+  date: string,
+): string | undefined {
+  if (!entryTime) return undefined;
+
+  // Expected format: "H:MM AM/PM TZ" e.g. "2:55 PM CT" or "10:30 AM ET"
+  const match = /^(\d{1,2}):(\d{2})\s+(AM|PM)\s+(CT|ET)$/i.exec(
+    entryTime.trim(),
+  );
+  if (!match) return undefined;
+
+  const [, hourStr, minuteStr, ampm, tz] = match;
+  let hour = Number(hourStr);
+  const minute = Number(minuteStr);
+
+  if (ampm!.toUpperCase() === 'PM' && hour !== 12) hour += 12;
+  if (ampm!.toUpperCase() === 'AM' && hour === 12) hour = 0;
+
+  const ianaZone =
+    tz!.toUpperCase() === 'CT' ? 'America/Chicago' : 'America/New_York';
+
+  // Build a wall-clock date-time string and find the UTC equivalent by
+  // iterating the Intl offset correction (converges in ≤2 passes).
+  const wallClock = `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:59`;
+
+  let utcGuess = new Date(`${wallClock}Z`);
+  for (let i = 0; i < 2; i++) {
+    const localStr = utcGuess.toLocaleString('en-CA', {
+      timeZone: ianaZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    // en-CA produces "YYYY-MM-DD, HH:MM:SS"
+    const localDate = new Date(localStr.replace(', ', 'T') + 'Z');
+    const offsetMs = utcGuess.getTime() - localDate.getTime();
+    utcGuess = new Date(new Date(`${wallClock}Z`).getTime() + offsetMs);
+  }
+
+  return utcGuess.toISOString();
+}
+
 /** Shape of the content blocks sent to the Anthropic API. */
 export type AnalysisContentBlock =
   | { type: 'text'; text: string }
@@ -233,6 +287,15 @@ export async function buildAnalysisContext(
   let previousRec: string | null = null;
   const analysisDate =
     (context.selectedDate as string | undefined) ?? getETDateStr(new Date());
+
+  // Parse entryTime ("2:55 PM CT" or "2:55 PM ET") into a UTC ISO cutoff for
+  // time-bounded DB queries. When the user sets the calculator to 2:55 PM and
+  // runs the review at 6 PM, Claude should only see data that existed at 2:55.
+  // If parsing fails we fall back to unrestricted (asOf = undefined).
+  const asOf = parseEntryTimeAsUtc(
+    (context.entryTime as string | undefined) ?? null,
+    analysisDate,
+  );
   if (!context.isBacktest && mode !== 'review') {
     try {
       const posData = await getLatestPositions(analysisDate);
@@ -317,20 +380,20 @@ export async function buildAnalysisContext(
       allExpiryStrikeRows,
       netGexRows,
     ] = await Promise.all([
-      getFlowData(analysisDate, 'market_tide'),
-      getFlowData(analysisDate, 'market_tide_otm'),
-      getFlowData(analysisDate, 'spx_flow'),
-      getFlowData(analysisDate, 'spy_flow'),
-      getFlowData(analysisDate, 'qqq_flow'),
-      getFlowData(analysisDate, 'spy_etf_tide'),
-      getFlowData(analysisDate, 'qqq_etf_tide'),
-      getFlowData(analysisDate, 'zero_dte_index'),
-      getFlowData(analysisDate, 'zero_dte_greek_flow'),
-      getGreekExposure(analysisDate),
-      getSpotExposures(analysisDate),
-      getStrikeExposures(analysisDate),
-      getAllExpiryStrikeExposures(analysisDate),
-      getNetGexHeatmap(analysisDate),
+      getFlowData(analysisDate, 'market_tide', asOf),
+      getFlowData(analysisDate, 'market_tide_otm', asOf),
+      getFlowData(analysisDate, 'spx_flow', asOf),
+      getFlowData(analysisDate, 'spy_flow', asOf),
+      getFlowData(analysisDate, 'qqq_flow', asOf),
+      getFlowData(analysisDate, 'spy_etf_tide', asOf),
+      getFlowData(analysisDate, 'qqq_etf_tide', asOf),
+      getFlowData(analysisDate, 'zero_dte_index', asOf),
+      getFlowData(analysisDate, 'zero_dte_greek_flow', asOf),
+      getGreekExposure(analysisDate),        // no timestamp column — full day
+      getSpotExposures(analysisDate, 'SPX', asOf),
+      getStrikeExposures(analysisDate, 'SPX', asOf),
+      getAllExpiryStrikeExposures(analysisDate, 'SPX', asOf),
+      getNetGexHeatmap(analysisDate),        // upsert table — no timestamp, always latest
     ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,

@@ -76,15 +76,24 @@ export interface FlowDataRow {
 export async function getStrikeExposures(
   date: string,
   ticker: string = 'SPX',
+  asOf?: string,
 ): Promise<StrikeExposureRow[]> {
   const db = getDb();
 
-  // Find the latest timestamp for this date
-  const tsRows = await db`
-    SELECT MAX(timestamp) as latest_ts
-    FROM strike_exposures
-    WHERE date = ${date} AND ticker = ${ticker} AND expiry != ${ALL_EXPIRY_SENTINEL}
-  `;
+  // Find the latest timestamp for this date (optionally capped by asOf)
+  const tsRows = asOf
+    ? await db`
+        SELECT MAX(timestamp) as latest_ts
+        FROM strike_exposures
+        WHERE date = ${date} AND ticker = ${ticker}
+          AND expiry != ${ALL_EXPIRY_SENTINEL}
+          AND timestamp <= ${asOf}
+      `
+    : await db`
+        SELECT MAX(timestamp) as latest_ts
+        FROM strike_exposures
+        WHERE date = ${date} AND ticker = ${ticker} AND expiry != ${ALL_EXPIRY_SENTINEL}
+      `;
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
 
@@ -372,15 +381,24 @@ function fmtStrike(value: number): string {
 export async function getAllExpiryStrikeExposures(
   date: string,
   ticker: string = 'SPX',
+  asOf?: string,
 ): Promise<StrikeExposureRow[]> {
   const db = getDb();
 
-  // Find the latest timestamp for all-expiry rows on this date
-  const tsRows = await db`
-    SELECT MAX(timestamp) as latest_ts
-    FROM strike_exposures
-    WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${ALL_EXPIRY_SENTINEL}
-  `;
+  // Find the latest timestamp for all-expiry rows on this date (optionally capped by asOf)
+  const tsRows = asOf
+    ? await db`
+        SELECT MAX(timestamp) as latest_ts
+        FROM strike_exposures
+        WHERE date = ${date} AND ticker = ${ticker}
+          AND expiry = ${ALL_EXPIRY_SENTINEL}
+          AND timestamp <= ${asOf}
+      `
+    : await db`
+        SELECT MAX(timestamp) as latest_ts
+        FROM strike_exposures
+        WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${ALL_EXPIRY_SENTINEL}
+      `;
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
 

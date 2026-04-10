@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
  * utilities: numOrUndef and formatMlFindingsForClaude.
  */
 
-import { numOrUndef } from '../_lib/analyze-context.js';
+import { numOrUndef, parseEntryTimeAsUtc } from '../_lib/analyze-context.js';
 
 // ── numOrUndef ─────────────────────────────────────────────
 
@@ -546,5 +546,75 @@ describe('buildAnalysisContext', () => {
 
     expect(result.darkPoolClusters).toBeNull();
     vi.unstubAllGlobals();
+  });
+});
+
+// ── parseEntryTimeAsUtc ───────────────────────────────────────────
+
+describe('parseEntryTimeAsUtc', () => {
+  it('returns undefined for null', () => {
+    expect(parseEntryTimeAsUtc(null, '2026-04-10')).toBeUndefined();
+  });
+
+  it('returns undefined for empty string', () => {
+    expect(parseEntryTimeAsUtc('', '2026-04-10')).toBeUndefined();
+  });
+
+  it('returns undefined for unrecognized format', () => {
+    expect(parseEntryTimeAsUtc('14:55', '2026-04-10')).toBeUndefined();
+    expect(parseEntryTimeAsUtc('2:55pm', '2026-04-10')).toBeUndefined();
+  });
+
+  it('converts 2:55 PM CT to UTC (CDT offset = UTC-5 in April)', () => {
+    // April 10 is in CDT (UTC-5). 2:55 PM CDT = 19:55 UTC.
+    const result = parseEntryTimeAsUtc('2:55 PM CT', '2026-04-10');
+    expect(result).toBeDefined();
+    const d = new Date(result!);
+    expect(d.getUTCHours()).toBe(19);
+    expect(d.getUTCMinutes()).toBe(55);
+  });
+
+  it('converts 3:00 PM ET to UTC (EDT offset = UTC-4 in April)', () => {
+    // April 10 is in EDT (UTC-4). 3:00 PM EDT = 19:00 UTC.
+    const result = parseEntryTimeAsUtc('3:00 PM ET', '2026-04-10');
+    expect(result).toBeDefined();
+    const d = new Date(result!);
+    expect(d.getUTCHours()).toBe(19);
+    expect(d.getUTCMinutes()).toBe(0);
+  });
+
+  it('handles 12:00 PM (noon) correctly', () => {
+    // 12:00 PM CT (CDT) = 17:00 UTC in April
+    const result = parseEntryTimeAsUtc('12:00 PM CT', '2026-04-10');
+    expect(result).toBeDefined();
+    const d = new Date(result!);
+    expect(d.getUTCHours()).toBe(17);
+    expect(d.getUTCMinutes()).toBe(0);
+  });
+
+  it('handles 12:00 AM (midnight) correctly', () => {
+    // 12:00 AM CT (CDT) = 05:00 UTC in April
+    const result = parseEntryTimeAsUtc('12:00 AM CT', '2026-04-10');
+    expect(result).toBeDefined();
+    const d = new Date(result!);
+    expect(d.getUTCHours()).toBe(5);
+    expect(d.getUTCMinutes()).toBe(0);
+  });
+
+  it('is case-insensitive for AM/PM and CT/ET', () => {
+    const upper = parseEntryTimeAsUtc('2:55 PM CT', '2026-04-10');
+    const lower = parseEntryTimeAsUtc('2:55 pm ct', '2026-04-10');
+    expect(upper).toBe(lower);
+  });
+
+  it('returns an ISO string ending in Z', () => {
+    const result = parseEntryTimeAsUtc('2:55 PM CT', '2026-04-10');
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
+  });
+
+  it('uses :59 seconds so the full minute is included', () => {
+    const result = parseEntryTimeAsUtc('2:55 PM CT', '2026-04-10');
+    const d = new Date(result!);
+    expect(d.getUTCSeconds()).toBe(59);
   });
 });

@@ -23,6 +23,7 @@ import { getDb } from './db.js';
 export async function getFlowData(
   date: string,
   source: string,
+  asOf?: string,
 ): Promise<
   Array<{
     timestamp: string;
@@ -34,12 +35,19 @@ export async function getFlowData(
   }>
 > {
   const sql = getDb();
-  const rows = await sql`
-    SELECT timestamp, ncp, npp, net_volume, otm_ncp, otm_npp
-    FROM flow_data
-    WHERE date = ${date} AND source = ${source}
-    ORDER BY timestamp ASC
-  `;
+  const rows = asOf
+    ? await sql`
+        SELECT timestamp, ncp, npp, net_volume, otm_ncp, otm_npp
+        FROM flow_data
+        WHERE date = ${date} AND source = ${source} AND timestamp <= ${asOf}
+        ORDER BY timestamp ASC
+      `
+    : await sql`
+        SELECT timestamp, ncp, npp, net_volume, otm_ncp, otm_npp
+        FROM flow_data
+        WHERE date = ${date} AND source = ${source}
+        ORDER BY timestamp ASC
+      `;
 
   return rows.map((r) => ({
     timestamp: r.timestamp as string,
@@ -321,17 +329,28 @@ export interface SpotExposureRow {
 export async function getSpotExposures(
   date: string,
   ticker: string = 'SPX',
+  asOf?: string,
 ): Promise<SpotExposureRow[]> {
   const db = getDb();
-  const rows = await db`
-    SELECT timestamp, price,
-           gamma_oi, gamma_vol, gamma_dir,
-           charm_oi, charm_vol, charm_dir,
-           vanna_oi, vanna_vol, vanna_dir
-    FROM spot_exposures
-    WHERE date = ${date} AND ticker = ${ticker}
-    ORDER BY timestamp ASC
-  `;
+  const rows = asOf
+    ? await db`
+        SELECT timestamp, price,
+               gamma_oi, gamma_vol, gamma_dir,
+               charm_oi, charm_vol, charm_dir,
+               vanna_oi, vanna_vol, vanna_dir
+        FROM spot_exposures
+        WHERE date = ${date} AND ticker = ${ticker} AND timestamp <= ${asOf}
+        ORDER BY timestamp ASC
+      `
+    : await db`
+        SELECT timestamp, price,
+               gamma_oi, gamma_vol, gamma_dir,
+               charm_oi, charm_vol, charm_dir,
+               vanna_oi, vanna_vol, vanna_dir
+        FROM spot_exposures
+        WHERE date = ${date} AND ticker = ${ticker}
+        ORDER BY timestamp ASC
+      `;
 
   return rows.map((r) => ({
     timestamp: r.timestamp as string,
