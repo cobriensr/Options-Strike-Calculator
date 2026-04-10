@@ -15,10 +15,13 @@ import {
   getAllExpiryStrikeExposures,
   formatAllExpiryStrikesForClaude,
   formatGreekFlowForClaude,
+  getNetGexHeatmap,
+  formatNetGexHeatmapForClaude,
 } from '../_lib/db-strike-helpers.js';
 import type {
   StrikeExposureRow,
   FlowDataRow,
+  NetGexRow,
 } from '../_lib/db-strike-helpers.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -1155,5 +1158,142 @@ describe('db-strike-helpers', () => {
       // Time series rows should include the OTM segment
       expect(result).toMatch(/OTM Δ: \+[0-9.]+[KM]/);
     });
+  });
+});
+
+// ── Net GEX Heatmap ───────────────────────────────────────────────
+
+function makeNetGexRow(overrides: Partial<NetGexRow> = {}): NetGexRow {
+  return {
+    strike: 6800,
+    callGex: 5_000_000_000,
+    putGex: -2_000_000_000,
+    netGex: 3_000_000_000,
+    absGex: 7_000_000_000,
+    callGexFraction: 5 / 7,
+    netDelta: 1_200_000,
+    netCharm: 40_000,
+    ...overrides,
+  };
+}
+
+describe('getNetGexHeatmap', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('queries greek_exposure_strike for date = expiry and maps rows', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        strike: 6800,
+        call_gex: '5000000000',
+        put_gex: '-2000000000',
+        net_gex: '3000000000',
+        abs_gex: '7000000000',
+        call_gex_fraction: '0.714285',
+        net_delta: '1200000',
+        net_charm: '40000',
+      },
+    ]);
+
+    const rows = await getNetGexHeatmap('2026-04-10');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.strike).toBe(6800);
+    expect(rows[0]!.netGex).toBeCloseTo(3_000_000_000);
+    expect(rows[0]!.callGexFraction).toBeCloseTo(0.714285);
+  });
+
+  it('returns empty array when no rows', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const rows = await getNetGexHeatmap('2026-04-10');
+    expect(rows).toEqual([]);
+  });
+
+  it('handles null call_gex_fraction', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        strike: 6800,
+        call_gex: '0',
+        put_gex: '0',
+        net_gex: '0',
+        abs_gex: '0',
+        call_gex_fraction: null,
+        net_delta: '0',
+        net_charm: '0',
+      },
+    ]);
+    const rows = await getNetGexHeatmap('2026-04-10');
+    expect(rows[0]!.callGexFraction).toBeNull();
+  });
+});
+
+describe('formatNetGexHeatmapForClaude', () => {
+  it('returns null for empty rows', () => {
+    expect(formatNetGexHeatmapForClaude([])).toBeNull();
+  });
+
+  it('includes top gamma walls with correct labels', () => {
+    const rows: NetGexRow[] = [
+      makeNetGexRow({ strike: 6875, netGex: 14_000_000_000, callGexFraction: 0.73 }),
+      makeNetGexRow({ strike: 6825, netGex: 7_000_000_000, callGexFraction: 0.68 }),
+      makeNetGexRow({ strike: 6775, netGex: -12_000_000_000, callGexFraction: 0.25 }),
+    ];
+
+    const result = formatNetGexHeatmapForClaude(rows)!;
+    expect(result).toMatch(/Gamma Walls/);
+    expect(result).toMatch(/6875/);
+    expect(result).toMatch(/\+14\.0B/);
+    expect(result).toMatch(/73% call/);
+  });
+
+  it('includes acceleration zones for negative net_gex rows', () => {
+    const rows: NetGexRow[] = [
+      makeNetGexRow({ strike: 6800, netGex: 5_000_000_000 }),
+      makeNetGexRow({ strike: 6775, netGex: -12_000_000_000, callGexFraction: 0.25 }),
+    ];
+
+    const result = formatNetGexHeatmapForClaude(rows)!;
+    expect(result).toMatch(/Acceleration Zones/);
+    expect(result).toMatch(/6775/);
+    expect(result).toMatch(/-12\.0B/);
+    expect(result).toMatch(/25% call/);
+  });
+
+  it('reports NET LONG GAMMA regime when total is positive', () => {
+    const rows: NetGexRow[] = [
+      makeNetGexRow({ strike: 6800, netGex: 5_000_000_000, absGex: 5_000_000_000 }),
+      makeNetGexRow({ strike: 6750, netGex: 3_000_000_000, absGex: 3_000_000_000 }),
+    ];
+    const result = formatNetGexHeatmapForClaude(rows)!;
+    expect(result).toMatch(/NET LONG GAMMA/);
+  });
+
+  it('reports NET SHORT GAMMA regime when total is negative', () => {
+    const rows: NetGexRow[] = [
+      makeNetGexRow({ strike: 6800, netGex: -5_000_000_000, absGex: 5_000_000_000 }),
+    ];
+    const result = formatNetGexHeatmapForClaude(rows)!;
+    expect(result).toMatch(/NET SHORT GAMMA/);
+  });
+
+  it('identifies the gamma flip zone between negative and positive strikes', () => {
+    const rows: NetGexRow[] = [
+      makeNetGexRow({ strike: 6810, netGex: -3_000_000_000 }),
+      makeNetGexRow({ strike: 6815, netGex: 2_000_000_000 }),
+      makeNetGexRow({ strike: 6825, netGex: 5_000_000_000 }),
+    ];
+    const result = formatNetGexHeatmapForClaude(rows)!;
+    expect(result).toMatch(/Gamma Flip Zone.*6810.*6815/);
+  });
+
+  it('marks the flip strike in the per-strike table', () => {
+    const rows: NetGexRow[] = [
+      makeNetGexRow({ strike: 6810, netGex: -3_000_000_000, absGex: 3_000_000_000 }),
+      makeNetGexRow({ strike: 6815, netGex: 2_000_000_000, absGex: 2_000_000_000 }),
+      makeNetGexRow({ strike: 6825, netGex: 5_000_000_000, absGex: 5_000_000_000 }),
+    ];
+    const result = formatNetGexHeatmapForClaude(rows)!;
+    expect(result).toMatch(/6815.*gamma flip/);
   });
 });

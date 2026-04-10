@@ -25,6 +25,8 @@ import {
   formatAllExpiryStrikesForClaude,
   formatGreekFlowForClaude,
   formatZeroGammaForClaude,
+  getNetGexHeatmap,
+  formatNetGexHeatmapForClaude,
 } from './db-strike-helpers.js';
 import { analyzeZeroGamma } from '../../src/utils/zero-gamma.js';
 import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
@@ -279,6 +281,7 @@ export async function buildAnalysisContext(
   let zeroGammaContext: string | null = null;
   let allExpiryStrikeContext: string | null = null;
   let greekFlowContext: string | null = null;
+  let netGexHeatmapContext: string | null = null;
   let ivTermStructureContext: string | null = null;
   let overnightGapContext: string | null = null;
   // Latest Market Tide NCP for directional chain fetch (hoisted for scope)
@@ -312,6 +315,7 @@ export async function buildAnalysisContext(
       spotGexRows,
       strikeRows,
       allExpiryStrikeRows,
+      netGexRows,
     ] = await Promise.all([
       getFlowData(analysisDate, 'market_tide'),
       getFlowData(analysisDate, 'market_tide_otm'),
@@ -326,6 +330,7 @@ export async function buildAnalysisContext(
       getSpotExposures(analysisDate),
       getStrikeExposures(analysisDate),
       getAllExpiryStrikeExposures(analysisDate),
+      getNetGexHeatmap(analysisDate),
     ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,
@@ -381,6 +386,7 @@ export async function buildAnalysisContext(
     greekFlowContext = formatGreekFlowForClaude(greekFlowRows);
     spotGexContext = formatSpotExposuresForClaude(spotGexRows);
     strikeExposureContext = formatStrikeExposuresForClaude(strikeRows);
+    netGexHeatmapContext = formatNetGexHeatmapForClaude(netGexRows);
     allExpiryStrikeContext = formatAllExpiryStrikesForClaude(
       allExpiryStrikeRows,
       strikeRows,
@@ -766,6 +772,7 @@ export async function buildAnalysisContext(
   if (!spotGexContext) unavailable.push('Aggregate GEX Panel');
   if (!greekExposureContext) unavailable.push('Greek Exposure (OI-based)');
   if (!strikeExposureContext) unavailable.push('Per-Strike Greek Profile');
+  if (!netGexHeatmapContext) unavailable.push('Net GEX Heatmap');
   if (!greekFlowContext) unavailable.push('0DTE Delta Flow');
   if (!spxCandlesContext && !context.isBacktest)
     unavailable.push('SPX Intraday Candles');
@@ -835,6 +842,7 @@ ${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggre
 ${greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${greekFlowContext}\n` : ''}
 ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}
 ${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
+${netGexHeatmapContext ? `\n## SPX 0DTE Net GEX Heatmap (from API — signed dollar GEX per strike)\nThis is the signed net GEX dollar amount at each strike from the greek_exposure_strike table, updated every minute. This is the same data shown in the UW Net GEX Heatmap UI. Positive net_gex = net long gamma (dealer mean-reverting hedging → price suppression, pin magnetism); negative net_gex = net short gamma (dealer momentum hedging → price acceleration, breakouts). The gamma flip zone (net_gex sign change) is the structural regime boundary between suppression and acceleration. Use this alongside the Per-Strike Greek Profile — this adds the dollar-scaled magnitude and call/put composition that the naive profile lacks.\n\n${netGexHeatmapContext}\n` : ''}
 ${zeroGammaContext ? `\n## SPX 0DTE Zero-Gamma Level (derived from per-strike gamma profile)\nThe zero-gamma strike is the approximate SPX level at which aggregate dealer gamma flips sign. Above the flip (positive gamma) dealers hedge mean-reverting and price movement is suppressed. Below the flip (negative gamma) dealers hedge momentum and price movement accelerates. Distance-to-flip in cone fractions tells you how close today's price is to a regime change in units that match the straddle cone.\n\n${zeroGammaContext}\n` : ''}
 ${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}

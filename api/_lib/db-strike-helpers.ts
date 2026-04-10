@@ -809,3 +809,174 @@ export function formatZeroGammaForClaude(
 
   return lines.join('\n');
 }
+
+// ── Net GEX Heatmap (greek_exposure_strike) ──────────────────────────────────
+
+export interface NetGexRow {
+  strike: number;
+  callGex: number;
+  putGex: number;
+  netGex: number;
+  absGex: number;
+  callGexFraction: number | null;
+  netDelta: number;
+  netCharm: number;
+}
+
+function mapNetGexRow(r: Record<string, unknown>): NetGexRow {
+  return {
+    strike: Number(r.strike),
+    callGex: Number(r.call_gex),
+    putGex: Number(r.put_gex),
+    netGex: Number(r.net_gex),
+    absGex: Number(r.abs_gex),
+    callGexFraction:
+      r.call_gex_fraction != null ? Number(r.call_gex_fraction) : null,
+    netDelta: Number(r.net_delta),
+    netCharm: Number(r.net_charm),
+  };
+}
+
+/**
+ * Fetch the latest 0DTE per-strike net GEX snapshot from greek_exposure_strike.
+ * Returns all strikes for today's expiry ordered by strike ascending.
+ * The table uses ON CONFLICT DO UPDATE so each (date, expiry, strike) always
+ * reflects the most recent cron run — no timestamp filtering needed.
+ */
+export async function getNetGexHeatmap(date: string): Promise<NetGexRow[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT strike, call_gex, put_gex, net_gex, abs_gex,
+           call_gex_fraction, net_delta, net_charm
+    FROM greek_exposure_strike
+    WHERE date = ${date} AND expiry = ${date}
+    ORDER BY strike ASC
+  `;
+  return rows.map(mapNetGexRow);
+}
+
+/**
+ * Format the net GEX heatmap as a structured text block for Claude's context.
+ *
+ * Surfaces:
+ *   - Top gamma walls (highest positive net_gex): mean-reverting / support zones
+ *   - Top acceleration zones (most negative net_gex): momentum-amplifying zones
+ *   - Total GEX balance and regime (long vs short gamma environment)
+ *   - Gamma flip zone (where net_gex crosses zero — regime boundary)
+ *   - Per-strike table around the flip zone (±100 pts)
+ */
+export function formatNetGexHeatmapForClaude(rows: NetGexRow[]): string | null {
+  if (rows.length === 0) return null;
+
+  const lines: string[] = [];
+  lines.push('SPX 0DTE Net GEX Heatmap (from API — current cron snapshot):');
+  lines.push(
+    '  Positive net_gex = net long gamma → dealers buy dips / sell rips → price suppression (pin / support / resistance)',
+  );
+  lines.push(
+    '  Negative net_gex = net short gamma → dealers chase moves → price acceleration (breakouts / trends)',
+  );
+  lines.push('');
+
+  // Sort for structural analysis
+  const byDesc = [...rows].sort((a, b) => b.netGex - a.netGex);
+  const byAsc = [...rows].sort((a, b) => a.netGex - b.netGex);
+  const topWalls = byDesc.filter((r) => r.netGex > 0).slice(0, 5);
+  const topAccel = byAsc.filter((r) => r.netGex < 0).slice(0, 5);
+
+  function callPutLabel(r: NetGexRow): string {
+    if (r.callGexFraction == null) return 'split unknown';
+    const c = Math.round(r.callGexFraction * 100);
+    return `${c}% call / ${100 - c}% put`;
+  }
+
+  if (topWalls.length > 0) {
+    lines.push(
+      '  Gamma Walls (positive net_gex — mean-reverting / dealer support or resistance):',
+    );
+    for (const w of topWalls) {
+      lines.push(`    ${w.strike}: ${fmtStrike(w.netGex)} (${callPutLabel(w)})`);
+    }
+  }
+
+  if (topAccel.length > 0) {
+    lines.push(
+      '  Acceleration Zones (negative net_gex — momentum-amplifying / dealer accelerates moves):',
+    );
+    for (const a of topAccel) {
+      lines.push(`    ${a.strike}: ${fmtStrike(a.netGex)} (${callPutLabel(a)})`);
+    }
+  }
+
+  // Total GEX regime
+  const totalNetGex = rows.reduce((s, r) => s + r.netGex, 0);
+  const totalAbsGex = rows.reduce((s, r) => s + r.absGex, 0);
+  const balancePct =
+    totalAbsGex > 0 ? Math.round((totalNetGex / totalAbsGex) * 100) : 0;
+  const balanceSign = balancePct > 0 ? '+' : '';
+  lines.push('');
+  lines.push(
+    `  Total Net GEX Balance: ${fmtStrike(totalNetGex)} (${balanceSign}${balancePct}% of gross abs GEX)`,
+  );
+  if (totalNetGex > 0) {
+    lines.push(
+      '  Session Regime: NET LONG GAMMA — aggregate suppression. IC / range-bound bias.',
+    );
+  } else {
+    lines.push(
+      '  Session Regime: NET SHORT GAMMA — aggregate amplification. Directional / trending bias.',
+    );
+  }
+
+  // Gamma sign flip zone (where net_gex crosses from negative to positive going upward)
+  let flipLow: number | null = null;
+  let flipHigh: number | null = null;
+  for (let i = 0; i < rows.length - 1; i++) {
+    const curr = rows[i]!;
+    const next = rows[i + 1]!;
+    if (curr.netGex < 0 && next.netGex >= 0) {
+      flipLow = curr.strike;
+      flipHigh = next.strike;
+      break;
+    }
+  }
+
+  if (flipLow !== null && flipHigh !== null) {
+    lines.push(
+      `  Gamma Flip Zone: ${flipLow}–${flipHigh} (net_gex crosses zero — regime boundary)`,
+    );
+    lines.push(
+      '  Above flip: positive gamma (suppression); below flip: negative gamma (acceleration)',
+    );
+  }
+
+  // Per-strike table: ±100 pts of the flip zone (proxy ATM)
+  const flipMid =
+    flipLow !== null && flipHigh !== null
+      ? (flipLow + flipHigh) / 2
+      : rows[Math.floor(rows.length / 2)]!.strike;
+  const tableRows = rows.filter(
+    (r) => r.strike >= flipMid - 100 && r.strike <= flipMid + 100,
+  );
+
+  if (tableRows.length > 0) {
+    lines.push('');
+    lines.push('  Per-Strike Net GEX (flip zone ±100 pts):');
+    lines.push(
+      '    Strike |  Net GEX$    | Call% | Net Delta    | Net Charm',
+    );
+    for (const r of tableRows) {
+      const callPct =
+        r.callGexFraction != null
+          ? `${Math.round(r.callGexFraction * 100).toString().padStart(3)}%`
+          : '  ?%';
+      const marker =
+        r.strike === flipHigh ? ' ← gamma flip' : '';
+      lines.push(
+        `    ${r.strike.toString().padStart(6)} | ${fmtStrike(r.netGex).padStart(12)} | ${callPct} | ${fmtStrike(r.netDelta).padStart(12)} | ${fmtStrike(r.netCharm).padStart(12)}${marker}`,
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
