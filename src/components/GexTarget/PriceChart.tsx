@@ -109,7 +109,7 @@ export const PriceChart = memo(function PriceChart({
     const chart = createChart(containerRef.current, {
       ...chartOptions,
       width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight || 300,
+      height: 320,
     });
     chartRef.current = chart;
 
@@ -141,7 +141,7 @@ export const PriceChart = memo(function PriceChart({
     };
   }, []); // create once
 
-  // ── Responsive resize ────────────────────────────────────────────────
+  // ── Responsive resize (width only — height is fixed by CSS) ─────────
 
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return;
@@ -149,10 +149,7 @@ export const PriceChart = memo(function PriceChart({
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      chartRef.current?.applyOptions({
-        width: entry.contentRect.width,
-        height: entry.contentRect.height,
-      });
+      chartRef.current?.applyOptions({ width: entry.contentRect.width });
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
@@ -236,7 +233,7 @@ export const PriceChart = memo(function PriceChart({
     <SectionBox label="PRICE ACTION">
       <div
         ref={containerRef}
-        className="h-full min-h-[300px] w-full"
+        className="h-[320px] w-full"
         aria-label="SPX price chart"
         role="img"
       />
