@@ -46,6 +46,14 @@ const VEX_TOOLTIPS = {
   zero: 'VEX near zero\nThis strike won\u2019t generate meaningful dealer flow from vol changes. Less interesting around VIX moves, OPEX, or vol-crush events.',
 };
 
+const CP_TOOLTIPS = {
+  positive:
+    'Net long gamma \u00B7 dealer long delta (support zone)\nNet GEX is positive here \u2014 dealers are net long gamma, meaning they buy dips and sell rips to stay delta-neutral. That mechanical two-way flow acts as a gravitational anchor. Expect price to be drawn toward this strike and find support on a test from above.\nFormula: net GEX$ \u00F7 (spot \u00D7 100) \u2248 dealer delta in contracts.',
+  negative:
+    'Net short gamma \u00B7 dealer short delta (resistance zone)\nNet GEX is negative here \u2014 dealers are net short gamma, meaning they sell into strength and buy into weakness in the same direction as price. This amplifies moves rather than dampening them. Price through this level tends to accelerate; it\u2019s a zone of fuel not a floor.\nFormula: net GEX$ \u00F7 (spot \u00D7 100) \u2248 dealer delta in contracts.',
+  zero: 'Net GEX near zero\nDealer gamma exposure is roughly balanced at this strike. No strong mechanical hedging pull in either direction \u2014 less likely to act as a magnet or accelerant.',
+};
+
 // ── Formatters ────────────────────────────────────────────────────────
 
 function formatGex(v: number): string {
@@ -407,6 +415,13 @@ export const StrikeBox = memo(function StrikeBox({
                       ? VEX_TOOLTIPS.positive
                       : VEX_TOOLTIPS.negative;
 
+                const cpTooltip =
+                  Math.abs(estDealerDelta) <= barStats.cp.nearZeroThreshold
+                    ? CP_TOOLTIPS.zero
+                    : estDealerDelta > 0
+                      ? CP_TOOLTIPS.positive
+                      : CP_TOOLTIPS.negative;
+
                 return (
                   <tr
                     key={s.strike}
@@ -474,7 +489,7 @@ export const StrikeBox = memo(function StrikeBox({
                     </td>
 
                     {/* C/P */}
-                    <td className={tdCls}>{cpLabel}</td>
+                    <td className={tdCls} title={cpTooltip}>{cpLabel}</td>
 
                     {/* HOT% */}
                     <td className={tdCls}>
