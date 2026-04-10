@@ -207,6 +207,31 @@ function getTodayET(): string {
   });
 }
 
+/**
+ * Filter candles to the regular SPX session: 8:30 AM – 3:00 PM CT.
+ *
+ * The DB cron occasionally stores early bars (9:00 AM ET = 8:00 AM CT)
+ * tagged as regular-session by the UW source. This client-side guard
+ * ensures the price chart never shows pre-market or post-market bars,
+ * consistent with the user's 8:30–15:00 CT requirement. DST is handled
+ * automatically by the `America/Chicago` timezone identifier.
+ */
+function filterRegularSessionCT(candles: SPXCandle[]): SPXCandle[] {
+  return candles.filter((c) => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    }).formatToParts(new Date(c.datetime));
+    const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? 0);
+    const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+    const mins = hour * 60 + minute;
+    // 8:30 AM CT = 510 min, 3:00 PM CT = 900 min (exclusive)
+    return mins >= 510 && mins < 900;
+  });
+}
+
 export function useGexTarget(
   marketOpen: boolean,
   initialDate?: string,
@@ -291,7 +316,7 @@ export function useGexTarget(
         setSpot(data.spot);
         setTimestamp(data.timestamp);
         setTimestamps(data.timestamps ?? []);
-        setCandles(data.candles ?? []);
+        setCandles(filterRegularSessionCT(data.candles ?? []));
         setPreviousClose(data.previousClose);
         setAvailableDates(data.availableDates ?? []);
         setError(null);
@@ -333,8 +358,8 @@ export function useGexTarget(
       }
       allSnapshotsRef.current = cache;
 
-      // Per-day fields
-      setCandles(data.candles ?? []);
+      // Per-day fields — filter candles to 8:30 AM–3:00 PM CT only
+      setCandles(filterRegularSessionCT(data.candles ?? []));
       setPreviousClose(data.previousClose);
       setTimestamps(data.timestamps ?? []);
       setAvailableDates(data.availableDates ?? []);
