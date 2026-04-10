@@ -96,6 +96,9 @@ const chartOptions: DeepPartial<ChartOptions> = {
     borderColor: 'rgba(255,255,255,0.1)',
     timeVisible: true,
     secondsVisible: false,
+    // tickMarkFormatter controls axis labels (localization.timeFormatter is crosshair only)
+    tickMarkFormatter: (utcSeconds: number) =>
+      ctTimeFormatter.format(new Date(utcSeconds * 1000)),
   },
   localization: {
     timeFormatter: (utcSeconds: number) =>
@@ -106,8 +109,8 @@ const chartOptions: DeepPartial<ChartOptions> = {
   handleScale: { mouseWheel: true, pinch: true },
 };
 
-const GEX_COLORS = ['#00e676', '#69f0ae', '#b9f6ca'] as const;
-const GEX_WIDTHS = [2, 1, 1] as const;
+const GEX_COLORS = ['#00e676', '#69f0ae', '#b9f6ca', '#ccffdf', '#e8fff0'] as const;
+const GEX_WIDTHS = [2, 1, 1, 1, 1] as const;
 
 // ── Component ─────────────────────────────────────────────────────────────
 
@@ -217,19 +220,12 @@ export const PriceChart = memo(function PriceChart({
 
     const lines: IPriceLine[] = [];
 
-    // GEX levels: top 3 by abs(gexDollars) from leaderboard
+    // GEX levels: top 5 in leaderboard order (same set as urgency/sparklines panels)
     if (score) {
-      const top3 = [...score.leaderboard]
-        .sort(
-          (a, b) =>
-            Math.abs(b.features.gexDollars) - Math.abs(a.features.gexDollars),
-        )
-        .slice(0, 3);
-
-      top3.forEach((s, i) => {
+      score.leaderboard.slice(0, 5).forEach((s, i) => {
         const line = candleSeriesRef.current!.createPriceLine({
           price: s.strike,
-          color: GEX_COLORS[i] ?? GEX_COLORS[2],
+          color: GEX_COLORS[i] ?? GEX_COLORS[4],
           lineWidth: GEX_WIDTHS[i] ?? 1,
           lineStyle: LineStyle.Solid,
           axisLabelVisible: true,
