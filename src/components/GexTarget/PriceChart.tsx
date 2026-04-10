@@ -172,10 +172,10 @@ export const PriceChart = memo(function PriceChart({
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      chartRef.current?.applyOptions({
-        width: entry.contentRect.width,
-        height: entry.contentRect.height,
-      });
+      // Width only — updating height here causes a feedback loop where the
+      // chart canvas grows the container, which fires the observer again.
+      // Height is CSS-controlled via h-full; overflow-hidden clips the canvas.
+      chartRef.current?.applyOptions({ width: entry.contentRect.width });
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
@@ -290,7 +290,7 @@ export const PriceChart = memo(function PriceChart({
     <SectionBox label="PRICE ACTION">
       <div
         ref={containerRef}
-        className="h-full min-h-[280px] w-full"
+        className="h-full min-h-[280px] w-full overflow-hidden"
         aria-label="SPX price chart"
         role="img"
       />
