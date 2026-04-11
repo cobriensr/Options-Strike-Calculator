@@ -188,6 +188,8 @@ interface GexTargetFeatureRow {
 
   prev_gex_dollars_1m: NumericOrNull;
   prev_gex_dollars_5m: NumericOrNull;
+  prev_gex_dollars_10m: NumericOrNull;
+  prev_gex_dollars_15m: NumericOrNull;
   prev_gex_dollars_20m: NumericOrNull;
   prev_gex_dollars_60m: NumericOrNull;
 
@@ -302,6 +304,8 @@ function rowToStrikeScore(row: GexTargetFeatureRow): StrikeScore {
       deltaGex_60m: numOrNull(row.delta_gex_60m),
       prevGexDollars_1m: numOrNull(row.prev_gex_dollars_1m),
       prevGexDollars_5m: numOrNull(row.prev_gex_dollars_5m),
+      prevGexDollars_10m: numOrNull(row.prev_gex_dollars_10m),
+      prevGexDollars_15m: numOrNull(row.prev_gex_dollars_15m),
       prevGexDollars_20m: numOrNull(row.prev_gex_dollars_20m),
       prevGexDollars_60m: numOrNull(row.prev_gex_dollars_60m),
       deltaPct_1m: numOrNull(row.delta_pct_1m),
@@ -557,6 +561,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ges.put_delta,
             gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
             gtf.prev_gex_dollars_1m, gtf.prev_gex_dollars_5m,
+            gtf.prev_gex_dollars_10m, gtf.prev_gex_dollars_15m,
             gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
             gtf.delta_pct_1m, gtf.delta_pct_5m, gtf.delta_pct_20m, gtf.delta_pct_60m,
             gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,

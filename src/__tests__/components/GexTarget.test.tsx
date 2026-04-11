@@ -55,6 +55,8 @@ function makeFeatures(overrides: Partial<MagnetFeatures> = {}): MagnetFeatures {
     deltaGex_60m: 300_000_000,
     prevGexDollars_1m: 990_000_000,
     prevGexDollars_5m: 950_000_000,
+    prevGexDollars_10m: 930_000_000,
+    prevGexDollars_15m: 900_000_000,
     prevGexDollars_20m: 850_000_000,
     prevGexDollars_60m: 700_000_000,
     deltaPct_1m: 0.01,

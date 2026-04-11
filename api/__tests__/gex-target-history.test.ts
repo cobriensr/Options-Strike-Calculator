@@ -67,6 +67,8 @@ interface FeatureRowOverrides {
   deltaPct60m?: number | null;
   prevGexDollars1m?: number | null;
   prevGexDollars5m?: number | null;
+  prevGexDollars10m?: number | null;
+  prevGexDollars15m?: number | null;
   prevGexDollars20m?: number | null;
   prevGexDollars60m?: number | null;
   // Other commonly-overridden columns
@@ -96,6 +98,8 @@ function makeFeatureRow(overrides: FeatureRowOverrides = {}) {
     deltaPct60m = 0.02,
     prevGexDollars1m = 1_000_000_000,
     prevGexDollars5m = 950_000_000,
+    prevGexDollars10m = 930_000_000,
+    prevGexDollars15m = 920_000_000,
     prevGexDollars20m = 900_000_000,
     prevGexDollars60m = 800_000_000,
     callRatio = 0.6,
@@ -126,6 +130,10 @@ function makeFeatureRow(overrides: FeatureRowOverrides = {}) {
       prevGexDollars1m === null ? null : String(prevGexDollars1m),
     prev_gex_dollars_5m:
       prevGexDollars5m === null ? null : String(prevGexDollars5m),
+    prev_gex_dollars_10m:
+      prevGexDollars10m === null ? null : String(prevGexDollars10m),
+    prev_gex_dollars_15m:
+      prevGexDollars15m === null ? null : String(prevGexDollars15m),
     prev_gex_dollars_20m:
       prevGexDollars20m === null ? null : String(prevGexDollars20m),
     prev_gex_dollars_60m:

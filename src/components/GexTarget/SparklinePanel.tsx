@@ -155,12 +155,14 @@ export const SparklinePanel = memo(function SparklinePanel({
         <div className="flex flex-col gap-2">
           {top5.map((s) => {
             const { features } = s;
-            // Only the three 5-minute-grid snapshots within the 20-min window.
+            // All five 5-minute-grid snapshots within the 20-min window.
             // Null entries (early session, data unavailable) are filtered out
             // so the sparkline always draws between real measurements.
             const pts: SparklinePoint[] = (
               [
                 { value: features.prevGexDollars_20m, minutesAgo: 20 },
+                { value: features.prevGexDollars_15m, minutesAgo: 15 },
+                { value: features.prevGexDollars_10m, minutesAgo: 10 },
                 { value: features.prevGexDollars_5m, minutesAgo: 5 },
                 { value: features.gexDollars, minutesAgo: 0 },
               ] as { value: number | null; minutesAgo: number }[]

@@ -109,15 +109,15 @@ interface RawStrikeRow {
 //   3  ranking      (rank_in_mode, rank_by_size, is_target)
 //   1  gex_dollars
 //   4  delta_gex_*
-//   4  prev_gex_dollars_*
+//   6  prev_gex_dollars_*  (1m, 5m, 10m, 15m, 20m, 60m)
 //   4  delta_pct_*
 //   4  call_ratio, charm_net, delta_net, vanna_net
 //   3  dist_from_spot, spot_price, minutes_after_noon_ct
 //   4  nearest-wall (pos_dist, pos_gex, neg_dist, neg_gex)
 //   6  component scores
 //   3  final_score, tier, wall_side
-// Total: 41
-const COLUMNS_PER_ROW = 41;
+// Total: 43
+const COLUMNS_PER_ROW = 43;
 
 // ── loadSnapshotHistory ─────────────────────────────────────────────────
 
@@ -479,6 +479,8 @@ function pushRowParams(
     features.deltaGex_60m,
     features.prevGexDollars_1m,
     features.prevGexDollars_5m,
+    features.prevGexDollars_10m,
+    features.prevGexDollars_15m,
     features.prevGexDollars_20m,
     features.prevGexDollars_60m,
     features.deltaPct_1m,
@@ -524,6 +526,7 @@ function buildInsertSql(valuesClauses: string[]): string {
       gex_dollars,
       delta_gex_1m, delta_gex_5m, delta_gex_20m, delta_gex_60m,
       prev_gex_dollars_1m, prev_gex_dollars_5m,
+      prev_gex_dollars_10m, prev_gex_dollars_15m,
       prev_gex_dollars_20m, prev_gex_dollars_60m,
       delta_pct_1m, delta_pct_5m, delta_pct_20m, delta_pct_60m,
       call_ratio, charm_net, delta_net, vanna_net,

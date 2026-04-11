@@ -1406,4 +1406,16 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 55,
+    description:
+      'Add prev_gex_dollars_10m and prev_gex_dollars_15m columns to gex_target_features for 5-minute sparkline resolution',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE gex_target_features
+        ADD COLUMN IF NOT EXISTS prev_gex_dollars_10m NUMERIC,
+        ADD COLUMN IF NOT EXISTS prev_gex_dollars_15m NUMERIC
+      `,
+    ],
+  },
 ];

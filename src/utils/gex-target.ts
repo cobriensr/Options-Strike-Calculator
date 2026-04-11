@@ -106,6 +106,8 @@ export interface MagnetFeatures {
   /** The 1-minute-prior snapshot's gexDollars, or null if unavailable. */
   prevGexDollars_1m: number | null;
   prevGexDollars_5m: number | null;
+  prevGexDollars_10m: number | null;
+  prevGexDollars_15m: number | null;
   prevGexDollars_20m: number | null;
   prevGexDollars_60m: number | null;
   /**
@@ -563,6 +565,8 @@ export const GEX_TARGET_CONFIG = {
   horizonOffsets: {
     h1m: 1,
     h5m: 5,
+    h10m: 10,
+    h15m: 15,
     h20m: 20,
     h60m: 60,
   },
@@ -828,6 +832,20 @@ export function extractFeatures(
     mode,
     gexDollars,
   );
+  const h10m = computeHorizon(
+    snapshots,
+    horizonOffsets.h10m,
+    strike,
+    mode,
+    gexDollars,
+  );
+  const h15m = computeHorizon(
+    snapshots,
+    horizonOffsets.h15m,
+    strike,
+    mode,
+    gexDollars,
+  );
   const h20m = computeHorizon(
     snapshots,
     horizonOffsets.h20m,
@@ -858,6 +876,8 @@ export function extractFeatures(
     deltaGex_60m: h60m.delta,
     prevGexDollars_1m: h1m.prior,
     prevGexDollars_5m: h5m.prior,
+    prevGexDollars_10m: h10m.prior,
+    prevGexDollars_15m: h15m.prior,
     prevGexDollars_20m: h20m.prior,
     prevGexDollars_60m: h60m.prior,
     deltaPct_1m: h1m.pct,

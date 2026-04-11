@@ -106,6 +106,8 @@ function makeStrike(
       deltaGex_60m: null,
       prevGexDollars_1m: null,
       prevGexDollars_5m: null,
+      prevGexDollars_10m: null,
+      prevGexDollars_15m: null,
       prevGexDollars_20m: null,
       prevGexDollars_60m: null,
       deltaPct_1m: null,
