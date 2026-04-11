@@ -319,4 +319,178 @@ describe('formatPositionSummaryForClaude', () => {
     expect(result).toContain('HEDGE: Long 6500 PUT x5');
     expect(result).toContain('cost $500.00');
   });
+
+  it('omits cushion when distanceToShortStrike is null', () => {
+    const spread = makeSpread({ distanceToShortStrike: null });
+    const statement = makeStatement([spread]);
+    const result = formatPositionSummaryForClaude(statement, 6607);
+
+    expect(result).not.toContain('pts cushion');
+  });
+
+  it('omits pctMax when pctOfMaxProfit is null', () => {
+    const spread = makeSpread({ pctOfMaxProfit: null });
+    const statement = makeStatement([spread]);
+    const result = formatPositionSummaryForClaude(statement, 6607);
+
+    expect(result).not.toContain('% max');
+  });
+
+  it('includes iron condor positions', () => {
+    const putSpread = makeSpread({
+      spreadType: 'PUT_CREDIT_SPREAD',
+      shortLeg: makeLeg({ strike: 6545, qty: -10 }),
+      longLeg: makeLeg({ strike: 6525, qty: 10 }),
+      creditReceived: 1250,
+    });
+    const callSpread = makeSpread({
+      spreadType: 'CALL_CREDIT_SPREAD',
+      shortLeg: makeLeg({ strike: 6700, type: 'CALL', qty: -10 }),
+      longLeg: makeLeg({ strike: 6720, type: 'CALL', qty: 10 }),
+      creditReceived: 1000,
+      wingWidth: 20,
+    });
+    const ic = {
+      spreadType: 'IRON_CONDOR' as const,
+      putSpread,
+      callSpread,
+      contracts: 10,
+      totalCredit: 2250,
+      maxProfit: 2250,
+      maxLoss: 17750,
+      riskRewardRatio: 7.89,
+      breakevenLow: 6543.75,
+      breakevenHigh: 6701.0,
+      putWingWidth: 20,
+      callWingWidth: 20,
+      entryTime: '10:00:39',
+    };
+    const statement = makeStatement([], { ironCondors: [ic] });
+    const result = formatPositionSummaryForClaude(statement, 6607);
+
+    expect(result).toContain('IC ');
+    expect(result).toContain('6545/6525');
+    expect(result).toContain('6700/6720');
+    expect(result).toContain('credit $2250.00');
+    expect(result).toContain('wing 20/20 wide');
+  });
+
+  it('includes butterfly positions with distanceToPin', () => {
+    const butterfly = {
+      lowerLeg: makeLeg({ strike: 6520, qty: 1 }),
+      middleLeg: makeLeg({ strike: 6545, qty: -2 }),
+      upperLeg: makeLeg({ strike: 6570, qty: 1 }),
+      optionType: 'PUT' as const,
+      contracts: 1,
+      lowerWidth: 25,
+      upperWidth: 25,
+      isBrokenWing: false,
+      maxProfitStrike: 6545,
+      debitPaid: 150,
+      maxProfit: 2350,
+      maxLoss: 150,
+      entryTime: '10:05:00',
+      distanceToPin: -62,
+    };
+    const statement = makeStatement([], { butterflies: [butterfly] });
+    const result = formatPositionSummaryForClaude(statement, 6607);
+
+    expect(result).toContain('BFLY');
+    expect(result).toContain('6520/6545/6570');
+    expect(result).toContain('debit $150.00');
+    expect(result).toContain('pts from pin');
+  });
+
+  it('includes BWB label for broken-wing butterfly', () => {
+    const butterfly = {
+      lowerLeg: makeLeg({ strike: 6500, qty: 1 }),
+      middleLeg: makeLeg({ strike: 6545, qty: -2 }),
+      upperLeg: makeLeg({ strike: 6570, qty: 1 }),
+      optionType: 'PUT' as const,
+      contracts: 1,
+      lowerWidth: 45,
+      upperWidth: 25,
+      isBrokenWing: true,
+      maxProfitStrike: 6545,
+      debitPaid: 50,
+      maxProfit: 2450,
+      maxLoss: 2050,
+      entryTime: '10:05:00',
+      distanceToPin: null,
+    };
+    const statement = makeStatement([], { butterflies: [butterfly] });
+    const result = formatPositionSummaryForClaude(statement, 6607);
+
+    expect(result).toContain('BWB');
+    // distanceToPin is null → no "pts from pin" in output
+    expect(result).not.toContain('pts from pin');
+  });
+
+  it('includes butterfly with positive distanceToPin (above pin)', () => {
+    const butterfly = {
+      lowerLeg: makeLeg({ strike: 6520, qty: 1 }),
+      middleLeg: makeLeg({ strike: 6545, qty: -2 }),
+      upperLeg: makeLeg({ strike: 6570, qty: 1 }),
+      optionType: 'CALL' as const,
+      contracts: 2,
+      lowerWidth: 25,
+      upperWidth: 25,
+      isBrokenWing: false,
+      maxProfitStrike: 6545,
+      debitPaid: 300,
+      maxProfit: 4700,
+      maxLoss: 300,
+      entryTime: '10:05:00',
+      distanceToPin: 50, // positive: below pin
+    };
+    const statement = makeStatement([], { butterflies: [butterfly] });
+    const result = formatPositionSummaryForClaude(statement, 6607);
+
+    expect(result).toContain('+50 pts from pin');
+    // CALL type → 'C' in label
+    expect(result).toContain('6520/6545/6570 C');
+  });
+
+  it('header count includes iron condors and butterflies', () => {
+    const ic = {
+      spreadType: 'IRON_CONDOR' as const,
+      putSpread: makeSpread(),
+      callSpread: makeSpread({ spreadType: 'CALL_CREDIT_SPREAD' }),
+      contracts: 10,
+      totalCredit: 2250,
+      maxProfit: 2250,
+      maxLoss: 17750,
+      riskRewardRatio: 7.89,
+      breakevenLow: 6543.75,
+      breakevenHigh: 6701.0,
+      putWingWidth: 20,
+      callWingWidth: 20,
+      entryTime: null,
+    };
+    const butterfly = {
+      lowerLeg: makeLeg({ strike: 6520, qty: 1 }),
+      middleLeg: makeLeg({ strike: 6545, qty: -2 }),
+      upperLeg: makeLeg({ strike: 6570, qty: 1 }),
+      optionType: 'PUT' as const,
+      contracts: 1,
+      lowerWidth: 25,
+      upperWidth: 25,
+      isBrokenWing: false,
+      maxProfitStrike: 6545,
+      debitPaid: 150,
+      maxProfit: 2350,
+      maxLoss: 150,
+      entryTime: null,
+      distanceToPin: null,
+    };
+    const spread = makeSpread();
+    const statement = makeStatement([spread], {
+      ironCondors: [ic],
+      butterflies: [butterfly],
+    });
+    const result = formatPositionSummaryForClaude(statement, 6607);
+
+    // 1 spread + 1 IC + 1 butterfly = 3
+    expect(result).toContain('3 defined-risk positions');
+  });
 });

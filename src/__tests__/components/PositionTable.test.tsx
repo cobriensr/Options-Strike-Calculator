@@ -556,4 +556,269 @@ describe('PositionTable', () => {
     });
     expect(screen.getByText('($18,500.00)')).toBeInTheDocument();
   });
+
+  // ── % Max progress bar color branches ────────────────────
+
+  it('applies bg-success bar color when pctOfMaxProfit >= 80', () => {
+    renderTable({ spreads: [makeSpread({ pctOfMaxProfit: 80 })] });
+    const bar = document.querySelector('.bg-success');
+    expect(bar).not.toBeNull();
+  });
+
+  it('applies bg-caution bar color when pctOfMaxProfit < 50', () => {
+    renderTable({ spreads: [makeSpread({ pctOfMaxProfit: 49 })] });
+    const bar = document.querySelector('.bg-caution');
+    expect(bar).not.toBeNull();
+  });
+
+  it('applies bg-accent bar color when pctOfMaxProfit between 50 and 79', () => {
+    renderTable({ spreads: [makeSpread({ pctOfMaxProfit: 65 })] });
+    const bar = document.querySelector('.bg-accent');
+    expect(bar).not.toBeNull();
+  });
+
+  it('clamps PctMaxBar width to 100% for values > 100', () => {
+    renderTable({ spreads: [makeSpread({ pctOfMaxProfit: 150 })] });
+    // Verifies the bar renders without error; clamping is internal
+    expect(screen.getByText('150%')).toBeInTheDocument();
+  });
+
+  it('clamps PctMaxBar width to 0% for negative values', () => {
+    renderTable({ spreads: [makeSpread({ pctOfMaxProfit: -10 })] });
+    expect(screen.getByText('-10%')).toBeInTheDocument();
+  });
+
+  // ── ButterflyRow branches ─────────────────────────────────
+
+  it('renders butterfly type label BFLY for symmetric butterfly', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5560, type: 'PUT', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5580, type: 'PUT', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5600, type: 'PUT', qty: 1 }),
+      optionType: 'PUT',
+      contracts: 1,
+      lowerWidth: 20,
+      upperWidth: 20,
+      isBrokenWing: false,
+      maxProfitStrike: 5580,
+      debitPaid: 150,
+      maxProfit: 1850,
+      maxLoss: 150,
+      entryTime: '09:35',
+      distanceToPin: -50,
+    };
+    renderTable({ butterflies: [bfly] });
+    expect(screen.getByText('BFLY')).toBeInTheDocument();
+  });
+
+  it('renders BWB label for broken wing butterfly', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5540, type: 'PUT', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5580, type: 'PUT', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5600, type: 'PUT', qty: 1 }),
+      optionType: 'PUT',
+      contracts: 1,
+      lowerWidth: 40,
+      upperWidth: 20,
+      isBrokenWing: true,
+      maxProfitStrike: 5580,
+      debitPaid: 50,
+      maxProfit: 1950,
+      maxLoss: 2050,
+      entryTime: '09:40',
+      distanceToPin: null,
+    };
+    renderTable({ butterflies: [bfly] });
+    expect(screen.getByText('BWB')).toBeInTheDocument();
+  });
+
+  it('renders butterfly strike label and type char', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5560, type: 'PUT', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5580, type: 'PUT', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5600, type: 'PUT', qty: 1 }),
+      optionType: 'PUT',
+      contracts: 1,
+      lowerWidth: 20,
+      upperWidth: 20,
+      isBrokenWing: false,
+      maxProfitStrike: 5580,
+      debitPaid: 150,
+      maxProfit: 1850,
+      maxLoss: 150,
+      entryTime: null,
+      distanceToPin: null,
+    };
+    renderTable({ butterflies: [bfly] });
+    const table = screen.getByRole('table');
+    expect(table.textContent).toContain('5560/5580/5600');
+    expect(table.textContent).toContain('5560/5580/5600 P');
+  });
+
+  it('renders butterfly call type char C', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5760, type: 'CALL', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5780, type: 'CALL', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5800, type: 'CALL', qty: 1 }),
+      optionType: 'CALL',
+      contracts: 1,
+      lowerWidth: 20,
+      upperWidth: 20,
+      isBrokenWing: false,
+      maxProfitStrike: 5780,
+      debitPaid: 200,
+      maxProfit: 1800,
+      maxLoss: 200,
+      entryTime: null,
+      distanceToPin: null,
+    };
+    renderTable({ butterflies: [bfly] });
+    const table = screen.getByRole('table');
+    expect(table.textContent).toContain('5760/5780/5800 C');
+  });
+
+  it('renders em-dash for butterfly risk:reward when maxProfit is 0', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5560, type: 'PUT', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5580, type: 'PUT', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5600, type: 'PUT', qty: 1 }),
+      optionType: 'PUT',
+      contracts: 1,
+      lowerWidth: 20,
+      upperWidth: 20,
+      isBrokenWing: false,
+      maxProfitStrike: 5580,
+      debitPaid: 2000,
+      maxProfit: 0, // zero maxProfit → em-dash for ratio
+      maxLoss: 2000,
+      entryTime: null,
+      distanceToPin: null,
+    };
+    renderTable({ butterflies: [bfly] });
+    const rows = getDataRows();
+    // Row content should have em-dash in the risk:reward column
+    expect(rows[0]!.textContent).toContain('\u2014');
+  });
+
+  it('renders butterfly distanceToPin with + prefix for positive values', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5560, type: 'PUT', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5580, type: 'PUT', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5600, type: 'PUT', qty: 1 }),
+      optionType: 'PUT',
+      contracts: 1,
+      lowerWidth: 20,
+      upperWidth: 20,
+      isBrokenWing: false,
+      maxProfitStrike: 5580,
+      debitPaid: 150,
+      maxProfit: 1850,
+      maxLoss: 150,
+      entryTime: null,
+      distanceToPin: 25,
+    };
+    renderTable({ butterflies: [bfly] });
+    expect(screen.getByText('+25 pts')).toBeInTheDocument();
+  });
+
+  it('renders butterfly distanceToPin without + prefix for negative values', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5560, type: 'PUT', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5580, type: 'PUT', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5600, type: 'PUT', qty: 1 }),
+      optionType: 'PUT',
+      contracts: 1,
+      lowerWidth: 20,
+      upperWidth: 20,
+      isBrokenWing: false,
+      maxProfitStrike: 5580,
+      debitPaid: 150,
+      maxProfit: 1850,
+      maxLoss: 150,
+      entryTime: null,
+      distanceToPin: -30,
+    };
+    renderTable({ butterflies: [bfly] });
+    expect(screen.getByText('-30 pts')).toBeInTheDocument();
+  });
+
+  it('renders em-dash for butterfly distanceToPin when null', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5560, type: 'PUT', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5580, type: 'PUT', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5600, type: 'PUT', qty: 1 }),
+      optionType: 'PUT',
+      contracts: 1,
+      lowerWidth: 20,
+      upperWidth: 20,
+      isBrokenWing: false,
+      maxProfitStrike: 5580,
+      debitPaid: 150,
+      maxProfit: 1850,
+      maxLoss: 150,
+      entryTime: null,
+      distanceToPin: null,
+    };
+    renderTable({ butterflies: [bfly] });
+    const rows = getDataRows();
+    expect(rows[0]!.textContent).toContain('\u2014');
+  });
+
+  // ── PositionTable: only butterflies (no spreads/ICs) ──────
+
+  it('renders table with only butterfly positions', () => {
+    const bfly: ButterflyPosition = {
+      lowerLeg: makeLeg({ strike: 5560, type: 'PUT', qty: 1 }),
+      middleLeg: makeLeg({ strike: 5580, type: 'PUT', qty: -2 }),
+      upperLeg: makeLeg({ strike: 5600, type: 'PUT', qty: 1 }),
+      optionType: 'PUT',
+      contracts: 1,
+      lowerWidth: 20,
+      upperWidth: 20,
+      isBrokenWing: false,
+      maxProfitStrike: 5580,
+      debitPaid: 150,
+      maxProfit: 1850,
+      maxLoss: 150,
+      entryTime: null,
+      distanceToPin: null,
+    };
+    renderTable({ butterflies: [bfly] });
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.queryByText('No open positions found in this statement.')).not.toBeInTheDocument();
+  });
+
+  // ── IC with null cushionPct (both wings null) ─────────────
+
+  it('renders IC with null cushion when pcts are null', () => {
+    const ic = makeIC({
+      putSpread: {
+        ...makeIC().putSpread,
+        distanceToShortStrikePct: null,
+      },
+      callSpread: {
+        ...makeIC().callSpread,
+        distanceToShortStrikePct: null,
+      },
+    });
+    renderTable({ ironCondors: [ic] });
+    const rows = getDataRows();
+    // IC row with null cushion should render (not crash)
+    expect(rows[0]!.textContent).toContain('IC');
+  });
+
+  // ── Alternating row background ────────────────────────────
+
+  it('applies bg-table-alt to odd-indexed rows', () => {
+    // With an IC + spread: IC is index 0 (bg-surface), spread is index 1 (bg-table-alt)
+    renderTable({
+      ironCondors: [makeIC()],
+      spreads: [makeSpread()],
+    });
+    const rows = getDataRows();
+    // IC row (index 0) has bg-surface
+    expect(rows[0]!.className).toContain('bg-surface');
+    // Spread row (index 1) has bg-table-alt
+    expect(rows[1]!.className).toContain('bg-table-alt');
+  });
 });

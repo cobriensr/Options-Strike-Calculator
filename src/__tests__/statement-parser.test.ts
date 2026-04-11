@@ -14,6 +14,15 @@ import {
   parseTosDate,
   parseTrdDescription,
 } from '../components/PositionMonitor/statement-parser';
+import {
+  findSections,
+  parseCashBalance,
+  parseOrderHistory,
+  parseTradeHistory,
+  parseOptions,
+  parsePnL,
+  parseAccountSummarySection,
+} from '../components/PositionMonitor/statement-parser/section-parsers';
 import type {
   AccountSummary,
   CashEntry,
@@ -2694,5 +2703,439 @@ Equity Commissions & Fees YTD,$0.00`;
     // And verify the statement with marks is valid
     expect(stmt.spreads[0]!.currentValue).toBe(1400);
     expect(stmt.spreads[0]!.openPnl).toBe(100);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 14. Section Parsers (direct unit tests)
+// ══════════════════════════════════════════════════════════════
+
+describe('findSections', () => {
+  it('returns empty map for empty lines array', () => {
+    const result = findSections([]);
+    expect(result.size).toBe(0);
+  });
+
+  it('returns empty map when no known section headers present', () => {
+    const result = findSections(['some,random,data', 'more,data']);
+    expect(result.size).toBe(0);
+  });
+
+  it('parses all six sections from multi-section input', () => {
+    const lines = [
+      'Cash Balance',
+      'header row',
+      'data',
+      '',
+      'Account Order History',
+      'header',
+      'Account Trade History',
+      'header',
+      'Options',
+      'header',
+      'Profits and Losses',
+      'header',
+      'Account Summary',
+      'header',
+    ];
+    const result = findSections(lines);
+    expect(result.has('Cash Balance')).toBe(true);
+    expect(result.has('Account Order History')).toBe(true);
+    expect(result.has('Account Trade History')).toBe(true);
+    expect(result.has('Options')).toBe(true);
+    expect(result.has('Profits and Losses')).toBe(true);
+    expect(result.has('Account Summary')).toBe(true);
+  });
+
+  it('sets correct dataStart and dataEnd bounds', () => {
+    const lines = [
+      'Cash Balance',
+      'col header',
+      'data row',
+      'Account Order History',
+      'col header',
+    ];
+    const result = findSections(lines);
+    const cb = result.get('Cash Balance')!;
+    expect(cb.headerIndex).toBe(0);
+    expect(cb.dataStart).toBe(1);
+    expect(cb.dataEnd).toBe(3); // next section starts at 3
+    const aoh = result.get('Account Order History')!;
+    expect(aoh.headerIndex).toBe(3);
+    expect(aoh.dataEnd).toBe(lines.length);
+  });
+
+  it('skips empty lines when searching for section headers', () => {
+    const lines = ['', '  ', 'Cash Balance', 'header'];
+    const result = findSections(lines);
+    expect(result.has('Cash Balance')).toBe(true);
+    expect(result.get('Cash Balance')!.headerIndex).toBe(2);
+  });
+});
+
+describe('parseCashBalance', () => {
+  it('returns empty array when header row not found', () => {
+    const lines = ['Cash Balance', 'no header here', 'data'];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseCashBalance(lines, bounds);
+    expect(result).toHaveLength(0);
+  });
+
+  it('parses BAL and TRD entries correctly', () => {
+    const lines = [
+      'Cash Balance',
+      'DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE',
+      '3/27/26,00:00:00,BAL,,Cash balance at start,,,,"100,000.00"',
+      '3/27/26,09:30:00,TRD,="1001",SOLD VERTICAL,-10.52,-13.00,"1,500.00","101,476.48"',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseCashBalance(lines, bounds);
+    expect(result).toHaveLength(2);
+    expect(result[0]!.type).toBe('BAL');
+    expect(result[0]!.balance).toBe(100000);
+    expect(result[1]!.type).toBe('TRD');
+    expect(result[1]!.refNumber).toBe('1001');
+    expect(result[1]!.amount).toBe(1500);
+  });
+
+  it('parses LIQ type entries', () => {
+    const lines = [
+      'Cash Balance',
+      'DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE',
+      '3/27/26,15:59:00,LIQ,,Cash liquidation,0,0,-500.00,99500.00',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseCashBalance(lines, bounds);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.type).toBe('LIQ');
+  });
+
+  it('parses EXP type entries', () => {
+    const lines = [
+      'Cash Balance',
+      'DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE',
+      '3/27/26,16:05:00,EXP,,Automatic Expiration,0,0,0.00,100000.00',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseCashBalance(lines, bounds);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.type).toBe('EXP');
+  });
+
+  it('skips rows with unknown type', () => {
+    const lines = [
+      'Cash Balance',
+      'DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE',
+      '3/27/26,09:30:00,XYZ,,Unknown type,0,0,0.00,100000.00',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseCashBalance(lines, bounds);
+    expect(result).toHaveLength(0);
+  });
+
+  it('sets refNumber to null when field is empty', () => {
+    const lines = [
+      'Cash Balance',
+      'DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE',
+      '3/27/26,00:00:00,BAL,,Cash balance,0,0,0.00,100000.00',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseCashBalance(lines, bounds);
+    expect(result[0]!.refNumber).toBeNull();
+  });
+
+  it('stops at empty line', () => {
+    const lines = [
+      'Cash Balance',
+      'DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE',
+      '3/27/26,00:00:00,BAL,,Cash balance,0,0,0.00,100000.00',
+      '',
+      '3/27/26,09:30:00,TRD,="1001",trade,0,0,100.00,100100.00',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 5 };
+    const result = parseCashBalance(lines, bounds);
+    expect(result).toHaveLength(1); // stopped at empty line
+  });
+});
+
+describe('parseOrderHistory', () => {
+  it('returns empty array when header row not found', () => {
+    const lines = ['Account Order History', 'no expected header'];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 2 };
+    const result = parseOrderHistory(lines, bounds);
+    expect(result).toHaveLength(0);
+  });
+
+  it('parses a replacement order (RE# prefix)', () => {
+    const lines = [
+      'Account Order History',
+      'Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status',
+      'RE#1234,,3/27/26 09:31:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6400,PUT,1.50,LMT,DAY,FILLED',
+      ',,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6380,PUT,CREDIT,,,',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseOrderHistory(lines, bounds);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.isReplacement).toBe(true);
+    expect(result[0]!.notes).toBe('RE#1234');
+  });
+
+  it('parses REJECTED status and extracts statusDetail', () => {
+    const lines = [
+      'Account Order History',
+      'Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status',
+      ',,3/27/26 09:28:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6350,PUT,1.00,LMT,DAY,"REJECTED: Buying power too low"',
+      ',,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6330,PUT,CREDIT,,,',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseOrderHistory(lines, bounds);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.status).toBe('REJECTED');
+    expect(result[0]!.statusDetail).toBe('Buying power too low');
+  });
+
+  it('parses CANCELED status', () => {
+    const lines = [
+      'Account Order History',
+      'Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status',
+      ',,3/27/26 09:28:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6350,PUT,1.00,LMT,DAY,CANCELED',
+      ',,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6330,PUT,CREDIT,,,',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseOrderHistory(lines, bounds);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.status).toBe('CANCELED');
+    expect(result[0]!.statusDetail).toBe('');
+  });
+
+  it('pushes last order even if no subsequent primary row', () => {
+    const lines = [
+      'Account Order History',
+      'Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status',
+      ',,3/27/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6400,PUT,1.50,LMT,DAY,FILLED',
+      ',,,,BUY,+10,TO OPEN,SPX,27 MAR 26,6380,PUT,CREDIT,,,',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseOrderHistory(lines, bounds);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.legs).toHaveLength(2);
+  });
+});
+
+describe('parseTradeHistory', () => {
+  it('returns empty array when header row not found', () => {
+    const lines = ['Account Trade History', 'no expected header'];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 2 };
+    const result = parseTradeHistory(lines, bounds);
+    expect(result).toHaveLength(0);
+  });
+
+  it('parses DEBIT creditDebit correctly', () => {
+    const lines = [
+      'Account Trade History',
+      ',Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type',
+      ',3/27/26 14:00:00,VERTICAL,BUY,+10,TO CLOSE,SPX,27 MAR 26,6600,CALL,.10,.05,LMT',
+      ',,,SELL,-10,TO CLOSE,SPX,27 MAR 26,6620,CALL,.05,DEBIT,',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseTradeHistory(lines, bounds);
+    expect(result).toHaveLength(1);
+    // Second leg has DEBIT creditDebit
+    const debitLeg = result[0]!.legs.find((l) => l.strike === 6620);
+    expect(debitLeg?.creditDebit).toBe('DEBIT');
+  });
+
+  it('parses CREDIT creditDebit correctly', () => {
+    const lines = [
+      'Account Trade History',
+      ',Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type',
+      ',3/27/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6400,PUT,3.50,1.50,LMT',
+      ',,,BUY,+10,TO OPEN,SPX,27 MAR 26,6380,PUT,2.00,CREDIT,',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseTradeHistory(lines, bounds);
+    expect(result).toHaveLength(1);
+    const creditLeg = result[0]!.legs.find((l) => l.strike === 6380);
+    expect(creditLeg?.creditDebit).toBe('CREDIT');
+  });
+
+  it('stops when non-comma-prefixed line is encountered', () => {
+    const lines = [
+      'Account Trade History',
+      ',Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type',
+      ',3/27/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,27 MAR 26,6400,PUT,3.50,1.50,LMT',
+      ',,,BUY,+10,TO OPEN,SPX,27 MAR 26,6380,PUT,2.00,CREDIT,',
+      'Options', // This stops the trade parsing (doesn't start with comma)
+      'header',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 6 };
+    const result = parseTradeHistory(lines, bounds);
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe('parseOptions', () => {
+  it('returns empty result when header not found', () => {
+    const lines = ['Options', 'no expected header'];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 2 };
+    const result = parseOptions(lines, bounds);
+    expect(result.legs).toHaveLength(0);
+    expect(result.hasMark).toBe(false);
+  });
+
+  it('parses basic options without Mark column', () => {
+    const lines = [
+      'Options',
+      'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price',
+      'SPX,SPXW260327P6380,27 MAR 26,6380,PUT,+10,2.00',
+      'SPX,SPXW260327P6400,27 MAR 26,6400,PUT,-10,3.50',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseOptions(lines, bounds);
+    expect(result.hasMark).toBe(false);
+    expect(result.legs).toHaveLength(2);
+    expect(result.legs[0]!.qty).toBe(10); // +10 → positive
+    expect(result.legs[1]!.qty).toBe(-10); // -10 → negative
+  });
+
+  it('detects hasMark when Mark column present', () => {
+    const lines = [
+      'Options',
+      'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark,Mark Value',
+      'SPX,SPXW260327P6400,27 MAR 26,6400,PUT,-10,3.50,0.45,-450',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseOptions(lines, bounds);
+    expect(result.hasMark).toBe(true);
+    expect(result.legs[0]!.mark).toBe(0.45);
+  });
+
+  it('stops at ,OVERALL line', () => {
+    const lines = [
+      'Options',
+      'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price',
+      'SPX,SPXW260327P6400,27 MAR 26,6400,PUT,-10,3.50',
+      ',OVERALL TOTALS,,,,,',
+      'SPX,SPXW260327P6380,27 MAR 26,6380,PUT,+10,2.00',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 5 };
+    const result = parseOptions(lines, bounds);
+    expect(result.legs).toHaveLength(1); // stopped at OVERALL TOTALS
+  });
+
+  it('skips rows with invalid strike or qty', () => {
+    const lines = [
+      'Options',
+      'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price',
+      'SPX,SPXW260327P6400,27 MAR 26,NOT_A_NUMBER,PUT,-10,3.50',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseOptions(lines, bounds);
+    expect(result.legs).toHaveLength(0);
+  });
+
+  it('skips rows with invalid option type', () => {
+    const lines = [
+      'Options',
+      'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price',
+      'SPX,SPXW260327X6400,27 MAR 26,6400,EXOTIC,-10,3.50',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseOptions(lines, bounds);
+    expect(result.legs).toHaveLength(0);
+  });
+
+  it('treats NaN trade price as 0', () => {
+    const lines = [
+      'Options',
+      'Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price',
+      'SPX,SPXW260327P6400,27 MAR 26,6400,PUT,-10,N/A',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 3 };
+    const result = parseOptions(lines, bounds);
+    expect(result.legs).toHaveLength(1);
+    expect(result.legs[0]!.tradePrice).toBe(0);
+  });
+});
+
+describe('parsePnL', () => {
+  it('returns empty result when header not found', () => {
+    const lines = ['Profits and Losses', 'no expected header'];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 2 };
+    const result = parsePnL(lines, bounds);
+    expect(result.entries).toHaveLength(0);
+    expect(result.totals).toBeNull();
+  });
+
+  it('parses entries and totals row', () => {
+    const lines = [
+      'Profits and Losses',
+      'Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value',
+      'SPX,S & P 500 INDEX,($200.00),-1.00%,"$2,381.24","$2,381.24",$0.00,"$20,000.00","($200.00)"',
+      ',OVERALL TOTALS,($200.00),-1.00%,"$2,381.24","$2,381.24",$0.00,"$20,000.00","($200.00)"',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parsePnL(lines, bounds);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]!.symbol).toBe('SPX');
+    expect(result.entries[0]!.plOpen).toBe(-200);
+    expect(result.totals).not.toBeNull();
+    expect(result.totals!.description).toBe('OVERALL TOTALS');
+    expect(result.totals!.plOpen).toBe(-200);
+  });
+});
+
+describe('parseAccountSummarySection', () => {
+  it('returns zeros when no lines present', () => {
+    const lines = ['Account Summary'];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 1 };
+    const result = parseAccountSummarySection(lines, bounds);
+    expect(result.netLiquidatingValue).toBe(0);
+    expect(result.stockBuyingPower).toBe(0);
+    expect(result.optionBuyingPower).toBe(0);
+    expect(result.equityCommissionsYtd).toBe(0);
+  });
+
+  it('parses all four known fields', () => {
+    const lines = [
+      'Account Summary',
+      'Net Liquidating Value,"$102,181.24"',
+      'Stock Buying Power,"$82,181.24"',
+      'Option Buying Power,"$82,181.24"',
+      'Equity Commissions & Fees YTD,"$68.76"',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 5 };
+    const result = parseAccountSummarySection(lines, bounds);
+    expect(result.netLiquidatingValue).toBe(102181.24);
+    expect(result.stockBuyingPower).toBe(82181.24);
+    expect(result.optionBuyingPower).toBe(82181.24);
+    expect(result.equityCommissionsYtd).toBe(68.76);
+  });
+
+  it('handles missing fields by returning 0', () => {
+    const lines = [
+      'Account Summary',
+      'Net Liquidating Value,"$50,000.00"',
+      // Missing the other 3 fields
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 2 };
+    const result = parseAccountSummarySection(lines, bounds);
+    expect(result.netLiquidatingValue).toBe(50000);
+    expect(result.stockBuyingPower).toBe(0);
+    expect(result.optionBuyingPower).toBe(0);
+    expect(result.equityCommissionsYtd).toBe(0);
+  });
+
+  it('stops at empty line', () => {
+    const lines = [
+      'Account Summary',
+      'Net Liquidating Value,"$50,000.00"',
+      '',
+      'Stock Buying Power,"$40,000.00"',
+    ];
+    const bounds = { headerIndex: 0, dataStart: 1, dataEnd: 4 };
+    const result = parseAccountSummarySection(lines, bounds);
+    expect(result.netLiquidatingValue).toBe(50000);
+    expect(result.stockBuyingPower).toBe(0); // not reached after empty line
   });
 });
