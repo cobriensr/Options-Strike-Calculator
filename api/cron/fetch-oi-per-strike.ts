@@ -22,6 +22,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -97,6 +98,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `;
     const existingCount = (existing[0]?.cnt as number) ?? 0;
     if (existingCount > 0) {
+      await reportCronRun('fetch-oi-per-strike', { status: 'skipped', reason: 'data already exists for today', durationMs: Date.now() - startTime });
       return res.status(200).json({
         skipped: true,
         reason: `Data already exists for ${today} (${existingCount} strikes)`,
@@ -129,6 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-oi-per-strike completed',
     );
 
+    await reportCronRun('fetch-oi-per-strike', { status: 'ok', date: today, total: rows.length, stored: result.stored, skipped: result.skipped, durationMs: Date.now() - startTime });
     return res.status(200).json({
       job: 'fetch-oi-per-strike',
       date: today,

@@ -33,6 +33,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -197,6 +198,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rows = await withRetry(() => fetchOptionContracts0dte(apiKey, today));
 
     if (rows.length === 0) {
+      await reportCronRun('fetch-vol-0dte', {
+        status: 'skipped',
+        reason: 'No 0DTE contracts with volume',
+        durationMs: Date.now() - startTime,
+      });
       return res
         .status(200)
         .json({ stored: false, reason: 'No 0DTE contracts with volume' });
@@ -246,6 +252,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    await reportCronRun('fetch-vol-0dte', {
+      status: 'ok',
+      contracts: rows.length,
+      strikes: aggregated.length,
+      stored: result.stored,
+      skipped: result.skipped,
+      durationMs: Date.now() - startTime,
+    });
     return res.status(200).json({
       job: 'fetch-vol-0dte',
       success: true,

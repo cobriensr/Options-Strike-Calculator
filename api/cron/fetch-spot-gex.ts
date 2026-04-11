@@ -28,6 +28,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -133,6 +134,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     logger.info({ ticks: rows.length, ...result }, 'fetch-spot-gex completed');
+
+    await reportCronRun('fetch-spot-gex', {
+      status: 'ok',
+      ticks: rows.length,
+      stored: result.stored,
+      totalRows: Number(total),
+      nonzeroRows: Number(nonzero),
+      durationMs: Date.now() - startTime,
+    });
 
     return res.status(200).json({
       job: 'fetch-spot-gex',

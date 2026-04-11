@@ -33,6 +33,7 @@ import {
 } from '../../src/utils/timezone.js';
 import { isTradingDay } from '../../src/data/marketHours.js';
 import { buildAnalysisSummary, generateEmbedding } from '../_lib/embeddings.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Time window check ──────────────────────────────────────
 
@@ -102,14 +103,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Holiday gate: skip NYSE-closed days so we don't silently report success
   // after calling Schwab on Thanksgiving/Christmas/etc. `force=true` bypasses
   // this so a trader can manually re-run on any calendar day.
+  const startTime = Date.now();
+
   if (!force && !isTradingDay(dateStr)) {
     logger.info({ date: dateStr }, 'fetch-outcomes: skipping non-trading day');
+    await reportCronRun('fetch-outcomes', { status: 'skipped', reason: 'not_trading_day', durationMs: Date.now() - startTime });
     return res
       .status(200)
       .json({ skipped: true, reason: 'not_trading_day', date: dateStr });
   }
-
-  const startTime = Date.now();
   const now = new Date();
 
   try {
@@ -143,6 +145,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (candles.length === 0) {
       logger.warn('fetch-outcomes: No intraday candles found for today');
+      await reportCronRun('fetch-outcomes', { status: 'skipped', reason: 'No candles', durationMs: Date.now() - startTime });
       return res.status(200).json({ skipped: true, reason: 'No candles' });
     }
 
@@ -211,6 +214,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-outcomes: saved',
     );
 
+    const rangePts = Math.round(dayHigh - dayLow);
+    await reportCronRun('fetch-outcomes', { status: 'ok', date: dateStr, settlement, dayOpen, dayHigh, dayLow, rangePts, vixClose, vix1dClose, durationMs: Date.now() - startTime });
     return res.status(200).json({
       job: 'fetch-outcomes',
       date: dateStr,
@@ -218,7 +223,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       dayOpen,
       dayHigh,
       dayLow,
-      rangePts: Math.round(dayHigh - dayLow),
+      rangePts,
       vixClose: vixClose ?? null,
       vix1dClose: vix1dClose ?? null,
       durationMs: Date.now() - startTime,

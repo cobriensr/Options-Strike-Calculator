@@ -26,6 +26,7 @@ import { cronGuard, uwFetch, withRetry } from '../_lib/api-helpers.js';
 import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
 import type { AlertPayload, AlertDirection } from '../_lib/alerts.js';
 import { ALERT_THRESHOLDS } from '../_lib/alert-thresholds.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -239,6 +240,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? await checkForCombinedAlert(today, 'ratio_surge')
       : false;
 
+    const durationMs = Date.now() - startTime;
+
+    await reportCronRun('monitor-flow-ratio', {
+      status: 'ok',
+      ratio,
+      absNpp,
+      absNcp,
+      spxPrice,
+      alerted,
+      combined,
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'monitor-flow-ratio',
       ratio,
@@ -247,7 +261,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       spxPrice,
       alerted,
       combined,
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'monitor-flow-ratio');

@@ -44,6 +44,7 @@ import { engineerFlowFeatures } from '../_lib/build-features-flow.js';
 import { engineerGexFeatures } from '../_lib/build-features-gex.js';
 import { engineerPhase2Features } from '../_lib/build-features-phase2.js';
 import { engineerMonitorFeatures } from '../_lib/build-features-monitor.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 export const config = { maxDuration: 300 };
 
@@ -881,6 +882,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let featuresBuilt = 0;
     let labelsExtracted = 0;
     let errors = 0;
+    let latestCompleteness: number | undefined;
 
     for (const dateStr of dates) {
       try {
@@ -888,6 +890,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (features) {
           await upsertFeatures(features);
           featuresBuilt++;
+          latestCompleteness = features.feature_completeness as number | undefined;
         }
 
         const labels = await extractLabelsForDate(dateStr);
@@ -908,6 +911,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       { dates: dates.length, featuresBuilt, labelsExtracted, errors },
       'build-features: completed',
     );
+
+    await reportCronRun('build-features', {
+      status: errors > 0 ? 'partial' : 'ok',
+      dates: dates.length,
+      featuresBuilt,
+      labelsExtracted,
+      errors,
+      completeness: latestCompleteness,
+      durationMs: Date.now() - startTime,
+    });
 
     return res.status(200).json({
       job: 'build-features',

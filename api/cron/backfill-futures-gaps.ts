@@ -17,6 +17,7 @@ import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import { checkDataQuality, cronGuard } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Constants ───────────────────────────────────────────────
 
@@ -287,6 +288,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     'backfill-futures-gaps completed',
   );
 
+  const durationMs = Date.now() - startTime;
+
+  await reportCronRun('backfill-futures-gaps', {
+    status: 'ok',
+    range: `${startStr} to ${endStr}`,
+    totalInserted,
+    totalRejected,
+    symbolsCount: Object.keys(SYMBOLS).length,
+    errorsCount: errors.length,
+    durationMs,
+  });
+
   return res.status(200).json({
     job: 'backfill-futures-gaps',
     range: `${startStr} to ${endStr}`,
@@ -295,6 +308,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     rejected: rejectedBySymbol,
     symbols: results,
     errors: errors.length > 0 ? errors : undefined,
-    durationMs: Date.now() - startTime,
+    durationMs,
   });
 }

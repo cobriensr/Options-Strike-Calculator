@@ -35,6 +35,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
+  const startTime = Date.now();
 
   try {
     const path = `/stock/SPX/greek-exposure/strike-expiry?date=${today}&expiry=${today}`;
@@ -204,6 +206,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       nonzero: Number(qcNonzero),
       minRows: 10,
     });
+
+    await reportCronRun('fetch-greek-exposure-strike', { status: 'ok', fetched: allRows.length, stored, skipped, durationMs: Date.now() - startTime });
 
     return res.status(200).json({
       fetched: allRows.length,

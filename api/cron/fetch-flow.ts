@@ -20,6 +20,7 @@ import {
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Per-source status (BE-CRON-007) ─────────────────────────
 //
@@ -93,6 +94,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
+  const startTime = Date.now();
 
   try {
     // Fetch both all-in and OTM Market Tide in parallel; partial failures are tolerated
@@ -232,6 +234,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ...responseBody,
       });
     }
+
+    await reportCronRun('fetch-flow', {
+      status: 'ok',
+      stored: anyStored,
+      partial,
+      allInRows: allInRows?.length ?? 0,
+      otmRows: otmRows?.length ?? 0,
+      sources: {
+        marketTide: marketTideStatus,
+        marketTideOtm: marketTideOtmStatus,
+      },
+      durationMs: Date.now() - startTime,
+    });
 
     return res.status(200).json(responseBody);
   } catch (err) {

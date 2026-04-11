@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.85.0",
+    "@axiomhq/js": "^1.6.0",
     "@neondatabase/serverless": "^1.0.2",
     "@sentry/node": "^10.44.0",
     "@sentry/react": "^10.44.0",

@@ -27,6 +27,7 @@ import {
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 const TICKERS: Array<{ ticker: string; source: string }> = [
   { ticker: 'SPX', source: 'spx_flow' },
@@ -202,6 +203,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     logger.info({ results }, 'fetch-net-flow completed');
+
+    await reportCronRun('fetch-net-flow', {
+      status: 'ok',
+      ...results,
+      durationMs: Date.now() - startTime,
+    });
 
     return res.status(200).json({
       job: 'fetch-net-flow',

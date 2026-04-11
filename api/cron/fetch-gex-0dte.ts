@@ -34,6 +34,7 @@ import {
   writeFeatureRows,
   type WriteFeatureRowsResult,
 } from '../_lib/gex-target-features.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // Snapshot window required for multi-horizon feature extraction: the
 // 60-minute horizon needs 60 prior snapshots plus the current one.
@@ -194,6 +195,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rows = await withRetry(() => fetchStrike0dte(apiKey, today));
 
     if (rows.length === 0) {
+      await reportCronRun('fetch-gex-0dte', {
+        status: 'skipped',
+        reason: 'No 0DTE strike data',
+        durationMs: Date.now() - startTime,
+      });
       return res
         .status(200)
         .json({ stored: false, reason: 'No 0DTE strike data' });
@@ -298,6 +304,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               modes: featureStatus.modes,
             };
 
+    await reportCronRun('fetch-gex-0dte', {
+      status: 'ok',
+      price,
+      stored: result.stored,
+      skipped: result.skipped,
+      durationMs: Date.now() - startTime,
+    });
     return res.status(200).json({
       job: 'fetch-gex-0dte',
       success: true,

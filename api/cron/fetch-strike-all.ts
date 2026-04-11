@@ -32,6 +32,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 const ATM_RANGE = 200;
 const ALL_EXPIRY_SENTINEL = '1970-01-01';
@@ -187,13 +188,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    const durationMs = Date.now() - startTime;
+    await reportCronRun('fetch-strike-all', {
+      status: 'ok',
+      price,
+      totalStrikes: rows.length,
+      stored: result.stored,
+      skipped: result.skipped,
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'fetch-strike-all',
       success: true,
       price,
       totalStrikes: rows.length,
       ...result,
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-strike-all');

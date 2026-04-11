@@ -27,6 +27,7 @@ import {
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 const SOURCE = 'zero_dte_index';
 
@@ -144,11 +145,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    const durationMs = Date.now() - startTime;
+    await reportCronRun('fetch-zero-dte-flow', {
+      status: 'ok',
+      ticks: ticks.length,
+      stored: result.stored,
+      skipped: result.skipped,
+      durationMs,
+    });
     return res.status(200).json({
       job: 'fetch-zero-dte-flow',
       ticks: ticks.length,
       ...result,
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-zero-dte-flow');

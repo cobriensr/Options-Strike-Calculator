@@ -24,6 +24,7 @@ import {
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 const TICKERS: Array<{ ticker: string; source: string }> = [
   { ticker: 'SPY', source: 'spy_etf_tide' },
@@ -175,10 +176,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     logger.info({ results }, 'fetch-etf-tide completed');
 
+    const durationMs = Date.now() - startTime;
+    await reportCronRun('fetch-etf-tide', {
+      status: 'ok',
+      results,
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'fetch-etf-tide',
       results,
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-etf-tide');

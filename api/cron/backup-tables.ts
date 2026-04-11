@@ -18,6 +18,7 @@ import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronGuard } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 export const config = { maxDuration: 300 };
 
@@ -95,6 +96,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   });
   if (!guard) return;
   const { today } = guard;
+  const startTime = Date.now();
   const results: Record<string, { rows: number; bytes: number }> = {};
   const errors: string[] = [];
 
@@ -151,6 +153,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     },
     'Weekly backup complete',
   );
+
+  await reportCronRun('backup-tables', {
+    status: 'ok',
+    date: today,
+    tables: Object.keys(results).length,
+    totalRows,
+    totalBytes,
+    pruned: pruned.length,
+    errors: errors.length,
+    durationMs: Date.now() - startTime,
+  });
 
   return res.status(200).json({
     date: today,

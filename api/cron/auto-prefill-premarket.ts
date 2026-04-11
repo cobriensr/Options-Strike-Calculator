@@ -17,6 +17,7 @@ import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Time helpers ────────────────────────────────────────────
 
@@ -131,6 +132,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `Pre-market auto-filled: Globex H/L/C/VWAP = ${globexHigh}/${globexLow}/${globexClose}/${globexVwap?.toFixed(2) ?? 'N/A'}`,
     );
 
+    const durationMs = Date.now() - startTime;
+    await reportCronRun('auto-prefill-premarket', {
+      status: 'ok',
+      tradeDate,
+      globexHigh,
+      globexLow,
+      globexClose,
+      globexVwap,
+      barCount,
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'auto-prefill-premarket',
       stored: true,
@@ -140,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       globexClose,
       globexVwap,
       barCount,
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'auto-prefill-premarket');

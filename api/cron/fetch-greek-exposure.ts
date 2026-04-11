@@ -27,6 +27,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -135,6 +136,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
+  const startTime = Date.now();
 
   try {
     // Fetch aggregate and by-expiry in parallel; tolerate partial failures
@@ -221,6 +223,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!anyStored && partial) {
       return res.status(500).json({ error: 'All sources failed' });
     }
+
+    await reportCronRun('fetch-greek-exposure', {
+      status: partial ? 'partial' : 'ok',
+      aggStored,
+      expiryRows: expiryRows?.length ?? 0,
+      expiryStored: expiryResult.stored,
+      expirySkipped: expiryResult.skipped,
+      aggFailed: aggFetch.status === 'rejected',
+      expiryFailed: expiryFetch.status === 'rejected',
+      durationMs: Date.now() - startTime,
+    });
 
     return res.status(200).json({
       aggregateStored: aggStored,

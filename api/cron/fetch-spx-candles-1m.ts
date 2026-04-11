@@ -40,6 +40,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -229,6 +230,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (ratioResult === null) {
       metrics.increment('fetch_spx_candles_1m.ratio_unavailable');
+      await reportCronRun('fetch-spx-candles-1m', {
+        status: 'skipped',
+        reason: 'SPX/SPY ratio unavailable from Schwab',
+        durationMs: Date.now() - startTime,
+      });
       return res.status(200).json({
         stored: false,
         reason: 'SPX/SPY ratio unavailable from Schwab',
@@ -238,12 +244,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { ratio, spxPrice } = ratioResult;
 
     if (rawRows.length === 0) {
+      await reportCronRun('fetch-spx-candles-1m', {
+        status: 'skipped',
+        reason: 'No 1m candles',
+        durationMs: Date.now() - startTime,
+      });
       return res.status(200).json({ stored: false, reason: 'No 1m candles' });
     }
 
     const translated = translateRows(rawRows, ratio);
 
     if (translated.length === 0) {
+      await reportCronRun('fetch-spx-candles-1m', {
+        status: 'skipped',
+        reason: 'No valid 1m candles after filter',
+        durationMs: Date.now() - startTime,
+      });
       return res
         .status(200)
         .json({ stored: false, reason: 'No valid 1m candles after filter' });
@@ -305,6 +321,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         nonzero: Number(nonzero),
       });
     }
+
+    await reportCronRun('fetch-spx-candles-1m', {
+      status: 'ok',
+      stored: result.stored,
+      skipped: result.skipped,
+      ratio,
+      spxPrice,
+      durationMs: Date.now() - startTime,
+    });
 
     return res.status(200).json({
       job: 'fetch-spx-candles-1m',

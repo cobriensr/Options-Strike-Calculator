@@ -17,6 +17,7 @@ import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard, withRetry } from '../_lib/api-helpers.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Constants ───────────────────────────────────────────────
 
@@ -209,6 +210,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-futures-snapshot completed',
     );
 
+    const durationMs = Date.now() - startTime;
+
+    await reportCronRun('fetch-futures-snapshot', {
+      status: 'ok',
+      stored: snapshots.length,
+      skipped: FUTURES_SYMBOLS.length - snapshots.length,
+      symbolsCount: FUTURES_SYMBOLS.length,
+      errorsCount: errors.length,
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'fetch-futures-snapshot',
       stored: snapshots.length,
@@ -220,7 +232,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         changeDayPct: s.changeDayPct,
       })),
       errors: errors.length > 0 ? errors : undefined,
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-futures-snapshot');

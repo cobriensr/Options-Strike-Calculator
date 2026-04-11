@@ -22,6 +22,7 @@ import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Max pain computation ────────────────────────────────────
 
@@ -196,11 +197,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'ES options EOD verification complete',
     );
 
-    return res.status(200).json({
-      job: 'fetch-es-options-eod',
+    const uniqueStrikes = Number.parseInt(String(stats.unique_strikes), 10);
+    const durationMs = Date.now() - startTime;
+
+    await reportCronRun('fetch-es-options-eod', {
+      status: 'ok',
       tradeDate,
       totalRows,
-      uniqueStrikes: Number.parseInt(String(stats.unique_strikes), 10),
+      uniqueStrikes,
       maxPain,
       oiConcentration: {
         call: {
@@ -216,7 +220,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
       totalCallOi,
       totalPutOi,
-      durationMs: Date.now() - startTime,
+      durationMs,
+    });
+
+    return res.status(200).json({
+      job: 'fetch-es-options-eod',
+      tradeDate,
+      totalRows,
+      uniqueStrikes,
+      maxPain,
+      oiConcentration: {
+        call: {
+          strike: maxCallStrike,
+          oi: maxCallOi,
+          ratio: Number.parseFloat(callConcentration.toFixed(4)),
+        },
+        put: {
+          strike: maxPutStrike,
+          oi: maxPutOi,
+          ratio: Number.parseFloat(putConcentration.toFixed(4)),
+        },
+      },
+      totalCallOi,
+      totalPutOi,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-es-options-eod');

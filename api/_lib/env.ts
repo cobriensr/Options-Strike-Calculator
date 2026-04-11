@@ -62,11 +62,13 @@ const twilioSchema = z.object({
   ALERT_PHONE_TO: z.string().min(1).optional(),
 });
 
-/** Observability: Sentry, logging. */
+/** Observability: Sentry, Axiom, logging. */
 const observabilitySchema = z.object({
   SENTRY_DSN: z.string().min(1).optional(),
   SENTRY_AUTH_TOKEN: z.string().min(1).optional(),
   LOG_LEVEL: z.string().min(1).optional(),
+  AXIOM_API_KEY: z.string().min(1).optional(),
+  AXIOM_DATASET: z.string().min(1).optional(),
 });
 
 /** Vercel runtime vars (auto-set by platform, read-only). */

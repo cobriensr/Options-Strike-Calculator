@@ -24,6 +24,7 @@ import { cronGuard, uwFetch, withRetry } from '../_lib/api-helpers.js';
 import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
 import type { AlertPayload } from '../_lib/alerts.js';
 import { ALERT_THRESHOLDS } from '../_lib/alert-thresholds.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -262,13 +263,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'monitor-iv completed',
     );
 
+    const durationMs = Date.now() - startTime;
+    await reportCronRun('monitor-iv', {
+      status: 'ok',
+      iv: ivResult.volatility,
+      spxPrice,
+      alerted,
+      combined,
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'monitor-iv',
       iv: ivResult.volatility,
       spxPrice,
       alerted,
       combined,
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'monitor-iv');

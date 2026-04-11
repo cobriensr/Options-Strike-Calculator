@@ -22,6 +22,7 @@ import {
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import {
   getETTime,
   getETDayOfWeek,
@@ -131,12 +132,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-economic-calendar completed',
     );
 
+    const durationMs = Date.now() - startTime;
+    await reportCronRun('fetch-economic-calendar', {
+      status: 'ok',
+      date: todayStr,
+      eventsStored: todayEvents.length,
+      events: todayEvents.map((e) => e.event),
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'fetch-economic-calendar',
       date: todayStr,
       eventsStored: todayEvents.length,
       events: todayEvents.map((e) => e.event),
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-economic-calendar');

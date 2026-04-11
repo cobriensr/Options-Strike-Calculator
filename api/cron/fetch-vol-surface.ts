@@ -19,6 +19,7 @@ import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { uwFetch, cronGuard, withRetry } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -196,6 +197,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-vol-surface completed',
     );
 
+    const durationMs = Date.now() - startTime;
+
+    await reportCronRun('fetch-vol-surface', {
+      status: 'ok',
+      date: today,
+      termStructureStored: tsResult.stored,
+      termStructureSkipped: tsResult.skipped,
+      realizedVol: rvStored,
+      rawCounts: {
+        tsRows: tsRows.length,
+        rvRows: rvRows.length,
+        ivRankRows: ivRankRows.length,
+      },
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'fetch-vol-surface',
       date: today,
@@ -206,7 +223,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         rvRows: rvRows.length,
         ivRankRows: ivRankRows.length,
       },
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-vol-surface');

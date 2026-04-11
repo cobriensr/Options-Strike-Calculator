@@ -27,6 +27,7 @@ import {
   fetchAllDarkPoolTrades,
   aggregateDarkPoolLevels,
 } from '../_lib/darkpool.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
@@ -55,6 +56,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (trades.length === 0) {
       logger.info({ cursor: cursorTs }, 'fetch-darkpool: no new trades');
+      await reportCronRun('fetch-darkpool', {
+        status: 'skipped',
+        reason: 'no new trades',
+        incremental: cursorTs != null,
+        durationMs: Date.now() - startTime,
+      });
       return res.status(200).json({
         job: 'fetch-darkpool',
         skipped: true,
@@ -95,6 +102,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-darkpool: upserted levels',
     );
 
+    await reportCronRun('fetch-darkpool', {
+      status: 'ok',
+      trades: trades.length,
+      levels: levels.length,
+      incremental: cursorTs != null,
+      durationMs: Date.now() - startTime,
+    });
     return res.status(200).json({
       job: 'fetch-darkpool',
       levels: levels.length,

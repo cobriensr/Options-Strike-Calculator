@@ -23,6 +23,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -169,12 +170,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-oi-change completed',
     );
 
+    const durationMs = Date.now() - startTime;
+    await reportCronRun('fetch-oi-change', {
+      status: 'ok',
+      date: today,
+      total: rows.length,
+      stored: result.stored,
+      skipped: result.skipped,
+      durationMs,
+    });
+
     return res.status(200).json({
       job: 'fetch-oi-change',
       date: today,
       total: rows.length,
       ...result,
-      durationMs: Date.now() - startTime,
+      durationMs,
     });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-oi-change');

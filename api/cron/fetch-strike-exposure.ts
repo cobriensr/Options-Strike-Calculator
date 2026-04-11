@@ -28,6 +28,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 const ATM_RANGE = 200; // ±200 pts from ATM
 
@@ -229,6 +230,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const totalStored = result0dte.stored + result1dte.stored;
     const totalSkipped = result0dte.skipped + result1dte.skipped;
+    const durationMs = Date.now() - startTime;
+
+    await reportCronRun('fetch-strike-exposure', {
+      status: 'ok',
+      price,
+      dte0: result0dte,
+      dte1: result1dte,
+      totalStored,
+      totalSkipped,
+      durationMs,
+    });
 
     return res.status(200).json({
       job: 'fetch-strike-exposure',

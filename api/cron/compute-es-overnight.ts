@@ -14,6 +14,7 @@ import logger from '../_lib/logger.js';
 import { metrics, Sentry } from '../_lib/sentry.js';
 import { schwabFetch, cronGuard } from '../_lib/api-helpers.js';
 import { getETTime } from '../../src/utils/timezone.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Time helpers ────────────────────────────────────────────
 
@@ -157,6 +158,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!bars[0]?.globex_open) {
       logger.info({ tradeDate }, 'No overnight ES bars found');
+      await reportCronRun('compute-es-overnight', {
+        status: 'skipped',
+        reason: 'no candles or gap data',
+        durationMs: Date.now() - startTime,
+      });
       return res
         .status(200)
         .json({ skipped: true, reason: 'No overnight bars' });
@@ -301,6 +307,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'ES overnight summary computed',
     );
 
+    const barCount = Number.parseInt(String(overnight.bar_count), 10);
+    await reportCronRun('compute-es-overnight', {
+      status: 'ok',
+      tradeDate,
+      gap: `${gapPts >= 0 ? '+' : ''}${gapPts.toFixed(1)} ${gapDirection}`,
+      fillProbability,
+      fillScore,
+      barCount,
+      durationMs: Date.now() - startTime,
+    });
     return res.status(200).json({
       job: 'compute-es-overnight',
       stored: true,
@@ -308,7 +324,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       gap: `${gapPts >= 0 ? '+' : ''}${gapPts.toFixed(1)} ${gapDirection}`,
       fillProbability,
       fillScore,
-      barCount: Number.parseInt(String(overnight.bar_count), 10),
+      barCount,
       durationMs: Date.now() - startTime,
     });
   } catch (err) {
