@@ -297,6 +297,32 @@ export default function StrikeCalculator() {
     [vixFileInputRef],
   );
 
+  const [migrateRunning, setMigrateRunning] = useState(false);
+  const handleRunMigrations = useCallback(async () => {
+    if (migrateRunning) return;
+    setMigrateRunning(true);
+    try {
+      const res = await fetch('/api/journal/init', { method: 'POST' });
+      const body = (await res.json()) as {
+        migrated?: string[];
+        error?: string;
+      };
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      const count = body.migrated?.length ?? 0;
+      toast.show(
+        count === 0 ? 'DB up to date' : `${count} migration(s) applied`,
+        'success',
+      );
+    } catch (err) {
+      toast.show(
+        err instanceof Error ? err.message : 'Migration failed',
+        'error',
+      );
+    } finally {
+      setMigrateRunning(false);
+    }
+  }, [migrateRunning, toast]);
+
   const handleDarkModeToggle = useCallback(
     () => setDarkMode(!darkMode),
     [darkMode, setDarkMode],
@@ -515,6 +541,45 @@ export default function StrikeCalculator() {
                   </svg>
                   <span className="text-[11px] font-semibold">Re-auth</span>
                 </a>
+              )}
+              {isOwner && (
+                <button
+                  onClick={handleRunMigrations}
+                  disabled={migrateRunning}
+                  aria-label="Run database migrations"
+                  title="Run DB migrations"
+                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <ellipse
+                      cx="8"
+                      cy="4"
+                      rx="5"
+                      ry="2"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    />
+                    <path
+                      d="M3 4v4c0 1.1 2.24 2 5 2s5-.9 5-2V4"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    />
+                    <path
+                      d="M3 8v4c0 1.1 2.24 2 5 2s5-.9 5-2V8"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    />
+                  </svg>
+                  <span className="text-[11px] font-semibold">
+                    {migrateRunning ? 'Running…' : 'Migrate DB'}
+                  </span>
+                </button>
               )}
               <input
                 ref={vixFileInputRef}
