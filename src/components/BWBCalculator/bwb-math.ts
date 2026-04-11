@@ -204,6 +204,132 @@ export function generatePnlRows(
   });
 }
 
+export type StrategyMode = 'bwb' | 'iron-fly';
+
+export interface IronFlyMetrics {
+  /** Positive = credit received, negative = debit paid (points) */
+  net: number;
+  /** mid - low */
+  lowerWing: number;
+  /** high - mid */
+  upperWing: number;
+  /** Max profit = credit collected (at mid) */
+  maxProfit: number;
+  /** P&L when S ≤ low = net - lowerWing (typically negative = loss) */
+  lossBelow: number;
+  /** P&L when S ≥ high = net - upperWing (typically negative = loss) */
+  lossAbove: number;
+  /** Lower breakeven = mid - net (only exists when net > 0) */
+  lowerBE: number | null;
+  /** Upper breakeven = mid + net (only exists when net > 0) */
+  upperBE: number | null;
+  /** Sweet spot = mid */
+  sweetSpot: number;
+}
+
+/**
+ * P&L at a given SPX price at expiry (per contract, points).
+ *
+ * Iron Butterfly: Buy 1 low put, Sell 1 mid put + 1 mid call (straddle), Buy 1 high call
+ */
+export function calcIronFlyPnl(
+  low: number,
+  mid: number,
+  high: number,
+  net: number,
+  spx: number,
+): number {
+  return (
+    net -
+    Math.max(mid - spx, 0) -
+    Math.max(spx - mid, 0) +
+    Math.max(low - spx, 0) +
+    Math.max(spx - high, 0)
+  );
+}
+
+export function calcIronFlyMetrics(
+  low: number,
+  mid: number,
+  high: number,
+  net: number,
+): IronFlyMetrics {
+  const lowerWing = mid - low;
+  const upperWing = high - mid;
+  const lowerBE = net > 0 ? mid - net : null;
+  const upperBE = net > 0 ? mid + net : null;
+  return {
+    net,
+    lowerWing,
+    upperWing,
+    maxProfit: net,
+    lossBelow: net - lowerWing,
+    lossAbove: net - upperWing,
+    lowerBE,
+    upperBE,
+    sweetSpot: mid,
+  };
+}
+
+export function generateIronFlyPnlRows(
+  low: number,
+  mid: number,
+  high: number,
+  net: number,
+  contracts: number,
+): PnlRow[] {
+  if (high - low > 300) return [];
+
+  const metrics = calcIronFlyMetrics(low, mid, high, net);
+  const mult = 100 * contracts;
+  const step = 5;
+  const padding = Math.max(20, Math.ceil(((high - low) * 0.3) / step) * step);
+  const start = Math.floor((low - padding) / step) * step;
+  const end = Math.ceil((high + padding) / step) * step;
+
+  const levelMap = new Map<string, number>();
+  for (let s = start; s <= end; s += step) {
+    levelMap.set(s.toFixed(2), s);
+  }
+  if (metrics.lowerBE !== null) {
+    levelMap.set(metrics.lowerBE.toFixed(2), metrics.lowerBE);
+  }
+  if (metrics.upperBE !== null) {
+    levelMap.set(metrics.upperBE.toFixed(2), metrics.upperBE);
+  }
+
+  const sorted = [...levelMap.values()].sort((a, b) => a - b);
+
+  return sorted.map((spx) => {
+    const pnl = calcIronFlyPnl(low, mid, high, net, spx);
+    const isLowerBE =
+      metrics.lowerBE !== null && Math.abs(spx - metrics.lowerBE) < 0.001;
+    const isUpperBE =
+      metrics.upperBE !== null && Math.abs(spx - metrics.upperBE) < 0.001;
+    const isSweetSpot = Math.abs(spx - mid) < 0.001;
+
+    let label = '';
+    if (isSweetSpot) {
+      label = 'Max profit';
+    } else if (isLowerBE || isUpperBE) {
+      label = 'Breakeven';
+    } else if (spx <= start) {
+      label = 'Max loss';
+    } else if (spx >= end) {
+      label = 'Max loss';
+    }
+
+    return {
+      spx,
+      pnlPts: pnl,
+      pnlPerContract: Math.round(pnl * 100),
+      pnlTotal: Math.round(pnl * mult),
+      label,
+      isKey: isSweetSpot || isLowerBE || isUpperBE,
+    };
+  });
+}
+
 /** Format a SPX level for display (e.g. 6481.50 or 6500) */
 export function fmtSpx(n: number): string {
   return n % 1 === 0 ? String(n) : n.toFixed(2);

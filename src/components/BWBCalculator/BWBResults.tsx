@@ -1,7 +1,14 @@
-import type { BWBSide, BWBMetrics, PnlRow } from './bwb-math';
+import type {
+  BWBSide,
+  BWBMetrics,
+  PnlRow,
+  StrategyMode,
+  IronFlyMetrics,
+} from './bwb-math';
 import { fmtSpx, fmtPnl } from './bwb-math';
 
 interface BWBResultsProps {
+  strategy: StrategyMode;
   side: BWBSide;
   contracts: number;
   low: number;
@@ -9,11 +16,13 @@ interface BWBResultsProps {
   high: number;
   net: number;
   metrics: BWBMetrics;
+  ironFlyMetrics: IronFlyMetrics | null;
   pnlRows: PnlRow[];
   midStrike: string;
 }
 
 export default function BWBResults({
+  strategy,
   side,
   contracts,
   low,
@@ -21,6 +30,7 @@ export default function BWBResults({
   high,
   net,
   metrics,
+  ironFlyMetrics,
   pnlRows,
   midStrike,
 }: Readonly<BWBResultsProps>) {
@@ -35,13 +45,26 @@ export default function BWBResults({
       <div className="bg-surface-alt mt-4 rounded-lg p-3">
         <div className="text-secondary mb-2 font-mono text-[12px] leading-relaxed">
           <div>
-            Buy {contracts} {'\u00D7'} {low} {sideLabel}
+            Buy {contracts} {'\u00D7'} {low}{' '}
+            {strategy === 'iron-fly' ? 'Put' : sideLabel}
           </div>
-          <div className="text-accent font-semibold">
-            Sell {contracts * 2} {'\u00D7'} {mid} {sideLabel}
-          </div>
+          {strategy === 'iron-fly' ? (
+            <>
+              <div className="text-accent font-semibold">
+                Sell {contracts} {'\u00D7'} {mid} Put
+              </div>
+              <div className="text-accent font-semibold">
+                Sell {contracts} {'\u00D7'} {mid} Call
+              </div>
+            </>
+          ) : (
+            <div className="text-accent font-semibold">
+              Sell {contracts * 2} {'\u00D7'} {mid} {sideLabel}
+            </div>
+          )}
           <div>
-            Buy {contracts} {'\u00D7'} {high} {sideLabel}
+            Buy {contracts} {'\u00D7'} {high}{' '}
+            {strategy === 'iron-fly' ? 'Call' : sideLabel}
           </div>
         </div>
 
@@ -71,18 +94,24 @@ export default function BWBResults({
         <div className="border-edge mt-2 grid grid-cols-2 gap-2 border-t pt-2">
           <div>
             <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-              Narrow wing
+              {strategy === 'iron-fly' ? 'Lower wing' : 'Narrow wing'}
             </div>
             <div className="text-primary font-mono text-sm">
-              {metrics.narrowWidth} pts
+              {strategy === 'iron-fly'
+                ? ironFlyMetrics?.lowerWing
+                : metrics.narrowWidth}{' '}
+              pts
             </div>
           </div>
           <div>
             <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-              Wide wing
+              {strategy === 'iron-fly' ? 'Upper wing' : 'Wide wing'}
             </div>
             <div className="text-primary font-mono text-sm">
-              {metrics.wideWidth} pts
+              {strategy === 'iron-fly'
+                ? ironFlyMetrics?.upperWing
+                : metrics.wideWidth}{' '}
+              pts
             </div>
           </div>
         </div>
@@ -95,7 +124,9 @@ export default function BWBResults({
             Max Profit
           </div>
           <div className="text-success font-mono text-[17px] font-bold">
-            {fmtPnl(metrics.maxProfit * mult)}
+            {strategy === 'iron-fly' && ironFlyMetrics
+              ? fmtPnl(ironFlyMetrics.maxProfit * mult)
+              : fmtPnl(metrics.maxProfit * mult)}
           </div>
           <div className="text-muted font-mono text-[10px]">
             at {midStrike} (sweet spot)
@@ -103,40 +134,68 @@ export default function BWBResults({
         </div>
         <div className="bg-surface-alt rounded-lg p-3">
           <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-            Max Loss {side === 'calls' ? '\u2191' : '\u2193'}
+            Max Loss {'\u2191'}
           </div>
           <div className="text-danger font-mono text-[17px] font-bold">
-            {fmtPnl(metrics.riskPnl * mult)}
+            {strategy === 'iron-fly' && ironFlyMetrics
+              ? fmtPnl(ironFlyMetrics.lossAbove * mult)
+              : fmtPnl(metrics.riskPnl * mult)}
           </div>
           <div className="text-muted font-mono text-[10px]">
-            {riskSideLabel}
+            {strategy === 'iron-fly' ? 'Above ' + high : riskSideLabel}
           </div>
         </div>
-        <div className="bg-surface-alt rounded-lg p-3">
-          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-            {net >= 0 ? 'Safe side' : 'Safe loss'}{' '}
-            {side === 'calls' ? '\u2193' : '\u2191'}
+        {strategy === 'iron-fly' && ironFlyMetrics ? (
+          <div className="bg-surface-alt rounded-lg p-3">
+            <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              Max Loss {'\u2193'}
+            </div>
+            <div className="text-danger font-mono text-[17px] font-bold">
+              {fmtPnl(ironFlyMetrics.lossBelow * mult)}
+            </div>
+            <div className="text-muted font-mono text-[10px]">
+              {'Below ' + low}
+            </div>
           </div>
-          <div
-            className={
-              'font-mono text-[17px] font-bold ' +
-              (metrics.safePnl >= 0 ? 'text-success' : 'text-danger')
-            }
-          >
-            {fmtPnl(metrics.safePnl * mult)}
+        ) : (
+          <div className="bg-surface-alt rounded-lg p-3">
+            <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+              {net >= 0 ? 'Safe side' : 'Safe loss'}{' '}
+              {side === 'calls' ? '\u2193' : '\u2191'}
+            </div>
+            <div
+              className={
+                'font-mono text-[17px] font-bold ' +
+                (metrics.safePnl >= 0 ? 'text-success' : 'text-danger')
+              }
+            >
+              {fmtPnl(metrics.safePnl * mult)}
+            </div>
+            <div className="text-muted font-mono text-[10px]">
+              {safeSideLabel}
+            </div>
           </div>
-          <div className="text-muted font-mono text-[10px]">
-            {safeSideLabel}
-          </div>
-        </div>
+        )}
         <div className="bg-surface-alt rounded-lg p-3">
           <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
             Breakevens
           </div>
           <div className="text-accent font-mono text-[15px] font-bold">
-            {metrics.lowerBE !== null ? fmtSpx(metrics.lowerBE) : '\u2014'}
-            {', '}
-            {metrics.upperBE !== null ? fmtSpx(metrics.upperBE) : '\u2014'}
+            {strategy === 'iron-fly' && ironFlyMetrics
+              ? (ironFlyMetrics.lowerBE !== null
+                  ? fmtSpx(ironFlyMetrics.lowerBE)
+                  : '\u2014') +
+                ', ' +
+                (ironFlyMetrics.upperBE !== null
+                  ? fmtSpx(ironFlyMetrics.upperBE)
+                  : '\u2014')
+              : (metrics.lowerBE !== null
+                  ? fmtSpx(metrics.lowerBE)
+                  : '\u2014') +
+                ', ' +
+                (metrics.upperBE !== null
+                  ? fmtSpx(metrics.upperBE)
+                  : '\u2014')}
           </div>
         </div>
       </div>
@@ -151,7 +210,9 @@ export default function BWBResults({
           <table
             className="w-full border-collapse font-mono text-[13px]"
             role="table"
-            aria-label="BWB P&L at expiry"
+            aria-label={
+              strategy === 'bwb' ? 'BWB P&L at expiry' : 'Iron Fly P&L at expiry'
+            }
           >
             <thead className="bg-table-header sticky top-0">
               <tr>

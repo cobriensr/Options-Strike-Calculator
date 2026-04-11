@@ -1,4 +1,4 @@
-import type { BWBSide } from './bwb-math';
+import type { BWBSide, StrategyMode } from './bwb-math';
 
 const INPUT =
   'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[10px_12px] text-[15px] font-mono outline-none w-full transition-[border-color] duration-150';
@@ -12,6 +12,7 @@ const LABEL =
   'text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]';
 
 interface BWBInputsProps {
+  strategy: StrategyMode;
   side: BWBSide;
   contracts: number;
   sweetSpot: string;
@@ -46,6 +47,7 @@ interface BWBInputsProps {
 }
 
 export default function BWBInputs({
+  strategy,
   side,
   contracts,
   sweetSpot,
@@ -77,22 +79,26 @@ export default function BWBInputs({
     <>
       {/* Side toggle + Contracts */}
       <div className="mb-4 flex items-center justify-between gap-4">
-        <div className="flex gap-1.5">
-          {(['calls', 'puts'] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => onSideChange(s)}
-              className={
-                'cursor-pointer rounded-md border-[1.5px] px-4 py-1.5 font-sans text-xs font-semibold transition-colors duration-100 ' +
-                (side === s
-                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                  : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
-              }
-            >
-              {s === 'calls' ? 'Calls' : 'Puts'}
-            </button>
-          ))}
-        </div>
+        {strategy === 'bwb' ? (
+          <div className="flex gap-1.5">
+            {(['calls', 'puts'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => onSideChange(s)}
+                className={
+                  'cursor-pointer rounded-md border-[1.5px] px-4 py-1.5 font-sans text-xs font-semibold transition-colors duration-100 ' +
+                  (side === s
+                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                    : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
+                }
+              >
+                {s === 'calls' ? 'Calls' : 'Puts'}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div />
+        )}
         <div className="flex items-center gap-0">
           <span className={LABEL + ' mr-2'}>Contracts</span>
           <button
@@ -206,25 +212,35 @@ export default function BWBInputs({
             />
           </div>
           <div>
-            <div className={LABEL + ' mb-1'}>Narrow</div>
+            <div className={LABEL + ' mb-1'}>
+              {strategy === 'iron-fly' ? 'Lower' : 'Narrow'}
+            </div>
             <input
               type="text"
               inputMode="numeric"
               value={narrowWing}
               onChange={(e) => onNarrowChange(e.target.value)}
               className={INPUT_SM + ' w-full sm:w-[60px]'}
-              aria-label="Narrow wing width"
+              aria-label={
+                strategy === 'iron-fly'
+                  ? 'Lower wing width'
+                  : 'Narrow wing width'
+              }
             />
           </div>
           <div>
-            <div className={LABEL + ' mb-1'}>Wide</div>
+            <div className={LABEL + ' mb-1'}>
+              {strategy === 'iron-fly' ? 'Upper' : 'Wide'}
+            </div>
             <input
               type="text"
               inputMode="numeric"
               value={wideWing}
               onChange={(e) => onWideChange(e.target.value)}
               className={INPUT_SM + ' w-full sm:w-[60px]'}
-              aria-label="Wide wing width"
+              aria-label={
+                strategy === 'iron-fly' ? 'Upper wing width' : 'Wide wing width'
+              }
             />
           </div>
         </div>
@@ -245,7 +261,8 @@ export default function BWBInputs({
           },
           {
             label: 'Mid',
-            sub: 'sell \u00D72',
+            sub:
+              strategy === 'iron-fly' ? 'sell straddle' : 'sell \u00D72',
             strike: midStrike,
             setStrike: setMidStrike,
           },

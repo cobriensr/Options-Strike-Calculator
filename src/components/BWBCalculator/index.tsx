@@ -1,6 +1,11 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { BWBSide } from './bwb-math';
-import { calcMetrics, generatePnlRows } from './bwb-math';
+import type { BWBSide, StrategyMode, IronFlyMetrics } from './bwb-math';
+import {
+  calcMetrics,
+  generatePnlRows,
+  calcIronFlyMetrics,
+  generateIronFlyPnlRows,
+} from './bwb-math';
 import BWBInputs from './BWBInputs';
 import BWBResults from './BWBResults';
 
@@ -11,6 +16,7 @@ interface BWBCalculatorProps {
 export default function BWBCalculator({
   selectedDate,
 }: Readonly<BWBCalculatorProps>) {
+  const [strategy, setStrategy] = useState<StrategyMode>('bwb');
   const [side, setSide] = useState<BWBSide>('calls');
   const [lowStrike, setLowStrike] = useState('');
   const [midStrike, setMidStrike] = useState('');
@@ -58,8 +64,14 @@ export default function BWBCalculator({
 
   // Auto-fill strikes from sweet spot + wing widths
   const fillStrikes = useCallback(
-    (ss: number, narrow: number, wide: number, s: BWBSide) => {
-      if (s === 'calls') {
+    (
+      ss: number,
+      narrow: number,
+      wide: number,
+      s: BWBSide,
+      strat: StrategyMode,
+    ) => {
+      if (strat === 'iron-fly' || s === 'calls') {
         setLowStrike(String(ss - narrow));
         setMidStrike(String(ss));
         setHighStrike(String(ss + wide));
@@ -75,7 +87,7 @@ export default function BWBCalculator({
   const handleSweetSpotChange = (value: string) => {
     setSweetSpot(value);
     const ss = Number.parseFloat(value);
-    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, side);
+    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, side, strategy);
   };
 
   const handleNarrowChange = (value: string) => {
@@ -83,7 +95,7 @@ export default function BWBCalculator({
     if (Number.isFinite(n) && n > 0) {
       setNarrowWing(n);
       const ss = Number.parseFloat(sweetSpot);
-      if (Number.isFinite(ss)) fillStrikes(ss, n, wideWing, side);
+      if (Number.isFinite(ss)) fillStrikes(ss, n, wideWing, side, strategy);
     }
   };
 
@@ -92,14 +104,20 @@ export default function BWBCalculator({
     if (Number.isFinite(w) && w > 0) {
       setWideWing(w);
       const ss = Number.parseFloat(sweetSpot);
-      if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, w, side);
+      if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, w, side, strategy);
     }
   };
 
   const handleSideChange = (s: BWBSide) => {
     setSide(s);
     const ss = Number.parseFloat(sweetSpot);
-    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, s);
+    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, s, strategy);
+  };
+
+  const handleStrategyChange = (s: StrategyMode) => {
+    setStrategy(s);
+    const ss = Number.parseFloat(sweetSpot);
+    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, side, s);
   };
 
   // Parse inputs
@@ -122,6 +140,14 @@ export default function BWBCalculator({
   const pnlRows = allValid
     ? generatePnlRows(side, low, mid, high, net, contracts)
     : [];
+  const ironFlyMetrics: IronFlyMetrics | null =
+    allValid && strategy === 'iron-fly'
+      ? calcIronFlyMetrics(low, mid, high, net)
+      : null;
+  const ironFlyRows =
+    allValid && strategy === 'iron-fly'
+      ? generateIronFlyPnlRows(low, mid, high, net, contracts)
+      : [];
 
   const handleClear = () => {
     setSweetSpot('');
@@ -138,7 +164,9 @@ export default function BWBCalculator({
 
   return (
     <section
-      aria-label="BWB live calculator"
+      aria-label={
+        strategy === 'bwb' ? 'BWB live calculator' : 'Iron Fly live calculator'
+      }
       className="animate-fade-in-up bg-surface border-edge border-t-accent mt-6 flex flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)]"
     >
       {/* Collapsible header */}
@@ -150,7 +178,11 @@ export default function BWBCalculator({
         onClick={toggleSection}
         role="button"
         tabIndex={0}
-        aria-label="Toggle BWB Live Calculator"
+        aria-label={
+          strategy === 'bwb'
+            ? 'Toggle BWB Live Calculator'
+            : 'Toggle Iron Fly Calculator'
+        }
         aria-expanded={!sectionCollapsed}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -170,10 +202,29 @@ export default function BWBCalculator({
             &#x25BE;
           </span>
           <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
-            BWB Live Calculator
+            {strategy === 'bwb' ? 'BWB Live Calculator' : 'Iron Fly Calculator'}
           </h2>
         </div>
-        <div onClick={(e) => e.stopPropagation()}>
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="flex items-center gap-2"
+        >
+          <div className="flex gap-1">
+            {(['bwb', 'iron-fly'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => handleStrategyChange(s)}
+                className={
+                  'cursor-pointer rounded-md border-[1.5px] px-2.5 py-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase transition-colors duration-100 ' +
+                  (strategy === s
+                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                    : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
+                }
+              >
+                {s === 'bwb' ? 'BWB' : 'Iron Fly'}
+              </button>
+            ))}
+          </div>
           <button
             onClick={handleClear}
             className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
@@ -186,6 +237,7 @@ export default function BWBCalculator({
       {!sectionCollapsed && (
         <>
           <BWBInputs
+            strategy={strategy}
             side={side}
             contracts={contracts}
             sweetSpot={sweetSpot}
@@ -217,6 +269,7 @@ export default function BWBCalculator({
           {/* Results — only when all inputs are valid */}
           {allValid && metrics && (
             <BWBResults
+              strategy={strategy}
               side={side}
               contracts={contracts}
               low={low}
@@ -224,7 +277,8 @@ export default function BWBCalculator({
               high={high}
               net={net}
               metrics={metrics}
-              pnlRows={pnlRows}
+              ironFlyMetrics={ironFlyMetrics}
+              pnlRows={strategy === 'iron-fly' ? ironFlyRows : pnlRows}
               midStrike={midStrike}
             />
           )}
