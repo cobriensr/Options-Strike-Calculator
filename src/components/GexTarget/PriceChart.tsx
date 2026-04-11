@@ -2,7 +2,7 @@
  * PriceChart — Panel 4 of the GexTarget widget.
  *
  * Renders an imperative lightweight-charts candlestick chart with:
- *  - 1-minute SPX candles for the active session
+ *  - 5-minute SPX candles for the active session (resampled from 1-minute data)
  *  - VWAP line (amber, dashed)
  *  - Top-3 GEX strike levels from the active TargetScore
  *  - Previous-close reference line
@@ -51,6 +51,33 @@ export interface PriceChartProps {
    * Drawn as a fixed orange line for the full session.
    */
   openingPutStrike: number | null;
+}
+
+// ── 5-minute resampler ────────────────────────────────────────────────────
+
+function resampleTo5Min(candles: SPXCandle[]): SPXCandle[] {
+  if (candles.length === 0) return [];
+  const FIVE_MIN_MS = 5 * 60 * 1000;
+  const buckets = new Map<number, SPXCandle[]>();
+  for (const c of candles) {
+    const key = c.datetime - (c.datetime % FIVE_MIN_MS);
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.push(c);
+    } else {
+      buckets.set(key, [c]);
+    }
+  }
+  return Array.from(buckets.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([key, group]) => ({
+      datetime: key,
+      open: group.at(0)!.open,
+      high: Math.max(...group.map((c) => c.high)),
+      low: Math.min(...group.map((c) => c.low)),
+      close: group.at(-1)!.close,
+      volume: group.reduce((sum, c) => sum + c.volume, 0),
+    }));
 }
 
 // ── VWAP helper ───────────────────────────────────────────────────────────
@@ -132,6 +159,10 @@ export const PriceChart = memo(function PriceChart({
   const candleSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
   const vwapSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
   const priceLineRefs = useRef<IPriceLine[]>([]);
+  // Track whether the chart has received its first data load so fitContent()
+  // is only called once. Subsequent candle updates (e.g. scrubbing) must not
+  // reset a zoom the user has set manually.
+  const initialFitDoneRef = useRef(false);
 
   // ── Create chart once on mount, destroy on unmount ───────────────────
 
@@ -195,7 +226,8 @@ export const PriceChart = memo(function PriceChart({
   useEffect(() => {
     if (!candleSeriesRef.current || candles.length === 0) return;
 
-    const data = candles.map((c) => ({
+    const resampled = resampleTo5Min(candles);
+    const data = resampled.map((c) => ({
       time: Math.floor(c.datetime / 1000) as UTCTimestamp,
       open: c.open,
       high: c.high,
@@ -205,10 +237,13 @@ export const PriceChart = memo(function PriceChart({
     candleSeriesRef.current.setData(data);
 
     if (vwapSeriesRef.current) {
-      vwapSeriesRef.current.setData(computeVWAP(candles));
+      vwapSeriesRef.current.setData(computeVWAP(resampled));
     }
 
-    chartRef.current?.timeScale().fitContent();
+    if (!initialFitDoneRef.current) {
+      chartRef.current?.timeScale().fitContent();
+      initialFitDoneRef.current = true;
+    }
   }, [candles]);
 
   // ── Overlay lines (GEX levels + opening walls + previous close) ────────

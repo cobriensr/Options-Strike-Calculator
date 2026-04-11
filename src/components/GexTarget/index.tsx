@@ -9,7 +9,7 @@
  * all three modes so switching modes is a pure UI change with no refetch.
  */
 
-import { memo, useState, useCallback } from 'react';
+import { memo, useState, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { SectionBox, Chip, StatusBadge } from '../ui';
 import { useGexTarget } from '../../hooks/useGexTarget';
@@ -82,7 +82,26 @@ export const GexTarget = memo(function GexTarget({
 
   const activeScore: TargetScore | null =
     mode === 'oi' ? oi : mode === 'vol' ? vol : dir;
-  const activeLeaderboard: StrikeScore[] = activeScore?.leaderboard ?? [];
+  const activeLeaderboard: StrikeScore[] = useMemo(
+    () => activeScore?.leaderboard ?? [],
+    [activeScore],
+  );
+
+  // ── Canonical top-5 strike universe (shared by all panels) ──────────────
+  // All three panels — Strike Board, 5-Min Urgency, 20-Min Sparklines — must
+  // display the same 5 strikes. The authoritative ranking is by |gexDollars|
+  // (largest absolute GEX $ first). Each panel then re-sorts within this set
+  // by its own metric (5m % change, 20m % change, or current GEX $).
+  const top5ByGex = useMemo(
+    () =>
+      [...activeLeaderboard]
+        .sort(
+          (a, b) =>
+            Math.abs(b.features.gexDollars) - Math.abs(a.features.gexDollars),
+        )
+        .slice(0, 5),
+    [activeLeaderboard],
+  );
 
   // ── Live badge config ────────────────────────────────────
 
@@ -236,8 +255,8 @@ export const GexTarget = memo(function GexTarget({
           {/* Left column: panels 1-3 (narrower so price chart has room) */}
           <div className="flex flex-col [&>section]:mt-0">
             <TargetTile score={activeScore} />
-            <UrgencyPanel leaderboard={activeLeaderboard} />
-            <SparklinePanel leaderboard={activeLeaderboard} />
+            <UrgencyPanel leaderboard={top5ByGex} />
+            <SparklinePanel leaderboard={top5ByGex} />
           </div>
 
           {/* Panel 4: price chart */}
@@ -252,7 +271,7 @@ export const GexTarget = memo(function GexTarget({
 
         {/* Panel 5: full-width strike box */}
         <div className="mt-3">
-          <StrikeBox leaderboard={activeLeaderboard} />
+          <StrikeBox leaderboard={top5ByGex} />
         </div>
       </>
     );

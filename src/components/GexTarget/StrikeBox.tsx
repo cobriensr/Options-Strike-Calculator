@@ -190,19 +190,9 @@ export interface StrikeBoxProps {
 export const StrikeBox = memo(function StrikeBox({
   leaderboard,
 }: StrikeBoxProps) {
-  // Top 5 by GEX $ magnitude — sorted descending by |gexDollars|.
-  // rankBySize (already computed in scoreMode) is used for the RK column
-  // and rank-change tracking so arrows reflect GEX$ rank movement.
-  const top5 = useMemo(
-    () =>
-      [...leaderboard]
-        .sort(
-          (a, b) =>
-            Math.abs(b.features.gexDollars) - Math.abs(a.features.gexDollars),
-        )
-        .slice(0, 5),
-    [leaderboard],
-  );
+  // The parent (GexTarget/index.tsx) pre-sorts the leaderboard by |gexDollars|
+  // and slices to 5 before passing it in. Use it directly — no re-sort needed.
+  const top5 = leaderboard;
 
   // Track previous GEX$ ranks via state so rank-change arrows can be computed
   // safely during render. The effect fires after paint and updates prevRanks

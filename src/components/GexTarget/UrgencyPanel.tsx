@@ -16,7 +16,17 @@ function formatDeltaPct(val: number | null): string {
 export const UrgencyPanel = memo(function UrgencyPanel({
   leaderboard,
 }: Readonly<UrgencyPanelProps>) {
-  const top5 = leaderboard.slice(0, 5);
+  // Sort the shared strike universe by |5m % change| descending so the most
+  // active strikes appear first.
+  const top5 = useMemo(
+    () =>
+      [...leaderboard].sort(
+        (a, b) =>
+          Math.abs(b.features.deltaPct_5m ?? 0) -
+          Math.abs(a.features.deltaPct_5m ?? 0),
+      ),
+    [leaderboard],
+  );
 
   const maxAbs = useMemo(() => {
     const max = Math.max(

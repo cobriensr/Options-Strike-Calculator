@@ -119,7 +119,17 @@ export interface SparklinePanelProps {
 export const SparklinePanel = memo(function SparklinePanel({
   leaderboard,
 }: SparklinePanelProps) {
-  const top5 = leaderboard.slice(0, 5);
+  // Sort the shared strike universe by |20m % change| descending so the
+  // highest-momentum strikes appear first.
+  const top5 = useMemo(
+    () =>
+      [...leaderboard].sort(
+        (a, b) =>
+          Math.abs(b.features.deltaPct_20m ?? 0) -
+          Math.abs(a.features.deltaPct_20m ?? 0),
+      ),
+    [leaderboard],
+  );
 
   return (
     <SectionBox label="20-MIN SPARKLINES">
