@@ -38,6 +38,7 @@ export interface SpxCandle1m {
   low: number;
   close: number;
   volume: number;
+  spxSchwabPrice: number | null; // Schwab-verified SPX close when available
 }
 
 /**
@@ -59,7 +60,7 @@ export async function getSpxCandles(
 
   if (from && to) {
     rows = await db`
-      SELECT timestamp, open, high, low, close, volume
+      SELECT timestamp, open, high, low, close, volume, spx_schwab_price
       FROM spx_candles_1m
       WHERE date = ${date} AND timestamp >= ${from} AND timestamp <= ${to}
       ORDER BY timestamp ASC
@@ -67,7 +68,7 @@ export async function getSpxCandles(
     `;
   } else if (from) {
     rows = await db`
-      SELECT timestamp, open, high, low, close, volume
+      SELECT timestamp, open, high, low, close, volume, spx_schwab_price
       FROM spx_candles_1m
       WHERE date = ${date} AND timestamp >= ${from}
       ORDER BY timestamp ASC
@@ -75,7 +76,7 @@ export async function getSpxCandles(
     `;
   } else if (to) {
     rows = await db`
-      SELECT timestamp, open, high, low, close, volume
+      SELECT timestamp, open, high, low, close, volume, spx_schwab_price
       FROM spx_candles_1m
       WHERE date = ${date} AND timestamp <= ${to}
       ORDER BY timestamp ASC
@@ -83,7 +84,7 @@ export async function getSpxCandles(
     `;
   } else {
     rows = await db`
-      SELECT timestamp, open, high, low, close, volume
+      SELECT timestamp, open, high, low, close, volume, spx_schwab_price
       FROM spx_candles_1m
       WHERE date = ${date}
       ORDER BY timestamp ASC
@@ -98,6 +99,8 @@ export async function getSpxCandles(
     low: Number(r.low),
     close: Number(r.close),
     volume: Number(r.volume),
+    spxSchwabPrice:
+      r.spx_schwab_price != null ? Number(r.spx_schwab_price) : null,
   }));
 }
 
@@ -307,6 +310,8 @@ export async function executeDbTool(
 
         const lines: string[] = [
           `SPX 1-minute candles (${rows.length} rows, ordered by timestamp ASC):`,
+          '  Note: OHLC values are SPY×ratio approximations and may differ from actual SPX by 10-25 pts at session extremes.',
+          '  spx_schwab_price (when present) is the Schwab-verified SPX close for that minute.',
           '  timestamp (ET) | open | high | low | close | volume',
         ];
 
@@ -317,8 +322,12 @@ export async function executeDbTool(
             minute: '2-digit',
             hour12: true,
           });
+          const schwabSuffix =
+            c.spxSchwabPrice != null
+              ? `  [Schwab SPX close: ${c.spxSchwabPrice.toFixed(2)}]`
+              : '';
           lines.push(
-            `  ${time} | ${c.open.toFixed(2)} | ${c.high.toFixed(2)} | ${c.low.toFixed(2)} | ${c.close.toFixed(2)} | ${c.volume}`,
+            `  ${time} | ${c.open.toFixed(2)} | ${c.high.toFixed(2)} | ${c.low.toFixed(2)} | ${c.close.toFixed(2)} | ${c.volume}${schwabSuffix}`,
           );
         }
 

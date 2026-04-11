@@ -87,7 +87,7 @@ export function buildClaudeTools(): Tool[] {
     {
       name: 'get_spx_candles',
       description:
-        'Fetch 1-minute SPX price candles. Returns open, high, low, close, volume per minute. Max 200 rows.',
+        'Fetch 1-minute SPX price candles. OHLC values are approximations derived from SPY×ratio and may differ from actual SPX by 10-25 pts at session extremes. spx_schwab_price (when present) is the Schwab-verified SPX close for that minute — use it for precise price level claims. Max 200 rows.',
       input_schema: {
         type: 'object',
         properties: {

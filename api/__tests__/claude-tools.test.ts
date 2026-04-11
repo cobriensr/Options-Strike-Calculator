@@ -426,6 +426,7 @@ describe('executeDbTool — get_spx_candles', () => {
         low: '5498.00',
         close: '5505.75',
         volume: '12345',
+        spx_schwab_price: null,
       },
     ];
     mockSql.mockResolvedValueOnce(fakeDbRows);
@@ -446,6 +447,30 @@ describe('executeDbTool — get_spx_candles', () => {
     expect(result.is_error).toBeFalsy();
     expect(result.content).toContain('SPX 1-minute candles');
     expect(result.content).toContain('5500.25');
+  });
+
+  it('includes Schwab SPX price anchor in formatted output when present', async () => {
+    const fakeDbRows = [
+      {
+        timestamp: '2026-04-10T14:30:00Z',
+        open: '5500.25',
+        high: '5510.50',
+        low: '5498.00',
+        close: '5505.75',
+        volume: '12345',
+        spx_schwab_price: '6810.20',
+      },
+    ];
+    mockSql.mockResolvedValueOnce(fakeDbRows);
+
+    const block = makeToolUseBlock('get_spx_candles', {});
+    const result = await executeDbTool(
+      block,
+      mockSql as unknown as NeonQueryFunction<false, false>,
+      ANALYSIS_DATE,
+    );
+
+    expect(result.content).toContain('Schwab SPX close: 6810.20');
   });
 
   it('clamps to param to asOf when to > asOf', async () => {
@@ -511,6 +536,7 @@ describe('getSpxCandles', () => {
         low: '5498.00',
         close: '5505.75',
         volume: '100',
+        spx_schwab_price: '6810.50',
       },
     ];
     mockSql.mockResolvedValueOnce(fakeRows);
@@ -528,6 +554,29 @@ describe('getSpxCandles', () => {
     expect(candle.low).toBe(5498.0);
     expect(candle.close).toBe(5505.75);
     expect(candle.volume).toBe(100);
+    expect(candle.spxSchwabPrice).toBe(6810.5);
+  });
+
+  it('sets spxSchwabPrice to null when DB column is null', async () => {
+    const fakeRows = [
+      {
+        timestamp: '2026-04-10T14:30:00Z',
+        open: '5500.25',
+        high: '5510.50',
+        low: '5498.00',
+        close: '5505.75',
+        volume: '100',
+        spx_schwab_price: null,
+      },
+    ];
+    mockSql.mockResolvedValueOnce(fakeRows);
+
+    const result = await getSpxCandles(
+      mockSql as unknown as NeonQueryFunction<false, false>,
+      ANALYSIS_DATE,
+    );
+
+    expect(result[0]?.spxSchwabPrice).toBeNull();
   });
 
   it('queries without from/to when neither is provided', async () => {

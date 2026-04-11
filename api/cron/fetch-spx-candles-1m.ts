@@ -50,6 +50,12 @@ interface SchwabQuoteEntry {
   };
 }
 
+/** Return type for fetchSpxSpyRatio — both values needed downstream. */
+interface SpxSpyRatioResult {
+  ratio: number;
+  spxPrice: number;
+}
+
 /** UW 1-minute candle row from /stock/SPY/ohlc/1m. */
 interface UWCandleRow {
   open: string;
@@ -87,7 +93,7 @@ interface SPXCandleRow {
  * Returns null if Schwab is unavailable or returns invalid prices, in
  * which case the caller skips storing candles rather than writing bad data.
  */
-async function fetchSpxSpyRatio(): Promise<number | null> {
+async function fetchSpxSpyRatio(): Promise<SpxSpyRatioResult | null> {
   const result = await schwabFetch<Record<string, SchwabQuoteEntry>>(
     '/quotes?symbols=SPY%2C%24SPX&fields=quote',
   );
@@ -111,7 +117,7 @@ async function fetchSpxSpyRatio(): Promise<number | null> {
     return null;
   }
 
-  return spxPrice / spyPrice;
+  return { ratio: spxPrice / spyPrice, spxPrice };
 }
 
 // ── Fetch helper ────────────────────────────────────────────
@@ -216,17 +222,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const startTime = Date.now();
 
   try {
-    const [rawRows, ratio] = await Promise.all([
+    const [rawRows, ratioResult] = await Promise.all([
       withRetry(() => fetchSPYCandles1m(apiKey, today)),
       fetchSpxSpyRatio(),
     ]);
 
-    if (ratio === null) {
+    if (ratioResult === null) {
       metrics.increment('fetch_spx_candles_1m.ratio_unavailable');
       return res
         .status(200)
         .json({ stored: false, reason: 'SPX/SPY ratio unavailable from Schwab' });
     }
+
+    const { ratio, spxPrice } = ratioResult;
 
     if (rawRows.length === 0) {
       return res.status(200).json({ stored: false, reason: 'No 1m candles' });
@@ -242,6 +250,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const result = await withRetry(() => storeCandles(translated, today));
 
+    // Anchor the current minute's candle with the Schwab-verified SPX close.
+    // Compute the current minute's timestamp (truncated to the minute boundary).
+    const now = new Date();
+    now.setSeconds(0, 0);
+    const currentMinuteTs = now.toISOString();
+    try {
+      await getDb()`
+        UPDATE spx_candles_1m
+        SET spx_schwab_price = ${spxPrice}
+        WHERE date = ${today}
+          AND timestamp = ${currentMinuteTs}
+          AND spx_schwab_price IS NULL
+      `;
+    } catch (updateErr) {
+      // Non-fatal: log and continue — candle is stored, anchor is best-effort
+      logger.warn(
+        { updateErr, currentMinuteTs },
+        'fetch-spx-candles-1m: spx_schwab_price UPDATE failed',
+      );
+    }
+
     logger.info(
       {
         total: rawRows.length,
@@ -249,6 +278,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         stored: result.stored,
         skipped: result.skipped,
         date: today,
+        spxPrice,
       },
       'fetch-spx-candles-1m completed',
     );
@@ -281,6 +311,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       stored: result.stored,
       skipped: result.skipped,
       ratio: Math.round(ratio * 10000) / 10000,
+      spxPrice,
       durationMs: Date.now() - startTime,
     });
   } catch (err) {

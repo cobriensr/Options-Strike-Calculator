@@ -1395,4 +1395,15 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 54,
+    description:
+      'Add spx_schwab_price column to spx_candles_1m for Schwab-verified SPX close anchor',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE spx_candles_1m
+        ADD COLUMN IF NOT EXISTS spx_schwab_price NUMERIC
+      `,
+    ],
+  },
 ];

@@ -589,4 +589,109 @@ describe('fetch-spx-candles-1m handler', () => {
     });
     expect(vi.mocked(checkDataQuality)).not.toHaveBeenCalled();
   });
+
+  // ── Schwab price anchor (spx_schwab_price) ────────────────
+
+  it('returns { ratio, spxPrice } from Schwab and surfaces spxPrice in response', async () => {
+    const spxPrice = 6817.43;
+    const spyPrice = 585.0;
+    vi.mocked(schwabFetch).mockResolvedValue(makeSchwabQuotes(spxPrice, spyPrice));
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const json = res._json as Record<string, unknown>;
+    expect(json.spxPrice).toBeCloseTo(spxPrice, 2);
+    expect(json.ratio).toBeCloseTo(spxPrice / spyPrice, 4);
+  });
+
+  it('calls UPDATE to anchor spx_schwab_price on the current minute candle', async () => {
+    const spxPrice = 6817.43;
+    vi.mocked(schwabFetch).mockResolvedValue(makeSchwabQuotes(spxPrice, 585.0));
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+
+    // Track all direct sql calls (non-transaction)
+    const sqlCalls: string[] = [];
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      sqlCalls.push(strings.join('?'));
+      return Promise.resolve([]);
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    // Verify at least one SQL call contained the UPDATE for spx_schwab_price
+    const hasUpdate = sqlCalls.some((q) => q.includes('spx_schwab_price'));
+    expect(hasUpdate).toBe(true);
+  });
+
+  it('does not attempt spx_schwab_price UPDATE when ratio fetch returns null', async () => {
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false as const,
+      status: 503,
+      error: 'Service unavailable',
+    });
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+
+    const sqlCalls: string[] = [];
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      sqlCalls.push(strings.join('?'));
+      return Promise.resolve([]);
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    // Ratio is null → handler returns early, no UPDATE attempted
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: false });
+    const hasUpdate = sqlCalls.some((q) => q.includes('spx_schwab_price'));
+    expect(hasUpdate).toBe(false);
+  });
+
+  it('proceeds normally even when spx_schwab_price UPDATE fails', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+
+    // Make the UPDATE throw (any direct sql call that includes the right string)
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      if (strings.join('').includes('spx_schwab_price')) {
+        throw new Error('UPDATE failed');
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    // Should still return 200 success — anchor failure is non-fatal
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ success: true });
+  });
 });
