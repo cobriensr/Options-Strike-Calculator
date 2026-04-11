@@ -22,8 +22,6 @@ from config import settings
 from logger_setup import log
 from symbol_manager import (
     DATASET_CME,
-    DATASET_IFUS,
-    DATASET_XCBF,
     OptionsStrikeSet,
     compute_atm_strikes,
     get_all_futures_subscriptions,
@@ -51,8 +49,6 @@ class DatabentoClient:
         trade_processor: TradeProcessor,
     ) -> None:
         self._client: db.Live | None = None
-        self._vxm_client: db.Live | None = None
-        self._dx_client: db.Live | None = None
         self._trade_processor = trade_processor
         self._connected = False
         self._last_bar_ts = 0.0
@@ -89,11 +85,6 @@ class DatabentoClient:
 
         # Cache: instrument_id -> internal symbol (populated on first resolve)
         self._resolved_cache: dict[int, str | None] = {}
-
-        # VX instrument_id -> internal symbol (VX1 or VX2)
-        # Populated when first VX bars arrive, keyed by instrument_id
-        self._vxm_resolved: dict[int, str] = {}
-        self._vxm_ids_seen: list[int] = []
 
         # Log symbol mapping summary once, not per-contract
         self._mapping_summary_logged = False
@@ -143,12 +134,6 @@ class DatabentoClient:
         self._connected = True
         log.info("CME Live client started -- streaming")
 
-        # Second client for VX on XCBF.PITCH (separate dataset)
-        self._start_vxm_client()
-
-        # Third client for DX on IFUS.IMPACT (ICE Futures US)
-        self._start_dx_client()
-
     def _subscribe_futures_ohlcv(self) -> None:
         """Subscribe to OHLCV-1m for CME/CBOT/NYMEX futures."""
         if not self._client:
@@ -178,101 +163,6 @@ class DatabentoClient:
                 cme_symbols,
                 extra={"symbols": cme_symbols},
             )
-
-    def _start_vxm_client(self) -> None:
-        """Start a second Live client for VXM on XCBF.PITCH.
-
-        Databento only allows one dataset per Live session, so VXM
-        (CBOE Futures Exchange) needs its own client separate from
-        the CME Group client.
-        """
-        subs = get_all_futures_subscriptions()
-        cfe_symbols = []
-        for sym, cfg in subs.items():
-            if cfg["dataset"] == DATASET_XCBF:
-                cfe_symbols.append(cfg["parent_symbol"])
-                self._prefix_to_internal[cfg["db_symbol"]] = cfg["db_symbol"]
-
-        if not cfe_symbols:
-            return
-
-        try:
-            self._vxm_client = db.Live(
-                key=settings.databento_api_key,
-                ts_out=True,
-                heartbeat_interval_s=30,
-                reconnect_policy=ReconnectPolicy.RECONNECT,
-            )
-
-            self._vxm_client.add_callback(
-                record_callback=self._on_vxm_record,
-                exception_callback=self._on_error,
-            )
-
-            self._vxm_client.subscribe(
-                dataset=DATASET_XCBF,
-                schema="ohlcv-1m",
-                symbols=cfe_symbols,
-                stype_in="parent",
-            )
-
-            self._vxm_client.start()
-            log.info(
-                "VX Live client started on %s: %s",
-                DATASET_XCBF,
-                cfe_symbols,
-            )
-        except Exception as exc:
-            log.error("Failed to start VX client: %s", exc)
-            self._vxm_client = None
-
-    def _start_dx_client(self) -> None:
-        """Start a third Live client for DX on IFUS.IMPACT (ICE Futures US)."""
-        subs = get_all_futures_subscriptions()
-        dx_cfg = subs.get("DX")
-        if not dx_cfg or dx_cfg["dataset"] != DATASET_IFUS:
-            return
-
-        try:
-            self._dx_client = db.Live(
-                key=settings.databento_api_key,
-                ts_out=True,
-                heartbeat_interval_s=30,
-                reconnect_policy=ReconnectPolicy.RECONNECT,
-            )
-
-            self._dx_client.add_callback(
-                record_callback=self._on_dx_record,
-                exception_callback=self._on_error,
-            )
-
-            self._dx_client.subscribe(
-                dataset=DATASET_IFUS,
-                schema="ohlcv-1m",
-                symbols=[dx_cfg["parent_symbol"]],
-                stype_in="parent",
-            )
-
-            self._prefix_to_internal["DX"] = "DX"
-            self._dx_client.start()
-            log.info(
-                "DX Live client started on %s: %s",
-                DATASET_IFUS,
-                dx_cfg["parent_symbol"],
-            )
-        except Exception as exc:
-            log.error("Failed to start DX client: %s", exc)
-            self._dx_client = None
-
-    def _on_dx_record(self, record: Any) -> None:
-        """Callback for DX client records (IFUS.IMPACT)."""
-        try:
-            record_type = type(record).__name__
-            if record_type not in ("OHLCVMsg", "OhlcvMsg"):
-                return
-            self._handle_ohlcv_from_client(record, self._dx_client)
-        except Exception as exc:
-            log.error("Error processing DX record: %s", exc)
 
     def _handle_ohlcv_from_client(self, record: Any, client: db.Live | None) -> None:
         """Process an OHLCV bar using a specific client's symbology map."""
@@ -397,70 +287,6 @@ class DatabentoClient:
             # Ignore other record types (heartbeats, etc.)
         except Exception as exc:
             log.error("Error processing record: %s", exc)
-
-    def _on_vxm_record(self, record: Any) -> None:
-        """Callback for VXM client records (XCBF.PITCH)."""
-        try:
-            record_type = type(record).__name__
-            if record_type not in ("OHLCVMsg", "OhlcvMsg"):
-                return  # Only process OHLCV bars from VXM client
-
-            self._handle_vxm_ohlcv(record)
-        except Exception as exc:
-            log.error("Error processing VXM record: %s", exc)
-
-    def _handle_vxm_ohlcv(self, record: Any) -> None:
-        """Process a VX OHLCV-1m bar.
-
-        Note: VX is not yet available from Databento as of 2026-04-08 —
-        Databento is working on it. This method is wired up and ready
-        but the XCBF.PITCH subscription in _start_vxm_client will either
-        fail cleanly or emit zero records until VX goes live.
-
-        VX.FUT (front month) and VX.FUT.1 (second month) each get
-        a unique instrument_id. We currently assign VX1 to the first
-        seen and VX2 to the second — but this is order-dependent and
-        will break on a sidecar restart if Databento re-sends the
-        instruments in a different order. When VX goes live, this
-        mapping MUST be rewritten to use the contract month from the
-        Definition message (Databento provides `expiration` on
-        definition records). See SIDE-004 in the audit.
-        """
-        if self._shutting_down:
-            return
-        from db import upsert_futures_bar
-
-        iid = getattr(record, "instrument_id", None)
-        if iid is None or self._vxm_client is None:
-            return
-
-        # Resolve instrument_id to VXM1 or VXM2
-        if iid not in self._vxm_resolved:
-            if len(self._vxm_ids_seen) >= 2:
-                return  # Already have both, ignore extra instruments
-            self._vxm_ids_seen.append(iid)
-            symbol = "VX1" if len(self._vxm_ids_seen) == 1 else "VX2"
-            self._vxm_resolved[iid] = symbol
-            log.info("VXM mapping: iid %d -> %s", iid, symbol)
-
-        symbol = self._vxm_resolved[iid]
-
-        # Convert prices and timestamp (same as _handle_ohlcv)
-        open_ = Decimal(record.open) / Decimal(1_000_000_000)
-        high = Decimal(record.high) / Decimal(1_000_000_000)
-        low = Decimal(record.low) / Decimal(1_000_000_000)
-        close = Decimal(record.close) / Decimal(1_000_000_000)
-        volume = record.volume
-        ts_ns = record.ts_event
-        ts = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
-        ts = ts.replace(second=0, microsecond=0)
-
-        try:
-            upsert_futures_bar(symbol, ts, open_, high, low, close, volume)
-            self._last_bar_ts = time.time()
-            log.debug("VXM Bar: %s %s C=%.2f", symbol, ts.isoformat(), close)
-        except Exception as exc:
-            log.error("Failed to upsert VXM bar for %s: %s", symbol, exc)
 
     def _on_error(self, exc: Exception) -> None:
         """Handle streaming errors."""
@@ -930,20 +756,12 @@ class DatabentoClient:
         # Neon query latencies on a warm connection (~5-50ms).
         time.sleep(0.2)
 
-        clients = [
-            ("CME", self._client),
-            ("VX", self._vxm_client),
-            ("DX", self._dx_client),
-        ]
-        for name, client in clients:
-            if client:
-                try:
-                    client.stop()
-                except Exception as exc:
-                    log.error("Error stopping %s client: %s", name, exc)
+        if self._client:
+            try:
+                self._client.stop()
+            except Exception as exc:
+                log.error("Error stopping CME client: %s", exc)
         self._client = None
-        self._vxm_client = None
-        self._dx_client = None
         self._trade_processor.flush()
         log.info("Databento clients stopped")
 
