@@ -58,7 +58,6 @@ const makeStrikeRow = (
 /** Default guard result returned by a passing cronGuard mock */
 const GUARD = { apiKey: 'test-uw-key', today: '2026-04-10' };
 
-
 describe('fetch-greek-exposure-strike handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();

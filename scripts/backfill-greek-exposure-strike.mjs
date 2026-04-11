@@ -175,8 +175,7 @@ async function main() {
     let peakStrike = null;
     let peakNetGex = null;
     for (const r of nonZero) {
-      const ng =
-        Number.parseFloat(r.call_gex) + Number.parseFloat(r.put_gex);
+      const ng = Number.parseFloat(r.call_gex) + Number.parseFloat(r.put_gex);
       if (peakNetGex === null || Math.abs(ng) > Math.abs(peakNetGex)) {
         peakNetGex = ng;
         peakStrike = r.strike;

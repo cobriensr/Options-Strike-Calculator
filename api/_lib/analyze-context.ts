@@ -290,10 +290,8 @@ export function formatEconomicCalendarForClaude(
 
     let line = `${severity} ${row.event_name} at ${timeEt} ET [${level}]`;
 
-    const forecastTrimmed =
-      row.forecast != null ? row.forecast.trim() : '';
-    const previousTrimmed =
-      row.previous != null ? row.previous.trim() : '';
+    const forecastTrimmed = row.forecast != null ? row.forecast.trim() : '';
+    const previousTrimmed = row.previous != null ? row.previous.trim() : '';
 
     if (forecastTrimmed) line += ` | Forecast: ${forecastTrimmed}`;
     if (previousTrimmed) {
@@ -557,7 +555,7 @@ function buildPriorFlowTrend(dayData: DayFlowData[]): string {
   const sourcesAligned = SECONDARY_FLOW_SOURCES.every((src) => {
     const row = recentDay.secondarySources[src];
     if (!row) return true; // missing = skip
-    return (row.ncp < row.npp) === last.bullish;
+    return row.ncp < row.npp === last.bullish;
   });
 
   let trend: string;
@@ -723,11 +721,11 @@ export async function buildAnalysisContext(
       getFlowData(analysisDate, 'qqq_etf_tide', asOf),
       getFlowData(analysisDate, 'zero_dte_index', asOf),
       getFlowData(analysisDate, 'zero_dte_greek_flow', asOf),
-      getGreekExposure(analysisDate),        // no timestamp column — full day
+      getGreekExposure(analysisDate), // no timestamp column — full day
       getSpotExposures(analysisDate, 'SPX', asOf),
       getStrikeExposures(analysisDate, 'SPX', asOf),
       getAllExpiryStrikeExposures(analysisDate, 'SPX', asOf),
-      getNetGexHeatmap(analysisDate),        // upsert table — no timestamp, always latest
+      getNetGexHeatmap(analysisDate), // upsert table — no timestamp, always latest
     ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,
@@ -1062,10 +1060,7 @@ export async function buildAnalysisContext(
   // Prior 2 trading days' terminal flow readings — multi-day momentum context
   try {
     const sql = getDb();
-    priorDayFlowContext = await formatPriorDayFlowForClaude(
-      sql,
-      analysisDate,
-    );
+    priorDayFlowContext = await formatPriorDayFlowForClaude(sql, analysisDate);
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch prior-day flow data');
     metrics.increment('analyze_context.prior_flow_error');

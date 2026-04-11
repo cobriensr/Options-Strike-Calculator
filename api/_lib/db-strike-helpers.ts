@@ -913,7 +913,9 @@ export function formatNetGexHeatmapForClaude(rows: NetGexRow[]): string | null {
       '  Gamma Walls (positive net_gex — mean-reverting / dealer support or resistance):',
     );
     for (const w of topWalls) {
-      lines.push(`    ${w.strike}: ${fmtStrike(w.netGex)} (${callPutLabel(w)})`);
+      lines.push(
+        `    ${w.strike}: ${fmtStrike(w.netGex)} (${callPutLabel(w)})`,
+      );
     }
   }
 
@@ -922,7 +924,9 @@ export function formatNetGexHeatmapForClaude(rows: NetGexRow[]): string | null {
       '  Acceleration Zones (negative net_gex — momentum-amplifying / dealer accelerates moves):',
     );
     for (const a of topAccel) {
-      lines.push(`    ${a.strike}: ${fmtStrike(a.netGex)} (${callPutLabel(a)})`);
+      lines.push(
+        `    ${a.strike}: ${fmtStrike(a.netGex)} (${callPutLabel(a)})`,
+      );
     }
   }
 
@@ -980,16 +984,15 @@ export function formatNetGexHeatmapForClaude(rows: NetGexRow[]): string | null {
   if (tableRows.length > 0) {
     lines.push('');
     lines.push('  Per-Strike Net GEX (flip zone ±100 pts):');
-    lines.push(
-      '    Strike |  Net GEX$    | Call% | Net Delta    | Net Charm',
-    );
+    lines.push('    Strike |  Net GEX$    | Call% | Net Delta    | Net Charm');
     for (const r of tableRows) {
       const callPct =
         r.callGexFraction != null
-          ? `${Math.round(r.callGexFraction * 100).toString().padStart(3)}%`
+          ? `${Math.round(r.callGexFraction * 100)
+              .toString()
+              .padStart(3)}%`
           : '  ?%';
-      const marker =
-        r.strike === flipHigh ? ' ← gamma flip' : '';
+      const marker = r.strike === flipHigh ? ' ← gamma flip' : '';
       lines.push(
         `    ${r.strike.toString().padStart(6)} | ${fmtStrike(r.netGex).padStart(12)} | ${callPct} | ${fmtStrike(r.netDelta).padStart(12)} | ${fmtStrike(r.netCharm).padStart(12)}${marker}`,
       );

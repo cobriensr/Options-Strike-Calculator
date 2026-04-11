@@ -109,7 +109,13 @@ const chartOptions: DeepPartial<ChartOptions> = {
   handleScale: { mouseWheel: true, pinch: true },
 };
 
-const GEX_COLORS = ['#00e676', '#69f0ae', '#b9f6ca', '#ccffdf', '#e8fff0'] as const;
+const GEX_COLORS = [
+  '#00e676',
+  '#69f0ae',
+  '#b9f6ca',
+  '#ccffdf',
+  '#e8fff0',
+] as const;
 const GEX_WIDTHS = [2, 1, 1, 1, 1] as const;
 
 // ── Component ─────────────────────────────────────────────────────────────
@@ -216,7 +222,13 @@ export const PriceChart = memo(function PriceChart({
     }
     priceLineRefs.current = [];
 
-    if (!score && previousClose === null && openingCallStrike === null && openingPutStrike === null) return;
+    if (
+      !score &&
+      previousClose === null &&
+      openingCallStrike === null &&
+      openingPutStrike === null
+    )
+      return;
 
     const lines: IPriceLine[] = [];
 

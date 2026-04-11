@@ -729,10 +729,7 @@ describe('GET /api/gex-target-history', () => {
       // availableDates
       mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
       // timestamps
-      mockSql.mockResolvedValueOnce([
-        { timestamp: ts1 },
-        { timestamp: ts2 },
-      ]);
+      mockSql.mockResolvedValueOnce([{ timestamp: ts1 }, { timestamp: ts2 }]);
       // all-rows (bulk) query
       mockSql.mockResolvedValueOnce([
         ...makeTimestampRows(ts1),
@@ -787,10 +784,7 @@ describe('GET /api/gex-target-history', () => {
       const ts2 = '2026-04-02T15:05:00Z';
 
       mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
-      mockSql.mockResolvedValueOnce([
-        { timestamp: ts1 },
-        { timestamp: ts2 },
-      ]);
+      mockSql.mockResolvedValueOnce([{ timestamp: ts1 }, { timestamp: ts2 }]);
       mockSql.mockResolvedValueOnce([
         ...makeTimestampRows(ts1),
         ...makeTimestampRows(ts2),
@@ -870,10 +864,7 @@ describe('GET /api/gex-target-history', () => {
       const ts2 = '2026-04-02T15:05:00Z';
 
       mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
-      mockSql.mockResolvedValueOnce([
-        { timestamp: ts1 },
-        { timestamp: ts2 },
-      ]);
+      mockSql.mockResolvedValueOnce([{ timestamp: ts1 }, { timestamp: ts2 }]);
       // All-rows query returns empty — no feature rows for any timestamp.
       mockSql.mockResolvedValueOnce([]);
 

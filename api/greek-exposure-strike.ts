@@ -50,9 +50,9 @@ interface GreekExposureStrikeResponse {
 // ── Helpers ─────────────────────────────────────────────────
 
 function getTodayET(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(
-    new Date(),
-  );
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+  }).format(new Date());
 }
 
 function parseNum(val: unknown): number | null {

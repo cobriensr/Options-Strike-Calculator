@@ -143,7 +143,6 @@ interface BulkSnapshot {
   dir: TargetScore | null;
 }
 
-
 function mockBulkSnapshot(
   opts: SnapshotOptions & {
     extraSnapshots?: Array<{
@@ -618,9 +617,7 @@ describe('useGexTarget: scrub controls', () => {
     );
 
     const { result } = renderHook(() => useGexTarget(true));
-    await waitFor(() =>
-      expect(result.current.oi?.target?.strike).toBe(5800),
-    );
+    await waitFor(() => expect(result.current.oi?.target?.strike).toBe(5800));
 
     const fetchCalls = mockFetch.mock.calls.length;
 
@@ -629,9 +626,7 @@ describe('useGexTarget: scrub controls', () => {
     });
 
     // State should flip to the cached 19:58 snapshot's oi (strike 5750)
-    await waitFor(() =>
-      expect(result.current.oi?.target?.strike).toBe(5750),
-    );
+    await waitFor(() => expect(result.current.oi?.target?.strike).toBe(5750));
 
     // No new fetch should have fired -- served from cache
     expect(mockFetch.mock.calls.length).toBe(fetchCalls);

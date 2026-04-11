@@ -1235,9 +1235,21 @@ describe('formatNetGexHeatmapForClaude', () => {
 
   it('includes top gamma walls with correct labels', () => {
     const rows: NetGexRow[] = [
-      makeNetGexRow({ strike: 6875, netGex: 14_000_000_000, callGexFraction: 0.73 }),
-      makeNetGexRow({ strike: 6825, netGex: 7_000_000_000, callGexFraction: 0.68 }),
-      makeNetGexRow({ strike: 6775, netGex: -12_000_000_000, callGexFraction: 0.25 }),
+      makeNetGexRow({
+        strike: 6875,
+        netGex: 14_000_000_000,
+        callGexFraction: 0.73,
+      }),
+      makeNetGexRow({
+        strike: 6825,
+        netGex: 7_000_000_000,
+        callGexFraction: 0.68,
+      }),
+      makeNetGexRow({
+        strike: 6775,
+        netGex: -12_000_000_000,
+        callGexFraction: 0.25,
+      }),
     ];
 
     const result = formatNetGexHeatmapForClaude(rows)!;
@@ -1250,7 +1262,11 @@ describe('formatNetGexHeatmapForClaude', () => {
   it('includes acceleration zones for negative net_gex rows', () => {
     const rows: NetGexRow[] = [
       makeNetGexRow({ strike: 6800, netGex: 5_000_000_000 }),
-      makeNetGexRow({ strike: 6775, netGex: -12_000_000_000, callGexFraction: 0.25 }),
+      makeNetGexRow({
+        strike: 6775,
+        netGex: -12_000_000_000,
+        callGexFraction: 0.25,
+      }),
     ];
 
     const result = formatNetGexHeatmapForClaude(rows)!;
@@ -1262,8 +1278,16 @@ describe('formatNetGexHeatmapForClaude', () => {
 
   it('reports NET LONG GAMMA regime when total is positive', () => {
     const rows: NetGexRow[] = [
-      makeNetGexRow({ strike: 6800, netGex: 5_000_000_000, absGex: 5_000_000_000 }),
-      makeNetGexRow({ strike: 6750, netGex: 3_000_000_000, absGex: 3_000_000_000 }),
+      makeNetGexRow({
+        strike: 6800,
+        netGex: 5_000_000_000,
+        absGex: 5_000_000_000,
+      }),
+      makeNetGexRow({
+        strike: 6750,
+        netGex: 3_000_000_000,
+        absGex: 3_000_000_000,
+      }),
     ];
     const result = formatNetGexHeatmapForClaude(rows)!;
     expect(result).toMatch(/NET LONG GAMMA/);
@@ -1271,7 +1295,11 @@ describe('formatNetGexHeatmapForClaude', () => {
 
   it('reports NET SHORT GAMMA regime when total is negative', () => {
     const rows: NetGexRow[] = [
-      makeNetGexRow({ strike: 6800, netGex: -5_000_000_000, absGex: 5_000_000_000 }),
+      makeNetGexRow({
+        strike: 6800,
+        netGex: -5_000_000_000,
+        absGex: 5_000_000_000,
+      }),
     ];
     const result = formatNetGexHeatmapForClaude(rows)!;
     expect(result).toMatch(/NET SHORT GAMMA/);
@@ -1289,9 +1317,21 @@ describe('formatNetGexHeatmapForClaude', () => {
 
   it('marks the flip strike in the per-strike table', () => {
     const rows: NetGexRow[] = [
-      makeNetGexRow({ strike: 6810, netGex: -3_000_000_000, absGex: 3_000_000_000 }),
-      makeNetGexRow({ strike: 6815, netGex: 2_000_000_000, absGex: 2_000_000_000 }),
-      makeNetGexRow({ strike: 6825, netGex: 5_000_000_000, absGex: 5_000_000_000 }),
+      makeNetGexRow({
+        strike: 6810,
+        netGex: -3_000_000_000,
+        absGex: 3_000_000_000,
+      }),
+      makeNetGexRow({
+        strike: 6815,
+        netGex: 2_000_000_000,
+        absGex: 2_000_000_000,
+      }),
+      makeNetGexRow({
+        strike: 6825,
+        netGex: 5_000_000_000,
+        absGex: 5_000_000_000,
+      }),
     ];
     const result = formatNetGexHeatmapForClaude(rows)!;
     expect(result).toMatch(/6815.*gamma flip/);

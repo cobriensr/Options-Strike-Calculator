@@ -461,8 +461,7 @@ export function formatSPXCandlesForClaude(
       const sigma2Hi = vwap + 2 * stdDev;
       const sigmaDist = (sessionClose - vwap) / stdDev;
       const sigmaAbs = Math.abs(sigmaDist).toFixed(1);
-      const sigmaDir =
-        sigmaDist > 0 ? 'above' : sigmaDist < 0 ? 'below' : 'at';
+      const sigmaDir = sigmaDist > 0 ? 'above' : sigmaDist < 0 ? 'below' : 'at';
       const sigma1Band = `[${sigma1Lo.toFixed(1)}, ${sigma1Hi.toFixed(1)}]`;
       const sigma2Band = `[${sigma2Lo.toFixed(1)}, ${sigma2Hi.toFixed(1)}]`;
       const sigmaLabel =

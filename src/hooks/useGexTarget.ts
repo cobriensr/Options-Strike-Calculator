@@ -272,7 +272,9 @@ export function useGexTarget(
   const mountedRef = useRef(true);
   /** Cache of every snapshot loaded for the current date (keyed by timestamp). */
   const allSnapshotsRef = useRef<Map<string, BulkSnapshot>>(new Map());
-  const [openingCallStrike, setOpeningCallStrike] = useState<number | null>(null);
+  const [openingCallStrike, setOpeningCallStrike] = useState<number | null>(
+    null,
+  );
   const [openingPutStrike, setOpeningPutStrike] = useState<number | null>(null);
 
   // `todayET` recomputes each render so the panel flips from LIVE -> BACKTEST

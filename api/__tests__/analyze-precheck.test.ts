@@ -236,7 +236,9 @@ describe('runAnalysisPreCheck — tool execution', () => {
       AS_OF,
     );
 
-    expect(result).toMatch(/^=== Additional Market Data \(fetched on request\)/);
+    expect(result).toMatch(
+      /^=== Additional Market Data \(fetched on request\)/,
+    );
   });
 
   it('returns null when all tool results are is_error true', async () => {

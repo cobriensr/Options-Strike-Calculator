@@ -47,8 +47,8 @@ export async function runAnalysisPreCheck(
     const tools = buildClaudeTools();
 
     const systemPrompt =
-      "You are a data-retrieval assistant. Decide what additional SPX market " +
-      "data would help the upcoming analysis. Use the provided tools to fetch " +
+      'You are a data-retrieval assistant. Decide what additional SPX market ' +
+      'data would help the upcoming analysis. Use the provided tools to fetch ' +
       "it, or respond with 'none' if existing context is sufficient.";
 
     const vixVal = context.vix ?? 'N/A';
@@ -68,9 +68,7 @@ export async function runAnalysisPreCheck(
       `- GEX Regime: ${regimeVal}\n\n` +
       `What additional market data would most improve this analysis?`;
 
-    const messages: MessageParam[] = [
-      { role: 'user', content: userText },
-    ];
+    const messages: MessageParam[] = [{ role: 'user', content: userText }];
 
     // Collect all tool result strings across all turns
     const toolResultTexts: string[] = [];

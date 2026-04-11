@@ -247,8 +247,8 @@ export const StrikeBox = memo(function StrikeBox({
     // GEX$ / (spot × 100) converts signed GEX dollars to a contract-scaled
     // proxy: positive = net long gamma (dealer long delta / support);
     // negative = net short gamma (dealer short delta / resistance).
-    const cpVals = top5.map((s) =>
-      s.features.gexDollars / (s.features.spot * 100),
+    const cpVals = top5.map(
+      (s) => s.features.gexDollars / (s.features.spot * 100),
     );
     return {
       charm: computeBarStats(charmVals),
@@ -503,7 +503,9 @@ export const StrikeBox = memo(function StrikeBox({
                     </td>
 
                     {/* C/P */}
-                    <td className={tdCls} title={cpTooltip}>{cpLabel}</td>
+                    <td className={tdCls} title={cpTooltip}>
+                      {cpLabel}
+                    </td>
 
                     {/* HOT% */}
                     <td className={tdCls}>

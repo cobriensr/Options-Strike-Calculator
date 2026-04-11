@@ -808,14 +808,14 @@ describe('formatPriorDayFlowForClaude', () => {
   it('formats a single prior day and includes arc + session type', async () => {
     // Three market_tide rows: open (14 UTC), midday (17 UTC), close (20 UTC)
     const tideRows = [
-      row('market_tide', -800000000, -200000000, '2026-04-09', 14),  // open: bull
+      row('market_tide', -800000000, -200000000, '2026-04-09', 14), // open: bull
       row('market_tide', -2500000000, -300000000, '2026-04-09', 17), // midday: bull
       row('market_tide', -1100000000, -250000000, '2026-04-09', 20), // close: bull
     ];
     const sql = makeSql([
-      [{ date: '2026-04-09' }],     // dateRows
-      tideRows,                      // market_tide rows for 2026-04-09
-      [],                            // secondary sources (empty is fine)
+      [{ date: '2026-04-09' }], // dateRows
+      tideRows, // market_tide rows for 2026-04-09
+      [], // secondary sources (empty is fine)
     ]);
     const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
     expect(result).not.toBeNull();
@@ -831,13 +831,9 @@ describe('formatPriorDayFlowForClaude', () => {
     const tideRows = [
       row('market_tide', -500000000, -200000000, '2026-04-09', 14), // open bull, 0.3B
       row('market_tide', -2200000000, -100000000, '2026-04-09', 17), // midday bull, 2.1B
-      row('market_tide', -600000000, -100000000, '2026-04-09', 20),  // close bull, 0.5B
+      row('market_tide', -600000000, -100000000, '2026-04-09', 20), // close bull, 0.5B
     ];
-    const sql = makeSql([
-      [{ date: '2026-04-09' }],
-      tideRows,
-      [],
-    ]);
+    const sql = makeSql([[{ date: '2026-04-09' }], tideRows, []]);
     const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
     expect(result).not.toBeNull();
     expect(result).toContain('FADE');
@@ -848,13 +844,9 @@ describe('formatPriorDayFlowForClaude', () => {
     const tideRows = [
       row('market_tide', -1500000000, -400000000, '2026-04-09', 14), // open bull
       row('market_tide', -2000000000, -300000000, '2026-04-09', 17), // midday bull
-      row('market_tide', 300000000, -1800000000, '2026-04-09', 20),  // close bear (ncp > npp)
+      row('market_tide', 300000000, -1800000000, '2026-04-09', 20), // close bear (ncp > npp)
     ];
-    const sql = makeSql([
-      [{ date: '2026-04-09' }],
-      tideRows,
-      [],
-    ]);
+    const sql = makeSql([[{ date: '2026-04-09' }], tideRows, []]);
     const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
     expect(result).not.toBeNull();
     expect(result).toContain('REVERSAL');
@@ -876,10 +868,10 @@ describe('formatPriorDayFlowForClaude', () => {
     ];
     const sql = makeSql([
       [{ date: '2026-04-09' }, { date: '2026-04-08' }], // dateRows (newest first)
-      tideD09,   // tide rows for 2026-04-09
-      tideD08,   // tide rows for 2026-04-08
-      [],        // secondary for 2026-04-09
-      [],        // secondary for 2026-04-08
+      tideD09, // tide rows for 2026-04-09
+      tideD08, // tide rows for 2026-04-08
+      [], // secondary for 2026-04-09
+      [], // secondary for 2026-04-08
     ]);
     const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
     expect(result).not.toBeNull();
@@ -919,11 +911,7 @@ describe('formatPriorDayFlowForClaude', () => {
       row('market_tide', -1200000000, -300000000, '2026-04-09', 17),
       row('market_tide', -1000000000, -300000000, '2026-04-09', 20),
     ];
-    const sql = makeSql([
-      [{ date: '2026-04-09' }],
-      tideRows,
-      [],
-    ]);
+    const sql = makeSql([[{ date: '2026-04-09' }], tideRows, []]);
     const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
     expect(result).toContain('Trend:');
   });
@@ -935,13 +923,15 @@ describe('formatPriorDayFlowForClaude', () => {
       row('market_tide', -1000000000, -300000000, '2026-04-09', 20),
     ];
     const secRows = [
-      { ticker: 'spx_flow', ncp: -220000000, npp: -80000000, date: '2026-04-09', created_at: new Date() },
+      {
+        ticker: 'spx_flow',
+        ncp: -220000000,
+        npp: -80000000,
+        date: '2026-04-09',
+        created_at: new Date(),
+      },
     ];
-    const sql = makeSql([
-      [{ date: '2026-04-09' }],
-      tideRows,
-      secRows,
-    ]);
+    const sql = makeSql([[{ date: '2026-04-09' }], tideRows, secRows]);
     const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
     expect(result).toContain('Confirmation:');
     expect(result).toContain('SPX Flow');
@@ -950,8 +940,8 @@ describe('formatPriorDayFlowForClaude', () => {
   it('handles no market_tide rows for a prior date gracefully', async () => {
     const sql = makeSql([
       [{ date: '2026-04-09' }],
-      [],  // no market_tide rows
-      [],  // no secondary rows
+      [], // no market_tide rows
+      [], // no secondary rows
     ]);
     const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
     expect(result).not.toBeNull();
