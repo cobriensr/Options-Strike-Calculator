@@ -437,6 +437,7 @@ export function formatSPXCandlesForClaude(
 
   // Price relative to session VWAP approximation. Running sum — works
   // for any candle period, no change needed for 1m resolution.
+  // Also computes volume-weighted standard deviation for sigma bands.
   const totalVolume = candles.reduce((s, c) => s + c.volume, 0);
   if (totalVolume > 0) {
     const vwap =
@@ -444,10 +445,40 @@ export function formatSPXCandlesForClaude(
         (s, c) => s + ((c.high + c.low + c.close) / 3) * c.volume,
         0,
       ) / totalVolume;
-    const vwapDist = sessionClose - vwap;
-    lines.push(
-      `  Approx VWAP: ${vwap.toFixed(1)} | Price ${vwapDist > 0 ? 'above' : 'below'} VWAP by ${Math.abs(vwapDist).toFixed(1)} pts`,
-    );
+
+    const variance =
+      candles.reduce((s, c) => {
+        const tp = (c.high + c.low + c.close) / 3;
+        const diff = tp - vwap;
+        return s + diff * diff * c.volume;
+      }, 0) / totalVolume;
+    const stdDev = Math.sqrt(variance);
+
+    if (stdDev > 0) {
+      const sigma1Lo = vwap - stdDev;
+      const sigma1Hi = vwap + stdDev;
+      const sigma2Lo = vwap - 2 * stdDev;
+      const sigma2Hi = vwap + 2 * stdDev;
+      const sigmaDist = (sessionClose - vwap) / stdDev;
+      const sigmaAbs = Math.abs(sigmaDist).toFixed(1);
+      const sigmaDir =
+        sigmaDist > 0 ? 'above' : sigmaDist < 0 ? 'below' : 'at';
+      const sigma1Band = `[${sigma1Lo.toFixed(1)}, ${sigma1Hi.toFixed(1)}]`;
+      const sigma2Band = `[${sigma2Lo.toFixed(1)}, ${sigma2Hi.toFixed(1)}]`;
+      const sigmaLabel =
+        sigmaDir === 'at' ? '0.0σ at VWAP' : `${sigmaAbs}σ ${sigmaDir} VWAP`;
+      lines.push(
+        `  Approx VWAP: ${vwap.toFixed(1)} | ±1σ: ${sigma1Band} | ±2σ: ${sigma2Band} | Price ${sigmaLabel}`,
+      );
+    } else {
+      // All candles printed at identical typical price — sigma undefined;
+      // fall back to simple point-distance format.
+      const vwapDist = sessionClose - vwap;
+      const distDir = vwapDist > 0 ? 'above' : 'below';
+      lines.push(
+        `  Approx VWAP: ${vwap.toFixed(1)} | Price ${distDir} VWAP by ${Math.abs(vwapDist).toFixed(1)} pts`,
+      );
+    }
   }
 
   // ── Recent candle table (last 30 = 30 minutes of detail) ───

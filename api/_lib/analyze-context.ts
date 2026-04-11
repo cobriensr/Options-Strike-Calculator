@@ -246,6 +246,338 @@ function formatMlFindingsForClaude(
   return lines.join('\n');
 }
 
+// ── NeonQueryFunction minimal interface for the helper functions ──
+
+type Sql = ReturnType<typeof getDb>;
+
+// ── Economic event row shape from economic_events table ──
+
+interface EconomicEventRow {
+  event_name: string;
+  event_time: string | Date;
+  event_type: string;
+  forecast: string | null;
+  previous: string | null;
+  reported_period: string | null;
+}
+
+const HIGH_SEVERITY_TYPES = new Set(['FOMC', 'CPI', 'PCE', 'JOBS', 'GDP']);
+
+/**
+ * Format rows from economic_events into a Claude-readable block.
+ * High-severity events (FOMC, CPI, PCE, JOBS, GDP) get 🔴; others get 🟡.
+ */
+export function formatEconomicCalendarForClaude(
+  rows: EconomicEventRow[],
+): string {
+  if (rows.length === 0) return 'No scheduled economic events today.';
+
+  const lines = rows.map((row) => {
+    const severity = HIGH_SEVERITY_TYPES.has(row.event_type) ? '🔴' : '🟡';
+    const level = HIGH_SEVERITY_TYPES.has(row.event_type) ? 'HIGH' : 'MEDIUM';
+
+    // Convert event_time (ISO timestamp or Date) to "HH:MM ET"
+    const dt =
+      row.event_time instanceof Date
+        ? row.event_time
+        : new Date(row.event_time);
+    const timeEt = dt.toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+    let line = `${severity} ${row.event_name} at ${timeEt} ET [${level}]`;
+
+    const forecastTrimmed =
+      row.forecast != null ? row.forecast.trim() : '';
+    const previousTrimmed =
+      row.previous != null ? row.previous.trim() : '';
+
+    if (forecastTrimmed) line += ` | Forecast: ${forecastTrimmed}`;
+    if (previousTrimmed) {
+      const period =
+        row.reported_period != null && row.reported_period.trim()
+          ? ` (${row.reported_period.trim()})`
+          : '';
+      line += ` | Previous: ${previousTrimmed}${period}`;
+    }
+
+    return line;
+  });
+
+  return lines.join('\n');
+}
+
+const FLOW_SOURCE_LABELS: Record<string, string> = {
+  market_tide: 'Market Tide',
+  spx_flow: 'SPX Flow',
+  spy_flow: 'SPY Flow',
+  qqq_flow: 'QQQ Flow',
+  spy_etf_tide: 'SPY ETF Tide',
+  qqq_etf_tide: 'QQQ ETF Tide',
+};
+
+const SECONDARY_FLOW_SOURCES = [
+  'spx_flow',
+  'spy_flow',
+  'qqq_flow',
+  'spy_etf_tide',
+  'qqq_etf_tide',
+] as const;
+
+type SecondaryFlowSource = (typeof SECONDARY_FLOW_SOURCES)[number];
+
+// 17:00 UTC = 12:00 PM ET (noon) for mid-session checkpoint
+const MIDDAY_UTC_HOUR = 17;
+
+interface FlowRow {
+  ncp: number;
+  npp: number;
+  ticker: string;
+  date: string;
+  created_at: string | Date;
+}
+
+interface TideArc {
+  open: FlowRow;
+  midday: FlowRow;
+  close: FlowRow;
+}
+
+interface DayFlowData {
+  date: string;
+  tideArc: TideArc | null;
+  secondarySources: Partial<Record<SecondaryFlowSource, FlowRow>>;
+}
+
+/** Format a net flow value as "+/-XB/M dir" label. */
+function formatNetFlow(ncp: number, npp: number): string {
+  const net = ncp - npp;
+  const dir = net < 0 ? 'bull' : 'bear';
+  const absNet = Math.abs(net);
+  const label =
+    absNet >= 1e9
+      ? `${(absNet / 1e9).toFixed(1)}B`
+      : `${Math.round(absNet / 1e6)}M`;
+  return `${net < 0 ? '-' : '+'}${label} ${dir}`;
+}
+
+/**
+ * Find the row whose created_at is closest to 17:00 UTC (noon ET).
+ * Rows must be sorted ASC by created_at before calling this.
+ */
+function findMiddayRow(rows: FlowRow[]): FlowRow {
+  let best = rows[0]!;
+  let bestDiff = Infinity;
+  for (const row of rows) {
+    const dt =
+      row.created_at instanceof Date
+        ? row.created_at
+        : new Date(row.created_at);
+    const diffHours = Math.abs(dt.getUTCHours() - MIDDAY_UTC_HOUR);
+    if (diffHours < bestDiff) {
+      bestDiff = diffHours;
+      best = row;
+    }
+  }
+  return best;
+}
+
+/**
+ * Classify a single day's Market Tide intraday arc into a session type.
+ *
+ * - REVERSAL   — open and close in opposite directions
+ * - FADE       — same direction open/close but midday peak ≥ 2× close magnitude
+ * - TREND DAY  — same direction, midday peak ≥ 1.5× close magnitude (strong, held)
+ * - SUSTAINED  — same direction, relatively flat arc (< 1.5× peak/close ratio)
+ */
+function classifySessionType(arc: TideArc): string {
+  const openBull = arc.open.ncp < arc.open.npp;
+  const closeBull = arc.close.ncp < arc.close.npp;
+
+  if (openBull !== closeBull) return 'REVERSAL';
+
+  const closeMag = Math.abs(arc.close.ncp - arc.close.npp);
+  const middayMag = Math.abs(arc.midday.ncp - arc.midday.npp);
+
+  if (closeMag === 0) return 'SUSTAINED';
+
+  const ratio = middayMag / closeMag;
+  if (ratio >= 2) return 'FADE';
+  if (ratio >= 1.5) return 'TREND DAY';
+  return 'SUSTAINED';
+}
+
+/**
+ * Format prior 2 trading days' flow readings for Claude, including the full
+ * intraday arc (open → midday → close) for Market Tide and terminal values
+ * for secondary sources. Returns null when no prior dates have data.
+ */
+export async function formatPriorDayFlowForClaude(
+  sql: Sql,
+  currentDate: string,
+): Promise<string | null> {
+  // Find the 2 most recent dates before currentDate that have market_tide data
+  const dateRows = await sql`
+    SELECT DISTINCT date
+    FROM flow_data
+    WHERE ticker = 'market_tide'
+      AND date < ${currentDate}
+    ORDER BY date DESC
+    LIMIT 2
+  `;
+
+  if (dateRows.length === 0) return null;
+
+  const priorDates = (dateRows as Array<{ date: string }>).map((r) => r.date);
+
+  const dayData: DayFlowData[] = await Promise.all(
+    priorDates.map(async (date) => {
+      // Fetch all Market Tide rows in chronological order to extract arc
+      const tideRows = (await sql`
+        SELECT ncp, npp, ticker, date, created_at
+        FROM flow_data
+        WHERE date = ${date}
+          AND ticker = 'market_tide'
+        ORDER BY created_at ASC
+      `) as FlowRow[];
+
+      let tideArc: TideArc | null = null;
+      if (tideRows.length > 0) {
+        const openRow = tideRows[0]!;
+        const closeRow = tideRows.at(-1)!;
+        const middayRow = findMiddayRow(tideRows);
+        tideArc = { open: openRow, midday: middayRow, close: closeRow };
+      }
+
+      // Fetch terminal row for each secondary source
+      const secRows = (await sql`
+        SELECT DISTINCT ON (ticker) ticker, ncp, npp, date, created_at
+        FROM flow_data
+        WHERE date = ${date}
+          AND ticker = ANY(${SECONDARY_FLOW_SOURCES as unknown as string[]})
+        ORDER BY ticker, created_at DESC
+      `) as FlowRow[];
+
+      const secondarySources: Partial<Record<SecondaryFlowSource, FlowRow>> =
+        {};
+      for (const row of secRows) {
+        if (
+          SECONDARY_FLOW_SOURCES.includes(row.ticker as SecondaryFlowSource)
+        ) {
+          secondarySources[row.ticker as SecondaryFlowSource] = row;
+        }
+      }
+
+      return { date, tideArc, secondarySources };
+    }),
+  );
+
+  // Reverse so oldest is first (chronological order in output)
+  dayData.reverse();
+
+  const lines: string[] = ['## Prior-Day Flow Trend'];
+
+  for (const day of dayData) {
+    lines.push('');
+    lines.push(`### ${day.date}`);
+
+    if (day.tideArc) {
+      const { open, midday, close } = day.tideArc;
+      const openLabel = formatNetFlow(open.ncp, open.npp);
+      const middayLabel = formatNetFlow(midday.ncp, midday.npp);
+      const closeLabel = formatNetFlow(close.ncp, close.npp);
+      const sessionType = classifySessionType(day.tideArc);
+      const closeBull = close.ncp < close.npp;
+      const closeDir = closeBull ? 'bullish' : 'bearish';
+      lines.push(
+        `Market Tide Arc: Open ${openLabel} → Midday ${middayLabel} → Close ${closeLabel}`,
+      );
+      lines.push(`Session Type: ${sessionType} — ${closeDir} close`);
+    } else {
+      lines.push('Market Tide: N/A');
+    }
+
+    // Secondary sources — terminal values as confirmation column
+    const secParts: string[] = [];
+    for (const src of SECONDARY_FLOW_SOURCES) {
+      const row = day.secondarySources[src];
+      if (row) {
+        const label = FLOW_SOURCE_LABELS[src] ?? src;
+        secParts.push(`${label}: ${formatNetFlow(row.ncp, row.npp)}`);
+      }
+    }
+    if (secParts.length > 0) {
+      lines.push(`Confirmation: ${secParts.join(' | ')}`);
+    }
+  }
+
+  // Cross-day trend summary
+  lines.push('');
+  lines.push(`Trend: ${buildPriorFlowTrend(dayData)}`);
+
+  return lines.join('\n');
+}
+
+function buildPriorFlowTrend(dayData: DayFlowData[]): string {
+  if (dayData.length === 0) return 'Insufficient data.';
+
+  // Assess Market Tide close direction and strength for each day
+  const assessments = dayData
+    .map((day) => {
+      if (!day.tideArc) return null;
+      const { close } = day.tideArc;
+      return {
+        bullish: close.ncp < close.npp,
+        strength: Math.abs(close.ncp - close.npp),
+        sessionType: classifySessionType(day.tideArc),
+      };
+    })
+    .filter(Boolean) as Array<{
+    bullish: boolean;
+    strength: number;
+    sessionType: string;
+  }>;
+
+  if (assessments.length === 0)
+    return 'No Market Tide data available for prior days.';
+
+  if (assessments.length === 1) {
+    const a = assessments[0]!;
+    return `Market Tide was ${a.bullish ? 'bullish' : 'bearish'} (${a.sessionType}, single prior day — no trend).`;
+  }
+
+  const first = assessments[0]!;
+  const last = assessments.at(-1)!;
+
+  // Check alignment across secondary sources for the most recent prior day
+  const recentDay = dayData.at(-1)!;
+  const sourcesAligned = SECONDARY_FLOW_SOURCES.every((src) => {
+    const row = recentDay.secondarySources[src];
+    if (!row) return true; // missing = skip
+    return (row.ncp < row.npp) === last.bullish;
+  });
+
+  let trend: string;
+  if (first.bullish === last.bullish) {
+    const strengthening = last.strength > first.strength;
+    const dir = last.bullish ? 'bullish' : 'bearish';
+    const change = strengthening ? 'strengthening' : 'weakening';
+    trend = `Market Tide ${change} ${dir} (${last.sessionType} most recent session).`;
+  } else {
+    const newDir = last.bullish ? 'bullish' : 'bearish';
+    trend = `Market Tide reversing to ${newDir} (${last.sessionType} most recent session).`;
+  }
+
+  const alignmentNote = sourcesAligned
+    ? ' Other sources aligned.'
+    : ' Mixed signals across sources.';
+
+  return trend + alignmentNote;
+}
+
 /**
  * Build the full analysis context by fetching data from multiple sources
  * in parallel, then assembling the user message template.
@@ -358,6 +690,8 @@ export async function buildAnalysisContext(
   let volRealizedContext: string | null = null;
   let mlCalibrationContext: string | null = null;
   let futuresContext: string | null = null;
+  let priorDayFlowContext: string | null = null;
+  let economicCalendarContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
@@ -725,6 +1059,40 @@ export async function buildAnalysisContext(
     logger.debug({ err: error_ }, 'Futures context fetch failed — skipping');
   }
 
+  // Prior 2 trading days' terminal flow readings — multi-day momentum context
+  try {
+    const sql = getDb();
+    priorDayFlowContext = await formatPriorDayFlowForClaude(
+      sql,
+      analysisDate,
+    );
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch prior-day flow data');
+    metrics.increment('analyze_context.prior_flow_error');
+  }
+
+  // Economic calendar from DB — structured event data with forecast/consensus
+  try {
+    const sql = getDb();
+    const calRows = await sql`
+      SELECT event_name, event_time, event_type, forecast, previous,
+             reported_period
+      FROM economic_events
+      WHERE date = ${analysisDate}
+      ORDER BY event_time ASC
+    `;
+    if (calRows.length > 0) {
+      economicCalendarContext = formatEconomicCalendarForClaude(
+        calRows as EconomicEventRow[],
+      );
+    } else {
+      economicCalendarContext = 'No scheduled economic events today.';
+    }
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch economic calendar from DB');
+    metrics.increment('analyze_context.economic_calendar_error');
+  }
+
   // On-demand 14 DTE directional chain (midday only, not backtests)
   let directionalChainContext: string | null = null;
   if (mode === 'midday' && !context.isBacktest) {
@@ -845,6 +1213,8 @@ export async function buildAnalysisContext(
   if (!overnightGapContext) unavailable.push('Overnight Gap Analysis');
   if (!oiChangeContext) unavailable.push('OI Change Analysis');
   if (!futuresContext) unavailable.push('Futures Context');
+  if (!priorDayFlowContext) unavailable.push('Prior-Day Flow Trend');
+  if (!economicCalendarContext) unavailable.push('Economic Calendar');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -894,6 +1264,8 @@ export async function buildAnalysisContext(
 ${context.dataNote ? `\n⚠️ DATA NOTES: ${context.dataNote}\n` : ''}
 ${mlCalibrationContext ? `\n## ML Calibration Update (from latest EDA pipeline run)\nWhen these numbers differ from the static values in the system prompt rules, use THESE numbers — they are more recent.\n${mlCalibrationContext}\n` : ''}
 ${unavailableSection}
+${economicCalendarContext ? `\n## Today's Economic Events (from DB)\n${economicCalendarContext}\n` : ''}
+${priorDayFlowContext ? `\n${priorDayFlowContext}\n` : ''}
 ${marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${marketTideContext}\n${marketTideOtmSection}` : ''}
 ${spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. These are the primary flow signal (Rule 8, 50% weight). Trust these values over screenshot estimates.\n\n${spxFlowContext}\n` : ''}
 ${spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPY. Secondary confirmation signal (Rule 8, 15% weight).\n\n${spyFlowContext}\n` : ''}

@@ -11,7 +11,12 @@ import { describe, it, expect } from 'vitest';
  * utilities: numOrUndef and formatMlFindingsForClaude.
  */
 
-import { numOrUndef, parseEntryTimeAsUtc } from '../_lib/analyze-context.js';
+import {
+  numOrUndef,
+  parseEntryTimeAsUtc,
+  formatEconomicCalendarForClaude,
+  formatPriorDayFlowForClaude,
+} from '../_lib/analyze-context.js';
 
 // ── numOrUndef ─────────────────────────────────────────────
 
@@ -616,5 +621,340 @@ describe('parseEntryTimeAsUtc', () => {
     const result = parseEntryTimeAsUtc('2:55 PM CT', '2026-04-10');
     const d = new Date(result!);
     expect(d.getUTCSeconds()).toBe(59);
+  });
+});
+
+// ── formatEconomicCalendarForClaude ──────────────────────────
+
+describe('formatEconomicCalendarForClaude', () => {
+  it('returns no-events string for empty rows', () => {
+    const result = formatEconomicCalendarForClaude([]);
+    expect(result).toBe('No scheduled economic events today.');
+  });
+
+  it('formats a high-severity CPI event with 🔴 and HIGH label', () => {
+    const rows = [
+      {
+        event_name: 'Consumer Price Index',
+        event_time: '2026-04-10T12:30:00.000Z', // 8:30 AM ET
+        event_type: 'CPI',
+        forecast: '+0.3%',
+        previous: '+0.2%',
+        reported_period: 'Mar 2026',
+      },
+    ];
+    const result = formatEconomicCalendarForClaude(rows);
+    expect(result).toContain('🔴');
+    expect(result).toContain('[HIGH]');
+    expect(result).toContain('Consumer Price Index');
+    expect(result).toContain('Forecast: +0.3%');
+    expect(result).toContain('Previous: +0.2%');
+    expect(result).toContain('Mar 2026');
+  });
+
+  it('formats a medium-severity PMI event with 🟡 and MEDIUM label', () => {
+    const rows = [
+      {
+        event_name: 'Manufacturing PMI',
+        event_time: '2026-04-10T13:45:00.000Z', // 9:45 AM ET
+        event_type: 'PMI',
+        forecast: '51.5',
+        previous: '51.2',
+        reported_period: null,
+      },
+    ];
+    const result = formatEconomicCalendarForClaude(rows);
+    expect(result).toContain('🟡');
+    expect(result).toContain('[MEDIUM]');
+    expect(result).toContain('Manufacturing PMI');
+    expect(result).toContain('Forecast: 51.5');
+    expect(result).toContain('Previous: 51.2');
+  });
+
+  it('handles null forecast gracefully — omits Forecast field', () => {
+    const rows = [
+      {
+        event_name: 'GDP',
+        event_time: '2026-04-10T12:30:00.000Z',
+        event_type: 'GDP',
+        forecast: null,
+        previous: '+2.1%',
+        reported_period: 'Q4 2025',
+      },
+    ];
+    const result = formatEconomicCalendarForClaude(rows);
+    expect(result).not.toContain('Forecast:');
+    expect(result).toContain('Previous: +2.1%');
+  });
+
+  it('handles null previous gracefully — omits Previous field', () => {
+    const rows = [
+      {
+        event_name: 'PCE',
+        event_time: '2026-04-10T12:30:00.000Z',
+        event_type: 'PCE',
+        forecast: '+0.2%',
+        previous: null,
+        reported_period: null,
+      },
+    ];
+    const result = formatEconomicCalendarForClaude(rows);
+    expect(result).toContain('Forecast: +0.2%');
+    expect(result).not.toContain('Previous:');
+  });
+
+  it('formats event_time as Date object correctly', () => {
+    const rows = [
+      {
+        event_name: 'FOMC Minutes',
+        event_time: new Date('2026-04-10T18:00:00.000Z'), // 2:00 PM ET
+        event_type: 'FOMC',
+        forecast: null,
+        previous: null,
+        reported_period: null,
+      },
+    ];
+    const result = formatEconomicCalendarForClaude(rows);
+    expect(result).toContain('14:00 ET');
+  });
+
+  it('formats multiple events in order', () => {
+    const rows = [
+      {
+        event_name: 'CPI',
+        event_time: '2026-04-10T12:30:00.000Z',
+        event_type: 'CPI',
+        forecast: null,
+        previous: null,
+        reported_period: null,
+      },
+      {
+        event_name: 'PMI',
+        event_time: '2026-04-10T13:45:00.000Z',
+        event_type: 'PMI',
+        forecast: null,
+        previous: null,
+        reported_period: null,
+      },
+    ];
+    const result = formatEconomicCalendarForClaude(rows);
+    const lines = result.split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('CPI');
+    expect(lines[1]).toContain('PMI');
+  });
+
+  it('recognizes all high-severity types: FOMC, CPI, PCE, JOBS, GDP', () => {
+    const highTypes = ['FOMC', 'CPI', 'PCE', 'JOBS', 'GDP'];
+    for (const eventType of highTypes) {
+      const rows = [
+        {
+          event_name: `${eventType} Event`,
+          event_time: '2026-04-10T12:30:00.000Z',
+          event_type: eventType,
+          forecast: null,
+          previous: null,
+          reported_period: null,
+        },
+      ];
+      const result = formatEconomicCalendarForClaude(rows);
+      expect(result).toContain('🔴');
+      expect(result).toContain('[HIGH]');
+    }
+  });
+});
+
+// ── formatPriorDayFlowForClaude ──────────────────────────────
+
+describe('formatPriorDayFlowForClaude', () => {
+  // Sequential mock SQL: each tagged-template call consumes the next response.
+  // Call order for N prior dates:
+  //   0: SELECT DISTINCT date (dateRows)
+  //   1: market_tide ASC rows for date[0]
+  //   2: market_tide ASC rows for date[1]  (Promise.all starts both, first awaits fire first)
+  //   3: secondary-source DISTINCT ON rows for date[0]
+  //   4: secondary-source DISTINCT ON rows for date[1]
+  const makeSql = (responses: unknown[][]) => {
+    let callIdx = 0;
+    const fn = () => {
+      const resp = responses[callIdx] ?? [];
+      callIdx++;
+      return Promise.resolve(resp);
+    };
+    return fn as unknown as ReturnType<typeof import('../_lib/db.js').getDb>;
+  };
+
+  // Helpers to build realistic flow rows with created_at timestamps
+  const row = (
+    ticker: string,
+    ncp: number,
+    npp: number,
+    date: string,
+    utcHour: number,
+  ) => ({
+    ticker,
+    ncp,
+    npp,
+    date,
+    created_at: new Date(`${date}T${String(utcHour).padStart(2, '0')}:00:00Z`),
+  });
+
+  it('returns null when no prior dates have market_tide data', async () => {
+    const sql = makeSql([[]]); // empty dateRows
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).toBeNull();
+  });
+
+  it('formats a single prior day and includes arc + session type', async () => {
+    // Three market_tide rows: open (14 UTC), midday (17 UTC), close (20 UTC)
+    const tideRows = [
+      row('market_tide', -800000000, -200000000, '2026-04-09', 14),  // open: bull
+      row('market_tide', -2500000000, -300000000, '2026-04-09', 17), // midday: bull
+      row('market_tide', -1100000000, -250000000, '2026-04-09', 20), // close: bull
+    ];
+    const sql = makeSql([
+      [{ date: '2026-04-09' }],     // dateRows
+      tideRows,                      // market_tide rows for 2026-04-09
+      [],                            // secondary sources (empty is fine)
+    ]);
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).not.toBeNull();
+    expect(result).toContain('Prior-Day Flow Trend');
+    expect(result).toContain('2026-04-09');
+    expect(result).toContain('Market Tide Arc:');
+    expect(result).toContain('Session Type:');
+    expect(result).toContain('bullish');
+  });
+
+  it('classifies FADE when midday peak is ≥ 2× close magnitude', async () => {
+    // close mag = 0.5B, midday mag = 2.1B → ratio = 4.2 → FADE
+    const tideRows = [
+      row('market_tide', -500000000, -200000000, '2026-04-09', 14), // open bull, 0.3B
+      row('market_tide', -2200000000, -100000000, '2026-04-09', 17), // midday bull, 2.1B
+      row('market_tide', -600000000, -100000000, '2026-04-09', 20),  // close bull, 0.5B
+    ];
+    const sql = makeSql([
+      [{ date: '2026-04-09' }],
+      tideRows,
+      [],
+    ]);
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).not.toBeNull();
+    expect(result).toContain('FADE');
+  });
+
+  it('classifies REVERSAL when open and close are in opposite directions', async () => {
+    // open: bull (ncp < npp); close: bear (ncp > npp)
+    const tideRows = [
+      row('market_tide', -1500000000, -400000000, '2026-04-09', 14), // open bull
+      row('market_tide', -2000000000, -300000000, '2026-04-09', 17), // midday bull
+      row('market_tide', 300000000, -1800000000, '2026-04-09', 20),  // close bear (ncp > npp)
+    ];
+    const sql = makeSql([
+      [{ date: '2026-04-09' }],
+      tideRows,
+      [],
+    ]);
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).not.toBeNull();
+    expect(result).toContain('REVERSAL');
+  });
+
+  it('identifies strengthening bullish trend across 2 days', async () => {
+    // Day 1 (2026-04-08): close net -1.3B bullish
+    // Day 2 (2026-04-09): close net -1.7B bullish — stronger
+    // Call order: dateRows, tide-d09, tide-d08, sec-d09, sec-d08
+    const tideD09 = [
+      row('market_tide', -2200000000, -500000000, '2026-04-09', 14),
+      row('market_tide', -2500000000, -500000000, '2026-04-09', 17),
+      row('market_tide', -2200000000, -500000000, '2026-04-09', 20), // close net -1.7B
+    ];
+    const tideD08 = [
+      row('market_tide', -1500000000, -400000000, '2026-04-08', 14),
+      row('market_tide', -1600000000, -400000000, '2026-04-08', 17),
+      row('market_tide', -1800000000, -500000000, '2026-04-08', 20), // close net -1.3B
+    ];
+    const sql = makeSql([
+      [{ date: '2026-04-09' }, { date: '2026-04-08' }], // dateRows (newest first)
+      tideD09,   // tide rows for 2026-04-09
+      tideD08,   // tide rows for 2026-04-08
+      [],        // secondary for 2026-04-09
+      [],        // secondary for 2026-04-08
+    ]);
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).not.toBeNull();
+    expect(result).toContain('Trend:');
+    expect(result).toContain('strengthening');
+    expect(result).toContain('bullish');
+  });
+
+  it('identifies reversing trend when close direction flips across days', async () => {
+    // Day 1 (2026-04-08): close bullish (ncp < npp)
+    // Day 2 (2026-04-09): close bearish (ncp > npp)
+    const tideD09 = [
+      row('market_tide', -500000000, -1800000000, '2026-04-09', 14), // open bear
+      row('market_tide', -400000000, -2100000000, '2026-04-09', 17), // midday bear
+      row('market_tide', -200000000, -1800000000, '2026-04-09', 20), // close bear
+    ];
+    const tideD08 = [
+      row('market_tide', -1800000000, -500000000, '2026-04-08', 14), // open bull
+      row('market_tide', -2000000000, -400000000, '2026-04-08', 17), // midday bull
+      row('market_tide', -1800000000, -500000000, '2026-04-08', 20), // close bull
+    ];
+    const sql = makeSql([
+      [{ date: '2026-04-09' }, { date: '2026-04-08' }],
+      tideD09,
+      tideD08,
+      [],
+      [],
+    ]);
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).not.toBeNull();
+    expect(result).toContain('reversing');
+  });
+
+  it('includes a Trend summary line', async () => {
+    const tideRows = [
+      row('market_tide', -1000000000, -300000000, '2026-04-09', 14),
+      row('market_tide', -1200000000, -300000000, '2026-04-09', 17),
+      row('market_tide', -1000000000, -300000000, '2026-04-09', 20),
+    ];
+    const sql = makeSql([
+      [{ date: '2026-04-09' }],
+      tideRows,
+      [],
+    ]);
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).toContain('Trend:');
+  });
+
+  it('shows secondary source confirmation when available', async () => {
+    const tideRows = [
+      row('market_tide', -1000000000, -300000000, '2026-04-09', 14),
+      row('market_tide', -1200000000, -300000000, '2026-04-09', 17),
+      row('market_tide', -1000000000, -300000000, '2026-04-09', 20),
+    ];
+    const secRows = [
+      { ticker: 'spx_flow', ncp: -220000000, npp: -80000000, date: '2026-04-09', created_at: new Date() },
+    ];
+    const sql = makeSql([
+      [{ date: '2026-04-09' }],
+      tideRows,
+      secRows,
+    ]);
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).toContain('Confirmation:');
+    expect(result).toContain('SPX Flow');
+  });
+
+  it('handles no market_tide rows for a prior date gracefully', async () => {
+    const sql = makeSql([
+      [{ date: '2026-04-09' }],
+      [],  // no market_tide rows
+      [],  // no secondary rows
+    ]);
+    const result = await formatPriorDayFlowForClaude(sql, '2026-04-10');
+    expect(result).not.toBeNull();
+    expect(result).toContain('Market Tide: N/A');
   });
 });

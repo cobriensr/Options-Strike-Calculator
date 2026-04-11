@@ -712,9 +712,90 @@ describe('formatSPXCandlesForClaude (1-min candles)', () => {
     const result = formatSPXCandlesForClaude(candles, null)!;
     expect(result).not.toContain('VWAP');
   });
+});
 
-  // ── Candle table ──────────────────────────────────────────
+// ============================================================
+// formatSPXCandlesForClaude — VWAP sigma bands
+// ============================================================
 
+describe('formatSPXCandlesForClaude VWAP sigma', () => {
+  // Hand-computed fixture:
+  //   Candle A: tp=(100+90+95)/3=95, vol=1
+  //   Candle B: tp=(120+110+115)/3=115, vol=1
+  //   totalVol=2, vwap=(95+115)/2=105
+  //   variance=((95-105)²×1+(115-105)²×1)/2=(100+100)/2=100
+  //   stdDev=10
+  //   sigma1=[95.0, 115.0], sigma2=[85.0, 125.0]
+  const sigmaCandles = [
+    spxCandle({ high: 100, low: 90, close: 95, volume: 1 }, 0),
+    spxCandle({ high: 120, low: 110, close: 115, volume: 1 }, 1),
+  ];
+
+  it('happy path — produces valid sigma bands and sigma distance in output', () => {
+    // sessionClose=115, vwap=105, stdDev=10 → 1.0σ above
+    const result = formatSPXCandlesForClaude(sigmaCandles, null)!;
+    expect(result).toContain('Approx VWAP: 105.0');
+    expect(result).toContain('±1σ: [95.0, 115.0]');
+    expect(result).toContain('±2σ: [85.0, 125.0]');
+    expect(result).toContain('1.0σ above VWAP');
+  });
+
+  it('price above VWAP — sigma distance is positive and output says "above"', () => {
+    // sessionClose=115 > vwap=105
+    const result = formatSPXCandlesForClaude(sigmaCandles, null)!;
+    expect(result).toContain('above VWAP');
+    expect(result).not.toContain('below VWAP');
+  });
+
+  it('price below VWAP — sigma distance is negative and output says "below"', () => {
+    // Flip: high-tp candle first, low-tp candle last → sessionClose=95 < vwap=105
+    const below = [
+      spxCandle({ high: 120, low: 110, close: 115, volume: 1 }, 0),
+      spxCandle({ high: 100, low: 90, close: 95, volume: 1 }, 1),
+    ];
+    const result = formatSPXCandlesForClaude(below, null)!;
+    expect(result).toContain('below VWAP');
+    expect(result).not.toContain('above VWAP');
+    expect(result).toContain('1.0σ below VWAP');
+  });
+
+  it('zero std_dev guard — all candles at same typical price falls back to point-distance format', () => {
+    // tp=(100+90+95)/3=95 for every candle → variance=0, stdDev=0
+    const flat = [
+      spxCandle({ high: 100, low: 90, close: 95, volume: 10_000 }, 0),
+      spxCandle({ high: 100, low: 90, close: 95, volume: 10_000 }, 1),
+      spxCandle({ high: 100, low: 90, close: 95, volume: 10_000 }, 2),
+    ];
+    const result = formatSPXCandlesForClaude(flat, null)!;
+    // Must include VWAP line without NaN
+    expect(result).toContain('Approx VWAP');
+    expect(result).not.toContain('NaN');
+    // Falls back to point-distance format — no sigma bands present
+    expect(result).not.toContain('±1σ');
+    expect(result).not.toContain('±2σ');
+    // Point-distance format emits "above VWAP by" or "below VWAP by"
+    expect(result).toMatch(/VWAP by \d+\.\d+ pts|VWAP: \d+\.\d+/);
+  });
+
+  it('single candle — produces VWAP output without NaN or division by zero', () => {
+    // Single candle: variance=0 (only one data point) → falls back to point format
+    const single = [
+      spxCandle({ high: 110, low: 90, close: 105, volume: 5_000 }, 0),
+    ];
+    const result = formatSPXCandlesForClaude(single, null)!;
+    expect(result).toContain('Approx VWAP');
+    expect(result).not.toContain('NaN');
+    expect(result).not.toContain('Infinity');
+    // No sigma bands for a single candle (stdDev=0)
+    expect(result).not.toContain('±1σ');
+  });
+});
+
+// ============================================================
+// formatSPXCandlesForClaude — candle table
+// ============================================================
+
+describe('formatSPXCandlesForClaude (candle table)', () => {
   it('renders recent candle table with up/down arrows and 1-min header', () => {
     const candles = [
       spxCandle({ open: 5700, close: 5710, volume: 10_000 }, 0),
