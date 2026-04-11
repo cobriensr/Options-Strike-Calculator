@@ -890,7 +890,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (features) {
           await upsertFeatures(features);
           featuresBuilt++;
-          latestCompleteness = features.feature_completeness as number | undefined;
+          latestCompleteness = features.feature_completeness as
+            | number
+            | undefined;
         }
 
         const labels = await extractLabelsForDate(dateStr);

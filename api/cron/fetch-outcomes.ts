@@ -107,7 +107,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!force && !isTradingDay(dateStr)) {
     logger.info({ date: dateStr }, 'fetch-outcomes: skipping non-trading day');
-    await reportCronRun('fetch-outcomes', { status: 'skipped', reason: 'not_trading_day', durationMs: Date.now() - startTime });
+    await reportCronRun('fetch-outcomes', {
+      status: 'skipped',
+      reason: 'not_trading_day',
+      durationMs: Date.now() - startTime,
+    });
     return res
       .status(200)
       .json({ skipped: true, reason: 'not_trading_day', date: dateStr });
@@ -145,7 +149,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (candles.length === 0) {
       logger.warn('fetch-outcomes: No intraday candles found for today');
-      await reportCronRun('fetch-outcomes', { status: 'skipped', reason: 'No candles', durationMs: Date.now() - startTime });
+      await reportCronRun('fetch-outcomes', {
+        status: 'skipped',
+        reason: 'No candles',
+        durationMs: Date.now() - startTime,
+      });
       return res.status(200).json({ skipped: true, reason: 'No candles' });
     }
 
@@ -215,7 +223,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     const rangePts = Math.round(dayHigh - dayLow);
-    await reportCronRun('fetch-outcomes', { status: 'ok', date: dateStr, settlement, dayOpen, dayHigh, dayLow, rangePts, vixClose, vix1dClose, durationMs: Date.now() - startTime });
+    await reportCronRun('fetch-outcomes', {
+      status: 'ok',
+      date: dateStr,
+      settlement,
+      dayOpen,
+      dayHigh,
+      dayLow,
+      rangePts,
+      vixClose,
+      vix1dClose,
+      durationMs: Date.now() - startTime,
+    });
     return res.status(200).json({
       job: 'fetch-outcomes',
       date: dateStr,

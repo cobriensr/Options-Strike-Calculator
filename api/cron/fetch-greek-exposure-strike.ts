@@ -207,7 +207,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       minRows: 10,
     });
 
-    await reportCronRun('fetch-greek-exposure-strike', { status: 'ok', fetched: allRows.length, stored, skipped, durationMs: Date.now() - startTime });
+    await reportCronRun('fetch-greek-exposure-strike', {
+      status: 'ok',
+      fetched: allRows.length,
+      stored,
+      skipped,
+      durationMs: Date.now() - startTime,
+    });
 
     return res.status(200).json({
       fetched: allRows.length,
