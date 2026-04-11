@@ -66,8 +66,7 @@ export async function loadStaticVixData(): Promise<{
     if (Object.keys(data).length === 0) return null;
     return {
       data,
-      source:
-        Object.keys(data).length.toLocaleString() + ' days',
+      source: Object.keys(data).length.toLocaleString() + ' days',
     };
   } catch {
     return null;

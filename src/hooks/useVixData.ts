@@ -166,7 +166,7 @@ export function useVixData(
       const parsed = parseVixCSV(text);
       const count = Object.keys(parsed).length;
       if (count > 0) {
-        const sourceName = file.name + ' (' + count.toLocaleString() + ' days)';
+        const sourceName = count.toLocaleString() + ' days';
         setVixData((prev) => {
           const merged = { ...prev, ...parsed };
           cacheVixData(merged, sourceName);

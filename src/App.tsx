@@ -157,10 +157,7 @@ export default function StrikeCalculator() {
   );
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
 
-  const darkPool = useDarkPoolLevels(
-    market.data.quotes?.marketOpen ?? false,
-    vix.selectedDate,
-  );
+  const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
   // GEX Per Strike owns its own date state, decoupled from the calculator's
   // vix.selectedDate. Picking a past date here is a backtest browsing
   // action and must not re-anchor the Black-Scholes math elsewhere.
@@ -367,6 +364,7 @@ export default function StrikeCalculator() {
     return [
       { id: 'sec-inputs', label: 'Inputs' },
       { id: 'sec-settings', label: 'Settings' },
+      { id: 'sec-trading-schedule', label: 'Schedule' },
       { id: 'sec-risk', label: 'Risk' },
       { id: 'sec-regime', label: 'Regime' },
       ...(isOwner && hasMarketOrSnapshot
@@ -714,7 +712,7 @@ export default function StrikeCalculator() {
 
             <div
               id="sec-settings"
-              className="mt-6 grid scroll-mt-28 grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
+              className="mt-6 grid scroll-mt-28 grid-cols-1 items-stretch gap-4 [&>*]:mt-0"
             >
               <AdvancedSection
                 skewPct={skewPct}
@@ -759,7 +757,14 @@ export default function StrikeCalculator() {
               />
             </div>
 
-            <TradingScheduleSection />
+            <span id="sec-trading-schedule" className="block scroll-mt-28" />
+            <TradingScheduleSection
+              selectedDate={vix.selectedDate}
+              timeHour={timeHour}
+              timeMinute={timeMinute}
+              timeAmPm={timeAmPm}
+              timezone={timezone}
+            />
 
             <span id="sec-risk" className="block scroll-mt-28" />
             <ErrorBoundary label="Risk Calculator">
@@ -802,6 +807,16 @@ export default function StrikeCalculator() {
                     updatedAt={darkPool.updatedAt}
                     spxPrice={results?.spot ?? spxVal ?? null}
                     onRefresh={darkPool.refresh}
+                    selectedDate={darkPool.selectedDate}
+                    onDateChange={darkPool.setSelectedDate}
+                    scrubTime={darkPool.scrubTime}
+                    isLive={darkPool.isLive}
+                    isScrubbed={darkPool.isScrubbed}
+                    canScrubPrev={darkPool.canScrubPrev}
+                    canScrubNext={darkPool.canScrubNext}
+                    onScrubPrev={darkPool.scrubPrev}
+                    onScrubNext={darkPool.scrubNext}
+                    onScrubLive={darkPool.scrubLive}
                   />
                 </ErrorBoundary>
               </>
@@ -820,6 +835,7 @@ export default function StrikeCalculator() {
                     selectedDate={gexStrike.selectedDate}
                     onDateChange={gexStrike.setSelectedDate}
                     isLive={gexStrike.isLive}
+                    isToday={gexStrike.isToday}
                     isScrubbed={gexStrike.isScrubbed}
                     canScrubPrev={gexStrike.canScrubPrev}
                     canScrubNext={gexStrike.canScrubNext}

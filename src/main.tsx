@@ -55,35 +55,36 @@ globalThis.addEventListener('unhandledrejection', (e) => {
 // BotID challenge scripts are served by the Vercel edge, not by the Vite dev
 // server. Calling initBotId() in dev causes a 404 for the challenge script and
 // a console error. The guard here keeps dev clean without affecting production.
-if (import.meta.env.PROD) initBotId({
-  protect: [
-    { path: '/api/quotes', method: 'GET' },
-    { path: '/api/chain', method: 'GET' },
-    { path: '/api/history', method: 'GET' },
-    { path: '/api/intraday', method: 'GET' },
-    { path: '/api/movers', method: 'GET' },
-    { path: '/api/yesterday', method: 'GET' },
-    { path: '/api/events', method: 'GET' },
-    { path: '/api/journal', method: 'GET' },
-    { path: '/api/journal/status', method: 'GET' },
-    { path: '/api/journal/init', method: 'POST' },
-    { path: '/api/journal/migrate', method: 'POST' },
-    { path: '/api/analyses', method: 'GET' },
-    { path: '/api/snapshot', method: 'POST' },
-    { path: '/api/analyze', method: 'POST' },
-    { path: '/api/positions', method: 'GET' },
-    { path: '/api/positions', method: 'POST' },
-    { path: '/api/vix-ohlc', method: 'GET' },
-    { path: '/api/pre-market', method: 'GET' },
-    { path: '/api/pre-market', method: 'POST' },
-    { path: '/api/iv-term-structure', method: 'GET' },
-    { path: '/api/ml/export', method: 'GET' },
-    { path: '/api/ml/prediction', method: 'GET' },
-    { path: '/api/bwb-anchor', method: 'GET' },
-    { path: '/api/futures/snapshot', method: 'GET' },
-    { path: '/api/gex-target-history', method: 'GET' },
-  ],
-});
+if (import.meta.env.PROD)
+  initBotId({
+    protect: [
+      { path: '/api/quotes', method: 'GET' },
+      { path: '/api/chain', method: 'GET' },
+      { path: '/api/history', method: 'GET' },
+      { path: '/api/intraday', method: 'GET' },
+      { path: '/api/movers', method: 'GET' },
+      { path: '/api/yesterday', method: 'GET' },
+      { path: '/api/events', method: 'GET' },
+      { path: '/api/journal', method: 'GET' },
+      { path: '/api/journal/status', method: 'GET' },
+      { path: '/api/journal/init', method: 'POST' },
+      { path: '/api/journal/migrate', method: 'POST' },
+      { path: '/api/analyses', method: 'GET' },
+      { path: '/api/snapshot', method: 'POST' },
+      { path: '/api/analyze', method: 'POST' },
+      { path: '/api/positions', method: 'GET' },
+      { path: '/api/positions', method: 'POST' },
+      { path: '/api/vix-ohlc', method: 'GET' },
+      { path: '/api/pre-market', method: 'GET' },
+      { path: '/api/pre-market', method: 'POST' },
+      { path: '/api/iv-term-structure', method: 'GET' },
+      { path: '/api/ml/export', method: 'GET' },
+      { path: '/api/ml/prediction', method: 'GET' },
+      { path: '/api/bwb-anchor', method: 'GET' },
+      { path: '/api/futures/snapshot', method: 'GET' },
+      { path: '/api/gex-target-history', method: 'GET' },
+    ],
+  });
 
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('Root element not found');
