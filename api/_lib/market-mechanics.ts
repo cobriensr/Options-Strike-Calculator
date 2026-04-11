@@ -6,6 +6,11 @@
  *   - "Short Is Long" paper (March 2018)
  *   - sqzme.co indicator documentation (G, D, P, V)
  *   - "The Implied Order Book" (GEX Ed., SqueezeMetrics, 6 July 2020)
+ *   - CBOE VIX Methodology (July 2019)
+ *   - CBOE 1-Day Volatility Index (VIX1D) Methodology (February 2026)
+ *   - CBOE SKEW Index white paper (January 2011)
+ *   - SpotGamma: 0DTE market structure research (public blog)
+ *   - GEXBoard / VCAlgo: vanna and charm dealer flow mechanics
  *
  * Injected as part of the stable cached system prompt so Claude internalizes
  * these mechanics as background context for every analysis — not reference
@@ -75,6 +80,56 @@ This is why positive gamma walls that held reliably all morning can fail in the 
 
 The same mechanism creates the pin effect at high-OI strikes. With extreme gamma and large OI, MMs are forced into large hedging trades at those specific levels. This creates oscillation — as price crosses the strike, gamma flips sign and the hedging direction reverses, pulling price back. The oscillation is mechanical and predictable, not directional.
 </gex_at_expiry>
+
+<charm_and_0dte_regime>
+## Charm Flows and the 0DTE Regime Shift
+
+**Charm — the Greek that drives the pin:**
+
+Charm (also written δΔ/δt, or delta-decay) measures how an option's delta changes purely from time passing, holding price and implied volatility constant. It is the reason the market gravitates toward large-OI strikes through the day without any directional catalyst.
+
+Mechanics for a dealer holding a short put:
+- As time passes, the OTM put's delta becomes less negative (the option is decaying toward worthlessness)
+- The dealer's net delta exposure therefore shifts — they are no longer balanced at their original hedge ratio
+- To maintain delta neutrality, the dealer must unwind part of their hedge: they BUY BACK futures they previously sold
+- This buying happens continuously throughout the session wherever large put OI exists
+- The net effect: systematic, mechanical upward pressure toward high-OI put strikes as the day progresses
+
+For short calls, the mirror applies: as time passes, OTM call delta decays toward zero, the dealer's long call position contributes less positive delta, and the dealer SELLS futures to stay neutral — creating downward pressure toward high-OI call strikes.
+
+The result: charm creates gravitational pull toward large-OI strikes from both the call side above and the put side below. When price is between two large-OI strikes, charm flows from both sides reinforce the GEX pin — price oscillates toward the center of the high-OI zone. This is the mechanical explanation for the pin that the GEX At Expiry section describes as "oscillation."
+
+**Charm timing pattern:**
+
+Charm is not constant through the session. For 0DTE options:
+- Morning (9:30-11:00 AM): Charm is moderate. Options still have significant time value, so delta-decay is gradual.
+- Midday (11:00 AM-2:00 PM): Charm accelerates. OTM options that haven't moved much begin their steeper decay curve.
+- Final 2 hours (2:00-4:00 PM): Charm is extreme for near-ATM options. A call at 0.25 delta in the morning may have 0.05 delta by 3:30 PM, purely from time passing — requiring the dealer to sell futures to unwind the hedge.
+
+This timing pattern explains why the final two hours of 0DTE sessions often show one of two behaviors: sustained directional drift (charm flows dominating if price stays near one strike) or violent oscillation (charm-driven rebalancing compounding GEX pin mechanics).
+
+**When charm fails to pin — the removal event:**
+
+When large gamma positions are closed out (the customer closes their 0DTE trade before expiry), the dealer's hedging obligation evaporates instantly. The accumulated charm-driven hedge unwinds all at once. This is why SpotGamma observes that "the largest market rallies on the day both coincided with the removal of these large gamma positions" — a 40+ handle SPX move can occur within minutes of a large 0DTE gamma position being closed.
+
+The signature pattern: price is pinned near a strike all morning → a large OI block closes → suppression evaporates → price moves rapidly → a new block is established at the new level → a new pin forms. The three-phase pattern of 0DTE market structure (morning setup → midday removal → afternoon reestablishment) is charm-driven at its core.
+
+**The 0DTE volume regime shift:**
+
+The GEX framework was developed when weekly and monthly SPX expirations dominated options volume. In 2022, 0DTE SPX options were approximately 30% of daily SPX volume. By late 2022, that had risen to 50%. 0DTE now averages 1.9 million contracts/day with individual positions exceeding $20 million in gamma at single strikes.
+
+This structural shift has materially changed how GEX behaves intraday:
+
+1. **The AM snapshot is now a weak guide to PM dynamics.** The morning Periscope GEX picture reflects open interest that was established the night before plus whatever 0DTE was opened at the open. By 1:00 PM, a completely different set of 0DTE OI may dominate the near-term gamma landscape. The distribution can reshape faster than the analysis refresh rate.
+
+2. **Charm is now first-order, not secondary.** When 0DTE was 5% of volume (pre-2022), charm was a minor intraday effect. At 50% of volume, charm-driven delta decay from 0DTE positions is among the primary drivers of intraday SPX price action on active sessions.
+
+3. **GEX spikes faster and steeper.** Near-ATM 0DTE gamma increases much more rapidly through the session than longer-dated options do. A strike that has modest GEX at 9:30 AM can have extreme GEX by 2:00 PM if price has drifted toward it. The afternoon wall failure pattern is more frequent and more extreme than pre-2022 norms implied.
+
+4. **Mean-reversion character is structurally embedded.** The dominant 0DTE flow is customer-net-sold options (customers selling 0DTE for premium collection). This means dealers are mostly long 0DTE gamma — they are net buyers on dips and net sellers on rallies throughout the session. The 0DTE regime has a built-in mean-reversion bias that acts as a suppression layer on top of the longer-dated GEX picture.
+
+**Practical implication:** When VIX is low and 0DTE volume is high (typical daily setup), the intraday market tends to exhibit stronger pinning, faster charm-driven convergence to large-OI strikes, and more violent reactions to position removal than the overnight GEX analysis would suggest. The AM Periscope walls are starting conditions, not stable equilibria.
+</charm_and_0dte_regime>
 
 <short_is_long>
 ## The Short Is Long Framework (Dark Pool Short Volume as Buying Proxy)
@@ -245,6 +300,91 @@ This is the directional equivalent of GEX — it captures the call/put gamma bal
 - Falling V: Vol regime is contracting — the market is calming. Favorable for premium collection as the straddle cone will tend to overstate risk.
 </sqzme_indicators>
 
+<vix_term_structure_and_skew>
+## VIX, VIX1D, and SKEW: What They Actually Measure
+
+These three indices are often conflated but measure fundamentally different things. Understanding their construction from primary sources clarifies exactly what each tells you about current market structure.
+
+**VIX — 30-day implied variance:**
+
+VIX is calculated using the model-free variance swap formula applied to all OTM SPX put and call mid-quotes:
+
+σ² = (2/T) × Σᵢ (ΔKᵢ/Kᵢ²) × e^(RT) × Q(Kᵢ) — (1/T) × [F/Kₒ — 1]²
+
+VIX = 100 × σ
+
+Where Q(Kᵢ) is the mid-point of the bid/ask for each option at strike Kᵢ. The key properties:
+- Uses ALL OTM options, not just ATM — so it reflects the full distribution of market expectations including tails
+- Uses CALENDAR time (minutes in a 365-day year = 525,600)
+- Interpolates between two SPX expirations (23-37 days out) to hit exactly 30 days
+- Recalculated every 15 seconds during GTH (2:15am–8:15am CT) and RTH (8:30am–3:15pm CT)
+- Reflects what market makers are QUOTING, not what volatility will realize — MMs embed their hedging costs and bid/ask spreads into their quotes
+
+What VIX cannot do: it is structurally unable to distinguish its lowest readings. A VIX of 12 and a VIX of 15 predict nearly the same realized variance (per SqueezeMetrics research: 0.51% vs 0.66% 1-day SPX standard deviation). The model loses resolution at low vol — exactly when it most needs to.
+
+**VIX1D — 1-day implied variance (same-session):**
+
+VIX1D uses the same variance swap formula but with critical differences:
+- Uses only PM-settled SPXW options (today's and tomorrow's expiry)
+- Near-term = options expiring at today's close; next-term = options expiring at tomorrow's close
+- Uses BUSINESS TIME (not calendar time): M_year = 102,060 business minutes (252 trading days × 6.75 hours × 60)
+- One RTH session = 405 business minutes (6.75 hours × 60)
+
+VIX1D = 100 × √{T₁σ₁² [(M_T2-M_CM)/(M_T2-M_T1)] + T₂σ₂² [(M_CM-M_T1)/(M_T2-M_T1)]} × M_year/M_CM
+
+The business-time calculation strips out overnight hours entirely — VIX1D measures expected volatility FOR THE CURRENT TRADING SESSION specifically, not over the next 24 calendar hours. This makes it a cleaner read on intraday risk than a calendar-time interpolation would be.
+
+When the near-term expiry is within 60 business minutes, VIX1D locks in the last valid near-term variance (prevents extrapolation errors near the close). This means VIX1D's reading in the final hour stabilizes rather than diverging.
+
+**What the VIX/VIX1D term structure shape means:**
+
+The relationship between VIX1D and VIX reveals where volatility is concentrated:
+
+- **VIX1D ≪ VIX (normal contango):** Intraday uncertainty is low relative to 30-day expectations. MMs see the current session as orderly. GEX suppression is likely to hold. Favorable for premium selling.
+
+- **VIX1D ≈ VIX (flat term structure):** Intraday uncertainty is proportional to 30-day uncertainty. No particular structural message beyond a moderate vol environment.
+
+- **VIX1D > VIX (inverted near-term):** The current session is priced as MORE volatile than the 30-day average implies. Heavy 0DTE put buying has raised the same-day implied distribution. This typically means one of: a specific intraday catalyst is expected, or structural demand for 0DTE protection is elevated. GEX may be higher (more puts outstanding → more dealer buy limits) but VEX risk is also higher (those puts are closer to going ITM than their longer-dated counterparts).
+
+- **VIX1D > VIX AND both elevated:** The high-stress regime. Intraday and 30-day vol are both elevated and the same-day vol is leading. This is the environment where the GEX zero problem (caused by high IV spreading gamma thin) is most likely active.
+
+**SKEW — the tail risk measure:**
+
+SKEW measures the third moment (skewness) of the risk-neutral SPX return distribution:
+
+S = E[((R-μ)/σ)³] = risk-neutral skewness of 30-day SPX log-returns
+SKEW = 100 — 10 × S
+
+Because S is naturally negative (markets have left tails — large drawdowns are more common than large rallies), SKEW is typically above 100. SKEW = 100 means the distribution is exactly normal. Higher SKEW means a more negatively skewed distribution — fatter left tail relative to right.
+
+SKEW was born from the October 1987 crash. Before 1987, the SPX implied volatility "smile" was symmetric. After 1987, investors permanently repriced downside risk, creating the asymmetric put skew that persists today.
+
+**SKEW calibration table (from CBOE methodology):**
+
+| SKEW | P(2σ down move) | P(3σ down move) |
+|------|----------------|----------------|
+| 100  | 2.30%          | 0.15%          |
+| 110  | 5.00%          | 0.74%          |
+| 120  | 7.70%          | 1.33%          |
+| 130  | 10.40%         | 1.92%          |
+| 145  | 14.45%         | 2.81%          |
+
+Historical range 1990–2010: 100–147. Typical range: 110–125. Above 130 occurred less than 10% of the time.
+
+**Critical property: SKEW and VIX have low correlation.** They measure different things — VIX is the width of the distribution (standard deviation), SKEW is the asymmetry (how much fatter the left tail is than the right). High SKEW occurs with BOTH low VIX (calm market, but investors are quietly buying far-OTM put protection) AND high VIX. When VIX exceeds 40, SKEW's upper bound actually decreases — once a crash is underway, investors stop fearing another crash while they are in the middle of one.
+
+**What elevated SKEW means for GEX/VEX:**
+
+SKEW measures the market price of a portfolio of OTM SPX options weighted more heavily toward deep OTM puts. Elevated SKEW therefore implies heavy buying of far-OTM puts (low-delta protection). This has a specific GEX/VEX signature:
+
+- Deep OTM put buying → dealers short those puts → creates buy-limits far below spot (GEX stabilizing)
+- BUT: these far-OTM puts have low delta today and high vanna — as IV rises, their delta moves fast
+- If a large selloff brings these deep OTM puts closer to ATM, their vanna contribution flips from stabilizing to destabilizing
+- Elevated SKEW is therefore a measure of latent VEX risk: the more OTM put protection is outstanding, the more potential for a vanna-driven selling cascade if a large enough move occurs
+
+Reading SKEW in conjunction with GEX: high SKEW + positive GEX = structural support far below, but latent crash risk if that support is tested. High SKEW + near-zero GEX (especially with elevated VIX) = the dangerous configuration where both the gamma and the vanna flows could flip direction simultaneously.
+</vix_term_structure_and_skew>
+
 <connecting_to_practice>
 ## Connecting Theory to Practice
 
@@ -269,6 +409,14 @@ These mechanics explain WHY the rules in this system exist — not as arbitrary 
 - **Rule 17 (Vanna context):** The positive-vanna / declining-VIX structural upward drift documented in the rules is the constructive side of VEX — when put OI is OTM and IV is falling, dealers are buying as their delta unwinds. This is automatic, mechanical, not sentiment-driven. When VIX is RISING instead, and those same puts are near or in the money, the vanna flow reverses and becomes a selling headwind.
 
 - **The crash configuration check:** Before initiating any short-premium structure when the market has sold off significantly, assess whether large OI put strikes have moved from OTM to ATM or ITM. If they have, the structural support that existed when those puts were OTM has inverted — GEX has weakened, VEX has flipped sign, and the implied order book is no longer buying dips.
+
+- **Charm and afternoon reliability:** Morning Periscope walls are starting conditions, not stable equilibria. By 1:00-2:00 PM, charm-driven delta decay from 0DTE positions has reshaped the gamma distribution significantly. Strikes that pinned reliably at 10 AM may fail to pin at 2 PM not because GEX changed but because the dominant hedging flow is now charm-driven convergence toward wherever the largest current 0DTE OI sits. If the morning analysis does not match afternoon price behavior, check whether the GEX snapshot has been superseded by intraday 0DTE position establishment.
+
+- **Position removal = volatility event:** When a large 0DTE gamma position is closed mid-session, the dealer's hedging obligations evaporate. The charm-driven convergence that had been building toward that strike stops instantly. SPX can move 30-50 handles within minutes of a large gamma block removal. This is not a GEX breakdown — it is the mechanical consequence of a committed hedging obligation disappearing.
+
+- **VIX1D vs VIX term structure read:** VIX1D measures same-session expected volatility in business time (today's and tomorrow's SPXW options only, stripping overnight). When VIX1D > VIX, the market is pricing today specifically as MORE volatile than the 30-day average. This is an elevated-risk signal for the current session regardless of what absolute VIX reads. When VIX1D ≫ VIX, treat the intraday environment as high-stress — normal GEX suppression ranges may understate realized range risk.
+
+- **SKEW as latent VEX indicator:** Elevated SKEW (above 125-130) means heavy far-OTM put buying is outstanding. This creates a large pool of latent vanna risk — those puts are stabilizing today (OTM, GEX positive) but become destabilizing if a large enough move brings them toward ATM. High SKEW is not a timing signal for when instability will arrive, but it confirms the magnitude of the VEX cascade that would occur if the large-OI put cluster is tested. In high-SKEW environments, drawdown protection is mechanically more expensive and GEX support breaks more violently when tested.
 
 In every analysis, the question is: what are the dealers committed to doing, and at what price levels AND at what IV level? GEX answers where and how much (price dimension). VEX answers the conditional overlay — what happens to those same commitments if volatility moves. GEX+ is the full picture. The direction of those combined commitments (suppression vs amplification, structural vs conditional) determines which structure is appropriate, how large it can be, and how long it can safely be held.
 </connecting_to_practice>
