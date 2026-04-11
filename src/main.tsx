@@ -52,7 +52,10 @@ globalThis.addEventListener('unhandledrejection', (e) => {
   }
 });
 
-initBotId({
+// BotID challenge scripts are served by the Vercel edge, not by the Vite dev
+// server. Calling initBotId() in dev causes a 404 for the challenge script and
+// a console error. The guard here keeps dev clean without affecting production.
+if (import.meta.env.PROD) initBotId({
   protect: [
     { path: '/api/quotes', method: 'GET' },
     { path: '/api/chain', method: 'GET' },

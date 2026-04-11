@@ -144,6 +144,7 @@ export default function AdvancedSection({
             </span>
           </div>
           <fieldset
+            id="wing-width"
             className="m-0 flex flex-wrap gap-1.5 border-0 p-0"
             aria-label="Iron condor wing width"
           >
@@ -277,6 +278,7 @@ export default function AdvancedSection({
             </span>
           </div>
           <fieldset
+            id="bwb-narrow"
             className="m-0 flex flex-wrap gap-1.5 border-0 p-0"
             aria-label="BWB narrow wing width"
           >
@@ -307,6 +309,7 @@ export default function AdvancedSection({
               </span>
             </div>
             <fieldset
+              id="bwb-multiplier"
               className="m-0 flex flex-wrap gap-1.5 border-0 p-0"
               aria-label="BWB wide wing multiplier"
             >

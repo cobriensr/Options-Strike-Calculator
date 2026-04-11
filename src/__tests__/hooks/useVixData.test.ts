@@ -100,7 +100,7 @@ describe('useVixData', () => {
     mockedLoadCached.mockReturnValue(null);
     mockedLoadStatic.mockResolvedValue({
       data: mockVixMap,
-      source: 'built-in (2 days)',
+      source: '2 days',
     });
 
     const { result } = renderWith();
@@ -108,9 +108,9 @@ describe('useVixData', () => {
     await waitFor(() => {
       expect(result.current.vixDataLoaded).toBe(true);
     });
-    expect(result.current.vixDataSource).toBe('built-in (2 days)');
+    expect(result.current.vixDataSource).toBe('2 days');
     expect(result.current.vixData).toEqual(mockVixMap);
-    expect(mockedCache).toHaveBeenCalledWith(mockVixMap, 'built-in (2 days)');
+    expect(mockedCache).toHaveBeenCalledWith(mockVixMap, '2 days');
   });
 
   it('stays unloaded when static also returns null', async () => {
@@ -324,7 +324,7 @@ describe('useVixData', () => {
     });
 
     expect(result.current.vixDataLoaded).toBe(true);
-    expect(result.current.vixDataSource).toMatch(/vix-history\.csv/);
+    expect(result.current.vixDataSource).toMatch(/\d+ days/);
     expect(mockedCache).toHaveBeenCalled();
   });
 

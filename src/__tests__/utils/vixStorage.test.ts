@@ -148,7 +148,7 @@ describe('loadStaticVixData', () => {
     const result = await loadStaticVixData();
     expect(result).not.toBeNull();
     expect(result!.data['2024-03-04']!.open).toBe(14.5);
-    expect(result!.source).toContain('built-in');
+    expect(result!.source).toMatch(/\d+ days/);
     expect(result!.source).toContain('2'); // 2 days
     expect(fetch).toHaveBeenCalledWith('/vix-data.json');
   });
