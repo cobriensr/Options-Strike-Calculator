@@ -78,14 +78,13 @@ describe('SparklinePanel: strike rows', () => {
     expect(screen.getByLabelText('Strike 5750')).toBeInTheDocument();
   });
 
-  it('limits output to the top 5 strikes', () => {
-    const strikes = [5800, 5750, 5700, 5650, 5600, 5550].map((s) =>
-      makeStrike(s),
-    );
+  it('renders all strikes passed in (parent pre-slices to top 5)', () => {
+    // SparklinePanel no longer slices — the parent (GexTarget/index.tsx)
+    // pre-computes top5ByGex before passing the leaderboard down.
+    const strikes = [5800, 5750, 5700, 5650, 5600].map((s) => makeStrike(s));
     render(<SparklinePanel leaderboard={strikes} />);
     expect(screen.getByLabelText('Strike 5800')).toBeInTheDocument();
     expect(screen.getByLabelText('Strike 5600')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Strike 5550')).not.toBeInTheDocument();
   });
 
   it('shows the strike number as a text label', () => {

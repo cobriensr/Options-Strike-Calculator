@@ -129,13 +129,16 @@ describe('StrikeBox: data rows', () => {
     expect(screen.getByText('5750')).toBeInTheDocument();
   });
 
-  it('limits to the top 5 strikes by GEX $ magnitude', () => {
-    const strikes = [5800, 5750, 5700, 5650, 5600, 5550].map((s, i) =>
+  it('renders all strikes passed in (parent pre-slices to top 5)', () => {
+    // StrikeBox no longer slices or sorts — the parent (GexTarget/index.tsx)
+    // pre-computes top5ByGex and passes it down. Verify all provided strikes
+    // are rendered in the order they are received.
+    const strikes = [5800, 5750, 5700, 5650, 5600].map((s, i) =>
       makeStrike(s, {
         rankBySize: i + 1,
         features: makeFeatures({
           strike: s,
-          gexDollars: (6 - i) * 1_000_000_000,
+          gexDollars: (5 - i) * 1_000_000_000,
           distFromSpot: s - 5795,
         }),
       }),
@@ -143,22 +146,22 @@ describe('StrikeBox: data rows', () => {
     render(<StrikeBox leaderboard={strikes} />);
     expect(screen.getByText('5800')).toBeInTheDocument();
     expect(screen.getByText('5600')).toBeInTheDocument();
-    expect(screen.queryByText('5550')).not.toBeInTheDocument();
   });
 
-  it('sorts by |gexDollars| descending regardless of input order', () => {
-    // Pass strikes in ascending GEX order — table should show 5700 first
+  it('renders strikes in the order received (parent is responsible for sort)', () => {
+    // Sorting by |gexDollars| is now done in GexTarget/index.tsx before the
+    // leaderboard is passed to StrikeBox. The component renders input order.
     const leaderboard = [
-      makeStrike(5800, {
-        features: makeFeatures({ strike: 5800, gexDollars: 1_000_000_000 }),
-      }),
       makeStrike(5700, {
         features: makeFeatures({ strike: 5700, gexDollars: 3_000_000_000 }),
+      }),
+      makeStrike(5800, {
+        features: makeFeatures({ strike: 5800, gexDollars: 1_000_000_000 }),
       }),
     ];
     render(<StrikeBox leaderboard={leaderboard} />);
     const rows = screen.getAllByRole('row');
-    // rows[0] = header, rows[1] = highest GEX (5700), rows[2] = 5800
+    // rows[0] = header; order matches input (5700 first, then 5800)
     expect(rows[1]).toHaveTextContent('5700');
     expect(rows[2]).toHaveTextContent('5800');
   });

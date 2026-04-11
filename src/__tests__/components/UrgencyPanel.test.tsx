@@ -85,8 +85,10 @@ describe('UrgencyPanel: strike rendering', () => {
     expect(screen.getByText('5750')).toBeInTheDocument();
   });
 
-  it('limits output to top 5 strikes', () => {
-    const strikes = [5800, 5750, 5700, 5650, 5600, 5550, 5500].map((s) =>
+  it('renders all strikes passed in (parent pre-slices to top 5)', () => {
+    // UrgencyPanel no longer slices — the parent (GexTarget/index.tsx)
+    // pre-computes top5ByGex before passing the leaderboard down.
+    const strikes = [5800, 5750, 5700, 5650, 5600].map((s) =>
       makeStrike(s, {
         features: makeFeatures({ strike: s, deltaPct_5m: 0.01 }),
       }),
@@ -94,8 +96,6 @@ describe('UrgencyPanel: strike rendering', () => {
     render(<UrgencyPanel leaderboard={strikes} />);
     expect(screen.getByText('5800')).toBeInTheDocument();
     expect(screen.getByText('5600')).toBeInTheDocument();
-    expect(screen.queryByText('5550')).not.toBeInTheDocument();
-    expect(screen.queryByText('5500')).not.toBeInTheDocument();
   });
 });
 
