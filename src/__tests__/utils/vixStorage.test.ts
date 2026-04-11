@@ -100,6 +100,22 @@ describe('loadCachedVixData', () => {
     });
     expect(loadCachedVixData()).toBeNull();
   });
+
+  it('normalizes legacy "filename.csv (N days)" source format', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sampleData));
+    localStorage.setItem(SOURCE_KEY, 'vix-daily(1).csv (9,142 days)');
+    const result = loadCachedVixData();
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe('9,142 days');
+  });
+
+  it('leaves non-filename sources unchanged', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sampleData));
+    localStorage.setItem(SOURCE_KEY, '2 days');
+    const result = loadCachedVixData();
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe('2 days');
+  });
 });
 
 // ============================================================

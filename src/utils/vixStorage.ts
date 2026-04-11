@@ -33,7 +33,12 @@ export function loadCachedVixData(): {
     if (!raw) return null;
     const data = JSON.parse(raw) as VIXDataMap;
     if (Object.keys(data).length === 0) return null;
-    return { data, source: source ?? 'cached' };
+    // Normalize legacy source format "filename.csv (N days)" → "N days"
+    const cleanSource = (source ?? 'cached').replace(
+      /^.+\.csv\s*\((\d[\d,]+ days)\)$/,
+      '$1',
+    );
+    return { data, source: cleanSource };
   } catch {
     return null;
   }
