@@ -103,7 +103,7 @@ def capture_exception(exc: BaseException, *, context: dict[str, Any] | None = No
     try:
         import sentry_sdk
 
-        with sentry_sdk.push_scope() as scope:
+        with sentry_sdk.new_scope() as scope:
             if context:
                 for key, value in context.items():
                     scope.set_extra(key, value)
@@ -135,7 +135,7 @@ def capture_message(
     try:
         import sentry_sdk
 
-        with sentry_sdk.push_scope() as scope:
+        with sentry_sdk.new_scope() as scope:
             if context:
                 for key, value in context.items():
                     scope.set_extra(key, value)
