@@ -802,6 +802,94 @@ describe('GET /api/cron/curate-lessons', () => {
       }),
     );
   });
+
+  // ── Outer handler catch (500) ──────────────────────────────
+
+  it('returns 500 when upsertReport throws an unexpected error', async () => {
+    const { Sentry } = await import('../_lib/sentry.js');
+
+    vi.mocked(upsertReport).mockRejectedValueOnce(
+      new Error('Unexpected DB failure'),
+    );
+
+    const req = makeAuthedRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'curate-lessons');
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  // ── Markdown code fence stripping ─────────────────────────
+
+  it('strips leading and trailing markdown code fences from Claude response', async () => {
+    const review = makeReview();
+
+    let callCount = 0;
+    mockSql.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 2) return [{ count: 0 }]; // active count
+      if (callCount === 3) return [review];
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
+      if (callCount === 5) return [{ id: 42 }]; // nextval
+      return [];
+    });
+
+    // Wrap the JSON in markdown fences (```json ... ```)
+    const decision = makeAddDecision();
+    const fencedJson = `\`\`\`json\n${JSON.stringify(decision)}\n\`\`\``;
+    mockStream.mockReturnValue({
+      finalMessage: vi.fn().mockResolvedValue({
+        content: [{ type: 'text', text: fencedJson }],
+        usage: { input_tokens: 100, output_tokens: 50 },
+      }),
+    });
+
+    const req = makeAuthedRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // The fences should be stripped and the lesson added successfully
+    expect(getCompleteEvent(res)).toEqual(
+      expect.objectContaining({ lessonsAdded: 1 }),
+    );
+  });
+
+  it('handles Claude response wrapped in plain code fences (no language tag)', async () => {
+    const review = makeReview();
+
+    let callCount = 0;
+    mockSql.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 2) return [{ count: 0 }]; // active count
+      if (callCount === 3) return [review];
+      if (callCount === 4) return [{ id: 10 }]; // snapshot
+      if (callCount === 5) return [{ id: 42 }]; // nextval
+      return [];
+    });
+
+    // Plain ``` fences without language tag
+    const decision = makeAddDecision();
+    const fencedJson = `\`\`\`\n${JSON.stringify(decision)}\n\`\`\``;
+    mockStream.mockReturnValue({
+      finalMessage: vi.fn().mockResolvedValue({
+        content: [{ type: 'text', text: fencedJson }],
+        usage: { input_tokens: 100, output_tokens: 50 },
+      }),
+    });
+
+    const req = makeAuthedRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(getCompleteEvent(res)).toEqual(
+      expect.objectContaining({ lessonsAdded: 1 }),
+    );
+  });
 });
 
 // ============================================================

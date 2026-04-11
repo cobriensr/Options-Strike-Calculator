@@ -219,6 +219,96 @@ describe('useImageUpload', () => {
     expect(preventDefaultSpy).toHaveBeenCalled();
   });
 
+  // ── replaceImage + handleReplaceFile ──
+
+  it('handleReplaceFile does nothing when no file is selected', () => {
+    const { result } = renderHook(() => useImageUpload());
+
+    act(() => {
+      result.current.addImage(makeFile('original.png'));
+    });
+
+    // Call replaceImage to set replaceTargetIndex
+    act(() => {
+      result.current.replaceImage(1);
+    });
+
+    // Call handleReplaceFile with an empty files list
+    const emptyEvent = {
+      target: { files: [] },
+    } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+    act(() => {
+      result.current.handleReplaceFile(emptyEvent);
+    });
+
+    // Image should be unchanged
+    expect(result.current.images).toHaveLength(1);
+  });
+
+  it('handleReplaceFile does nothing when replaceTargetIndex is null', () => {
+    const { result } = renderHook(() => useImageUpload());
+
+    act(() => {
+      result.current.addImage(makeFile('original.png'));
+    });
+
+    // Do NOT call replaceImage — replaceTargetIndex stays null
+    const file = makeFile('new.png');
+    const event = {
+      target: { files: [file] },
+    } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+    act(() => {
+      result.current.handleReplaceFile(event);
+    });
+
+    // Image should be unchanged (early return because replaceTargetIndex is null)
+    expect(result.current.images).toHaveLength(1);
+    expect(result.current.images[0]!.file.name).toBe('original.png');
+  });
+
+  it('handleReplaceFile replaces the target image at the correct index', () => {
+    let urlCounter = 0;
+    mockCreateObjectURL.mockImplementation(() => `blob:url-${++urlCounter}`);
+
+    const { result } = renderHook(() => useImageUpload());
+
+    // Add two images
+    act(() => {
+      result.current.addImage(makeFile('first.png'));
+    });
+    act(() => {
+      result.current.addImage(makeFile('second.png'));
+    });
+
+    const firstId = result.current.images[0]!.id;
+    const secondId = result.current.images[1]!.id;
+
+    // Replace the second image (index 2 = 1-based)
+    act(() => {
+      result.current.replaceImage(2);
+    });
+
+    const replacementFile = makeFile('replacement.png');
+    const event = {
+      target: { files: [replacementFile], value: '' },
+    } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+    act(() => {
+      result.current.handleReplaceFile(event);
+    });
+
+    expect(result.current.images).toHaveLength(2);
+    // First image unchanged
+    expect(result.current.images[0]!.id).toBe(firstId);
+    // Second image replaced with new file
+    expect(result.current.images[1]!.id).not.toBe(secondId);
+    expect(result.current.images[1]!.file.name).toBe('replacement.png');
+    // Old preview URL was revoked
+    expect(mockRevokeObjectURL).toHaveBeenCalledWith('blob:url-2');
+  });
+
   it('ignores paste events without image items', () => {
     const { result } = renderHook(() => useImageUpload());
 

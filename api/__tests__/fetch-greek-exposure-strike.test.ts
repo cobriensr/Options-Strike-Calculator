@@ -204,6 +204,59 @@ describe('fetch-greek-exposure-strike handler', () => {
     expect(res._json).toMatchObject({ fetched: 1, stored: 1 });
   });
 
+  // ── Per-row INSERT error → skipped counter ─────────────────
+
+  it('increments skipped when an individual row INSERT throws', async () => {
+    const goodRow = makeStrikeRow('6800', '6105.1409', '-699.9181');
+    const badRow = makeStrikeRow('6900', '100.0000', '-50.0000');
+    mockUwFetch.mockResolvedValue([goodRow, badRow]);
+
+    // First INSERT succeeds (returns stored row), second throws, QC SELECT returns data
+    mockSql
+      .mockResolvedValueOnce([{ strike: '6800' }]) // INSERT for goodRow → stored
+      .mockRejectedValueOnce(new Error('unique violation')) // INSERT for badRow → skipped
+      .mockResolvedValueOnce([{ total: '1', nonzero: '1' }]); // QC SELECT
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ fetched: 2, stored: 1, skipped: 1 });
+  });
+
+  // ── Largest-magnitude GEX strike logging ───────────────────
+
+  it('computes and logs the largest-magnitude GEX strike when rows > 1', async () => {
+    const { default: logger } = await import('../_lib/logger.js');
+    // Two rows with different total absolute GEX magnitudes
+    const smallRow = makeStrikeRow('6700', '100.0000', '-50.0000');
+    const largeRow = makeStrikeRow('6800', '6105.1409', '-699.9181');
+    mockUwFetch.mockResolvedValue([smallRow, largeRow]);
+
+    mockSql
+      .mockResolvedValueOnce([{ strike: '6700' }]) // INSERT smallRow
+      .mockResolvedValueOnce([{ strike: '6800' }]) // INSERT largeRow
+      .mockResolvedValueOnce([{ total: '2', nonzero: '2' }]); // QC SELECT
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Logger should have been called with the largest strike (6800) net GEX info
+    expect(vi.mocked(logger).info).toHaveBeenCalledWith(
+      expect.objectContaining({ strike: '6800' }),
+      'Largest-magnitude strike net GEX',
+    );
+  });
+
   // ── DB error ───────────────────────────────────────────────
 
   it('returns 500 on unexpected DB error and reports via Sentry', async () => {

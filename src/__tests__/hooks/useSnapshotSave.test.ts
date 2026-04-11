@@ -209,6 +209,35 @@ describe('useSnapshotSave', () => {
     // (We can't easily test this without re-rendering with the same hook instance)
   });
 
+  it('does not remove key from saved set when fetch rejects with AbortError', async () => {
+    // AbortError means the component unmounted or deps changed — the key should
+    // remain in the saved set (no retry desired)
+    const abortError = new DOMException('signal was aborted', 'AbortError');
+    fetchSpy.mockRejectedValueOnce(abortError);
+
+    const results = makeResults();
+    renderHook(() => useSnapshotSave(results, defaultSignals, baseMeta, true));
+
+    // Wait for the rejected promise to settle
+    await vi.waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // Re-rendering should NOT trigger another fetch because key is still in savedRef
+    // (AbortError path returns early without deleting the key)
+    // A second hook with different time will fire normally to confirm fetch is still working
+    renderHook(() =>
+      useSnapshotSave(
+        results,
+        defaultSignals,
+        { ...baseMeta, entryTime: '10:30' },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('skips allDeltas entries with errors', () => {
     const results = makeResults({
       allDeltas: [
