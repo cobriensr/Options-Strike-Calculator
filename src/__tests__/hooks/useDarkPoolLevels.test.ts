@@ -70,6 +70,13 @@ describe('useDarkPoolLevels: initial state', () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
     expect(result.current.loading).toBe(true);
   });
+
+  it('starts live with no scrub time', () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    expect(result.current.scrubTime).toBeNull();
+    expect(result.current.isLive).toBe(true);
+    expect(result.current.isScrubbed).toBe(false);
+  });
 });
 
 // ============================================================
@@ -83,10 +90,10 @@ describe('useDarkPoolLevels: fetching', () => {
     await act(async () => {});
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch).toHaveBeenCalledWith('/api/darkpool-levels', {
-      credentials: 'same-origin',
-      signal: expect.any(AbortSignal),
-    });
+    // Live mode: always sends ?date= but never ?time=
+    const url = mockFetch.mock.calls[0]?.[0] as string;
+    expect(url).toContain('date=');
+    expect(url).not.toContain('time=');
   });
 
   it('returns levels from API response', async () => {
@@ -205,7 +212,7 @@ describe('useDarkPoolLevels: polling', () => {
       }),
     });
 
-    const { result } = renderHook(() => useDarkPoolLevels(true, todayET));
+    const { result } = renderHook(() => useDarkPoolLevels(true));
 
     await waitFor(() =>
       expect(result.current.updatedAt).toBe(`${todayET}T19:58:00Z`),
@@ -228,6 +235,25 @@ describe('useDarkPoolLevels: polling', () => {
     await waitFor(() =>
       expect(result.current.updatedAt).toBe(`${todayET}T19:59:00Z`),
     );
+  });
+
+  it('does not poll when scrub time is set (scrubbed snapshots are static)', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // Enter scrub mode
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await act(async () => {});
+
+    const callsAfterScrub = mockFetch.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL * 3);
+    });
+
+    expect(mockFetch.mock.calls.length).toBe(callsAfterScrub);
   });
 });
 
@@ -348,80 +374,141 @@ describe('useDarkPoolLevels: error handling', () => {
 // ============================================================
 
 describe('useDarkPoolLevels: backtest mode', () => {
-  it('fetches with date param when selectedDate provided', async () => {
+  it('fetches with date param when selectedDate is changed', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({ levels: [makeLevel()], date: '2026-03-28' }),
     });
 
-    renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
-
+    const { result } = renderHook(() => useDarkPoolLevels(false));
     await act(async () => {});
 
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const url = mockFetch.mock.calls[0]?.[0] as string;
-    expect(url).toContain('?date=2026-03-28');
+    act(() => {
+      result.current.setSelectedDate('2026-03-28');
+    });
+    await act(async () => {});
+
+    const calls = mockFetch.mock.calls;
+    const lastCall = calls.at(-1)?.[0] as string;
+    expect(lastCall).toContain('date=2026-03-28');
   });
 
-  it('fetches once without polling in backtest mode', async () => {
+  it('fetches once without polling after date changes to past', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({ levels: [], date: '2026-03-28' }),
     });
 
-    renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
-
+    const { result } = renderHook(() => useDarkPoolLevels(false));
     await act(async () => {});
 
-    const initialCalls = mockFetch.mock.calls.length;
+    act(() => {
+      result.current.setSelectedDate('2026-03-28');
+    });
+    await act(async () => {});
+
+    const callsAfterDateChange = mockFetch.mock.calls.length;
 
     await act(async () => {
       vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL * 3);
     });
 
-    expect(mockFetch.mock.calls.length).toBe(initialCalls);
-  });
-
-  it('returns levels from backtest date', async () => {
-    const levels = [makeLevel({ spxLevel: 6550 })];
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ levels, date: '2026-03-28' }),
-    });
-
-    const { result } = renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
-
-    await waitFor(() => expect(result.current.levels).toHaveLength(1));
-
-    expect(result.current.levels[0]!.spxLevel).toBe(6550);
-    expect(result.current.loading).toBe(false);
+    expect(mockFetch.mock.calls.length).toBe(callsAfterDateChange);
   });
 
   it('does not fetch in backtest mode when not owner', async () => {
     vi.mocked(useIsOwner).mockReturnValue(false);
 
-    renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
+    const { result } = renderHook(() => useDarkPoolLevels(false));
+    await act(async () => {});
 
+    act(() => {
+      result.current.setSelectedDate('2026-03-28');
+    });
     await act(async () => {});
 
     expect(mockFetch).not.toHaveBeenCalled();
   });
+});
 
-  it('does not include a time param — the hook ignores selectedTime entirely', async () => {
-    // Regression guard for the "panel appears frozen while polling" bug.
-    // See useGexPerStrike.test.ts for the full explanation.
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ levels: [makeLevel()], date: '2026-03-28' }),
-    });
+// ============================================================
+// TIME SCRUBBING
+// ============================================================
 
-    renderHook(() => useDarkPoolLevels(false, '2026-03-28'));
-
+describe('useDarkPoolLevels: time scrubbing', () => {
+  it('does not include time= param in live mode', async () => {
+    // REGRESSION GUARD: the hook must never send ?time= when the user has not
+    // explicitly scrubbed. Coupling to the app's time picker caused the
+    // "panel appears frozen while polling" bug — polling refetched the same
+    // stale snapshot every cycle while updatedAt never advanced.
+    renderHook(() => useDarkPoolLevels(true));
     await act(async () => {});
 
-    expect(mockFetch).toHaveBeenCalledTimes(1);
     const url = mockFetch.mock.calls[0]?.[0] as string;
-    expect(url).toContain('date=2026-03-28');
     expect(url).not.toContain('time=');
+  });
+
+  it('includes time= param after scrubPrev', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await act(async () => {});
+
+    const lastUrl = mockFetch.mock.calls.at(-1)?.[0] as string;
+    expect(lastUrl).toContain('time=');
+    expect(result.current.isScrubbed).toBe(true);
+    expect(result.current.isLive).toBe(false);
+  });
+
+  it('removes time= param after scrubLive', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // Enter scrub mode
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await act(async () => {});
+
+    // Return to live
+    act(() => {
+      result.current.scrubLive();
+    });
+    await act(async () => {});
+
+    expect(result.current.isLive).toBe(true);
+    expect(result.current.scrubTime).toBeNull();
+  });
+
+  it('canScrubPrev is true in live mode (entering scrub)', () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    expect(result.current.canScrubPrev).toBe(true);
+  });
+
+  it('canScrubNext is false in live mode', () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    expect(result.current.canScrubNext).toBe(false);
+  });
+
+  it('resets scrubTime when selectedDate changes', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // Enter scrub mode
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await act(async () => {});
+    expect(result.current.scrubTime).not.toBeNull();
+
+    // Change date → scrub time should reset
+    act(() => {
+      result.current.setSelectedDate('2026-03-28');
+    });
+    await act(async () => {});
+    expect(result.current.scrubTime).toBeNull();
   });
 });

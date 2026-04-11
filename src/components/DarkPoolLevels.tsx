@@ -14,6 +14,7 @@
 import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../themes';
 import { SectionBox } from './ui';
+import { StatusBadge } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
 
 const DEFAULT_VISIBLE = 15;
@@ -30,6 +31,17 @@ interface Props {
   updatedAt: string | null;
   spxPrice?: number | null;
   onRefresh: () => void;
+  // Date & time scrubbing (optional — omit for tests or when hook is not wired)
+  selectedDate?: string;
+  onDateChange?: (d: string) => void;
+  scrubTime?: string | null;
+  isLive?: boolean;
+  isScrubbed?: boolean;
+  canScrubPrev?: boolean;
+  canScrubNext?: boolean;
+  onScrubPrev?: () => void;
+  onScrubNext?: () => void;
+  onScrubLive?: () => void;
 }
 
 function formatPremium(value: number): string {
@@ -73,6 +85,18 @@ export default memo(function DarkPoolLevels({
   updatedAt,
   spxPrice,
   onRefresh,
+  selectedDate = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  }),
+  onDateChange,
+  scrubTime = null,
+  isLive = true,
+  isScrubbed = false,
+  canScrubPrev = false,
+  canScrubNext = false,
+  onScrubPrev,
+  onScrubNext,
+  onScrubLive,
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
   const [sortBy, setSortBy] = useState<SortMode>('premium');
@@ -139,28 +163,89 @@ export default memo(function DarkPoolLevels({
   const totalLevels = levels.length;
   const badge = totalLevels > 0 ? `${filtered.length} of ${totalLevels}` : null;
 
-  // Distance sort is only meaningful when we know spot
-  const canSortByDistance = spxPrice != null;
+  const badgeLabel = isLive ? '● LIVE' : isScrubbed ? 'SCRUBBED' : 'BACKTEST';
+  const badgeColor = isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800';
 
   const headerRight = (
-    <div className="flex items-center gap-2">
-      {updatedAt && (
-        <span className="text-muted font-sans text-[10px]">
-          Updated {formatTime(updatedAt)}
+    <div className="flex flex-wrap items-center gap-2">
+      {/* Time scrubber */}
+      <div className="border-edge flex items-center gap-0.5 rounded border">
+        <button
+          type="button"
+          onClick={onScrubPrev}
+          disabled={!canScrubPrev}
+          aria-label="Earlier snapshot"
+          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
+        >
+          &#x25C0;
+        </button>
+        <span
+          className="min-w-[44px] text-center font-mono text-[10px]"
+          style={{
+            color: isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800',
+          }}
+        >
+          {scrubTime ?? (updatedAt ? formatTime(updatedAt) : '')}
         </span>
+        <button
+          type="button"
+          onClick={onScrubNext}
+          disabled={!canScrubNext}
+          aria-label="Later snapshot"
+          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
+        >
+          &#x25B6;
+        </button>
+      </div>
+
+      {/* LIVE button — only shown when scrubbed */}
+      {(isScrubbed || !isLive) && (
+        <button
+          type="button"
+          onClick={onScrubLive}
+          aria-label="Resume live"
+          className="cursor-pointer rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider transition-colors"
+          style={{
+            color: '#00e676',
+            background: 'rgba(0,230,118,0.08)',
+            border: '1px solid rgba(0,230,118,0.25)',
+          }}
+        >
+          LIVE
+        </button>
       )}
+
+      {/* Date picker */}
+      <input
+        type="date"
+        value={selectedDate}
+        onChange={(e) => onDateChange?.(e.target.value)}
+        aria-label="Select date"
+        className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
+      />
+
+      {/* Status badge */}
+      <StatusBadge label={badgeLabel} color={badgeColor} />
+
+      {/* Refresh */}
       <button
         onClick={onRefresh}
         disabled={loading}
         aria-label="Refresh dark pool data"
-        className="text-accent hover:text-primary disabled:text-muted cursor-pointer font-sans text-[10px] font-semibold transition-colors disabled:cursor-default"
+        className="text-secondary hover:text-primary disabled:text-muted cursor-pointer font-mono text-[15px] disabled:cursor-default"
       >
-        &#x21bb;
+        <span
+          className={loading ? 'inline-block animate-spin' : undefined}
+          aria-hidden="true"
+        >
+          ↻
+        </span>
       </button>
+
+      {/* Sort cycle */}
       <button
         onClick={cycleSort}
         aria-label={`Sort mode: ${SORT_LABELS[sortBy]} — click to cycle`}
-        disabled={sortBy === 'distance' && !canSortByDistance}
         className="text-accent hover:text-primary border-edge cursor-pointer rounded border px-1.5 py-0.5 font-sans text-[10px] font-semibold transition-colors"
       >
         {SORT_LABELS[sortBy]}

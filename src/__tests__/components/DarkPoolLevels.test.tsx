@@ -441,7 +441,8 @@ describe('DarkPoolLevels: time display', () => {
     expect(screen.getByText(/2:30/)).toBeInTheDocument();
   });
 
-  it('shows "Updated" with time when updatedAt is provided', () => {
+  it('shows the updatedAt time in the scrubber when no scrub time is set', () => {
+    // 2026-04-02T19:35:00Z = 2:35 PM CT
     render(
       <DarkPoolLevels
         levels={[makeLevel()]}
@@ -451,7 +452,7 @@ describe('DarkPoolLevels: time display', () => {
         onRefresh={noop}
       />,
     );
-    expect(screen.getByText(/Updated/)).toBeInTheDocument();
+    expect(screen.getByText(/2:35/)).toBeInTheDocument();
   });
 });
 
