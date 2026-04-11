@@ -1,8 +1,10 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { SectionBox } from './ui';
 import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
 import { currentSessionStage, type SessionStage } from '../data/marketHours';
+import { to24Hour } from '../utils/time';
+import type { AmPm, Timezone } from '../types';
 
 /* ── phase definitions (UI presentation only) ────────── */
 
@@ -55,29 +57,105 @@ const PHASES: readonly Phase[] = [
   },
 ];
 
+/* ── helpers ──────────────────────────────────────────── */
+
+const IANA_ZONE: Record<Timezone, string> = {
+  CT: 'America/Chicago',
+  ET: 'America/New_York',
+};
+
+/** Today's date in CT as YYYY-MM-DD. */
+function ctToday(): string {
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/Chicago',
+  });
+}
+
+/**
+ * Build a Date for a specific wall-clock time in the given IANA zone.
+ *
+ * Two-step DST correction: create a candidate at UTC-6 (CST baseline),
+ * then check what the zone's Intl formatter says about that instant and
+ * adjust by the difference. Handles CT (CDT/CST) and ET (EDT/EST) without
+ * any hard-coded offset tables.
+ */
+function buildDateFromTZ(
+  dateStr: string,
+  h24: number,
+  minute: number,
+  ianaZone: string,
+): Date {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  // Step 1: candidate using CST (UTC-6) — at most 1h off from actual offset
+  const candidate = new Date(`${dateStr}T${pad(h24)}:${pad(minute)}:00-06:00`);
+  // Step 2: see what the zone actually reports at this UTC instant
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: ianaZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(candidate);
+  const rawH = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
+  const actualM = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+  // Some locales return '24' for midnight — normalize
+  const actualH = rawH >= 24 ? 0 : rawH;
+  const diffMs = ((h24 - actualH) * 60 + (minute - actualM)) * 60_000;
+  return new Date(candidate.getTime() + diffMs);
+}
+
 /**
  * Returns the index of the currently-active phase in `PHASES`, or `-1`
  * if no phase is active (pre-market, post-close, 2:30–2:55 late-bwb
  * gap, weekend, full-day holiday, or NYSE half-day).
- *
- * Uses the shared `currentSessionStage` helper from `marketHours.ts`
- * so holiday and half-day handling are centralized. (CROSS-003)
  */
-function getActiveIndex(): number {
-  const stage = currentSessionStage();
-  const idx = PHASES.findIndex((p) => p.stage === stage);
-  return idx; // -1 when stage is not one of the five displayed phases
+function getActiveIndex(now?: Date): number {
+  const stage = currentSessionStage(now);
+  return PHASES.findIndex((p) => p.stage === stage);
 }
 
 /* ── component ────────────────────────────────────────── */
 
-export default memo(function TradingScheduleSection() {
-  const [activeIdx, setActiveIdx] = useState(getActiveIndex);
+export default memo(function TradingScheduleSection({
+  selectedDate,
+  timeHour,
+  timeMinute,
+  timeAmPm,
+  timezone = 'CT',
+}: {
+  selectedDate?: string;
+  timeHour?: string;
+  timeMinute?: string;
+  timeAmPm?: AmPm;
+  timezone?: Timezone;
+}) {
+  // Live mode: no date provided, or the selected date is today's CT date.
+  // Backtest mode: a past date is selected — highlight based on that time.
+  const isLive = !selectedDate || selectedDate === ctToday();
+
+  const computeActiveIdx = useCallback((): number => {
+    if (isLive || !selectedDate || !timeHour || !timeMinute || !timeAmPm) {
+      return getActiveIndex(); // wall-clock now
+    }
+    const h24 = to24Hour(Number.parseInt(timeHour, 10), timeAmPm);
+    const minute = Number.parseInt(timeMinute, 10) || 0;
+    const backtestDate = buildDateFromTZ(
+      selectedDate,
+      h24,
+      minute,
+      IANA_ZONE[timezone],
+    );
+    return getActiveIndex(backtestDate);
+  }, [isLive, selectedDate, timeHour, timeMinute, timeAmPm, timezone]);
+
+  const [activeIdx, setActiveIdx] = useState(computeActiveIdx);
 
   useEffect(() => {
-    const id = setInterval(() => setActiveIdx(getActiveIndex()), 60_000);
+    setActiveIdx(computeActiveIdx());
+    // Only poll the live clock; backtest snapshots are static
+    if (!isLive) return;
+    const id = setInterval(() => setActiveIdx(computeActiveIdx()), 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, [computeActiveIdx, isLive]);
 
   return (
     <SectionBox label="Trading Schedule" badge="CT" collapsible>

@@ -16,6 +16,21 @@ interface Props {
   readonly analyzedCount: number;
 }
 
+/** Most recent Monday–Friday in CT, going back from yesterday. */
+function getLastExpectedTradingDay(): string {
+  const ct = new Date(
+    new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }),
+  );
+  ct.setDate(ct.getDate() - 1);
+  while (ct.getDay() === 0 || ct.getDay() === 6) {
+    ct.setDate(ct.getDate() - 1);
+  }
+  const y = ct.getFullYear();
+  const m = String(ct.getMonth() + 1).padStart(2, '0');
+  const d = String(ct.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function getNestedValue(
   obj: Record<string, unknown>,
   ...keys: string[]
@@ -63,9 +78,29 @@ const FindingsSummary = memo(function FindingsSummary({
         ? theme.red
         : theme.caution;
 
+  const lastExpected = getLastExpectedTradingDay();
+  const freshnessStatus = (() => {
+    if (!pipelineDate) return null;
+    if (pipelineDate === lastExpected) return 'FRESH';
+    // Check if exactly one trading day behind
+    const expected = new Date(`${lastExpected}T12:00:00`);
+    const actual = new Date(`${pipelineDate}T12:00:00`);
+    const diffDays = Math.round(
+      (expected.getTime() - actual.getTime()) / 86_400_000,
+    );
+    if (diffDays === 1) return 'MISSED';
+    return 'STALE';
+  })();
+  const freshnessColor =
+    freshnessStatus === 'FRESH'
+      ? theme.green
+      : freshnessStatus === 'MISSED'
+        ? theme.caution
+        : theme.red;
+
   return (
     <div
-      className="border-edge grid grid-cols-2 gap-3 rounded-lg border p-3 sm:grid-cols-3 lg:grid-cols-5"
+      className="border-edge grid grid-cols-2 gap-3 rounded-lg border p-3 sm:grid-cols-3 lg:grid-cols-6"
       style={{ backgroundColor: tint(theme.accent, '06') }}
     >
       {/* Pipeline Date */}
@@ -132,6 +167,20 @@ const FindingsSummary = memo(function FindingsSummary({
         </div>
         <div className="text-primary font-mono text-[12px] font-semibold">
           {analyzedCount}/{plotCount} analyzed
+        </div>
+      </div>
+
+      {/* Freshness */}
+      <div>
+        <div className="text-muted mb-0.5 font-sans text-[10px] font-bold tracking-[0.12em] uppercase">
+          Freshness
+        </div>
+        <div className="font-mono text-[12px] font-semibold">
+          {freshnessStatus ? (
+            <span style={{ color: freshnessColor }}>{freshnessStatus}</span>
+          ) : (
+            <span className="text-muted">N/A</span>
+          )}
         </div>
       </div>
     </div>
