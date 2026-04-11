@@ -87,7 +87,7 @@ function makeSchwabQuotes(spxPrice = 6817.43, spyPrice = 585.0) {
   return {
     ok: true as const,
     data: {
-      '$SPX': { quote: { lastPrice: spxPrice } },
+      $SPX: { quote: { lastPrice: spxPrice } },
       SPY: { quote: { lastPrice: spyPrice } },
     },
   };
@@ -184,7 +184,9 @@ describe('fetch-spx-candles-1m handler', () => {
   it('translates SPY prices to SPX using the live Schwab ratio', async () => {
     const spxPrice = 6817.43;
     const spyPrice = 585.0;
-    vi.mocked(schwabFetch).mockResolvedValue(makeSchwabQuotes(spxPrice, spyPrice));
+    vi.mocked(schwabFetch).mockResolvedValue(
+      makeSchwabQuotes(spxPrice, spyPrice),
+    );
     vi.mocked(uwFetch).mockResolvedValue([
       makeCandleRow({
         open: '580.00',
@@ -313,7 +315,7 @@ describe('fetch-spx-candles-1m handler', () => {
     vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true as const,
-      data: { '$SPX': {}, SPY: {} },
+      data: { $SPX: {}, SPY: {} },
     });
 
     const res = mockResponse();
@@ -595,7 +597,9 @@ describe('fetch-spx-candles-1m handler', () => {
   it('returns { ratio, spxPrice } from Schwab and surfaces spxPrice in response', async () => {
     const spxPrice = 6817.43;
     const spyPrice = 585.0;
-    vi.mocked(schwabFetch).mockResolvedValue(makeSchwabQuotes(spxPrice, spyPrice));
+    vi.mocked(schwabFetch).mockResolvedValue(
+      makeSchwabQuotes(spxPrice, spyPrice),
+    );
     vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
 
     const res = mockResponse();

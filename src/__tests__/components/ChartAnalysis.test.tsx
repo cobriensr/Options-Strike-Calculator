@@ -1693,17 +1693,13 @@ describe('AnalysisHistoryItem', () => {
   });
 
   it('omits SPX span when spx is null', () => {
-    render(
-      <AnalysisHistoryItem analysis={makeAnalysisEntry({ spx: null })} />,
-    );
+    render(<AnalysisHistoryItem analysis={makeAnalysisEntry({ spx: null })} />);
 
     expect(screen.queryByText(/^SPX/)).not.toBeInTheDocument();
   });
 
   it('omits VIX span when vix is null', () => {
-    render(
-      <AnalysisHistoryItem analysis={makeAnalysisEntry({ vix: null })} />,
-    );
+    render(<AnalysisHistoryItem analysis={makeAnalysisEntry({ vix: null })} />);
 
     expect(screen.queryByText(/^VIX/)).not.toBeInTheDocument();
   });
@@ -1796,7 +1792,12 @@ describe('ConfirmationBar', () => {
   const noop = () => {};
 
   function makeImage(label = 'Periscope (Gamma)') {
-    return { id: '1', file: new File([''], 'chart.png'), preview: 'blob:x', label };
+    return {
+      id: '1',
+      file: new File([''], 'chart.png'),
+      preview: 'blob:x',
+      label,
+    };
   }
 
   it('shows singular "image" for one image', () => {
@@ -1909,9 +1910,7 @@ describe('ConfirmationBar', () => {
       />,
     );
 
-    expect(
-      screen.queryByText(/includes previous/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/includes previous/i)).not.toBeInTheDocument();
   });
 
   it('omits previous recommendation when lastAnalysis is null', () => {
@@ -1926,9 +1925,7 @@ describe('ConfirmationBar', () => {
       />,
     );
 
-    expect(
-      screen.queryByText(/includes previous/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/includes previous/i)).not.toBeInTheDocument();
   });
 
   it('calls onCancel when Go Back is clicked', async () => {
@@ -1973,7 +1970,11 @@ describe('ConfirmationBar', () => {
 // ============================================================
 
 describe('LoadingIndicator', () => {
-  const MESSAGES = ['Fetching data...', 'Analyzing charts...', 'Almost done...'];
+  const MESSAGES = [
+    'Fetching data...',
+    'Analyzing charts...',
+    'Almost done...',
+  ];
 
   it('renders elapsed time and thinking message', () => {
     render(

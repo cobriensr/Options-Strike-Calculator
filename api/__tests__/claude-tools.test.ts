@@ -106,9 +106,8 @@ describe('buildClaudeTools', () => {
   it('get_flow_data schema has optional after/before/source properties', () => {
     const tools = buildClaudeTools();
     const tool = tools.find((t) => t.name === 'get_flow_data')!;
-    const props = (
-      tool.input_schema as { properties: Record<string, unknown> }
-    ).properties;
+    const props = (tool.input_schema as { properties: Record<string, unknown> })
+      .properties;
     expect(props).toHaveProperty('after');
     expect(props).toHaveProperty('before');
     expect(props).toHaveProperty('source');
@@ -118,9 +117,8 @@ describe('buildClaudeTools', () => {
   it('get_net_gex_heatmap schema has empty properties', () => {
     const tools = buildClaudeTools();
     const tool = tools.find((t) => t.name === 'get_net_gex_heatmap')!;
-    const props = (
-      tool.input_schema as { properties: Record<string, unknown> }
-    ).properties;
+    const props = (tool.input_schema as { properties: Record<string, unknown> })
+      .properties;
     expect(Object.keys(props)).toHaveLength(0);
   });
 });
@@ -147,7 +145,9 @@ describe('executeDbTool — get_flow_data', () => {
       },
     ]);
 
-    const block = makeToolUseBlock('get_flow_data', { source: 'unusual_whales' });
+    const block = makeToolUseBlock('get_flow_data', {
+      source: 'unusual_whales',
+    });
     const result = await executeDbTool(
       block,
       mockSql as unknown as NeonQueryFunction<false, false>,

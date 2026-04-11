@@ -172,9 +172,7 @@ function formatFlowForClaude(rows: FlowRow[]): string {
       r.netVolume != null
         ? `${r.netVolume >= 0 ? '+' : ''}${r.netVolume.toLocaleString()}`
         : 'N/A';
-    lines.push(
-      `  ${time} ET — NCP: ${ncpFmt}, NPP: ${nppFmt}, Vol: ${vol}`,
-    );
+    lines.push(`  ${time} ET — NCP: ${ncpFmt}, NPP: ${nppFmt}, Vol: ${vol}`);
   }
 
   return lines.join('\n');
@@ -218,11 +216,7 @@ export async function executeDbTool(
 
         // getFlowData accepts (date, source, asOf?) — asOf acts as upper bound
         // We use effectiveBefore for the upper bound and filter after in-memory
-        const rows = await getFlowData(
-          analysisDate,
-          source,
-          effectiveBefore,
-        );
+        const rows = await getFlowData(analysisDate, source, effectiveBefore);
 
         // Apply after filter in-memory (getFlowData does not have an after param)
         const filtered = inp.after
@@ -242,11 +236,7 @@ export async function executeDbTool(
         const inp = (input ?? {}) as GetSpotExposuresInput;
         const effectiveAsOf = clampToAsOf(inp.asOf, asOf);
 
-        const rows = await getSpotExposures(
-          analysisDate,
-          'SPX',
-          effectiveAsOf,
-        );
+        const rows = await getSpotExposures(analysisDate, 'SPX', effectiveAsOf);
 
         const limited = rows.slice(-SPOT_LIMIT);
         const formatted = formatSpotExposuresForClaude(limited);

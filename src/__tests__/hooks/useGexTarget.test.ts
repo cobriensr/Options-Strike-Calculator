@@ -972,7 +972,11 @@ describe('useGexTarget: opening strikes', () => {
             spot: 5795,
             oi: {
               target: callDominantStrike,
-              leaderboard: [callDominantStrike, neutralStrike, putDominantStrike],
+              leaderboard: [
+                callDominantStrike,
+                neutralStrike,
+                putDominantStrike,
+              ],
             },
             vol: null,
             dir: null,

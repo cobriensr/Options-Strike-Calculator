@@ -281,8 +281,11 @@ describe('GET /api/greek-exposure-strike', () => {
     (
       Sentry.withIsolationScope as ReturnType<typeof vi.fn>
     ).mockImplementationOnce(
-      (cb: (scope: { setTransactionName: typeof setTransactionName }) => unknown) =>
-        cb({ setTransactionName }),
+      (
+        cb: (scope: {
+          setTransactionName: typeof setTransactionName;
+        }) => unknown,
+      ) => cb({ setTransactionName }),
     );
     mockSql.mockResolvedValueOnce([]);
     const res = mockResponse();

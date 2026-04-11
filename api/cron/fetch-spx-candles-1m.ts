@@ -229,9 +229,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (ratioResult === null) {
       metrics.increment('fetch_spx_candles_1m.ratio_unavailable');
-      return res
-        .status(200)
-        .json({ stored: false, reason: 'SPX/SPY ratio unavailable from Schwab' });
+      return res.status(200).json({
+        stored: false,
+        reason: 'SPX/SPY ratio unavailable from Schwab',
+      });
     }
 
     const { ratio, spxPrice } = ratioResult;

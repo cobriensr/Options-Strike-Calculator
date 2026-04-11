@@ -785,7 +785,9 @@ describe('PositionTable', () => {
     };
     renderTable({ butterflies: [bfly] });
     expect(screen.getByRole('table')).toBeInTheDocument();
-    expect(screen.queryByText('No open positions found in this statement.')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('No open positions found in this statement.'),
+    ).not.toBeInTheDocument();
   });
 
   // ── IC with null cushionPct (both wings null) ─────────────
