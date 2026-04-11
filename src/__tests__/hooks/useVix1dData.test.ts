@@ -29,8 +29,8 @@ afterEach(() => {
 });
 
 /**
- * Helper: render the hook and trigger a lazy load by calling getVix1d.
- * Returns the hook result after the fetch completes.
+ * Helper: render the hook and trigger a lazy load via the API endpoint.
+ * Mocks /api/vix1d-daily returning 200 with mockVix1dMap.
  */
 async function renderAndLoad() {
   fetchSpy.mockResolvedValue(
@@ -66,11 +66,29 @@ describe('useVix1dData', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('fetches data on first getVix1d call and sets loaded with correct dayCount', async () => {
+  it('fetches from /api/vix1d-daily on first getVix1d call and sets loaded with correct dayCount', async () => {
     const result = await renderAndLoad();
 
     expect(result.current.dayCount).toBe(2);
-    expect(fetchSpy).toHaveBeenCalledWith('/vix1d-daily.json');
+    expect(fetchSpy).toHaveBeenCalledWith('/api/vix1d-daily');
+  });
+
+  it('falls back to /vix1d-daily.json when API returns 404', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(mockVix1dMap), { status: 200 }),
+      );
+
+    const { result } = renderHook(() => useVix1dData());
+    act(() => {
+      result.current.getVix1d('2026-03-11', 10);
+    });
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, '/api/vix1d-daily');
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, '/vix1d-daily.json');
+    expect(result.current.dayCount).toBe(2);
   });
 
   // --------------------------------------------------------

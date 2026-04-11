@@ -45,10 +45,17 @@ export function useVix1dData(): UseVix1dDataReturn {
     if (fetchStarted.current) return;
     fetchStarted.current = true;
 
-    fetch('/vix1d-daily.json')
+    // Try the live endpoint (fed by the refresh-vix1d cron, always up-to-date).
+    // Fall back to the static JSON baseline if the cron has not run yet (404)
+    // or if Redis is unavailable.
+    fetch('/api/vix1d-daily')
       .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
+        if (res.ok) return res.json() as Promise<Vix1dDataMap>;
+        // 404 = cron not yet run; fall back to static baseline
+        return fetch('/vix1d-daily.json').then((fallback) => {
+          if (!fallback.ok) throw new Error(`HTTP ${fallback.status}`);
+          return fallback.json() as Promise<Vix1dDataMap>;
+        });
       })
       .then((json: Vix1dDataMap) => {
         setData(json);

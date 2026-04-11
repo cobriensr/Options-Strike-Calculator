@@ -120,6 +120,10 @@
     {
       "path": "/api/cron/backfill-futures-gaps",
       "schedule": "0 6 * * 1-6"
+    },
+    {
+      "path": "/api/cron/refresh-vix1d",
+      "schedule": "0 11 * * 1-5"
     }
   ],
   "functions": {
