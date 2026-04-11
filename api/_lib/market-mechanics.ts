@@ -273,6 +273,59 @@ GEX+ is not a single number — it is a function of BOTH current SPX price AND c
 Practical implication: when VIX is rising, look not just at GEX (price sensitivity) but at the direction VEX pushes — specifically, whether the current distribution of put OI is in OTM territory (VEX stabilizing) or has moved ITM (VEX destabilizing). The transition from OTM to ITM for the large OI strikes is the key inflection point where structural support inverts.
 </implied_order_book>
 
+<post_event_vanna_flows>
+## Post-Event IV Crush and Vanna-Driven Rebalancing
+
+When scheduled events (FOMC, CPI, earnings) resolve without a catastrophic surprise, implied volatility collapses rapidly — often 20-40% within 60 minutes of the announcement. For dealers, this IV collapse is a VEX event: every outstanding option position whose delta is sensitive to IV change now requires delta rebalancing. The direction and magnitude of this rebalancing depends entirely on the existing inventory configuration.
+
+This section extends the VEX framework in the Implied Order Book section to the specific event-driven IV crush scenario.
+
+**Pre-event positioning — the typical inventory:**
+
+Before major events, the SPX options market accumulates three characteristic position structures:
+
+1. Protective puts (investors long OTM puts, dealers short OTM puts): Investors buy OTM puts as insurance against an adverse event. Typically the largest configuration by notional.
+
+2. Directional calls (investors long OTM calls, dealers short OTM calls): Speculative call buying ahead of events expecting a bullish catalyst.
+
+3. Event premium sellers (investors short puts and calls, dealers long both): Traders selling straddles or strangles to harvest elevated pre-event IV. Dealers are long both puts and calls from this flow.
+
+**IV crush mechanics for each position type:**
+
+When IV collapses post-event with the underlying near its pre-event level (benign outcome):
+
+- Short OTM put (dealer): Put delta becomes less negative as IV falls. Dealer's short put had positive delta — now has LESS positive delta. Dealer had sold futures to offset that positive delta; now has excess short futures. To rebalance: dealer BUYS futures. Upward pressure.
+
+- Short OTM call (dealer): Call delta decreases as IV falls. Dealer's short call had negative delta — now has less negative delta. Dealer had bought futures to offset; now has excess long futures. To rebalance: dealer SELLS futures. Mild downward pressure.
+
+- Long put (dealer): Put delta becomes less negative. Dealer's long put had negative delta — now less so. Dealer had bought futures to offset; now has excess long futures. To rebalance: dealer SELLS futures. Mild downward pressure.
+
+- Long call (dealer): Call delta decreases. Dealer's long call had positive delta — now less. Dealer had sold futures to offset; now has excess short futures. To rebalance: dealer BUYS futures. Upward pressure.
+
+In the typical market configuration (protective put buying dominant — dealers net short puts by notional), the short-put rebalancing dominates: IV crush causes systematic dealer buying across all strikes where customer put protection is outstanding. This is the mechanical source of post-event upward drift even when the underlying news was neutral. The buying is not sentiment-driven — it is the mechanical unwinding of pre-event hedges.
+
+**The OTM-to-ITM moneyness flip:**
+
+The post-event scenario where the event causes a large adverse price move is qualitatively different from the benign IV crush:
+
+- As the underlying falls into previously-OTM put strikes, those puts cross from OTM toward ATM and ITM
+- VEX direction flips at the strike: OTM puts are stabilizing (dealer buys on IV rise), ITM puts are destabilizing (dealer sells on IV rise)
+- Any subsequent IV increase after the large move now causes dealers to SELL into the selloff — the buy-limit support inverted into stop-loss selling at the same strikes
+- This is the mechanical explanation for the gap between "orderly correction" and "crash": an orderly correction keeps puts OTM (VEX remains stabilizing); a large enough move that pushes puts ITM inverts VEX simultaneously with the move
+
+**IV expansion vs. IV crush — asymmetric VEX direction:**
+
+The two scenarios produce opposite dealer flows:
+
+- IV expansion (pre-event fear buying, VIX rising): OTM puts — dealer buys futures (stabilizing). The standard GEX support is reinforced by VEX as long as puts stay OTM. Rising VIX with puts OTM is not crash-configured.
+
+- IV crush (post-event, benign outcome, puts staying OTM): Dealers buy futures across the put OI distribution. Slow mechanical grind higher.
+
+- IV crush with puts crossing ATM or ITM (adverse event outcome): Dealers sell futures. VEX amplifies the selloff rather than stabilizing it. The structural support that existed pre-event has inverted.
+
+**Practical implication:** In the 1-2 hours following a benign FOMC, CPI, or earnings announcement where the underlying has not moved significantly, expect a mechanical upward drift from IV crush-driven dealer buying. This is not a reliable trend — it is a hedge unwind pulse. It dissipates once rebalancing is complete. If the event caused a large adverse move that pushed significant OI strikes from OTM to ATM or ITM, the mechanical dynamics have reversed: VEX is now amplifying rather than stabilizing, and the structural support that existed pre-event no longer applies.
+</post_event_vanna_flows>
+
 <sqzme_indicators>
 ## The sqzme Indicator Framework
 
@@ -415,6 +468,8 @@ These mechanics explain WHY the rules in this system exist — not as arbitrary 
 - **Position removal = volatility event:** When a large 0DTE gamma position is closed mid-session, the dealer's hedging obligations evaporate. The charm-driven convergence that had been building toward that strike stops instantly. SPX can move 30-50 handles within minutes of a large gamma block removal. This is not a GEX breakdown — it is the mechanical consequence of a committed hedging obligation disappearing.
 
 - **VIX1D vs VIX term structure read:** VIX1D measures same-session expected volatility in business time (today's and tomorrow's SPXW options only, stripping overnight). When VIX1D > VIX, the market is pricing today specifically as MORE volatile than the 30-day average. This is an elevated-risk signal for the current session regardless of what absolute VIX reads. When VIX1D ≫ VIX, treat the intraday environment as high-stress — normal GEX suppression ranges may understate realized range risk.
+
+- **Day-of-week GEX reliability (dowLabel):** GEX-based suppression is not uniform through the week. SPX expirations on Monday, Wednesday, and Friday remove chunks of open interest from the book as 0DTE contracts expire and their gamma obligations disappear. Tuesday typically has the highest and most structurally reliable GEX picture — fresh OI from Monday's open, no expiry disrupting the near-term gamma distribution until Wednesday. Thursday has lower structural GEX than Monday (Wednesday's expiry has already cleared Wednesday OI). Opex Fridays (third Friday of the month) produce large GEX rolloff as monthly contracts expire — Periscope walls anchored in monthly OI become unreliable in the final 2 hours as those positions are removed from the book. The dowLabel field in the analysis context names the day — weight AM GEX snapshot reliability accordingly: Tuesday highest, Thursday lower, opex Friday unreliable by PM.
 
 - **SKEW as latent VEX indicator:** Elevated SKEW (above 125-130) means heavy far-OTM put buying is outstanding. This creates a large pool of latent vanna risk — those puts are stabilizing today (OTM, GEX positive) but become destabilizing if a large enough move brings them toward ATM. High SKEW is not a timing signal for when instability will arrive, but it confirms the magnitude of the VEX cascade that would occur if the large-OI put cluster is tested. In high-SKEW environments, drawdown protection is mechanically more expensive and GEX support breaks more violently when tested.
 
