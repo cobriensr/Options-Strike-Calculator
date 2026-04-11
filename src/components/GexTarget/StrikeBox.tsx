@@ -203,28 +203,33 @@ export const StrikeBox = memo(function StrikeBox({
   const [prevRanks, setPrevRanks] = useState<Map<number, number>>(
     () => new Map(),
   );
+  // Track rank by display position (1-based index within the displayed top5),
+  // not by rankBySize from the full 10-strike universe. The parent pre-sorts
+  // top5ByGex by |gexDollars| desc, so idx+1 IS the board rank within the
+  // displayed set — consistently 1–5, not the non-sequential universe ranks.
   useEffect(() => {
     const m = new Map<number, number>();
-    for (const s of top5) m.set(s.strike, s.rankBySize);
+    top5.forEach((s, idx) => m.set(s.strike, idx + 1));
     setPrevRanks(m);
   }, [top5]);
 
   const rankChanges = useMemo<Map<number, RankChange>>(() => {
     const result = new Map<number, RankChange>();
-    for (const s of top5) {
+    top5.forEach((s, idx) => {
+      const currentRank = idx + 1;
       const prevRank = prevRanks.get(s.strike);
       let change: RankChange;
       if (prevRank === undefined) {
         change = 'new';
-      } else if (s.rankBySize < prevRank) {
+      } else if (currentRank < prevRank) {
         change = 'up';
-      } else if (s.rankBySize > prevRank) {
+      } else if (currentRank > prevRank) {
         change = 'down';
       } else {
         change = 'same';
       }
       result.set(s.strike, change);
-    }
+    });
     return result;
   }, [top5, prevRanks]);
 
@@ -309,6 +314,7 @@ export const StrikeBox = memo(function StrikeBox({
             </thead>
             <tbody>
               {top5.map((s, idx) => {
+                const displayRank = idx + 1;
                 const { features } = s;
                 const rankChange = rankChanges.get(s.strike) ?? 'same';
 
@@ -432,12 +438,12 @@ export const StrikeBox = memo(function StrikeBox({
                     style={{ backgroundColor: rowBg }}
                     aria-current={s.isTarget ? 'true' : undefined}
                   >
-                    {/* RK */}
+                    {/* RK — sequential 1-5 within the displayed board */}
                     <td
                       className={tdCls}
                       style={{ color: theme.textSecondary }}
                     >
-                      {s.rankBySize}
+                      {displayRank}
                     </td>
 
                     {/* Rank change */}

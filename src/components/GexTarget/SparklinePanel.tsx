@@ -40,9 +40,13 @@ interface SparklinePoint {
 
 interface SparklineProps {
   points: SparklinePoint[];
+  /** Explicit line color — overrides the internal rising/falling computation.
+   * Use when an external signal (e.g. deltaPct_20m sign) is more authoritative
+   * than comparing the raw GEX$ values (which may be recalculated via JOIN). */
+  colorOverride?: string;
 }
 
-const Sparkline = memo(function Sparkline({ points }: SparklineProps) {
+const Sparkline = memo(function Sparkline({ points, colorOverride }: SparklineProps) {
   // Only keep points with real values; sort oldest-first for correct drawing order.
   const valid = useMemo(
     () => [...points].sort((a, b) => b.minutesAgo - a.minutesAgo),
@@ -94,7 +98,12 @@ const Sparkline = memo(function Sparkline({ points }: SparklineProps) {
   const last = valid.at(-1)!.value;
   const rising = last > first;
   const flat = last === first;
-  const lineColor = flat ? theme.textMuted : rising ? theme.green : theme.red;
+  const computedColor = flat ? theme.textMuted : rising ? theme.green : theme.red;
+  // colorOverride wins when provided — callers should pass the deltaPct sign
+  // so the line color always agrees with the % label, even when the current
+  // gexDollars value has been recalculated via a JOIN and drifted from what
+  // deltaPct_20m was computed against.
+  const lineColor = colorOverride ?? computedColor;
 
   return (
     <svg
@@ -190,8 +199,13 @@ export const SparklinePanel = memo(function SparklinePanel({
                   {s.strike}
                 </span>
 
-                {/* Sparkline */}
-                <Sparkline points={pts} />
+                {/* Sparkline — pass pct20m color so line direction agrees with
+                    the % label even when gexDollars has drifted from the value
+                    that deltaPct_20m was computed against (JOIN recalculation). */}
+                <Sparkline
+                  points={pts}
+                  colorOverride={pct20m !== null ? pctColor : undefined}
+                />
 
                 {/* 20m % change */}
                 <span

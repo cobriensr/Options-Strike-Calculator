@@ -93,16 +93,30 @@ export const GexTarget = memo(function GexTarget({
   // display the same 5 strikes. The authoritative ranking is by |gexDollars|
   // (largest absolute GEX $ first). Each panel then re-sorts within this set
   // by its own metric (5m % change, 20m % change, or current GEX $).
-  const top5ByGex = useMemo(
-    () =>
-      [...activeLeaderboard]
-        .sort(
-          (a, b) =>
-            Math.abs(b.features.gexDollars) - Math.abs(a.features.gexDollars),
-        )
-        .slice(0, 5),
-    [activeLeaderboard],
-  );
+  //
+  // The target strike is always guaranteed to be in the set: if it falls
+  // outside the top4 by GEX$, it replaces the 5th entry. Without this, the
+  // Strike Board would never highlight the target row (isTarget flag), and
+  // the TargetTile would recommend a strike the user can't find in the table.
+  const top5ByGex = useMemo(() => {
+    const target = activeScore?.target ?? null;
+    const sorted = [...activeLeaderboard]
+      .sort(
+        (a, b) =>
+          Math.abs(b.features.gexDollars) - Math.abs(a.features.gexDollars),
+      )
+      .slice(0, 5);
+
+    if (
+      target !== null &&
+      sorted.length > 0 &&
+      !sorted.some((s) => s.strike === target.strike)
+    ) {
+      sorted[sorted.length - 1] = target;
+    }
+
+    return sorted;
+  }, [activeLeaderboard, activeScore]);
 
   // ── Live badge config ────────────────────────────────────
 
