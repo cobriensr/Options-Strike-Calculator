@@ -533,19 +533,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
             gtf.rank_in_mode, gtf.rank_by_size, gtf.is_target,
             CASE gtf.mode
-              WHEN 'oi'  THEN COALESCE(gso.call_gamma_oi::numeric  + gso.put_gamma_oi::numeric,  gtf.gex_dollars)
+              -- OI mode: use greek_exposure_strike (correctly-scaled millions-range
+              -- GEX) in preference to gex_strike_0dte.call_gamma_oi which carries
+              -- a ~548 000x pre-scaling factor from the spot-exposures endpoint.
+              WHEN 'oi'  THEN COALESCE(ges.net_gex, gtf.gex_dollars)
               WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric + gso.put_gamma_vol::numeric, gtf.gex_dollars)
               WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric + gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, gtf.gex_dollars)
               ELSE gtf.gex_dollars
             END AS gex_dollars,
             CASE gtf.mode
-              WHEN 'oi'  THEN COALESCE(gso.call_gamma_oi::numeric,  0)
+              WHEN 'oi'  THEN COALESCE(ges.call_gex::numeric, 0)
               WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric, 0)
               WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric, 0)
               ELSE 0
             END AS call_gex_dollars,
             CASE gtf.mode
-              WHEN 'oi'  THEN COALESCE(gso.put_gamma_oi::numeric,  0)
+              WHEN 'oi'  THEN COALESCE(ges.put_gex::numeric, 0)
               WHEN 'vol' THEN COALESCE(gso.put_gamma_vol::numeric, 0)
               WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
               ELSE 0
@@ -617,19 +620,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
           gtf.rank_in_mode, gtf.rank_by_size, gtf.is_target,
           CASE gtf.mode
-            WHEN 'oi'  THEN COALESCE(gso.call_gamma_oi::numeric  + gso.put_gamma_oi::numeric,  gtf.gex_dollars)
+            -- OI mode: use greek_exposure_strike (correctly-scaled millions-range
+            -- GEX) in preference to gex_strike_0dte.call_gamma_oi which carries
+            -- a ~548 000x pre-scaling factor from the spot-exposures endpoint.
+            WHEN 'oi'  THEN COALESCE(ges.net_gex, gtf.gex_dollars)
             WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric + gso.put_gamma_vol::numeric, gtf.gex_dollars)
             WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric + gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, gtf.gex_dollars)
             ELSE gtf.gex_dollars
           END AS gex_dollars,
           CASE gtf.mode
-            WHEN 'oi'  THEN COALESCE(gso.call_gamma_oi::numeric,  0)
+            WHEN 'oi'  THEN COALESCE(ges.call_gex::numeric, 0)
             WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric, 0)
             WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric, 0)
             ELSE 0
           END AS call_gex_dollars,
           CASE gtf.mode
-            WHEN 'oi'  THEN COALESCE(gso.put_gamma_oi::numeric,  0)
+            WHEN 'oi'  THEN COALESCE(ges.put_gex::numeric, 0)
             WHEN 'vol' THEN COALESCE(gso.put_gamma_vol::numeric, 0)
             WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
             ELSE 0
