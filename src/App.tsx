@@ -23,7 +23,6 @@ import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
-import { useVolumePerStrike } from './hooks/useVolumePerStrike';
 import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
@@ -43,7 +42,6 @@ import ErrorBoundary from './components/ErrorBoundary';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import GexPerStrike from './components/GexPerStrike';
-import { VolumePerStrike } from './components/VolumePerStrike';
 import { GexTarget } from './components/GexTarget';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
@@ -165,10 +163,6 @@ export default function StrikeCalculator() {
   // vix.selectedDate. Picking a past date here is a backtest browsing
   // action and must not re-anchor the Black-Scholes math elsewhere.
   const gexStrike = useGexPerStrike(market.data.quotes?.marketOpen ?? false);
-  const volumePerStrike = useVolumePerStrike(
-    market.data.quotes?.marketOpen ?? false,
-    vix.selectedDate,
-  );
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -736,15 +730,6 @@ export default function StrikeCalculator() {
                     onScrubPrev={gexStrike.scrubPrev}
                     onScrubNext={gexStrike.scrubNext}
                     onScrubLive={gexStrike.scrubLive}
-                  />
-                </ErrorBoundary>
-                <ErrorBoundary label="0DTE Volume Magnets">
-                  <VolumePerStrike
-                    snapshots={volumePerStrike.snapshots}
-                    loading={volumePerStrike.loading}
-                    error={volumePerStrike.error}
-                    onRefresh={volumePerStrike.refresh}
-                    spot={results?.spot ?? spxVal ?? null}
                   />
                 </ErrorBoundary>
               </>
