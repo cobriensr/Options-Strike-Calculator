@@ -165,18 +165,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Sanity check: log net GEX at largest absolute GEX strike
     if (rows.length > 0) {
-      const largest = rows.reduce(
-        (best, r) => {
-          const a =
-            Math.abs(Number.parseFloat(r.call_gex)) +
-            Math.abs(Number.parseFloat(r.put_gex));
-          const b =
-            Math.abs(Number.parseFloat(best.call_gex)) +
-            Math.abs(Number.parseFloat(best.put_gex));
-          return a > b ? r : best;
-        },
-        rows[0]!,
-      );
+      const largest = rows.reduce((best, r) => {
+        const a =
+          Math.abs(Number.parseFloat(r.call_gex)) +
+          Math.abs(Number.parseFloat(r.put_gex));
+        const b =
+          Math.abs(Number.parseFloat(best.call_gex)) +
+          Math.abs(Number.parseFloat(best.put_gex));
+        return a > b ? r : best;
+      }, rows[0]!);
       const { netGex } = computeColumns(largest);
       logger.info(
         { strike: largest.strike, netGex: Math.round(netGex) },
