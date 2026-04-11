@@ -649,6 +649,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ges.put_delta,
           gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
           gtf.prev_gex_dollars_1m, gtf.prev_gex_dollars_5m,
+          gtf.prev_gex_dollars_10m, gtf.prev_gex_dollars_15m,
           gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
           gtf.delta_pct_1m, gtf.delta_pct_5m, gtf.delta_pct_20m, gtf.delta_pct_60m,
           gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,
