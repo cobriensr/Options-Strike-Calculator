@@ -36,6 +36,7 @@ import {
   SYSTEM_PROMPT_PART1,
   SYSTEM_PROMPT_PART2,
 } from './_lib/analyze-prompts.js';
+import { MARKET_MECHANICS_CONTEXT } from './_lib/market-mechanics.js';
 import { getCalibrationExample } from './_lib/analyze-calibration.js';
 import {
   buildAnalysisContext,
@@ -119,7 +120,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // model reads rules → sees what correct output looks like → sees output schema.
   const calibration = getCalibrationExample(mode);
   const stableSystemText =
-    SYSTEM_PROMPT_PART1 + '\n' + calibration + '\n' + SYSTEM_PROMPT_PART2;
+    SYSTEM_PROMPT_PART1 +
+    '\n' +
+    MARKET_MECHANICS_CONTEXT +
+    '\n' +
+    calibration +
+    '\n' +
+    SYSTEM_PROMPT_PART2;
   const promptHash = createHash('sha256')
     .update(stableSystemText)
     .digest('hex')
