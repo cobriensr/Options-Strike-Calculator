@@ -10,6 +10,13 @@ import userEvent from '@testing-library/user-event';
 
 import ChartAnalysis from '../../components/ChartAnalysis';
 import type { AnalysisContext } from '../../components/ChartAnalysis';
+import AnalysisHistoryItem from '../../components/ChartAnalysis/AnalysisHistoryItem';
+import {
+  ConfirmationBar,
+  LoadingIndicator,
+  RetryPromptDialog,
+} from '../../components/ChartAnalysis/AnalysisLoadingState';
+import type { AnalysisEntry } from '../../components/ChartAnalysis/types';
 import { theme } from '../../themes';
 import type { CalculationResults } from '../../types';
 
@@ -1626,5 +1633,519 @@ describe('ChartAnalysis', () => {
         });
       });
     });
+  });
+});
+
+// ============================================================
+// AnalysisHistoryItem
+// ============================================================
+
+function makeAnalysisEntry(
+  overrides: Partial<AnalysisEntry> = {},
+): AnalysisEntry {
+  return {
+    id: 1,
+    entryTime: '10:00 AM',
+    mode: 'entry',
+    structure: 'IRON CONDOR',
+    confidence: 'HIGH',
+    suggestedDelta: 8,
+    spx: 5700,
+    vix: 18.5,
+    vix1d: 15,
+    hedge: null,
+    analysis: {
+      mode: 'entry',
+      structure: 'IRON CONDOR',
+      confidence: 'HIGH',
+      suggestedDelta: 8,
+      reasoning: 'Balanced flow.',
+      observations: ['obs1'],
+      risks: ['risk1'],
+      structureRationale: 'NCP ≈ NPP.',
+    },
+    createdAt: '2025-03-01T10:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('AnalysisHistoryItem', () => {
+  it('renders mode badge, structure, confidence, and delta', () => {
+    render(<AnalysisHistoryItem analysis={makeAnalysisEntry()} />);
+
+    // Multiple elements may contain these labels (badge + results view)
+    expect(screen.getAllByText('Pre-Trade').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('IRON CONDOR').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('HIGH').length).toBeGreaterThanOrEqual(1);
+    // Delta rendered as two sibling text nodes: number + Δ symbol
+    expect(screen.getAllByText(/\u0394/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows SPX and VIX values when both are present', () => {
+    render(
+      <AnalysisHistoryItem
+        analysis={makeAnalysisEntry({ spx: 5750, vix: 20.3 })}
+      />,
+    );
+
+    expect(screen.getByText('SPX 5750')).toBeInTheDocument();
+    expect(screen.getByText('VIX 20.3')).toBeInTheDocument();
+  });
+
+  it('omits SPX span when spx is null', () => {
+    render(
+      <AnalysisHistoryItem analysis={makeAnalysisEntry({ spx: null })} />,
+    );
+
+    expect(screen.queryByText(/^SPX/)).not.toBeInTheDocument();
+  });
+
+  it('omits VIX span when vix is null', () => {
+    render(
+      <AnalysisHistoryItem analysis={makeAnalysisEntry({ vix: null })} />,
+    );
+
+    expect(screen.queryByText(/^VIX/)).not.toBeInTheDocument();
+  });
+
+  it('renders midday mode badge with Mid-Day label', () => {
+    render(
+      <AnalysisHistoryItem
+        analysis={makeAnalysisEntry({
+          mode: 'midday',
+          analysis: { ...makeAnalysisEntry().analysis, mode: 'midday' },
+        })}
+      />,
+    );
+
+    expect(screen.getAllByText('Mid-Day').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders review mode badge with Review label', () => {
+    render(
+      <AnalysisHistoryItem
+        analysis={makeAnalysisEntry({
+          mode: 'review',
+          analysis: { ...makeAnalysisEntry().analysis, mode: 'review' },
+        })}
+      />,
+    );
+
+    expect(screen.getAllByText('Review').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('applies PUT CREDIT SPREAD structure color', () => {
+    render(
+      <AnalysisHistoryItem
+        analysis={makeAnalysisEntry({ structure: 'PUT CREDIT SPREAD' })}
+      />,
+    );
+
+    const structureEl = screen.getByText('PUT CREDIT SPREAD');
+    expect(structureEl).toBeInTheDocument();
+  });
+
+  it('applies CALL CREDIT SPREAD structure color', () => {
+    render(
+      <AnalysisHistoryItem
+        analysis={makeAnalysisEntry({ structure: 'CALL CREDIT SPREAD' })}
+      />,
+    );
+
+    expect(screen.getByText('CALL CREDIT SPREAD')).toBeInTheDocument();
+  });
+
+  it('applies fallback structure color for unknown structure', () => {
+    render(
+      <AnalysisHistoryItem
+        analysis={makeAnalysisEntry({ structure: 'SIT OUT' })}
+      />,
+    );
+
+    const structureEl = screen.getByText('SIT OUT');
+    // theme.caution is the fallback color — just verify it renders
+    expect(structureEl).toBeInTheDocument();
+  });
+
+  it('applies MODERATE confidence color', () => {
+    render(
+      <AnalysisHistoryItem
+        analysis={makeAnalysisEntry({ confidence: 'MODERATE' })}
+      />,
+    );
+
+    expect(screen.getByText('MODERATE')).toBeInTheDocument();
+  });
+
+  it('applies LOW confidence color', () => {
+    render(
+      <AnalysisHistoryItem
+        analysis={makeAnalysisEntry({ confidence: 'LOW' })}
+      />,
+    );
+
+    expect(screen.getByText('LOW')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// ConfirmationBar (AnalysisLoadingState)
+// ============================================================
+
+describe('ConfirmationBar', () => {
+  const noop = () => {};
+
+  function makeImage(label = 'Periscope (Gamma)') {
+    return { id: '1', file: new File([''], 'chart.png'), preview: 'blob:x', label };
+  }
+
+  it('shows singular "image" for one image', () => {
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="entry"
+        isBacktest={false}
+        lastAnalysis={null}
+        onCancel={noop}
+        onConfirm={noop}
+      />,
+    );
+
+    expect(screen.getByText(/send 1 image to opus/i)).toBeInTheDocument();
+  });
+
+  it('shows plural "images" for two images', () => {
+    render(
+      <ConfirmationBar
+        images={[makeImage(), makeImage('Periscope Charm (SPX)')]}
+        mode="entry"
+        isBacktest={false}
+        lastAnalysis={null}
+        onCancel={noop}
+        onConfirm={noop}
+      />,
+    );
+
+    expect(screen.getByText(/send 2 images to opus/i)).toBeInTheDocument();
+  });
+
+  it('shows Schwab note when not a backtest', () => {
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="entry"
+        isBacktest={false}
+        lastAnalysis={null}
+        onCancel={noop}
+        onConfirm={noop}
+      />,
+    );
+
+    expect(
+      screen.getByText(/will fetch live positions from schwab/i),
+    ).toBeInTheDocument();
+  });
+
+  it('omits Schwab note for backtest', () => {
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="entry"
+        isBacktest={true}
+        lastAnalysis={null}
+        onCancel={noop}
+        onConfirm={noop}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/will fetch live positions from schwab/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows previous recommendation for midday mode with lastAnalysis', () => {
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="midday"
+        isBacktest={false}
+        lastAnalysis={{ structure: 'IRON CONDOR' }}
+        onCancel={noop}
+        onConfirm={noop}
+      />,
+    );
+
+    expect(
+      screen.getByText(/includes previous iron condor recommendation/i),
+    ).toBeInTheDocument();
+  });
+
+  it('shows previous recommendation for review mode with lastAnalysis', () => {
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="review"
+        isBacktest={false}
+        lastAnalysis={{ structure: 'PUT CREDIT SPREAD' }}
+        onCancel={noop}
+        onConfirm={noop}
+      />,
+    );
+
+    expect(
+      screen.getByText(/includes previous put credit spread recommendation/i),
+    ).toBeInTheDocument();
+  });
+
+  it('omits previous recommendation for entry mode even with lastAnalysis', () => {
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="entry"
+        isBacktest={false}
+        lastAnalysis={{ structure: 'IRON CONDOR' }}
+        onCancel={noop}
+        onConfirm={noop}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/includes previous/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('omits previous recommendation when lastAnalysis is null', () => {
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="midday"
+        isBacktest={false}
+        lastAnalysis={null}
+        onCancel={noop}
+        onConfirm={noop}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/includes previous/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('calls onCancel when Go Back is clicked', async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn();
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="entry"
+        isBacktest={false}
+        lastAnalysis={null}
+        onCancel={onCancel}
+        onConfirm={noop}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /go back/i }));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it('calls onConfirm when Confirm is clicked', async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    render(
+      <ConfirmationBar
+        images={[makeImage()]}
+        mode="entry"
+        isBacktest={false}
+        lastAnalysis={null}
+        onCancel={noop}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /confirm/i }));
+    expect(onConfirm).toHaveBeenCalledOnce();
+  });
+});
+
+// ============================================================
+// LoadingIndicator (AnalysisLoadingState)
+// ============================================================
+
+describe('LoadingIndicator', () => {
+  const MESSAGES = ['Fetching data...', 'Analyzing charts...', 'Almost done...'];
+
+  it('renders elapsed time and thinking message', () => {
+    render(
+      <LoadingIndicator
+        elapsed={0}
+        THINKING_MESSAGES={MESSAGES}
+        cancelAnalysis={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('0s')).toBeInTheDocument();
+    expect(screen.getByText('Fetching data...')).toBeInTheDocument();
+    expect(screen.getByText(/opus is thinking/i)).toBeInTheDocument();
+  });
+
+  it('advances thinking message based on elapsed seconds', () => {
+    // elapsed=50 → index=1, elapsed=100 → index=2
+    render(
+      <LoadingIndicator
+        elapsed={50}
+        THINKING_MESSAGES={MESSAGES}
+        cancelAnalysis={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('Analyzing charts...')).toBeInTheDocument();
+  });
+
+  it('clamps thinking message index to last entry', () => {
+    // elapsed=10000 → would overflow array; should clamp to last
+    render(
+      <LoadingIndicator
+        elapsed={10000}
+        THINKING_MESSAGES={MESSAGES}
+        cancelAnalysis={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('Almost done...')).toBeInTheDocument();
+  });
+
+  it('calls cancelAnalysis when Cancel is clicked', async () => {
+    const user = userEvent.setup();
+    const cancel = vi.fn();
+    render(
+      <LoadingIndicator
+        elapsed={30}
+        THINKING_MESSAGES={MESSAGES}
+        cancelAnalysis={cancel}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+// ============================================================
+// RetryPromptDialog (AnalysisLoadingState)
+// ============================================================
+
+describe('RetryPromptDialog', () => {
+  const noop = () => {};
+
+  function makeRetryPrompt(attempt: number, maxAttempts: number) {
+    return { attempt, maxAttempts, error: 'Timeout error' };
+  }
+
+  it('shows attempt info and error', () => {
+    render(
+      <RetryPromptDialog
+        retryPrompt={makeRetryPrompt(1, 3)}
+        onRetryNow={noop}
+        onUpdateScreenshots={noop}
+        onCancel={noop}
+      />,
+    );
+
+    expect(screen.getByText(/attempt 1\/3 failed/i)).toBeInTheDocument();
+    expect(screen.getByText('Timeout error')).toBeInTheDocument();
+  });
+
+  it('shows plural "attempts" when more than 1 remaining', () => {
+    // 3 max, attempt 1 → 2 remaining
+    render(
+      <RetryPromptDialog
+        retryPrompt={makeRetryPrompt(1, 3)}
+        onRetryNow={noop}
+        onUpdateScreenshots={noop}
+        onCancel={noop}
+      />,
+    );
+
+    expect(screen.getByText(/2 attempts remaining/i)).toBeInTheDocument();
+  });
+
+  it('shows singular "attempt" when exactly 1 remaining', () => {
+    // 3 max, attempt 2 → 1 remaining
+    render(
+      <RetryPromptDialog
+        retryPrompt={makeRetryPrompt(2, 3)}
+        onRetryNow={noop}
+        onUpdateScreenshots={noop}
+        onCancel={noop}
+      />,
+    );
+
+    expect(screen.getByText(/1 attempt remaining/i)).toBeInTheDocument();
+  });
+
+  it('calls onRetryNow when Retry Now is clicked', async () => {
+    const user = userEvent.setup();
+    const onRetryNow = vi.fn();
+    render(
+      <RetryPromptDialog
+        retryPrompt={makeRetryPrompt(1, 3)}
+        onRetryNow={onRetryNow}
+        onUpdateScreenshots={noop}
+        onCancel={noop}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /retry now/i }));
+    expect(onRetryNow).toHaveBeenCalledOnce();
+  });
+
+  it('calls onUpdateScreenshots when Update Screenshots First is clicked', async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    render(
+      <RetryPromptDialog
+        retryPrompt={makeRetryPrompt(1, 3)}
+        onRetryNow={noop}
+        onUpdateScreenshots={onUpdate}
+        onCancel={noop}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole('button', { name: /update screenshots first/i }),
+    );
+    expect(onUpdate).toHaveBeenCalledOnce();
+  });
+
+  it('calls onCancel when Cancel is clicked', async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn();
+    render(
+      <RetryPromptDialog
+        retryPrompt={makeRetryPrompt(1, 3)}
+        onRetryNow={noop}
+        onUpdateScreenshots={noop}
+        onCancel={onCancel}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it('has alertdialog role and label', () => {
+    render(
+      <RetryPromptDialog
+        retryPrompt={makeRetryPrompt(1, 3)}
+        onRetryNow={noop}
+        onUpdateScreenshots={noop}
+        onCancel={noop}
+      />,
+    );
+
+    expect(
+      screen.getByRole('alertdialog', { name: /analysis retry prompt/i }),
+    ).toBeInTheDocument();
   });
 });

@@ -162,4 +162,76 @@ describe('SectionNav: active link styling', () => {
     // One observe() call per section that has a DOM element
     expect(mockObserve).toHaveBeenCalledTimes(sections.length);
   });
+
+  it('does not change active section when no entries are intersecting', () => {
+    render(<SectionNav sections={sections} />);
+
+    // Fire callback with all isIntersecting: false — best stays null, no setActiveId
+    act(() => {
+      observerCallback(
+        [
+          {
+            isIntersecting: false,
+            target: { id: 'sec-inputs' },
+            boundingClientRect: { top: 50 },
+          },
+          {
+            isIntersecting: false,
+            target: { id: 'sec-risk' },
+            boundingClientRect: { top: 200 },
+          },
+        ] as unknown as IntersectionObserverEntry[],
+        {} as IntersectionObserver,
+      );
+    });
+
+    // No link should have active styling since activeId is still ''
+    for (const s of sections) {
+      const link = screen.getByRole('link', { name: s.label });
+      expect(link.className).not.toContain('bg-accent-bg');
+    }
+  });
+
+  it('selects the topmost entry when multiple sections intersect simultaneously', () => {
+    render(<SectionNav sections={sections} />);
+
+    // Two sections intersecting — sec-inputs at top=50, sec-risk at top=200
+    // The one with lower top (sec-inputs) should win
+    act(() => {
+      observerCallback(
+        [
+          {
+            isIntersecting: true,
+            target: { id: 'sec-inputs' },
+            boundingClientRect: { top: 50 },
+          },
+          {
+            isIntersecting: true,
+            target: { id: 'sec-risk' },
+            boundingClientRect: { top: 200 },
+          },
+        ] as unknown as IntersectionObserverEntry[],
+        {} as IntersectionObserver,
+      );
+    });
+
+    const inputsLink = screen.getByRole('link', { name: 'Inputs' });
+    expect(inputsLink.className).toContain('bg-accent-bg');
+
+    const riskLink = screen.getByRole('link', { name: 'Risk' });
+    expect(riskLink.className).not.toContain('bg-accent-bg');
+  });
+
+  it('skips observe for sections whose DOM element does not exist', () => {
+    // A section id that has no corresponding DOM element
+    const sectionsWithMissing: NavSection[] = [
+      ...sections,
+      { id: 'sec-missing', label: 'Missing' },
+    ];
+
+    render(<SectionNav sections={sectionsWithMissing} />);
+
+    // Only the 3 real sections get observed — sec-missing has no DOM element
+    expect(mockObserve).toHaveBeenCalledTimes(sections.length);
+  });
 });
