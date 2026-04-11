@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-04-10T02:40:49+00:00",
+  "generated_at": "2026-04-11T02:40:04+00:00",
   "dataset": {
-    "total_days": 43,
+    "total_days": 44,
     "labeled_days": 39,
     "date_range": [
       "2026-02-09",
-      "2026-04-09"
+      "2026-04-10"
     ],
     "overall_accuracy": 0.923
   },
@@ -191,13 +191,12 @@
   "health": {
     "status": "WARN",
     "warnings": [
-      "Feature completeness below 90% on 2 of last 10 days",
-      "Completeness trending down: 77.60% vs 98.40% (delta 20.80%)",
-      "Recent label coverage (60%) is lower than overall (91%)",
-      "'dp_support_resistance_ratio' is 30% null in last 10 days"
+      "Feature completeness below 90% on 3 of last 10 days",
+      "Recent label coverage (60%) is lower than overall (89%)",
+      "'dp_support_resistance_ratio' is 40% null in last 10 days"
     ],
     "failures": [],
-    "run_time": "2026-04-10 02:39:50"
+    "run_time": "2026-04-11 02:39:21"
   },
   "pipeline_sections": [
     "health",
@@ -510,7 +509,7 @@
   "clustering": {
     "best_k": 1,
     "algorithm": "KMeans",
-    "fallback_reason": "k=2 rejected (min size 2 < 5), k=3 rejected (min size 2 < 5), k=4 rejected (min size 2 < 5), k=5 rejected (min size 2 < 5), k=6 rejected (min size 2 < 5)",
+    "fallback_reason": "k=2 rejected (min size 3 < 5), k=3 rejected (min size 3 < 5), k=4 rejected (min size 3 < 5), k=5 rejected (min size 3 < 5), k=6 rejected (min size 3 < 5)",
     "silhouette": null,
     "calinski_harabasz": null,
     "davies_bouldin": null,
@@ -520,7 +519,7 @@
     "gmm_bic": null,
     "permutation_p": null,
     "chi_squared": {},
-    "n_samples": 38,
+    "n_samples": 39,
     "n_pca_components": 4,
     "n_features": 120
   },
@@ -554,7 +553,7 @@
       {
         "name": "correlations",
         "generated": true,
-        "file_size_kb": 391.3
+        "file_size_kb": 392.1
       },
       {
         "name": "dark_pool_vs_range",
@@ -564,7 +563,7 @@
       {
         "name": "day_of_week",
         "generated": true,
-        "file_size_kb": 62.8
+        "file_size_kb": 63.0
       },
       {
         "name": "failure_heatmap",
@@ -614,12 +613,12 @@
       {
         "name": "range_by_regime",
         "generated": true,
-        "file_size_kb": 123.1
+        "file_size_kb": 123.5
       },
       {
         "name": "stationarity",
         "generated": true,
-        "file_size_kb": 532.7
+        "file_size_kb": 534.1
       },
       {
         "name": "structure_confidence",
@@ -629,7 +628,7 @@
       {
         "name": "timeline",
         "generated": true,
-        "file_size_kb": 228.0
+        "file_size_kb": 231.2
       }
     ],
     "count": 21
@@ -663,49 +662,49 @@
   "pin_analysis": {
     "pin_accuracy_by_method": {
       "peak_gamma": {
-        "avg_distance": 15.0,
-        "median_distance": 12.4,
-        "within_10": 0.364,
-        "within_20": 0.818,
-        "n_days": 11
+        "avg_distance": 14.3,
+        "median_distance": 11.9,
+        "within_10": 0.417,
+        "within_20": 0.833,
+        "n_days": 12
       },
       "pos_peak": {
-        "avg_distance": 46.6,
-        "median_distance": 11.6,
-        "within_10": 0.364,
-        "within_20": 0.636,
-        "n_days": 11
+        "avg_distance": 43.3,
+        "median_distance": 11.4,
+        "within_10": 0.417,
+        "within_20": 0.667,
+        "n_days": 12
       },
       "pos_centroid": {
-        "avg_distance": 48.5,
+        "avg_distance": 44.8,
         "median_distance": 12.0,
-        "within_10": 0.364,
-        "within_20": 0.636,
-        "n_days": 11
+        "within_10": 0.417,
+        "within_20": 0.667,
+        "n_days": 12
       },
       "prox_centroid": {
-        "avg_distance": 10.7,
-        "median_distance": 7.7,
-        "within_10": 0.636,
-        "within_20": 0.909,
-        "n_days": 11
+        "avg_distance": 10.0,
+        "median_distance": 7.5,
+        "within_10": 0.667,
+        "within_20": 0.917,
+        "n_days": 12
       },
       "charm_centroid": {
-        "avg_distance": 10.8,
-        "median_distance": 8.0,
-        "within_10": 0.636,
-        "within_20": 0.909,
-        "n_days": 11
+        "avg_distance": 10.1,
+        "median_distance": 7.4,
+        "within_10": 0.667,
+        "within_20": 0.917,
+        "n_days": 12
       },
       "gamma_centroid": {
-        "avg_distance": 12.5,
-        "median_distance": 11.8,
-        "within_10": 0.364,
-        "within_20": 0.818,
-        "n_days": 11
+        "avg_distance": 11.7,
+        "median_distance": 11.0,
+        "within_10": 0.417,
+        "within_20": 0.833,
+        "n_days": 12
       }
     },
     "asymmetry_correlation": null,
-    "n_days": 40
+    "n_days": 41
   }
 }
