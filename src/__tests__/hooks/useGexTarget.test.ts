@@ -905,4 +905,237 @@ describe('useGexTarget: refresh', () => {
       expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBefore),
     );
   });
+
+  it('refresh() when scrubbed sends the scrub timestamp', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ts,
+        extraSnapshots: [{ timestamp: '2026-04-02T19:58:00Z' }],
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    const callsBefore = mockFetch.mock.calls.length;
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() =>
+      expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBefore),
+    );
+    const refreshUrl = mockFetch.mock.calls.at(-1)![0] as string;
+    expect(refreshUrl).toContain('ts=');
+  });
+});
+
+// ============================================================
+// OPENING STRIKES
+// ============================================================
+
+describe('useGexTarget: opening strikes', () => {
+  it('derives openingCallStrike and openingPutStrike from first snapshot leaderboard', async () => {
+    // callRatio: 0.8 → most call-dominant = callStrike
+    // callRatio: -0.6 → most put-dominant = putStrike
+    const callDominantStrike = makeStrike({
+      strike: 5900,
+      features: makeFeatures({ callRatio: 0.8 }),
+    });
+    const putDominantStrike = makeStrike({
+      strike: 5600,
+      features: makeFeatures({ callRatio: -0.6 }),
+    });
+    const neutralStrike = makeStrike({
+      strike: 5750,
+      features: makeFeatures({ callRatio: 0.0 }),
+    });
+
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        availableDates: ['2026-04-02'],
+        date: '2026-04-02',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        candles: [],
+        previousClose: null,
+        snapshots: [
+          {
+            timestamp: '2026-04-02T19:59:00Z',
+            spot: 5795,
+            oi: {
+              target: callDominantStrike,
+              leaderboard: [callDominantStrike, neutralStrike, putDominantStrike],
+            },
+            vol: null,
+            dir: null,
+          },
+        ],
+      }),
+    });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.openingCallStrike).toBe(5900));
+    expect(result.current.openingPutStrike).toBe(5600);
+  });
+
+  it('sets openingCallStrike and openingPutStrike to null when first snapshot has no oi leaderboard', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        availableDates: ['2026-04-02'],
+        date: '2026-04-02',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        candles: [],
+        previousClose: null,
+        snapshots: [
+          {
+            timestamp: '2026-04-02T19:59:00Z',
+            spot: 5795,
+            oi: null,
+            vol: null,
+            dir: null,
+          },
+        ],
+      }),
+    });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.openingCallStrike).toBeNull();
+    expect(result.current.openingPutStrike).toBeNull();
+  });
+
+  it('sets openingCallStrike and openingPutStrike to null when snapshots list is empty', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        availableDates: ['2026-04-02'],
+        date: '2026-04-02',
+        timestamps: [],
+        candles: [],
+        previousClose: null,
+        snapshots: [],
+      }),
+    });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.openingCallStrike).toBeNull();
+    expect(result.current.openingPutStrike).toBeNull();
+  });
+
+  it('sets openingCallStrike and openingPutStrike to null when first snapshot oi leaderboard is empty', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        availableDates: ['2026-04-02'],
+        date: '2026-04-02',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        candles: [],
+        previousClose: null,
+        snapshots: [
+          {
+            timestamp: '2026-04-02T19:59:00Z',
+            spot: 5795,
+            oi: { target: makeStrike(), leaderboard: [] },
+            vol: null,
+            dir: null,
+          },
+        ],
+      }),
+    });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.openingCallStrike).toBeNull();
+    expect(result.current.openingPutStrike).toBeNull();
+  });
+});
+
+// ============================================================
+// SCRUB NEXT — additional branches
+// ============================================================
+
+describe('useGexTarget: scrubNext branches', () => {
+  it('scrubNext steps forward one position from a mid-list scrub', async () => {
+    const ts = [
+      '2026-04-02T19:57:00Z',
+      '2026-04-02T19:58:00Z',
+      '2026-04-02T19:59:00Z',
+    ];
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ts,
+        extraSnapshots: [
+          { timestamp: '2026-04-02T19:57:00Z' },
+          { timestamp: '2026-04-02T19:58:00Z' },
+        ],
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    // Go back 2 steps to 19:57
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() =>
+      expect(result.current.timestamp).toBe('2026-04-02T19:57:00Z'),
+    );
+
+    // Step forward one — should land on 19:58, not clear scrub
+    act(() => {
+      result.current.scrubNext();
+    });
+    await waitFor(() =>
+      expect(result.current.timestamp).toBe('2026-04-02T19:58:00Z'),
+    );
+    expect(result.current.isScrubbed).toBe(true);
+  });
+
+  it('scrubNext clears scrub when at second-to-last or beyond', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ts,
+        extraSnapshots: [{ timestamp: '2026-04-02T19:58:00Z' }],
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    // Scrub back to 19:58 (idx=0, second-to-last when list has 2 entries)
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    // scrubNext: idx=0, timestamps.length-2=0, so 0 >= 0 → clears scrub
+    act(() => {
+      result.current.scrubNext();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(false));
+    expect(result.current.isLive).toBe(true);
+  });
 });

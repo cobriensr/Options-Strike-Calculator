@@ -916,3 +916,158 @@ describe('useGexPerStrike: panel-local selectedDate', () => {
     expect(result.current.selectedDate).toBe('2026-04-02');
   });
 });
+
+// ============================================================
+// SCRUB NEXT — additional branches
+// ============================================================
+
+describe('useGexPerStrike: scrubNext branches', () => {
+  it('scrubNext steps forward one position from a mid-list scrub', async () => {
+    // Three timestamps. First scrubPrev puts us at idx=1 (19:58), second
+    // scrubPrev puts us at idx=0 (19:57). scrubNext from idx=0 should advance
+    // to idx=1 (not clear scrub, because idx+1 < length-1).
+    const ts = [
+      '2026-04-02T19:57:00Z',
+      '2026-04-02T19:58:00Z',
+      '2026-04-02T19:59:00Z',
+    ];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    // Scrub back once → scrubTimestamp = 19:58 (idx=1)
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    // Scrub back again → scrubTimestamp = 19:57 (idx=0)
+    act(() => {
+      result.current.scrubPrev();
+    });
+    // canScrubPrev should become false (at idx=0)
+    await waitFor(() => expect(result.current.canScrubPrev).toBe(false));
+    expect(result.current.isScrubbed).toBe(true);
+
+    // Step forward one — idx=0 < length-2=1, so scrub should advance to 19:58
+    // (stays scrubbed, does not resume live)
+    act(() => {
+      result.current.scrubNext();
+    });
+    // canScrubPrev should become true again (now at idx=1)
+    await waitFor(() => expect(result.current.canScrubPrev).toBe(true));
+    expect(result.current.isScrubbed).toBe(true);
+    expect(result.current.isLive).toBe(false);
+  });
+
+  it('scrubNext clears scrub when at second-to-last position (idx >= length-2)', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    // Scrub to 19:58 — idx=0, length-2=0, so 0 >= 0 → should clear scrub
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    act(() => {
+      result.current.scrubNext();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(false));
+    expect(result.current.isLive).toBe(true);
+  });
+
+  it('scrubNext is a no-op when current scrubTimestamp is null', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    // Not scrubbed — scrubNext should be a no-op (isScrubbed stays false)
+    act(() => {
+      result.current.scrubNext();
+    });
+    await act(async () => {});
+    expect(result.current.isScrubbed).toBe(false);
+    expect(result.current.isLive).toBe(true);
+  });
+});
+
+// ============================================================
+// REFRESH
+// ============================================================
+
+describe('useGexPerStrike: refresh', () => {
+  it('refresh() triggers a new fetch with no timestamp when not scrubbed', async () => {
+    mockFetch.mockResolvedValue(
+      mockSnapshot('2026-04-02T19:59:00Z', ['2026-04-02T19:59:00Z']),
+    );
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    const callsBefore = mockFetch.mock.calls.length;
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() =>
+      expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBefore),
+    );
+    // No scrub timestamp in the URL
+    const refreshUrl = mockFetch.mock.calls.at(-1)![0] as string;
+    expect(refreshUrl).not.toContain('ts=');
+  });
+
+  it('refresh() when scrubbed sends the scrub timestamp', async () => {
+    const ts = ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'];
+    mockFetch.mockResolvedValue(mockSnapshot('2026-04-02T19:59:00Z', ts));
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+    await waitFor(() => expect(result.current.timestamps).toEqual(ts));
+
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    const callsBefore = mockFetch.mock.calls.length;
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() =>
+      expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBefore),
+    );
+    const refreshUrl = mockFetch.mock.calls.at(-1)![0] as string;
+    expect(refreshUrl).toContain('ts=');
+  });
+});
+
+// ============================================================
+// TIMESTAMPS FALLBACK
+// ============================================================
+
+describe('useGexPerStrike: timestamps fallback', () => {
+  it('defaults timestamps to [] when API omits the field', async () => {
+    // The API shape allows `timestamps?` — verify the hook handles the missing field.
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        strikes: [makeStrike()],
+        timestamp: '2026-04-02T19:59:00Z',
+        // timestamps intentionally omitted
+      }),
+    });
+
+    const { result } = renderHook(() => useGexPerStrike(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.timestamps).toEqual([]);
+  });
+});

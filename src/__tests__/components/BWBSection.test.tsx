@@ -474,4 +474,105 @@ describe('BWBSection', () => {
       configurable: true,
     });
   });
+
+  // ============================================================
+  // Collapse / expand toggle
+  // ============================================================
+
+  it('clicking the heading collapses the section', () => {
+    renderSection();
+
+    // Tables are visible before collapse
+    expect(
+      screen.getByRole('table', { name: 'BWB legs by delta' }),
+    ).toBeInTheDocument();
+
+    const heading = screen.getByRole('button', {
+      name: /Toggle Broken Wing Butterfly/,
+    });
+    fireEvent.click(heading);
+
+    // Tables are hidden after collapse
+    expect(
+      screen.queryByRole('table', { name: 'BWB legs by delta' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('table', { name: 'BWB P&L by delta' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clicking the heading twice re-expands the section', () => {
+    renderSection();
+
+    const heading = screen.getByRole('button', {
+      name: /Toggle Broken Wing Butterfly/,
+    });
+    fireEvent.click(heading);
+    fireEvent.click(heading);
+
+    expect(
+      screen.getByRole('table', { name: 'BWB legs by delta' }),
+    ).toBeInTheDocument();
+  });
+
+  it('heading has aria-expanded=true when expanded', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Broken Wing Butterfly/,
+    });
+    expect(heading).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('heading has aria-expanded=false when collapsed', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Broken Wing Butterfly/,
+    });
+    fireEvent.click(heading);
+    expect(heading).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('Enter key collapses the section', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Broken Wing Butterfly/,
+    });
+    fireEvent.keyDown(heading, { key: 'Enter' });
+    expect(
+      screen.queryByRole('table', { name: 'BWB legs by delta' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('Space key collapses the section', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Broken Wing Butterfly/,
+    });
+    fireEvent.keyDown(heading, { key: ' ' });
+    expect(
+      screen.queryByRole('table', { name: 'BWB legs by delta' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('other keys do not collapse the section', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Broken Wing Butterfly/,
+    });
+    fireEvent.keyDown(heading, { key: 'Tab' });
+    expect(
+      screen.getByRole('table', { name: 'BWB legs by delta' }),
+    ).toBeInTheDocument();
+  });
+
+  it('export button is hidden when section is collapsed', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Broken Wing Butterfly/,
+    });
+    fireEvent.click(heading);
+    expect(
+      screen.queryByRole('button', { name: 'Export All BWB Widths to Excel' }),
+    ).not.toBeInTheDocument();
+  });
 });

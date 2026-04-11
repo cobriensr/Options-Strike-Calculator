@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within, waitFor } from '@testing-library/react';
+import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IronCondorSection from '../../components/IronCondorSection';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
@@ -511,5 +511,149 @@ describe('IronCondorSection', () => {
       // confirm returned true — reload SHOULD be called
       expect(globalThis.location.reload).toHaveBeenCalled();
     });
+  });
+
+  // ============================================================
+  // Collapse / expand toggle
+  // ============================================================
+
+  it('clicking the heading collapses the section', () => {
+    renderSection();
+
+    // Tables are visible before collapse
+    expect(
+      screen.getByRole('table', { name: 'Iron condor legs by delta' }),
+    ).toBeInTheDocument();
+
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    fireEvent.click(heading);
+
+    // Tables are hidden after collapse
+    expect(
+      screen.queryByRole('table', { name: 'Iron condor legs by delta' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('table', { name: 'Iron condor P&L by delta' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clicking the heading twice re-expands the section', () => {
+    renderSection();
+
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    fireEvent.click(heading);
+    fireEvent.click(heading);
+
+    expect(
+      screen.getByRole('table', { name: 'Iron condor legs by delta' }),
+    ).toBeInTheDocument();
+  });
+
+  it('heading has aria-expanded=true when expanded', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    expect(heading).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('heading has aria-expanded=false when collapsed', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    fireEvent.click(heading);
+    expect(heading).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('Enter key collapses the section', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    fireEvent.keyDown(heading, { key: 'Enter' });
+    expect(
+      screen.queryByRole('table', { name: 'Iron condor legs by delta' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('Space key collapses the section', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    fireEvent.keyDown(heading, { key: ' ' });
+    expect(
+      screen.queryByRole('table', { name: 'Iron condor legs by delta' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('other keys do not collapse the section', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    fireEvent.keyDown(heading, { key: 'Tab' });
+    expect(
+      screen.getByRole('table', { name: 'Iron condor legs by delta' }),
+    ).toBeInTheDocument();
+  });
+
+  it('hedge section is hidden when section is collapsed', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    fireEvent.click(heading);
+    expect(
+      screen.queryByText(/Hedge Calculator \(Reinsurance\)/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('export button is hidden when section is collapsed', () => {
+    renderSection();
+    const heading = screen.getByRole('button', {
+      name: /Toggle Iron Condor/,
+    });
+    fireEvent.click(heading);
+    expect(
+      screen.queryByRole('button', { name: 'Export All Wing Widths to Excel' }),
+    ).not.toBeInTheDocument();
+  });
+
+  // ============================================================
+  // Optional props — breakevenTarget and setBreakevenTarget
+  // ============================================================
+
+  it('accepts explicit breakevenTarget and setBreakevenTarget props', () => {
+    const setBreakevenTarget = vi.fn();
+    render(
+      <IronCondorSection
+        results={makeResults()}
+        wingWidth={25}
+        contracts={1}
+        effectiveRatio={10}
+        skewPct={0}
+        breakevenTarget={2.0}
+        setBreakevenTarget={setBreakevenTarget}
+      />,
+    );
+
+    // Section renders without error; hedge section visible
+    expect(
+      screen.getByText(/Hedge Calculator \(Reinsurance\)/i),
+    ).toBeInTheDocument();
+  });
+
+  it('renders without optional breakevenTarget / setBreakevenTarget (uses defaults)', () => {
+    // NOOP_SET_BE_TARGET and default breakevenTarget=1.5
+    renderSection();
+    expect(
+      screen.getByText(/Hedge Calculator \(Reinsurance\)/i),
+    ).toBeInTheDocument();
   });
 });
