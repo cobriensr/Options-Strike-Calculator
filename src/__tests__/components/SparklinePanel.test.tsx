@@ -167,7 +167,9 @@ describe('SparklinePanel: SVG sparklines', () => {
     const { container } = render(<SparklinePanel leaderboard={leaderboard} />);
     // Insufficient points → flat dashed line rather than a polyline
     expect(container.querySelector('polyline')).not.toBeInTheDocument();
-    expect(container.querySelector('line[stroke-dasharray]')).toBeInTheDocument();
+    expect(
+      container.querySelector('line[stroke-dasharray]'),
+    ).toBeInTheDocument();
   });
 
   it('renders a polyline when only prev1m is available (2 points suffice)', () => {
