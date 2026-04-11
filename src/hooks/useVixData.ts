@@ -41,7 +41,7 @@ export function useVixData(
   const [vixOHLC, setVixOHLC] = useState<VIXDayData | null>(null);
   const [vixOHLCField, setVixOHLCField] = useState<OHLCField>('smart');
   const [selectedDate, setSelectedDate] = useState(() =>
-    new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }),
+    new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }),
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
