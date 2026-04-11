@@ -64,6 +64,12 @@ vi.mock('../_lib/lessons.js', () => ({
   formatWinRateForClaude: vi.fn().mockReturnValue(''),
 }));
 
+// Mock the pre-check module — prevents real Anthropic calls in analyze tests.
+// Default: returns null (no-op path, existing content unchanged).
+vi.mock('../_lib/analyze-precheck.js', () => ({
+  runAnalysisPreCheck: vi.fn().mockResolvedValue(null),
+}));
+
 // Mock the Anthropic SDK — capture the stream call
 // The handler uses `anthropic.messages.stream(params).finalMessage()`
 const mockFinalMessage = vi.fn();
@@ -1551,5 +1557,114 @@ describe('POST /api/analyze', () => {
       gexRegime: 'RED',
       dayOfWeek: 'Wednesday',
     });
+  });
+});
+
+// ── Pre-check integration tests ────────────────────────────────
+
+describe('POST /api/analyze — pre-check integration', () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    _resetEnvCache();
+    mockStream.mockReset().mockReturnValue({ finalMessage: mockFinalMessage });
+    mockFinalMessage.mockReset();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+    vi.mocked(respondIfInvalid).mockImplementation((parsed, res) => {
+      if (!parsed.success) {
+        const msg = parsed.error?.issues[0]?.message ?? 'Invalid request body';
+        res.status(400).json({ error: msg });
+        return true;
+      }
+      return false;
+    });
+    vi.mocked(getHistoricalWinRate).mockResolvedValue(null);
+    vi.mocked(formatWinRateForClaude).mockReturnValue('');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    // Reset the pre-check mock to default null for each test
+    const { runAnalysisPreCheck } = await import('../_lib/analyze-precheck.js');
+    vi.mocked(runAnalysisPreCheck).mockResolvedValue(null);
+  });
+
+  it('when pre-check returns null, toolMessages content equals original content', async () => {
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const { runAnalysisPreCheck } = await import('../_lib/analyze-precheck.js');
+    vi.mocked(runAnalysisPreCheck).mockResolvedValue(null);
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    // Standard body = 1 text label + 1 image + 1 context block = 3 items
+    expect(params.messages[0].content).toHaveLength(3);
+    // The last block should be the context text (no pre-check injection)
+    const lastBlock = params.messages[0].content.at(-1);
+    expect(lastBlock.type).toBe('text');
+    expect(lastBlock.text).not.toContain('Additional Market Data');
+  });
+
+  it('when pre-check returns a string, it is appended as a text block to toolMessages', async () => {
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const preCheckText =
+      '=== Additional Market Data (fetched on request) ===\nSPX spot exposure data here';
+    const { runAnalysisPreCheck } = await import('../_lib/analyze-precheck.js');
+    vi.mocked(runAnalysisPreCheck).mockResolvedValue(preCheckText);
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    // Standard body (3 blocks) + 1 pre-check text block = 4 items
+    expect(params.messages[0].content).toHaveLength(4);
+    // The injected pre-check block should be last
+    const lastBlock = params.messages[0].content.at(-1);
+    expect(lastBlock.type).toBe('text');
+    expect(lastBlock.text).toContain('Additional Market Data');
+    expect(lastBlock.text).toContain('SPX spot exposure data here');
+  });
+
+  it('analysis still succeeds when pre-check returns null (no-op path)', async () => {
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const { runAnalysisPreCheck } = await import('../_lib/analyze-precheck.js');
+    vi.mocked(runAnalysisPreCheck).mockResolvedValue(null);
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
+
+  it('analysis still succeeds when pre-check returns extra context', async () => {
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    const { runAnalysisPreCheck } = await import('../_lib/analyze-precheck.js');
+    vi.mocked(runAnalysisPreCheck).mockResolvedValue(
+      '=== Additional Market Data (fetched on request) ===\nsome data',
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
   });
 });
