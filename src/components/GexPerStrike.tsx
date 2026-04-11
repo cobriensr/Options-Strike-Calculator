@@ -45,11 +45,11 @@ interface Props {
   onDateChange: (date: string) => void;
   /**
    * True when the displayed snapshot is genuinely live: not scrubbed, market
-   * open, viewing today. Mutually exclusive with `isScrubbed`. When neither
-   * `isLive` nor `isScrubbed` is true the panel is in BACKTEST mode (after
-   * hours, or viewing a past day).
+   * open, viewing today. Mutually exclusive with `isScrubbed`.
    */
   isLive: boolean;
+  /** True when selectedDate equals today's ET date. */
+  isToday: boolean;
   /** True when the user has stepped backwards from the latest snapshot */
   isScrubbed: boolean;
   /** True when there is at least one earlier snapshot to scrub to */
@@ -318,6 +318,7 @@ export default memo(function GexPerStrike({
   selectedDate,
   onDateChange,
   isLive,
+  isToday,
   isScrubbed,
   canScrubPrev,
   canScrubNext,
@@ -501,21 +502,23 @@ export default memo(function GexPerStrike({
           LIVE
         </span>
       )}
-      {isScrubbed && (
+      {/* Clickable LIVE — shown when scrubbed or on a past date */}
+      {(isScrubbed || !isToday) && !isLive && (
         <button
           onClick={onScrubLive}
           aria-label="Resume live snapshot"
           className="cursor-pointer rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider transition-colors"
           style={{
-            color: theme.accent,
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.12)',
+            color: '#00e676',
+            background: 'rgba(0,230,118,0.08)',
+            border: '1px solid rgba(0,230,118,0.25)',
           }}
         >
           LIVE
         </button>
       )}
-      {!isLive && !isScrubbed && (
+      {/* BACKTEST — only when viewing a past date, not today-closed */}
+      {!isLive && !isScrubbed && !isToday && (
         <span
           className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider"
           style={{

@@ -177,6 +177,8 @@ export interface UseGexTargetReturn {
    * historical date -- those are backtest views.
    */
   isLive: boolean;
+  /** True when `selectedDate` equals today's ET date. */
+  isToday: boolean;
   /** True when the user has explicitly stepped backwards from the latest snapshot. */
   isScrubbed: boolean;
   /** True when there is at least one earlier snapshot the user can scrub to. */
@@ -560,8 +562,10 @@ export function useGexTarget(
   }, []);
 
   const refresh = useCallback(() => {
-    fetchData(scrubTimestamp ?? undefined);
-  }, [fetchData, scrubTimestamp]);
+    allSnapshotsRef.current = new Map();
+    setLoading(true);
+    void fetchAllSnapshots();
+  }, [fetchAllSnapshots]);
 
   // Candles filtered to the scrub position for the price chart. When live
   // (not scrubbed) the full session candles are returned unchanged.
@@ -587,6 +591,7 @@ export function useGexTarget(
     setSelectedDate,
     availableDates,
     isLive,
+    isToday,
     isScrubbed,
     canScrubPrev,
     canScrubNext,

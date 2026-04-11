@@ -116,6 +116,8 @@ export interface UseGexPerStrikeReturn {
    * looking at a historical date — those are backtest views.
    */
   isLive: boolean;
+  /** True when `selectedDate` equals today's ET date. */
+  isToday: boolean;
   /** True when the user has explicitly stepped backwards from the latest snapshot */
   isScrubbed: boolean;
   /** True when there is at least one earlier snapshot the user can scrub to */
@@ -358,6 +360,7 @@ export function useGexPerStrike(
     selectedDate,
     setSelectedDate,
     isLive,
+    isToday,
     isScrubbed,
     canScrubPrev,
     canScrubNext,

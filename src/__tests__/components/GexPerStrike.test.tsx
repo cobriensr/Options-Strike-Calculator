@@ -13,6 +13,7 @@ const defaultScrubProps = {
   selectedDate: '2026-04-02',
   onDateChange: noop,
   isLive: true,
+  isToday: true,
   isScrubbed: false,
   canScrubPrev: false,
   canScrubNext: false,
@@ -490,6 +491,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={true}
+        isToday={true}
         isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
@@ -517,6 +519,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={true}
+        isToday={true}
         isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
@@ -544,6 +547,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={false}
+        isToday={true}
         isScrubbed={true}
         canScrubPrev={true}
         canScrubNext={true}
@@ -558,8 +562,8 @@ describe('GexPerStrike: scrub controls', () => {
     expect(screen.queryByText('BACKTEST')).not.toBeInTheDocument();
   });
 
-  it('shows BACKTEST pill when not live and not scrubbed', () => {
-    // After-hours, or viewing a past day. Neither isLive nor isScrubbed.
+  it('shows BACKTEST pill and LIVE button when viewing a past date', () => {
+    // Viewing a past day: neither isLive nor isScrubbed, and isToday is false.
     render(
       <GexPerStrike
         strikes={[makeStrike()]}
@@ -570,6 +574,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={false}
+        isToday={false}
         isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
@@ -579,11 +584,10 @@ describe('GexPerStrike: scrub controls', () => {
       />,
     );
     expect(screen.getByText('BACKTEST')).toBeInTheDocument();
-    // The clickable resume-live button only appears while scrubbed
+    // LIVE button appears on past dates to navigate back to today
     expect(
-      screen.queryByRole('button', { name: /resume live/i }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText('LIVE')).not.toBeInTheDocument();
+      screen.getByRole('button', { name: /resume live/i }),
+    ).toBeInTheDocument();
   });
 
   it('disables prev when canScrubPrev is false', () => {
@@ -596,6 +600,7 @@ describe('GexPerStrike: scrub controls', () => {
         onRefresh={noop}
         selectedDate="2026-04-02"
         onDateChange={noop}
+        isToday={true}
         isLive={true}
         isScrubbed={false}
         canScrubPrev={false}
@@ -621,6 +626,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={true}
+        isToday={true}
         isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
@@ -647,6 +653,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={true}
+        isToday={true}
         isScrubbed={false}
         canScrubPrev={true}
         canScrubNext={false}
@@ -674,6 +681,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={false}
+        isToday={true}
         isScrubbed={true}
         canScrubPrev={true}
         canScrubNext={true}
@@ -699,6 +707,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={false}
+        isToday={true}
         isScrubbed={true}
         canScrubPrev={true}
         canScrubNext={true}
@@ -722,6 +731,7 @@ describe('GexPerStrike: scrub controls', () => {
         selectedDate="2026-04-02"
         onDateChange={noop}
         isLive={false}
+        isToday={true}
         isScrubbed={true}
         canScrubPrev={true}
         canScrubNext={true}

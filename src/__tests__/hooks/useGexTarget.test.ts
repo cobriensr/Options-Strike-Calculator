@@ -935,7 +935,7 @@ describe('useGexTarget: refresh', () => {
       expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBefore),
     );
     const refreshUrl = mockFetch.mock.calls.at(-1)![0] as string;
-    expect(refreshUrl).toContain('ts=');
+    expect(refreshUrl).toContain('all=true');
   });
 });
 

@@ -132,6 +132,7 @@ function makeHookResult(
     setSelectedDate: vi.fn(),
     availableDates: ['2026-04-07'],
     isLive: true,
+    isToday: true,
     isScrubbed: false,
     canScrubPrev: false,
     canScrubNext: false,
@@ -202,9 +203,9 @@ describe('GexTarget: live state', () => {
 });
 
 describe('GexTarget: backtest state', () => {
-  it('shows BACKTEST badge when not live and not scrubbed', () => {
+  it('shows BACKTEST badge when not live, not scrubbed, and viewing a past date', () => {
     vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({ isLive: false, isScrubbed: false }),
+      makeHookResult({ isLive: false, isToday: false, isScrubbed: false }),
     );
 
     render(<GexTarget marketOpen={false} />);

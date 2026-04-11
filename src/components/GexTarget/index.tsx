@@ -59,6 +59,7 @@ export const GexTarget = memo(function GexTarget({
     setSelectedDate,
     availableDates,
     isLive,
+    isToday,
     isScrubbed,
     canScrubPrev,
     canScrubNext,
@@ -105,7 +106,14 @@ export const GexTarget = memo(function GexTarget({
 
   // ── Live badge config ────────────────────────────────────
 
-  const badgeLabel = isLive ? '● LIVE' : isScrubbed ? 'SCRUBBED' : 'BACKTEST';
+  // BACKTEST only when viewing a past date — today with closed market is not backtest.
+  const badgeLabel = isLive
+    ? '● LIVE'
+    : isScrubbed
+      ? 'SCRUBBED'
+      : !isToday
+        ? 'BACKTEST'
+        : null;
   const badgeColor = isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800';
 
   // ── Data availability check ──────────────────────────────
@@ -145,7 +153,13 @@ export const GexTarget = memo(function GexTarget({
           <span
             className="min-w-[44px] text-center font-mono text-[10px]"
             style={{
-              color: isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800',
+              color: isLive
+                ? '#00e676'
+                : isScrubbed
+                  ? '#ffb300'
+                  : !isToday
+                    ? '#ff9800'
+                    : undefined,
             }}
           >
             {formatTime(timestamp)}
@@ -162,8 +176,8 @@ export const GexTarget = memo(function GexTarget({
         </button>
       </div>
 
-      {/* LIVE button — only shown when scrubbed or not live */}
-      {(isScrubbed || !isLive) && (
+      {/* LIVE button — shown when scrubbed or viewing a past date */}
+      {(isScrubbed || !isToday) && (
         <button
           type="button"
           onClick={scrubLive}
@@ -196,17 +210,23 @@ export const GexTarget = memo(function GexTarget({
         ))}
       </datalist>
 
-      {/* Status badge */}
-      <StatusBadge label={badgeLabel} color={badgeColor} />
+      {/* Status badge — omitted when viewing today outside market hours */}
+      {badgeLabel && <StatusBadge label={badgeLabel} color={badgeColor} />}
 
       {/* Refresh */}
       <button
         type="button"
         onClick={refresh}
+        disabled={loading}
         aria-label="Refresh GEX target data"
-        className="text-muted hover:text-secondary cursor-pointer font-mono text-[11px]"
+        className="text-secondary hover:text-primary disabled:text-muted cursor-pointer font-mono text-[15px] disabled:cursor-default"
       >
-        ↻
+        <span
+          className={loading ? 'inline-block animate-spin' : undefined}
+          aria-hidden="true"
+        >
+          ↻
+        </span>
       </button>
     </div>
   );
