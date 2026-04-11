@@ -42,6 +42,7 @@ __snapshots__/
 .claude/
 .vercel
 .env*.local
+.clone/
 
 # Sonar
 .scannerwork/
