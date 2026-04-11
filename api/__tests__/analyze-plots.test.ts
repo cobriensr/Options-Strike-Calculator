@@ -293,6 +293,59 @@ describe('POST /api/ml/analyze-plots', () => {
     expect(finalChunk.failed).toEqual([]);
   });
 
+  it('handles preamble text before a fenced JSON block', async () => {
+    mockList.mockResolvedValueOnce({
+      blobs: [makeBlobEntry('ml-plots/latest/correlations.png')],
+    });
+    mockDbFn.mockResolvedValueOnce([]);
+    mockBlobGet.mockResolvedValueOnce(makeBlobGetResult());
+
+    // Simulates the Sentry failure: Claude adds introductory text before the fence
+    const responseWithPreamble =
+      'Here is my analysis:\n\n```json\n{"what_it_means":"preamble test"}\n```';
+    mockStream.mockReturnValueOnce(
+      mockStreamReturn(makeFinalMessage(responseWithPreamble)),
+    );
+    mockDbFn.mockResolvedValueOnce([]);
+
+    const req = makeAuthRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    const chunks = res._chunks
+      .filter((c) => !c.includes('"ping"'))
+      .map((c) => JSON.parse(c));
+    const finalChunk = chunks.at(-1);
+    expect(finalChunk.analyzed).toBe(1);
+    expect(finalChunk.failed).toEqual([]);
+  });
+
+  it('handles preamble text before a bare JSON object', async () => {
+    mockList.mockResolvedValueOnce({
+      blobs: [makeBlobEntry('ml-plots/latest/correlations.png')],
+    });
+    mockDbFn.mockResolvedValueOnce([]);
+    mockBlobGet.mockResolvedValueOnce(makeBlobGetResult());
+
+    const responseWithPreamble =
+      'Here is my analysis:\n\n{"what_it_means":"bare json after preamble"}';
+    mockStream.mockReturnValueOnce(
+      mockStreamReturn(makeFinalMessage(responseWithPreamble)),
+    );
+    mockDbFn.mockResolvedValueOnce([]);
+
+    const req = makeAuthRequest();
+    const res = mockResponse();
+    await handler(req, res);
+
+    const chunks = res._chunks
+      .filter((c) => !c.includes('"ping"'))
+      .map((c) => JSON.parse(c));
+    const finalChunk = chunks.at(-1);
+    expect(finalChunk.analyzed).toBe(1);
+    expect(finalChunk.failed).toEqual([]);
+  });
+
   // ── Multiple plots: first sequential, rest concurrent ─────
   it('processes multiple plots (first sequential, rest concurrent)', async () => {
     mockList.mockResolvedValueOnce({

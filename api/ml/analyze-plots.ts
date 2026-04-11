@@ -34,13 +34,39 @@ const anthropic = new Anthropic({
 const MODEL = 'claude-sonnet-4-6';
 
 /**
- * Strip markdown code fences from Claude response if present.
+ * Extract the JSON object from Claude's response.
+ *
+ * Claude sometimes adds preamble text ("Here is my analysis:") or wraps
+ * the JSON in a code fence that doesn't start at position 0. This function
+ * handles all observed variants in priority order:
+ *   1. Response already starts with `{` — fastest path
+ *   2. Code fence at the start — original behaviour
+ *   3. Code fence embedded anywhere after preamble text
+ *   4. Bare `{...}` buried after preamble text
  */
-function stripFences(text: string): string {
+function extractJson(text: string): string {
   const trimmed = text.trim();
+
+  if (trimmed.startsWith('{')) return trimmed;
+
   if (trimmed.startsWith('```')) {
     return trimmed.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
   }
+
+  const fenceOpen = trimmed.indexOf('```');
+  if (fenceOpen !== -1) {
+    // Skip past the opening fence + optional language tag to first newline
+    const afterFence = trimmed.slice(fenceOpen + 3);
+    const nlIdx = afterFence.indexOf('\n');
+    const body = nlIdx !== -1 ? afterFence.slice(nlIdx + 1) : afterFence;
+    const fenceClose = body.indexOf('```');
+    if (fenceClose !== -1) return body.slice(0, fenceClose).trim();
+  }
+
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start !== -1 && end > start) return trimmed.slice(start, end + 1);
+
   return trimmed;
 }
 
@@ -188,7 +214,7 @@ async function analyzePlot(
       .join('') ?? '';
 
   // Parse JSON response
-  const jsonStr = stripFences(text);
+  const jsonStr = extractJson(text);
   const analysis = JSON.parse(jsonStr) as Record<string, string>;
 
   return { analysis, usage };
