@@ -37,12 +37,17 @@ import {
   SYSTEM_PROMPT_PART2,
 } from './_lib/analyze-prompts.js';
 import { getCalibrationExample } from './_lib/analyze-calibration.js';
-import { buildAnalysisContext } from './_lib/analyze-context.js';
+import {
+  buildAnalysisContext,
+  parseEntryTimeAsUtc,
+} from './_lib/analyze-context.js';
 import {
   buildAnalysisSummary,
   generateEmbedding,
   saveAnalysisEmbedding,
 } from './_lib/embeddings.js';
+import { runAnalysisPreCheck } from './_lib/analyze-precheck.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -90,6 +95,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     darkPoolClusters,
   } = await buildAnalysisContext(images, context);
 
+  // Derive analysisDate and asOf for the pre-check (same logic as analyze-context.ts)
+  const analysisDate =
+    (context.selectedDate as string | undefined) ?? getETDateStr(new Date());
+  const asOf = parseEntryTimeAsUtc(
+    (context.entryTime as string | undefined) ?? null,
+    analysisDate,
+  );
+
+  // Run lightweight pre-check with Sonnet to fetch any additional data Claude
+  // needs. Uses ~500 tokens of input (vs 75K for the main call). Falls back to
+  // null on any error — the main call is completely unaffected.
+  const extraContext = await runAnalysisPreCheck(
+    anthropic,
+    context,
+    analysisDate,
+    asOf,
+  );
+
   // Stable system prompt (cached 1h) — lessons appended outside cache boundary
   // Calibration example is mode-specific (entry/midday/review) so each mode
   // gets its own cache entry. Placed between rules and output format so the
@@ -134,7 +157,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ];
 
     const toolMessages: MessageParam[] = [
-      { role: 'user' as const, content },
+      {
+        role: 'user' as const,
+        content: extraContext
+          ? [...content, { type: 'text' as const, text: extraContext }]
+          : content,
+      },
     ];
 
     // ── Final streaming call ───────────────────────────────────
