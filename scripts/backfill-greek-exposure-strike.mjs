@@ -78,12 +78,12 @@ async function storeStrikeRows(rows, date) {
   let stored = 0;
 
   for (const row of rows) {
-    // Filter out zero-GEX rows (API field is call_gamma / put_gamma)
-    if (row.call_gamma === '0.0000' && row.put_gamma === '0.0000') continue;
+    // Filter out zero-GEX rows
+    if (row.call_gex === '0.0000' && row.put_gex === '0.0000') continue;
 
     // Layer 2 computed columns
-    const callGex = Number.parseFloat(row.call_gamma);
-    const putGex = Number.parseFloat(row.put_gamma);
+    const callGex = Number.parseFloat(row.call_gex);
+    const putGex = Number.parseFloat(row.put_gex);
     const netGex = callGex + putGex;
     const netDelta =
       Number.parseFloat(row.call_delta) + Number.parseFloat(row.put_delta);
@@ -107,7 +107,7 @@ async function storeStrikeRows(rows, date) {
         )
         VALUES (
           ${date}, ${date}, ${row.strike}, 0,
-          ${row.call_gamma}, ${row.put_gamma},
+          ${row.call_gex}, ${row.put_gex},
           ${row.call_delta}, ${row.put_delta},
           ${row.call_charm}, ${row.put_charm},
           ${row.call_vanna}, ${row.put_vanna},
@@ -163,7 +163,7 @@ async function main() {
 
     // Filter zero-GEX rows before logging count
     const nonZero = rows.filter(
-      (r) => !(r.call_gamma === '0.0000' && r.put_gamma === '0.0000'),
+      (r) => r.call_gex !== '0.0000' || r.put_gex !== '0.0000',
     );
 
     const stored = await storeStrikeRows(rows, date);
@@ -175,7 +175,7 @@ async function main() {
     let peakStrike = null;
     let peakNetGex = null;
     for (const r of nonZero) {
-      const ng = Number.parseFloat(r.call_gamma) + Number.parseFloat(r.put_gamma);
+      const ng = Number.parseFloat(r.call_gex) + Number.parseFloat(r.put_gex);
       if (peakNetGex === null || Math.abs(ng) > Math.abs(peakNetGex)) {
         peakNetGex = ng;
         peakStrike = r.strike;
