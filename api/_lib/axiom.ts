@@ -17,6 +17,11 @@ import logger from './logger.js';
 
 let _client: AxiomWithoutBatching | null = null;
 
+/** Reset the singleton client. Exported for tests only. */
+export function _resetClient(): void {
+  _client = null;
+}
+
 function getClient(): AxiomWithoutBatching | null {
   const token = optionalEnv('AXIOM_API_KEY');
   if (!token) return null;
