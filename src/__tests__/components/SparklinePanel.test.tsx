@@ -138,10 +138,8 @@ describe('SparklinePanel: SVG sparklines', () => {
       makeStrike(5800, {
         features: makeFeatures({
           gexDollars: 1_000_000_000,
-          prevGexDollars_1m: 990_000_000,
           prevGexDollars_5m: 950_000_000,
           prevGexDollars_20m: 850_000_000,
-          prevGexDollars_60m: 700_000_000,
           strike: 5800,
         }),
       }),
@@ -150,36 +148,32 @@ describe('SparklinePanel: SVG sparklines', () => {
     expect(container.querySelector('polyline')).toBeInTheDocument();
   });
 
-  it('renders a dashed flat line when prev GEX data is all null (early session)', () => {
+  it('renders a dashed flat line when all 5-min-grid prev GEX data is null (early session)', () => {
     const leaderboard = [
       makeStrike(5800, {
         features: makeFeatures({
           gexDollars: 1_000_000_000,
-          prevGexDollars_1m: null,
           prevGexDollars_5m: null,
           prevGexDollars_20m: null,
-          prevGexDollars_60m: null,
           strike: 5800,
         }),
       }),
     ];
     const { container } = render(<SparklinePanel leaderboard={leaderboard} />);
-    // Insufficient points → flat dashed line rather than a polyline
+    // Only current value → 1 valid point → flat dashed line
     expect(container.querySelector('polyline')).not.toBeInTheDocument();
     expect(
       container.querySelector('line[stroke-dasharray]'),
     ).toBeInTheDocument();
   });
 
-  it('renders a polyline when only prev1m is available (2 points suffice)', () => {
+  it('renders a polyline when only prev5m is available (2 points suffice)', () => {
     const leaderboard = [
       makeStrike(5800, {
         features: makeFeatures({
           gexDollars: 1_100_000_000,
-          prevGexDollars_1m: 1_000_000_000,
-          prevGexDollars_5m: null,
+          prevGexDollars_5m: 1_000_000_000,
           prevGexDollars_20m: null,
-          prevGexDollars_60m: null,
           strike: 5800,
         }),
       }),
