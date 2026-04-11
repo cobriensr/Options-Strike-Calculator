@@ -13,6 +13,7 @@ import { CollapseAllContext } from './collapse-context';
 export const SectionBox = memo(function SectionBox({
   label,
   badge,
+  badgeColor,
   headerRight,
   collapsible,
   defaultCollapsed,
@@ -20,6 +21,8 @@ export const SectionBox = memo(function SectionBox({
 }: {
   label: string;
   badge?: string | null;
+  /** When provided, overrides the default accent color for the badge. */
+  badgeColor?: string;
   headerRight?: ReactNode;
   collapsible?: boolean;
   defaultCollapsed?: boolean;
@@ -84,7 +87,20 @@ export const SectionBox = memo(function SectionBox({
             {label}
           </h2>
           {badge && (
-            <span className="text-accent bg-accent-bg rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold">
+            <span
+              className={
+                'rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold' +
+                (badgeColor ? '' : ' text-accent bg-accent-bg')
+              }
+              style={
+                badgeColor
+                  ? {
+                      color: badgeColor,
+                      backgroundColor: `color-mix(in srgb, ${badgeColor} 15%, transparent)`,
+                    }
+                  : undefined
+              }
+            >
               {badge}
             </span>
           )}

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { CalculationResults } from '../types';
 import { SectionBox } from './ui';
+import { findBucket } from '../data/vixRangeStats';
+import { theme } from '../themes';
 import VIXRangeAnalysis from './VIXRangeAnalysis';
 import VolatilityCluster from './VolatilityCluster';
 import DeltaRegimeGuide from './DeltaRegimeGuide';
@@ -48,10 +50,20 @@ export default function MarketRegimeSection({
   const [showRegime, setShowRegime] = useState(true);
   const vixNum = dVix ? Number.parseFloat(dVix) : null;
 
+  const bucket = vixNum != null ? findBucket(vixNum) : null;
+  const vixBadgeColor = bucket
+    ? bucket.zone === 'go'
+      ? theme.green
+      : bucket.zone === 'caution'
+        ? theme.caution
+        : theme.red
+    : undefined;
+
   return (
     <SectionBox
       label="Market Regime"
       badge={results ? 'VIX ' + (vixNum || '\u2014') : null}
+      badgeColor={results ? vixBadgeColor : undefined}
       collapsible
       headerRight={
         <button
