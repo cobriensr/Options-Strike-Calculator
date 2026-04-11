@@ -38,13 +38,15 @@ import {
 
 // ── Types ────────────────────────────────────────────────────
 
+// API returns call_gamma / put_gamma — these are the OI-weighted GEX values
+// stored in the DB as call_gex / put_gex (our internal naming convention).
 interface StrikeRow {
   date: string;
   expiry: string;
   strike: string;
   dte: number;
-  call_gex: string;
-  put_gex: string;
+  call_gamma: string;
+  put_gamma: string;
   call_delta: string;
   put_delta: string;
   call_charm: string;
@@ -56,8 +58,8 @@ interface StrikeRow {
 // ── Computed columns ─────────────────────────────────────────
 
 function computeColumns(row: StrikeRow) {
-  const callGex = Number.parseFloat(row.call_gex);
-  const putGex = Number.parseFloat(row.put_gex);
+  const callGex = Number.parseFloat(row.call_gamma);
+  const putGex = Number.parseFloat(row.put_gamma);
   const netGex = callGex + putGex;
   const netDelta =
     Number.parseFloat(row.call_delta) + Number.parseFloat(row.put_delta);
@@ -97,7 +99,7 @@ async function storeStrikeRows(
         )
         VALUES (
           ${row.date}, ${row.expiry}, ${row.strike}, ${row.dte},
-          ${row.call_gex}, ${row.put_gex},
+          ${row.call_gamma}, ${row.put_gamma},
           ${row.call_delta}, ${row.put_delta},
           ${row.call_charm}, ${row.put_charm},
           ${row.call_vanna}, ${row.put_vanna},
@@ -151,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Filter zero-OI strikes (no useful signal)
     const rows = allRows.filter(
-      (r) => !(r.call_gex === '0.0000' && r.put_gex === '0.0000'),
+      (r) => !(r.call_gamma === '0.0000' && r.put_gamma === '0.0000'),
     );
 
     const skippedZero = allRows.length - rows.length;
@@ -167,11 +169,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (rows.length > 0) {
       const largest = rows.reduce((best, r) => {
         const a =
-          Math.abs(Number.parseFloat(r.call_gex)) +
-          Math.abs(Number.parseFloat(r.put_gex));
+          Math.abs(Number.parseFloat(r.call_gamma)) +
+          Math.abs(Number.parseFloat(r.put_gamma));
         const b =
-          Math.abs(Number.parseFloat(best.call_gex)) +
-          Math.abs(Number.parseFloat(best.put_gex));
+          Math.abs(Number.parseFloat(best.call_gamma)) +
+          Math.abs(Number.parseFloat(best.put_gamma));
         return a > b ? r : best;
       });
       const { netGex } = computeColumns(largest);
