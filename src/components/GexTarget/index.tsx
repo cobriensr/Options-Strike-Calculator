@@ -278,7 +278,7 @@ export const GexTarget = memo(function GexTarget({
   }
 
   return (
-    <SectionBox label="GEX TARGET" headerRight={headerRight}>
+    <SectionBox label="GEX TARGET" headerRight={headerRight} collapsible>
       {content}
     </SectionBox>
   );

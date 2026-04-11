@@ -45,6 +45,8 @@ import GexPerStrike from './components/GexPerStrike';
 import { GexTarget } from './components/GexTarget';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
+import { CollapseAllContext } from './components/collapse-context';
+import type { CollapseSignal } from './components/collapse-context';
 import { useToast } from './hooks/useToast';
 import SectionNav from './components/SectionNav';
 import type { NavSection } from './components/SectionNav';
@@ -297,6 +299,17 @@ export default function StrikeCalculator() {
     [vixFileInputRef],
   );
 
+  const [collapseSignal, setCollapseSignal] = useState<CollapseSignal>({
+    version: 0,
+    collapsed: false,
+  });
+  const handleCollapseAll = useCallback(() => {
+    setCollapseSignal((s) => ({
+      version: s.version + 1,
+      collapsed: !s.collapsed,
+    }));
+  }, []);
+
   const [migrateRunning, setMigrateRunning] = useState(false);
   const handleRunMigrations = useCallback(async () => {
     if (migrateRunning) return;
@@ -390,7 +403,7 @@ export default function StrikeCalculator() {
   });
 
   return (
-    <>
+    <CollapseAllContext.Provider value={collapseSignal}>
       <AlertBanner
         alerts={alertState.alerts}
         onAcknowledge={alertState.acknowledge}
@@ -542,6 +555,24 @@ export default function StrikeCalculator() {
                   <span className="text-[11px] font-semibold">Re-auth</span>
                 </a>
               )}
+              <button
+                onClick={handleCollapseAll}
+                aria-label={
+                  collapseSignal.collapsed
+                    ? 'Expand all sections'
+                    : 'Collapse all sections'
+                }
+                title={
+                  collapseSignal.collapsed
+                    ? 'Expand all sections'
+                    : 'Collapse all sections'
+                }
+                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+              >
+                <span className="text-[11px] font-semibold">
+                  {collapseSignal.collapsed ? '⊞ Expand' : '⊟ Collapse'}
+                </span>
+              </button>
               {isOwner && (
                 <button
                   onClick={handleRunMigrations}
@@ -906,6 +937,6 @@ export default function StrikeCalculator() {
       />
       <Analytics />
       <SpeedInsights />
-    </>
+    </CollapseAllContext.Provider>
   );
 }

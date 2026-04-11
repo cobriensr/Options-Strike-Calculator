@@ -1,11 +1,13 @@
 import {
   memo,
+  useContext,
   useRef,
   useState,
   useCallback,
   useEffect,
   type ReactNode,
 } from 'react';
+import { CollapseAllContext } from './collapse-context';
 
 /** Reusable section wrapper with label and optional badge */
 export const SectionBox = memo(function SectionBox({
@@ -26,6 +28,17 @@ export const SectionBox = memo(function SectionBox({
   const [collapsed, setCollapsed] = useState(defaultCollapsed ?? false);
   const toggle = useCallback(() => setCollapsed((v) => !v), []);
   const isOpen = !collapsible || !collapsed;
+
+  // Respond to "collapse all" / "expand all" broadcast. Only applies when
+  // this section is collapsible; non-collapsible sections are unaffected.
+  const signal = useContext(CollapseAllContext);
+  const prevVersionRef = useRef(signal.version);
+  useEffect(() => {
+    if (!collapsible) return;
+    if (signal.version === prevVersionRef.current) return;
+    prevVersionRef.current = signal.version;
+    setCollapsed(signal.collapsed);
+  }, [collapsible, signal]);
 
   return (
     <section
