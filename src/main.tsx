@@ -31,6 +31,17 @@ Sentry.init({
   },
 });
 
+// Reload when the service worker takes over a new deployment so the page picks
+// up the new JS bundle (and fresh BotID tokens) automatically.
+if ('serviceWorker' in navigator) {
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  });
+}
+
 // Suppress Kasada SDK "already configured" noise — race condition in botid SDK
 globalThis.addEventListener('unhandledrejection', (e) => {
   if (
