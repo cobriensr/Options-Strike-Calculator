@@ -189,4 +189,24 @@ describe('SparklinePanel: SVG sparklines', () => {
     const { container } = render(<SparklinePanel leaderboard={leaderboard} />);
     expect(container.querySelector('polyline')).toBeInTheDocument();
   });
+
+  it('uses reconstructed current (prevGexDollars_5m + deltaGex_5m) instead of drifted gexDollars', () => {
+    // gexDollars has drifted far below the stored scale (JOIN recalculation
+    // artefact). The reconstructed current = 950M + 50M = 1000M, which is
+    // above prevGexDollars_20m (850M), so a polyline should still render.
+    const leaderboard = [
+      makeStrike(5800, {
+        features: makeFeatures({
+          gexDollars: 100_000_000, // drifted JOIN value — would produce wrong slope
+          deltaGex_5m: 50_000_000, // stored delta on correct scale
+          prevGexDollars_5m: 950_000_000,
+          prevGexDollars_20m: 850_000_000,
+          strike: 5800,
+        }),
+      }),
+    ];
+    const { container } = render(<SparklinePanel leaderboard={leaderboard} />);
+    // Reconstructed current = 1,000,000,000 — valid data point → polyline
+    expect(container.querySelector('polyline')).toBeInTheDocument();
+  });
 });

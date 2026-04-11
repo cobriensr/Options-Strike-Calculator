@@ -167,13 +167,26 @@ export const SparklinePanel = memo(function SparklinePanel({
             // All five 5-minute-grid snapshots within the 20-min window.
             // Null entries (early session, data unavailable) are filtered out
             // so the sparkline always draws between real measurements.
+            //
+            // The "current" point is reconstructed from the stored delta
+            // (prevGexDollars_5m + deltaGex_5m) rather than reading
+            // gexDollars directly. The API recalculates gexDollars via a
+            // JOIN against current OI, which can drift from the scale used
+            // when prevGexDollars_* were stored — making the visual slope
+            // wrong. The stored delta is always on the same scale as the
+            // prior values, so the reconstructed current is correct.
+            const reconstructedCurrent =
+              features.prevGexDollars_5m !== null &&
+              features.deltaGex_5m !== null
+                ? features.prevGexDollars_5m + features.deltaGex_5m
+                : features.gexDollars;
             const pts: SparklinePoint[] = (
               [
                 { value: features.prevGexDollars_20m, minutesAgo: 20 },
                 { value: features.prevGexDollars_15m, minutesAgo: 15 },
                 { value: features.prevGexDollars_10m, minutesAgo: 10 },
                 { value: features.prevGexDollars_5m, minutesAgo: 5 },
-                { value: features.gexDollars, minutesAgo: 0 },
+                { value: reconstructedCurrent, minutesAgo: 0 },
               ] as { value: number | null; minutesAgo: number }[]
             ).filter((p): p is SparklinePoint => p.value !== null);
 
