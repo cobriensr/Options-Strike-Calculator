@@ -122,11 +122,15 @@ Step 3 — Go to the ABSOLUTE RIGHT EDGE of the chart (3:00 PM):
     region immediately adjacent to where red pressure ends.
 
 Step 4 — Read the Y-axis precisely using bracketing:
-  At the 3 PM position, find the CENTER of the black channel.
-  a. Identify the two Y-axis price labels immediately ABOVE and BELOW the channel center.
-  b. Estimate what fraction of the way between those two labels the center sits.
-  c. Calculate: lower_label + fraction × (upper_label - lower_label)
-  Example: channel center sits 40% of the way from 6840 to 6860 → report 6848.
+  At the 3 PM position, read the UPPER BOUNDARY of the black channel — where the red
+  zone ends and black begins. SPX tends to pin at the lower boundary of selling pressure,
+  not the geometric center of the void. Do NOT use the midpoint of the void.
+
+  a. Find the exact price level where the red gradient ends (its lower edge).
+  b. Identify the two Y-axis price labels immediately ABOVE and BELOW that red-black boundary.
+  c. Estimate what fraction of the way between those two labels the boundary sits.
+  d. Calculate: lower_label + fraction × (upper_label - lower_label)
+  Example: red ends 70% of the way from 6840 to 6860 → report 6854.
   Do NOT round to the nearest 10. Report the interpolated value.
 
 Return ONLY a JSON object (no markdown fences, no explanation):
