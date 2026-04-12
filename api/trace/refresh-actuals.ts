@@ -17,18 +17,20 @@ interface DayPrices {
  * Using Stooq instead of Yahoo Finance to avoid Yahoo's crumb/cookie
  * authentication flow which breaks in serverless environments.
  */
-async function fetchSpxPrices(dates: string[]): Promise<Map<string, DayPrices>> {
-  const sorted = [...dates].sort();
+async function fetchSpxPrices(
+  dates: string[],
+): Promise<Map<string, DayPrices>> {
+  const sorted = [...dates].sort((a, b) => a.localeCompare(b));
 
   // Pad 5 days before/after to ensure we catch every requested date
   const start = new Date(`${sorted[0]}T12:00:00Z`);
   start.setDate(start.getDate() - 5);
   const end = new Date(`${sorted.at(-1)!}T12:00:00Z`);
   end.setDate(end.getDate() + 2);
-  const d1padded = start.toISOString().slice(0, 10).replace(/-/g, '');
-  const d2padded = end.toISOString().slice(0, 10).replace(/-/g, '');
+  const d1padded = start.toISOString().slice(0, 10).replaceAll('-', '');
+  const d2padded = end.toISOString().slice(0, 10).replaceAll('-', '');
 
-  const url = `https://stooq.com/q/d/l/?s=%5Espx&d1=${d1padded}&d2=${d2padded}&i=d`;
+  const url = `https://stooq.com/q/d/l/?s=%5ESPX&d1=${d1padded}&d2=${d2padded}&i=d`;
   const res = await fetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/csv' },
   });
@@ -97,7 +99,7 @@ export default async function handler(
       }
     }
 
-    res.status(200).json({ updated });
+    res.status(200).json({ updated, attempted: dates.length, found: priceMap.size });
   } catch (err) {
     logger.error({ err }, 'trace/refresh-actuals failed');
     res.status(500).json({ error: 'Failed to refresh actuals' });
