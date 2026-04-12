@@ -3,7 +3,10 @@
   "dataset": {
     "total_days": 44,
     "labeled_days": 39,
-    "date_range": ["2026-02-09", "2026-04-10"],
+    "date_range": [
+      "2026-02-09",
+      "2026-04-10"
+    ],
     "overall_accuracy": 0.923
   },
   "structure_accuracy": {
@@ -632,5 +635,46 @@
     },
     "asymmetry_correlation": null,
     "n_days": 41
+  },
+  "trace": {
+    "n_days": 20,
+    "mae": 2.21,
+    "median_ae": 1.66,
+    "std_error": 2.9,
+    "mean_signed_error": 1.42,
+    "direction_correct": 0.95,
+    "hit_rates": {
+      "within_5pt": 0.95,
+      "within_10pt": 0.95,
+      "within_15pt": 1.0,
+      "within_20pt": 1.0
+    },
+    "by_confidence": {
+      "high": {
+        "n": 17,
+        "mae": 1.71,
+        "median_ae": 1.6,
+        "direction_correct": 1.0,
+        "hit_10pt": 1.0
+      },
+      "medium": {
+        "n": 2,
+        "mae": 2.32,
+        "median_ae": 2.32,
+        "direction_correct": 1.0,
+        "hit_10pt": 1.0
+      },
+      "low": {
+        "n": 1,
+        "mae": 10.61,
+        "median_ae": 10.61,
+        "direction_correct": 0.0,
+        "hit_10pt": 0.0
+      }
+    },
+    "date_range": {
+      "start": "2026-01-02",
+      "end": "2026-01-30"
+    }
   }
 }

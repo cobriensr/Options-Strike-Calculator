@@ -16,6 +16,7 @@ Outputs:
     ml/plots/trace_accuracy_by_confidence.png
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -25,6 +26,7 @@ import pandas as pd
 
 RESULTS_DIR = Path(__file__).parent / "results"
 PLOTS_DIR = Path(__file__).parent.parent / "plots"
+FINDINGS_PATH = Path(__file__).parent.parent / "findings.json"
 
 _CONF_COLORS = {"high": "#2ecc71", "medium": "#f39c12", "low": "#e74c3c"}
 _HIT_THRESHOLDS = [5, 10, 15, 20]
@@ -204,6 +206,55 @@ def plot_accuracy_by_confidence(df: pd.DataFrame) -> None:
     print(f"  Saved: {out}")
 
 
+def build_trace_findings(df: pd.DataFrame) -> dict:
+    """Build the trace section for ml/findings.json."""
+    n = len(df)
+    by_conf = {}
+    for conf in ["high", "medium", "low"]:
+        sub = df[df["confidence"] == conf]
+        if sub.empty:
+            continue
+        by_conf[conf] = {
+            "n": int(len(sub)),
+            "mae": round(float(sub["abs_error"].mean()), 2),
+            "median_ae": round(float(sub["abs_error"].median()), 2),
+            "direction_correct": round(float(sub["direction_correct"].mean()), 4),
+            "hit_10pt": round(float(sub["hit_10pt"].mean()), 4),
+        }
+
+    return {
+        "n_days": n,
+        "mae": round(float(df["abs_error"].mean()), 2),
+        "median_ae": round(float(df["abs_error"].median()), 2),
+        "std_error": round(float(df["error"].std()), 2),
+        "mean_signed_error": round(float(df["error"].mean()), 2),
+        "direction_correct": round(float(df["direction_correct"].mean()), 4),
+        "hit_rates": {
+            f"within_{pts}pt": round(float(df[f"hit_{pts}pt"].mean()), 4)
+            for pts in _HIT_THRESHOLDS
+        },
+        "by_confidence": by_conf,
+        "date_range": {
+            "start": str(df["date"].iloc[0]),
+            "end": str(df["date"].iloc[-1]),
+        },
+    }
+
+
+def write_findings(df: pd.DataFrame) -> None:
+    """Upsert the trace section into ml/findings.json."""
+    findings: dict = {}
+    if FINDINGS_PATH.exists():
+        try:
+            findings = json.loads(FINDINGS_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    findings["trace"] = build_trace_findings(df)
+    FINDINGS_PATH.write_text(json.dumps(findings, indent=2))
+    print(f"Updated trace section in {FINDINGS_PATH}")
+
+
 def main() -> None:
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -221,6 +272,8 @@ def main() -> None:
     report_path = RESULTS_DIR / "accuracy_report.csv"
     df.to_csv(report_path, index=False)
     print(f"Saved accuracy report → {report_path}")
+
+    write_findings(df)
 
     print("\nGenerating plots:")
     plot_error_distribution(df)
