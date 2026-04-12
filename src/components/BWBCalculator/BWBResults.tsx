@@ -134,9 +134,18 @@ export default function BWBResults({
         </div>
         <div className="bg-surface-alt rounded-lg p-3">
           <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-            Max Loss {'\u2191'}
+            {strategy === 'iron-fly' && ironFlyMetrics && ironFlyMetrics.lossAbove > 0
+              ? 'Min Profit \u2191'
+              : 'Max Loss \u2191'}
           </div>
-          <div className="text-danger font-mono text-[17px] font-bold">
+          <div
+            className={
+              'font-mono text-[17px] font-bold ' +
+              (strategy === 'iron-fly' && ironFlyMetrics && ironFlyMetrics.lossAbove > 0
+                ? 'text-success'
+                : 'text-danger')
+            }
+          >
             {strategy === 'iron-fly' && ironFlyMetrics
               ? fmtPnl(ironFlyMetrics.lossAbove * mult)
               : fmtPnl(metrics.riskPnl * mult)}
@@ -148,9 +157,14 @@ export default function BWBResults({
         {strategy === 'iron-fly' && ironFlyMetrics ? (
           <div className="bg-surface-alt rounded-lg p-3">
             <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-              Max Loss {'\u2193'}
+              {ironFlyMetrics.lossBelow > 0 ? 'Min Profit \u2193' : 'Max Loss \u2193'}
             </div>
-            <div className="text-danger font-mono text-[17px] font-bold">
+            <div
+              className={
+                'font-mono text-[17px] font-bold ' +
+                (ironFlyMetrics.lossBelow > 0 ? 'text-success' : 'text-danger')
+              }
+            >
               {fmtPnl(ironFlyMetrics.lossBelow * mult)}
             </div>
             <div className="text-muted font-mono text-[10px]">
