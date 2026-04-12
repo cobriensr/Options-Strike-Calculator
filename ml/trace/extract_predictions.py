@@ -136,10 +136,10 @@ Step 4 — Read the Y-axis precisely using bracketing:
 Return ONLY a JSON object (no markdown fences, no explanation):
 {
     "current_price": <number: SPX price at market open>,
-    "predicted_close": <number: interpolated Y-axis value at CENTER of black channel at 3 PM>,
+    "predicted_close": <number: interpolated Y-axis value at red-black upper boundary at 3 PM>,
     "confidence": "<high|medium|low>",
-    "notes": "<describe: where the channel sits at 3 PM, what Y-axis labels bracket it, \
-and estimated fraction>"
+    "notes": "<describe: where red zone ends at 3 PM, what Y-axis labels bracket \
+the red-black boundary, and estimated fraction>"
 }
 
 Confidence guide:
