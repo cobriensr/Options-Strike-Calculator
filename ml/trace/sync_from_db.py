@@ -9,8 +9,8 @@ Usage:
 
 Reads DATABASE_URL from ml/.env or environment.
 Writes: ml/trace/results/predictions.csv
-        Columns include VIX context from training_features (LEFT JOIN — may be NULL
-        for dates before the ML pipeline ran).
+        Columns include VIX context (COALESCE of training_features and the earliest
+        market_snapshots entry per day — covers dates before the ML pipeline ran).
 """
 
 import os
@@ -50,18 +50,26 @@ def main() -> None:
         df = pd.read_sql(
             """
             SELECT
-                tp.date::text        AS date,
+                tp.date::text                              AS date,
                 tp.predicted_close,
                 tp.current_price,
                 tp.actual_close,
                 tp.confidence,
                 tp.notes,
-                tf.vix::float        AS vix,
-                tf.vix1d::float      AS vix1d,
-                tf.vix9d::float      AS vix9d,
-                tf.vvix::float       AS vvix
+                COALESCE(tf.vix::float,   ms.vix::float)   AS vix,
+                COALESCE(tf.vix1d::float, ms.vix1d::float) AS vix1d,
+                COALESCE(tf.vix9d::float, ms.vix9d::float) AS vix9d,
+                COALESCE(tf.vvix::float,  ms.vvix::float)  AS vvix
             FROM trace_predictions tp
             LEFT JOIN training_features tf ON tf.date = tp.date
+            LEFT JOIN LATERAL (
+                SELECT vix, vix1d, vix9d, vvix
+                FROM market_snapshots
+                WHERE date = tp.date
+                ORDER BY (spx_open IS NULL OR spx_open = 'NaN') ASC,
+                         entry_time ASC
+                LIMIT 1
+            ) ms ON true
             ORDER BY tp.date
             """,
             conn,

@@ -673,16 +673,22 @@
       }
     },
     "by_vix_regime": {
+      "<15": {
+        "n": 1,
+        "mae": 1.53,
+        "direction_correct": 1.0,
+        "hit_10pt": 1.0
+      },
       "15-20": {
-        "n": 7,
-        "mae": 2.87,
+        "n": 15,
+        "mae": 2.81,
         "direction_correct": 1.0,
         "hit_10pt": 1.0
       },
       "20-25": {
-        "n": 6,
-        "mae": 3.48,
-        "direction_correct": 0.6667,
+        "n": 7,
+        "mae": 3.47,
+        "direction_correct": 0.7143,
         "hit_10pt": 1.0
       }
     },
