@@ -6,12 +6,23 @@ Usage:
 
 Reads:  ml/trace/results/predictions.csv
 Writes: ml/trace/results/actual_prices.csv
+Also updates actual_close in trace_predictions DB table.
 """
 
+import os
 import sys
 from pathlib import Path
 
 import pandas as pd
+
+_env_path = Path(__file__).parent.parent / ".env"
+if _env_path.exists():
+    with _env_path.open() as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _, _val = _line.partition("=")
+                os.environ.setdefault(_key.strip(), _val.strip().strip('"').strip("'"))
 
 try:
     import yfinance as yf
@@ -50,11 +61,49 @@ def fetch_spx_closes(dates: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def write_actuals_to_db(prices: pd.DataFrame) -> None:
+    """Update actual_close in trace_predictions for any dates with a known price."""
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        print("Skipping DB write-back: DATABASE_URL not set.")
+        return
+
+    try:
+        import psycopg2
+    except ImportError:
+        print("Skipping DB write-back: psycopg2 not installed.")
+        return
+
+    valid = prices.dropna(subset=["actual_close"])
+    if valid.empty:
+        print("No valid prices to write back to DB.")
+        return
+
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            updated = 0
+            for _, row in valid.iterrows():
+                cur.execute(
+                    """
+                    UPDATE trace_predictions
+                    SET actual_close = %s, updated_at = now()
+                    WHERE date = %s
+                    """,
+                    (float(row["actual_close"]), str(row["date"])),
+                )
+                updated += cur.rowcount
+        conn.commit()
+        print(f"Updated {updated} actual_close values in DB.")
+    finally:
+        conn.close()
+
+
 def main() -> None:
     predictions_path = RESULTS_DIR / "predictions.csv"
     if not predictions_path.exists():
         print(f"Error: {predictions_path} not found.")
-        print("Run extract_predictions.py first.")
+        print("Run sync_from_db.py first.")
         sys.exit(1)
 
     predictions = pd.read_csv(predictions_path)
@@ -72,10 +121,12 @@ def main() -> None:
         missing = prices[prices["actual_close"].isna()]["date"].tolist()
         print(f"Missing dates (non-trading days?): {missing}")
 
+    write_actuals_to_db(prices)
+
     # Print predicted vs actual recap
-    merged = predictions.merge(prices, on="date", how="inner").dropna(
-        subset=["actual_close"]
-    )
+    merged = predictions.drop(columns=["actual_close"], errors="ignore").merge(
+        prices, on="date", how="inner"
+    ).dropna(subset=["actual_close"])
     if not merged.empty:
         print(f"\n{'date':<12} {'open':>6} {'pred':>6} {'actual':>8} {'error':>7}  direction")
         print("-" * 58)
