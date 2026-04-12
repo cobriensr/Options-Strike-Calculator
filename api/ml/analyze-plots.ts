@@ -112,6 +112,9 @@ function getPlotFindings(
     pin_composite: ['pin_analysis', 'dataset'],
     prev_day_transition: ['eda', 'dataset'],
     cone_consumption: ['eda', 'dataset'],
+    trace_error_distribution: ['dataset'],
+    trace_predicted_vs_actual: ['dataset'],
+    trace_accuracy_by_confidence: ['dataset'],
   };
 
   const sections = sectionMap[plotName] ?? ['dataset'];

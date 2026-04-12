@@ -56,6 +56,14 @@ const PLOT_GROUPS: PlotGroup[] = [
     label: 'Transitions',
     plots: ['prev_day_transition', 'cone_consumption'],
   },
+  {
+    label: 'TRACE Pin',
+    plots: [
+      'trace_error_distribution',
+      'trace_predicted_vs_actual',
+      'trace_accuracy_by_confidence',
+    ],
+  },
 ];
 
 /** Format plot name for display: snake_case -> Title Case */
