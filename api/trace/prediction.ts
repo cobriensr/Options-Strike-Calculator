@@ -42,7 +42,9 @@ export default async function handler(
   if (req.method === 'POST') {
     const parsed = PredictionSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: 'Invalid input', details: parsed.error.format() });
+      res
+        .status(400)
+        .json({ error: 'Invalid input', details: parsed.error.format() });
       return;
     }
     const { date, predicted_close, confidence, notes } = parsed.data;

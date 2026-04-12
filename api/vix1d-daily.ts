@@ -20,7 +20,10 @@ const REDIS_KEY = 'vix1d:daily-map';
 /** 24 hours — cron refreshes daily. */
 const CACHE_TTL = 24 * 60 * 60;
 
-export default async function handler(_req: VercelRequest, res: VercelResponse) {
+export default async function handler(
+  _req: VercelRequest,
+  res: VercelResponse,
+) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/vix1d-daily');
     const done = metrics.request('/api/vix1d-daily');

@@ -173,7 +173,8 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       // getVix1d triggers ensureLoaded() on first call; returns null until the
       // fetch completes, then its reference changes → effect re-runs with data.
       const vix1dVal =
-        snapshot.vix1d ?? vix1dStatic.getVix1d(historyData.history!.date, etHour);
+        snapshot.vix1d ??
+        vix1dStatic.getVix1d(historyData.history!.date, etHour);
       const isNewDate =
         ivModeAutoFilledDate.current !== historyData.history!.date;
       if (vix1dVal != null && vix1dVal > 0) {

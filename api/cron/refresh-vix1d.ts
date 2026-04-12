@@ -89,10 +89,7 @@ export function parseCboeCsv(csv: string): Vix1dDailyMap {
 
 // ── Handler ────────────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/cron/refresh-vix1d');
     Sentry.setTag('cron.job', 'refresh-vix1d');

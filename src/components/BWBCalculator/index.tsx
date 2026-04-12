@@ -87,7 +87,8 @@ export default function BWBCalculator({
   const handleSweetSpotChange = (value: string) => {
     setSweetSpot(value);
     const ss = Number.parseFloat(value);
-    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, side, strategy);
+    if (Number.isFinite(ss))
+      fillStrikes(ss, narrowWing, wideWing, side, strategy);
   };
 
   const handleNarrowChange = (value: string) => {

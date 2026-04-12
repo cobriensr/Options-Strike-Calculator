@@ -21,8 +21,12 @@ interface DayPrices {
   close: number;
 }
 
-async function fetchSpxPrices(dates: string[]): Promise<Map<string, DayPrices>> {
-  const timestamps = dates.map((d) => new Date(`${d}T12:00:00Z`).getTime() / 1000);
+async function fetchSpxPrices(
+  dates: string[],
+): Promise<Map<string, DayPrices>> {
+  const timestamps = dates.map(
+    (d) => new Date(`${d}T12:00:00Z`).getTime() / 1000,
+  );
   const period1 = Math.floor(Math.min(...timestamps) - 5 * 86400);
   const period2 = Math.floor(Math.max(...timestamps) + 2 * 86400);
 

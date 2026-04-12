@@ -54,8 +54,18 @@ const SAMPLE_MAP = {
 describe('parseCboeCsv', () => {
   it('parses a well-formed CSV into the date-keyed map', () => {
     const result = parseCboeCsv(SAMPLE_CSV);
-    expect(result['2026-04-10']).toEqual({ o: 9.85, h: 20.38, l: 9.61, c: 19.07 });
-    expect(result['2026-04-09']).toEqual({ o: 10.89, h: 14.59, l: 10.17, c: 14.07 });
+    expect(result['2026-04-10']).toEqual({
+      o: 9.85,
+      h: 20.38,
+      l: 9.61,
+      c: 19.07,
+    });
+    expect(result['2026-04-09']).toEqual({
+      o: 10.89,
+      h: 14.59,
+      l: 10.17,
+      c: 14.07,
+    });
     expect(Object.keys(result)).toHaveLength(3);
   });
 

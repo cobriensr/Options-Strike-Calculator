@@ -46,7 +46,10 @@ interface SparklineProps {
   colorOverride?: string;
 }
 
-const Sparkline = memo(function Sparkline({ points, colorOverride }: SparklineProps) {
+const Sparkline = memo(function Sparkline({
+  points,
+  colorOverride,
+}: SparklineProps) {
   // Only keep points with real values; sort oldest-first for correct drawing order.
   const valid = useMemo(
     () => [...points].sort((a, b) => b.minutesAgo - a.minutesAgo),
@@ -98,7 +101,11 @@ const Sparkline = memo(function Sparkline({ points, colorOverride }: SparklinePr
   const last = valid.at(-1)!.value;
   const rising = last > first;
   const flat = last === first;
-  const computedColor = flat ? theme.textMuted : rising ? theme.green : theme.red;
+  const computedColor = flat
+    ? theme.textMuted
+    : rising
+      ? theme.green
+      : theme.red;
   // colorOverride wins when provided — callers should pass the deltaPct sign
   // so the line color always agrees with the % label, even when the current
   // gexDollars value has been recalculated via a JOIN and drifted from what

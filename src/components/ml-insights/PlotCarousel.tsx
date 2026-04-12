@@ -278,7 +278,9 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
       )}
 
       {/* TRACE Pin manual prediction entry */}
-      {availableGroups[activeGroupIdx]?.label === 'TRACE Pin' && <TracePinForm />}
+      {availableGroups[activeGroupIdx]?.label === 'TRACE Pin' && (
+        <TracePinForm />
+      )}
 
       {/* Keyboard hint */}
       <div className="text-muted mt-2 text-center font-sans text-[9px]">

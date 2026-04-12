@@ -71,7 +71,7 @@ ml/trace/images/charm-20260408.png
 ```
 
 When a charm image is present for a date, both screenshots are sent together in
-one API call. Charm Pressure tells Claude *where within* the equilibrium zone
+one API call. Charm Pressure tells Claude _where within_ the equilibrium zone
 price will pin: red charm → floor (Point A), blue charm → ceiling (Point B),
 mixed → midpoint. Adds `charm_bias`, `point_a`, and `point_b` columns to the
 output CSV.
@@ -112,11 +112,11 @@ cd ml && make trace
 `analyze_accuracy.py` merges predictions with actuals, computes error
 columns, prints a summary report, and saves three plots to `ml/plots/`:
 
-| File | Contents |
-| --- | --- |
-| `trace_error_distribution.png` | Histogram of prediction error (actual − predicted) |
-| `trace_predicted_vs_actual.png` | Scatter plot colored by confidence level |
-| `trace_accuracy_by_confidence.png` | MAE and ±10pt hit rate by confidence level |
+| File                               | Contents                                           |
+| ---------------------------------- | -------------------------------------------------- |
+| `trace_error_distribution.png`     | Histogram of prediction error (actual − predicted) |
+| `trace_predicted_vs_actual.png`    | Scatter plot colored by confidence level           |
+| `trace_accuracy_by_confidence.png` | MAE and ±10pt hit rate by confidence level         |
 
 Requires at least 5 data points to run.
 
@@ -138,9 +138,9 @@ images, then commit the results.
 
 ## Accuracy columns (accuracy_report.csv)
 
-| Column | Description |
-| --- | --- |
-| `error` | actual_close − predicted_close |
-| `abs_error` | Absolute value of error |
-| `direction_correct` | Whether predicted direction (up/down from open) was correct |
-| `hit_5pt` … `hit_20pt` | Whether actual close was within N points of prediction |
+| Column                 | Description                                                 |
+| ---------------------- | ----------------------------------------------------------- |
+| `error`                | actual_close − predicted_close                              |
+| `abs_error`            | Absolute value of error                                     |
+| `direction_correct`    | Whether predicted direction (up/down from open) was correct |
+| `hit_5pt` … `hit_20pt` | Whether actual close was within N points of prediction      |

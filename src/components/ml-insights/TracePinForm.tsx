@@ -83,7 +83,9 @@ export default function TracePinForm() {
           body: JSON.stringify({ date, predicted_close: value, confidence }),
         });
         if (!res.ok) {
-          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          const data = (await res.json().catch(() => ({}))) as {
+            error?: string;
+          };
           setSubmitError(data.error ?? 'Save failed');
         } else {
           setSaved(true);
@@ -96,7 +98,14 @@ export default function TracePinForm() {
         setSubmitting(false);
       }
     },
-    [date, predictedClose, confidence, confirmOverwrite, predictions, loadPredictions],
+    [
+      date,
+      predictedClose,
+      confidence,
+      confirmOverwrite,
+      predictions,
+      loadPredictions,
+    ],
   );
 
   const handleRefresh = useCallback(async () => {
@@ -116,7 +125,7 @@ export default function TracePinForm() {
     >
       <div className="mb-3 flex items-center justify-between">
         <h3
-          className="font-sans text-[12px] font-semibold uppercase tracking-wider"
+          className="font-sans text-[12px] font-semibold tracking-wider uppercase"
           style={{ color: theme.textMuted }}
         >
           Log TRACE Pin Prediction
@@ -126,16 +135,23 @@ export default function TracePinForm() {
           onClick={() => void handleRefresh()}
           disabled={refreshing}
           className="rounded px-2 py-1 font-sans text-[10px] transition-opacity disabled:opacity-40"
-          style={{ backgroundColor: tint(theme.accent, '15'), color: theme.accent, border: `1px solid ${tint(theme.accent, '35')}` }}
+          style={{
+            backgroundColor: tint(theme.accent, '15'),
+            color: theme.accent,
+            border: `1px solid ${tint(theme.accent, '35')}`,
+          }}
         >
           {refreshing ? 'Refreshing…' : 'Refresh Actuals'}
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="mb-4 flex flex-wrap items-end gap-3">
+      <form
+        onSubmit={handleSubmit}
+        className="mb-4 flex flex-wrap items-end gap-3"
+      >
         <label className="flex flex-col gap-1">
           <span
-            className="font-sans text-[10px] uppercase tracking-wide"
+            className="font-sans text-[10px] tracking-wide uppercase"
             style={{ color: theme.textMuted }}
           >
             Date
@@ -143,7 +159,10 @@ export default function TracePinForm() {
           <input
             type="date"
             value={date}
-            onChange={(e) => { setDate(e.target.value); setConfirmOverwrite(false); }}
+            onChange={(e) => {
+              setDate(e.target.value);
+              setConfirmOverwrite(false);
+            }}
             className="border-edge rounded border bg-transparent px-2 py-1.5 font-mono text-[12px]"
             style={{ color: theme.text }}
             required
@@ -152,7 +171,7 @@ export default function TracePinForm() {
 
         <label className="flex flex-col gap-1">
           <span
-            className="font-sans text-[10px] uppercase tracking-wide"
+            className="font-sans text-[10px] tracking-wide uppercase"
             style={{ color: theme.textMuted }}
           >
             Predicted Close
@@ -172,16 +191,14 @@ export default function TracePinForm() {
 
         <label className="flex flex-col gap-1">
           <span
-            className="font-sans text-[10px] uppercase tracking-wide"
+            className="font-sans text-[10px] tracking-wide uppercase"
             style={{ color: theme.textMuted }}
           >
             Confidence
           </span>
           <select
             value={confidence}
-            onChange={(e) =>
-              setConfidence(e.target.value as Confidence)
-            }
+            onChange={(e) => setConfidence(e.target.value as Confidence)}
             className="border-edge rounded border px-2 py-1.5 font-sans text-[12px]"
             style={{ color: theme.text, backgroundColor: theme.surfaceAlt }}
           >
@@ -197,7 +214,10 @@ export default function TracePinForm() {
               type="submit"
               disabled={submitting || !predictedClose}
               className="rounded px-3 py-1.5 font-sans text-[12px] font-semibold transition-opacity disabled:opacity-40"
-              style={{ backgroundColor: confirmOverwrite ? theme.red : theme.accent, color: '#fff' }}
+              style={{
+                backgroundColor: confirmOverwrite ? theme.red : theme.accent,
+                color: '#fff',
+              }}
             >
               {submitting ? 'Saving…' : confirmOverwrite ? 'Overwrite' : 'Save'}
             </button>
@@ -212,18 +232,27 @@ export default function TracePinForm() {
               </button>
             )}
             {saved && (
-              <span className="font-sans text-[11px]" style={{ color: theme.green }}>
+              <span
+                className="font-sans text-[11px]"
+                style={{ color: theme.green }}
+              >
                 Saved
               </span>
             )}
             {submitError && (
-              <span className="font-sans text-[11px]" style={{ color: theme.red }}>
+              <span
+                className="font-sans text-[11px]"
+                style={{ color: theme.red }}
+              >
                 {submitError}
               </span>
             )}
           </div>
           {confirmOverwrite && (
-            <span className="font-sans text-[10px]" style={{ color: theme.red }}>
+            <span
+              className="font-sans text-[10px]"
+              style={{ color: theme.red }}
+            >
               Entry for {date} already exists — click Overwrite to replace it.
             </span>
           )}
@@ -242,22 +271,27 @@ export default function TracePinForm() {
           No predictions yet.
         </p>
       ) : (
-        <div className="max-h-[320px] overflow-auto" style={{ scrollbarWidth: 'thin' }}>
+        <div
+          className="max-h-[320px] overflow-auto"
+          style={{ scrollbarWidth: 'thin' }}
+        >
           <table className="w-full border-collapse">
             <thead>
               <tr
                 className="border-edge border-b text-left"
                 style={{ color: theme.textMuted }}
               >
-                {['Date', 'Open', 'Predicted', 'Actual', 'Error', 'Conf'].map((h) => (
-                  <th
-                    key={h}
-                    className="sticky top-0 pb-1.5 pr-4 font-sans text-[10px] font-medium uppercase tracking-wide last:pr-0"
-                    style={{ backgroundColor: tint(theme.surfaceAlt, '40') }}
-                  >
-                    {h}
-                  </th>
-                ))}
+                {['Date', 'Open', 'Predicted', 'Actual', 'Error', 'Conf'].map(
+                  (h) => (
+                    <th
+                      key={h}
+                      className="sticky top-0 pr-4 pb-1.5 font-sans text-[10px] font-medium tracking-wide uppercase last:pr-0"
+                      style={{ backgroundColor: tint(theme.surfaceAlt, '40') }}
+                    >
+                      {h}
+                    </th>
+                  ),
+                )}
               </tr>
             </thead>
             <tbody>
@@ -300,7 +334,9 @@ export default function TracePinForm() {
                       className="py-1.5 pr-4 font-mono text-[11px]"
                       style={{ color: theme.textMuted }}
                     >
-                      {p.current_price != null ? p.current_price.toFixed(0) : '—'}
+                      {p.current_price != null
+                        ? p.current_price.toFixed(0)
+                        : '—'}
                     </td>
                     <td
                       className="py-1.5 pr-4 font-mono text-[11px]"

@@ -261,8 +261,7 @@ export default function BWBInputs({
           },
           {
             label: 'Mid',
-            sub:
-              strategy === 'iron-fly' ? 'sell straddle' : 'sell \u00D72',
+            sub: strategy === 'iron-fly' ? 'sell straddle' : 'sell \u00D72',
             strike: midStrike,
             setStrike: setMidStrike,
           },

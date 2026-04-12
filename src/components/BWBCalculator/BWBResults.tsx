@@ -134,14 +134,18 @@ export default function BWBResults({
         </div>
         <div className="bg-surface-alt rounded-lg p-3">
           <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-            {strategy === 'iron-fly' && ironFlyMetrics && ironFlyMetrics.lossAbove > 0
+            {strategy === 'iron-fly' &&
+            ironFlyMetrics &&
+            ironFlyMetrics.lossAbove > 0
               ? 'Min Profit \u2191'
               : 'Max Loss \u2191'}
           </div>
           <div
             className={
               'font-mono text-[17px] font-bold ' +
-              (strategy === 'iron-fly' && ironFlyMetrics && ironFlyMetrics.lossAbove > 0
+              (strategy === 'iron-fly' &&
+              ironFlyMetrics &&
+              ironFlyMetrics.lossAbove > 0
                 ? 'text-success'
                 : 'text-danger')
             }
@@ -157,7 +161,9 @@ export default function BWBResults({
         {strategy === 'iron-fly' && ironFlyMetrics ? (
           <div className="bg-surface-alt rounded-lg p-3">
             <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
-              {ironFlyMetrics.lossBelow > 0 ? 'Min Profit \u2193' : 'Max Loss \u2193'}
+              {ironFlyMetrics.lossBelow > 0
+                ? 'Min Profit \u2193'
+                : 'Max Loss \u2193'}
             </div>
             <div
               className={
@@ -207,9 +213,7 @@ export default function BWBResults({
                   ? fmtSpx(metrics.lowerBE)
                   : '\u2014') +
                 ', ' +
-                (metrics.upperBE !== null
-                  ? fmtSpx(metrics.upperBE)
-                  : '\u2014')}
+                (metrics.upperBE !== null ? fmtSpx(metrics.upperBE) : '\u2014')}
           </div>
         </div>
       </div>
@@ -225,7 +229,9 @@ export default function BWBResults({
             className="w-full border-collapse font-mono text-[13px]"
             role="table"
             aria-label={
-              strategy === 'bwb' ? 'BWB P&L at expiry' : 'Iron Fly P&L at expiry'
+              strategy === 'bwb'
+                ? 'BWB P&L at expiry'
+                : 'Iron Fly P&L at expiry'
             }
           >
             <thead className="bg-table-header sticky top-0">
