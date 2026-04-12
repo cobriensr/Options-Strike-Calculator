@@ -30,6 +30,9 @@ addopts = [
   "--strict-markers",
   "-q",
 ]
+filterwarnings = [
+  "ignore:vert.*will be deprecated:PendingDeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["src"]
