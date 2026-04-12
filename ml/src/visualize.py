@@ -470,6 +470,308 @@ def plot_flow_reliability(df: pd.DataFrame) -> None:
     save(fig, "flow_reliability.png")
 
 
+# ── Plot: Structure Accuracy by VIX Regime ──────────────────
+
+
+def plot_structure_by_vix(df: pd.DataFrame) -> None:
+    """Grouped bar chart of structure accuracy per VIX regime."""
+    labeled = df[df["structure_correct"].notna() & df["vix"].notna()].copy()
+    if len(labeled) < 10:
+        return
+
+    vix_labels = ["<15", "15-20", "20-25", "25+"]
+    structures = ["PUT CREDIT SPREAD", "CALL CREDIT SPREAD", "IRON CONDOR"]
+
+    labeled["vix_bin"] = pd.cut(
+        labeled["vix"].astype(float),
+        bins=[0, 15, 20, 25, float("inf")],
+        labels=vix_labels,
+    )
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    bar_width = 0.25
+
+    for s_idx, structure in enumerate(structures):
+        color = STRUCTURE_COLORS.get(structure, COLORS["gray"])
+        x_positions = []
+        heights = []
+        acc_labels = []
+        n_labels = []
+
+        for v_idx, vix_label in enumerate(vix_labels):
+            subset = labeled[
+                (labeled["vix_bin"] == vix_label)
+                & (labeled["recommended_structure"] == structure)
+            ]
+            n = len(subset)
+            x_pos = v_idx + s_idx * bar_width
+            x_positions.append(x_pos)
+
+            if n >= 2:
+                acc = subset["structure_correct"].astype(float).mean()
+                heights.append(acc * 100)
+                acc_labels.append(f"{acc:.0%}")
+            else:
+                heights.append(0.0)
+                acc_labels.append(None)
+            n_labels.append(n)
+
+        short = {
+            "PUT CREDIT SPREAD": "PCS",
+            "CALL CREDIT SPREAD": "CCS",
+            "IRON CONDOR": "IC",
+        }
+        bars = ax.bar(
+            x_positions,
+            heights,
+            width=bar_width,
+            color=color,
+            edgecolor="#333",
+            label=short.get(structure, structure),
+        )
+
+        for bar, acc_lbl, n in zip(bars, acc_labels, n_labels):
+            x = bar.get_x() + bar.get_width() / 2
+            if acc_lbl is not None:
+                ax.text(
+                    x,
+                    bar.get_height() + 1.5,
+                    acc_lbl,
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                    color="#eee",
+                )
+            ax.text(
+                x,
+                2,
+                f"n={n}",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color="#aaa",
+            )
+
+    # Reference lines
+    ax.axhline(
+        y=80,
+        color=COLORS["green"],
+        linestyle="--",
+        alpha=0.5,
+        linewidth=1,
+        label="Good (80%)",
+    )
+    ax.axhline(
+        y=50,
+        color=COLORS["orange"],
+        linestyle="--",
+        alpha=0.4,
+        linewidth=1,
+        label="Coin flip (50%)",
+    )
+
+    # X-axis ticks centered on each group
+    group_centers = [v_idx + bar_width for v_idx in range(len(vix_labels))]
+    ax.set_xticks(group_centers)
+    ax.set_xticklabels(vix_labels)
+    ax.set_xlabel("VIX Regime")
+    ax.set_ylim(0, 110)
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_title("Structure Accuracy by VIX Regime", fontsize=13, pad=15)
+    ax.legend(fontsize=9, loc="upper right")
+
+    fig.tight_layout()
+    save(fig, "structure_by_vix.png")
+
+
+# ── Plot: Rolling Accuracy (Drift Detection) ─────────────────
+
+
+def plot_rolling_accuracy(df: pd.DataFrame) -> None:
+    """10-day rolling model accuracy with fill-between drift indicator."""
+    labeled = df[df["structure_correct"].notna()].copy().sort_index()
+    if len(labeled) < 12:
+        return
+
+    labeled["correct_f"] = labeled["structure_correct"].astype(float)
+    rolling = labeled["correct_f"].rolling(10, min_periods=5).mean()
+    overall = labeled["correct_f"].mean()
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    dates = labeled.index
+    x = range(len(dates))
+
+    # Fill between rolling and overall mean
+    ax.fill_between(
+        x,
+        rolling.values,
+        overall,
+        where=(rolling.values >= overall),
+        color=COLORS["green"],
+        alpha=0.25,
+        interpolate=True,
+    )
+    ax.fill_between(
+        x,
+        rolling.values,
+        overall,
+        where=(rolling.values < overall),
+        color=COLORS["red"],
+        alpha=0.25,
+        interpolate=True,
+    )
+
+    # Rolling line
+    ax.plot(
+        x,
+        rolling.values,
+        color=COLORS["blue"],
+        linewidth=2,
+        label="10-day rolling accuracy",
+    )
+
+    # Overall mean reference
+    ax.axhline(
+        y=overall,
+        color="white",
+        linestyle="--",
+        alpha=0.6,
+        linewidth=1.5,
+        label=f"Overall {overall:.1%}",
+    )
+
+    # X-axis date labels
+    tick_step = max(1, len(dates) // 8)
+    ax.set_xticks(range(0, len(dates), tick_step))
+    ax.set_xticklabels(
+        [d.strftime("%m/%d") for d in dates[::tick_step]],
+        rotation=30,
+        ha="right",
+        fontsize=9,
+    )
+
+    ax.set_ylim(0, 1.1)
+    ax.yaxis.set_major_locator(plt.MultipleLocator(0.2))
+    ax.set_ylabel("Accuracy")
+    ax.set_title("Model Accuracy: 10-Day Rolling Window", fontsize=13, pad=15)
+    ax.legend(fontsize=9, loc="lower left")
+
+    fig.tight_layout()
+    save(fig, "rolling_accuracy.png")
+
+
+# ── Plot: Flow Signal Reliability by VIX Regime ─────────────
+
+
+def plot_flow_by_vix(df: pd.DataFrame) -> None:
+    """Flow signal reliability broken down by VIX regime bucket."""
+    if df["vix"].isna().all():
+        return
+
+    top_sources = [
+        ("mt_ncp_t1", "Mkt Tide"),
+        ("qqq_ncp_t1", "QQQ Flow"),
+        ("spy_etf_ncp_t1", "SPY ETF"),
+        ("spx_ncp_t1", "SPX Flow"),
+    ]
+
+    vix_labels = ["<15", "15-20", "20-25", "25+"]
+    VIX_COLORS = {
+        "<15": "#2ecc71",
+        "15-20": "#3498db",
+        "20-25": "#f39c12",
+        "25+": "#e74c3c",
+    }
+
+    has_dir = df[df["settlement_direction"].notna()].copy()
+    has_dir["vix_bin"] = pd.cut(
+        has_dir["vix"].astype(float),
+        bins=[0, 15, 20, 25, float("inf")],
+        labels=vix_labels,
+    )
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    bar_width = 0.18
+
+    for v_idx, vix_label in enumerate(vix_labels):
+        color = VIX_COLORS[vix_label]
+        x_positions = []
+        heights = []
+        acc_labels = []
+
+        for s_idx, (col, _label) in enumerate(top_sources):
+            if col not in has_dir.columns:
+                x_positions.append(s_idx + v_idx * bar_width)
+                heights.append(0.0)
+                acc_labels.append(None)
+                continue
+
+            subset = has_dir[
+                (has_dir["vix_bin"] == vix_label) & has_dir[col].notna()
+            ]
+            n = len(subset)
+            x_pos = s_idx + v_idx * bar_width
+            x_positions.append(x_pos)
+
+            if n >= 3:
+                ncp = subset[col].astype(float)
+                actual_up = subset["settlement_direction"] == "UP"
+                acc = ((ncp > 0) == actual_up).mean()
+                heights.append(acc * 100)
+                acc_labels.append((f"{acc:.0%}", n))
+            else:
+                heights.append(0.0)
+                acc_labels.append(None)
+
+        bars = ax.bar(
+            x_positions,
+            heights,
+            width=bar_width,
+            color=color,
+            edgecolor="#333",
+            label=vix_label,
+        )
+
+        for bar, info in zip(bars, acc_labels):
+            if info is not None:
+                lbl, _n = info
+                x = bar.get_x() + bar.get_width() / 2
+                ax.text(
+                    x,
+                    bar.get_height() + 1.5,
+                    lbl,
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    color="#eee",
+                )
+
+    # Coin-flip reference
+    ax.axhline(
+        y=50,
+        color="white",
+        linestyle="--",
+        alpha=0.4,
+        linewidth=1,
+        label="Coin flip (50%)",
+    )
+
+    # X-axis ticks centered on each source group
+    group_centers = [s_idx + bar_width * 1.5 for s_idx in range(len(top_sources))]
+    source_names = [lbl for _col, lbl in top_sources]
+    ax.set_xticks(group_centers)
+    ax.set_xticklabels(source_names)
+    ax.set_xlabel("Flow Source")
+    ax.set_ylim(0, 110)
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_title("Flow Signal Reliability by VIX Regime", fontsize=13, pad=15)
+    ax.legend(fontsize=9, loc="upper right", title="VIX Regime")
+
+    fig.tight_layout()
+    save(fig, "flow_by_vix.png")
+
+
 # ── Plot 4: GEX vs Range Scatter ─────────────────────────────
 
 
@@ -1645,6 +1947,9 @@ def main() -> None:
     plot_correlation_heatmap(df)
     plot_range_by_regime(df)
     plot_flow_reliability(df)
+    plot_structure_by_vix(df)
+    plot_rolling_accuracy(df)
+    plot_flow_by_vix(df)
     plot_gex_vs_range(df)
     plot_timeline(df)
     plot_structure_confidence(df)
