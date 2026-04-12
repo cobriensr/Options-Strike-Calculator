@@ -37,6 +37,13 @@ async function fetchSpxPrices(
   if (!res.ok) throw new Error(`Stooq returned ${res.status}`);
 
   const csv = await res.text();
+
+  // Log the raw response so we can diagnose symbol/format issues in Vercel logs
+  logger.info(
+    { url, statusCode: res.status, csvPreview: csv.slice(0, 300) },
+    'Stooq CSV response',
+  );
+
   const priceMap = new Map<string, DayPrices>();
 
   for (const line of csv.split('\n').slice(1)) {
@@ -52,6 +59,11 @@ async function fetchSpxPrices(
       });
     }
   }
+
+  logger.info(
+    { dates, priceMapKeys: [...priceMap.keys()] },
+    'Stooq price map built',
+  );
 
   return priceMap;
 }
