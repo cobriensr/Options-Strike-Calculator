@@ -19,7 +19,7 @@ Pygments==2.20.0
 pyparsing==3.3.2
 pytest==9.0.2
 python-dateutil==2.9.0.post0
-requests==2.32.5
+requests==2.33.1
 scikit-learn==1.8.0
 sqlalchemy>=2.0
 scipy==1.17.1
