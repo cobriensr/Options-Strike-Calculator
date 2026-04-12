@@ -59,7 +59,8 @@ def main() -> None:
                 COALESCE(tf.vix::float,   ms.vix::float,  o.vix_close::float)  AS vix,
                 COALESCE(tf.vix1d::float, ms.vix1d::float, o.vix1d_close::float) AS vix1d,
                 COALESCE(tf.vix9d::float, ms.vix9d::float)             AS vix9d,
-                COALESCE(tf.vvix::float,  ms.vvix::float)              AS vvix
+                COALESCE(tf.vvix::float,  ms.vvix::float)              AS vvix,
+                o.day_range_pts
             FROM trace_predictions tp
             LEFT JOIN training_features tf ON tf.date = tp.date
             LEFT JOIN LATERAL (

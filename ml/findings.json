@@ -637,31 +637,31 @@
     "n_days": 41
   },
   "trace": {
-    "n_days": 38,
-    "mae": 2.61,
-    "median_ae": 2.52,
-    "std_error": 3.09,
-    "mean_signed_error": 1.04,
-    "direction_correct": 0.9211,
+    "n_days": 46,
+    "mae": 2.91,
+    "median_ae": 2.73,
+    "std_error": 3.41,
+    "mean_signed_error": 1.0,
+    "direction_correct": 0.9348,
     "hit_rates": {
-      "within_5pt": 0.9474,
-      "within_10pt": 0.9737,
+      "within_5pt": 0.8696,
+      "within_10pt": 0.9783,
       "within_15pt": 1.0,
       "within_20pt": 1.0
     },
     "by_confidence": {
       "high": {
-        "n": 22,
-        "mae": 2.0,
-        "median_ae": 1.8,
+        "n": 23,
+        "mae": 2.13,
+        "median_ae": 1.86,
         "direction_correct": 1.0,
         "hit_10pt": 1.0
       },
       "medium": {
-        "n": 11,
-        "mae": 2.61,
-        "median_ae": 2.28,
-        "direction_correct": 0.9091,
+        "n": 18,
+        "mae": 3.25,
+        "median_ae": 3.36,
+        "direction_correct": 0.9444,
         "hit_10pt": 1.0
       },
       "low": {
@@ -686,15 +686,39 @@
         "hit_10pt": 0.9655
       },
       "20-25": {
-        "n": 7,
-        "mae": 3.37,
-        "direction_correct": 0.7143,
+        "n": 12,
+        "mae": 4.02,
+        "direction_correct": 0.8333,
         "hit_10pt": 1.0
+      },
+      "25+": {
+        "n": 3,
+        "mae": 3.38,
+        "direction_correct": 1.0,
+        "hit_10pt": 1.0
+      }
+    },
+    "signal_strength": {
+      "0-5": {
+        "n": 4,
+        "direction_correct": 0.25
+      },
+      "10-20": {
+        "n": 10,
+        "direction_correct": 1.0
+      },
+      "20-30": {
+        "n": 10,
+        "direction_correct": 1.0
+      },
+      "30+": {
+        "n": 21,
+        "direction_correct": 1.0
       }
     },
     "date_range": {
       "start": "2026-01-02",
-      "end": "2026-02-27"
+      "end": "2026-03-11"
     }
   }
 }

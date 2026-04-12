@@ -283,6 +283,186 @@ def plot_accuracy_by_vix_regime(df: pd.DataFrame) -> None:
     print(f"  Saved: {out}")
 
 
+def plot_signal_strength(df: pd.DataFrame) -> None:
+    if "current_price" not in df.columns or df["current_price"].isna().all():
+        return
+
+    df = df.copy()
+    df["signal_strength"] = (df["predicted_close"] - df["current_price"]).abs()
+
+    bins = [0, 5, 10, 20, 30, float("inf")]
+    bin_labels = ["0–5", "5–10", "10–20", "20–30", "30+"]
+    df["ss_bin"] = pd.cut(df["signal_strength"], bins=bins, labels=bin_labels, right=False)
+
+    rows = []
+    for label in bin_labels:
+        sub = df[df["ss_bin"] == label]
+        if len(sub) >= 1:
+            rows.append(
+                {
+                    "bin": label,
+                    "n": len(sub),
+                    "dir_acc": sub["direction_correct"].mean() * 100,
+                }
+            )
+
+    if not rows:
+        return
+
+    labels = [r["bin"] for r in rows]
+    dir_acc = [r["dir_acc"] for r in rows]
+    counts = [r["n"] for r in rows]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.patch.set_facecolor("#1a1a2e")
+
+    for ax in (ax1, ax2):
+        ax.set_facecolor("#16213e")
+        ax.tick_params(colors="#ccc")
+        ax.xaxis.label.set_color("#ccc")
+        ax.yaxis.label.set_color("#ccc")
+        ax.title.set_color("#ccc")
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#444")
+
+    ax1.bar(labels, dir_acc, color="#2ecc71", edgecolor="white")
+    ax1.axhline(50, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Random (50%)")
+    ax1.set_ylim(0, 110)
+    ax1.set_xlabel("Predicted − Open  (pts, absolute)", fontsize=11)
+    ax1.set_ylabel("Direction Accuracy (%)", fontsize=11)
+    ax1.set_title("Direction Accuracy by Signal Strength", fontsize=12)
+    ax1.legend(fontsize=10)
+    ax1.grid(axis="y", alpha=0.3)
+
+    ax2.bar(labels, counts, color="#4c9be8", edgecolor="white")
+    ax2.set_xlabel("Predicted − Open  (pts, absolute)", fontsize=11)
+    ax2.set_ylabel("Sample Count", fontsize=11)
+    ax2.set_title("Sample Count per Bin", fontsize=12)
+    ax2.grid(axis="y", alpha=0.3)
+
+    fig.suptitle(
+        "TRACE: Does a Stronger Signal Mean Better Direction?",
+        fontsize=14,
+        color="#ccc",
+    )
+    fig.tight_layout()
+    out = PLOTS_DIR / "trace_signal_strength.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out}")
+
+
+def plot_rolling_error(df: pd.DataFrame) -> None:
+    if len(df) < 8:
+        return
+
+    df = df.copy()
+    rolling_mean = df["error"].rolling(5).mean()
+
+    step = max(1, len(df) // 10)
+    x_labels = df["date"].astype(str).tolist()
+    x_pos = list(range(len(df)))
+
+    colors = ["#2ecc71" if e >= 0 else "#e74c3c" for e in df["error"]]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    fig.patch.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#16213e")
+    ax.tick_params(colors="#ccc")
+    ax.xaxis.label.set_color("#ccc")
+    ax.yaxis.label.set_color("#ccc")
+    ax.title.set_color("#ccc")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#444")
+
+    ax.bar(x_pos, df["error"].tolist(), color=colors, alpha=0.4, width=0.8)
+    ax.plot(
+        x_pos,
+        rolling_mean.tolist(),
+        color="#f39c12",
+        linewidth=2,
+        label="5-day rolling mean",
+    )
+    ax.axhline(0, color="white", linestyle="--", linewidth=1, alpha=0.5)
+
+    ax.set_xticks(x_pos[::step])
+    ax.set_xticklabels(x_labels[::step], rotation=45, ha="right", color="#ccc")
+    ax.set_ylabel("Error (Actual − Predicted, pts)", fontsize=11)
+    ax.set_title("TRACE: Signed Error Over Time (Bias Check)", fontsize=13, color="#ccc")
+    ax.legend(fontsize=10)
+    ax.grid(axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    out = PLOTS_DIR / "trace_rolling_error.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out}")
+
+
+def plot_error_vs_range(df: pd.DataFrame) -> None:
+    if "day_range_pts" not in df.columns or df["day_range_pts"].isna().all():
+        return
+
+    valid = df.dropna(subset=["day_range_pts"]).copy()
+    if len(valid) < 5:
+        return
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    fig.patch.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#16213e")
+    ax.tick_params(colors="#ccc")
+    ax.xaxis.label.set_color("#ccc")
+    ax.yaxis.label.set_color("#ccc")
+    ax.title.set_color("#ccc")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#444")
+
+    conf_col = "confidence"
+    if conf_col in valid.columns:
+        for conf, color in _CONF_COLORS.items():
+            sub = valid[valid[conf_col] == conf]
+            if sub.empty:
+                continue
+            ax.scatter(
+                sub["day_range_pts"],
+                sub["abs_error"],
+                c=color,
+                label=f"{conf} confidence (n={len(sub)})",
+                alpha=0.75,
+                s=70,
+                edgecolors="white",
+                linewidths=0.5,
+            )
+    else:
+        ax.scatter(valid["day_range_pts"], valid["abs_error"], alpha=0.75, s=70)
+
+    x_vals = valid["day_range_pts"].astype(float).values
+    y_vals = valid["abs_error"].astype(float).values
+    coeffs = np.polyfit(x_vals, y_vals, 1)
+    x_line = np.array([x_vals.min(), x_vals.max()])
+    ax.plot(
+        x_line,
+        np.polyval(coeffs, x_line),
+        color="white",
+        linewidth=1.5,
+        linestyle="--",
+        alpha=0.7,
+        label=f"Trend (slope={coeffs[0]:.2f})",
+    )
+
+    ax.set_xlabel("Day Range (pts, High − Low)", fontsize=11)
+    ax.set_ylabel("Absolute Error (pts)", fontsize=11)
+    ax.set_title("TRACE: Prediction Error vs Day Range", fontsize=13, color="#ccc")
+    ax.legend(fontsize=10)
+    ax.grid(alpha=0.2)
+
+    fig.tight_layout()
+    out = PLOTS_DIR / "trace_error_vs_range.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out}")
+
+
 def build_trace_findings(df: pd.DataFrame) -> dict:
     """Build the trace section for ml/findings.json."""
     n = len(df)
@@ -313,6 +493,23 @@ def build_trace_findings(df: pd.DataFrame) -> dict:
                 "hit_10pt": round(float(sub["hit_10pt"].mean()), 4),
             }
 
+    signal_strength: dict = {}
+    if "current_price" in df.columns and not df["current_price"].isna().all():
+        _ss_df = df.copy()
+        _ss_df["signal_strength"] = (_ss_df["predicted_close"] - _ss_df["current_price"]).abs()
+        _ss_bins = [0, 5, 10, 20, 30, float("inf")]
+        _ss_labels = ["0-5", "5-10", "10-20", "20-30", "30+"]
+        _ss_df["ss_bin"] = pd.cut(
+            _ss_df["signal_strength"], bins=_ss_bins, labels=_ss_labels, right=False
+        )
+        for label in _ss_labels:
+            sub = _ss_df[_ss_df["ss_bin"] == label]
+            if len(sub) >= 3:
+                signal_strength[label] = {
+                    "n": int(len(sub)),
+                    "direction_correct": round(float(sub["direction_correct"].mean()), 4),
+                }
+
     return {
         "n_days": n,
         "mae": round(float(df["abs_error"].mean()), 2),
@@ -326,6 +523,7 @@ def build_trace_findings(df: pd.DataFrame) -> dict:
         },
         "by_confidence": by_conf,
         "by_vix_regime": by_vix,
+        "signal_strength": signal_strength,
         "date_range": {
             "start": str(df["date"].iloc[0]),
             "end": str(df["date"].iloc[-1]),
@@ -374,6 +572,9 @@ def main() -> None:
     plot_predicted_vs_actual(df)
     plot_accuracy_by_confidence(df)
     plot_accuracy_by_vix_regime(df)
+    plot_signal_strength(df)
+    plot_rolling_error(df)
+    plot_error_vs_range(df)
 
     print(f"\nDone. {len(df)} days analyzed.")
 
