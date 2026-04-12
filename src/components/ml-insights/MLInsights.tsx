@@ -6,6 +6,7 @@
  * at top with PlotCarousel below.
  */
 
+import React from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import { useMLInsights } from '../../hooks/useMLInsights';
@@ -16,8 +17,22 @@ import PlotCarousel from './PlotCarousel';
 export default function MLInsights() {
   const { plots, findings, pipelineDate, loading, error, refetch } =
     useMLInsights();
+  const [analyzeState, setAnalyzeState] = React.useState<
+    'idle' | 'running' | 'done' | 'error'
+  >('idle');
 
   const analyzedCount = plots.filter((p) => p.analysis != null).length;
+
+  async function triggerAnalyze() {
+    setAnalyzeState('running');
+    try {
+      const r = await fetch('/api/ml/trigger-analyze', { method: 'POST' });
+      setAnalyzeState(r.ok ? 'done' : 'error');
+    } catch {
+      setAnalyzeState('error');
+    }
+    setTimeout(() => setAnalyzeState('idle'), 3000);
+  }
 
   return (
     <SectionBox
@@ -25,20 +40,47 @@ export default function MLInsights() {
       badge={pipelineDate}
       collapsible
       headerRight={
-        <button
-          type="button"
-          onClick={refetch}
-          disabled={loading}
-          className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
-          style={{
-            backgroundColor: tint(theme.accent, '12'),
-            color: theme.accent,
-            border: `1px solid ${tint(theme.accent, '25')}`,
-          }}
-          aria-label="Refresh ML insights"
-        >
-          {loading ? 'Loading...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => void triggerAnalyze()}
+            disabled={analyzeState === 'running'}
+            className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+            style={{
+              backgroundColor: tint(theme.caution, '12'),
+              color:
+                analyzeState === 'done'
+                  ? theme.green
+                  : analyzeState === 'error'
+                    ? theme.red
+                    : theme.caution,
+              border: `1px solid ${tint(theme.caution, '25')}`,
+            }}
+            aria-label="Run Claude plot analysis"
+          >
+            {analyzeState === 'running'
+              ? 'Starting...'
+              : analyzeState === 'done'
+                ? 'Started ✓'
+                : analyzeState === 'error'
+                  ? 'Failed'
+                  : 'Analyze'}
+          </button>
+          <button
+            type="button"
+            onClick={refetch}
+            disabled={loading}
+            className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+            style={{
+              backgroundColor: tint(theme.accent, '12'),
+              color: theme.accent,
+              border: `1px solid ${tint(theme.accent, '25')}`,
+            }}
+            aria-label="Refresh ML insights"
+          >
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
       }
     >
       <div className="font-sans text-[11px] leading-relaxed">
