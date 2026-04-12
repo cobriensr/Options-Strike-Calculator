@@ -60,6 +60,25 @@ Maker mode with the Delta Pressure lens selected. Before screenshotting:
 - Crop tightly to the chart area, excluding the right Y-axis (HIRO scale)
 - The green/red candlesticks and left Y-axis (SPX price) are all that's needed
 
+#### Optional: Charm Pressure screenshots (improves within-zone accuracy)
+
+For each Delta Pressure image, you can also capture the Charm Pressure lens at
+the same time. Name it `charm-YYYYMMDD.png`:
+
+```text
+ml/trace/images/charm-20260407.png
+ml/trace/images/charm-20260408.png
+```
+
+When a charm image is present for a date, both screenshots are sent together in
+one API call. Charm Pressure tells Claude *where within* the equilibrium zone
+price will pin: red charm → floor (Point A), blue charm → ceiling (Point B),
+mixed → midpoint. Adds `charm_bias`, `point_a`, and `point_b` columns to the
+output CSV.
+
+If you add charm images for dates already in `predictions.csv`, the script
+detects the upgrade automatically and re-runs only those dates.
+
 ### Step 2 — Extract predictions (manual, after adding screenshots)
 
 ```bash
