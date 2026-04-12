@@ -672,6 +672,20 @@
         "hit_10pt": 0.8
       }
     },
+    "by_vix_regime": {
+      "15-20": {
+        "n": 7,
+        "mae": 2.87,
+        "direction_correct": 1.0,
+        "hit_10pt": 1.0
+      },
+      "20-25": {
+        "n": 6,
+        "mae": 3.48,
+        "direction_correct": 0.6667,
+        "hit_10pt": 1.0
+      }
+    },
     "date_range": {
       "start": "2026-01-02",
       "end": "2026-02-27"

@@ -9,6 +9,8 @@ Usage:
 
 Reads DATABASE_URL from ml/.env or environment.
 Writes: ml/trace/results/predictions.csv
+        Columns include VIX context from training_features (LEFT JOIN — may be NULL
+        for dates before the ML pipeline ran).
 """
 
 import os
@@ -48,14 +50,19 @@ def main() -> None:
         df = pd.read_sql(
             """
             SELECT
-                date::text        AS date,
-                predicted_close,
-                current_price,
-                actual_close,
-                confidence,
-                notes
-            FROM trace_predictions
-            ORDER BY date
+                tp.date::text        AS date,
+                tp.predicted_close,
+                tp.current_price,
+                tp.actual_close,
+                tp.confidence,
+                tp.notes,
+                tf.vix::float        AS vix,
+                tf.vix1d::float      AS vix1d,
+                tf.vix9d::float      AS vix9d,
+                tf.vvix::float       AS vvix
+            FROM trace_predictions tp
+            LEFT JOIN training_features tf ON tf.date = tp.date
+            ORDER BY tp.date
             """,
             conn,
         )

@@ -593,7 +593,7 @@ const SRC_TRACE_PREDICTED_VS_ACTUAL = `def plot_predicted_vs_actual(df: pd.DataF
     # Black dashed diagonal y=x: "Perfect prediction"
     # Green fill band: ±10 pt zone around diagonal ("±10 pt band")
     # Equal aspect ratio; axis range = [min(all_vals)-15, max(all_vals)+15]
-    # X-axis: "Predicted Close  (from TRACE at 8:30 AM CT)"
+    # X-axis: "Predicted Close  (from TRACE at 9:00 AM CT)"
     # Y-axis: "Actual SPX Close"
     # Points ABOVE diagonal: actual > predicted (bullish miss)
     # Points BELOW diagonal: actual < predicted (bearish miss)
@@ -611,6 +611,20 @@ const SRC_TRACE_ACCURACY_BY_CONF = `def plot_accuracy_by_confidence(df: pd.DataF
     #   Title: "Hit Rate (±10 pts) by Confidence Level"
     # X-axis labels per bar: "{confidence}\\n(n={count})"
     # Saved to ml/plots/trace_accuracy_by_confidence.png`;
+
+const SRC_TRACE_VIX_REGIME = `def plot_accuracy_by_vix_regime(df: pd.DataFrame) -> None:
+    # Two side-by-side bar charts (1×2 grid), only shown if 2+ VIX regimes populated
+    # VIX buckets: <15 (green/calm), 15-20 (blue/normal), 20-25 (orange/elevated), 25+ (red/high)
+    # VIX is the session VIX reading from training_features at ~9:00 AM CT (30 min into session)
+    # Left — MAE by VIX regime:
+    #   Y-axis: "Mean Absolute Error (pts)"
+    #   Title: "MAE by VIX Regime"
+    # Right — ±10pt hit rate by VIX regime:
+    #   Y-axis: "Hit Rate (%)", ylim 0–108
+    #   Green dashed reference line at 100%
+    #   Title: "Hit Rate (±10 pts) by VIX Regime"
+    # X-axis labels: "VIX {regime}\\n(n={count})" for each bucket
+    # Saved to ml/plots/trace_accuracy_by_vix_regime.png`;
 
 // ── Per-Plot Reference Block Builder ────────────────────────
 
@@ -857,14 +871,14 @@ ${plotRefBlock(
 ${plotRefBlock(
   'trace_error_distribution',
   SRC_TRACE_ERROR_DIST,
-  "Histogram of prediction errors (actual_close - predicted_close) for all TRACE predictions in the dataset. TRACE is the user's proprietary delta pressure heatmap read at 8:30 AM CT each morning that predicts the SPX daily close. Each bar is a count of days where the prediction missed by a given number of points. The orange line marks the mean signed error (systematic bias); the red line marks perfect prediction (error=0). Underlying data includes columns: date, predicted_close, current_price, actual_close, confidence, error, abs_error, direction_correct, hit_5pt, hit_10pt, hit_15pt, hit_20pt.",
+  "Histogram of prediction errors (actual_close - predicted_close) for all TRACE predictions in the dataset. TRACE is the user's proprietary delta pressure heatmap read at 9:00 AM CT each morning (30 minutes into the session) that predicts the SPX daily close. Each bar is a count of days where the prediction missed by a given number of points. The orange line marks the mean signed error (systematic bias); the red line marks perfect prediction (error=0). Underlying data includes columns: date, predicted_close, current_price, actual_close, confidence, error, abs_error, direction_correct, hit_5pt, hit_10pt, hit_15pt, hit_20pt.",
   'Focus on: (1) the mean signed error and its direction — positive mean means actual tends to exceed prediction (TRACE systematically underestimates the close), negative means overestimation; state the exact value and whether a fixed offset calibration would help, (2) the spread — std dev of error describes day-to-day variability; compare to the 5pt and 10pt hit rate bands cited in the underlying data, (3) whether the distribution is symmetric or skewed — a right tail means occasional large bullish misses, a left tail means bearish surprises dominate the outliers, (4) practical trading implication: if 95%+ of predictions land within ±5pts, using the TRACE predicted close ±5pts as the strike anchor is well-calibrated for 0DTE spread placement — name the exact structural implication for PCS vs CCS strike selection.',
 )}
 
 ${plotRefBlock(
   'trace_predicted_vs_actual',
   SRC_TRACE_PREDICTED_VS_ACTUAL,
-  "Scatter plot comparing each day's TRACE predicted close (x-axis) vs actual SPX close (y-axis), colored by confidence tier (high=green, medium=orange, low=red). The dashed diagonal is perfect prediction. The green band shows the ±10pt zone. TRACE predictions are made from the delta pressure heatmap at 8:30 AM CT using the prior day's open interest structure to estimate where closing price pressure will be greatest. The underlying data includes n days from the accuracy report with date, predicted_close, current_price, actual_close, and confidence.",
+  "Scatter plot comparing each day's TRACE predicted close (x-axis) vs actual SPX close (y-axis), colored by confidence tier (high=green, medium=orange, low=red). The dashed diagonal is perfect prediction. The green band shows the ±10pt zone. TRACE predictions are made from the delta pressure heatmap at 9:00 AM CT (30 minutes into the session, after the opening range is established) using the current day's open interest structure to estimate where closing price pressure will be greatest. The underlying data includes n days from the accuracy report with date, predicted_close, current_price, actual_close, and confidence.",
   'Focus on: (1) whether HIGH confidence points cluster tightly along the diagonal while MEDIUM/LOW points scatter wider — this is the core validation of the confidence labeling scheme as a tradeable filter, (2) directional bias — are most points above or below the diagonal? Systematic above means actual close tends to exceed prediction (TRACE underestimates); systematic below means overestimation; estimate the median vertical offset, (3) the ±10pt band coverage — visually count points inside the green band and cross-check against the stated hit rate in the underlying data, (4) the LOW confidence outlier — confirm it is visually isolated from the HIGH cluster, which validates the low-confidence flag as a reliable warning, (5) whether prediction accuracy varies with price level — if points at higher SPX levels scatter wider than at lower levels, the model may degrade in trending or high-volatility regimes.',
 )}
 
@@ -873,6 +887,13 @@ ${plotRefBlock(
   SRC_TRACE_ACCURACY_BY_CONF,
   "Two bar charts comparing prediction accuracy across HIGH/MEDIUM/LOW confidence tiers. Left: Mean Absolute Error per tier. Right: Hit rate (% of days within ±10pts of actual close) per tier. Confidence is assigned by the user at prediction time based on subjective assessment of TRACE heatmap clarity — HIGH means the delta pressure signal is unambiguous, LOW means competing pressures or unclear structure. The underlying data includes n_high, n_medium, n_low sample counts from the accuracy report.",
   'Focus on: (1) whether MAE is monotonically ordered HIGH < MEDIUM < LOW — this is perfect calibration; if MEDIUM MAE is lower than HIGH, the middle tier is miscalibrated and the labeling scheme should be reviewed, (2) the magnitude ratio between HIGH and LOW MAE — a 5x+ ratio (e.g., 1.7 vs 10.6 pts) means the confidence label is highly discriminative and can gate trading decisions with high confidence, (3) hit rates: if HIGH achieves 100% ±10pt coverage and LOW does not, the actionable rule is "only trade on HIGH confidence TRACE signals" — state it explicitly, (4) CRITICAL sample size caveat: if any tier has n=1, its bar is a single-day anecdote and cannot support a strong conclusion; state the minimum n needed before relying on that tier statistically, (5) whether MEDIUM behaves like HIGH or LOW in both metrics — if MEDIUM is close to HIGH, the effective decision rule simplifies to binary (HIGH/MEDIUM = tradeable vs LOW = skip).',
+)}
+
+${plotRefBlock(
+  'trace_accuracy_by_vix_regime',
+  SRC_TRACE_VIX_REGIME,
+  "Two bar charts comparing TRACE prediction accuracy across VIX regime buckets: <15 (calm/green), 15-20 (normal/blue), 20-25 (elevated/orange), 25+ (high/red). Left: Mean Absolute Error per bucket. Right: Hit rate (±10pts) per bucket. VIX is the session reading at 9:00 AM CT (~30 min into trading), pulled from the training_features table. Only buckets with at least 1 day are rendered. With ~38 days of data, expect 2-3 populated buckets and small sample sizes per bucket.",
+  'Focus on: (1) whether MAE is monotonically higher in elevated/high VIX regimes — if so, choppy/uncertain sessions genuinely degrade TRACE accuracy and the signal should be down-weighted on high-VIX days, (2) whether direction accuracy (reported in underlying data) follows the same pattern — MAE and direction can diverge (high VIX might increase absolute error but not flip direction if the move is simply larger), (3) CRITICAL sample size caveat: with only ~38 total days and ~3 regime buckets, each bucket has ~10-15 days at best — name the exact n for each bucket and flag that no bucket currently has statistical significance; actionable conclusions require 30+ days per bucket, (4) the practical trading rule implied: if 15-20 VIX has lower MAE than <15, the signal is actually MORE reliable in mild vol (confirming the main thesis); if 20-25 VIX shows degraded accuracy, state the threshold above which TRACE should be flagged as less reliable, (5) whether the LOW confidence labels already capture the high-VIX degradation — if HIGH confidence days in the 20-25 VIX bucket still show low MAE, the confidence labeling is doing the regime filtering automatically.',
 )}
 
 <output_format>

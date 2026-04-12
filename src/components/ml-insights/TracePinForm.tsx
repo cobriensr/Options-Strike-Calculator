@@ -2,7 +2,7 @@
  * TracePinForm — Manual entry for TRACE Delta Pressure EOD pin predictions.
  *
  * Read the zero-delta black band level from SpotGamma's TRACE Delta Pressure
- * chart at 8:30 AM CT, enter it here. Actual closes are filled by the
+ * chart at 9:00 AM CT, enter it here. Actual closes are filled by the
  * nightly pipeline.
  */
 
@@ -19,6 +19,8 @@ interface TracePrediction {
   notes: string | null;
   actual_close: number | null;
   current_price: number | null;
+  vix: number | null;
+  vix1d: number | null;
 }
 
 function todayLocal(): string {
@@ -305,6 +307,7 @@ export default function TracePinForm() {
                   'Actual',
                   'Error',
                   'Conf',
+                  'VIX',
                   '',
                 ].map((h) => (
                   <th
@@ -331,6 +334,16 @@ export default function TracePinForm() {
                       : Math.abs(err) <= 15
                         ? theme.text
                         : theme.red;
+                const vixColor =
+                  p.vix == null
+                    ? theme.textMuted
+                    : p.vix < 15
+                      ? theme.green
+                      : p.vix < 20
+                        ? theme.text
+                        : p.vix < 25
+                          ? theme.caution
+                          : theme.red;
                 const dayBullish =
                   p.actual_close != null && p.current_price != null
                     ? p.actual_close > p.current_price
@@ -382,10 +395,16 @@ export default function TracePinForm() {
                         : '—'}
                     </td>
                     <td
-                      className="py-1.5 font-sans text-[10px]"
+                      className="py-1.5 pr-4 font-sans text-[10px]"
                       style={{ color: theme.textMuted }}
                     >
                       {p.confidence}
+                    </td>
+                    <td
+                      className="py-1.5 pr-4 font-mono text-[11px]"
+                      style={{ color: vixColor }}
+                    >
+                      {p.vix != null ? p.vix.toFixed(1) : '—'}
                     </td>
                     <td className="py-1.5 pl-2">
                       <button

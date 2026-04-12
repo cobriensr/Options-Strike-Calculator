@@ -20,6 +20,8 @@ function makePrediction(overrides = {}) {
     notes: null,
     actual_close: 5920.5,
     current_price: 5880,
+    vix: null,
+    vix1d: null,
     ...overrides,
   };
 }

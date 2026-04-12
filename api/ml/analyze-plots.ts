@@ -115,6 +115,7 @@ function getPlotFindings(
     trace_error_distribution: ['trace', 'dataset'],
     trace_predicted_vs_actual: ['trace', 'dataset'],
     trace_accuracy_by_confidence: ['trace', 'dataset'],
+    trace_accuracy_by_vix_regime: ['trace', 'dataset'],
   };
 
   const sections = sectionMap[plotName] ?? ['dataset'];

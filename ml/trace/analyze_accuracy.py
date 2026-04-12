@@ -14,6 +14,7 @@ Outputs:
     ml/plots/trace_error_distribution.png
     ml/plots/trace_predicted_vs_actual.png
     ml/plots/trace_accuracy_by_confidence.png
+    ml/plots/trace_accuracy_by_vix_regime.png  (only if VIX data available)
 """
 
 import json
@@ -30,6 +31,15 @@ FINDINGS_PATH = Path(__file__).parent.parent / "findings.json"
 
 _CONF_COLORS = {"high": "#2ecc71", "medium": "#f39c12", "low": "#e74c3c"}
 _HIT_THRESHOLDS = [5, 10, 15, 20]
+
+_VIX_REGIME_LABELS = ["<15", "15-20", "20-25", "25+"]
+_VIX_REGIME_COLORS = {
+    "<15": "#2ecc71",    # green — calm
+    "15-20": "#3498db",  # blue — normal
+    "20-25": "#f39c12",  # orange — elevated
+    "25+": "#e74c3c",    # red — high
+}
+_VIX_BINS = [0, 15, 20, 25, float("inf")]
 
 
 def load_data() -> pd.DataFrame:
@@ -51,6 +61,15 @@ def load_data() -> pd.DataFrame:
 
     for pts in _HIT_THRESHOLDS:
         df[f"hit_{pts}pt"] = df["abs_error"] <= pts
+
+    if "vix" in df.columns and df["vix"].notna().any():
+        df["vix_regime"] = pd.cut(
+            df["vix"],
+            bins=_VIX_BINS,
+            labels=_VIX_REGIME_LABELS,
+            right=False,
+        ).astype(str)
+        df.loc[df["vix"].isna(), "vix_regime"] = None
 
     return df
 
@@ -95,6 +114,27 @@ def print_summary(df: pd.DataFrame) -> None:
             )
 
     print(f"\n{sep}\n")
+
+
+def print_vix_breakdown(df: pd.DataFrame) -> None:
+    if "vix_regime" not in df.columns:
+        return
+    vix_data = df.dropna(subset=["vix_regime"])
+    if vix_data.empty or vix_data["vix_regime"].nunique() < 2:
+        return
+
+    print("Breakdown by VIX regime (session VIX at 9:00 AM CT):")
+    for regime in _VIX_REGIME_LABELS:
+        sub = vix_data[vix_data["vix_regime"] == regime]
+        if sub.empty:
+            continue
+        print(
+            f"  VIX {regime:5s} (n={len(sub):3d}): "
+            f"MAE={sub['abs_error'].mean():.1f}  "
+            f"±10pt={sub['hit_10pt'].mean():.1%}  "
+            f"direction={sub['direction_correct'].mean():.1%}"
+        )
+    print()
 
 
 def plot_error_distribution(df: pd.DataFrame) -> None:
@@ -157,7 +197,7 @@ def plot_predicted_vs_actual(df: pd.DataFrame) -> None:
 
     ax.set_xlim(lim)
     ax.set_ylim(lim)
-    ax.set_xlabel("Predicted Close  (from TRACE at 8:30 AM CT)", fontsize=12)
+    ax.set_xlabel("Predicted Close  (from TRACE at 9:00 AM CT)", fontsize=12)
     ax.set_ylabel("Actual SPX Close", fontsize=12)
     ax.set_title("TRACE Delta Pressure: Predicted vs Actual Close", fontsize=14)
     ax.legend(fontsize=10)
@@ -206,6 +246,43 @@ def plot_accuracy_by_confidence(df: pd.DataFrame) -> None:
     print(f"  Saved: {out}")
 
 
+def plot_accuracy_by_vix_regime(df: pd.DataFrame) -> None:
+    if "vix_regime" not in df.columns:
+        return
+    vix_data = df.dropna(subset=["vix_regime"])
+    if vix_data.empty or vix_data["vix_regime"].nunique() < 2:
+        return
+
+    present = [r for r in _VIX_REGIME_LABELS if r in vix_data["vix_regime"].values]
+    colors = [_VIX_REGIME_COLORS[r] for r in present]
+
+    mae_vals = [vix_data[vix_data["vix_regime"] == r]["abs_error"].mean() for r in present]
+    hit_vals = [vix_data[vix_data["vix_regime"] == r]["hit_10pt"].mean() * 100 for r in present]
+    counts = [len(vix_data[vix_data["vix_regime"] == r]) for r in present]
+    labels = [f"VIX {r}\n(n={n})" for r, n in zip(present, counts)]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+    ax1.bar(labels, mae_vals, color=colors, edgecolor="white")
+    ax1.set_ylabel("Mean Absolute Error (pts)", fontsize=11)
+    ax1.set_title("MAE by VIX Regime", fontsize=12)
+    ax1.grid(axis="y", alpha=0.3)
+
+    ax2.bar(labels, hit_vals, color=colors, edgecolor="white")
+    ax2.set_ylabel("Hit Rate (%)", fontsize=11)
+    ax2.set_title("Hit Rate (±10 pts) by VIX Regime", fontsize=12)
+    ax2.set_ylim(0, 108)
+    ax2.axhline(100, color="green", linestyle="--", alpha=0.4, linewidth=1)
+    ax2.grid(axis="y", alpha=0.3)
+
+    fig.suptitle("TRACE Delta Pressure: Accuracy by VIX Regime", fontsize=14)
+    fig.tight_layout()
+    out = PLOTS_DIR / "trace_accuracy_by_vix_regime.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out}")
+
+
 def build_trace_findings(df: pd.DataFrame) -> dict:
     """Build the trace section for ml/findings.json."""
     n = len(df)
@@ -222,6 +299,20 @@ def build_trace_findings(df: pd.DataFrame) -> dict:
             "hit_10pt": round(float(sub["hit_10pt"].mean()), 4),
         }
 
+    by_vix: dict = {}
+    if "vix_regime" in df.columns:
+        vix_data = df.dropna(subset=["vix_regime"])
+        for regime in _VIX_REGIME_LABELS:
+            sub = vix_data[vix_data["vix_regime"] == regime]
+            if sub.empty:
+                continue
+            by_vix[regime] = {
+                "n": int(len(sub)),
+                "mae": round(float(sub["abs_error"].mean()), 2),
+                "direction_correct": round(float(sub["direction_correct"].mean()), 4),
+                "hit_10pt": round(float(sub["hit_10pt"].mean()), 4),
+            }
+
     return {
         "n_days": n,
         "mae": round(float(df["abs_error"].mean()), 2),
@@ -234,6 +325,7 @@ def build_trace_findings(df: pd.DataFrame) -> dict:
             for pts in _HIT_THRESHOLDS
         },
         "by_confidence": by_conf,
+        "by_vix_regime": by_vix,
         "date_range": {
             "start": str(df["date"].iloc[0]),
             "end": str(df["date"].iloc[-1]),
@@ -275,10 +367,13 @@ def main() -> None:
 
     write_findings(df)
 
+    print_vix_breakdown(df)
+
     print("\nGenerating plots:")
     plot_error_distribution(df)
     plot_predicted_vs_actual(df)
     plot_accuracy_by_confidence(df)
+    plot_accuracy_by_vix_regime(df)
 
     print(f"\nDone. {len(df)} days analyzed.")
 

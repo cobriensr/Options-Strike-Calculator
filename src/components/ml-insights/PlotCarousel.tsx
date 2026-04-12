@@ -63,6 +63,7 @@ const PLOT_GROUPS: PlotGroup[] = [
       'trace_error_distribution',
       'trace_predicted_vs_actual',
       'trace_accuracy_by_confidence',
+      'trace_accuracy_by_vix_regime',
     ],
   },
 ];

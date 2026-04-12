@@ -25,15 +25,18 @@ export default async function handler(
     try {
       const rows = await sql`
         SELECT
-          date::text,
-          predicted_close::float,
-          confidence,
-          notes,
-          current_price::float,
-          actual_close::float,
-          created_at
-        FROM trace_predictions
-        ORDER BY date DESC
+          tp.date::text,
+          tp.predicted_close::float,
+          tp.confidence,
+          tp.notes,
+          tp.current_price::float,
+          tp.actual_close::float,
+          tp.created_at,
+          tf.vix::float   AS vix,
+          tf.vix1d::float AS vix1d
+        FROM trace_predictions tp
+        LEFT JOIN training_features tf ON tf.date = tp.date
+        ORDER BY tp.date DESC
         LIMIT 60
       `;
       res.status(200).json(rows);
