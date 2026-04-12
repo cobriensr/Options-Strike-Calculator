@@ -41,6 +41,7 @@ export default function TracePinForm() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+  const [deletingDate, setDeletingDate] = useState<string | null>(null);
 
   const loadPredictions = useCallback(async () => {
     try {
@@ -118,6 +119,21 @@ export default function TracePinForm() {
     }
   }, [loadPredictions]);
 
+  const handleDelete = useCallback(
+    async (dateToDelete: string) => {
+      setDeletingDate(dateToDelete);
+      try {
+        await fetch(`/api/trace/prediction?date=${dateToDelete}`, {
+          method: 'DELETE',
+        });
+        void loadPredictions();
+      } finally {
+        setDeletingDate(null);
+      }
+    },
+    [loadPredictions],
+  );
+
   return (
     <div
       className="border-edge mt-4 rounded-lg border p-4"
@@ -159,6 +175,7 @@ export default function TracePinForm() {
           <input
             type="date"
             value={date}
+            max={todayLocal()}
             onChange={(e) => {
               setDate(e.target.value);
               setConfirmOverwrite(false);
@@ -281,7 +298,7 @@ export default function TracePinForm() {
                 className="border-edge border-b text-left"
                 style={{ color: theme.textMuted }}
               >
-                {['Date', 'Open', 'Predicted', 'Actual', 'Error', 'Conf'].map(
+                {['Date', 'Open', 'Predicted', 'Actual', 'Error', 'Conf', ''].map(
                   (h) => (
                     <th
                       key={h}
@@ -363,6 +380,18 @@ export default function TracePinForm() {
                       style={{ color: theme.textMuted }}
                     >
                       {p.confidence}
+                    </td>
+                    <td className="py-1.5 pl-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleDelete(p.date)}
+                        disabled={deletingDate === p.date}
+                        className="cursor-pointer font-sans text-[10px] opacity-30 transition-opacity hover:opacity-80 disabled:opacity-20"
+                        style={{ color: theme.red }}
+                        aria-label={`Delete prediction for ${p.date}`}
+                      >
+                        {deletingDate === p.date ? '…' : '×'}
+                      </button>
                     </td>
                   </tr>
                 );

@@ -3,8 +3,13 @@ import { z } from 'zod';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
+const todayUtc = () => new Date().toISOString().slice(0, 10);
+
 const PredictionSchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .refine((d) => d <= todayUtc(), 'date cannot be in the future'),
   predicted_close: z.number().positive(),
   confidence: z.enum(['high', 'medium', 'low']),
   notes: z.string().optional(),
@@ -63,6 +68,22 @@ export default async function handler(
     } catch (err) {
       logger.error({ err }, 'trace/prediction POST failed');
       res.status(500).json({ error: 'Failed to save prediction' });
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE') {
+    const date = req.query['date'];
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: 'date query param required (YYYY-MM-DD)' });
+      return;
+    }
+    try {
+      await sql`DELETE FROM trace_predictions WHERE date = ${date}`;
+      res.status(200).json({ deleted: date });
+    } catch (err) {
+      logger.error({ err }, 'trace/prediction DELETE failed');
+      res.status(500).json({ error: 'Failed to delete prediction' });
     }
     return;
   }
