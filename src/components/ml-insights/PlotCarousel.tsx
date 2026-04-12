@@ -15,6 +15,7 @@ import type { MLPlot } from '../../hooks/useMLInsights';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import PlotAnalysis from './PlotAnalysis';
+import TracePinForm from './TracePinForm';
 
 interface PlotGroup {
   label: string;
@@ -274,6 +275,9 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
           />
         </div>
       )}
+
+      {/* TRACE Pin manual prediction entry */}
+      {PLOT_GROUPS[activeGroupIdx]?.label === 'TRACE Pin' && <TracePinForm />}
 
       {/* Keyboard hint */}
       <div className="text-muted mt-2 text-center font-sans text-[9px]">

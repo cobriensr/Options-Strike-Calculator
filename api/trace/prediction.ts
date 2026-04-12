@@ -1,0 +1,69 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { z } from 'zod';
+import { getDb } from '../_lib/db';
+import logger from '../_lib/logger';
+
+const PredictionSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  predicted_close: z.number().positive(),
+  confidence: z.enum(['high', 'medium', 'low']),
+  notes: z.string().optional(),
+});
+
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse,
+): Promise<void> {
+  const sql = getDb();
+
+  if (req.method === 'GET') {
+    try {
+      const rows = await sql`
+        SELECT
+          date::text,
+          predicted_close,
+          confidence,
+          notes,
+          current_price,
+          actual_close,
+          created_at
+        FROM trace_predictions
+        ORDER BY date DESC
+        LIMIT 60
+      `;
+      res.status(200).json(rows);
+    } catch (err) {
+      logger.error({ err }, 'trace/prediction GET failed');
+      res.status(500).json({ error: 'Failed to load predictions' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST') {
+    const parsed = PredictionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid input', details: parsed.error.format() });
+      return;
+    }
+    const { date, predicted_close, confidence, notes } = parsed.data;
+    try {
+      const [row] = await sql`
+        INSERT INTO trace_predictions (date, predicted_close, confidence, notes)
+        VALUES (${date}, ${predicted_close}, ${confidence}, ${notes ?? null})
+        ON CONFLICT (date) DO UPDATE SET
+          predicted_close = EXCLUDED.predicted_close,
+          confidence      = EXCLUDED.confidence,
+          notes           = EXCLUDED.notes,
+          updated_at      = now()
+        RETURNING date::text, predicted_close, confidence, notes, actual_close, current_price
+      `;
+      res.status(200).json(row);
+    } catch (err) {
+      logger.error({ err }, 'trace/prediction POST failed');
+      res.status(500).json({ error: 'Failed to save prediction' });
+    }
+    return;
+  }
+
+  res.status(405).json({ error: 'Method not allowed' });
+}

@@ -1418,4 +1418,24 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 56,
+    description:
+      'Create trace_predictions table for manual TRACE Delta Pressure EOD pin predictions',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS trace_predictions (
+          id              SERIAL PRIMARY KEY,
+          date            DATE UNIQUE NOT NULL,
+          predicted_close DECIMAL(10,2) NOT NULL,
+          confidence      VARCHAR(10) CHECK (confidence IN ('high', 'medium', 'low')),
+          notes           TEXT,
+          current_price   DECIMAL(10,2),
+          actual_close    DECIMAL(10,2),
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `,
+    ],
+  },
 ];

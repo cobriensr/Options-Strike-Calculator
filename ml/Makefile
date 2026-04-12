@@ -3,7 +3,7 @@
 
 PYTHON ?= .venv/bin/python
 
-.PHONY: all eda cluster visualize health milestone backtest early pin trace trace-full lint format test test-cov test-html review clean help
+.PHONY: all eda cluster visualize health milestone backtest early pin trace lint format test test-cov test-html review clean help
 
 all: health eda cluster visualize early backtest pin trace ## Run full analysis pipeline
 
@@ -34,12 +34,8 @@ early-shap: ## Run Phase 2 early experiment with SHAP plots
 pin: ## Run settlement pin risk / gamma correlation analysis
 	$(PYTHON) src/pin_analysis.py
 
-trace: ## Run TRACE accuracy analysis (fetch prices + plot) — nightly pipeline
-	-$(PYTHON) trace/fetch_prices.py
-	$(PYTHON) trace/analyze_accuracy.py
-
-trace-full: ## Run full TRACE pipeline: extract screenshots + fetch prices + analyze
-	$(PYTHON) trace/extract_predictions.py
+trace: ## Run TRACE accuracy analysis (sync from DB + fetch prices + plot) — nightly pipeline
+	$(PYTHON) trace/sync_from_db.py
 	-$(PYTHON) trace/fetch_prices.py
 	$(PYTHON) trace/analyze_accuracy.py
 
