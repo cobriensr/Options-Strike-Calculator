@@ -40,6 +40,7 @@ export default function TracePinForm() {
   const [predictions, setPredictions] = useState<TracePrediction[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
 
   const loadPredictions = useCallback(async () => {
     try {
@@ -64,9 +65,17 @@ export default function TracePinForm() {
       e.preventDefault();
       const value = Number.parseFloat(predictedClose);
       if (!date || Number.isNaN(value)) return;
+
+      const exists = predictions.some((p) => p.date === date);
+      if (exists && !confirmOverwrite) {
+        setConfirmOverwrite(true);
+        return;
+      }
+
       setSubmitting(true);
       setSubmitError('');
       setSaved(false);
+      setConfirmOverwrite(false);
       try {
         const res = await fetch('/api/trace/prediction', {
           method: 'POST',
@@ -87,7 +96,7 @@ export default function TracePinForm() {
         setSubmitting(false);
       }
     },
-    [date, predictedClose, confidence, loadPredictions],
+    [date, predictedClose, confidence, confirmOverwrite, predictions, loadPredictions],
   );
 
   const handleRefresh = useCallback(async () => {
@@ -134,7 +143,7 @@ export default function TracePinForm() {
           <input
             type="date"
             value={date}
-            onChange={(e) => setDate(e.target.value)}
+            onChange={(e) => { setDate(e.target.value); setConfirmOverwrite(false); }}
             className="border-edge rounded border bg-transparent px-2 py-1.5 font-mono text-[12px]"
             style={{ color: theme.text }}
             required
@@ -182,23 +191,40 @@ export default function TracePinForm() {
           </select>
         </label>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="submit"
-            disabled={submitting || !predictedClose}
-            className="rounded px-3 py-1.5 font-sans text-[12px] font-semibold transition-opacity disabled:opacity-40"
-            style={{ backgroundColor: theme.accent, color: '#fff' }}
-          >
-            {submitting ? 'Saving…' : 'Save'}
-          </button>
-          {saved && (
-            <span className="font-sans text-[11px]" style={{ color: theme.green }}>
-              Saved
-            </span>
-          )}
-          {submitError && (
-            <span className="font-sans text-[11px]" style={{ color: theme.red }}>
-              {submitError}
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={submitting || !predictedClose}
+              className="rounded px-3 py-1.5 font-sans text-[12px] font-semibold transition-opacity disabled:opacity-40"
+              style={{ backgroundColor: confirmOverwrite ? theme.red : theme.accent, color: '#fff' }}
+            >
+              {submitting ? 'Saving…' : confirmOverwrite ? 'Overwrite' : 'Save'}
+            </button>
+            {confirmOverwrite && (
+              <button
+                type="button"
+                onClick={() => setConfirmOverwrite(false)}
+                className="rounded px-3 py-1.5 font-sans text-[12px] font-semibold"
+                style={{ color: theme.textMuted }}
+              >
+                Cancel
+              </button>
+            )}
+            {saved && (
+              <span className="font-sans text-[11px]" style={{ color: theme.green }}>
+                Saved
+              </span>
+            )}
+            {submitError && (
+              <span className="font-sans text-[11px]" style={{ color: theme.red }}>
+                {submitError}
+              </span>
+            )}
+          </div>
+          {confirmOverwrite && (
+            <span className="font-sans text-[10px]" style={{ color: theme.red }}>
+              Entry for {date} already exists — click Overwrite to replace it.
             </span>
           )}
         </div>
