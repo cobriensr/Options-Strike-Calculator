@@ -307,6 +307,72 @@ def plot_equity_curves(
     print("  Saved: ml/plots/backtest_equity.png")
 
 
+def plot_pnl_distribution(
+    strategies: dict[str, pd.DataFrame],
+    metrics: dict[str, dict],
+) -> None:
+    """Generate P&L distribution histogram for each strategy."""
+    active = {name: trades for name, trades in strategies.items() if len(trades) > 0}
+    if not active:
+        return
+
+    n = len(active)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
+    if n == 1:
+        axes = [axes]
+
+    for ax, (name, trades) in zip(axes, active.items()):
+        pnl = trades["pnl"]
+        m = metrics.get(name, {})
+        win_rate = m.get("win_rate", 0)
+        num_trades = m.get("num_trades", len(trades))
+        total_pnl = m.get("total_pnl", pnl.sum())
+        mean_pnl = pnl.mean()
+
+        bins = min(15, num_trades)
+        _, bin_edges = pd.cut(pnl, bins=bins, retbins=True)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        bin_counts = pd.cut(pnl, bins=bin_edges).value_counts(sort=False)
+
+        for center, count, left_edge in zip(
+            bin_centers, bin_counts.values, bin_edges[:-1]
+        ):
+            color = COLORS["green"] if left_edge >= 0 else COLORS["red"]
+            ax.bar(center, count, width=(bin_edges[1] - bin_edges[0]) * 0.85, color=color, alpha=0.85)
+
+        ax.axvline(x=0, color="white", linestyle="--", alpha=0.5, linewidth=1.0)
+        ax.axvline(
+            x=mean_pnl,
+            color=COLORS["orange"],
+            linewidth=1.5,
+            label=f"Mean ${mean_pnl:.0f}",
+        )
+
+        ax.set_xlabel("Trade P&L ($)")
+        ax.set_ylabel("Count")
+        ax.set_title(f"{name}\n{win_rate:.0%} win rate | {num_trades} trades")
+        ax.legend(fontsize=9)
+
+        ax.text(
+            0.97,
+            0.97,
+            f"Total: ${total_pnl:+,.0f}",
+            transform=ax.transAxes,
+            fontsize=9,
+            verticalalignment="top",
+            horizontalalignment="right",
+            color="#ccc",
+        )
+
+    fig.suptitle("Trade P&L Distribution by Strategy", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+
+    path = PLOT_DIR / "pnl_distribution.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved: ml/plots/pnl_distribution.png")
+
+
 # ── Summary Report ───────────────────────────────────────────
 
 
@@ -510,9 +576,10 @@ def main() -> None:
     for name, trades in strategies.items():
         metrics[name] = compute_metrics(trades)
 
-    # Generate plot
-    section("GENERATING EQUITY CURVE")
+    # Generate plots
+    section("GENERATING PLOTS")
     plot_equity_curves(strategies, metrics)
+    plot_pnl_distribution(strategies, metrics)
 
     # Print report
     print_report(df, strategies, metrics)
