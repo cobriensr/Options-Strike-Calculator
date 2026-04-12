@@ -216,7 +216,7 @@ export default function TracePinForm() {
           No predictions yet.
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="max-h-[320px] overflow-auto"style={{ scrollbarWidth: 'thin' }}>
           <table className="w-full border-collapse">
             <thead>
               <tr
@@ -226,7 +226,8 @@ export default function TracePinForm() {
                 {['Date', 'Predicted', 'Actual', 'Error', 'Conf'].map((h) => (
                   <th
                     key={h}
-                    className="pb-1.5 pr-4 font-sans text-[10px] font-medium uppercase tracking-wide last:pr-0"
+                    className="sticky top-0 pb-1.5 pr-4 font-sans text-[10px] font-medium uppercase tracking-wide last:pr-0"
+                    style={{ backgroundColor: tint(theme.surfaceAlt, '40') }}
                   >
                     {h}
                   </th>
