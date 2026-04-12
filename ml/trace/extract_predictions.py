@@ -66,86 +66,65 @@ EXTRACTION_PROMPT = """\
 This is a TRACE Delta Pressure heatmap (Market Maker mode) captured at \
 approximately 8:30 AM CT on an SPX trading day.
 
-Chart layout:
+CHART LAYOUT:
 - LEFT Y-axis ONLY: SPX price levels in whole numbers (e.g. 6820, 6840, 6860, 6880).
-  Use ONLY the left Y-axis for all price readings. Ignore everything on the right side.
-- RIGHT Y-axis: shows HIRO indicator values (200M, 100M, 0, -200M, etc.). IGNORE completely.
-  These are not price levels.
-- BLUE/PURPLE LINE running across the chart: this is the HIRO indicator line. IGNORE it
-  entirely. It is not a price level and not the equilibrium channel.
-- WHITE DASHED HORIZONTAL LINE: SpotGamma draws a thin white dashed line spanning the full
-  chart width at the opening/reference price level. IGNORE it completely. It is NOT the
-  equilibrium channel. The equilibrium channel is a curved or sloping band that moves through
-  time — it is never a flat horizontal line spanning the full chart width.
-- X-axis (bottom): time from ~7:00 AM to 3:00 PM CT
-- Red zones: selling/resistance pressure (above equilibrium)
-- Blue/purple zones: buying/support pressure (below equilibrium)
-- BLACK equilibrium channel: the void-black band running between the red and blue zones.
-  This is NOT a contour line. It is a continuous dark gap — like a river of black space —
-  running between the two color gradients. The white/grey curves are contour boundaries;
-  ignore them. The black channel is the space between those curves where neither red nor
-  blue pressure exists.
-- Green/red candlesticks: the actual SPX price action, visible in the left portion.
-  Use these (and any price label shown near the open) to read the current price at open.
+  Use ONLY the left Y-axis for all price readings.
+- RIGHT Y-axis: HIRO indicator values. IGNORE completely — not price levels.
+- WHITE DASHED HORIZONTAL LINE: SpotGamma reference line at the opening price. IGNORE.
+- X-axis: time from ~7:00 AM to 3:00 PM CT
+- SATURATED BLUE zone (lower): maximum buying support — market makers must buy to hedge.
+  Identified by deep, vivid blue filling a large area.
+- SATURATED RED zone (upper): maximum selling resistance — market makers must sell to hedge.
+  Identified by deep, vivid red/pink filling a large area.
+- GRADIENT TRANSITION ZONE: the band between saturated blue and saturated red where the
+  color smoothly shifts from blue to red. Neither pressure dominates here. This zone may be
+  narrow (5 pts) or wide (30+ pts) depending on the day. SPX tends to pin at the MIDPOINT
+  of this transition zone at EOD.
+- Green/red candlesticks: actual SPX price visible only in the first ~1.5 hours.
 
-CRITICAL READING STEPS:
+HOW TO READ THE EOD PIN LEVEL:
+The predicted close is the MIDPOINT of the gradient transition zone at 3 PM. It is NOT
+the bottom of red alone. It is NOT the top of blue alone. It is the center between them.
+
+READING STEPS:
 
 Step 1 — Find the current price at open:
-  Read the price label shown on or near the candlestick cluster at capture time (~8:30 AM).
+  Read the price label near the candlestick cluster at ~8:30 AM.
 
-Step 2 — Identify the BLACK channel:
-  Find the continuous void/black band between the red and blue gradients. It may curve,
-  slope up or down, or widen/narrow across the chart. It can end up significantly higher
-  OR lower than the open price by 3 PM — do not anchor to the open price.
-  If there is no sharp black void (the gradient transitions smoothly from red to blue),
-  find the midpoint of the transition zone — where neither color clearly dominates.
+Step 2 — Go to the ABSOLUTE RIGHT EDGE (3:00 PM):
+  Evaluate ONLY the rightmost vertical slice of data. Do not trace features across the chart.
+  The 3 PM column may look very different from the 8:30 AM area — that is expected.
 
-Step 3 — Go to the ABSOLUTE RIGHT EDGE of the chart (3:00 PM):
-  Move all the way to the rightmost data column. This is where the time axis ends at 3 PM,
-  NOT at 2:30 PM or 2:45 PM. The very last vertical slice of chart data.
+Step 3 — Identify the gradient transition zone at 3 PM:
+  Scan the 3 PM column from bottom to top:
+  a. POINT A — top of saturated blue: where the vivid blue color first starts to fade.
+     This is the FLOOR of the transition zone.
+  b. POINT B — bottom of saturated red: where vivid red/pink color first appears.
+     This is the CEILING of the transition zone.
+  c. The transition zone spans Point A to Point B.
 
-  IMPORTANT: Evaluate this column IN ISOLATION. Do not trace a channel from the left side
-  of the chart to the right — evaluate ONLY what you see at the 3 PM column itself. On days
-  with large price moves, the equilibrium channel at 3 PM may be 30-50+ points above or
-  below where it was at the open. Your reading must reflect where it IS at 3 PM, not where
-  it was at 8:30 AM.
-
-  At the 3 PM column, scan from top to bottom:
-  - Find where the RED zone ends — its lower boundary. Note that price level.
-  - The equilibrium channel is a NARROW void (typically 5–20 pts wide) that sits
-    immediately BELOW the lower boundary of red. It is not a wide dark region.
-    Deep blue/purple zones may also look dark, but they are NOT the equilibrium —
-    they are buying support below the channel.
-  - The channel center will be very close to the lower boundary of red — usually
-    within 10–15 pts of it. If you find a "void" that is more than 30 pts wide,
-    you are likely including the buying support zone. Narrow your reading to the
-    region immediately adjacent to where red pressure ends.
-
-Step 4 — Read the Y-axis precisely using bracketing:
-  At the 3 PM position, read the UPPER BOUNDARY of the black channel — where the red
-  zone ends and black begins. SPX tends to pin at the lower boundary of selling pressure,
-  not the geometric center of the void. Do NOT use the midpoint of the void.
-
-  a. Find the exact price level where the red gradient ends (its lower edge).
-  b. Identify the two Y-axis price labels immediately ABOVE and BELOW that red-black boundary.
-  c. Estimate what fraction of the way between those two labels the boundary sits.
-  d. Calculate: lower_label + fraction × (upper_label - lower_label)
-  Example: red ends 70% of the way from 6840 to 6860 → report 6854.
-  Do NOT round to the nearest 10. Report the interpolated value.
+Step 4 — Calculate the midpoint using Y-axis bracketing:
+  For each of Point A and Point B:
+  - Identify the two Y-axis labels immediately above and below that point.
+  - Estimate what fraction of the way between those labels the point sits.
+  - Calculate: lower_label + fraction × (upper_label − lower_label)
+  Then: predicted_close = (Point A + Point B) / 2
+  Example: Point A = 6858 (top of blue), Point B = 6876 (bottom of red) → midpoint = 6867.
+  Do NOT round to the nearest 10. Report the interpolated midpoint.
 
 Return ONLY a JSON object (no markdown fences, no explanation):
 {
-    "current_price": <number: SPX price at market open>,
-    "predicted_close": <number: interpolated Y-axis value at red-black upper boundary at 3 PM>,
+    "current_price": <number: SPX price at open>,
+    "predicted_close": <number: midpoint of gradient transition zone at 3 PM>,
     "confidence": "<high|medium|low>",
-    "notes": "<describe: where red zone ends at 3 PM, what Y-axis labels bracket \
-the red-black boundary, and estimated fraction>"
+    "notes": "<describe: Point A (top of blue) level, Point B (bottom of red) level, \
+transition zone width, and calculated midpoint>"
 }
 
 Confidence guide:
-- high: channel is narrow (< 5 pts wide) and clearly defined at the 3 PM edge
-- medium: channel is 5-15 pts wide or shifts direction in the final hour
-- low: channel is very wide (> 15 pts), diffuse, or impossible to trace to 3 PM\
+- high: transition zone is narrow (≤ 10 pts) and cleanly defined at the 3 PM edge
+- medium: transition zone is 10–25 pts wide or shifts in the final hour
+- low: transition zone is very wide (> 25 pts) or colors blend ambiguously\
 """
 
 
