@@ -45,6 +45,12 @@ function makeGroupPlots(): MLPlot[] {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  // TracePinForm fetches predictions on mount; stub fetch to avoid act() warnings
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve([]) }),
+  );
 });
 
 // ============================================================
@@ -59,14 +65,17 @@ describe('PlotCarousel: rendering', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows "No plots available" when no plots match groups', () => {
+  it('shows TRACE Pin tab when no plots match other groups', () => {
     render(<PlotCarousel plots={[makePlot({ name: 'unknown_plot' })]} />);
-    expect(screen.getByText('No plots available')).toBeInTheDocument();
+    // TRACE Pin is always visible so the user can log predictions even without plots
+    expect(screen.getByRole('tab', { name: 'TRACE Pin' })).toBeInTheDocument();
+    expect(screen.queryByText('No plots available')).not.toBeInTheDocument();
   });
 
-  it('shows empty state for empty plots array', () => {
+  it('shows TRACE Pin tab for empty plots array', () => {
     render(<PlotCarousel plots={[]} />);
-    expect(screen.getByText('No plots available')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'TRACE Pin' })).toBeInTheDocument();
+    expect(screen.queryByText('No plots available')).not.toBeInTheDocument();
   });
 
   it('renders group tabs for available groups', () => {
