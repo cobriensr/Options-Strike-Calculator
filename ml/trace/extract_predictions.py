@@ -104,6 +104,23 @@ Step 3 — Go to the ABSOLUTE RIGHT EDGE of the chart (3:00 PM):
   Move all the way to the rightmost data column. This is where the time axis ends at 3 PM,
   NOT at 2:30 PM or 2:45 PM. The very last vertical slice of chart data.
 
+  IMPORTANT: Evaluate this column IN ISOLATION. Do not trace a channel from the left side
+  of the chart to the right — evaluate ONLY what you see at the 3 PM column itself. On days
+  with large price moves, the equilibrium channel at 3 PM may be 30-50+ points above or
+  below where it was at the open. Your reading must reflect where it IS at 3 PM, not where
+  it was at 8:30 AM.
+
+  At the 3 PM column, scan from top to bottom:
+  - Find where the RED zone ends — its lower boundary. Note that price level.
+  - The equilibrium channel is a NARROW void (typically 5–20 pts wide) that sits
+    immediately BELOW the lower boundary of red. It is not a wide dark region.
+    Deep blue/purple zones may also look dark, but they are NOT the equilibrium —
+    they are buying support below the channel.
+  - The channel center will be very close to the lower boundary of red — usually
+    within 10–15 pts of it. If you find a "void" that is more than 30 pts wide,
+    you are likely including the buying support zone. Narrow your reading to the
+    region immediately adjacent to where red pressure ends.
+
 Step 4 — Read the Y-axis precisely using bracketing:
   At the 3 PM position, find the CENTER of the black channel.
   a. Identify the two Y-axis price labels immediately ABOVE and BELOW the channel center.
