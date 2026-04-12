@@ -57,6 +57,7 @@ __snapshots__/
 ml/.venv/
 ml/*.csv
 ml/trace/results/
+ml/trace/images/
 ml/__pycache__/
 ml/src/__pycache__/
 ml/tests/__pycache__/
