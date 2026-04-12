@@ -4,7 +4,9 @@ import logger from '../_lib/logger.js';
 
 interface YahooChartResult {
   timestamp: number[];
-  indicators: { quote: Array<{ close: (number | null)[] }> };
+  indicators: {
+    quote: Array<{ open: (number | null)[]; close: (number | null)[] }>;
+  };
 }
 
 interface YahooChartResponse {
@@ -14,7 +16,12 @@ interface YahooChartResponse {
   };
 }
 
-async function fetchSpxCloses(dates: string[]): Promise<Map<string, number>> {
+interface DayPrices {
+  open: number;
+  close: number;
+}
+
+async function fetchSpxPrices(dates: string[]): Promise<Map<string, DayPrices>> {
   const timestamps = dates.map((d) => new Date(`${d}T12:00:00Z`).getTime() / 1000);
   const period1 = Math.floor(Math.min(...timestamps) - 5 * 86400);
   const period2 = Math.floor(Math.max(...timestamps) + 2 * 86400);
@@ -29,18 +36,22 @@ async function fetchSpxCloses(dates: string[]): Promise<Map<string, number>> {
   }
 
   const result = data.chart.result[0];
-  const closes = result.indicators.quote[0]?.close ?? [];
+  const quote = result.indicators.quote[0];
+  const opens = quote?.open ?? [];
+  const closes = quote?.close ?? [];
   const { timestamp } = result;
-  const priceMap = new Map<string, number>();
+  const priceMap = new Map<string, DayPrices>();
 
   for (let i = 0; i < timestamp.length; i++) {
+    const open = opens[i];
     const close = closes[i];
     const ts = timestamp[i];
-    if (close != null && ts != null) {
-      // Yahoo timestamps are at close time (4 PM ET = ~21:00 UTC in winter)
-      // UTC date always matches the trading date
+    if (open != null && close != null && ts != null) {
       const dateStr = new Date(ts * 1000).toISOString().slice(0, 10);
-      priceMap.set(dateStr, Math.round(close * 100) / 100);
+      priceMap.set(dateStr, {
+        open: Math.round(open * 100) / 100,
+        close: Math.round(close * 100) / 100,
+      });
     }
   }
 
@@ -59,9 +70,10 @@ export default async function handler(
   const sql = getDb();
 
   try {
+    // Fetch rows missing actual_close OR current_price so both get filled in one pass
     const rows = (await sql`
       SELECT date::text FROM trace_predictions
-      WHERE actual_close IS NULL
+      WHERE actual_close IS NULL OR current_price IS NULL
       ORDER BY date
     `) as { date: string }[];
 
@@ -71,15 +83,18 @@ export default async function handler(
     }
 
     const dates = rows.map((r) => r.date);
-    const priceMap = await fetchSpxCloses(dates);
+    const priceMap = await fetchSpxPrices(dates);
 
     let updated = 0;
     for (const date of dates) {
-      const close = priceMap.get(date);
-      if (close != null) {
+      const prices = priceMap.get(date);
+      if (prices != null) {
         await sql`
           UPDATE trace_predictions
-          SET actual_close = ${close}, updated_at = now()
+          SET
+            actual_close  = ${prices.close},
+            current_price = ${prices.open},
+            updated_at    = now()
           WHERE date = ${date}
         `;
         updated++;

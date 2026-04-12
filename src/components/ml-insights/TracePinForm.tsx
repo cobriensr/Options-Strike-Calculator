@@ -242,14 +242,14 @@ export default function TracePinForm() {
           No predictions yet.
         </p>
       ) : (
-        <div className="max-h-[320px] overflow-auto"style={{ scrollbarWidth: 'thin' }}>
+        <div className="max-h-[320px] overflow-auto" style={{ scrollbarWidth: 'thin' }}>
           <table className="w-full border-collapse">
             <thead>
               <tr
                 className="border-edge border-b text-left"
                 style={{ color: theme.textMuted }}
               >
-                {['Date', 'Predicted', 'Actual', 'Error', 'Conf'].map((h) => (
+                {['Date', 'Open', 'Predicted', 'Actual', 'Error', 'Conf'].map((h) => (
                   <th
                     key={h}
                     className="sticky top-0 pb-1.5 pr-4 font-sans text-[10px] font-medium uppercase tracking-wide last:pr-0"
@@ -274,13 +274,33 @@ export default function TracePinForm() {
                       : Math.abs(err) <= 15
                         ? theme.text
                         : theme.red;
+                const dayBullish =
+                  p.actual_close != null && p.current_price != null
+                    ? p.actual_close > p.current_price
+                    : null;
+                const rowBg =
+                  dayBullish === true
+                    ? tint(theme.green, '08')
+                    : dayBullish === false
+                      ? tint(theme.red, '08')
+                      : 'transparent';
                 return (
-                  <tr key={p.date} className="border-edge border-b last:border-0">
+                  <tr
+                    key={p.date}
+                    className="border-edge border-b last:border-0"
+                    style={{ backgroundColor: rowBg }}
+                  >
                     <td
                       className="py-1.5 pr-4 font-mono text-[11px]"
                       style={{ color: theme.text }}
                     >
                       {p.date}
+                    </td>
+                    <td
+                      className="py-1.5 pr-4 font-mono text-[11px]"
+                      style={{ color: theme.textMuted }}
+                    >
+                      {p.current_price != null ? p.current_price.toFixed(0) : '—'}
                     </td>
                     <td
                       className="py-1.5 pr-4 font-mono text-[11px]"
