@@ -6,8 +6,6 @@ import pytest
 
 from symbol_manager import (
     DATASET_CME,
-    DATASET_IFUS,
-    DATASET_XCBF,
     ES_RECENTER_THRESHOLD,
     ES_STRIKE_SPACING,
     ES_STRIKES_EACH_SIDE,
@@ -269,13 +267,13 @@ class TestGetNearestEsExpiry:
 
 
 class TestGetAllFuturesSubscriptions:
-    def test_returns_exactly_9_symbols(self):
+    def test_returns_exactly_6_symbols(self):
         subs = get_all_futures_subscriptions()
-        assert len(subs) == 9
+        assert len(subs) == 6
 
     def test_expected_keys(self):
         subs = get_all_futures_subscriptions()
-        expected = {"ES", "NQ", "ZN", "RTY", "CL", "GC", "VX1", "VX2", "DX"}
+        expected = {"ES", "NQ", "ZN", "RTY", "CL", "GC"}
         assert set(subs.keys()) == expected
 
     def test_each_entry_has_required_fields(self):
@@ -291,24 +289,10 @@ class TestGetAllFuturesSubscriptions:
         for sym in cme_syms:
             assert subs[sym]["dataset"] == DATASET_CME
 
-    def test_vx_symbols_use_xcbf_dataset(self):
-        subs = get_all_futures_subscriptions()
-        assert subs["VX1"]["dataset"] == DATASET_XCBF
-        assert subs["VX2"]["dataset"] == DATASET_XCBF
-
-    def test_dx_uses_ifus_dataset(self):
-        subs = get_all_futures_subscriptions()
-        assert subs["DX"]["dataset"] == DATASET_IFUS
-
     def test_parent_symbols_follow_convention(self):
         subs = get_all_futures_subscriptions()
-        # CME products end in .FUT
         for sym in ("ES", "NQ", "ZN", "RTY", "CL", "GC"):
             assert subs[sym]["parent_symbol"].endswith(".FUT")
-        # VX second month uses .FUT.1
-        assert subs["VX1"]["parent_symbol"] == "VX.FUT"
-        assert subs["VX2"]["parent_symbol"] == "VX.FUT.1"
-        assert subs["DX"]["parent_symbol"] == "DX.FUT"
 
     def test_db_symbols_match_keys(self):
         subs = get_all_futures_subscriptions()

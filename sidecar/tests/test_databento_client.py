@@ -175,17 +175,6 @@ class TestShutdownBarrier:
         client._handle_trade(rec)
         client._trade_processor.process_trade.assert_not_called()
 
-    def test_handle_vxm_ohlcv_early_returns_when_shutting_down(
-        self, client: DatabentoClient
-    ) -> None:
-        client._shutting_down = True
-        client._vxm_client = MagicMock()
-        client._vxm_client.symbology_map = {10: "VX.FUT"}
-        rec = _make_bar_record(iid=10)
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_vxm_ohlcv(rec)
-            upsert_mock.assert_not_called()
-
     def test_handle_ohlcv_from_client_early_returns_when_shutting_down(
         self, client: DatabentoClient
     ) -> None:

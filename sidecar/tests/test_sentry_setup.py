@@ -169,10 +169,10 @@ class TestCaptureExceptionEnabled:
         # Set up Sentry as enabled with a mock sentry_sdk
         monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
         mock_sentry_sdk = MagicMock()
-        # push_scope needs to return a context manager that yields a scope
+        # new_scope needs to return a context manager that yields a scope
         mock_scope = MagicMock()
-        mock_sentry_sdk.push_scope.return_value.__enter__.return_value = mock_scope
-        mock_sentry_sdk.push_scope.return_value.__exit__.return_value = None
+        mock_sentry_sdk.new_scope.return_value.__enter__.return_value = mock_scope
+        mock_sentry_sdk.new_scope.return_value.__exit__.return_value = None
         monkeypatch.setitem(sys.modules, "sentry_sdk", mock_sentry_sdk)
 
         sentry_setup.init_sentry()
