@@ -50,16 +50,16 @@ def main() -> None:
         df = pd.read_sql(
             """
             SELECT
-                tp.date::text                              AS date,
+                tp.date::text                                          AS date,
                 tp.predicted_close,
                 tp.current_price,
                 tp.actual_close,
                 tp.confidence,
                 tp.notes,
-                COALESCE(tf.vix::float,   ms.vix::float)   AS vix,
-                COALESCE(tf.vix1d::float, ms.vix1d::float) AS vix1d,
-                COALESCE(tf.vix9d::float, ms.vix9d::float) AS vix9d,
-                COALESCE(tf.vvix::float,  ms.vvix::float)  AS vvix
+                COALESCE(tf.vix::float,   ms.vix::float,  o.vix_close::float)  AS vix,
+                COALESCE(tf.vix1d::float, ms.vix1d::float, o.vix1d_close::float) AS vix1d,
+                COALESCE(tf.vix9d::float, ms.vix9d::float)             AS vix9d,
+                COALESCE(tf.vvix::float,  ms.vvix::float)              AS vvix
             FROM trace_predictions tp
             LEFT JOIN training_features tf ON tf.date = tp.date
             LEFT JOIN LATERAL (
@@ -70,6 +70,7 @@ def main() -> None:
                          entry_time ASC
                 LIMIT 1
             ) ms ON true
+            LEFT JOIN outcomes o ON o.date = tp.date
             ORDER BY tp.date
             """,
             conn,
