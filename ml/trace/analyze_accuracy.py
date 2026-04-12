@@ -5,14 +5,15 @@ Usage:
     ml/.venv/bin/python ml/trace/analyze_accuracy.py
 
 Reads:
-    ml/trace/results/predictions.csv
-    ml/trace/results/actual_prices.csv
+    ml/trace/results/predictions.csv   (exported by sync_from_db.py)
+    Actual close prices come from the DB via sync_from_db.py — no separate
+    actual_prices.csv needed since Refresh Actuals writes to the same table.
 
 Outputs:
     ml/trace/results/accuracy_report.csv
-    ml/plots/trace/error_distribution.png
-    ml/plots/trace/predicted_vs_actual.png
-    ml/plots/trace/accuracy_by_confidence.png
+    ml/plots/trace_error_distribution.png
+    ml/plots/trace_predicted_vs_actual.png
+    ml/plots/trace_accuracy_by_confidence.png
 """
 
 import sys
@@ -30,19 +31,14 @@ _HIT_THRESHOLDS = [5, 10, 15, 20]
 
 
 def load_data() -> pd.DataFrame:
-    """Merge predictions with actual prices and compute error columns."""
-    for path in (RESULTS_DIR / "predictions.csv", RESULTS_DIR / "actual_prices.csv"):
-        if not path.exists():
-            print(f"Error: {path} not found.")
-            print("Run extract_predictions.py then fetch_prices.py first.")
-            sys.exit(1)
+    """Load predictions (with actuals already included) and compute error columns."""
+    predictions_path = RESULTS_DIR / "predictions.csv"
+    if not predictions_path.exists():
+        print(f"Error: {predictions_path} not found.")
+        print("Run sync_from_db.py first.")
+        sys.exit(1)
 
-    predictions = pd.read_csv(RESULTS_DIR / "predictions.csv")
-    prices = pd.read_csv(RESULTS_DIR / "actual_prices.csv")
-
-    df = predictions.merge(prices, on="date", how="inner").dropna(
-        subset=["actual_close"]
-    )
+    df = pd.read_csv(predictions_path).dropna(subset=["actual_close"])
     df = df.sort_values("date").reset_index(drop=True)
 
     df["error"] = df["actual_close"] - df["predicted_close"]
