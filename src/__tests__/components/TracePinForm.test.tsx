@@ -62,9 +62,7 @@ describe('TracePinForm: rendering', () => {
     await act(async () => {
       render(<TracePinForm />);
     });
-    expect(
-      screen.getByText(/log trace pin prediction/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/log trace pin prediction/i)).toBeInTheDocument();
   });
 
   it('renders date, predicted close, and confidence inputs', async () => {
@@ -121,7 +119,11 @@ describe('TracePinForm: predictions table', () => {
         json: () =>
           Promise.resolve([
             makePrediction({ date: '2026-01-15' }),
-            makePrediction({ date: '2026-01-14', actual_close: null, current_price: null }),
+            makePrediction({
+              date: '2026-01-14',
+              actual_close: null,
+              current_price: null,
+            }),
           ]),
       }),
     );
@@ -162,7 +164,11 @@ describe('TracePinForm: predictions table', () => {
         ok: true,
         json: () =>
           Promise.resolve([
-            makePrediction({ predicted_close: 5900, actual_close: 5920, current_price: 5880 }),
+            makePrediction({
+              predicted_close: 5900,
+              actual_close: 5920,
+              current_price: 5880,
+            }),
           ]),
       }),
     );
@@ -181,7 +187,11 @@ describe('TracePinForm: predictions table', () => {
         ok: true,
         json: () =>
           Promise.resolve([
-            makePrediction({ predicted_close: 5950, actual_close: 5920, current_price: 5880 }),
+            makePrediction({
+              predicted_close: 5950,
+              actual_close: 5920,
+              current_price: 5880,
+            }),
           ]),
       }),
     );
@@ -219,9 +229,9 @@ describe('TracePinForm: predictions table', () => {
 describe('TracePinForm: form submission', () => {
   it('shows Saved confirmation after a successful POST', async () => {
     const fetchMock = mockFetch([
-      { ok: true, json: [] },       // initial GET
-      { ok: true, json: {} },       // POST
-      { ok: true, json: [] },       // reload GET
+      { ok: true, json: [] }, // initial GET
+      { ok: true, json: {} }, // POST
+      { ok: true, json: [] }, // reload GET
     ]);
     vi.stubGlobal('fetch', fetchMock);
 
@@ -233,7 +243,9 @@ describe('TracePinForm: form submission', () => {
       target: { value: '5900' },
     });
     await act(async () => {
-      fireEvent.submit(screen.getByRole('button', { name: /save/i }).closest('form')!);
+      fireEvent.submit(
+        screen.getByRole('button', { name: /save/i }).closest('form')!,
+      );
     });
 
     await waitFor(() => expect(screen.getByText(/saved/i)).toBeInTheDocument());
@@ -254,7 +266,9 @@ describe('TracePinForm: form submission', () => {
       target: { value: '5900' },
     });
     await act(async () => {
-      fireEvent.submit(screen.getByRole('button', { name: /save/i }).closest('form')!);
+      fireEvent.submit(
+        screen.getByRole('button', { name: /save/i }).closest('form')!,
+      );
     });
 
     await waitFor(() =>
@@ -265,7 +279,8 @@ describe('TracePinForm: form submission', () => {
   it('shows "Network error" when fetch throws', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn()
+      vi
+        .fn()
         .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) })
         .mockRejectedValueOnce(new Error('offline')),
     );
@@ -278,7 +293,9 @@ describe('TracePinForm: form submission', () => {
       target: { value: '5900' },
     });
     await act(async () => {
-      fireEvent.submit(screen.getByRole('button', { name: /save/i }).closest('form')!);
+      fireEvent.submit(
+        screen.getByRole('button', { name: /save/i }).closest('form')!,
+      );
     });
 
     await waitFor(() =>
@@ -320,7 +337,9 @@ describe('TracePinForm: overwrite confirmation', () => {
       );
     });
 
-    expect(screen.getByRole('button', { name: /overwrite/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /overwrite/i }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
   });
 
@@ -366,7 +385,8 @@ describe('TracePinForm: overwrite confirmation', () => {
 
 describe('TracePinForm: refresh actuals', () => {
   it('calls the refresh endpoint and reloads predictions', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = vi
+      .fn()
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }) // initial GET
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) }) // POST refresh
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }); // reload GET
@@ -395,7 +415,8 @@ describe('TracePinForm: refresh actuals', () => {
 
 describe('TracePinForm: delete row', () => {
   it('calls the DELETE endpoint and reloads predictions', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = vi
+      .fn()
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve([makePrediction()]),
@@ -410,7 +431,9 @@ describe('TracePinForm: delete row', () => {
 
     await act(async () => {
       fireEvent.click(
-        screen.getByRole('button', { name: /delete prediction for 2026-01-15/i }),
+        screen.getByRole('button', {
+          name: /delete prediction for 2026-01-15/i,
+        }),
       );
     });
 

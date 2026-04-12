@@ -18,7 +18,6 @@ import handler from '../trace/prediction.js';
 // helpers
 // ---------------------------------------------------------------------------
 
-
 function makeRow(overrides = {}) {
   return {
     date: '2026-01-15',
@@ -36,7 +35,10 @@ describe('GET /api/trace/prediction', () => {
   beforeEach(() => mockSql.mockReset());
 
   it('returns rows from the database', async () => {
-    const rows = [makeRow(), makeRow({ date: '2026-01-14', predicted_close: 5850 })];
+    const rows = [
+      makeRow(),
+      makeRow({ date: '2026-01-14', predicted_close: 5850 }),
+    ];
     mockSql.mockResolvedValue(rows);
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -134,7 +136,11 @@ describe('POST /api/trace/prediction', () => {
     await handler(
       mockRequest({
         method: 'POST',
-        body: { date: '2026-01-15', predicted_close: 5900, confidence: 'extreme' },
+        body: {
+          date: '2026-01-15',
+          predicted_close: 5900,
+          confidence: 'extreme',
+        },
       }),
       res,
     );

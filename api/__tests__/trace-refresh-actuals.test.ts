@@ -50,8 +50,8 @@ describe('POST /api/trace/refresh-actuals', () => {
   it('updates rows with data returned from Stooq', async () => {
     mockSql
       .mockResolvedValueOnce([{ date: '2026-01-15' }]) // SELECT missing rows
-      .mockResolvedValueOnce([])                        // UPDATE row
-      .mockResolvedValueOnce([]);                       // (extra guard)
+      .mockResolvedValueOnce([]) // UPDATE row
+      .mockResolvedValueOnce([]); // (extra guard)
 
     const csv = stooqCsv([{ date: '2026-01-15', open: 5880, close: 5920 }]);
     vi.stubGlobal(
@@ -63,7 +63,11 @@ describe('POST /api/trace/refresh-actuals', () => {
     await handler(mockRequest({ method: 'POST' }), res);
 
     expect(res._status).toBe(200);
-    const body = res._json as { updated: number; attempted: number; found: number };
+    const body = res._json as {
+      updated: number;
+      attempted: number;
+      found: number;
+    };
     expect(body.attempted).toBe(1);
     expect(body.found).toBe(1);
     expect(body.updated).toBe(1);
@@ -130,9 +134,13 @@ describe('POST /api/trace/refresh-actuals', () => {
     await handler(mockRequest({ method: 'POST' }), res);
 
     expect(res._status).toBe(200);
-    const body = res._json as { updated: number; attempted: number; found: number };
+    const body = res._json as {
+      updated: number;
+      attempted: number;
+      found: number;
+    };
     expect(body.attempted).toBe(2);
-    expect(body.found).toBe(1);   // only 2026-01-14 in CSV
+    expect(body.found).toBe(1); // only 2026-01-14 in CSV
     expect(body.updated).toBe(1); // only that one was updated
   });
 });

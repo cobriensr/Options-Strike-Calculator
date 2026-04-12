@@ -99,7 +99,9 @@ export default async function handler(
       }
     }
 
-    res.status(200).json({ updated, attempted: dates.length, found: priceMap.size });
+    res
+      .status(200)
+      .json({ updated, attempted: dates.length, found: priceMap.size });
   } catch (err) {
     logger.error({ err }, 'trace/refresh-actuals failed');
     res.status(500).json({ error: 'Failed to refresh actuals' });

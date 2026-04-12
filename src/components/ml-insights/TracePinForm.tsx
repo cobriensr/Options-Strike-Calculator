@@ -298,17 +298,23 @@ export default function TracePinForm() {
                 className="border-edge border-b text-left"
                 style={{ color: theme.textMuted }}
               >
-                {['Date', 'Open', 'Predicted', 'Actual', 'Error', 'Conf', ''].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      className="sticky top-0 pr-4 pb-1.5 font-sans text-[10px] font-medium tracking-wide uppercase last:pr-0"
-                      style={{ backgroundColor: tint(theme.surfaceAlt, '40') }}
-                    >
-                      {h}
-                    </th>
-                  ),
-                )}
+                {[
+                  'Date',
+                  'Open',
+                  'Predicted',
+                  'Actual',
+                  'Error',
+                  'Conf',
+                  '',
+                ].map((h) => (
+                  <th
+                    key={h}
+                    className="sticky top-0 pr-4 pb-1.5 font-sans text-[10px] font-medium tracking-wide uppercase last:pr-0"
+                    style={{ backgroundColor: tint(theme.surfaceAlt, '40') }}
+                  >
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
