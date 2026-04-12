@@ -9,26 +9,45 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/logger.js', () => ({
-  default: { error: vi.fn() },
+  default: { error: vi.fn(), info: vi.fn() },
+}));
+
+const mockSchwabFetch = vi.fn();
+vi.mock('../_lib/api-helpers.js', () => ({
+  schwabFetch: (...args: unknown[]) => mockSchwabFetch(...args),
 }));
 
 import handler from '../trace/refresh-actuals.js';
 
 // ---------------------------------------------------------------------------
-// Stooq CSV fixture
+// Schwab response fixture
 // ---------------------------------------------------------------------------
 
-function stooqCsv(rows: Array<{ date: string; open: number; close: number }>) {
-  const header = 'Date,Open,High,Low,Close,Volume';
-  const lines = rows.map(
-    (r) => `${r.date},${r.open},${r.open + 10},${r.open - 10},${r.close},0`,
-  );
-  return [header, ...lines].join('\n');
+/** Build a Schwab priceHistory response for the given dates. */
+function schwabHistory(
+  rows: Array<{ date: string; open: number; close: number }>,
+) {
+  return {
+    ok: true,
+    data: {
+      symbol: '$SPX',
+      empty: false,
+      candles: rows.map((r) => ({
+        open: r.open,
+        high: r.open + 10,
+        low: r.open - 10,
+        close: r.close,
+        // Build an epoch ms that maps to r.date in ET (noon UTC = 8 AM ET)
+        datetime: new Date(`${r.date}T12:00:00Z`).getTime(),
+      })),
+    },
+  };
 }
 
 describe('POST /api/trace/refresh-actuals', () => {
   beforeEach(() => {
     mockSql.mockReset();
+    mockSchwabFetch.mockReset();
     vi.restoreAllMocks();
   });
 
@@ -39,7 +58,6 @@ describe('POST /api/trace/refresh-actuals', () => {
   });
 
   it('returns updated: 0 when no rows need refreshing', async () => {
-    // SELECT returns empty — nothing is missing actuals
     mockSql.mockResolvedValue([]);
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST' }), res);
@@ -47,16 +65,13 @@ describe('POST /api/trace/refresh-actuals', () => {
     expect(res._json).toEqual({ updated: 0 });
   });
 
-  it('updates rows with data returned from Stooq', async () => {
+  it('updates rows with data returned from Schwab', async () => {
     mockSql
       .mockResolvedValueOnce([{ date: '2026-01-15' }]) // SELECT missing rows
-      .mockResolvedValueOnce([]) // UPDATE row
-      .mockResolvedValueOnce([]); // (extra guard)
+      .mockResolvedValueOnce([]); // UPDATE row
 
-    const csv = stooqCsv([{ date: '2026-01-15', open: 5880, close: 5920 }]);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve(csv) }),
+    mockSchwabFetch.mockResolvedValue(
+      schwabHistory([{ date: '2026-01-15', open: 5880, close: 5920 }]),
     );
 
     const res = mockResponse();
@@ -73,17 +88,12 @@ describe('POST /api/trace/refresh-actuals', () => {
     expect(body.updated).toBe(1);
   });
 
-  it('returns updated: 0 when Stooq has no data for the requested dates', async () => {
+  it('returns updated: 0 when Schwab has no candles for the requested dates', async () => {
     mockSql.mockResolvedValueOnce([{ date: '2026-01-15' }]);
-
-    // Stooq returns CSV with no matching date rows
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        text: () => Promise.resolve('Date,Open,High,Low,Close,Volume\n'),
-      }),
-    );
+    mockSchwabFetch.mockResolvedValue({
+      ok: true,
+      data: { symbol: '$SPX', empty: true, candles: [] },
+    });
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST' }), res);
@@ -93,13 +103,9 @@ describe('POST /api/trace/refresh-actuals', () => {
     expect(body.found).toBe(0);
   });
 
-  it('returns 500 when Stooq fetch fails', async () => {
+  it('returns 500 when Schwab returns an error', async () => {
     mockSql.mockResolvedValueOnce([{ date: '2026-01-15' }]);
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: false, status: 503 }),
-    );
+    mockSchwabFetch.mockResolvedValue({ ok: false, error: 'Unauthorized' });
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST' }), res);
@@ -121,13 +127,9 @@ describe('POST /api/trace/refresh-actuals', () => {
       .mockResolvedValueOnce([]) // UPDATE 2026-01-14
       .mockResolvedValueOnce([]); // UPDATE 2026-01-15
 
-    const csv = stooqCsv([
-      { date: '2026-01-14', open: 5860, close: 5900 },
-      // 2026-01-15 intentionally absent from Stooq data (e.g. weekend)
-    ]);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve(csv) }),
+    // Only 2026-01-14 in Schwab response (2026-01-15 is a weekend/holiday)
+    mockSchwabFetch.mockResolvedValue(
+      schwabHistory([{ date: '2026-01-14', open: 5860, close: 5900 }]),
     );
 
     const res = mockResponse();
@@ -140,7 +142,7 @@ describe('POST /api/trace/refresh-actuals', () => {
       found: number;
     };
     expect(body.attempted).toBe(2);
-    expect(body.found).toBe(1); // only 2026-01-14 in CSV
-    expect(body.updated).toBe(1); // only that one was updated
+    expect(body.found).toBe(1);
+    expect(body.updated).toBe(1);
   });
 });

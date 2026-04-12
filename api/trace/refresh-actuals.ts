@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { schwabFetch } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
@@ -7,63 +8,69 @@ interface DayPrices {
   close: number;
 }
 
+interface SchwabCandle {
+  open: number;
+  close: number;
+  datetime: number; // epoch ms
+}
+
+interface SchwabPriceHistory {
+  candles: SchwabCandle[];
+  symbol: string;
+  empty: boolean;
+}
+
 /**
- * Fetch SPX open/close prices from Stooq.
+ * Fetch SPX daily open/close prices from Schwab for the given dates.
  *
- * Stooq returns a plain CSV (no auth, no crumb):
- *   Date,Open,High,Low,Close,Volume
- *   2026-01-16,5862.19,5953.68,5862.19,5937.34,0
- *
- * Using Stooq instead of Yahoo Finance to avoid Yahoo's crumb/cookie
- * authentication flow which breaks in serverless environments.
+ * Uses the same schwabFetch helper used by /api/history so tokens are
+ * refreshed automatically.  Daily frequency returns one candle per
+ * trading day with the session open and close already set.
  */
 async function fetchSpxPrices(
   dates: string[],
 ): Promise<Map<string, DayPrices>> {
   const sorted = [...dates].sort((a, b) => a.localeCompare(b));
 
-  // Pad 5 days before/after to ensure we catch every requested date
-  const start = new Date(`${sorted[0]}T12:00:00Z`);
-  start.setDate(start.getDate() - 5);
-  const end = new Date(`${sorted.at(-1)!}T12:00:00Z`);
-  end.setDate(end.getDate() + 2);
-  const d1padded = start.toISOString().slice(0, 10).replaceAll('-', '');
-  const d2padded = end.toISOString().slice(0, 10).replaceAll('-', '');
+  // Pad a few days around the requested range to catch the nearest
+  // trading day on either end.
+  const startDate = new Date(`${sorted[0]}T12:00:00Z`);
+  startDate.setDate(startDate.getDate() - 5);
+  const endDate = new Date(`${sorted.at(-1)!}T12:00:00Z`);
+  endDate.setDate(endDate.getDate() + 2);
 
-  const url = `https://stooq.com/q/d/l/?s=%5ESPX&d1=${d1padded}&d2=${d2padded}&i=d`;
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/csv' },
+  const params = new URLSearchParams({
+    symbol: '$SPX',
+    periodType: 'year',
+    frequencyType: 'daily',
+    frequency: '1',
+    startDate: String(startDate.getTime()),
+    endDate: String(endDate.getTime()),
+    needExtendedHoursData: 'false',
+    needPreviousClose: 'false',
   });
-  if (!res.ok) throw new Error(`Stooq returned ${res.status}`);
 
-  const csv = await res.text();
-
-  // Log the raw response so we can diagnose symbol/format issues in Vercel logs
-  logger.info(
-    { url, statusCode: res.status, csvPreview: csv.slice(0, 300) },
-    'Stooq CSV response',
+  const result = await schwabFetch<SchwabPriceHistory>(
+    `/pricehistory?${params.toString()}`,
   );
+
+  if (!result.ok) {
+    throw new Error(`Schwab priceHistory failed: ${result.error}`);
+  }
 
   const priceMap = new Map<string, DayPrices>();
 
-  for (const line of csv.split('\n').slice(1)) {
-    const parts = line.trim().split(',');
-    if (parts.length < 5) continue;
-    const [date, openStr, , , closeStr] = parts;
-    const open = Number.parseFloat(openStr ?? '');
-    const close = Number.parseFloat(closeStr ?? '');
-    if (date && Number.isFinite(open) && Number.isFinite(close)) {
-      priceMap.set(date, {
-        open: Math.round(open * 100) / 100,
-        close: Math.round(close * 100) / 100,
-      });
-    }
+  for (const candle of result.data.candles) {
+    // Convert epoch ms → YYYY-MM-DD in ET (Schwab daily candles use ET midnight)
+    const d = new Date(candle.datetime);
+    const dateStr = d.toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    priceMap.set(dateStr, {
+      open: Math.round(candle.open * 100) / 100,
+      close: Math.round(candle.close * 100) / 100,
+    });
   }
-
-  logger.info(
-    { dates, priceMapKeys: [...priceMap.keys()] },
-    'Stooq price map built',
-  );
 
   return priceMap;
 }
@@ -110,6 +117,11 @@ export default async function handler(
         updated++;
       }
     }
+
+    logger.info(
+      { dates, found: priceMap.size, updated },
+      'trace/refresh-actuals complete',
+    );
 
     res
       .status(200)
