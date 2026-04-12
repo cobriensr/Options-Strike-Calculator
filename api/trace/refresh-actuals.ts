@@ -2,57 +2,49 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
-interface YahooChartResult {
-  timestamp: number[];
-  indicators: {
-    quote: Array<{ open: (number | null)[]; close: (number | null)[] }>;
-  };
-}
-
-interface YahooChartResponse {
-  chart: {
-    result?: YahooChartResult[];
-    error?: { message: string };
-  };
-}
-
 interface DayPrices {
   open: number;
   close: number;
 }
 
-async function fetchSpxPrices(
-  dates: string[],
-): Promise<Map<string, DayPrices>> {
-  const timestamps = dates.map(
-    (d) => new Date(`${d}T12:00:00Z`).getTime() / 1000,
-  );
-  const period1 = Math.floor(Math.min(...timestamps) - 5 * 86400);
-  const period2 = Math.floor(Math.max(...timestamps) + 2 * 86400);
+/**
+ * Fetch SPX open/close prices from Stooq.
+ *
+ * Stooq returns a plain CSV (no auth, no crumb):
+ *   Date,Open,High,Low,Close,Volume
+ *   2026-01-16,5862.19,5953.68,5862.19,5937.34,0
+ *
+ * Using Stooq instead of Yahoo Finance to avoid Yahoo's crumb/cookie
+ * authentication flow which breaks in serverless environments.
+ */
+async function fetchSpxPrices(dates: string[]): Promise<Map<string, DayPrices>> {
+  const sorted = [...dates].sort();
 
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/%5ESPX?interval=1d&period1=${period1}&period2=${period2}`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-  if (!res.ok) throw new Error(`Yahoo Finance returned ${res.status}`);
+  // Pad 5 days before/after to ensure we catch every requested date
+  const start = new Date(`${sorted[0]}T12:00:00Z`);
+  start.setDate(start.getDate() - 5);
+  const end = new Date(`${sorted.at(-1)!}T12:00:00Z`);
+  end.setDate(end.getDate() + 2);
+  const d1padded = start.toISOString().slice(0, 10).replace(/-/g, '');
+  const d2padded = end.toISOString().slice(0, 10).replace(/-/g, '');
 
-  const data = (await res.json()) as YahooChartResponse;
-  if (!data.chart.result?.[0]) {
-    throw new Error(data.chart.error?.message ?? 'No data from Yahoo Finance');
-  }
+  const url = `https://stooq.com/q/d/l/?s=%5Espx&d1=${d1padded}&d2=${d2padded}&i=d`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/csv' },
+  });
+  if (!res.ok) throw new Error(`Stooq returned ${res.status}`);
 
-  const result = data.chart.result[0];
-  const quote = result.indicators.quote[0];
-  const opens = quote?.open ?? [];
-  const closes = quote?.close ?? [];
-  const { timestamp } = result;
+  const csv = await res.text();
   const priceMap = new Map<string, DayPrices>();
 
-  for (let i = 0; i < timestamp.length; i++) {
-    const open = opens[i];
-    const close = closes[i];
-    const ts = timestamp[i];
-    if (open != null && close != null && ts != null) {
-      const dateStr = new Date(ts * 1000).toISOString().slice(0, 10);
-      priceMap.set(dateStr, {
+  for (const line of csv.split('\n').slice(1)) {
+    const parts = line.trim().split(',');
+    if (parts.length < 5) continue;
+    const [date, openStr, , , closeStr] = parts;
+    const open = Number.parseFloat(openStr ?? '');
+    const close = Number.parseFloat(closeStr ?? '');
+    if (date && Number.isFinite(open) && Number.isFinite(close)) {
+      priceMap.set(date, {
         open: Math.round(open * 100) / 100,
         close: Math.round(close * 100) / 100,
       });
