@@ -21,11 +21,11 @@ export default async function handler(
       const rows = await sql`
         SELECT
           date::text,
-          predicted_close,
+          predicted_close::float,
           confidence,
           notes,
-          current_price,
-          actual_close,
+          current_price::float,
+          actual_close::float,
           created_at
         FROM trace_predictions
         ORDER BY date DESC
@@ -55,7 +55,7 @@ export default async function handler(
           confidence      = EXCLUDED.confidence,
           notes           = EXCLUDED.notes,
           updated_at      = now()
-        RETURNING date::text, predicted_close, confidence, notes, actual_close, current_price
+        RETURNING date::text, predicted_close::float, confidence, notes, actual_close::float, current_price::float
       `;
       res.status(200).json(row);
     } catch (err) {
