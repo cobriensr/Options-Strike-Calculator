@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { z } from 'zod';
-import { getDb } from '../_lib/db';
-import logger from '../_lib/logger';
+import { getDb } from '../_lib/db.js';
+import logger from '../_lib/logger.js';
 
 const PredictionSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
