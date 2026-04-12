@@ -87,11 +87,12 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
 
   const plotMap = new Map(plots.map((p) => [p.name, p]));
 
-  // Filter groups to only those with available plots
+  // Filter groups to only those with available plots, but always include TRACE Pin
+  // (it hosts the manual prediction form even when no accuracy plots exist yet).
   const availableGroups = PLOT_GROUPS.map((group) => ({
     ...group,
     plots: group.plots.filter((name) => plotMap.has(name)),
-  })).filter((group) => group.plots.length > 0);
+  })).filter((group) => group.plots.length > 0 || group.label === 'TRACE Pin');
 
   const activeGroup = availableGroups[activeGroupIdx];
   const activePlotName = activeGroup?.plots[activePlotIdx];
@@ -277,7 +278,7 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
       )}
 
       {/* TRACE Pin manual prediction entry */}
-      {PLOT_GROUPS[activeGroupIdx]?.label === 'TRACE Pin' && <TracePinForm />}
+      {availableGroups[activeGroupIdx]?.label === 'TRACE Pin' && <TracePinForm />}
 
       {/* Keyboard hint */}
       <div className="text-muted mt-2 text-center font-sans text-[9px]">
