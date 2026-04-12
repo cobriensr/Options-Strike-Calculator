@@ -39,6 +39,7 @@ export default function TracePinForm() {
   const [submitError, setSubmitError] = useState('');
   const [predictions, setPredictions] = useState<TracePrediction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadPredictions = useCallback(async () => {
     try {
@@ -89,17 +90,38 @@ export default function TracePinForm() {
     [date, predictedClose, confidence, loadPredictions],
   );
 
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await fetch('/api/trace/refresh-actuals', { method: 'POST' });
+      void loadPredictions();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadPredictions]);
+
   return (
     <div
       className="border-edge mt-4 rounded-lg border p-4"
       style={{ backgroundColor: tint(theme.surfaceAlt, '40') }}
     >
-      <h3
-        className="mb-3 font-sans text-[12px] font-semibold uppercase tracking-wider"
-        style={{ color: theme.textMuted }}
-      >
-        Log TRACE Pin Prediction
-      </h3>
+      <div className="mb-3 flex items-center justify-between">
+        <h3
+          className="font-sans text-[12px] font-semibold uppercase tracking-wider"
+          style={{ color: theme.textMuted }}
+        >
+          Log TRACE Pin Prediction
+        </h3>
+        <button
+          type="button"
+          onClick={() => void handleRefresh()}
+          disabled={refreshing}
+          className="rounded px-2 py-1 font-sans text-[10px] transition-opacity disabled:opacity-40"
+          style={{ backgroundColor: tint(theme.accent, '15'), color: theme.accent, border: `1px solid ${tint(theme.accent, '35')}` }}
+        >
+          {refreshing ? 'Refreshing…' : 'Refresh Actuals'}
+        </button>
+      </div>
 
       <form onSubmit={handleSubmit} className="mb-4 flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1">
