@@ -137,7 +137,7 @@ export default function PositionTable({
           {/* Iron Condors first */}
           {ironCondors.map((ic, i) => (
             <IronCondorRow
-              key={`ic-${String(i)}`}
+              key={`${ic.putSpread.shortLeg.optionCode}/${ic.callSpread.shortLeg.optionCode}`}
               ic={ic}
               spotPrice={spotPrice}
               index={i}
@@ -146,7 +146,7 @@ export default function PositionTable({
           {/* Vertical spreads */}
           {sorted.map((s, i) => (
             <SpreadRow
-              key={`spread-${String(i)}`}
+              key={s.shortLeg.optionCode}
               spread={s}
               spotPrice={spotPrice}
               rowIndex={ironCondors.length + i}
@@ -155,7 +155,7 @@ export default function PositionTable({
           {/* Butterflies / BWBs */}
           {butterflies.map((bfly, i) => (
             <ButterflyRow
-              key={`bfly-${String(i)}`}
+              key={bfly.middleLeg.optionCode}
               butterfly={bfly}
               rowIndex={ironCondors.length + sorted.length + i}
             />

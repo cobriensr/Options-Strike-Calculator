@@ -116,13 +116,20 @@ export default function BWBSection({
                     effectiveRatio,
                   }),
                 )
-                .catch(() => {
-                  if (
-                    confirm(
-                      'A new version is available. Reload to use the export feature?',
-                    )
-                  ) {
-                    globalThis.location.reload();
+                .catch((err: unknown) => {
+                  const isChunkError =
+                    err instanceof TypeError &&
+                    err.message.includes('dynamically imported');
+                  if (isChunkError) {
+                    if (
+                      confirm(
+                        'A new version is available. Reload to use the export feature?',
+                      )
+                    ) {
+                      globalThis.location.reload();
+                    }
+                  } else {
+                    console.error('Export failed:', err);
                   }
                 })
             }
