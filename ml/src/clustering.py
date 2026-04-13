@@ -731,6 +731,79 @@ def _draw_confidence_ellipse(ax, x, y, color, alpha=0.15):
     ax.add_patch(ellipse)
 
 
+def plot_cluster_transitions(plot_dir: Path, labels: np.ndarray, k: int) -> None:
+    """Save a Markov transition probability heatmap for day-type clusters."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    if k < 2:
+        print("  Skipping cluster transitions: k < 2")
+        return
+
+    if len(labels) < 5:
+        print("  Skipping cluster transitions: fewer than 4 consecutive-day pairs")
+        return
+
+    # Build transition count matrix
+    transition_counts = np.zeros((k, k), dtype=int)
+    for i in range(len(labels) - 1):
+        from_c = labels[i]
+        to_c = labels[i + 1]
+        transition_counts[from_c, to_c] += 1
+
+    # Row-normalize (guard against zero-sum rows)
+    row_sums = transition_counts.sum(axis=1, keepdims=True)
+    row_sums = np.where(row_sums == 0, 1, row_sums)
+    transition_probs = transition_counts / row_sums
+
+    tick_labels = [f"Cluster {i}" for i in range(k)]
+
+    fig, ax = plt.subplots(1, 1, figsize=(max(5, k * 1.4), max(4, k * 1.2)))
+    fig.patch.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#16213e")
+
+    im = ax.imshow(transition_probs, cmap="Blues", aspect="auto", vmin=0, vmax=1)
+
+    # Annotate each cell with its probability
+    for row in range(k):
+        for col in range(k):
+            ax.text(
+                col,
+                row,
+                f"{transition_probs[row, col]:.2f}",
+                ha="center",
+                va="center",
+                color="#ffffff",
+                fontsize=10,
+            )
+
+    ax.set_xticks(range(k))
+    ax.set_xticklabels(tick_labels, color="#cccccc")
+    ax.set_yticks(range(k))
+    ax.set_yticklabels(tick_labels, color="#cccccc")
+    ax.tick_params(colors="#cccccc")
+    ax.set_title("Day Type Transition Matrix", color="#cccccc")
+    ax.set_xlabel("To Cluster", color="#cccccc")
+    ax.set_ylabel("From Cluster", color="#cccccc")
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+    cbar.ax.yaxis.set_tick_params(color="#cccccc")
+    plt.setp(cbar.ax.yaxis.get_ticklabels(), color="#cccccc")
+
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#cccccc")
+
+    fig.tight_layout()
+    fig.savefig(plot_dir / "cluster_transitions.png", dpi=150)
+    print("  Saved: ml/plots/cluster_transitions.png")
+    plt.close(fig)
+
+
 def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) -> None:
     """Save PCA scatter plot and cluster summary."""
     try:
@@ -820,6 +893,9 @@ def save_plots(X_pca: np.ndarray, labels: np.ndarray, k: int, df: pd.DataFrame) 
         fig2.tight_layout()
         fig2.savefig(plot_dir / "clusters_heatmap.png", dpi=150)
         print("  Saved: ml/plots/clusters_heatmap.png")
+
+    # Cluster transition matrix
+    plot_cluster_transitions(plot_dir, labels, k)
 
     plt.close("all")
 
