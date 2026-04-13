@@ -12,10 +12,7 @@
       "IRON CONDOR": 4
     },
     "feature_completeness_threshold": 0.8,
-    "date_range": [
-      "2026-02-11",
-      "2026-04-09"
-    ]
+    "date_range": ["2026-02-11", "2026-04-09"]
   },
   "xgboost_params": {
     "objective": "multi:softprob",
@@ -43,46 +40,16 @@
     "walk_forward_folds": 15
   },
   "feature_importance_top10": [
-    [
-      "num__qqq_ncp_t1",
-      0.066
-    ],
-    [
-      "num__gex_vol_t2",
-      0.056
-    ],
-    [
-      "num__gamma_asymmetry",
-      0.0475
-    ],
-    [
-      "num__neg_gamma_nearest_dist",
-      0.044
-    ],
-    [
-      "num__prev_day_vix_change",
-      0.0436
-    ],
-    [
-      "num__pcr_open",
-      0.0425
-    ],
-    [
-      "cat__prev_day_direction_DOWN",
-      0.0352
-    ],
-    [
-      "num__vix1d",
-      0.0299
-    ],
-    [
-      "num__realized_vol_10d",
-      0.0299
-    ],
-    [
-      "num__mt_ncp_t2",
-      0.0297
-    ]
+    ["num__qqq_ncp_t1", 0.066],
+    ["num__gex_vol_t2", 0.056],
+    ["num__gamma_asymmetry", 0.0475],
+    ["num__neg_gamma_nearest_dist", 0.044],
+    ["num__prev_day_vix_change", 0.0436],
+    ["num__pcr_open", 0.0425],
+    ["cat__prev_day_direction_DOWN", 0.0352],
+    ["num__vix1d", 0.0299],
+    ["num__realized_vol_10d", 0.0299],
+    ["num__mt_ncp_t2", 0.0297]
   ],
   "notes": "Walk-forward comparison of 5 models on 3-class structure prediction (CCS/PCS/IC). XGBoost with conservative hyperparams + 4 sklearn baselines (logistic regression, random forest, naive bayes, decision tree).",
   "model_comparison": {
