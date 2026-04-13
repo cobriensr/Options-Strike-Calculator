@@ -210,7 +210,7 @@ describe('bwb-math: generatePnlRows', () => {
 describe('BWBCalculator component', () => {
   it('renders the calculator heading', () => {
     render(<BWBCalculator />);
-    expect(screen.getByText('BWB Live Calculator')).toBeInTheDocument();
+    expect(screen.getByText('Settlement Pin Calculator')).toBeInTheDocument();
   });
 
   it('renders calls/puts toggle', () => {
@@ -470,7 +470,7 @@ describe('BWBCalculator anchor + charm', () => {
     );
     render(<BWBCalculator />);
     // Should still render without anchor
-    expect(screen.getByText('BWB Live Calculator')).toBeInTheDocument();
+    expect(screen.getByText('Settlement Pin Calculator')).toBeInTheDocument();
     expect(screen.queryByText(/γ Anchor/)).not.toBeInTheDocument();
   });
 

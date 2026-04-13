@@ -384,7 +384,7 @@ export default function StrikeCalculator() {
       { id: 'sec-history', label: 'History' },
       ...(isOwner ? [{ id: 'sec-ml-insights', label: 'ML Insights' }] : []),
       { id: 'sec-positions', label: 'Positions' },
-      ...(isOwner ? [{ id: 'sec-bwb', label: 'BWB' }] : []),
+      ...(isOwner ? [{ id: 'sec-bwb', label: 'Settlement Pin' }] : []),
       { id: 'results', label: 'Results' },
     ];
   }, [isOwner, market.hasData, historySnapshot]);

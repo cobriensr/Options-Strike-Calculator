@@ -8,6 +8,7 @@ import {
 } from './bwb-math';
 import BWBInputs from './BWBInputs';
 import BWBResults from './BWBResults';
+import { SectionBox } from '../ui';
 
 interface BWBCalculatorProps {
   selectedDate?: string;
@@ -160,56 +161,14 @@ export default function BWBCalculator({
     setContracts(1);
   };
 
-  const [sectionCollapsed, setSectionCollapsed] = useState(false);
-  const toggleSection = useCallback(() => setSectionCollapsed((v) => !v), []);
-
   return (
-    <section
-      aria-label={
-        strategy === 'bwb' ? 'BWB live calculator' : 'Iron Fly live calculator'
+    <SectionBox
+      label={
+        strategy === 'bwb' ? 'Settlement Pin Calculator' : 'Iron Fly Calculator'
       }
-      className="animate-fade-in-up bg-surface border-edge border-t-accent mt-6 flex flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)]"
-    >
-      {/* Collapsible header */}
-      <div
-        className={
-          (sectionCollapsed ? '' : 'mb-3.5 ') +
-          'flex cursor-pointer items-center justify-between select-none'
-        }
-        onClick={toggleSection}
-        role="button"
-        tabIndex={0}
-        aria-label={
-          strategy === 'bwb'
-            ? 'Toggle BWB Live Calculator'
-            : 'Toggle Iron Fly Calculator'
-        }
-        aria-expanded={!sectionCollapsed}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            toggleSection();
-          }
-        }}
-      >
-        <div className="flex items-center gap-2.5">
-          <span
-            className="text-muted text-[12px] transition-transform duration-200"
-            style={{
-              transform: sectionCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-            }}
-            aria-hidden="true"
-          >
-            &#x25BE;
-          </span>
-          <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
-            {strategy === 'bwb' ? 'BWB Live Calculator' : 'Iron Fly Calculator'}
-          </h2>
-        </div>
-        <div
-          onClick={(e) => e.stopPropagation()}
-          className="flex items-center gap-2"
-        >
+      collapsible
+      headerRight={
+        <div className="flex items-center gap-2">
           <div className="flex gap-1">
             {(['bwb', 'iron-fly'] as const).map((s) => (
               <button
@@ -233,65 +192,61 @@ export default function BWBCalculator({
             Clear
           </button>
         </div>
-      </div>
+      }
+    >
+      <BWBInputs
+        strategy={strategy}
+        side={side}
+        contracts={contracts}
+        sweetSpot={sweetSpot}
+        narrowWing={narrowWing}
+        wideWing={wideWing}
+        lowStrike={lowStrike}
+        midStrike={midStrike}
+        highStrike={highStrike}
+        netInput={netInput}
+        isCredit={isCredit}
+        anchor={anchor}
+        useCharm={useCharm}
+        strikesValid={strikesValid}
+        onSideChange={handleSideChange}
+        setContracts={setContracts}
+        onSweetSpotChange={handleSweetSpotChange}
+        onNarrowChange={handleNarrowChange}
+        onWideChange={handleWideChange}
+        setLowStrike={setLowStrike}
+        setMidStrike={setMidStrike}
+        setHighStrike={setHighStrike}
+        setSweetSpot={setSweetSpot}
+        setNetInput={setNetInput}
+        setIsCredit={setIsCredit}
+        setUseCharm={setUseCharm}
+        onRefreshAnchor={refreshAnchor}
+      />
 
-      {!sectionCollapsed && (
-        <>
-          <BWBInputs
-            strategy={strategy}
-            side={side}
-            contracts={contracts}
-            sweetSpot={sweetSpot}
-            narrowWing={narrowWing}
-            wideWing={wideWing}
-            lowStrike={lowStrike}
-            midStrike={midStrike}
-            highStrike={highStrike}
-            netInput={netInput}
-            isCredit={isCredit}
-            anchor={anchor}
-            useCharm={useCharm}
-            strikesValid={strikesValid}
-            onSideChange={handleSideChange}
-            setContracts={setContracts}
-            onSweetSpotChange={handleSweetSpotChange}
-            onNarrowChange={handleNarrowChange}
-            onWideChange={handleWideChange}
-            setLowStrike={setLowStrike}
-            setMidStrike={setMidStrike}
-            setHighStrike={setHighStrike}
-            setSweetSpot={setSweetSpot}
-            setNetInput={setNetInput}
-            setIsCredit={setIsCredit}
-            setUseCharm={setUseCharm}
-            onRefreshAnchor={refreshAnchor}
-          />
-
-          {/* Results — only when all inputs are valid */}
-          {allValid && metrics && (
-            <BWBResults
-              strategy={strategy}
-              side={side}
-              contracts={contracts}
-              low={low}
-              mid={mid}
-              high={high}
-              net={net}
-              metrics={metrics}
-              ironFlyMetrics={ironFlyMetrics}
-              pnlRows={strategy === 'iron-fly' ? ironFlyRows : pnlRows}
-              midStrike={midStrike}
-            />
-          )}
-
-          {/* Empty state */}
-          {!allValid && (
-            <div className="text-muted mt-4 text-center text-sm italic">
-              Enter three strikes and a fill price to see the P&L profile.
-            </div>
-          )}
-        </>
+      {/* Results — only when all inputs are valid */}
+      {allValid && metrics && (
+        <BWBResults
+          strategy={strategy}
+          side={side}
+          contracts={contracts}
+          low={low}
+          mid={mid}
+          high={high}
+          net={net}
+          metrics={metrics}
+          ironFlyMetrics={ironFlyMetrics}
+          pnlRows={strategy === 'iron-fly' ? ironFlyRows : pnlRows}
+          midStrike={midStrike}
+        />
       )}
-    </section>
+
+      {/* Empty state */}
+      {!allValid && (
+        <div className="text-muted mt-4 text-center text-sm italic">
+          Enter three strikes and a fill price to see the P&L profile.
+        </div>
+      )}
+    </SectionBox>
   );
 }

@@ -200,7 +200,6 @@ export default function BWBInputs({
 
         <div className="grid grid-cols-[1fr_1fr] items-end gap-2 sm:grid-cols-[1fr_auto_auto]">
           <div className="col-span-2 sm:col-span-1">
-            <div className={LABEL + ' mb-1'}>Sweet Spot</div>
             <input
               type="text"
               inputMode="decimal"
