@@ -707,9 +707,7 @@ def plot_flow_by_vix(df: pd.DataFrame) -> None:
                 acc_labels.append(None)
                 continue
 
-            subset = has_dir[
-                (has_dir["vix_bin"] == vix_label) & has_dir[col].notna()
-            ]
+            subset = has_dir[(has_dir["vix_bin"] == vix_label) & has_dir[col].notna()]
             n = len(subset)
             x_pos = s_idx + v_idx * bar_width
             x_positions.append(x_pos)

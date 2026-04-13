@@ -338,7 +338,13 @@ def plot_pnl_distribution(
             bin_centers, bin_counts.values, bin_edges[:-1]
         ):
             color = COLORS["green"] if left_edge >= 0 else COLORS["red"]
-            ax.bar(center, count, width=(bin_edges[1] - bin_edges[0]) * 0.85, color=color, alpha=0.85)
+            ax.bar(
+                center,
+                count,
+                width=(bin_edges[1] - bin_edges[0]) * 0.85,
+                color=color,
+                alpha=0.85,
+            )
 
         ax.axvline(x=0, color="white", linestyle="--", alpha=0.5, linewidth=1.0)
         ax.axvline(
