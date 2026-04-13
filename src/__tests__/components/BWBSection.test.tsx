@@ -405,7 +405,7 @@ describe('BWBSection', () => {
   // ============================================================
 
   it('export button shows reload prompt when export throws', async () => {
-    mockExportBWBComparison.mockRejectedValue(new Error('chunk failed'));
+    mockExportBWBComparison.mockRejectedValue(new TypeError('Failed to fetch dynamically imported module: utils/export.js'));
 
     const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
 
@@ -442,7 +442,7 @@ describe('BWBSection', () => {
   });
 
   it('export button does not reload when user declines confirm', async () => {
-    mockExportBWBComparison.mockRejectedValue(new Error('chunk failed'));
+    mockExportBWBComparison.mockRejectedValue(new TypeError('Failed to fetch dynamically imported module: utils/export.js'));
 
     const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(false);
 
