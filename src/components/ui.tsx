@@ -9,6 +9,42 @@ import {
 } from 'react';
 import { CollapseAllContext } from './collapse-context';
 
+function SectionTitle({
+  label,
+  badge,
+  badgeColor,
+}: {
+  label: string;
+  badge?: string | null;
+  badgeColor?: string;
+}) {
+  return (
+    <>
+      <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+        {label}
+      </h2>
+      {badge && (
+        <span
+          className={
+            'rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold' +
+            (badgeColor ? '' : ' text-accent bg-accent-bg')
+          }
+          style={
+            badgeColor
+              ? {
+                  color: badgeColor,
+                  backgroundColor: `color-mix(in srgb, ${badgeColor} 15%, transparent)`,
+                }
+              : undefined
+          }
+        >
+          {badge}
+        </span>
+      )}
+    </>
+  );
+}
+
 /** Reusable section wrapper with label and optional badge */
 export const SectionBox = memo(function SectionBox({
   label,
@@ -59,7 +95,7 @@ export const SectionBox = memo(function SectionBox({
         {collapsible ? (
           <button
             type="button"
-            className="flex flex-1 cursor-pointer select-none items-center gap-2.5 text-left"
+            className="flex flex-1 cursor-pointer items-center gap-2.5 text-left select-none"
             onClick={toggle}
             aria-label={`Toggle ${label}`}
             aria-expanded={isOpen}
@@ -71,51 +107,11 @@ export const SectionBox = memo(function SectionBox({
             >
               &#x25BE;
             </span>
-            <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
-              {label}
-            </h2>
-            {badge && (
-              <span
-                className={
-                  'rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold' +
-                  (badgeColor ? '' : ' text-accent bg-accent-bg')
-                }
-                style={
-                  badgeColor
-                    ? {
-                        color: badgeColor,
-                        backgroundColor: `color-mix(in srgb, ${badgeColor} 15%, transparent)`,
-                      }
-                    : undefined
-                }
-              >
-                {badge}
-              </span>
-            )}
+            <SectionTitle label={label} badge={badge} badgeColor={badgeColor} />
           </button>
         ) : (
           <div className="flex items-center gap-2.5">
-            <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
-              {label}
-            </h2>
-            {badge && (
-              <span
-                className={
-                  'rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold' +
-                  (badgeColor ? '' : ' text-accent bg-accent-bg')
-                }
-                style={
-                  badgeColor
-                    ? {
-                        color: badgeColor,
-                        backgroundColor: `color-mix(in srgb, ${badgeColor} 15%, transparent)`,
-                      }
-                    : undefined
-                }
-              >
-                {badge}
-              </span>
-            )}
+            <SectionTitle label={label} badge={badge} badgeColor={badgeColor} />
           </div>
         )}
         {headerRight}
