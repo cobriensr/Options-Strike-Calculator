@@ -31,7 +31,7 @@ vi.mock('../../hooks/useMLInsights', () => ({
 
 // Must import AFTER vi.mock
 const { default: MLInsights } =
-  await import('../../components/ml-insights/MLInsights');
+  await import('../../components/MLInsights');
 
 // ============================================================
 // HELPERS

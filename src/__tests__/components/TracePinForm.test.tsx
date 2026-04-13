@@ -6,7 +6,7 @@ import {
   waitFor,
   act,
 } from '@testing-library/react';
-import TracePinForm from '../../components/ml-insights/TracePinForm';
+import TracePinForm from '../../components/MLInsights/TracePinForm';
 
 // ---------------------------------------------------------------------------
 // helpers

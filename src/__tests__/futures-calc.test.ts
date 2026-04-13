@@ -11,7 +11,7 @@ import {
   calcTickRow,
   riskRewardRatio,
   maxContractsFromRisk,
-} from '../components/futures/futures-calc';
+} from '../components/FuturesCalculator/futures-calc';
 
 // ── Contract specs ─────────────────────────────────────────────────────────
 

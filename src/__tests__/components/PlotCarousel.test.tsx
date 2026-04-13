@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { MLPlot } from '../../hooks/useMLInsights';
-import PlotCarousel from '../../components/ml-insights/PlotCarousel';
-import FindingsSummary from '../../components/ml-insights/FindingsSummary';
-import PlotAnalysis from '../../components/ml-insights/PlotAnalysis';
+import PlotCarousel from '../../components/MLInsights/PlotCarousel';
+import FindingsSummary from '../../components/MLInsights/FindingsSummary';
+import PlotAnalysis from '../../components/MLInsights/PlotAnalysis';
 
 // ============================================================
 // HELPERS

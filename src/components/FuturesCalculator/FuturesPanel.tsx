@@ -12,7 +12,7 @@ import { useFuturesData } from '../../hooks/useFuturesData';
 import { SectionBox } from '../ui';
 import FuturesGrid from './FuturesGrid';
 import VixTermStructure from './VixTermStructure';
-import FuturesCalculator from './FuturesCalculator';
+import FuturesCalculator from '.';
 
 function formatUpdatedAt(iso: string | null): string | null {
   if (!iso) return null;

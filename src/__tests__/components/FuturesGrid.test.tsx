@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import FuturesGrid from '../../components/futures/FuturesGrid';
+import FuturesGrid from '../../components/FuturesCalculator/FuturesGrid';
 import type { FuturesSnapshot } from '../../hooks/useFuturesData';
 
 // ── Helpers ───────────────────────────────────────────────

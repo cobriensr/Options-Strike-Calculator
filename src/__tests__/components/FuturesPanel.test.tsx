@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import FuturesPanel from '../../components/futures/FuturesPanel';
+import FuturesPanel from '../../components/FuturesCalculator/FuturesPanel';
 import type { FuturesDataState } from '../../hooks/useFuturesData';
 import { useFuturesData } from '../../hooks/useFuturesData';
 

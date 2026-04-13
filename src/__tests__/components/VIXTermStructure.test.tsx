@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import VixTermStructure from '../../components/futures/VixTermStructure';
+import VixTermStructure from '../../components/FuturesCalculator/VixTermStructure';
 import type { FuturesSnapshot } from '../../hooks/useFuturesData';
 
 // ── Helpers ───────────────────────────────────────────────
