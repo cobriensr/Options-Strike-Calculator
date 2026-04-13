@@ -930,3 +930,104 @@ describe('FuturesCalculator — position sizing', () => {
     expect(screen.getByLabelText('Account Balance')).toHaveValue('50000');
   });
 });
+
+// ── Margin cap ────────────────────────────────────────────────────────────────
+
+describe('FuturesCalculator — margin cap', () => {
+  // ES dayMargin = $500. Account $1000 → max 2 contracts.
+  // Clear localStorage before each test so the account field starts empty.
+  beforeEach(() => localStorage.clear());
+
+  it('shows max-by-margin hint when account is set', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '1000');
+    // $1000 / $500 (ES day margin) = 2
+    expect(screen.getByText(/Max.*by margin/)).toHaveTextContent(
+      'Max 2 by margin',
+    );
+  });
+
+  it('+ button is disabled when contracts reach the margin cap', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '1000');
+    const inc = screen.getByRole('button', { name: 'Increase contracts' });
+
+    // Click twice to reach cap of 2
+    await user.click(inc);
+    await user.click(inc);
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('2');
+    expect(inc).toBeDisabled();
+  });
+
+  it('cannot increment past the margin cap', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '1000');
+    const inc = screen.getByRole('button', { name: 'Increase contracts' });
+
+    // Click 5× — should stop at cap of 2
+    for (let i = 0; i < 5; i++) await user.click(inc);
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('2');
+  });
+
+  it('shows insufficient-margin warning when account is below one day margin', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    // ES requires $500/contract; $400 is not enough for 1
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '400');
+    expect(screen.getByText(/Insufficient margin/)).toBeInTheDocument();
+  });
+
+  it('clamps contracts down when switching to a higher-margin symbol', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    // MNQ dayMargin = $100 → $1000 allows 10 contracts
+    await user.click(screen.getByRole('button', { name: 'MNQ' }));
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '1000');
+
+    const inc = screen.getByRole('button', { name: 'Increase contracts' });
+    // Bump to 5 contracts
+    for (let i = 0; i < 4; i++) await user.click(inc);
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('5');
+
+    // Switch to NQ (dayMargin = $1000) → max 1 contract with $1000 account
+    await user.click(screen.getByRole('button', { name: 'NQ' }));
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('1');
+  });
+
+  it('clamps contracts when account balance is reduced', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    // Start with $2000 → ES cap = 4
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '2000');
+    const inc = screen.getByRole('button', { name: 'Increase contracts' });
+    await user.click(inc);
+    await user.click(inc);
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('3');
+
+    // Reduce to $500 → ES cap = 1; contracts should clamp to 1
+    await user.clear(accountInput);
+    await user.type(accountInput, '500');
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('1');
+  });
+});

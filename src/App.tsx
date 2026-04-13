@@ -59,7 +59,9 @@ const ChartAnalysis = lazy(() => import('./components/ChartAnalysis'));
 const RiskCalculator = lazy(() => import('./components/RiskCalculator'));
 const PositionMonitor = lazy(() => import('./components/PositionMonitor'));
 const MLInsights = lazy(() => import('./components/MLInsights'));
-const FuturesPanel = lazy(() => import('./components/FuturesCalculator/FuturesPanel'));
+const FuturesPanel = lazy(
+  () => import('./components/FuturesCalculator/FuturesPanel'),
+);
 
 function SchwabAuthLink({
   ariaLabel,

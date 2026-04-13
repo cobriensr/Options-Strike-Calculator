@@ -125,10 +125,18 @@ export default function FuturesCalculator() {
   const [direction, setDirection] = useState<Direction>('long');
   // Account settings — persisted across sessions via localStorage
   const [accountInput, setAccountInput] = useState(() => {
-    try { return localStorage.getItem('fc-account') ?? ''; } catch { return ''; }
+    try {
+      return localStorage.getItem('fc-account') ?? '';
+    } catch {
+      return '';
+    }
   });
   const [riskPctInput, setRiskPctInput] = useState(() => {
-    try { return localStorage.getItem('fc-riskpct') ?? '1'; } catch { return '1'; }
+    try {
+      return localStorage.getItem('fc-riskpct') ?? '1';
+    } catch {
+      return '1';
+    }
   });
 
   // Trade-specific inputs — cleared on Clear / symbol / direction change
@@ -155,6 +163,11 @@ export default function FuturesCalculator() {
   const derivedMaxRisk =
     accountValid && riskPctValid ? (account * riskPct) / 100 : null;
 
+  // Max contracts the account balance can cover at day margin
+  const maxContractsByMargin = accountValid
+    ? Math.floor(account / spec.dayMargin)
+    : null;
+
   const pctOfAccount = (dollars: number): string | null => {
     if (!accountValid) return null;
     const pct = (dollars / account) * 100;
@@ -163,11 +176,24 @@ export default function FuturesCalculator() {
 
   const handleAccountChange = (v: string) => {
     setAccountInput(v);
-    try { localStorage.setItem('fc-account', v); } catch { /* noop */ }
+    const newAccount = Number.parseFloat(v);
+    if (Number.isFinite(newAccount) && newAccount > 0) {
+      const newMax = Math.floor(newAccount / spec.dayMargin);
+      setContracts((c) => Math.min(c, Math.max(1, newMax)));
+    }
+    try {
+      localStorage.setItem('fc-account', v);
+    } catch {
+      /* noop */
+    }
   };
   const handleRiskPctChange = (v: string) => {
     setRiskPctInput(v);
-    try { localStorage.setItem('fc-riskpct', v); } catch { /* noop */ }
+    try {
+      localStorage.setItem('fc-riskpct', v);
+    } catch {
+      /* noop */
+    }
   };
 
   const clearPrices = useCallback(() => {
@@ -366,6 +392,10 @@ export default function FuturesCalculator() {
                 e.stopPropagation();
                 setSymbol(sym);
                 clearPrices();
+                if (accountValid) {
+                  const newMax = Math.floor(account / SPECS[sym].dayMargin);
+                  setContracts((c) => Math.min(c, Math.max(1, newMax)));
+                }
               }}
               className={chipClass(symbol === sym)}
             >
@@ -448,7 +478,7 @@ export default function FuturesCalculator() {
                   className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] px-3 py-[11px] pr-8 font-mono text-sm transition-[border-color] duration-150 outline-none"
                 />
                 <span
-                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 font-mono text-sm"
+                  className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 font-mono text-sm"
                   style={{ color: theme.textMuted }}
                 >
                   %
@@ -460,11 +490,12 @@ export default function FuturesCalculator() {
                   style={{ color: theme.textMuted }}
                 >
                   Max risk:{' '}
-                  <span
-                    className="font-semibold"
-                    style={{ color: theme.text }}
-                  >
-                    ${derivedMaxRisk!.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <span className="font-semibold" style={{ color: theme.text }}>
+                    $
+                    {derivedMaxRisk!.toLocaleString('en-US', {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
                   </span>
                 </p>
               )}
@@ -553,12 +584,43 @@ export default function FuturesCalculator() {
                 <button
                   type="button"
                   aria-label="Increase contracts"
-                  onClick={() => setContracts((n) => n + 1)}
-                  className="text-secondary hover:text-primary flex h-full w-9 flex-shrink-0 items-center justify-center rounded-r-lg font-mono text-lg leading-none transition-colors"
+                  disabled={
+                    maxContractsByMargin !== null &&
+                    contracts >= maxContractsByMargin
+                  }
+                  onClick={() =>
+                    setContracts((n) =>
+                      maxContractsByMargin !== null
+                        ? Math.min(maxContractsByMargin, n + 1)
+                        : n + 1,
+                    )
+                  }
+                  className="text-secondary hover:text-primary flex h-full w-9 flex-shrink-0 items-center justify-center rounded-r-lg font-mono text-lg leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-30"
                 >
                   +
                 </button>
               </div>
+              {maxContractsByMargin !== null &&
+                (maxContractsByMargin < 1 ? (
+                  <p
+                    className="mt-1 font-sans text-[10px]"
+                    style={{ color: theme.red }}
+                  >
+                    Insufficient margin (need{' '}
+                    {fmtDollar(spec.dayMargin)})
+                  </p>
+                ) : (
+                  <p
+                    className="mt-1 font-sans text-[10px]"
+                    style={{ color: theme.textMuted }}
+                  >
+                    Max{' '}
+                    <span style={{ color: theme.text }}>
+                      {maxContractsByMargin}
+                    </span>{' '}
+                    by margin
+                  </p>
+                ))}
             </div>
           </div>
 
