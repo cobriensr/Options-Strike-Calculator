@@ -162,6 +162,55 @@ function charmTooltip(netCharm: number): string {
     : 'Charm − (negative): dealer delta shrinks over time. Hedging pressure bleeds off toward close — structural influence fades.';
 }
 
+// ── Delta helpers ─────────────────────────────────────────────────────────────
+
+interface Snapshot {
+  strikes: GexStrikeLevel[];
+  ts: number; // unix ms from snapshot timestamp
+}
+
+/** Compute % change in netGamma from prev → current for each strike. */
+function computeDeltaMap(
+  current: GexStrikeLevel[],
+  prev: GexStrikeLevel[],
+): Map<number, number | null> {
+  const prevByStrike = new Map(prev.map((s) => [s.strike, s.netGamma]));
+  const result = new Map<number, number | null>();
+  for (const s of current) {
+    const prevGamma = prevByStrike.get(s.strike);
+    result.set(
+      s.strike,
+      prevGamma === undefined || prevGamma === 0
+        ? null
+        : ((s.netGamma - prevGamma) / Math.abs(prevGamma)) * 100,
+    );
+  }
+  return result;
+}
+
+/**
+ * Find the snapshot in `buf` whose timestamp is closest to `targetTs`.
+ * Returns null if no snapshot falls within `toleranceMs` of the target,
+ * so callers get an empty column rather than a misleading comparison.
+ */
+function findClosestSnapshot(
+  buf: Snapshot[],
+  targetTs: number,
+  toleranceMs = 120_000,
+): Snapshot | null {
+  if (!buf.length) return null;
+  let closest: Snapshot | null = null;
+  let minDiff = Infinity;
+  for (const snap of buf) {
+    const diff = Math.abs(snap.ts - targetTs);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = snap;
+    }
+  }
+  return minDiff <= toleranceMs ? closest : null;
+}
+
 // ── Formatters ────────────────────────────────────────────────────────────────
 
 function fmtGex(n: number): string {
@@ -209,9 +258,10 @@ const GexLandscape = memo(function GexLandscape({
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
   const hasScrolledRef = useRef(false);
-  // Previous snapshot strikes for Δ% computation.
-  const prevStrikesRef = useRef<GexStrikeLevel[]>([]);
+  // Rolling buffer of recent snapshots for Δ% computations (1m and 5m).
+  const snapshotBufferRef = useRef<Snapshot[]>([]);
   const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(new Map());
+  const [gexDelta5mMap, setGexDelta5mMap] = useState<Map<number, number | null>>(new Map());
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -232,8 +282,8 @@ const GexLandscape = memo(function GexLandscape({
     );
   }, [rows, currentPrice]);
 
-  // Strike (within current rows) with the largest absolute GEX Δ% this snapshot.
-  const maxChangedStrike = useMemo(() => {
+  // Strike with the largest absolute 1m GEX Δ% (excludes ATM row).
+  const maxChanged1mStrike = useMemo(() => {
     let maxAbs = 0;
     let maxStrike: number | null = null;
     for (const s of rows) {
@@ -248,13 +298,30 @@ const GexLandscape = memo(function GexLandscape({
     return maxAbs > 0 ? maxStrike : null;
   }, [gexDeltaMap, rows]);
 
-  // When the viewed date changes, reset scroll and Δ% tracking so the new
+  // Strike with the largest absolute 5m GEX Δ% (excludes ATM row).
+  const maxChanged5mStrike = useMemo(() => {
+    let maxAbs = 0;
+    let maxStrike: number | null = null;
+    for (const s of rows) {
+      const pct = gexDelta5mMap.get(s.strike) ?? null;
+      if (pct === null) continue;
+      const abs = Math.abs(pct);
+      if (abs > maxAbs) {
+        maxAbs = abs;
+        maxStrike = s.strike;
+      }
+    }
+    return maxAbs > 0 ? maxStrike : null;
+  }, [gexDelta5mMap, rows]);
+
+  // When the viewed date changes, reset scroll and all Δ% tracking so the new
   // date's first snapshot gets a clean baseline instead of comparing against
   // the previous date's strikes.
   useEffect(() => {
     hasScrolledRef.current = false;
-    prevStrikesRef.current = [];
+    snapshotBufferRef.current = [];
     setGexDeltaMap(new Map());
+    setGexDelta5mMap(new Map());
   }, [selectedDate]);
 
   // Scroll ATM row into view only on initial data arrival.
@@ -266,27 +333,32 @@ const GexLandscape = memo(function GexLandscape({
     }
   }, [loading, rows.length]);
 
-  // Compute GEX Δ% whenever strikes updates (new snapshot from poll).
+  // Compute 1m and 5m GEX Δ% on each new snapshot.
+  // Uses a rolling buffer keyed by snapshot timestamp to avoid duplicate
+  // processing and to support arbitrary lookback windows.
   useEffect(() => {
-    const prev = prevStrikesRef.current;
-    if (prev.length === 0 || strikes.length === 0) {
-      prevStrikesRef.current = strikes;
-      return;
-    }
-    const prevByStrike = new Map(prev.map((s) => [s.strike, s.netGamma]));
-    const deltas = new Map<number, number | null>();
-    for (const s of strikes) {
-      const prevGamma = prevByStrike.get(s.strike);
-      deltas.set(
-        s.strike,
-        prevGamma === undefined || prevGamma === 0
-          ? null
-          : ((s.netGamma - prevGamma) / Math.abs(prevGamma)) * 100,
-      );
-    }
-    setGexDeltaMap(deltas);
-    prevStrikesRef.current = strikes;
-  }, [strikes]);
+    if (!timestamp || strikes.length === 0) return;
+    const now = new Date(timestamp).getTime();
+
+    // Guard: don't process the same snapshot twice (e.g. re-render with same data).
+    if (snapshotBufferRef.current.at(-1)?.ts === now) return;
+
+    // Prune entries older than 10 minutes to keep the buffer bounded.
+    const cutoff = now - 10 * 60 * 1000;
+    const buf = snapshotBufferRef.current.filter((snap) => snap.ts >= cutoff);
+
+    // 1m delta — compare against the most recent buffered snapshot.
+    const prev1m = buf.at(-1);
+    setGexDeltaMap(prev1m ? computeDeltaMap(strikes, prev1m.strikes) : new Map());
+
+    // 5m delta — find the snapshot closest to 5 minutes ago.
+    const snap5m = findClosestSnapshot(buf, now - 5 * 60 * 1000);
+    setGexDelta5mMap(snap5m ? computeDeltaMap(strikes, snap5m.strikes) : new Map());
+
+    // Push current snapshot and persist the updated buffer.
+    buf.push({ strikes, ts: now });
+    snapshotBufferRef.current = buf;
+  }, [strikes, timestamp]);
 
   // ── Header controls ────────────────────────────────────────────────────────
 
@@ -401,8 +473,8 @@ const GexLandscape = memo(function GexLandscape({
 
   // ── Table ──────────────────────────────────────────────────────────────────
 
-  // Strike | Classification | Signal | Net GEX | GEX Δ% | Charm | Vol
-  const cols = 'grid-cols-[76px_130px_1fr_88px_68px_76px_56px]';
+  // Strike | Classification | Signal | Net GEX | 1m Δ% | 5m Δ% | Charm | Vol
+  const cols = 'grid-cols-[76px_130px_1fr_88px_68px_68px_76px_56px]';
 
   return (
     <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
@@ -416,7 +488,8 @@ const GexLandscape = memo(function GexLandscape({
           <div className="px-3 py-2">Classification</div>
           <div className="px-3 py-2">Signal</div>
           <div className="px-3 py-2 text-right">Net GEX</div>
-          <div className="px-3 py-2 text-right">GEX Δ%</div>
+          <div className="px-3 py-2 text-right">1m Δ%</div>
+          <div className="px-3 py-2 text-right">5m Δ%</div>
           <div className="px-3 py-2 text-right">Charm</div>
           <div className="px-3 py-2 text-center">Vol</div>
         </div>
@@ -429,12 +502,17 @@ const GexLandscape = memo(function GexLandscape({
         >
           {rows.map((s) => {
             const isSpot = s.strike === spotStrike?.strike;
-            const isMaxChanged = !isSpot && s.strike === maxChangedStrike;
             const isAboveSpot = s.strike > currentPrice;
+            const isMax1m = !isSpot && s.strike === maxChanged1mStrike;
+            const isMax5m = !isSpot && s.strike === maxChanged5mStrike;
+            // Confluence: same strike leads BOTH timeframes — stronger signal.
+            const isConfluence = isMax1m && isMax5m;
+            const isHighlighted = isMax1m || isMax5m;
             const dir = getDirection(s.strike, currentPrice);
             const cls = classify(s.netGamma, s.netCharm);
             const meta = CLASS_META[cls];
-            const pct = gexDeltaMap.get(s.strike) ?? null;
+            const pct1m = gexDeltaMap.get(s.strike) ?? null;
+            const pct5m = gexDelta5mMap.get(s.strike) ?? null;
 
             return (
               <div
@@ -445,11 +523,15 @@ const GexLandscape = memo(function GexLandscape({
                   `border-edge/30 hover:bg-surface-alt/60 grid border-b transition-colors ${cols}`,
                   isSpot
                     ? 'border-l-2 border-l-sky-400/40 bg-sky-500/10'
-                    : isMaxChanged
+                    : isConfluence
                       ? isAboveSpot
-                        ? 'border-l-2 border-l-green-400/40 bg-green-500/10'
-                        : 'border-l-2 border-l-red-400/40 bg-red-500/10'
-                      : meta.rowBg,
+                        ? 'border-l-2 border-l-green-400/60 bg-green-500/20'
+                        : 'border-l-2 border-l-red-400/60 bg-red-500/20'
+                      : isHighlighted
+                        ? isAboveSpot
+                          ? 'border-l-2 border-l-green-400/40 bg-green-500/10'
+                          : 'border-l-2 border-l-red-400/40 bg-red-500/10'
+                        : meta.rowBg,
                 ].join(' ')}
               >
                 {/* Strike + ATM label */}
@@ -509,20 +591,37 @@ const GexLandscape = memo(function GexLandscape({
                   </span>
                 </div>
 
-                {/* GEX Δ% */}
+                {/* 1m GEX Δ% */}
                 <div className="flex items-center justify-end px-3 py-1.5">
                   <span
                     className="font-mono text-[11px]"
                     style={{
                       color:
-                        pct === null
+                        pct1m === null
                           ? 'var(--color-muted)'
-                          : pct >= 0
+                          : pct1m >= 0
                             ? 'rgba(74,222,128,0.85)'
                             : 'rgba(248,113,113,0.85)',
                     }}
                   >
-                    {fmtPct(pct)}
+                    {fmtPct(pct1m)}
+                  </span>
+                </div>
+
+                {/* 5m GEX Δ% */}
+                <div className="flex items-center justify-end px-3 py-1.5">
+                  <span
+                    className="font-mono text-[11px]"
+                    style={{
+                      color:
+                        pct5m === null
+                          ? 'var(--color-muted)'
+                          : pct5m >= 0
+                            ? 'rgba(74,222,128,0.85)'
+                            : 'rgba(248,113,113,0.85)',
+                    }}
+                  >
+                    {fmtPct(pct5m)}
                   </span>
                 </div>
 
