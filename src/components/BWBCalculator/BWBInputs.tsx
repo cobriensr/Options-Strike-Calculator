@@ -254,19 +254,34 @@ export default function BWBInputs({
         {[
           {
             label: 'Low',
-            sub: 'buy 1',
+            sub:
+              strategy === 'iron-fly'
+                ? 'buy 1 put'
+                : side === 'calls'
+                  ? 'buy 1 call'
+                  : 'buy 1 put',
             strike: lowStrike,
             setStrike: setLowStrike,
           },
           {
             label: 'Mid',
-            sub: strategy === 'iron-fly' ? 'sell straddle' : 'sell \u00D72',
+            sub:
+              strategy === 'iron-fly'
+                ? 'sell put + call'
+                : side === 'calls'
+                  ? 'sell 2 calls'
+                  : 'sell 2 puts',
             strike: midStrike,
             setStrike: setMidStrike,
           },
           {
             label: 'High',
-            sub: 'buy 1',
+            sub:
+              strategy === 'iron-fly'
+                ? 'buy 1 call'
+                : side === 'calls'
+                  ? 'buy 1 call'
+                  : 'buy 1 put',
             strike: highStrike,
             setStrike: setHighStrike,
           },
