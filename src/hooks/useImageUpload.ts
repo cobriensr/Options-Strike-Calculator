@@ -36,7 +36,7 @@ export function useImageUpload(): UseImageUploadReturn {
   const addImage = useCallback(
     (file: File) => {
       if (images.length >= 2) return;
-      const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const id = `img-${crypto.randomUUID()}`;
       const preview = URL.createObjectURL(file);
       setImages((prev) => {
         const usedLabels = new Set(prev.map((i) => i.label));
@@ -82,7 +82,7 @@ export function useImageUpload(): UseImageUploadReturn {
         const old = prev[targetIdx]!;
         URL.revokeObjectURL(old.preview);
         const newImg: UploadedImage = {
-          id: `img-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          id: `img-${crypto.randomUUID()}`,
           file,
           preview: URL.createObjectURL(file),
           label: old.label,

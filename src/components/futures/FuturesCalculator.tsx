@@ -525,12 +525,12 @@ export default function FuturesCalculator() {
               placeholder="5510.00"
             />
             <div>
-              <label
+              <span
                 id="fc-contracts-label"
                 className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
               >
                 Contracts
-              </label>
+              </span>
               <div
                 aria-labelledby="fc-contracts-label"
                 aria-label="Contracts"
