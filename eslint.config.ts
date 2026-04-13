@@ -17,6 +17,7 @@ export default [
       '.clone',
       'sidecar',
       'playwright-report',
+      '.scannerwork',
     ],
   },
   js.configs.recommended,
