@@ -374,7 +374,12 @@ export default function StrikeCalculator() {
             { id: 'sec-gex-target', label: 'GEX Target' },
           ]
         : []),
-      ...(isOwner ? [{ id: 'sec-futures', label: 'Futures' }] : []),
+      ...(isOwner
+        ? [
+            { id: 'sec-futures', label: 'Futures' },
+            { id: 'sec-futures-calc', label: 'Futures Calc' },
+          ]
+        : []),
       ...(hasMarketOrSnapshot ? [{ id: 'sec-charts', label: 'Charts' }] : []),
       { id: 'sec-history', label: 'History' },
       ...(isOwner ? [{ id: 'sec-ml-insights', label: 'ML Insights' }] : []),

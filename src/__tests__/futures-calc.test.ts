@@ -1,0 +1,215 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  SPECS,
+  feesPerSide,
+  roundTripFees,
+  grossPnl,
+  netPnl,
+  breakEvenPrice,
+  calcTrade,
+  calcTickRow,
+} from '../components/futures/futures-calc';
+
+// ── Contract specs ─────────────────────────────────────────────────────────
+
+describe('SPECS', () => {
+  it('ES has correct point value, tick value, and day margin', () => {
+    expect(SPECS.ES.pointValue).toBe(50);
+    expect(SPECS.ES.tickValue).toBe(12.5);
+    expect(SPECS.ES.tickSize).toBe(0.25);
+    expect(SPECS.ES.dayMargin).toBe(500);
+  });
+
+  it('NQ has correct point value, tick value, and day margin', () => {
+    expect(SPECS.NQ.pointValue).toBe(20);
+    expect(SPECS.NQ.tickValue).toBe(5.0);
+    expect(SPECS.NQ.tickSize).toBe(0.25);
+    expect(SPECS.NQ.dayMargin).toBe(1000);
+  });
+
+  it('ES and NQ share the same per-side fee structure', () => {
+    expect(SPECS.ES.exchangeFee).toBe(1.38);
+    expect(SPECS.ES.nfaFee).toBe(0.02);
+    expect(SPECS.ES.clearingFee).toBe(0.19);
+    expect(SPECS.NQ.exchangeFee).toBe(SPECS.ES.exchangeFee);
+    expect(SPECS.NQ.nfaFee).toBe(SPECS.ES.nfaFee);
+    expect(SPECS.NQ.clearingFee).toBe(SPECS.ES.clearingFee);
+  });
+});
+
+// ── feesPerSide ────────────────────────────────────────────────────────────
+
+describe('feesPerSide', () => {
+  it('returns $1.59 for 1 ES contract', () => {
+    expect(feesPerSide(SPECS.ES, 1)).toBeCloseTo(1.59, 10);
+  });
+
+  it('scales linearly with contract count', () => {
+    expect(feesPerSide(SPECS.ES, 3)).toBeCloseTo(4.77, 10);
+    expect(feesPerSide(SPECS.NQ, 5)).toBeCloseTo(7.95, 10);
+  });
+});
+
+// ── roundTripFees ──────────────────────────────────────────────────────────
+
+describe('roundTripFees', () => {
+  it('returns $3.18 round-trip for 1 ES contract', () => {
+    expect(roundTripFees(SPECS.ES, 1)).toBeCloseTo(3.18, 10);
+  });
+
+  it('is exactly twice the per-side fee', () => {
+    expect(roundTripFees(SPECS.NQ, 2)).toBeCloseTo(
+      feesPerSide(SPECS.NQ, 2) * 2,
+      10,
+    );
+  });
+});
+
+// ── grossPnl ───────────────────────────────────────────────────────────────
+
+describe('grossPnl', () => {
+  it('calculates correct ES long P&L for a 10-point gain', () => {
+    // 10 pts × $50/pt × 1 contract = $500
+    expect(grossPnl(SPECS.ES, 5500, 5510, 'long', 1)).toBeCloseTo(500, 10);
+  });
+
+  it('calculates correct ES short P&L for a 10-point gain', () => {
+    // Short means we profit when price falls
+    expect(grossPnl(SPECS.ES, 5510, 5500, 'short', 1)).toBeCloseTo(500, 10);
+  });
+
+  it('returns a loss when long and price falls', () => {
+    expect(grossPnl(SPECS.ES, 5510, 5500, 'long', 1)).toBeCloseTo(-500, 10);
+  });
+
+  it('scales with contract count', () => {
+    expect(grossPnl(SPECS.ES, 5500, 5510, 'long', 3)).toBeCloseTo(1500, 10);
+  });
+
+  it('calculates correct NQ long P&L for a 20-point gain', () => {
+    // 20 pts × $20/pt × 1 contract = $400
+    expect(grossPnl(SPECS.NQ, 21000, 21020, 'long', 1)).toBeCloseTo(400, 10);
+  });
+
+  it('is zero when entry equals exit', () => {
+    expect(grossPnl(SPECS.ES, 5500, 5500, 'long', 1)).toBe(0);
+    expect(grossPnl(SPECS.NQ, 21000, 21000, 'short', 2)).toBe(0);
+  });
+});
+
+// ── netPnl ─────────────────────────────────────────────────────────────────
+
+describe('netPnl', () => {
+  it('subtracts fees from gross P&L', () => {
+    expect(netPnl(500, 3.18)).toBeCloseTo(496.82, 10);
+  });
+
+  it('can return a negative net even on a gross winner if fees exceed gains', () => {
+    // A 1-tick ES winner (gross +$12.50) minus $3.18 fees = +$9.32
+    expect(netPnl(12.5, 3.18)).toBeCloseTo(9.32, 10);
+  });
+
+  it('is worse than gross when fees are positive', () => {
+    expect(netPnl(100, 3.18)).toBeLessThan(100);
+  });
+});
+
+// ── breakEvenPrice ─────────────────────────────────────────────────────────
+
+describe('breakEvenPrice', () => {
+  it('long: break-even is above entry by the fee amount in points', () => {
+    const be = breakEvenPrice(SPECS.ES, 5500, 'long', 1);
+    // $3.18 / $50 per point = 0.0636 pts
+    expect(be).toBeCloseTo(5500 + 3.18 / 50, 8);
+  });
+
+  it('short: break-even is below entry', () => {
+    const be = breakEvenPrice(SPECS.ES, 5500, 'short', 1);
+    expect(be).toBeCloseTo(5500 - 3.18 / 50, 8);
+  });
+
+  it('break-even is independent of contract count (per-contract fees scale evenly)', () => {
+    const be1 = breakEvenPrice(SPECS.ES, 5500, 'long', 1);
+    const be5 = breakEvenPrice(SPECS.ES, 5500, 'long', 5);
+    expect(be1).toBeCloseTo(be5, 10);
+  });
+
+  it('NQ break-even uses the correct NQ point value', () => {
+    const be = breakEvenPrice(SPECS.NQ, 21000, 'long', 1);
+    expect(be).toBeCloseTo(21000 + 3.18 / 20, 8);
+  });
+});
+
+// ── calcTrade ──────────────────────────────────────────────────────────────
+
+describe('calcTrade', () => {
+  it('returns correct full result for an ES long 10-point winner', () => {
+    const result = calcTrade(SPECS.ES, 5500, 5510, 'long', 1);
+    expect(result.gross).toBeCloseTo(500, 10);
+    expect(result.fees).toBeCloseTo(3.18, 10);
+    expect(result.net).toBeCloseTo(496.82, 10);
+    expect(result.points).toBeCloseTo(10, 10);
+    expect(result.ticks).toBeCloseTo(40, 10);
+    expect(result.marginRequired).toBe(500);
+    // ROM = 496.82 / 500 * 100 ≈ 99.364%
+    expect(result.returnOnMarginPct).toBeCloseTo(99.364, 2);
+  });
+
+  it('returns negative net for an ES long loser', () => {
+    const result = calcTrade(SPECS.ES, 5510, 5500, 'long', 1);
+    expect(result.gross).toBeCloseTo(-500, 10);
+    expect(result.net).toBeCloseTo(-503.18, 10);
+    expect(result.returnOnMarginPct).toBeLessThan(0);
+  });
+
+  it('scales margin with contract count', () => {
+    const result = calcTrade(SPECS.ES, 5500, 5510, 'long', 4);
+    expect(result.marginRequired).toBe(2000);
+    expect(result.gross).toBeCloseTo(2000, 10);
+    expect(result.fees).toBeCloseTo(12.72, 10);
+    expect(result.net).toBeCloseTo(1987.28, 10);
+  });
+
+  it('handles NQ correctly', () => {
+    // 10 pts × $20/pt × 2 contracts = $400 gross
+    const result = calcTrade(SPECS.NQ, 21000, 21010, 'long', 2);
+    expect(result.gross).toBeCloseTo(400, 10);
+    expect(result.fees).toBeCloseTo(6.36, 10);
+    expect(result.net).toBeCloseTo(393.64, 10);
+    expect(result.marginRequired).toBe(2000);
+  });
+});
+
+// ── calcTickRow ────────────────────────────────────────────────────────────
+
+describe('calcTickRow', () => {
+  it('1 tick on ES long = $12.50 gross', () => {
+    const row = calcTickRow(SPECS.ES, 5500, 'long', 1, 1);
+    expect(row.gross).toBeCloseTo(12.5, 10);
+    expect(row.net).toBeCloseTo(12.5 - 3.18, 10);
+    expect(row.exitPx).toBeCloseTo(5500.25, 10);
+    expect(row.ticks).toBe(1);
+    expect(row.points).toBeCloseTo(0.25, 10);
+  });
+
+  it('10 ticks on NQ long = $50 gross', () => {
+    // 10 ticks × 0.25 pts/tick × $20/pt = $50
+    const row = calcTickRow(SPECS.NQ, 21000, 'long', 1, 10);
+    expect(row.gross).toBeCloseTo(50, 10);
+    expect(row.net).toBeCloseTo(50 - 3.18, 10);
+    expect(row.exitPx).toBeCloseTo(21002.5, 10);
+  });
+
+  it('exit price goes down for short direction', () => {
+    const row = calcTickRow(SPECS.ES, 5500, 'short', 1, 4);
+    expect(row.exitPx).toBeCloseTo(5499, 10);
+    expect(row.gross).toBeCloseTo(50, 10); // 4 ticks × $12.50
+  });
+
+  it('scales gross linearly with contract count', () => {
+    const row1 = calcTickRow(SPECS.ES, 5500, 'long', 1, 8);
+    const row3 = calcTickRow(SPECS.ES, 5500, 'long', 3, 8);
+    expect(row3.gross).toBeCloseTo(row1.gross * 3, 10);
+  });
+});

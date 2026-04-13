@@ -12,6 +12,7 @@ import { useFuturesData } from '../../hooks/useFuturesData';
 import { SectionBox } from '../ui';
 import FuturesGrid from './FuturesGrid';
 import VixTermStructure from './VixTermStructure';
+import FuturesCalculator from './FuturesCalculator';
 
 function formatUpdatedAt(iso: string | null): string | null {
   if (!iso) return null;
@@ -114,6 +115,10 @@ export default function FuturesPanel() {
             <FuturesGrid snapshots={snapshots} esSpxBasis={esSpxBasis} />
           </div>
         )}
+
+        {/* P&L Calculator — always shown, no data dependency */}
+        <span id="sec-futures-calc" className="block scroll-mt-28" />
+        <FuturesCalculator />
       </div>
     </SectionBox>
   );
