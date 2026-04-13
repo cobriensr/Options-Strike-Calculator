@@ -283,9 +283,9 @@ describe('plot-analysis-prompts.ts', () => {
       const matches = PLOT_ANALYSIS_SYSTEM_PROMPT.match(
         /<calibration_example\/>/g,
       );
-      // Should have one per plot (21 total)
+      // Should have one per plot (33 total)
       expect(matches).not.toBeNull();
-      expect(matches!.length).toBe(21);
+      expect(matches!.length).toBe(33);
     });
 
     it('does not contain filled calibration example tags when all empty', () => {
@@ -354,9 +354,9 @@ describe('plot-analysis-prompts.ts (with calibration)', () => {
     );
 
     // Other plots should still use the self-closing tag
-    // 20 empty calibrations + 1 filled = 20 self-closing
+    // 32 empty calibrations + 1 filled = 32 self-closing
     const selfClosing = prompt.match(/<calibration_example\/>/g);
     expect(selfClosing).not.toBeNull();
-    expect(selfClosing!.length).toBe(20);
+    expect(selfClosing!.length).toBe(32);
   });
 });
