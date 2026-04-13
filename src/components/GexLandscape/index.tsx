@@ -125,6 +125,43 @@ const CLASS_META: Record<GexClassification, ClassMeta> = {
   },
 };
 
+// ── Tooltips ─────────────────────────────────────────────────────────────────
+
+const CLS_TOOLTIP: Record<GexClassification, string> = {
+  'max-launchpad':
+    'Neg γ + Pos charm — dealers are short gamma (pro-cyclical: buy rallies, sell drops) AND their delta is growing as the day ages. Price accelerates through this level; it is not a wall.',
+  'fading-launchpad':
+    'Neg γ + Neg charm — dealers are short gamma (amplify moves) but charm is draining their delta over time. Launch risk fades toward close; strongest early session.',
+  'sticky-pin':
+    'Pos γ + Pos charm — dealers are long gamma (counter-cyclical: sell rallies, buy dips) AND their hedging power grows with time. Strongest wall; gets stickier into close.',
+  'weakening-pin':
+    'Pos γ + Neg charm — dealers are long gamma (dampen moves) but charm is bleeding off their delta. Pin may hold early; loses grip toward close.',
+};
+
+function signalTooltip(cls: GexClassification, dir: Direction): string {
+  const mechanic =
+    cls === 'max-launchpad' || cls === 'fading-launchpad'
+      ? 'Neg gamma: pro-cyclical dealers amplify whichever direction price is moving.'
+      : 'Pos gamma: counter-cyclical dealers sell strength and buy weakness, damping moves.';
+  const position =
+    dir === 'ceiling'
+      ? 'Strike is above spot — functions as resistance.'
+      : dir === 'floor'
+        ? 'Strike is below spot — functions as support.'
+        : 'Strike is at the money — directional pressure is symmetric.';
+  const charm =
+    cls === 'max-launchpad' || cls === 'sticky-pin'
+      ? 'Charm is positive — this structure strengthens as the session ages.'
+      : 'Charm is negative — this structure weakens as the session ages.';
+  return `${mechanic} ${position} ${charm}`;
+}
+
+function charmTooltip(netCharm: number): string {
+  return netCharm >= 0
+    ? 'Charm + (positive): dealer delta grows over time. More futures buying is required as the day ages — upward delta pressure builds into close.'
+    : 'Charm − (negative): dealer delta shrinks over time. Hedging pressure bleeds off toward close — structural influence fades.';
+}
+
 // ── Formatters ────────────────────────────────────────────────────────────────
 
 function fmtGex(n: number): string {
@@ -399,7 +436,8 @@ const GexLandscape = memo(function GexLandscape({
                 {/* Classification badge */}
                 <div className="flex items-center px-3 py-1.5">
                   <span
-                    className={`inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${meta.badgeBg} ${meta.badgeText}`}
+                    className={`inline-block cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${meta.badgeBg} ${meta.badgeText}`}
+                    title={CLS_TOOLTIP[cls]}
                   >
                     {meta.badge}
                   </span>
@@ -420,7 +458,10 @@ const GexLandscape = memo(function GexLandscape({
                   >
                     {dir === 'ceiling' ? '↑' : dir === 'floor' ? '↓' : '●'}
                   </span>
-                  <span className={`font-mono text-[10px] ${meta.badgeText}`}>
+                  <span
+                    className={`cursor-help font-mono text-[10px] ${meta.badgeText}`}
+                    title={signalTooltip(cls, dir)}
+                  >
                     {meta.signal(dir)}
                   </span>
                 </div>
@@ -455,11 +496,12 @@ const GexLandscape = memo(function GexLandscape({
                 {/* Charm */}
                 <div className="flex items-center justify-end px-3 py-1.5">
                   <span
-                    className="font-mono text-[11px]"
+                    className="cursor-help font-mono text-[11px]"
                     style={{
                       color:
                         s.netCharm >= 0 ? 'rgba(74,222,128,0.75)' : 'rgba(248,113,113,0.75)',
                     }}
+                    title={charmTooltip(s.netCharm)}
                   >
                     {fmtGex(s.netCharm)}
                   </span>
