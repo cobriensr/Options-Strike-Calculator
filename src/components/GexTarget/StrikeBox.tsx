@@ -5,8 +5,9 @@
  * rank-change arrow, strike price, distance from spot, 1m delta%,
  * CHEX/DEX/VEX greek bars, GEX $, est. Δ, and HOT% badge.
  *
- * Rank-change tracking: a useState holds the previous render's rank map
- * so per-row ▲/▼/— arrows can be computed safely during render.
+ * Rank-change tracking: a useRef holds the previous snapshot's rank map;
+ * a useState holds the computed RankChangeInfo so arrows persist until the
+ * next data update without triggering a reset re-render.
  *
  * Greek bar sizing uses tanh(|value| / scale) where scale = median
  * abs(value) across the displayed 5-strike set, recomputed on every render.
@@ -14,7 +15,7 @@
  * is rendered in muted gray.
  */
 
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { SectionBox, ScrollHint } from '../ui';
 import { theme } from '../../themes';
@@ -76,13 +77,14 @@ function formatDist(dist: number): string {
   return `${sign}${dist.toFixed(0)}p`;
 }
 
-/** Compact signed label for net values — no decimal, fits tight columns. */
+/** Compact signed label for net values — two decimal places when fractional. */
 function formatNet(v: number): string {
   const abs = Math.abs(v);
   const sign = v >= 0 ? '+' : '−';
   if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(1)}M`;
   if (abs >= 1e3) return `${sign}${Math.round(abs / 1e3)}K`;
-  return `${sign}${Math.round(abs)}`;
+  if (abs >= 0.5) return `${sign}${Math.round(abs)}`;
+  return `${sign}${abs.toFixed(2)}`;
 }
 
 // ── Greek bar stats ───────────────────────────────────────────────────
@@ -159,19 +161,38 @@ const GreekBar = memo(function GreekBar({
 
 // ── Rank change arrow ─────────────────────────────────────────────────
 
-type RankChange = 'up' | 'down' | 'same' | 'new';
+interface RankChangeInfo {
+  type: 'new' | 'up' | 'down' | 'same';
+  /** Positions improved (positive) or worsened (negative). Zero for same/new. */
+  delta: number;
+}
 
-function RankArrow({ change }: Readonly<{ change: RankChange }>) {
-  if (change === 'up')
+function RankArrow({ info }: Readonly<{ info: RankChangeInfo }>) {
+  if (info.type === 'new')
     return (
-      <span style={{ color: theme.green }} aria-label="Rank improved">
-        &#9650;
+      <span
+        style={{ color: '#7c7cff', fontSize: 9, fontWeight: 700 }}
+        aria-label="New entry"
+      >
+        NEW
       </span>
     );
-  if (change === 'down')
+  if (info.type === 'up')
     return (
-      <span style={{ color: theme.red }} aria-label="Rank worsened">
-        &#9660;
+      <span
+        style={{ color: theme.green }}
+        aria-label={`Rank improved by ${info.delta}`}
+      >
+        ↑{info.delta}
+      </span>
+    );
+  if (info.type === 'down')
+    return (
+      <span
+        style={{ color: theme.red }}
+        aria-label={`Rank worsened by ${Math.abs(info.delta)}`}
+      >
+        ↓{Math.abs(info.delta)}
       </span>
     );
   return (
@@ -194,56 +215,49 @@ export const StrikeBox = memo(function StrikeBox({
   // and slices to 5 before passing it in. Use it directly — no re-sort needed.
   const top5 = leaderboard;
 
-  // Track previous GEX$ ranks via state so rank-change arrows can be computed
-  // safely during render. The effect fires after paint and updates prevRanks
-  // for the next leaderboard change — this is the correct React pattern for
-  // "previous value" comparisons (arrows show 'new' on first load, 'same'
-  // on the effect-triggered second render, then correctly show ▲/▼ on
-  // subsequent changes).
-  const [prevRanks, setPrevRanks] = useState<Map<number, number>>(
+  // Track previous ranks in a ref so arrows persist until the NEXT data
+  // update. The old useState approach caused arrows to flash once and
+  // immediately reset to "same" because setPrevRanks triggered a second
+  // render that overwrote the comparison before the user could see it.
+  // A ref updates silently (no re-render) so the computed rankChanges
+  // state is stable until top5 changes again.
+  const prevRanksRef = useRef<Map<number, number>>(new Map());
+  const [rankChanges, setRankChanges] = useState<Map<number, RankChangeInfo>>(
     () => new Map(),
   );
-  // Track rank by display position (1-based index within the displayed top5),
-  // not by rankBySize from the full 10-strike universe. The parent pre-sorts
-  // top5ByGex by |gexDollars| desc, so idx+1 IS the board rank within the
-  // displayed set — consistently 1–5, not the non-sequential universe ranks.
-  useEffect(() => {
-    const m = new Map<number, number>();
-    top5.forEach((s, idx) => m.set(s.strike, idx + 1));
-    setPrevRanks(m);
-  }, [top5]);
 
-  const rankChanges = useMemo<Map<number, RankChange>>(() => {
-    const result = new Map<number, RankChange>();
+  useEffect(() => {
+    const prev = prevRanksRef.current;
+    const result = new Map<number, RankChangeInfo>();
     top5.forEach((s, idx) => {
       const currentRank = idx + 1;
-      const prevRank = prevRanks.get(s.strike);
-      let change: RankChange;
+      const prevRank = prev.get(s.strike);
       if (prevRank === undefined) {
-        change = 'new';
-      } else if (currentRank < prevRank) {
-        change = 'up';
-      } else if (currentRank > prevRank) {
-        change = 'down';
+        result.set(s.strike, { type: 'new', delta: 0 });
       } else {
-        change = 'same';
+        const delta = prevRank - currentRank; // positive = moved up
+        result.set(s.strike, {
+          type: delta > 0 ? 'up' : delta < 0 ? 'down' : 'same',
+          delta,
+        });
       }
-      result.set(s.strike, change);
     });
-    return result;
-  }, [top5, prevRanks]);
+    setRankChanges(result);
+    const m = new Map<number, number>();
+    top5.forEach((s, idx) => m.set(s.strike, idx + 1));
+    prevRanksRef.current = m;
+  }, [top5]);
 
   // Compute per-greek bar stats once per render (scoped to the displayed top5)
   const barStats = useMemo(() => {
     const charmVals = top5.map((s) => s.features.charmNet);
     const deltaVals = top5.map((s) => s.features.deltaNet);
     const vannaVals = top5.map((s) => s.features.vannaNet);
-    // Approximate dealer net delta in contracts via net GEX dollars.
-    // GEX$ / (spot × 100) converts signed GEX dollars to a contract-scaled
-    // proxy: positive = net long gamma (dealer long delta / support);
-    // negative = net short gamma (dealer short delta / resistance).
+    // Net dealer delta in contracts from greek_exposure_strike (call_delta + put_delta).
+    // Positive = dealers net long delta (support); negative = net short delta (resistance).
+    // Falls back to 0 when the JOIN produced no greek exposure row (early session, no data).
     const cpVals = top5.map(
-      (s) => s.features.gexDollars / (s.features.spot * 100),
+      (s) => (s.features.callDelta ?? 0) + (s.features.putDelta ?? 0),
     );
     return {
       charm: computeBarStats(charmVals),
@@ -303,7 +317,7 @@ export const StrikeBox = memo(function StrikeBox({
                 <th
                   className={thCls}
                   scope="col"
-                  title="Approx. dealer delta (contracts) = net GEX$ ÷ (spot × 100). Positive = net long gamma / dealer long delta (support); negative = net short gamma / dealer short delta (resistance). Approximation only."
+                  title="Net dealer delta in contracts (Σ call delta + Σ put delta from greek_exposure_strike). Positive = dealers net long delta (support zone); negative = net short delta (resistance zone)."
                 >
                   est.&nbsp;Δ
                 </th>
@@ -316,7 +330,10 @@ export const StrikeBox = memo(function StrikeBox({
               {top5.map((s, idx) => {
                 const displayRank = idx + 1;
                 const { features } = s;
-                const rankChange = rankChanges.get(s.strike) ?? 'same';
+                const rankChange = rankChanges.get(s.strike) ?? {
+                  type: 'same' as const,
+                  delta: 0,
+                };
 
                 // Dist color: positive = above spot (green), negative = below (red)
                 const distColor =
@@ -331,12 +348,10 @@ export const StrikeBox = memo(function StrikeBox({
                       ? theme.green
                       : theme.red;
 
-                // est. Δ — approximate dealer delta in contracts via net GEX dollars.
-                // GEX$ / (spot × 100) gives a contract-scaled proxy matching
-                // the sign of net gamma: positive = long gamma/delta (support);
-                // negative = short gamma/delta (resistance).
+                // est. Δ — actual net dealer delta in contracts from greek_exposure_strike.
+                // Null when the daily greek exposure cron hasn't run yet (pre-market).
                 const estDealerDelta =
-                  features.gexDollars / (features.spot * 100);
+                  (features.callDelta ?? 0) + (features.putDelta ?? 0);
                 const halfW = BAR_MAX_W / 2;
                 const dealerBarW =
                   Math.tanh(Math.abs(estDealerDelta) / barStats.cp.scale) *
@@ -388,6 +403,9 @@ export const StrikeBox = memo(function StrikeBox({
 
                 // HOT% — absolute 1m delta pct (deltaPct_1m is a fraction, ×100 for display)
                 const hotPct = `${(Math.abs(deltaPct1m ?? 0) * 100).toFixed(0)}%`;
+                // Flag strikes with ≥10% 1m move — the threshold Wonce watches for
+                // "big delta from previous update" as a predictive signal.
+                const isHot = Math.abs(deltaPct1m ?? 0) >= 0.1;
 
                 // GEX color
                 const gexColor =
@@ -448,7 +466,7 @@ export const StrikeBox = memo(function StrikeBox({
 
                     {/* Rank change */}
                     <td className={tdCls} style={{ fontSize: 10 }}>
-                      <RankArrow change={rankChange} />
+                      <RankArrow info={rankChange} />
                     </td>
 
                     {/* Strike */}
@@ -508,8 +526,14 @@ export const StrikeBox = memo(function StrikeBox({
                       <span
                         className="rounded px-1 py-0.5 text-[10px]"
                         style={{
-                          backgroundColor: 'rgba(255,255,255,0.06)',
-                          color: theme.textSecondary,
+                          backgroundColor: isHot
+                            ? 'rgba(255,180,0,0.15)'
+                            : 'rgba(255,255,255,0.06)',
+                          color: isHot ? '#ffb300' : theme.textSecondary,
+                          border: isHot
+                            ? '1px solid rgba(255,180,0,0.35)'
+                            : undefined,
+                          fontWeight: isHot ? 700 : undefined,
                         }}
                       >
                         {hotPct}

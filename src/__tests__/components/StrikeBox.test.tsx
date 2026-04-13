@@ -296,7 +296,7 @@ describe('StrikeBox: target row highlight', () => {
 });
 
 describe('StrikeBox: rank arrows', () => {
-  it('shows Rank unchanged arrow on initial render', () => {
+  it('shows New entry arrow on initial render', () => {
     render(
       <StrikeBox
         leaderboard={[
@@ -307,16 +307,17 @@ describe('StrikeBox: rank arrows', () => {
         ]}
       />,
     );
-    // First render: prevRanks is empty so rank is 'new', which renders
-    // the same — arrow as 'same'. After the effect flushes, rank becomes
-    // 'same' — still the same arrow. Both states are "Rank unchanged".
-    expect(screen.getByLabelText('Rank unchanged')).toBeInTheDocument();
+    // First render: prevRanksRef is empty so every entry is 'new'.
+    // The effect fires and sets rankChanges to {type:'new'}, which persists
+    // until the next top5 change — so the "NEW" badge is what the user sees.
+    expect(screen.getByLabelText('New entry')).toBeInTheDocument();
   });
 });
 
 describe('StrikeBox: delta percentage formatting', () => {
   it('shows — for null deltaPct_1m', () => {
-    // The Δ% cell and the rank arrow both render — (em dash), so use getAllByText.
+    // The Δ% cell renders — for null deltaPct_1m. The rank column now shows
+    // "NEW" on initial render (not —), so only the Δ% cell contributes a dash.
     render(
       <StrikeBox
         leaderboard={[
@@ -326,7 +327,7 @@ describe('StrikeBox: delta percentage formatting', () => {
         ]}
       />,
     );
-    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows formatted positive deltaPct_1m', () => {
@@ -572,9 +573,9 @@ describe('StrikeBox: rank arrows (up / down)', () => {
       />,
     );
 
-    // After first render + effect flush, both arrows are "Rank unchanged"
-    const unchangedArrows = screen.getAllByLabelText('Rank unchanged');
-    expect(unchangedArrows.length).toBeGreaterThanOrEqual(1);
+    // After first render + effect flush, all entries show "New entry" (prevRanksRef was empty)
+    const newArrows = screen.getAllByLabelText('New entry');
+    expect(newArrows.length).toBeGreaterThanOrEqual(1);
 
     // Rerender with swapped order so rank changes fire
     rerender(
@@ -592,11 +593,11 @@ describe('StrikeBox: rank arrows (up / down)', () => {
       />,
     );
 
-    // After rerender the transient ▲ / ▼ arrows appear before prevRanks catches up
-    // We can assert the component didn't crash and arrows are present
+    // After rerender: 5750 was rank 2 → now rank 1 (↑1), 5800 was rank 1 → now rank 2 (↓1).
+    // aria-labels now include the delta count ("Rank improved by 1", "Rank worsened by 1").
     const allArrows = [
-      ...screen.queryAllByLabelText('Rank improved'),
-      ...screen.queryAllByLabelText('Rank worsened'),
+      ...screen.queryAllByLabelText(/Rank improved/),
+      ...screen.queryAllByLabelText(/Rank worsened/),
       ...screen.queryAllByLabelText('Rank unchanged'),
     ];
     expect(allArrows.length).toBeGreaterThanOrEqual(2);
