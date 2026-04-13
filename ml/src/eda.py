@@ -219,8 +219,10 @@ def rule_validation(df: pd.DataFrame) -> None:
             6: "Sat",
         }
         dow_data = []
-        for dow in sorted(dr["day_of_week"].dropna().astype(int).unique()):
-            subset = dr[dr["day_of_week"].astype(int) == dow]["day_range_pts"]
+        dr_dow = dr[dr["day_of_week"].notna()].copy()
+        dr_dow["day_of_week"] = dr_dow["day_of_week"].astype(int)
+        for dow in sorted(dr_dow["day_of_week"].unique()):
+            subset = dr_dow[dr_dow["day_of_week"] == dow]["day_range_pts"]
             if len(subset) > 0:
                 name = day_names.get(dow, str(dow))
                 dow_data.append((name, len(subset), subset.mean(), subset.median()))

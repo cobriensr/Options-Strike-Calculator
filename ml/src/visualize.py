@@ -1146,7 +1146,7 @@ def plot_structure_confidence(df: pd.DataFrame) -> None:
 
 
 def plot_day_of_week(df: pd.DataFrame) -> None:
-    has_range = df[df["day_range_pts"].notna()].copy()
+    has_range = df[df["day_range_pts"].notna() & df["day_of_week"].notna()].copy()
     has_range["range"] = has_range["day_range_pts"].astype(float)
     has_range["dow"] = has_range["day_of_week"].astype(int)
 
