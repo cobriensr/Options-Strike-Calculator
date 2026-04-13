@@ -123,11 +123,19 @@ function ResultRow({
 export default function FuturesCalculator() {
   const [symbol, setSymbol] = useState<FuturesSymbol>('ES');
   const [direction, setDirection] = useState<Direction>('long');
+  // Account settings — persisted across sessions via localStorage
+  const [accountInput, setAccountInput] = useState(() => {
+    try { return localStorage.getItem('fc-account') ?? ''; } catch { return ''; }
+  });
+  const [riskPctInput, setRiskPctInput] = useState(() => {
+    try { return localStorage.getItem('fc-riskpct') ?? '1'; } catch { return '1'; }
+  });
+
+  // Trade-specific inputs — cleared on Clear / symbol / direction change
   const [entryInput, setEntryInput] = useState('');
   const [exitInput, setExitInput] = useState('');
   const [adverseInput, setAdverseInput] = useState('');
   const [favorableInput, setFavorableInput] = useState('');
-  const [maxRiskInput, setMaxRiskInput] = useState('');
   const [contracts, setContracts] = useState(1);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -139,6 +147,29 @@ export default function FuturesCalculator() {
   const exitValid = Number.isFinite(exit) && exit > 0;
   const contractsValid = Number.isFinite(contracts) && contracts >= 1;
 
+  // Account settings — derived values
+  const account = Number.parseFloat(accountInput);
+  const accountValid = Number.isFinite(account) && account > 0;
+  const riskPct = Number.parseFloat(riskPctInput);
+  const riskPctValid = Number.isFinite(riskPct) && riskPct > 0;
+  const derivedMaxRisk =
+    accountValid && riskPctValid ? (account * riskPct) / 100 : null;
+
+  const pctOfAccount = (dollars: number): string | null => {
+    if (!accountValid) return null;
+    const pct = (dollars / account) * 100;
+    return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% of account`;
+  };
+
+  const handleAccountChange = (v: string) => {
+    setAccountInput(v);
+    try { localStorage.setItem('fc-account', v); } catch { /* noop */ }
+  };
+  const handleRiskPctChange = (v: string) => {
+    setRiskPctInput(v);
+    try { localStorage.setItem('fc-riskpct', v); } catch { /* noop */ }
+  };
+
   const clearPrices = useCallback(() => {
     setEntryInput('');
     setExitInput('');
@@ -146,15 +177,14 @@ export default function FuturesCalculator() {
     setFavorableInput('');
   }, []);
 
+  // Clear only resets trade data — account settings survive
   const handleClear = useCallback(() => {
     setEntryInput('');
     setExitInput('');
     setAdverseInput('');
     setFavorableInput('');
-    setMaxRiskInput('');
     setContracts(1);
   }, []);
-
 
   // Full P&L (both entry and exit)
   const calc = useMemo(
@@ -240,30 +270,30 @@ export default function FuturesCalculator() {
     return riskRewardRatio(entry, exit, adverse, direction);
   }, [entryValid, exitValid, adverseValid, entry, exit, adverse, direction]);
 
-  // Position sizing — max contracts within a dollar risk budget
-  const maxRisk = Number.parseFloat(maxRiskInput);
-  const maxRiskValid = Number.isFinite(maxRisk) && maxRisk > 0;
+  // Position sizing — derived from account balance × risk % + stop distance
   const positionSize = useMemo(() => {
-    if (!entryValid || !adverseValid || !maxRiskValid) return null;
+    if (!entryValid || !adverseValid || derivedMaxRisk === null) return null;
+    const stopPts = direction === 'long' ? entry - adverse : adverse - entry;
+    if (stopPts <= 0) return null;
     return {
-      contracts: maxContractsFromRisk(spec, entry, adverse, direction, maxRisk),
-      riskPerContract: (() => {
-        const stopPts =
-          direction === 'long' ? entry - adverse : adverse - entry;
-        return stopPts > 0
-          ? stopPts * spec.pointValue + roundTripFees(spec, 1)
-          : 0;
-      })(),
+      contracts: maxContractsFromRisk(
+        spec,
+        entry,
+        adverse,
+        direction,
+        derivedMaxRisk,
+      ),
+      riskPerContract: stopPts * spec.pointValue + roundTripFees(spec, 1),
+      maxRisk: derivedMaxRisk,
     };
   }, [
     entryValid,
     adverseValid,
-    maxRiskValid,
+    derivedMaxRisk,
     spec,
     entry,
     adverse,
     direction,
-    maxRisk,
   ]);
 
   const chipClass = (active: boolean) =>
@@ -303,7 +333,9 @@ export default function FuturesCalculator() {
           <div className="flex items-center gap-2.5">
             <span
               className="text-muted text-[12px] transition-transform duration-200"
-              style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+              style={{
+                transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+              }}
               aria-hidden="true"
             >
               &#x25BE;
@@ -314,7 +346,10 @@ export default function FuturesCalculator() {
           </div>
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); handleClear(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleClear();
+            }}
             className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
           >
             Clear
@@ -380,6 +415,60 @@ export default function FuturesCalculator() {
               </span>{' '}
               / contract
             </span>
+          </div>
+
+          {/* Account settings — persistent, not cleared by Clear button */}
+          <div className="grid grid-cols-2 gap-3">
+            <PriceInput
+              id="fc-account"
+              label="Account Balance"
+              value={accountInput}
+              onChange={handleAccountChange}
+              placeholder="50000.00"
+            />
+            <div>
+              <label
+                htmlFor="fc-riskpct"
+                className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
+              >
+                Risk % per Trade
+              </label>
+              <div className="relative">
+                <input
+                  id="fc-riskpct"
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="1.00"
+                  value={riskPctInput}
+                  onChange={(e) =>
+                    handleRiskPctChange(
+                      e.target.value.replaceAll(/[^0-9.]/g, ''),
+                    )
+                  }
+                  className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] px-3 py-[11px] pr-8 font-mono text-sm transition-[border-color] duration-150 outline-none"
+                />
+                <span
+                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 font-mono text-sm"
+                  style={{ color: theme.textMuted }}
+                >
+                  %
+                </span>
+              </div>
+              {accountValid && riskPctValid && (
+                <p
+                  className="mt-1 font-sans text-[10px]"
+                  style={{ color: theme.textMuted }}
+                >
+                  Max risk:{' '}
+                  <span
+                    className="font-semibold"
+                    style={{ color: theme.text }}
+                  >
+                    ${derivedMaxRisk!.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Direction toggle */}
@@ -473,9 +562,9 @@ export default function FuturesCalculator() {
             </div>
           </div>
 
-          {/* Row 2: Adverse (MAE) | Favorable (MFE) | Max $ Risk — shown when entry valid */}
+          {/* Row 2: Adverse (MAE) | Favorable (MFE) — shown when entry valid */}
           {entryValid && (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <PriceInput
                 id="fc-adverse"
                 label={
@@ -497,13 +586,6 @@ export default function FuturesCalculator() {
                 value={favorableInput}
                 onChange={setFavorableInput}
                 placeholder={direction === 'long' ? '5520.00' : '5480.00'}
-              />
-              <PriceInput
-                id="fc-maxrisk"
-                label="Max $ Risk"
-                value={maxRiskInput}
-                onChange={setMaxRiskInput}
-                placeholder="500.00"
               />
             </div>
           )}
@@ -541,6 +623,13 @@ export default function FuturesCalculator() {
                   color={pnlColor(adverseCalc.net)}
                   bold
                 />
+                {pctOfAccount(adverseCalc.net) !== null && (
+                  <ResultRow
+                    label="Account impact"
+                    value={pctOfAccount(adverseCalc.net)!}
+                    color={pnlColor(adverseCalc.net)}
+                  />
+                )}
               </div>
             </div>
           )}
@@ -578,6 +667,13 @@ export default function FuturesCalculator() {
                   color={pnlColor(favorableCalc.net)}
                   bold
                 />
+                {pctOfAccount(favorableCalc.net) !== null && (
+                  <ResultRow
+                    label="Account impact"
+                    value={pctOfAccount(favorableCalc.net)!}
+                    color={pnlColor(favorableCalc.net)}
+                  />
+                )}
               </div>
             </div>
           )}
@@ -599,16 +695,21 @@ export default function FuturesCalculator() {
               </div>
               <div className="divide-edge divide-y">
                 <ResultRow
+                  label={`Budget (${riskPct.toFixed(2)}% of ${fmtDollar(account)})`}
+                  value={fmtDollar(positionSize.maxRisk)}
+                  color={theme.textMuted}
+                />
+                <ResultRow
                   label="Risk per contract (stop loss + fees)"
                   value={fmtDollar(positionSize.riskPerContract)}
                   color={theme.red}
                 />
                 <ResultRow
-                  label={`Max contracts within ${fmtDollar(maxRisk)} budget`}
+                  label="Max contracts"
                   value={
                     positionSize.contracts > 0
                       ? `${positionSize.contracts} contract${positionSize.contracts !== 1 ? 's' : ''}`
-                      : 'budget too small'
+                      : 'budget too small for 1 contract'
                   }
                   color={
                     positionSize.contracts > 0 ? theme.green : theme.textMuted
@@ -707,6 +808,13 @@ export default function FuturesCalculator() {
                           ? theme.caution
                           : theme.red
                     }
+                  />
+                )}
+                {pctOfAccount(calc.net) !== null && (
+                  <ResultRow
+                    label="Account impact"
+                    value={pctOfAccount(calc.net)!}
+                    color={pnlColor(calc.net)}
                   />
                 )}
                 <ResultRow

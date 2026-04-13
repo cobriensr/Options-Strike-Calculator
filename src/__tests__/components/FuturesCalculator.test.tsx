@@ -437,7 +437,9 @@ describe('FuturesCalculator — full P&L results', () => {
 
     await fillEntry(user, '5500');
     await fillExit(user, '5510');
-    await user.click(screen.getByRole('button', { name: 'Increase contracts' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Increase contracts' }),
+    );
 
     // 2 contracts: gross $1000, fees $11.52, net $988.48
     expect(screen.getByText('+$1,000.00')).toBeInTheDocument();
@@ -523,7 +525,9 @@ describe('FuturesCalculator — contracts stepper', () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
-    await user.click(screen.getByRole('button', { name: 'Increase contracts' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Increase contracts' }),
+    );
 
     expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('2');
   });
@@ -532,7 +536,9 @@ describe('FuturesCalculator — contracts stepper', () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
-    await user.click(screen.getByRole('button', { name: 'Decrease contracts' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Decrease contracts' }),
+    );
 
     expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('1');
   });
@@ -544,7 +550,9 @@ describe('FuturesCalculator — contracts stepper', () => {
     const inc = screen.getByRole('button', { name: 'Increase contracts' });
     await user.click(inc);
     await user.click(inc);
-    await user.click(screen.getByRole('button', { name: 'Decrease contracts' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Decrease contracts' }),
+    );
 
     expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('2');
   });
@@ -712,10 +720,7 @@ describe('FuturesCalculator — favorable excursion (MFE)', () => {
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
-    await user.type(
-      screen.getByLabelText('Favorable / Target (High)'),
-      '5520',
-    );
+    await user.type(screen.getByLabelText('Favorable / Target (High)'), '5520');
 
     expect(screen.getByText(/Max Favorable Excursion/i)).toBeInTheDocument();
   });
@@ -726,10 +731,7 @@ describe('FuturesCalculator — favorable excursion (MFE)', () => {
 
     // Long ES: entry 5500, favorable 5520 → +20 pts × $50 = $1000 gross, net $994.24
     await fillEntry(user, '5500');
-    await user.type(
-      screen.getByLabelText('Favorable / Target (High)'),
-      '5520',
-    );
+    await user.type(screen.getByLabelText('Favorable / Target (High)'), '5520');
 
     expect(screen.getByText('+$994.24')).toBeInTheDocument();
   });
@@ -739,10 +741,7 @@ describe('FuturesCalculator — favorable excursion (MFE)', () => {
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
-    await user.type(
-      screen.getByLabelText('Favorable / Target (High)'),
-      '5520',
-    );
+    await user.type(screen.getByLabelText('Favorable / Target (High)'), '5520');
 
     expect(screen.getByText(/Max Favorable Excursion/i)).toBeInTheDocument();
     expect(screen.getByText('Net upside (after fees)')).toBeInTheDocument();
@@ -753,10 +752,7 @@ describe('FuturesCalculator — favorable excursion (MFE)', () => {
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
-    await user.type(
-      screen.getByLabelText('Favorable / Target (High)'),
-      '5520',
-    );
+    await user.type(screen.getByLabelText('Favorable / Target (High)'), '5520');
     await user.click(screen.getByRole('button', { name: 'Clear' }));
 
     expect(
@@ -802,23 +798,92 @@ describe('FuturesCalculator — R:R ratio', () => {
   });
 });
 
-// ── Position sizing ───────────────────────────────────────────────────────────
+// ── Account settings ──────────────────────────────────────────────────────────
 
-describe('FuturesCalculator — position sizing', () => {
-  it('shows position sizing panel when entry + adverse + max risk are provided', async () => {
+describe('FuturesCalculator — account settings', () => {
+  it('renders Account Balance and Risk % inputs', () => {
+    render(<FuturesCalculator />);
+    expect(screen.getByLabelText('Account Balance')).toBeInTheDocument();
+    expect(screen.getByLabelText('Risk % per Trade')).toBeInTheDocument();
+  });
+
+  it('shows derived max risk when account and risk % are entered', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '50000');
+    // risk % field already has default "1" from localStorage/state init
+    // $50,000 × 1% = $500
+    expect(screen.getByText('$500.00')).toBeInTheDocument();
+  });
+
+  it('account balance is not cleared when Clear is clicked', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '50000');
+    await fillEntry(user, '5500');
+    await user.click(screen.getByRole('button', { name: 'Clear' }));
+
+    expect(screen.getByLabelText('Account Balance')).toHaveValue('50000');
+  });
+
+  it('shows % of account in MAE panel when account is set', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '50000');
     await fillEntry(user, '5500');
     await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
-    await user.type(screen.getByLabelText('Max $ Risk'), '500');
+
+    // net MAE = -$505.76 / $50,000 = -1.01%
+    expect(screen.getByText(/-1\.01% of account/)).toBeInTheDocument();
+  });
+
+  it('shows % of account in trade results when account is set', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '50000');
+    await fillEntry(user, '5500');
+    await fillExit(user, '5510');
+
+    // net = +$494.24 / $50,000 = +0.99%
+    expect(screen.getByText(/\+0\.99% of account/)).toBeInTheDocument();
+  });
+});
+
+// ── Position sizing ───────────────────────────────────────────────────────────
+
+describe('FuturesCalculator — position sizing', () => {
+  it('shows position sizing panel when entry + adverse + account + risk% set', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '50000');
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
 
     expect(screen.getByText('Position Sizing')).toBeInTheDocument();
   });
 
-  it('does not show position sizing without max risk', async () => {
+  it('does not show position sizing without account balance', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
+
+    // Clear account (default state has empty account from localStorage mock)
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
 
     await fillEntry(user, '5500');
     await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
@@ -830,27 +895,38 @@ describe('FuturesCalculator — position sizing', () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
-    // ES, 10-pt stop: risk = 10×$50 + $5.76 = $505.76 → $200 budget → 0 contracts
+    // ES, 10-pt stop: risk/contract = $505.76. Account $1000 × 0.01% = $0.10 → 0 contracts
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '1000');
+
+    const riskInput = screen.getByLabelText('Risk % per Trade');
+    await user.clear(riskInput);
+    await user.type(riskInput, '0.01');
+
     await fillEntry(user, '5500');
     await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
-    await user.type(screen.getByLabelText('Max $ Risk'), '200');
 
-    expect(screen.getByText('budget too small')).toBeInTheDocument();
+    expect(
+      screen.getByText('budget too small for 1 contract'),
+    ).toBeInTheDocument();
   });
 
-  it('clears max risk and hides panel when Clear is clicked', async () => {
+  it('hides position sizing panel when Clear is clicked (entry cleared)', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
+    const accountInput = screen.getByLabelText('Account Balance');
+    await user.clear(accountInput);
+    await user.type(accountInput, '50000');
     await fillEntry(user, '5500');
     await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
-    await user.type(screen.getByLabelText('Max $ Risk'), '500');
     expect(screen.getByText('Position Sizing')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Clear' }));
 
-    // Second row unmounts when entry is cleared
     expect(screen.queryByText('Position Sizing')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Max $ Risk')).not.toBeInTheDocument();
+    // Account balance survives Clear
+    expect(screen.getByLabelText('Account Balance')).toHaveValue('50000');
   });
 });

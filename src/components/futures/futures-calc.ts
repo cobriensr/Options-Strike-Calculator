@@ -80,7 +80,10 @@ export const SPECS: Record<FuturesSymbol, ContractSpec> = {
 /** Per-side cost for a given number of contracts (exchange + NFA + clearing + broker). */
 export function feesPerSide(spec: ContractSpec, contracts: number): number {
   return (
-    (spec.exchangeFee + spec.nfaFee + spec.clearingFee + spec.brokerCommission) *
+    (spec.exchangeFee +
+      spec.nfaFee +
+      spec.clearingFee +
+      spec.brokerCommission) *
     contracts
   );
 }
@@ -183,7 +186,8 @@ export function maxContractsFromRisk(
 ): number {
   const stopPts = direction === 'long' ? entry - stop : stop - entry;
   if (stopPts <= 0 || maxDollarRisk <= 0) return 0;
-  const dollarRiskPerContract = stopPts * spec.pointValue + roundTripFees(spec, 1);
+  const dollarRiskPerContract =
+    stopPts * spec.pointValue + roundTripFees(spec, 1);
   return Math.max(0, Math.floor(maxDollarRisk / dollarRiskPerContract));
 }
 
