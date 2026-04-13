@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import FuturesCalculator from '../../components/futures/FuturesCalculator';
 
@@ -67,11 +67,16 @@ describe('FuturesCalculator — initial render', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders entry, exit, and contracts inputs', () => {
+  it('renders entry, exit, and contracts stepper', () => {
     render(<FuturesCalculator />);
     expect(screen.getByLabelText('Entry Price')).toBeInTheDocument();
     expect(screen.getByLabelText('Exit Price')).toBeInTheDocument();
-    expect(screen.getByLabelText('Contracts')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Increase contracts' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Decrease contracts' }),
+    ).toBeInTheDocument();
   });
 
   it('shows empty state when no entry is provided', () => {
@@ -79,9 +84,9 @@ describe('FuturesCalculator — initial render', () => {
     expect(screen.getByText(/Enter an entry price/)).toBeInTheDocument();
   });
 
-  it('contracts input defaults to 1', () => {
+  it('contracts stepper defaults to 1', () => {
     render(<FuturesCalculator />);
-    expect(screen.getByLabelText('Contracts')).toHaveValue(1);
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('1');
   });
 });
 
@@ -311,9 +316,10 @@ describe('FuturesCalculator — tick ladder', () => {
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
-    fireEvent.change(screen.getByLabelText('Contracts'), {
-      target: { value: '3' },
-    });
+    // Increment from 1 → 3
+    const inc = screen.getByRole('button', { name: 'Increase contracts' });
+    await user.click(inc);
+    await user.click(inc);
 
     // 3× $2.88 each side → total -$17.28
     expect(screen.getByText('-$17.28')).toBeInTheDocument();
@@ -431,11 +437,9 @@ describe('FuturesCalculator — full P&L results', () => {
 
     await fillEntry(user, '5500');
     await fillExit(user, '5510');
-    fireEvent.change(screen.getByLabelText('Contracts'), {
-      target: { value: '2' },
-    });
+    await user.click(screen.getByRole('button', { name: 'Increase contracts' }));
 
-    // 2 contracts: gross $1000, fees $6.36, net $993.64
+    // 2 contracts: gross $1000, fees $11.52, net $988.48
     expect(screen.getByText('+$1,000.00')).toBeInTheDocument();
     expect(screen.getByText('+$988.48')).toBeInTheDocument();
     expect(screen.getByText('$1,000.00')).toBeInTheDocument(); // margin (2 × $500)
@@ -447,9 +451,9 @@ describe('FuturesCalculator — full P&L results', () => {
 
     await fillEntry(user, '5500');
     await fillExit(user, '5510');
-    fireEvent.change(screen.getByLabelText('Contracts'), {
-      target: { value: '3' },
-    });
+    const inc = screen.getByRole('button', { name: 'Increase contracts' });
+    await user.click(inc);
+    await user.click(inc);
 
     expect(screen.getByText(/3 contracts/)).toBeInTheDocument();
   });
@@ -490,12 +494,14 @@ describe('FuturesCalculator — Clear button', () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
-    fireEvent.change(screen.getByLabelText('Contracts'), {
-      target: { value: '5' },
-    });
+    const inc = screen.getByRole('button', { name: 'Increase contracts' });
+    await user.click(inc);
+    await user.click(inc);
+    await user.click(inc);
+    await user.click(inc);
     await user.click(screen.getByRole('button', { name: 'Clear' }));
 
-    expect(screen.getByLabelText('Contracts')).toHaveValue(1);
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('1');
   });
 
   it('returns to empty state after clearing', async () => {
@@ -510,23 +516,37 @@ describe('FuturesCalculator — Clear button', () => {
   });
 });
 
-// ── Contracts input ───────────────────────────────────────────────────────────
+// ── Contracts stepper ────────────────────────────────────────────────────────
 
-describe('FuturesCalculator — contracts input', () => {
-  it('accepts a valid integer', () => {
+describe('FuturesCalculator — contracts stepper', () => {
+  it('increments on + click', async () => {
+    const user = userEvent.setup();
     render(<FuturesCalculator />);
-    fireEvent.change(screen.getByLabelText('Contracts'), {
-      target: { value: '4' },
-    });
-    expect(screen.getByLabelText('Contracts')).toHaveValue(4);
+
+    await user.click(screen.getByRole('button', { name: 'Increase contracts' }));
+
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('2');
   });
 
-  it('resets to 1 when empty value is entered', () => {
+  it('decrements on − click but does not go below 1', async () => {
+    const user = userEvent.setup();
     render(<FuturesCalculator />);
-    fireEvent.change(screen.getByLabelText('Contracts'), {
-      target: { value: '' },
-    });
-    expect(screen.getByLabelText('Contracts')).toHaveValue(1);
+
+    await user.click(screen.getByRole('button', { name: 'Decrease contracts' }));
+
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('1');
+  });
+
+  it('decrements correctly from 3 → 2', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    const inc = screen.getByRole('button', { name: 'Increase contracts' });
+    await user.click(inc);
+    await user.click(inc);
+    await user.click(screen.getByRole('button', { name: 'Decrease contracts' }));
+
+    expect(screen.getByTestId('fc-contracts-display')).toHaveTextContent('2');
   });
 });
 

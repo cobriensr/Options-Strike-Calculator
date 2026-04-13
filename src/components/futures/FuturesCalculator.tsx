@@ -148,11 +148,6 @@ export default function FuturesCalculator() {
     setContracts(1);
   }, []);
 
-  const handleContractsChange = (v: string) => {
-    const n = Number.parseInt(v);
-    if (Number.isFinite(n) && n >= 1) setContracts(n);
-    else if (v === '') setContracts(1);
-  };
 
   // Full P&L (both entry and exit)
   const calc = useMemo(
@@ -389,20 +384,39 @@ export default function FuturesCalculator() {
             />
             <div>
               <label
-                htmlFor="fc-contracts"
+                id="fc-contracts-label"
                 className="text-tertiary mb-1.5 block font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
               >
                 Contracts
               </label>
-              <input
-                id="fc-contracts"
-                type="number"
-                min={1}
-                step={1}
-                value={contracts}
-                onChange={(e) => handleContractsChange(e.target.value)}
-                className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] px-3 py-[11px] font-mono text-sm transition-[border-color] duration-150 outline-none"
-              />
+              <div
+                aria-labelledby="fc-contracts-label"
+                aria-label="Contracts"
+                className="bg-input border-edge-strong flex h-[43px] items-center rounded-lg border-[1.5px]"
+              >
+                <button
+                  type="button"
+                  aria-label="Decrease contracts"
+                  onClick={() => setContracts((n) => Math.max(1, n - 1))}
+                  className="text-secondary hover:text-primary flex h-full w-9 flex-shrink-0 items-center justify-center rounded-l-lg font-mono text-lg leading-none transition-colors"
+                >
+                  −
+                </button>
+                <span
+                  data-testid="fc-contracts-display"
+                  className="text-primary flex-1 text-center font-mono text-sm font-medium tabular-nums"
+                >
+                  {contracts}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Increase contracts"
+                  onClick={() => setContracts((n) => n + 1)}
+                  className="text-secondary hover:text-primary flex h-full w-9 flex-shrink-0 items-center justify-center rounded-r-lg font-mono text-lg leading-none transition-colors"
+                >
+                  +
+                </button>
+              </div>
             </div>
             {entryValid && (
               <PriceInput
