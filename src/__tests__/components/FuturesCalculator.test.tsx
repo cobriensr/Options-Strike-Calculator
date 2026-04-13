@@ -36,10 +36,12 @@ describe('FuturesCalculator — initial render', () => {
     expect(screen.getByText(/Futures P&L Calculator/i)).toBeInTheDocument();
   });
 
-  it('renders ES and NQ symbol chips', () => {
+  it('renders all four symbol chips', () => {
     render(<FuturesCalculator />);
     expect(screen.getByRole('button', { name: 'ES' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'NQ' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'MES' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'MNQ' })).toBeInTheDocument();
   });
 
   it('renders Clear button', () => {
@@ -169,6 +171,30 @@ describe('FuturesCalculator — symbol switching', () => {
 
     expect(screen.getByText(/E-Mini S&P 500/)).toBeInTheDocument();
     expect(screen.getByText('$50')).toBeInTheDocument();
+  });
+
+  it('switching to MES updates the spec bar', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await user.click(screen.getByRole('button', { name: 'MES' }));
+
+    expect(screen.getByText(/Micro E-Mini S&P 500/)).toBeInTheDocument();
+    expect(screen.getByText('$5')).toBeInTheDocument();
+    expect(screen.getByText('$1.25')).toBeInTheDocument();
+    expect(screen.getByText('$50')).toBeInTheDocument();
+  });
+
+  it('switching to MNQ updates the spec bar', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await user.click(screen.getByRole('button', { name: 'MNQ' }));
+
+    expect(screen.getByText(/Micro E-Mini NASDAQ 100/)).toBeInTheDocument();
+    expect(screen.getByText('$2')).toBeInTheDocument();
+    expect(screen.getByText('$0.5')).toBeInTheDocument();
+    expect(screen.getByText('$100')).toBeInTheDocument();
   });
 
   it('switching symbol clears prices then uses new spec', async () => {

@@ -10,7 +10,7 @@
  *   Round-trip: $5.76 per contract
  */
 
-export type FuturesSymbol = 'ES' | 'NQ';
+export type FuturesSymbol = 'ES' | 'NQ' | 'MES' | 'MNQ';
 export type Direction = 'long' | 'short';
 
 export interface ContractSpec {
@@ -50,6 +50,30 @@ export const SPECS: Record<FuturesSymbol, ContractSpec> = {
     nfaFee: 0.02,
     clearingFee: 0.19,
     brokerCommission: 1.29,
+  },
+  MES: {
+    label: '/MES',
+    name: 'Micro E-Mini S&P 500',
+    pointValue: 5,
+    tickSize: 0.25,
+    tickValue: 1.25,
+    dayMargin: 50,
+    exchangeFee: 0.35,
+    nfaFee: 0.02,
+    clearingFee: 0.19,
+    brokerCommission: 0.95,
+  },
+  MNQ: {
+    label: '/MNQ',
+    name: 'Micro E-Mini NASDAQ 100',
+    pointValue: 2,
+    tickSize: 0.25,
+    tickValue: 0.5,
+    dayMargin: 100,
+    exchangeFee: 0.35,
+    nfaFee: 0.02,
+    clearingFee: 0.19,
+    brokerCommission: 0.95,
   },
 };
 

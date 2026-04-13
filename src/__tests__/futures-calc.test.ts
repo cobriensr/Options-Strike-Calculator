@@ -28,6 +28,31 @@ describe('SPECS', () => {
     expect(SPECS.NQ.dayMargin).toBe(1000);
   });
 
+  it('MES has correct point value, tick value, and day margin', () => {
+    expect(SPECS.MES.pointValue).toBe(5);
+    expect(SPECS.MES.tickValue).toBe(1.25);
+    expect(SPECS.MES.tickSize).toBe(0.25);
+    expect(SPECS.MES.dayMargin).toBe(50);
+  });
+
+  it('MNQ has correct point value, tick value, and day margin', () => {
+    expect(SPECS.MNQ.pointValue).toBe(2);
+    expect(SPECS.MNQ.tickValue).toBe(0.5);
+    expect(SPECS.MNQ.tickSize).toBe(0.25);
+    expect(SPECS.MNQ.dayMargin).toBe(100);
+  });
+
+  it('MES and MNQ share the same per-side fee structure', () => {
+    expect(SPECS.MES.exchangeFee).toBe(0.35);
+    expect(SPECS.MES.nfaFee).toBe(0.02);
+    expect(SPECS.MES.clearingFee).toBe(0.19);
+    expect(SPECS.MES.brokerCommission).toBe(0.95);
+    expect(SPECS.MNQ.exchangeFee).toBe(SPECS.MES.exchangeFee);
+    expect(SPECS.MNQ.nfaFee).toBe(SPECS.MES.nfaFee);
+    expect(SPECS.MNQ.clearingFee).toBe(SPECS.MES.clearingFee);
+    expect(SPECS.MNQ.brokerCommission).toBe(SPECS.MES.brokerCommission);
+  });
+
   it('ES and NQ share the same per-side fee structure', () => {
     expect(SPECS.ES.exchangeFee).toBe(1.38);
     expect(SPECS.ES.nfaFee).toBe(0.02);
@@ -47,9 +72,18 @@ describe('feesPerSide', () => {
     expect(feesPerSide(SPECS.ES, 1)).toBeCloseTo(2.88, 10);
   });
 
+  it('returns $1.51 for 1 MES contract', () => {
+    // 0.35 + 0.02 + 0.19 + 0.95 = 1.51
+    expect(feesPerSide(SPECS.MES, 1)).toBeCloseTo(1.51, 10);
+  });
+
+  it('returns $1.51 for 1 MNQ contract', () => {
+    expect(feesPerSide(SPECS.MNQ, 1)).toBeCloseTo(1.51, 10);
+  });
+
   it('scales linearly with contract count', () => {
     expect(feesPerSide(SPECS.ES, 3)).toBeCloseTo(8.64, 10);
-    expect(feesPerSide(SPECS.NQ, 5)).toBeCloseTo(14.4, 10);
+    expect(feesPerSide(SPECS.MES, 2)).toBeCloseTo(3.02, 10);
   });
 });
 

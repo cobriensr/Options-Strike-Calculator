@@ -261,9 +261,9 @@ export default function FuturesCalculator() {
           onClick={(e) => e.stopPropagation()}
           className="flex items-center gap-2"
         >
-          {/* Symbol chips */}
-          <div className="flex gap-1">
-            {(['ES', 'NQ'] as const).map((sym) => (
+          {/* Symbol chips — 2×2 grid to keep header compact */}
+          <div className="grid grid-cols-2 gap-1">
+            {(['ES', 'NQ', 'MES', 'MNQ'] as const).map((sym) => (
               <button
                 key={sym}
                 type="button"
