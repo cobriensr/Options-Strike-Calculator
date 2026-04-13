@@ -1002,7 +1002,8 @@ describe('api-helpers', () => {
       const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({ ok: true, data: mockData });
       // Verify it used the trader base URL
-      const fetchArg = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+      const fetchArg = (fetch as ReturnType<typeof vi.fn>).mock
+        .calls[0]![0] as string;
       expect(fetchArg).toContain('schwabapi.com/trader/v1');
     });
 
@@ -1121,7 +1122,9 @@ describe('api-helpers', () => {
 
   describe('rejectIfRateLimited (Redis error path)', () => {
     it('fails open when Redis pipeline throws', async () => {
-      mockPipeline.exec.mockRejectedValueOnce(new Error('Redis connection refused'));
+      mockPipeline.exec.mockRejectedValueOnce(
+        new Error('Redis connection refused'),
+      );
       const req = mockRequest({ headers: {} });
       const res = mockResponse();
       // Fails open — should not block the request
@@ -1171,7 +1174,10 @@ describe('api-helpers', () => {
       );
 
       await expect(
-        uwFetch('key123', 'https://api.unusualwhales.com/api/stock/SPX/flow?date=2026-04-13'),
+        uwFetch(
+          'key123',
+          'https://api.unusualwhales.com/api/stock/SPX/flow?date=2026-04-13',
+        ),
       ).rejects.toThrow('UW API 429');
 
       expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
@@ -1186,9 +1192,14 @@ describe('api-helpers', () => {
 
       // Temporarily make URL constructor throw for this test
       const OrigURL = global.URL;
-      vi.stubGlobal('URL', class {
-        constructor() { throw new Error('bad url'); }
-      });
+      vi.stubGlobal(
+        'URL',
+        class {
+          constructor() {
+            throw new Error('bad url');
+          }
+        },
+      );
 
       vi.stubGlobal(
         'fetch',

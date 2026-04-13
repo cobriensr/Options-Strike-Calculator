@@ -550,8 +550,7 @@ describe('StrikeBox: Greek bar tooltips', () => {
         ]}
       />,
     );
-    const chexCells = screen
-      .getAllByTitle(/charm near zero/i);
+    const chexCells = screen.getAllByTitle(/charm near zero/i);
     expect(chexCells.length).toBeGreaterThanOrEqual(1);
   });
 });

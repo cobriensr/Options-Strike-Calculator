@@ -1345,9 +1345,8 @@ describe('buildAnalysisContext: API-gated paths', () => {
 
   it('fetches IV term structure when UW_API_KEY is set and API returns OK', async () => {
     process.env.UW_API_KEY = 'test-uw-key';
-    const { formatIvTermStructureForClaude } = await import(
-      '../iv-term-structure.js'
-    );
+    const { formatIvTermStructureForClaude } =
+      await import('../iv-term-structure.js');
     vi.mocked(formatIvTermStructureForClaude).mockReturnValue(
       '0DTE IV: 15.2%  30D IV: 18.5%',
     );
@@ -1398,15 +1397,16 @@ describe('buildAnalysisContext: API-gated paths', () => {
 
   it('fetches dark pool data when UW_API_KEY is set and data is returned', async () => {
     process.env.UW_API_KEY = 'test-uw-key';
-    const { fetchDarkPoolBlocks, clusterDarkPoolTrades, formatDarkPoolForClaude } =
-      await import('../_lib/darkpool.js');
+    const {
+      fetchDarkPoolBlocks,
+      clusterDarkPoolTrades,
+      formatDarkPoolForClaude,
+    } = await import('../_lib/darkpool.js');
     const fakeCluster = [{ price: 570.0, totalSize: 5000000 }];
     vi.mocked(fetchDarkPoolBlocks).mockResolvedValueOnce([
       { price: 570.0, size: 5000000 } as never,
     ]);
-    vi.mocked(clusterDarkPoolTrades).mockReturnValueOnce(
-      fakeCluster as never,
-    );
+    vi.mocked(clusterDarkPoolTrades).mockReturnValueOnce(fakeCluster as never);
     vi.mocked(formatDarkPoolForClaude).mockReturnValueOnce(
       'Dark Pool: 5700 level',
     );
@@ -1427,15 +1427,12 @@ describe('buildAnalysisContext: API-gated paths', () => {
 
   it('fetches max pain when UW_API_KEY is set and data is returned', async () => {
     process.env.UW_API_KEY = 'test-uw-key';
-    const { fetchMaxPain, formatMaxPainForClaude } = await import(
-      '../_lib/max-pain.js'
-    );
+    const { fetchMaxPain, formatMaxPainForClaude } =
+      await import('../_lib/max-pain.js');
     vi.mocked(fetchMaxPain).mockResolvedValueOnce([
       { strike: 5700, totalPain: 1000000 } as never,
     ]);
-    vi.mocked(formatMaxPainForClaude).mockReturnValueOnce(
-      'Max Pain: 5700',
-    );
+    vi.mocked(formatMaxPainForClaude).mockReturnValueOnce('Max Pain: 5700');
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -1489,8 +1486,7 @@ describe('buildAnalysisContext: API-gated paths', () => {
       'midday',
     );
     const textBlock = result.content.find(
-      (b) =>
-        b.type === 'text' && b.text.includes('Previous Recommendation'),
+      (b) => b.type === 'text' && b.text.includes('Previous Recommendation'),
     );
     expect(textBlock).toBeDefined();
     vi.unstubAllGlobals();
@@ -1689,7 +1685,10 @@ describe('buildAnalysisContext: midday directional chain', () => {
     vi.mocked(sh.formatGreekFlowForClaude).mockReturnValue(null);
 
     const api = await import('../_lib/api-helpers.js');
-    vi.mocked(api.schwabFetch).mockResolvedValue({ ok: false, status: 401 } as never);
+    vi.mocked(api.schwabFetch).mockResolvedValue({
+      ok: false,
+      status: 401,
+    } as never);
 
     vi.stubGlobal(
       'fetch',
@@ -1828,9 +1827,8 @@ describe('buildAnalysisContext: win rate and similar analyses', () => {
   });
 
   it('includes winRateContext in context text when winRate is returned', async () => {
-    const { getHistoricalWinRate, formatWinRateForClaude } = await import(
-      '../_lib/lessons.js'
-    );
+    const { getHistoricalWinRate, formatWinRateForClaude } =
+      await import('../_lib/lessons.js');
     vi.mocked(getHistoricalWinRate).mockResolvedValueOnce({
       wins: 18,
       total: 22,
@@ -1849,8 +1847,7 @@ describe('buildAnalysisContext: win rate and similar analyses', () => {
     });
 
     const textBlock = result.content.find(
-      (b) =>
-        b.type === 'text' && b.text.includes('Historical Base Rate'),
+      (b) => b.type === 'text' && b.text.includes('Historical Base Rate'),
     );
     expect(textBlock).toBeDefined();
     const text = (textBlock as { type: 'text'; text: string }).text;
@@ -1880,7 +1877,9 @@ describe('buildAnalysisContext: win rate and similar analyses', () => {
   it('populates similarAnalysesBlock in entry mode', async () => {
     // Mock embeddings module inline since it's not mocked at the module level
     vi.doMock('../_lib/embeddings.js', () => ({
-      buildAnalysisSummary: vi.fn().mockReturnValue('VIX 18, Low GEX, Thursday'),
+      buildAnalysisSummary: vi
+        .fn()
+        .mockReturnValue('VIX 18, Low GEX, Thursday'),
       generateEmbedding: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
       findSimilarAnalyses: vi.fn().mockResolvedValue([
         {

@@ -130,9 +130,7 @@ describe('POST /api/ml/trigger-analyze', () => {
   it('logs error when background fetch rejects but still returns 202', async () => {
     process.env.CRON_SECRET = 'secret';
     const fetchError = new Error('network failure');
-    const mockFetch = vi
-      .fn()
-      .mockRejectedValue(fetchError);
+    const mockFetch = vi.fn().mockRejectedValue(fetchError);
     vi.stubGlobal('fetch', mockFetch);
 
     const res = mockResponse();

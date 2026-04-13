@@ -244,7 +244,7 @@ describe('TradingScheduleSection: ctToday() coverage', () => {
     expect(screen.getByText('Active')).toBeInTheDocument();
   });
 
-  it('treats today\'s CT date as live when selectedDate matches today', () => {
+  it("treats today's CT date as live when selectedDate matches today", () => {
     // Use a date that is unambiguously NOT today so the component is forced to
     // call ctToday() and compare. We set systemTime to April 13 2026 and pass
     // selectedDate = '2026-04-13' (today CT) which should resolve to live mode.

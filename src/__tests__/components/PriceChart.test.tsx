@@ -309,8 +309,22 @@ describe('PriceChart: resampleTo5Min coverage', () => {
     // Two candles in the same 5-min bucket: datetime difference < 5 min
     const base = 1_744_545_000_000; // arbitrary epoch aligned to 5-min boundary
     const candles: SPXCandle[] = [
-      makeCandle({ datetime: base, open: 5800, high: 5820, low: 5795, close: 5810, volume: 500 }),
-      makeCandle({ datetime: base + 60_000, open: 5810, high: 5830, low: 5808, close: 5825, volume: 600 }),
+      makeCandle({
+        datetime: base,
+        open: 5800,
+        high: 5820,
+        low: 5795,
+        close: 5810,
+        volume: 500,
+      }),
+      makeCandle({
+        datetime: base + 60_000,
+        open: 5810,
+        high: 5830,
+        low: 5808,
+        close: 5825,
+        volume: 600,
+      }),
     ];
 
     const { getByRole } = render(
@@ -354,8 +368,22 @@ describe('PriceChart: VWAP zero-volume filtering', () => {
     // The VWAP filter(c => c.volume > 0) should only process the non-zero one.
     const base = 1_744_545_000_000;
     const candles: SPXCandle[] = [
-      makeCandle({ datetime: base, volume: 0, open: 5800, high: 5820, low: 5795, close: 5810 }),
-      makeCandle({ datetime: base + 60_000, volume: 1000, open: 5810, high: 5830, low: 5808, close: 5825 }),
+      makeCandle({
+        datetime: base,
+        volume: 0,
+        open: 5800,
+        high: 5820,
+        low: 5795,
+        close: 5810,
+      }),
+      makeCandle({
+        datetime: base + 60_000,
+        volume: 1000,
+        open: 5810,
+        high: 5830,
+        low: 5808,
+        close: 5825,
+      }),
     ];
 
     const { getByRole } = render(
@@ -472,14 +500,18 @@ describe('PriceChart: ResizeObserver guard', () => {
       observe(el: Element) {
         observations.push(el);
         // Immediately fire the callback to exercise the resize handler
-        capturedCallback!([{ contentRect: { width: 400 } } as ResizeObserverEntry], this);
+        capturedCallback!(
+          [{ contentRect: { width: 400 } } as ResizeObserverEntry],
+          this,
+        );
       }
       unobserve = vi.fn();
       disconnect = vi.fn();
     }
 
     const original = globalThis.ResizeObserver;
-    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+    globalThis.ResizeObserver =
+      MockResizeObserver as unknown as typeof ResizeObserver;
 
     const { unmount, getByRole } = render(
       <PriceChart
