@@ -47,7 +47,7 @@ def _make_df(n: int = 10, seed: int = 42) -> pd.DataFrame:
 
 
 def test_load_data_merges_and_computes_error_columns(tmp_path):
-    """load_data() merges CSVs, drops NaN actual closes, and adds error cols."""
+    """load_data() reads single CSV, drops NaN actual closes, and adds error cols."""
     results_dir = tmp_path / "results"
     results_dir.mkdir()
 
@@ -56,18 +56,12 @@ def test_load_data_merges_and_computes_error_columns(tmp_path):
             "date": ["2026-01-06", "2026-01-07", "2026-01-08"],
             "current_price": [5800.0, 5820.0, 5810.0],
             "predicted_close": [5790.0, 5830.0, 5800.0],
+            "actual_close": [5795.0, None, 5805.0],
             "confidence": ["high", "medium", "low"],
             "notes": ["", "", ""],
         }
     )
-    prices = pd.DataFrame(
-        {
-            "date": ["2026-01-06", "2026-01-07", "2026-01-08"],
-            "actual_close": [5795.0, None, 5805.0],
-        }
-    )
     predictions.to_csv(results_dir / "predictions.csv", index=False)
-    prices.to_csv(results_dir / "actual_prices.csv", index=False)
 
     with patch.object(acc, "RESULTS_DIR", results_dir):
         df = acc.load_data()
@@ -96,18 +90,26 @@ def test_load_data_exits_if_predictions_missing(tmp_path):
             acc.load_data()
 
 
-def test_load_data_exits_if_prices_missing(tmp_path):
-    """load_data() calls sys.exit when actual_prices.csv is absent."""
+def test_load_data_returns_empty_when_no_actual_closes(tmp_path):
+    """load_data() returns empty DataFrame when all actual_close values are null."""
     results_dir = tmp_path / "results"
     results_dir.mkdir()
 
-    pd.DataFrame({"date": ["2026-01-06"], "predicted_close": [5790.0]}).to_csv(
-        results_dir / "predictions.csv", index=False
-    )
+    pd.DataFrame(
+        {
+            "date": ["2026-01-06"],
+            "current_price": [5800.0],
+            "predicted_close": [5790.0],
+            "actual_close": [None],
+            "confidence": ["high"],
+            "notes": [""],
+        }
+    ).to_csv(results_dir / "predictions.csv", index=False)
 
     with patch.object(acc, "RESULTS_DIR", results_dir):
-        with pytest.raises(SystemExit):
-            acc.load_data()
+        df = acc.load_data()
+
+    assert len(df) == 0
 
 
 def test_load_data_sorted_by_date(tmp_path):
@@ -120,18 +122,12 @@ def test_load_data_sorted_by_date(tmp_path):
             "date": ["2026-01-08", "2026-01-06", "2026-01-07"],
             "current_price": [5810.0, 5800.0, 5820.0],
             "predicted_close": [5800.0, 5790.0, 5830.0],
+            "actual_close": [5805.0, 5795.0, 5825.0],
             "confidence": ["high", "high", "medium"],
             "notes": ["", "", ""],
         }
     )
-    prices = pd.DataFrame(
-        {
-            "date": ["2026-01-08", "2026-01-06", "2026-01-07"],
-            "actual_close": [5805.0, 5795.0, 5825.0],
-        }
-    )
     predictions.to_csv(results_dir / "predictions.csv", index=False)
-    prices.to_csv(results_dir / "actual_prices.csv", index=False)
 
     with patch.object(acc, "RESULTS_DIR", results_dir):
         df = acc.load_data()
@@ -253,15 +249,12 @@ def test_main_exits_early_with_few_points(tmp_path, capsys):
             "date": ["2026-01-06", "2026-01-07"],
             "current_price": [5800.0, 5820.0],
             "predicted_close": [5790.0, 5830.0],
+            "actual_close": [5795.0, 5825.0],
             "confidence": ["high", "medium"],
             "notes": ["", ""],
         }
     )
-    prices = pd.DataFrame(
-        {"date": ["2026-01-06", "2026-01-07"], "actual_close": [5795.0, 5825.0]}
-    )
     predictions.to_csv(results_dir / "predictions.csv", index=False)
-    prices.to_csv(results_dir / "actual_prices.csv", index=False)
 
     with (
         patch.object(acc, "RESULTS_DIR", results_dir),

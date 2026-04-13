@@ -14,6 +14,7 @@ Requires: pip install psycopg2-binary pandas scikit-learn matplotlib
 
 import argparse
 import sys
+from pathlib import Path
 
 try:
     import numpy as np

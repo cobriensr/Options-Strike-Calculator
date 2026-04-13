@@ -77,9 +77,14 @@ def test_fetch_spx_closes_date_range_includes_buffer():
         fp.fetch_spx_closes(dates)
 
     call_kwargs = mock_ticker.history.call_args
-    start = call_kwargs.kwargs.get("start") or call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs["start"]
+    start = (
+        call_kwargs.kwargs.get("start") or call_kwargs.args[0]
+        if call_kwargs.args
+        else call_kwargs.kwargs["start"]
+    )
     # start should be at least 5 days before 2026-03-10
     import datetime
+
     start_date = datetime.date.fromisoformat(start)
     assert start_date <= datetime.date(2026, 3, 5)
 
@@ -127,6 +132,7 @@ def test_main_writes_actual_prices_csv(tmp_path):
     predictions = pd.DataFrame(
         {
             "date": ["2026-01-06", "2026-01-07"],
+            "current_price": [5800.0, 5820.0],
             "predicted_close": [5790.0, 5830.0],
         }
     )
