@@ -43,6 +43,7 @@ import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import GexPerStrike from './components/GexPerStrike';
 import { GexTarget } from './components/GexTarget';
+import GexLandscape from './components/GexLandscape';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
@@ -418,6 +419,7 @@ export default function StrikeCalculator() {
             { id: 'sec-darkpool', label: 'Dark Pool' },
             { id: 'sec-gex', label: 'GEX' },
             { id: 'sec-gex-target', label: 'GEX Target' },
+            { id: 'sec-gex-landscape', label: 'GEX Map' },
           ]
         : []),
       ...(isOwner
@@ -852,6 +854,31 @@ export default function StrikeCalculator() {
                 <ErrorBoundary label="GEX Target">
                   <GexTarget
                     marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </ErrorBoundary>
+              </>
+            )}
+
+            {isOwner && (market.hasData || !!historySnapshot) && (
+              <>
+                <span id="sec-gex-landscape" className="block scroll-mt-28" />
+                <ErrorBoundary label="GEX Landscape">
+                  <GexLandscape
+                    strikes={gexStrike.strikes}
+                    loading={gexStrike.loading}
+                    error={gexStrike.error}
+                    timestamp={gexStrike.timestamp}
+                    onRefresh={gexStrike.refresh}
+                    selectedDate={gexStrike.selectedDate}
+                    onDateChange={gexStrike.setSelectedDate}
+                    isLive={gexStrike.isLive}
+                    isToday={gexStrike.isToday}
+                    isScrubbed={gexStrike.isScrubbed}
+                    canScrubPrev={gexStrike.canScrubPrev}
+                    canScrubNext={gexStrike.canScrubNext}
+                    onScrubPrev={gexStrike.scrubPrev}
+                    onScrubNext={gexStrike.scrubNext}
+                    onScrubLive={gexStrike.scrubLive}
                   />
                 </ErrorBoundary>
               </>
