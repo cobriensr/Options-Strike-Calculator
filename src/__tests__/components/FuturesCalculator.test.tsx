@@ -441,7 +441,7 @@ describe('FuturesCalculator — full P&L results', () => {
 // ── Clear button ──────────────────────────────────────────────────────────────
 
 describe('FuturesCalculator — Clear button', () => {
-  it('clears entry and exit price inputs', async () => {
+  it('clears entry, exit, and adverse price inputs', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
@@ -525,5 +525,106 @@ describe('FuturesCalculator — fee display', () => {
     await fillExit(user, '5510');
 
     expect(screen.getByText('-$3.18')).toBeInTheDocument();
+  });
+});
+
+// ── Adverse excursion ─────────────────────────────────────────────────────────
+
+describe('FuturesCalculator — adverse excursion', () => {
+  it('shows "Lowest Price Reached" label when Long', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+
+    expect(screen.getByLabelText('Lowest Price Reached')).toBeInTheDocument();
+  });
+
+  it('shows "Highest Price Reached" label when Short', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
+
+    expect(
+      screen.getByLabelText('Highest Price Reached'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not show adverse input when no entry is provided', () => {
+    render(<FuturesCalculator />);
+    expect(
+      screen.queryByLabelText('Lowest Price Reached'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows MAE panel when adverse price is entered', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+
+    expect(screen.getByText(/Max Adverse Excursion/i)).toBeInTheDocument();
+  });
+
+  it('shows correct adverse net P&L for ES long (10-point adverse move)', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    // Long ES: entry 5500, lowest 5490 → -10 pts × $50 = -$500 gross, net -$503.18
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+
+    expect(screen.getByText('-$503.18')).toBeInTheDocument();
+  });
+
+  it('shows correct adverse gross exposure', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    // Long ES: entry 5500, lowest 5490 → -$500 gross
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+
+    expect(screen.getByText('-$500.00')).toBeInTheDocument();
+  });
+
+  it('shows adverse in points and ticks', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    // Long ES: entry 5500, lowest 5490 → -10.00 pts / -40 ticks
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+
+    expect(screen.getByText('-10.00 pts / -40 ticks')).toBeInTheDocument();
+  });
+
+  it('clears adverse input when Clear is clicked', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+    await user.click(screen.getByRole('button', { name: 'Clear' }));
+
+    // After clear, adverse field is gone (entry cleared → entryValid=false)
+    expect(
+      screen.queryByLabelText('Lowest Price Reached'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows correct adverse result for Short position', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
+    await fillEntry(user, '5500');
+    // Short ES: entry 5500, highest 5510 → -10 pts adverse → -$500 gross
+    await user.type(screen.getByLabelText('Highest Price Reached'), '5510');
+
+    expect(screen.getByText('-$503.18')).toBeInTheDocument();
   });
 });

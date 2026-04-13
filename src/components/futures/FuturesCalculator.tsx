@@ -123,6 +123,7 @@ export default function FuturesCalculator() {
   const [direction, setDirection] = useState<Direction>('long');
   const [entryInput, setEntryInput] = useState('');
   const [exitInput, setExitInput] = useState('');
+  const [adverseInput, setAdverseInput] = useState('');
   const [contracts, setContracts] = useState(1);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -137,6 +138,7 @@ export default function FuturesCalculator() {
   const handleClear = useCallback(() => {
     setEntryInput('');
     setExitInput('');
+    setAdverseInput('');
     setContracts(1);
   }, []);
 
@@ -182,6 +184,17 @@ export default function FuturesCalculator() {
           )
         : null,
     [entryValid, contractsValid, spec, entry, direction, contracts],
+  );
+
+  // Adverse excursion (optional — lowest price for long, highest for short)
+  const adverse = Number.parseFloat(adverseInput);
+  const adverseValid = Number.isFinite(adverse) && adverse > 0;
+  const adverseCalc = useMemo(
+    () =>
+      entryValid && adverseValid && contractsValid
+        ? calcTrade(spec, entry, adverse, direction, contracts)
+        : null,
+    [entryValid, adverseValid, contractsValid, spec, entry, adverse, direction, contracts],
   );
 
   const chipClass = (active: boolean) =>
@@ -365,6 +378,58 @@ export default function FuturesCalculator() {
               />
             </div>
           </div>
+
+          {/* ── Adverse excursion ── */}
+          {entryValid && (
+            <div>
+              <PriceInput
+                id="fc-adverse"
+                label={
+                  direction === 'long'
+                    ? 'Lowest Price Reached'
+                    : 'Highest Price Reached'
+                }
+                value={adverseInput}
+                onChange={setAdverseInput}
+                placeholder={direction === 'long' ? '5490.00' : '5510.00'}
+              />
+              {adverseCalc && (
+                <div
+                  className="mt-2 rounded-xl border p-4"
+                  style={{
+                    backgroundColor: tint(theme.red, '08'),
+                    borderColor: tint(theme.red, '20'),
+                  }}
+                >
+                  <div
+                    className="mb-2 font-sans text-[10px] font-bold tracking-[0.10em] uppercase"
+                    style={{ color: theme.red }}
+                  >
+                    Max Adverse Excursion · {contracts} contract
+                    {contracts !== 1 ? 's' : ''}
+                  </div>
+                  <div className="divide-edge divide-y">
+                    <ResultRow
+                      label="Adverse move"
+                      value={`${adverseCalc.points >= 0 ? '+' : ''}${fmtPrice(adverseCalc.points)} pts / ${adverseCalc.ticks >= 0 ? '+' : ''}${adverseCalc.ticks.toFixed(0)} ticks`}
+                      color={pnlColor(adverseCalc.points)}
+                    />
+                    <ResultRow
+                      label="Gross exposure"
+                      value={fmtDollar(adverseCalc.gross, true)}
+                      color={pnlColor(adverseCalc.gross)}
+                    />
+                    <ResultRow
+                      label="Net exposure (after fees)"
+                      value={fmtDollar(adverseCalc.net, true)}
+                      color={pnlColor(adverseCalc.net)}
+                      bold
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Full P&L results ── */}
           {calc && (
