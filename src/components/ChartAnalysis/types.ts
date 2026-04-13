@@ -101,6 +101,8 @@ export interface AnalysisResult {
     pinRisk?: ChartSignal;
     skew?: ChartSignal;
     futuresContext?: ChartSignal;
+    deltaPressure?: ChartSignal;
+    charmPressure?: ChartSignal;
   };
   observations: string[];
   strikeGuidance?: {
@@ -144,6 +146,7 @@ export interface AnalysisResult {
     estimatedCost: string;
   } | null;
   periscopeNotes?: string | null;
+  pressureAnalysis?: string | null;
   structureRationale: string;
   review?: {
     wasCorrect: boolean;
@@ -190,6 +193,8 @@ export type ModeFilter = 'all' | 'entry' | 'midday' | 'review';
 export const CHART_LABELS = [
   'Periscope (Gamma)',
   'Periscope Charm (SPX)',
+  'Delta Pressure',
+  'Charm Pressure',
 ] as const;
 
 export const MODE_LABELS: Record<

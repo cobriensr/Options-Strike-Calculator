@@ -20,6 +20,8 @@ export default function ChartConfidenceGrid({ chartConfidence }: Props) {
           ['periscopeCharm', 'Periscope Charm'],
           ['darkPool', 'Dark Pool'],
           ['futuresContext', 'Futures'],
+          ['deltaPressure', 'Delta Pressure'],
+          ['charmPressure', 'Charm Pressure'],
         ] as const
       ).map(([key, label]) => {
         const sig = chartConfidence[key];

@@ -169,6 +169,15 @@ export default function AnalysisResults({
         </Collapsible>
       )}
 
+      {/* Pressure Analysis */}
+      {analysis.pressureAnalysis && (
+        <Collapsible title="Pressure Analysis" color={theme.textMuted}>
+          <div className="text-secondary text-[11px] leading-relaxed">
+            {analysis.pressureAnalysis}
+          </div>
+        </Collapsible>
+      )}
+
       {/* End-of-Day Review (always visible when present) */}
       {analysis.review && <EndOfDayReview review={analysis.review} />}
 

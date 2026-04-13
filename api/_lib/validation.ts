@@ -27,7 +27,7 @@ export const analyzeBodySchema = z.object({
   images: z
     .array(analyzeImageSchema)
     .min(1, 'At least one image is required')
-    .max(2, 'Maximum 2 images allowed'),
+    .max(4, 'Maximum 4 images allowed'),
   context: z.record(z.string(), z.unknown()),
 });
 
@@ -191,6 +191,8 @@ export const analysisResponseSchema = z.object({
     pinRisk: chartConfidenceEntry,
     skew: chartConfidenceEntry,
     futuresContext: chartConfidenceEntry,
+    deltaPressure: chartConfidenceEntry,
+    charmPressure: chartConfidenceEntry,
   }),
   observations: z.array(z.string()),
   strikeGuidance: z
@@ -257,6 +259,7 @@ export const analysisResponseSchema = z.object({
     })
     .nullable(),
   periscopeNotes: z.string().nullable(),
+  pressureAnalysis: z.string().nullable().optional(),
   structureRationale: z.string(),
   review: z
     .object({

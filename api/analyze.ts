@@ -37,6 +37,7 @@ import {
   SYSTEM_PROMPT_PART2,
 } from './_lib/analyze-prompts.js';
 import { MARKET_MECHANICS_CONTEXT } from './_lib/market-mechanics.js';
+import { SPOTGAMMA_MECHANICS_CONTEXT } from './_lib/spotgamma-mechanics.js';
 import { getCalibrationExample } from './_lib/analyze-calibration.js';
 import {
   buildAnalysisContext,
@@ -123,6 +124,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     SYSTEM_PROMPT_PART1 +
     '\n' +
     MARKET_MECHANICS_CONTEXT +
+    '\n' +
+    SPOTGAMMA_MECHANICS_CONTEXT +
     '\n' +
     calibration +
     '\n' +

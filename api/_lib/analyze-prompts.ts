@@ -1026,7 +1026,9 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "vannaExposure": { "signal": "TAILWIND" | "HEADWIND" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Aggregate vanna direction and VIX intraday trend — Rule 17 management adjustment" },
     "pinRisk": { "signal": "LOW" | "MODERATE" | "HIGH" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Top OI strikes relative to short strike placement — pin magnet proximity" },
     "skew": { "signal": "STEEP_PUT" | "FLAT" | "SYMMETRIC" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "25Δ put skew level and skew ratio — tail risk premium assessment" },
-    "futuresContext": { "signal": "RISK_ON" | "RISK_OFF" | "MIXED" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Cross-asset regime summary: ES basis, NQ divergence, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven, DX dollar headwind — which futures signals are active and what they mean for the structure" }
+    "futuresContext": { "signal": "RISK_ON" | "RISK_OFF" | "MIXED" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Cross-asset regime summary: ES basis, NQ divergence, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven, DX dollar headwind — which futures signals are active and what they mean for the structure" },
+    "deltaPressure": { "signal": "BULLISH" | "BEARISH" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Delta Pressure heatmap read: direction of pressure zone relative to current price, hole/neutral zone location, and whether multi-expiry GEX structure supports or opposes the trade thesis" },
+    "charmPressure": { "signal": "PIN_TARGET" | "DRIFT_UP" | "DRIFT_DOWN" | "MIXED" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Charm Pressure heatmap read: convergence boundary strike for EOD pin, blue/red zone alignment with current price, and whether Delta+Charm boundaries overlap for maximum confidence pin confirmation" }
   },
   "observations": ["point 1", "point 2", "point 3", "point 4", "point 5"],
   "strikeGuidance": {
@@ -1070,6 +1072,7 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "estimatedCost": "~$8.00 purchase, ~$6.00-7.00 recovered at EOD close, net cost ~$1.50"
   },
   "periscopeNotes": "Detailed gamma/straddle analysis from the Periscope images. null if no Periscope images provided.",
+  "pressureAnalysis": "Integrated Delta Pressure + Charm Pressure analysis. Describe: (1) the current pressure zone and 'hole' location from the Delta Pressure heatmap and what it implies for support/resistance, (2) the Charm convergence boundary and EOD pin target, (3) whether the Delta transition zone and Charm boundary align (max confidence if within 10 pts), (4) how scale expansion or contraction since open signals institutional positioning, (5) directional implication for the trade structure. null if neither Delta Pressure nor Charm Pressure images were provided.",
   "structureRationale": "Why this structure, referencing NCP/NPP relationship and all confirming/contradicting signals.",
   "review": {
     "wasCorrect": true,
@@ -1091,7 +1094,7 @@ Notes on the response:
 - For "entry" mode: populate everything EXCEPT the "review" field (set to null).
 - For "midday" mode: focus on managementRules updates and whether to add entries. Set review to null.
 - For "review" mode: populate the "review" field with detailed retrospective analysis. entryPlan can be null.
-- The chartConfidence breakdown is always required — it shows which data sources drove the decision. For marketTide, spxNetFlow, spyNetFlow, qqqNetFlow, netCharm, aggregateGex, darkPool, ivTermStructure, spxCandles, overnightGap, vannaExposure, pinRisk, and skew: populate these from the API data sections in the context. Only mark as "NOT PROVIDED" if the corresponding data section is genuinely absent from the context. For periscope and periscopeCharm: populate from the uploaded Periscope images. Mark as "NOT PROVIDED" only if no Periscope images were uploaded.
+- The chartConfidence breakdown is always required — it shows which data sources drove the decision. For marketTide, spxNetFlow, spyNetFlow, qqqNetFlow, netCharm, aggregateGex, darkPool, ivTermStructure, spxCandles, overnightGap, vannaExposure, pinRisk, and skew: populate these from the API data sections in the context. Only mark as "NOT PROVIDED" if the corresponding data section is genuinely absent from the context. For periscope and periscopeCharm: populate from the uploaded Periscope images. Mark as "NOT PROVIDED" only if no Periscope images were uploaded. For deltaPressure and charmPressure: populate from the uploaded SpotGamma Delta Pressure and Charm Pressure heatmap images respectively. Mark as "NOT PROVIDED" only if the corresponding image type was not provided.
 - strikeGuidance.adjustments should reference SPECIFIC SPX price levels from the Periscope image and API per-strike data.
 - managementRules should be actionable if/then statements the trader can follow mechanically.
 - entryPlan should account for the trader's laddered entry style (2-4 entries, typically 9:00 AM, 10:00 AM, 11:00 AM CT).
