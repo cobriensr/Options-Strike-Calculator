@@ -232,6 +232,31 @@ const GexLandscape = memo(function GexLandscape({
     );
   }, [rows, currentPrice]);
 
+  // Strike (within current rows) with the largest absolute GEX Δ% this snapshot.
+  const maxChangedStrike = useMemo(() => {
+    let maxAbs = 0;
+    let maxStrike: number | null = null;
+    for (const s of rows) {
+      const pct = gexDeltaMap.get(s.strike) ?? null;
+      if (pct === null) continue;
+      const abs = Math.abs(pct);
+      if (abs > maxAbs) {
+        maxAbs = abs;
+        maxStrike = s.strike;
+      }
+    }
+    return maxAbs > 0 ? maxStrike : null;
+  }, [gexDeltaMap, rows]);
+
+  // When the viewed date changes, reset scroll and Δ% tracking so the new
+  // date's first snapshot gets a clean baseline instead of comparing against
+  // the previous date's strikes.
+  useEffect(() => {
+    hasScrolledRef.current = false;
+    prevStrikesRef.current = [];
+    setGexDeltaMap(new Map());
+  }, [selectedDate]);
+
   // Scroll ATM row into view only on initial data arrival.
   useEffect(() => {
     if (hasScrolledRef.current) return;
@@ -404,6 +429,8 @@ const GexLandscape = memo(function GexLandscape({
         >
           {rows.map((s) => {
             const isSpot = s.strike === spotStrike?.strike;
+            const isMaxChanged = !isSpot && s.strike === maxChangedStrike;
+            const isAboveSpot = s.strike > currentPrice;
             const dir = getDirection(s.strike, currentPrice);
             const cls = classify(s.netGamma, s.netCharm);
             const meta = CLASS_META[cls];
@@ -416,7 +443,13 @@ const GexLandscape = memo(function GexLandscape({
                 role="listitem"
                 className={[
                   `border-edge/30 hover:bg-surface-alt/60 grid border-b transition-colors ${cols}`,
-                  isSpot ? 'border-l-2 border-l-sky-400/40 bg-sky-500/10' : meta.rowBg,
+                  isSpot
+                    ? 'border-l-2 border-l-sky-400/40 bg-sky-500/10'
+                    : isMaxChanged
+                      ? isAboveSpot
+                        ? 'border-l-2 border-l-green-400/40 bg-green-500/10'
+                        : 'border-l-2 border-l-red-400/40 bg-red-500/10'
+                      : meta.rowBg,
                 ].join(' ')}
               >
                 {/* Strike + ATM label */}
