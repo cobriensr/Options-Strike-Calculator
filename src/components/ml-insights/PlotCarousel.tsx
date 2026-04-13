@@ -26,7 +26,12 @@ const PLOT_GROUPS: PlotGroup[] = [
   { label: 'Overview', plots: ['timeline', 'stationarity', 'correlations'] },
   {
     label: 'Regime',
-    plots: ['range_by_regime', 'gex_vs_range', 'day_of_week', 'structure_by_vix'],
+    plots: [
+      'range_by_regime',
+      'gex_vs_range',
+      'day_of_week',
+      'structure_by_vix',
+    ],
   },
   {
     label: 'Flow & Pool',

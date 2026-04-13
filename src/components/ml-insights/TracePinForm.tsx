@@ -86,7 +86,12 @@ export default function TracePinForm() {
         const res = await fetch('/api/trace/prediction', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date, predicted_close: value, confidence, gamma_regime: gammaRegime }),
+          body: JSON.stringify({
+            date,
+            predicted_close: value,
+            confidence,
+            gamma_regime: gammaRegime,
+          }),
         });
         if (!res.ok) {
           const data = (await res.json().catch(() => ({}))) as {

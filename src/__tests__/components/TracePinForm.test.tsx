@@ -237,9 +237,7 @@ describe('TracePinForm: predictions table', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         json: () =>
-          Promise.resolve([
-            makePrediction({ gamma_regime: 'positive' }),
-          ]),
+          Promise.resolve([makePrediction({ gamma_regime: 'positive' })]),
       }),
     );
 
@@ -256,9 +254,7 @@ describe('TracePinForm: predictions table', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         json: () =>
-          Promise.resolve([
-            makePrediction({ gamma_regime: 'negative' }),
-          ]),
+          Promise.resolve([makePrediction({ gamma_regime: 'negative' })]),
       }),
     );
 
