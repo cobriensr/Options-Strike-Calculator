@@ -7,6 +7,9 @@ import {
   calcPnl,
   calcMetrics,
   generatePnlRows,
+  calcIronFlyPnl,
+  calcIronFlyMetrics,
+  generateIronFlyPnlRows,
 } from '../../components/BWBCalculator/bwb-math';
 
 // ============================================================
@@ -587,5 +590,257 @@ describe('BWBCalculator wing width + credit/debit', () => {
     // Empty resets to 1
     fe.change(contractInput, { target: { value: '' } });
     expect(contractInput).toHaveValue('1');
+  });
+});
+
+// ============================================================
+// Unit tests: calcIronFlyPnl
+// ============================================================
+
+describe('bwb-math: calcIronFlyPnl', () => {
+  // Typical 0DTE SPX iron fly: buy 5490P, sell 5500 straddle, buy 5510C
+  // net = credit collected, e.g. 8.00 pts
+  const low = 5490,
+    mid = 5500,
+    high = 5510;
+  const net = 8;
+
+  it('at the money (sweet spot): P&L = net (full credit kept)', () => {
+    // At mid: max(mid-spx,0)=0, max(spx-mid,0)=0, wings expired worthless
+    expect(calcIronFlyPnl(low, mid, high, net, 5500)).toBeCloseTo(8, 8);
+  });
+
+  it('below low wing: P&L = net - lowerWing (max loss below)', () => {
+    // spx=5480: net - (mid-spx) + (low-spx) = 8 - 20 + 10 = -2
+    // formula: net - max(5500-5480,0) - max(5480-5500,0) + max(5490-5480,0) + max(5480-5510,0)
+    //        = 8 - 20 - 0 + 10 + 0 = -2
+    expect(calcIronFlyPnl(low, mid, high, net, 5480)).toBeCloseTo(-2, 8);
+  });
+
+  it('at low wing exactly: P&L = net - lowerWing', () => {
+    // spx=5490: net - max(5500-5490,0) - 0 + max(5490-5490,0) + 0
+    //         = 8 - 10 - 0 + 0 + 0 = -2
+    expect(calcIronFlyPnl(low, mid, high, net, 5490)).toBeCloseTo(-2, 8);
+  });
+
+  it('above high wing: P&L = net - upperWing (max loss above)', () => {
+    // spx=5520: net - 0 - max(5520-5500,0) + 0 + max(5520-5510,0)
+    //         = 8 - 0 - 20 + 0 + 10 = -2
+    expect(calcIronFlyPnl(low, mid, high, net, 5520)).toBeCloseTo(-2, 8);
+  });
+
+  it('at high wing exactly: P&L = net - upperWing', () => {
+    // spx=5510: 8 - 0 - 10 + 0 + 0 = -2
+    expect(calcIronFlyPnl(low, mid, high, net, 5510)).toBeCloseTo(-2, 8);
+  });
+
+  it('at lower breakeven (mid - net): P&L ≈ 0', () => {
+    // lowerBE = 5500 - 8 = 5492
+    // spx=5492: 8 - max(8,0) - 0 + max(-2,0) + 0 = 8 - 8 + 0 = 0
+    expect(calcIronFlyPnl(low, mid, high, net, 5492)).toBeCloseTo(0, 6);
+  });
+
+  it('at upper breakeven (mid + net): P&L ≈ 0', () => {
+    // upperBE = 5500 + 8 = 5508
+    // spx=5508: 8 - 0 - max(8,0) + 0 + max(-2,0) = 8 - 8 = 0
+    expect(calcIronFlyPnl(low, mid, high, net, 5508)).toBeCloseTo(0, 6);
+  });
+
+  it('between lower BE and mid: partial profit', () => {
+    // spx=5496 (between lowerBE=5492 and mid=5500)
+    // 8 - max(4,0) - 0 + 0 + 0 = 4
+    expect(calcIronFlyPnl(low, mid, high, net, 5496)).toBeCloseTo(4, 6);
+  });
+
+  it('between mid and upper BE: partial profit', () => {
+    // spx=5504 (between mid=5500 and upperBE=5508)
+    // 8 - 0 - max(4,0) + 0 + 0 = 4
+    expect(calcIronFlyPnl(low, mid, high, net, 5504)).toBeCloseTo(4, 6);
+  });
+
+  it('zero net credit: P&L is always <= 0', () => {
+    const pnlAtMid = calcIronFlyPnl(5490, 5500, 5510, 0, 5500);
+    expect(pnlAtMid).toBeCloseTo(0, 8);
+    const pnlBelow = calcIronFlyPnl(5490, 5500, 5510, 0, 5480);
+    expect(pnlBelow).toBeLessThanOrEqual(0);
+  });
+
+  it('P&L is capped (same at and beyond wing)', () => {
+    const atLow = calcIronFlyPnl(low, mid, high, net, 5490);
+    const belowLow = calcIronFlyPnl(low, mid, high, net, 5400);
+    expect(atLow).toBeCloseTo(belowLow, 8);
+
+    const atHigh = calcIronFlyPnl(low, mid, high, net, 5510);
+    const aboveHigh = calcIronFlyPnl(low, mid, high, net, 5600);
+    expect(atHigh).toBeCloseTo(aboveHigh, 8);
+  });
+});
+
+// ============================================================
+// Unit tests: calcIronFlyMetrics
+// ============================================================
+
+describe('bwb-math: calcIronFlyMetrics', () => {
+  const low = 5490,
+    mid = 5500,
+    high = 5510;
+  const net = 8;
+  const m = calcIronFlyMetrics(low, mid, high, net);
+
+  it('lowerWing = mid - low', () => {
+    expect(m.lowerWing).toBe(10);
+  });
+
+  it('upperWing = high - mid', () => {
+    expect(m.upperWing).toBe(10);
+  });
+
+  it('maxProfit = net (credit collected at sweet spot)', () => {
+    expect(m.maxProfit).toBe(8);
+  });
+
+  it('net is stored correctly', () => {
+    expect(m.net).toBe(8);
+  });
+
+  it('lossBelow = net - lowerWing', () => {
+    expect(m.lossBelow).toBeCloseTo(8 - 10, 8); // -2
+  });
+
+  it('lossAbove = net - upperWing', () => {
+    expect(m.lossAbove).toBeCloseTo(8 - 10, 8); // -2
+  });
+
+  it('lowerBE = mid - net when net > 0', () => {
+    expect(m.lowerBE).toBeCloseTo(5492, 8);
+  });
+
+  it('upperBE = mid + net when net > 0', () => {
+    expect(m.upperBE).toBeCloseTo(5508, 8);
+  });
+
+  it('sweetSpot = mid', () => {
+    expect(m.sweetSpot).toBe(5500);
+  });
+
+  it('asymmetric wings: lowerWing != upperWing', () => {
+    const am = calcIronFlyMetrics(5480, 5500, 5515, 6);
+    expect(am.lowerWing).toBe(20);
+    expect(am.upperWing).toBe(15);
+    expect(am.lossBelow).toBeCloseTo(6 - 20, 8); // -14
+    expect(am.lossAbove).toBeCloseTo(6 - 15, 8); // -9
+  });
+
+  it('zero net: lowerBE and upperBE are null', () => {
+    const zm = calcIronFlyMetrics(5490, 5500, 5510, 0);
+    expect(zm.lowerBE).toBeNull();
+    expect(zm.upperBE).toBeNull();
+    expect(zm.maxProfit).toBe(0);
+  });
+
+  it('negative net (debit): lowerBE and upperBE are null', () => {
+    const dm = calcIronFlyMetrics(5490, 5500, 5510, -2);
+    expect(dm.lowerBE).toBeNull();
+    expect(dm.upperBE).toBeNull();
+  });
+});
+
+// ============================================================
+// Unit tests: generateIronFlyPnlRows
+// ============================================================
+
+describe('bwb-math: generateIronFlyPnlRows', () => {
+  const low = 5490,
+    mid = 5500,
+    high = 5510;
+  const net = 8;
+  const rows = generateIronFlyPnlRows(low, mid, high, net, 2);
+
+  it('returns empty array when high - low > 300', () => {
+    expect(generateIronFlyPnlRows(5000, 5500, 5400, 8, 1)).toHaveLength(0);
+  });
+
+  it('returns a non-empty array for valid inputs', () => {
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it('rows are sorted by ascending SPX level', () => {
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i]!.spx).toBeGreaterThan(rows[i - 1]!.spx);
+    }
+  });
+
+  it('includes exact breakeven levels as rows', () => {
+    const spxLevels = rows.map((r) => r.spx);
+    // lowerBE = 5500 - 8 = 5492
+    expect(spxLevels).toContain(5492);
+    // upperBE = 5500 + 8 = 5508
+    expect(spxLevels).toContain(5508);
+  });
+
+  it('sweet spot row has label "Max profit" and isKey = true', () => {
+    const sweet = rows.find((r) => r.spx === 5500);
+    expect(sweet).toBeDefined();
+    expect(sweet!.label).toBe('Max profit');
+    expect(sweet!.isKey).toBe(true);
+  });
+
+  it('breakeven rows have label "Breakeven" and isKey = true', () => {
+    const lbe = rows.find((r) => r.spx === 5492);
+    expect(lbe).toBeDefined();
+    expect(lbe!.label).toBe('Breakeven');
+    expect(lbe!.isKey).toBe(true);
+
+    const ube = rows.find((r) => r.spx === 5508);
+    expect(ube).toBeDefined();
+    expect(ube!.label).toBe('Breakeven');
+    expect(ube!.isKey).toBe(true);
+  });
+
+  it('pnlPerContract uses $100 multiplier at sweet spot', () => {
+    const sweet = rows.find((r) => r.spx === 5500)!;
+    // P&L = 8 pts × $100 = $800
+    expect(sweet.pnlPerContract).toBe(800);
+  });
+
+  it('pnlTotal scales by contracts at sweet spot', () => {
+    const sweet = rows.find((r) => r.spx === 5500)!;
+    // 8 pts × $100 × 2 contracts = $1600
+    expect(sweet.pnlTotal).toBe(1600);
+  });
+
+  it('non-key rows have isKey = false', () => {
+    const nonKey = rows.filter((r) => !r.isKey);
+    expect(nonKey.length).toBeGreaterThan(0);
+    nonKey.forEach((r) => expect(r.isKey).toBe(false));
+  });
+
+  it('rows at/beyond wings have label "Max loss"', () => {
+    // The start of the range (well below low) should get "Max loss"
+    const startRow = rows[0]!;
+    expect(startRow.label).toBe('Max loss');
+
+    // The end of the range (well above high) should get "Max loss"
+    const endRow = rows.at(-1)!;
+    expect(endRow.label).toBe('Max loss');
+  });
+
+  it('pnlPts at max-loss levels equals net - wing', () => {
+    // lossBelow = 8 - 10 = -2
+    const startRow = rows[0]!;
+    expect(startRow.pnlPts).toBeCloseTo(-2, 6);
+  });
+
+  it('zero net: no breakeven rows inserted', () => {
+    const zeroRows = generateIronFlyPnlRows(5490, 5500, 5510, 0, 1);
+    const beRows = zeroRows.filter((r) => r.label === 'Breakeven');
+    expect(beRows).toHaveLength(0);
+  });
+
+  it('1 contract: pnlTotal equals pnlPerContract', () => {
+    const singleRows = generateIronFlyPnlRows(5490, 5500, 5510, 8, 1);
+    singleRows.forEach((r) => {
+      expect(r.pnlTotal).toBe(r.pnlPerContract);
+    });
   });
 });

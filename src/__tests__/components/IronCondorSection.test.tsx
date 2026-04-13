@@ -462,7 +462,9 @@ describe('IronCondorSection', () => {
       });
       // Make the export function throw so the .catch() handler fires
       exportMock.exportPnLComparison.mockImplementation(() => {
-        throw new TypeError('Failed to fetch dynamically imported module: utils/export.js');
+        throw new TypeError(
+          'Failed to fetch dynamically imported module: utils/export.js',
+        );
       });
     });
 

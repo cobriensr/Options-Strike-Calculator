@@ -14,7 +14,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseFullCSV } from '../_lib/csv-parser.js';
+import {
+  parseFullCSV,
+  parseTosExpiration,
+  parseCSVLine,
+  buildFullSummary,
+} from '../_lib/csv-parser.js';
 
 // ── CSV-002: wide-spread recognition ────────────────────────
 
@@ -264,5 +269,406 @@ SPX,.SPXW260407C5700,APR 07 26,5700,CALL,-1,12.50,8.20,430.00,-15.00,
     const parsed = parseFullCSV(csv);
     expect(parsed.dayPnl).toBeNull();
     expect(parsed.ytdPnl).toBeNull();
+  });
+});
+
+// ── parseTosExpiration ──────────────────────────────────────────────
+
+describe('parseTosExpiration', () => {
+  it('converts "27 MAR 26" → "2026-03-27"', () => {
+    expect(parseTosExpiration('27 MAR 26')).toBe('2026-03-27');
+  });
+
+  it('converts "7 APR 26" with single-digit day → "2026-04-07"', () => {
+    expect(parseTosExpiration('7 APR 26')).toBe('2026-04-07');
+  });
+
+  it('handles all 12 months correctly', () => {
+    const months = [
+      ['JAN', '01'],
+      ['FEB', '02'],
+      ['MAR', '03'],
+      ['APR', '04'],
+      ['MAY', '05'],
+      ['JUN', '06'],
+      ['JUL', '07'],
+      ['AUG', '08'],
+      ['SEP', '09'],
+      ['OCT', '10'],
+      ['NOV', '11'],
+      ['DEC', '12'],
+    ] as const;
+    for (const [abbr, num] of months) {
+      expect(parseTosExpiration(`15 ${abbr} 26`)).toBe(`2026-${num}-15`);
+    }
+  });
+
+  it('returns raw string when not 3 parts (wrong format)', () => {
+    expect(parseTosExpiration('APR 26')).toBe('APR 26');
+    expect(parseTosExpiration('')).toBe('');
+    expect(parseTosExpiration('7 APR 26 EXTRA')).toBe('7 APR 26 EXTRA');
+  });
+
+  it('returns raw string when month abbreviation is unrecognized', () => {
+    expect(parseTosExpiration('07 XYZ 26')).toBe('07 XYZ 26');
+  });
+
+  it('handles 4-digit year without prepending "20"', () => {
+    expect(parseTosExpiration('15 MAR 2026')).toBe('2026-03-15');
+  });
+
+  it('is case-insensitive for month abbreviation', () => {
+    expect(parseTosExpiration('15 mar 26')).toBe('2026-03-15');
+    expect(parseTosExpiration('15 Mar 26')).toBe('2026-03-15');
+  });
+});
+
+// ── parseCSVLine ────────────────────────────────────────────────────
+
+describe('parseCSVLine', () => {
+  it('splits a simple unquoted CSV line', () => {
+    expect(parseCSVLine('a,b,c')).toEqual(['a', 'b', 'c']);
+  });
+
+  it('handles quoted fields containing commas', () => {
+    expect(parseCSVLine('"hello, world",foo,bar')).toEqual([
+      'hello, world',
+      'foo',
+      'bar',
+    ]);
+  });
+
+  it('trims whitespace from unquoted fields', () => {
+    expect(parseCSVLine('  a , b , c ')).toEqual(['a', 'b', 'c']);
+  });
+
+  it('handles a quoted field with an embedded comma AND surrounding fields', () => {
+    const fields = parseCSVLine('DATE,"1,234.56",END');
+    expect(fields).toEqual(['DATE', '1,234.56', 'END']);
+  });
+
+  it('handles empty fields (consecutive commas)', () => {
+    expect(parseCSVLine('a,,c')).toEqual(['a', '', 'c']);
+  });
+
+  it('handles a line with a single field (no commas)', () => {
+    expect(parseCSVLine('hello')).toEqual(['hello']);
+  });
+
+  it('handles an empty string', () => {
+    expect(parseCSVLine('')).toEqual(['']);
+  });
+
+  it('toggles quote state correctly across multiple quoted fields', () => {
+    // Two quoted fields in one line
+    expect(parseCSVLine('"foo","bar"')).toEqual(['foo', 'bar']);
+  });
+});
+
+// ── parseFullCSV — options section edge cases ──────────────────────
+
+describe('parseFullCSV — options section', () => {
+  it('parses open legs from the Options section with mark value column', () => {
+    // The options section includes a "Mark Value" column (9th column)
+    const csv = `Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark,Mark Value
+SPX,.SPXW260407P6480,7 APR 26,6480,PUT,-10,1.50,0.80,"(800.00)"
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.hasOptionsSection).toBe(true);
+    expect(parsed.openLegs).toHaveLength(1);
+    const leg = parsed.openLegs[0]!;
+    expect(leg.putCall).toBe('PUT');
+    expect(leg.strike).toBe(6480);
+    expect(leg.quantity).toBe(-10);
+    expect(leg.averagePrice).toBe(1.5);
+  });
+
+  it('skips non-SPX rows in the options section', () => {
+    const csv = `Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark
+QQQ,.QQQ260407P350,7 APR 26,350,PUT,-5,1.00,0.50
+SPX,.SPXW260407C6600,7 APR 26,6600,CALL,-5,2.00,1.00
+`;
+    const parsed = parseFullCSV(csv);
+    // Only SPX leg should be included
+    expect(parsed.openLegs).toHaveLength(1);
+    expect(parsed.openLegs[0]!.putCall).toBe('CALL');
+  });
+
+  it('skips rows with invalid put/call type in options section', () => {
+    const csv = `Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark
+SPX,.SPXW260407X6500,7 APR 26,6500,UNKNOWN,-5,1.00,0.50
+SPX,.SPXW260407C6600,7 APR 26,6600,CALL,-5,2.00,1.00
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.openLegs).toHaveLength(1);
+    expect(parsed.openLegs[0]!.putCall).toBe('CALL');
+  });
+
+  it('skips rows where strike is NaN', () => {
+    const csv = `Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark
+SPX,.SPXW260407P,7 APR 26,NOTANUMBER,PUT,-5,1.00,0.50
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.openLegs).toHaveLength(0);
+  });
+
+  it('stops parsing options at OVERALL TOTALS line', () => {
+    const csv = `Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark
+SPX,.SPXW260407P6480,7 APR 26,6480,PUT,-10,1.50,0.80
+,OVERALL TOTALS,,,,,,,
+SPX,.SPXW260407C6600,7 APR 26,6600,CALL,-5,2.00,1.00
+`;
+    const parsed = parseFullCSV(csv);
+    // Only the PUT before OVERALL TOTALS should be included
+    expect(parsed.openLegs).toHaveLength(1);
+    expect(parsed.openLegs[0]!.putCall).toBe('PUT');
+  });
+
+  it('returns empty openLegs when options section header is missing', () => {
+    const csv = `Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.openLegs).toHaveLength(0);
+    expect(parsed.hasOptionsSection).toBe(false);
+  });
+});
+
+// ── parseFullCSV — CALL credit spreads ────────────────────────────
+
+describe('parseFullCSV — CALL credit spreads', () => {
+  it('recognizes a closed CALL credit spread', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 14:00:00,VERTICAL,SELL,-5,TO CLOSE,SPX,7 APR 26,6600,CALL,.15,.08,LMT
+,,,BUY,+5,TO CLOSE,SPX,7 APR 26,6650,CALL,.05,DEBIT,
+,4/07/26 09:30:00,VERTICAL,BUY,+5,TO OPEN,SPX,7 APR 26,6600,CALL,3.00,2.00,LMT
+,,,SELL,-5,TO OPEN,SPX,7 APR 26,6650,CALL,1.00,CREDIT,
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.closedSpreads).toHaveLength(1);
+    const spread = parsed.closedSpreads[0]!;
+    expect(spread.type).toBe('CALL CREDIT SPREAD');
+    expect(spread.shortStrike).toBe(6650);
+    expect(spread.longStrike).toBe(6600);
+    expect(spread.width).toBe(50);
+  });
+});
+
+// ── parseFullCSV — fallback open legs from trade history ────────────
+
+describe('parseFullCSV — fallback open legs from trade history', () => {
+  it('derives open legs from trade history when no options section is present', () => {
+    // No "Symbol,Option Code,Exp,Strike..." options header → no options section.
+    // Trades: 10 opens of 6480 PUT, 0 closes → 10 remain open.
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,7 APR 26,6480,PUT,3.00,2.00,LMT
+,,,BUY,+10,TO OPEN,SPX,7 APR 26,6430,PUT,1.00,CREDIT,
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.hasOptionsSection).toBe(false);
+    // Both legs should be reflected as open positions
+    expect(parsed.openLegs.length).toBeGreaterThan(0);
+  });
+
+  it('nets out fully-closed legs from the fallback open list', () => {
+    // 10 opens, 10 closes → net 0 remaining for the short leg
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 14:00:00,VERTICAL,BUY,+10,TO CLOSE,SPX,7 APR 26,6480,PUT,.10,.05,LMT
+,,,SELL,-10,TO CLOSE,SPX,7 APR 26,6430,PUT,.05,DEBIT,
+,4/07/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,7 APR 26,6480,PUT,3.00,2.00,LMT
+,,,BUY,+10,TO OPEN,SPX,7 APR 26,6430,PUT,1.00,CREDIT,
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.hasOptionsSection).toBe(false);
+    // After netting, no legs should remain open (spread was fully closed)
+    expect(parsed.openLegs).toHaveLength(0);
+  });
+});
+
+// ── parseFullCSV — trade history parsing edge cases ─────────────────
+
+describe('parseFullCSV — trade history edge cases', () => {
+  it('returns empty allTrades when Account Trade History section is missing', () => {
+    const csv = `Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+4/07/26,00:00:00,BAL,,Cash balance at the start of business day,,,,"100,000.00"
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.allTrades).toHaveLength(0);
+  });
+
+  it('returns empty allTrades when trade history header row is missing', () => {
+    // Section marker exists but no "Exec Time,Strike" header within 5 lines
+    const csv = `Account Trade History
+This is some other content
+More content
+More
+More
+More
+More content past look-ahead
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.allTrades).toHaveLength(0);
+  });
+
+  it('skips trade rows for non-SPX symbols', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 09:30:00,VERTICAL,SELL,-5,TO OPEN,QQQ,7 APR 26,350,PUT,1.00,0.50,LMT
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.allTrades).toHaveLength(0);
+  });
+
+  it('skips trade rows with missing strike or price', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 09:30:00,VERTICAL,SELL,-5,TO OPEN,SPX,7 APR 26,,PUT,,0.50,LMT
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.allTrades).toHaveLength(0);
+  });
+
+  it('skips trade rows with NaN strike', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 09:30:00,VERTICAL,SELL,-5,TO OPEN,SPX,7 APR 26,BADSTRIKE,PUT,1.00,0.50,LMT
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.allTrades).toHaveLength(0);
+  });
+
+  it('skips trade rows with zero quantity', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 09:30:00,VERTICAL,SELL,0,TO OPEN,SPX,7 APR 26,6480,PUT,1.00,0.50,LMT
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.allTrades).toHaveLength(0);
+  });
+
+  it('defaults posEffect to TO OPEN when value is neither TO OPEN nor TO CLOSE', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 09:30:00,VERTICAL,SELL,-5,UNKNOWN_EFFECT,SPX,7 APR 26,6480,PUT,1.00,0.50,LMT
+`;
+    const parsed = parseFullCSV(csv);
+    // The row should still be parsed and treated as TO OPEN
+    expect(parsed.allTrades).toHaveLength(1);
+    expect(parsed.allTrades[0]!.posEffect).toBe('TO OPEN');
+  });
+
+  it('stops parsing trade history rows when a non-comma-leading line is encountered', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 09:30:00,VERTICAL,SELL,-5,TO OPEN,SPX,7 APR 26,6480,PUT,3.00,2.00,LMT
+This line does not start with comma — ends the section
+,4/07/26 10:00:00,VERTICAL,SELL,-5,TO OPEN,SPX,7 APR 26,6500,PUT,2.00,1.50,LMT
+`;
+    const parsed = parseFullCSV(csv);
+    // Only the first trade row should be parsed (section ends at non-comma line)
+    expect(parsed.allTrades).toHaveLength(1);
+    expect(parsed.allTrades[0]!.strike).toBe(6480);
+  });
+});
+
+// ── parseFullCSV — negative/parenthetical dollar values ─────────────
+
+describe('parseFullCSV — negative dollar value parsing', () => {
+  it('parses negative P&L in parenthetical format', () => {
+    const csv = `Profits and Losses
+Symbol,Description,Qty,Trade Price,P/L Day,P/L YTD,Mark Value
+SPX,SPX INDEX,,,"(1,250.00)","(4,500.00)",
+`;
+    const parsed = parseFullCSV(csv);
+    expect(parsed.dayPnl).toBe(-1250);
+    expect(parsed.ytdPnl).toBe(-4500);
+  });
+});
+
+// ── buildFullSummary ─────────────────────────────────────────────────
+
+describe('buildFullSummary', () => {
+  it('shows NO OPEN positions message when flat', () => {
+    const csv = `Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+4/07/26,00:00:00,BAL,,Cash balance at the start of business day,,,,"100,000.00"
+`;
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('NO OPEN SPX 0DTE POSITIONS');
+  });
+
+  it('includes closed spread P&L when spreads were closed today', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 14:00:00,VERTICAL,BUY,+10,TO CLOSE,SPX,7 APR 26,6500,PUT,.10,.05,LMT
+,,,SELL,-10,TO CLOSE,SPX,7 APR 26,6400,PUT,.05,DEBIT,
+,4/07/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,7 APR 26,6500,PUT,3.00,2.00,LMT
+,,,BUY,+10,TO OPEN,SPX,7 APR 26,6400,PUT,1.00,CREDIT,
+
+Profits and Losses
+Symbol,Description,Qty,Trade Price,P/L Day,P/L YTD,Mark Value
+SPX,SPX INDEX,,,"1,900.00","1,900.00",
+`;
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('Closed Today');
+    expect(summary).toContain('PCS closed');
+    expect(summary).toContain("Today's P&L");
+  });
+
+  it('shows open VERTICAL spreads from trade history', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 09:30:00,VERTICAL,SELL,-10,TO OPEN,SPX,7 APR 26,6500,PUT,3.00,2.00,LMT
+,,,BUY,+10,TO OPEN,SPX,7 APR 26,6400,PUT,1.00,CREDIT,
+`;
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed, 6600);
+    expect(summary).toContain('OPEN SPX 0DTE Positions');
+    expect(summary).toContain('PCS');
+    expect(summary).toContain('6500');
+    // SPX price provided → should show cushion
+    expect(summary).toContain('pts cushion');
+  });
+
+  it('falls back to flat legs display when allTrades is empty but openLegs exist', () => {
+    // Build a parsed object manually with openLegs but no allTrades
+    // (simulates importing a positions-only CSV with no trade history)
+    const csv = `Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark
+SPX,.SPXW260407P6480,7 APR 26,6480,PUT,-10,1.50,0.80
+SPX,.SPXW260407P6430,7 APR 26,6430,PUT,+10,0.50,0.20
+`;
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed, 6600);
+    // Should show PUT CREDIT SPREADS in the fallback display
+    expect(summary).toContain('OPEN SPX 0DTE Positions');
+  });
+
+  it('shows Max Risk section when open legs exist', () => {
+    const csv = `Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark
+SPX,.SPXW260407P6480,7 APR 26,6480,PUT,-10,1.50,0.80
+SPX,.SPXW260407P6430,7 APR 26,6430,PUT,+10,0.50,0.20
+`;
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('Max Risk');
+  });
+
+  it('shows closed CCS spreads section', () => {
+    const csv = `Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/07/26 14:00:00,VERTICAL,SELL,-5,TO CLOSE,SPX,7 APR 26,6600,CALL,.10,.05,LMT
+,,,BUY,+5,TO CLOSE,SPX,7 APR 26,6650,CALL,.05,DEBIT,
+,4/07/26 09:30:00,VERTICAL,BUY,+5,TO OPEN,SPX,7 APR 26,6600,CALL,3.00,2.00,LMT
+,,,SELL,-5,TO OPEN,SPX,7 APR 26,6650,CALL,1.00,CREDIT,
+`;
+    const parsed = parseFullCSV(csv);
+    const summary = buildFullSummary(parsed);
+    expect(summary).toContain('CCS closed');
   });
 });

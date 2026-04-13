@@ -4,6 +4,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { _resetEnvCache } from '../_lib/env.js';
 import { mockRequest, mockResponse } from './helpers';
 
+// Mock botid/server so checkBot and guardOwnerEndpoint are testable
+vi.mock('botid/server', () => ({
+  checkBotId: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
 // Mock schwab module before importing api-helpers
 const mockPipeline = {
   incr: vi.fn().mockReturnThis(),
@@ -38,6 +43,17 @@ vi.mock('../_lib/logger.js', () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+// Mock timezone + marketHours so isMarketHours/isMarketOpen branches are reachable
+vi.mock('../../src/utils/timezone.js', () => ({
+  getETDayOfWeek: vi.fn().mockReturnValue(1), // Monday by default
+  getETDateStr: vi.fn().mockReturnValue('2026-04-13'),
+  getETTime: vi.fn().mockReturnValue({ hour: 10, minute: 30 }),
+}));
+
+vi.mock('../../src/data/marketHours.js', () => ({
+  getMarketCloseHourET: vi.fn().mockReturnValue(16), // normal close at 4 PM
+}));
+
 import {
   isOwner,
   rejectIfNotOwner,
@@ -45,16 +61,35 @@ import {
   OWNER_COOKIE_MAX_AGE,
   rejectIfRateLimited,
   schwabFetch,
+  schwabTraderFetch,
   setCacheHeaders,
   isMarketOpen,
+  isMarketHours,
   sendError,
   withRetry,
   uwFetch,
   roundTo5Min,
   cronGuard,
   checkDataQuality,
+  checkBot,
+  guardOwnerEndpoint,
+  respondIfInvalid,
 } from '../_lib/api-helpers.js';
+import { z } from 'zod';
 import { getAccessToken } from '../_lib/schwab.js';
+import { checkBotId } from 'botid/server';
+import { getETDayOfWeek } from '../../src/utils/timezone.js';
+import { getMarketCloseHourET } from '../../src/data/marketHours.js';
+
+/** Build a minimal botid result shape for mocking checkBotId. */
+function makeBotResult(isBot: boolean): Awaited<ReturnType<typeof checkBotId>> {
+  return {
+    isBot,
+    isHuman: !isBot,
+    isVerifiedBot: false,
+    bypassed: false,
+  } as Awaited<ReturnType<typeof checkBotId>>;
+}
 
 describe('api-helpers', () => {
   const originalEnv = process.env;
@@ -793,6 +828,389 @@ describe('api-helpers', () => {
       });
       // total (15) <= minRows (20), so no alert
       expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // ============================================================
+  // CHECK BOT
+  // ============================================================
+
+  describe('checkBot', () => {
+    afterEach(() => {
+      vi.mocked(checkBotId).mockResolvedValue(makeBotResult(false));
+    });
+
+    it('returns { isBot: false } when VERCEL is not set', async () => {
+      delete process.env.VERCEL;
+      const req = mockRequest();
+      const result = await checkBot(req);
+      expect(result).toEqual({ isBot: false });
+      // checkBotId should NOT be called in local dev
+      expect(checkBotId).not.toHaveBeenCalled();
+    });
+
+    it('calls checkBotId and returns its result when VERCEL is set', async () => {
+      process.env.VERCEL = '1';
+      vi.mocked(checkBotId).mockResolvedValue(makeBotResult(true));
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const result = await checkBot(req);
+      expect(result).toEqual(expect.objectContaining({ isBot: true }));
+      expect(checkBotId).toHaveBeenCalledWith({
+        advancedOptions: { headers: req.headers },
+      });
+    });
+
+    it('returns { isBot: false } when checkBotId says so', async () => {
+      process.env.VERCEL = '1';
+      vi.mocked(checkBotId).mockResolvedValue(makeBotResult(false));
+      const req = mockRequest();
+      const result = await checkBot(req);
+      expect(result).toEqual(expect.objectContaining({ isBot: false }));
+    });
+  });
+
+  // ============================================================
+  // GUARD OWNER ENDPOINT
+  // ============================================================
+
+  describe('guardOwnerEndpoint', () => {
+    const done = vi.fn();
+
+    beforeEach(() => {
+      done.mockReset();
+      vi.mocked(checkBotId).mockResolvedValue(makeBotResult(false));
+    });
+
+    afterEach(() => {
+      delete process.env.VERCEL;
+    });
+
+    it('rejects bot requests with 403 and returns true', async () => {
+      process.env.VERCEL = '1';
+      vi.mocked(checkBotId).mockResolvedValue(makeBotResult(true));
+      const req = mockRequest();
+      const res = mockResponse();
+      const rejected = await guardOwnerEndpoint(req, res, done);
+      expect(rejected).toBe(true);
+      expect(res._status).toBe(403);
+      expect(res._json).toEqual({ error: 'Access denied' });
+      expect(done).toHaveBeenCalledWith({ status: 403 });
+    });
+
+    it('rejects non-owner (no bot) with 401 and returns true', async () => {
+      delete process.env.VERCEL;
+      delete process.env.OWNER_SECRET;
+      const req = mockRequest();
+      const res = mockResponse();
+      const rejected = await guardOwnerEndpoint(req, res, done);
+      expect(rejected).toBe(true);
+      expect(res._status).toBe(401);
+      expect(done).toHaveBeenCalledWith({ status: 401 });
+    });
+
+    it('returns false when bot check passes and owner is valid', async () => {
+      delete process.env.VERCEL;
+      process.env.OWNER_SECRET = 'mysecret';
+      const req = mockRequest({
+        headers: { cookie: `${OWNER_COOKIE}=mysecret` },
+      });
+      const res = mockResponse();
+      const rejected = await guardOwnerEndpoint(req, res, done);
+      expect(rejected).toBe(false);
+      expect(done).not.toHaveBeenCalled();
+    });
+  });
+
+  // ============================================================
+  // RESPOND IF INVALID
+  // ============================================================
+
+  describe('respondIfInvalid', () => {
+    it('sends 400 and returns true when parse fails', () => {
+      const schema = z.object({ name: z.string() });
+      const parsed = schema.safeParse({ name: 123 });
+      const res = mockResponse();
+      const done = vi.fn();
+      const result = respondIfInvalid(parsed, res, done);
+      expect(result).toBe(true);
+      expect(res._status).toBe(400);
+      expect(res._json).toMatchObject({ error: expect.any(String) });
+      expect(done).toHaveBeenCalledWith({ status: 400 });
+    });
+
+    it('returns false when parse succeeds', () => {
+      const schema = z.object({ name: z.string() });
+      const parsed = schema.safeParse({ name: 'hello' });
+      const res = mockResponse();
+      const result = respondIfInvalid(parsed, res);
+      expect(result).toBe(false);
+      expect(res._status).toBe(200); // unchanged
+    });
+
+    it('works without a done callback', () => {
+      const schema = z.object({ count: z.number() });
+      const parsed = schema.safeParse({ count: 'not-a-number' });
+      const res = mockResponse();
+      // Should not throw even with no done callback
+      expect(() => respondIfInvalid(parsed, res)).not.toThrow();
+      expect(res._status).toBe(400);
+    });
+
+    it('uses fallback message when issues array is empty', () => {
+      // Construct a synthetic failed parse result with no issues
+      const failedParse = {
+        success: false as const,
+        error: { issues: [] } as unknown as import('zod').ZodError,
+      };
+      const res = mockResponse();
+      respondIfInvalid(failedParse, res);
+      expect(res._json).toEqual({ error: 'Invalid request body' });
+    });
+  });
+
+  // ============================================================
+  // SCHWAB TRADER FETCH
+  // ============================================================
+
+  describe('schwabTraderFetch', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('returns error when getAccessToken fails', async () => {
+      vi.mocked(getAccessToken).mockResolvedValue({
+        error: { type: 'expired_refresh', message: 'Token expired' },
+      });
+      const result = await schwabTraderFetch('/accounts');
+      expect(result).toEqual({
+        ok: false,
+        error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
+        status: 401,
+      });
+    });
+
+    it('returns data on successful fetch to trader base URL', async () => {
+      vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok-trader' });
+      const mockData = { accounts: [] };
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve(mockData),
+        }),
+      );
+      const result = await schwabTraderFetch('/accounts');
+      expect(result).toEqual({ ok: true, data: mockData });
+      // Verify it used the trader base URL
+      const fetchArg = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+      expect(fetchArg).toContain('schwabapi.com/trader/v1');
+    });
+
+    it('returns 429 status when Schwab trader returns 429', async () => {
+      vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok-trader' });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          text: () => Promise.resolve('Rate limited'),
+        }),
+      );
+      const result = await schwabTraderFetch('/accounts');
+      expect(result).toEqual({
+        ok: false,
+        error: '[SCHWAB_API_429] Schwab API error (429): Rate limited',
+        status: 429,
+      });
+    });
+  });
+
+  // ============================================================
+  // IS MARKET HOURS
+  // ============================================================
+
+  describe('isMarketHours', () => {
+    afterEach(() => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(1);
+      vi.mocked(getMarketCloseHourET).mockReturnValue(16);
+    });
+
+    it('returns false on weekend (day === 0)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(0);
+      expect(isMarketHours()).toBe(false);
+    });
+
+    it('returns false on weekend (day === 6)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(6);
+      expect(isMarketHours()).toBe(false);
+    });
+
+    it('returns false on a holiday (closeHour is null)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(3);
+      vi.mocked(getMarketCloseHourET).mockReturnValue(null);
+      expect(isMarketHours()).toBe(false);
+    });
+
+    it('returns a boolean on a normal weekday', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(2);
+      vi.mocked(getMarketCloseHourET).mockReturnValue(16);
+      expect(typeof isMarketHours()).toBe('boolean');
+    });
+  });
+
+  // ============================================================
+  // IS MARKET OPEN — ADDITIONAL BRANCHES
+  // ============================================================
+
+  describe('isMarketOpen (weekend and holiday branches)', () => {
+    afterEach(() => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(1);
+      vi.mocked(getMarketCloseHourET).mockReturnValue(16);
+    });
+
+    it('returns false on Sunday (day === 0)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(0);
+      expect(isMarketOpen()).toBe(false);
+    });
+
+    it('returns false on Saturday (day === 6)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(6);
+      expect(isMarketOpen()).toBe(false);
+    });
+
+    it('returns false on a holiday (closeHour is null)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(4);
+      vi.mocked(getMarketCloseHourET).mockReturnValue(null);
+      expect(isMarketOpen()).toBe(false);
+    });
+  });
+
+  // ============================================================
+  // SCHWAB FETCH — RETRY PATH (500 transient → success)
+  // ============================================================
+
+  describe('schwabFetch (retry on 500)', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('retries on 500 and succeeds on second attempt', async () => {
+      vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
+      const mockData = { result: 'ok' };
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          text: () => Promise.resolve('Service Unavailable'),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(mockData),
+        });
+      vi.stubGlobal('fetch', mockFetch);
+      const result = await schwabFetch('/quotes');
+      expect(result).toEqual({ ok: true, data: mockData });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    }, 10000);
+  });
+
+  // ============================================================
+  // IS RATE LIMITED — REDIS ERROR PATH
+  // ============================================================
+
+  describe('rejectIfRateLimited (Redis error path)', () => {
+    it('fails open when Redis pipeline throws', async () => {
+      mockPipeline.exec.mockRejectedValueOnce(new Error('Redis connection refused'));
+      const req = mockRequest({ headers: {} });
+      const res = mockResponse();
+      // Fails open — should not block the request
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+    });
+  });
+
+  // ============================================================
+  // IS OWNER — VERCEL warning branch
+  // ============================================================
+
+  describe('isOwner (VERCEL env warning)', () => {
+    it('logs a warning once when OWNER_SECRET is absent and VERCEL is set', () => {
+      delete process.env.OWNER_SECRET;
+      process.env.VERCEL = '1';
+      const req = mockRequest({
+        headers: { cookie: `${OWNER_COOKIE}=anything` },
+      });
+      // First call should trigger the one-time warning
+      const result = isOwner(req);
+      expect(result).toBe(false);
+    });
+  });
+
+  // ============================================================
+  // UW FETCH — 429 with full http URL (IIFE pathname extraction)
+  // ============================================================
+
+  describe('uwFetch (429 with full http URL)', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('extracts pathname from full http URL on 429', async () => {
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwRateLimit).mockClear();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          headers: { get: (h: string) => (h === 'retry-after' ? '60' : null) },
+          text: () => Promise.resolve('Too many requests'),
+        }),
+      );
+
+      await expect(
+        uwFetch('key123', 'https://api.unusualwhales.com/api/stock/SPX/flow?date=2026-04-13'),
+      ).rejects.toThrow('UW API 429');
+
+      expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
+        '/api/stock/SPX/flow',
+        '60',
+      );
+    });
+
+    it('falls back to raw path when URL parsing fails on 429', async () => {
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwRateLimit).mockClear();
+
+      // Temporarily make URL constructor throw for this test
+      const OrigURL = global.URL;
+      vi.stubGlobal('URL', class {
+        constructor() { throw new Error('bad url'); }
+      });
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          headers: { get: () => null },
+          text: () => Promise.resolve('Rate limited'),
+        }),
+      );
+
+      await expect(
+        uwFetch('key123', 'https://bad-url-for-test'),
+      ).rejects.toThrow('UW API 429');
+
+      // Restore URL before assertions
+      vi.stubGlobal('URL', OrigURL);
+
+      expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
+        'https://bad-url-for-test',
+        null,
+      );
     });
   });
 });

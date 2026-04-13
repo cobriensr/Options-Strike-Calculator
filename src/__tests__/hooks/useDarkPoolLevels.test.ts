@@ -511,4 +511,172 @@ describe('useDarkPoolLevels: time scrubbing', () => {
     await act(async () => {});
     expect(result.current.scrubTime).toBeNull();
   });
+
+  it('scrubPrev from first grid slot stays at first slot (canScrubPrev becomes false)', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // Enter scrub mode — jumps to lastGridTimeBeforeNow()
+    act(() => result.current.scrubPrev());
+    await act(async () => {});
+
+    const firstScrubTime = result.current.scrubTime;
+    expect(firstScrubTime).not.toBeNull();
+
+    // Keep pressing prev until we can't go further
+    while (result.current.canScrubPrev) {
+      act(() => result.current.scrubPrev());
+    }
+    await act(async () => {});
+
+    // At the first slot, canScrubPrev is false
+    expect(result.current.canScrubPrev).toBe(false);
+    expect(result.current.scrubTime).toBe('08:30');
+  });
+
+  it('scrubNext when scrubTime is null is a no-op', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // In live mode, scrubTime is null — scrubNext should not move it
+    expect(result.current.scrubTime).toBeNull();
+    expect(result.current.canScrubNext).toBe(false);
+
+    act(() => result.current.scrubNext());
+    await act(async () => {});
+
+    expect(result.current.scrubTime).toBeNull();
+  });
+
+  it('scrubNext advances the time slot forward from a scrubbed position', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // Enter scrub mode
+    act(() => result.current.scrubPrev());
+    await act(async () => {});
+
+    // Now go prev all the way to '08:30' to guarantee canScrubNext is true
+    while (result.current.canScrubPrev) {
+      act(() => result.current.scrubPrev());
+    }
+    await act(async () => {});
+    expect(result.current.scrubTime).toBe('08:30');
+
+    // scrubNext should advance to '08:35'
+    act(() => result.current.scrubNext());
+    await act(async () => {});
+    expect(result.current.scrubTime).toBe('08:35');
+    expect(result.current.canScrubNext).toBe(true);
+  });
+
+  it('scrubNext at last grid slot stays at last slot', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // Scrub back to the first slot
+    act(() => result.current.scrubPrev());
+    await act(async () => {});
+    while (result.current.canScrubPrev) {
+      act(() => result.current.scrubPrev());
+    }
+    await act(async () => {});
+
+    // Advance all the way to the last slot
+    while (result.current.canScrubNext) {
+      act(() => result.current.scrubNext());
+    }
+    await act(async () => {});
+
+    expect(result.current.canScrubNext).toBe(false);
+    expect(result.current.scrubTime).toBe('15:00');
+  });
+
+  it('lastGridTimeBeforeNow anchors to 08:30 when current CT time is before market open', async () => {
+    // Simulate a time well before market open (06:00 CT = 11:00 UTC in CDT)
+    vi.setSystemTime(new Date('2026-04-13T11:00:00Z'));
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // scrubPrev from live mode calls lastGridTimeBeforeNow() — when CT time is
+    // before 08:30 no slot qualifies, so the function returns TIME_GRID[0] ('08:30')
+    act(() => result.current.scrubPrev());
+    await act(async () => {});
+
+    expect(result.current.scrubTime).toBe('08:30');
+  });
+});
+
+// ============================================================
+// REFRESH
+// ============================================================
+
+describe('useDarkPoolLevels: refresh', () => {
+  it('calls fetchLevels immediately when refresh is invoked', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(false));
+    await act(async () => {});
+
+    const callsBefore = mockFetch.mock.calls.length;
+
+    act(() => {
+      result.current.refresh();
+    });
+    await act(async () => {});
+
+    expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBefore);
+  });
+
+  it('sets loading to true when refresh is invoked', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(false));
+    await act(async () => {});
+
+    // At this point loading is false (fetch resolved)
+    expect(result.current.loading).toBe(false);
+
+    // Trigger a slow fetch so loading stays true for a moment
+    let resolveHold: () => void = () => {};
+    mockFetch.mockReturnValueOnce(
+      new Promise((res) => {
+        resolveHold = () =>
+          res({
+            ok: true,
+            json: async () => ({ levels: [], date: '2026-04-02' }),
+          });
+      }),
+    );
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    // loading should be true while fetch is in-flight
+    expect(result.current.loading).toBe(true);
+
+    // Resolve the fetch
+    await act(async () => {
+      resolveHold();
+    });
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('sends scrubTime in the refresh URL when scrubbed', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // Enter scrub mode
+    act(() => result.current.scrubPrev());
+    await act(async () => {});
+
+    const scrubTime = result.current.scrubTime;
+    expect(scrubTime).not.toBeNull();
+
+    mockFetch.mockClear();
+    act(() => result.current.refresh());
+    await act(async () => {});
+
+    const url = mockFetch.mock.calls[0]?.[0] as string;
+    // URLSearchParams encodes ':' as '%3A'
+    expect(url).toContain(`time=${encodeURIComponent(scrubTime!)}`);
+  });
 });

@@ -11,10 +11,12 @@ vi.mock('../_lib/db.js', () => ({
 
 import {
   getStrikeExposures,
+  getStrikeExposuresByExpiry,
   formatStrikeExposuresForClaude,
   getAllExpiryStrikeExposures,
   formatAllExpiryStrikesForClaude,
   formatGreekFlowForClaude,
+  formatZeroGammaForClaude,
   getNetGexHeatmap,
   formatNetGexHeatmapForClaude,
 } from '../_lib/db-strike-helpers.js';
@@ -23,6 +25,7 @@ import type {
   FlowDataRow,
   NetGexRow,
 } from '../_lib/db-strike-helpers.js';
+import type { ZeroGammaAnalysis } from '../../src/utils/zero-gamma.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -1158,6 +1161,339 @@ describe('db-strike-helpers', () => {
       // Time series rows should include the OTM segment
       expect(result).toMatch(/OTM Δ: \+[0-9.]+[KM]/);
     });
+  });
+});
+
+// ================================================================
+// getStrikeExposuresByExpiry
+// ================================================================
+describe('getStrikeExposuresByExpiry', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('returns empty array when no timestamp found for 0dte', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    const result = await getStrikeExposuresByExpiry('2026-04-10', '0dte');
+
+    expect(result).toEqual([]);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns empty array when no timestamp found for 1dte', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    const result = await getStrikeExposuresByExpiry('2026-04-10', '1dte');
+
+    expect(result).toEqual([]);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns mapped rows for 0dte expiry mode', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-10T15:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([
+      makeDbRow({
+        strike: 5300,
+        price: 5300,
+        call_gamma_oi: 400000,
+        put_gamma_oi: 200000,
+        call_charm_oi: 20000,
+        put_charm_oi: 10000,
+        call_delta_oi: 100000,
+        put_delta_oi: 60000,
+        call_gamma_ask: 150000,
+        call_gamma_bid: 100000,
+        put_gamma_ask: 80000,
+        put_gamma_bid: 40000,
+        call_charm_ask: 8000,
+        call_charm_bid: 6000,
+        put_charm_ask: 4000,
+        put_charm_bid: 3000,
+      }),
+    ]);
+
+    const result = await getStrikeExposuresByExpiry('2026-04-10', '0dte');
+
+    expect(result).toHaveLength(1);
+    const row = result[0]!;
+    expect(row.strike).toBe(5300);
+    expect(row.netGamma).toBe(400000 + 200000);
+    expect(row.netCharm).toBe(20000 + 10000);
+    expect(row.netDelta).toBe(100000 + 60000);
+    expect(row.dirGamma).toBe(150000 + 100000 + 80000 + 40000);
+    expect(row.dirCharm).toBe(8000 + 6000 + 4000 + 3000);
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns mapped rows for 1dte expiry mode', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-10T15:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([makeDbRow()]);
+
+    const result = await getStrikeExposuresByExpiry('2026-04-10', '1dte');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.netGamma).toBe(600000 + 400000);
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses default ticker SPX', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    await getStrikeExposuresByExpiry('2026-04-10', '0dte');
+
+    const callArgs = mockSql.mock.calls[0]!;
+    expect(callArgs[1]).toBe('2026-04-10');
+    expect(callArgs[2]).toBe('SPX');
+  });
+
+  it('passes custom ticker when specified', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    await getStrikeExposuresByExpiry('2026-04-10', '0dte', 'QQQ');
+
+    const callArgs = mockSql.mock.calls[0]!;
+    expect(callArgs[2]).toBe('QQQ');
+  });
+
+  it('0dte mode: first query filters expiry = date', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-10T15:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([]);
+
+    await getStrikeExposuresByExpiry('2026-04-10', '0dte');
+
+    // The 0dte timestamp query uses expiry = date (not a sentinel)
+    const firstCallArgs = mockSql.mock.calls[0]!;
+    // interpolated values: date, ticker, date (expiry = date)
+    expect(firstCallArgs[1]).toBe('2026-04-10');
+    expect(firstCallArgs[2]).toBe('SPX');
+    expect(firstCallArgs[3]).toBe('2026-04-10');
+  });
+
+  it('handles null DB values gracefully', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-10T15:00:00Z' }]);
+    mockSql.mockResolvedValueOnce([
+      makeDbRow({
+        call_gamma_oi: null,
+        put_gamma_oi: null,
+        call_charm_oi: null,
+        put_charm_oi: null,
+        call_delta_oi: null,
+        put_delta_oi: null,
+        call_gamma_ask: null,
+        call_gamma_bid: null,
+        put_gamma_ask: null,
+        put_gamma_bid: null,
+        call_charm_ask: null,
+        call_charm_bid: null,
+        put_charm_ask: null,
+        put_charm_bid: null,
+      }),
+    ]);
+
+    const result = await getStrikeExposuresByExpiry('2026-04-10', '0dte');
+    const row = result[0]!;
+
+    expect(row.netGamma).toBe(0);
+    expect(row.netCharm).toBe(0);
+    expect(row.netDelta).toBe(0);
+    expect(row.dirGamma).toBe(0);
+    expect(row.dirCharm).toBe(0);
+  });
+});
+
+// ================================================================
+// formatZeroGammaForClaude
+// ================================================================
+describe('formatZeroGammaForClaude', () => {
+  function makeAnalysis(
+    overrides: Partial<ZeroGammaAnalysis> = {},
+  ): ZeroGammaAnalysis {
+    return {
+      zeroGammaStrike: 5750,
+      distancePoints: 50,
+      distanceConeFraction: 0.75,
+      currentRegime: 'positive',
+      crossingCount: 1,
+      ...overrides,
+    };
+  }
+
+  it('returns null when no flip strike AND regime is unknown', () => {
+    const analysis = makeAnalysis({
+      zeroGammaStrike: null,
+      distancePoints: null,
+      distanceConeFraction: null,
+      currentRegime: 'unknown',
+      crossingCount: 0,
+    });
+
+    expect(formatZeroGammaForClaude(analysis, 5800)).toBeNull();
+  });
+
+  it('returns string (not null) when flip strike is known even if regime unknown', () => {
+    const analysis = makeAnalysis({ currentRegime: 'unknown' });
+
+    const result = formatZeroGammaForClaude(analysis, 5800);
+
+    expect(result).not.toBeNull();
+  });
+
+  it('returns string (not null) when regime is known even if no flip strike', () => {
+    const analysis = makeAnalysis({
+      zeroGammaStrike: null,
+      distancePoints: null,
+      distanceConeFraction: null,
+      currentRegime: 'positive',
+      crossingCount: 0,
+    });
+
+    const result = formatZeroGammaForClaude(analysis, 5800);
+
+    expect(result).not.toBeNull();
+  });
+
+  it('includes zero-gamma strike and spot distance when flip strike is known', () => {
+    const analysis = makeAnalysis({
+      zeroGammaStrike: 5750,
+      distancePoints: 50,
+    });
+
+    const result = formatZeroGammaForClaude(analysis, 5800)!;
+
+    expect(result).toContain('Zero-gamma strike: 5750');
+    expect(result).toContain('50 pts');
+  });
+
+  it('shows "above" when distancePoints >= 0', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ distancePoints: 50 }),
+      5800,
+    )!;
+
+    expect(result).toContain('above flip');
+  });
+
+  it('shows "below" when distancePoints < 0', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ distancePoints: -30 }),
+      5800,
+    )!;
+
+    expect(result).toContain('below flip');
+  });
+
+  it('includes cone fraction when distanceConeFraction is not null', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ distanceConeFraction: 0.75 }),
+      5800,
+    )!;
+
+    expect(result).toContain('Cone fraction:');
+    expect(result).toContain('0.75');
+    expect(result).toContain('inside');
+  });
+
+  it('shows "beyond" when distanceConeFraction >= 1', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ distanceConeFraction: 1.5 }),
+      5800,
+    )!;
+
+    expect(result).toContain('beyond');
+  });
+
+  it('omits cone fraction line when distanceConeFraction is null', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ distanceConeFraction: null }),
+      5800,
+    )!;
+
+    expect(result).not.toContain('Cone fraction');
+  });
+
+  it('shows NOT OBSERVED message when zeroGammaStrike is null but regime is known', () => {
+    const analysis = makeAnalysis({
+      zeroGammaStrike: null,
+      distancePoints: null,
+      distanceConeFraction: null,
+      currentRegime: 'positive',
+      crossingCount: 0,
+    });
+
+    const result = formatZeroGammaForClaude(analysis, 5800)!;
+
+    expect(result).toContain('NOT OBSERVED');
+    expect(result).toContain('single-regime day');
+  });
+
+  it('shows POSITIVE GAMMA regime label', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ currentRegime: 'positive' }),
+      5800,
+    )!;
+
+    expect(result).toContain('POSITIVE GAMMA');
+    expect(result).toContain('mean-reverting');
+  });
+
+  it('shows NEGATIVE GAMMA regime label', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ currentRegime: 'negative' }),
+      5800,
+    )!;
+
+    expect(result).toContain('NEGATIVE GAMMA');
+    expect(result).toContain('momentum-accelerating');
+  });
+
+  it('shows UNKNOWN regime label when regime is unknown but flip strike exists', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ currentRegime: 'unknown' }),
+      5800,
+    )!;
+
+    expect(result).toContain('UNKNOWN (insufficient strike data)');
+  });
+
+  it('includes DISTORTED PROFILE warning when crossingCount >= 2', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ crossingCount: 2 }),
+      5800,
+    )!;
+
+    expect(result).toContain('DISTORTED PROFILE');
+    expect(result).toContain('Crossings detected: 2');
+  });
+
+  it('omits DISTORTED PROFILE when crossingCount is 1', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({ crossingCount: 1 }),
+      5800,
+    )!;
+
+    expect(result).not.toContain('DISTORTED PROFILE');
+  });
+
+  it('omits DISTORTED PROFILE when crossingCount is 0', () => {
+    const result = formatZeroGammaForClaude(
+      makeAnalysis({
+        zeroGammaStrike: null,
+        distancePoints: null,
+        distanceConeFraction: null,
+        currentRegime: 'positive',
+        crossingCount: 0,
+      }),
+      5800,
+    )!;
+
+    expect(result).not.toContain('DISTORTED PROFILE');
+  });
+
+  it('always includes spot at snapshot', () => {
+    const result = formatZeroGammaForClaude(makeAnalysis(), 5812.5)!;
+
+    expect(result).toContain('Spot (at snapshot): 5812.50');
   });
 });
 

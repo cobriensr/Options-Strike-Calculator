@@ -606,8 +606,7 @@ export default function FuturesCalculator() {
                     className="mt-1 font-sans text-[10px]"
                     style={{ color: theme.red }}
                   >
-                    Insufficient margin (need{' '}
-                    {fmtDollar(spec.dayMargin)})
+                    Insufficient margin (need {fmtDollar(spec.dayMargin)})
                   </p>
                 ) : (
                   <p

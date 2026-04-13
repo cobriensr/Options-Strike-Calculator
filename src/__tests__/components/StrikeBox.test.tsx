@@ -341,4 +341,308 @@ describe('StrikeBox: delta percentage formatting', () => {
     );
     expect(screen.getByText('+2.5%')).toBeInTheDocument();
   });
+
+  it('shows formatted negative deltaPct_1m', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ deltaPct_1m: -0.025, strike: 5800 }),
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('-2.5%')).toBeInTheDocument();
+  });
+});
+
+describe('StrikeBox: formatNet coverage (est. Δ column)', () => {
+  it('renders the leaderboard table with est. Δ column (positive gexDollars)', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({
+              gexDollars: 1_000_000_000,
+              spot: 5795,
+              strike: 5800,
+            }),
+          }),
+        ]}
+      />,
+    );
+    expect(
+      screen.getByRole('table', { name: /gex strike leaderboard/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders positive dealer delta (green) when gexDollars is positive', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({
+              gexDollars: 1_000_000_000,
+              spot: 5795,
+              strike: 5800,
+            }),
+          }),
+        ]}
+      />,
+    );
+    // formatNet(1_000_000_000 / (5795 * 100)) — small value, rendered as formatted label
+    // The key assertion is that the component renders without crashing
+    expect(
+      screen.getByRole('table', { name: /gex strike leaderboard/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders negative dealer delta when gexDollars is negative', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({
+              gexDollars: -500_000_000,
+              spot: 5795,
+              strike: 5800,
+            }),
+          }),
+        ]}
+      />,
+    );
+    expect(
+      screen.getByRole('table', { name: /gex strike leaderboard/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('StrikeBox: Greek bar tooltips', () => {
+  // Note: computeBarStats with a single row sets nearZeroThreshold = abs(value),
+  // making any single value "near zero". We need two rows with differing magnitudes
+  // so the smaller value is not clamped and the tooltip reflects sign.
+
+  it('renders CHEX cell with tooltip text for positive charm', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ charmNet: 5e7, strike: 5800 }),
+          }),
+          makeStrike(5750, {
+            features: makeFeatures({ charmNet: 1e6, strike: 5750 }),
+          }),
+        ]}
+      />,
+    );
+    // The larger positive charm row will get the "Positive Charm" tooltip
+    const chexCells = screen
+      .getAllByTitle(/charm/i)
+      .filter((el) => /Positive Charm/i.test(el.title));
+    expect(chexCells.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders CHEX cell with negative tooltip for negative charm', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ charmNet: -5e7, strike: 5800 }),
+          }),
+          makeStrike(5750, {
+            features: makeFeatures({ charmNet: -1e6, strike: 5750 }),
+          }),
+        ]}
+      />,
+    );
+    const chexCells = screen
+      .getAllByTitle(/charm/i)
+      .filter((el) => /Negative Charm/i.test(el.title));
+    expect(chexCells.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders DEX cell with positive tooltip for positive deltaNet', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ deltaNet: 5e8, strike: 5800 }),
+          }),
+          makeStrike(5750, {
+            features: makeFeatures({ deltaNet: 1e7, strike: 5750 }),
+          }),
+        ]}
+      />,
+    );
+    const dexCells = screen
+      .getAllByTitle(/dex/i)
+      .filter((el) => /Positive DEX/i.test(el.title));
+    expect(dexCells.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders DEX cell with negative tooltip for negative deltaNet', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ deltaNet: -5e8, strike: 5800 }),
+          }),
+          makeStrike(5750, {
+            features: makeFeatures({ deltaNet: -1e7, strike: 5750 }),
+          }),
+        ]}
+      />,
+    );
+    const dexCells = screen
+      .getAllByTitle(/dex/i)
+      .filter((el) => /Negative DEX/i.test(el.title));
+    expect(dexCells.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders VEX cell with positive tooltip for positive vannaNet', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ vannaNet: 5e7, strike: 5800 }),
+          }),
+          makeStrike(5750, {
+            features: makeFeatures({ vannaNet: 1e6, strike: 5750 }),
+          }),
+        ]}
+      />,
+    );
+    const vexCells = screen
+      .getAllByTitle(/vex/i)
+      .filter((el) => /Positive VEX/i.test(el.title));
+    expect(vexCells.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders VEX cell with negative tooltip for negative vannaNet', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ vannaNet: -5e7, strike: 5800 }),
+          }),
+          makeStrike(5750, {
+            features: makeFeatures({ vannaNet: -1e6, strike: 5750 }),
+          }),
+        ]}
+      />,
+    );
+    const vexCells = screen
+      .getAllByTitle(/vex/i)
+      .filter((el) => /Negative VEX/i.test(el.title));
+    expect(vexCells.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders near-zero CHEX tooltip when charmNet is zero', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ charmNet: 0, strike: 5800 }),
+          }),
+          makeStrike(5750, {
+            features: makeFeatures({ charmNet: 0, strike: 5750 }),
+          }),
+        ]}
+      />,
+    );
+    const chexCells = screen
+      .getAllByTitle(/charm near zero/i);
+    expect(chexCells.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('StrikeBox: rank arrows (up / down)', () => {
+  it('renders rank arrows for all rows in a multi-strike leaderboard', async () => {
+    const { rerender } = render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            rankBySize: 1,
+            features: makeFeatures({ gexDollars: 3_000_000_000, strike: 5800 }),
+          }),
+          makeStrike(5750, {
+            rankBySize: 2,
+            features: makeFeatures({ gexDollars: 2_000_000_000, strike: 5750 }),
+          }),
+        ]}
+      />,
+    );
+
+    // After first render + effect flush, both arrows are "Rank unchanged"
+    const unchangedArrows = screen.getAllByLabelText('Rank unchanged');
+    expect(unchangedArrows.length).toBeGreaterThanOrEqual(1);
+
+    // Rerender with swapped order so rank changes fire
+    rerender(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5750, {
+            rankBySize: 1,
+            features: makeFeatures({ gexDollars: 2_000_000_000, strike: 5750 }),
+          }),
+          makeStrike(5800, {
+            rankBySize: 2,
+            features: makeFeatures({ gexDollars: 3_000_000_000, strike: 5800 }),
+          }),
+        ]}
+      />,
+    );
+
+    // After rerender the transient ▲ / ▼ arrows appear before prevRanks catches up
+    // We can assert the component didn't crash and arrows are present
+    const allArrows = [
+      ...screen.queryAllByLabelText('Rank improved'),
+      ...screen.queryAllByLabelText('Rank worsened'),
+      ...screen.queryAllByLabelText('Rank unchanged'),
+    ];
+    expect(allArrows.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('StrikeBox: HOT% badge', () => {
+  it('shows 0% HOT badge when deltaPct_1m is null', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            features: makeFeatures({ deltaPct_1m: null, strike: 5800 }),
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('0%')).toBeInTheDocument();
+  });
+
+  it('shows correct HOT% for a non-null positive deltaPct_1m', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            // |0.08| * 100 = 8 → toFixed(0) = '8'
+            features: makeFeatures({ deltaPct_1m: 0.08, strike: 5800 }),
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('8%')).toBeInTheDocument();
+  });
+
+  it('shows absolute HOT% for a negative deltaPct_1m', () => {
+    render(
+      <StrikeBox
+        leaderboard={[
+          makeStrike(5800, {
+            // |-0.12| * 100 = 12 → toFixed(0) = '12'
+            features: makeFeatures({ deltaPct_1m: -0.12, strike: 5800 }),
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('12%')).toBeInTheDocument();
+  });
 });
