@@ -1,5 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import type { MLInsightsState, MLPlot } from '../../hooks/useMLInsights';
 
 // ============================================================
@@ -262,5 +268,157 @@ describe('MLInsights: interactions', () => {
       name: /refresh ml insights/i,
     });
     expect(btn).not.toBeDisabled();
+  });
+});
+
+// ============================================================
+// ANALYZE BUTTON — triggerAnalyze flow (lines 27-34, 46)
+// ============================================================
+
+describe('MLInsights: analyze button', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('renders the analyze button in idle state', () => {
+    render(<MLInsights />);
+    expect(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    ).toHaveTextContent('Analyze');
+  });
+
+  it('analyze button is enabled in idle state', () => {
+    render(<MLInsights />);
+    expect(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    ).not.toBeDisabled();
+  });
+
+  it('shows "Starting..." while fetch is in flight', async () => {
+    // Never-resolving promise keeps the button in 'running' state
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})));
+    render(<MLInsights />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /run claude plot analysis/i }),
+      ).toHaveTextContent('Starting...');
+    });
+  });
+
+  it('disables analyze button while running', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})));
+    render(<MLInsights />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /run claude plot analysis/i }),
+      ).toBeDisabled();
+    });
+  });
+
+  it('shows "Started ✓" when fetch resolves with ok:true', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+    render(<MLInsights />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    );
+
+    // Flush the promise microtask queue without advancing fake timers.
+    // act(async () => {}) yields to the microtask queue, letting the
+    // awaited fetch() inside triggerAnalyze() resolve and call setState.
+    await act(async () => {});
+
+    expect(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    ).toHaveTextContent('Started ✓');
+  });
+
+  it('shows "Failed" when fetch resolves with ok:false', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
+    render(<MLInsights />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    );
+    await act(async () => {});
+
+    expect(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    ).toHaveTextContent('Failed');
+  });
+
+  it('shows "Failed" when fetch throws a network error', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new Error('Network error')),
+    );
+    render(<MLInsights />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    );
+    await act(async () => {});
+
+    expect(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    ).toHaveTextContent('Failed');
+  });
+
+  it('resets to "Analyze" after 3 seconds', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+    render(<MLInsights />);
+
+    // Click and flush promise microtasks so fetch resolves → 'done'
+    fireEvent.click(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    );
+    await act(async () => {});
+
+    expect(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    ).toHaveTextContent('Started ✓');
+
+    // Advance past the 3-second reset setTimeout
+    await act(async () => {
+      vi.advanceTimersByTime(3001);
+    });
+
+    expect(
+      screen.getByRole('button', { name: /run claude plot analysis/i }),
+    ).toHaveTextContent('Analyze');
+  });
+
+  it('POSTs to /api/ml/trigger-analyze', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchSpy);
+    render(<MLInsights />);
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /run claude plot analysis/i }),
+      );
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/ml/trigger-analyze', {
+      method: 'POST',
+    });
   });
 });
