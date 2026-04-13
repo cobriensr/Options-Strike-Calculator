@@ -739,6 +739,7 @@ def plot_cluster_transitions(plot_dir: Path, labels: np.ndarray, k: int) -> None
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
+        print("  matplotlib not available, skipping cluster transitions")
         return
 
     if k < 2:
@@ -746,14 +747,20 @@ def plot_cluster_transitions(plot_dir: Path, labels: np.ndarray, k: int) -> None
         return
 
     if len(labels) < 5:
-        print("  Skipping cluster transitions: fewer than 4 consecutive-day pairs")
+        print("  Skipping cluster transitions: fewer than 5 samples")
+        return
+
+    # Guard: label values must be in [0, k-1] (KMeans always produces this,
+    # but guard here in case labels from another algorithm are passed)
+    if np.any((labels < 0) | (labels >= k)):
+        print("  Skipping cluster transitions: label values out of [0, k-1] range")
         return
 
     # Build transition count matrix
     transition_counts = np.zeros((k, k), dtype=int)
     for i in range(len(labels) - 1):
-        from_c = labels[i]
-        to_c = labels[i + 1]
+        from_c = int(labels[i])
+        to_c = int(labels[i + 1])
         transition_counts[from_c, to_c] += 1
 
     # Row-normalize (guard against zero-sum rows)
