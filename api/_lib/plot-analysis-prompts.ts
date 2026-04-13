@@ -626,6 +626,88 @@ const SRC_TRACE_VIX_REGIME = `def plot_accuracy_by_vix_regime(df: pd.DataFrame) 
     # X-axis labels: "VIX {regime}\\n(n={count})" for each bucket
     # Saved to ml/plots/trace_accuracy_by_vix_regime.png`;
 
+const SRC_TRACE_SIGNAL_STRENGTH = `def plot_signal_strength(df: pd.DataFrame) -> None:
+    # Bins predictions by distance from current_price (open): [0-5, 5-10, 10-20, 20-30, 30+]
+    # Subplot 1: direction accuracy per bin (green bar if > 50%, red if <= 50%)
+    # Subplot 2: count of predictions per bin (gray bars, n annotated)
+    # X-axis: "|Predicted - Open| (pts)" bin labels
+    # Y-axis left: "Direction Accuracy (%)" with 50% dashed reference line
+    # Y-axis right: "Count"
+    # Key finding: bins 0-5 pts show ~25% accuracy (noise); bins > 10 pts show 100%
+    # Saved to ml/plots/trace_signal_strength.png`;
+
+const SRC_TRACE_ROLLING_ERROR = `def plot_rolling_error(df: pd.DataFrame) -> None:
+    # Bar chart of signed errors (actual_close - predicted_close) per day, colored:
+    #   green if error >= 0 (actual >= predicted), red if error < 0
+    # Orange line overlay: 5-day rolling mean of signed error (window=5)
+    # X-axis: date labels (rotated 45 deg)
+    # Y-axis: "Error (pts)" with dashed zero line
+    # Title: "Rolling Signed Error"
+    # Skips if fewer than 8 rows
+    # Saved to ml/plots/trace_rolling_error.png`;
+
+const SRC_TRACE_ERROR_VS_RANGE = `def plot_error_vs_range(df: pd.DataFrame) -> None:
+    # Scatter: x=day_range_pts (full-day SPX range), y=abs_error (|actual - predicted|)
+    # Points colored by confidence: high=#2ecc71, medium=#f39c12, low=#e74c3c
+    # Polyfit trendline (degree=1, orange dashed) across all points
+    # X-axis: "Day Range (pts)"
+    # Y-axis: "Absolute Error (pts)"
+    # Title: "Prediction Error vs Day Range"
+    # Skips if day_range_pts missing or fewer than 5 valid rows
+    # Saved to ml/plots/trace_error_vs_range.png`;
+
+const SRC_STRUCTURE_BY_VIX = `def plot_structure_by_vix(df: pd.DataFrame) -> None:
+    # Grouped bar chart: x=VIX regime bucket, groups=structure type (PCS/CCS/IC)
+    # VIX buckets: <15 (green/calm), 15-20 (blue/normal), 20-25 (orange/elevated), 25+ (red/high)
+    # Colors from STRUCTURE_COLORS: PCS=blue, CCS=orange, IC=gray
+    # Dashed reference lines at 80% and 50% accuracy
+    # Annotates each bar with accuracy% and (n=count)
+    # Skips if fewer than 10 labeled days with VIX
+    # Saved to ml/plots/structure_by_vix.png`;
+
+const SRC_ROLLING_ACCURACY = `def plot_rolling_accuracy(df: pd.DataFrame) -> None:
+    # 10-day rolling accuracy line (blue, solid) over chronological labeled days
+    # fill_between: green above overall mean, red below overall mean
+    # Overall mean: dashed horizontal line (gray)
+    # X-axis: date index (sequential labeled days)
+    # Y-axis: "Accuracy (rolling 10-day)"
+    # Skips if fewer than 12 labeled days
+    # Saved to ml/plots/rolling_accuracy.png`;
+
+const SRC_FLOW_BY_VIX = `def plot_flow_by_vix(df: pd.DataFrame) -> None:
+    # Grouped bar chart: top 4 flow sources by VIX regime
+    # Each group of bars = one VIX regime bucket, each bar = one flow source
+    # Bar colors: same per-regime palette as plot_structure_by_vix
+    # Skips regime buckets with n < 3
+    # Skips entirely if VIX is all-null
+    # Y-axis: "Direction Accuracy (%)" with 50% dashed reference line
+    # X-axis: regime bucket labels ("< 15", "15-20", "20-25", "25+")
+    # Saved to ml/plots/flow_by_vix.png`;
+
+const SRC_PNL_DISTRIBUTION = `def plot_pnl_distribution(strategies: list, metrics: dict) -> None:
+    # 1×N subplots, one per strategy (PCS, CCS, IC — or fewer if data permits)
+    # Each subplot: histogram of per-trade P&L in dollars
+    # Green bars for positive P&L bins, red bars for negative P&L bins
+    # White dashed vertical line at x=0 (break-even)
+    # Orange dashed vertical line at mean P&L
+    # Corner annotation: "Total P&L: $X"
+    # Subplot title: "{strategy} | Win: {win_rate}% | n={num_trades}"
+    # X-axis: "P&L ($)"
+    # Y-axis: "Count"
+    # Saved to ml/plots/pnl_distribution.png`;
+
+const SRC_CLUSTER_TRANSITIONS = `def plot_cluster_transitions(plot_dir: Path, labels: np.ndarray, k: int) -> None:
+    # k×k Markov transition probability heatmap
+    # Cell (i,j) = P(next day is cluster j | today is cluster i)
+    # Computed by counting consecutive label pairs and row-normalizing
+    # Colormap: "Blues" (0=white, 1=dark blue)
+    # Dark theme: figure bg #1a1a2e, axes bg #16213e
+    # White cell annotations: probability to 2 decimal places
+    # Y-axis: "From Cluster", X-axis: "To Cluster"
+    # Tick labels: "Cluster 0", "Cluster 1", etc.
+    # Skips if k < 2 or fewer than 5 samples
+    # Saved to ml/plots/cluster_transitions.png`;
+
 // ── Per-Plot Reference Block Builder ────────────────────────
 
 function plotRefBlock(
@@ -894,6 +976,62 @@ ${plotRefBlock(
   SRC_TRACE_VIX_REGIME,
   "Two bar charts comparing TRACE prediction accuracy across VIX regime buckets: <15 (calm/green), 15-20 (normal/blue), 20-25 (elevated/orange), 25+ (high/red). Left: Mean Absolute Error per bucket. Right: Hit rate (±10pts) per bucket. VIX is the session reading at 9:00 AM CT (~30 min into trading), pulled from the training_features table. Only buckets with at least 1 day are rendered. With ~38 days of data, expect 2-3 populated buckets and small sample sizes per bucket.",
   'Focus on: (1) whether MAE is monotonically higher in elevated/high VIX regimes — if so, choppy/uncertain sessions genuinely degrade TRACE accuracy and the signal should be down-weighted on high-VIX days, (2) whether direction accuracy (reported in underlying data) follows the same pattern — MAE and direction can diverge (high VIX might increase absolute error but not flip direction if the move is simply larger), (3) CRITICAL sample size caveat: with only ~38 total days and ~3 regime buckets, each bucket has ~10-15 days at best — name the exact n for each bucket and flag that no bucket currently has statistical significance; actionable conclusions require 30+ days per bucket, (4) the practical trading rule implied: if 15-20 VIX has lower MAE than <15, the signal is actually MORE reliable in mild vol (confirming the main thesis); if 20-25 VIX shows degraded accuracy, state the threshold above which TRACE should be flagged as less reliable, (5) whether the LOW confidence labels already capture the high-VIX degradation — if HIGH confidence days in the 20-25 VIX bucket still show low MAE, the confidence labeling is doing the regime filtering automatically.',
+)}
+
+${plotRefBlock(
+  'trace_signal_strength',
+  SRC_TRACE_SIGNAL_STRENGTH,
+  "Two-panel bar chart showing how TRACE prediction quality varies by signal magnitude — specifically, by how far the predicted close is from the day's open (current_price at 9:00 AM CT). Bins: [0-5, 5-10, 10-20, 20-30, 30+] pts away from open. Top panel: direction accuracy per bin (green > 50%, red <= 50%). Bottom panel: count per bin. This tests whether larger TRACE signals carry more information than small ones — a classic signal-to-noise diagnostic.",
+  'Focus on: (1) the 0-5 pt bin direction accuracy — if it is near 25-50%, small signals are noise and should be filtered out of trade entries; state the exact accuracy and count, (2) the inflection point — at what bin does accuracy cross 50% and stay above it? This becomes a minimum signal threshold rule (e.g., "only trade when |predicted - open| > 10 pts"), (3) whether 100% accuracy bins have n=1 or n=2 — single-day 100% accuracy is meaningless; state counts explicitly and distinguish anecdotes from signal, (4) the trading rule implied: if bins >10 pts show >=80% direction accuracy with n>=5, consider making signal magnitude a Tier 1 filter (alongside confidence), (5) whether this threshold should be combined with the confidence tier — HIGH confidence + large signal may be the optimal conjunction filter.',
+)}
+
+${plotRefBlock(
+  'trace_rolling_error',
+  SRC_TRACE_ROLLING_ERROR,
+  "Chronological bar chart of signed prediction errors (actual_close - predicted_close) per day, with a 5-day rolling mean overlay. Green bars = actual exceeded prediction (TRACE underestimated the close); red bars = actual fell short (TRACE overestimated). The rolling mean reveals systematic drift: if it stays consistently above zero, TRACE has a persistent upward bias; if it oscillates, errors are regime-dependent. Underlying data includes all rows with actual_close populated.",
+  'Focus on: (1) whether the rolling mean shows a sustained trend in either direction — a slope over 5+ days suggests TRACE is miscalibrated for the current SPX level or volatility regime; name the direction and rough magnitude, (2) clusters of same-color bars — 3+ consecutive green or red bars indicate a regime where TRACE systematically under- or over-predicted; state the dates and magnitude, (3) the largest single-day error bars — are they associated with a recognizable market event? If the underlying data includes VIX, note whether high-error days are high-VIX days, (4) mean reversion vs persistent bias: if the rolling mean crosses zero frequently, errors are unbiased and roughly mean-reverting (good for mean-reversion spread strategies); if it rarely crosses zero, a fixed offset calibration would improve strike selection, (5) practical implication: if the rolling mean is currently positive (negative), should today\'s TRACE prediction be adjusted upward (downward) to account for recent systematic bias?',
+)}
+
+${plotRefBlock(
+  'trace_error_vs_range',
+  SRC_TRACE_ERROR_VS_RANGE,
+  "Scatter plot of absolute prediction error (y-axis) vs full-day SPX range (x-axis), colored by confidence tier (high=green, medium=orange, low=red). A linear trendline shows whether wider-range days are harder to predict. day_range_pts is the total high-minus-low for the day, measuring how much the market moved — a direct proxy for realized vol for that session. Underlying data requires both actual_close (for error) and day_range_pts (from outcomes table).",
+  'Focus on: (1) the trendline slope — positive slope means wider days are harder to predict (error grows with range); quantify the expected error increase per 10 pts of additional range, (2) whether HIGH confidence points are clustered in the lower-left (low error, narrow range) — this would confirm that the user naturally assigns high confidence on quieter days with cleaner TRACE signals, (3) outliers: any HIGH confidence point with large error is a misfire worth investigating — note its approximate coordinates if visible, (4) whether the trendline slope is steep enough to justify a "skip TRACE on wide-range days" rule — if error > 10 pts only when range > 30 pts, the rule has a natural threshold, (5) sample size caveat: day_range_pts requires both actual_close and the outcomes table to be populated for the same date; fewer points than the total prediction count indicates missing outcome data; state the approximate n visible in the scatter.',
+)}
+
+${plotRefBlock(
+  'structure_by_vix',
+  SRC_STRUCTURE_BY_VIX,
+  "Grouped bar chart showing structure type accuracy (PCS/CCS/IC) across VIX regime buckets (<15 calm, 15-20 normal, 20-25 elevated, 25+ high). Each cluster of bars = one VIX regime; bars within each cluster = accuracy for PCS, CCS, and IC respectively. Reference lines at 80% (profitability target) and 50% (break-even). This reveals whether structure selection accuracy is regime-dependent — for example, whether CCS accuracy degrades in elevated VIX (when directional calls are harder) while PCS remains strong.",
+  'Focus on: (1) which structure is most regime-sensitive — a structure whose bar heights vary greatly across VIX buckets is unreliable and should be sized down in high-VIX regimes; name the structure and the accuracy range, (2) whether the 80% profitability threshold is met for each structure in the 15-20 VIX bucket (the most common regime) — this is the primary operating regime and its accuracy determines baseline sizing, (3) the elevated (20-25) VIX bucket — if accuracy drops below 80% there, the trading rule should require higher confirmation signals in that regime, (4) CRITICAL sample size: with ~39 total days split across 3-4 buckets and 3 structures, many cells have n < 5; state the smallest n visible and whether any bar should be ignored for being a single-day anecdote, (5) whether one VIX regime uniformly dominates all others (all three structures accurate) — that would be the ideal operating environment to over-size, while regimes with mixed accuracy should reduce sizing.',
+)}
+
+${plotRefBlock(
+  'rolling_accuracy',
+  SRC_ROLLING_ACCURACY,
+  "10-day rolling accuracy time series over the chronological sequence of labeled trading days. The line shows smoothed accuracy over the most recent 10 days; the green fill above the overall mean and red fill below reveal periods of outperformance and underperformance. The dashed horizontal overall mean line (~92% from the static system context) is the benchmark. This is the primary drift-detection plot: a sustained red fill over 10+ days signals model degradation or regime change.",
+  'Focus on: (1) whether the rolling accuracy is currently above or below the overall mean — state the approximate current value and direction of the last slope, (2) any extended red-fill periods (rolling accuracy below mean for 5+ days) — these indicate regime changes where the model struggled; identify the date range and magnitude of the dip, (3) whether the rolling accuracy is trending up or down toward the end of the time series — a downward trend at the tail signals emerging degradation that warrants investigation before it reaches statistical significance, (4) the amplitude of oscillation — if accuracy swings between 70-100% on a 10-day window with only 40 days of data, the rolling window is too small to be reliable; note whether the fill area oscillates rapidly or shows sustained trends, (5) whether accuracy drops align with any patterns observable in other plots (e.g., high-VIX periods, wider range days) — cross-reference if the timing is consistent.',
+)}
+
+${plotRefBlock(
+  'flow_by_vix',
+  SRC_FLOW_BY_VIX,
+  "Grouped bar chart comparing the top 4 flow sources' direction accuracy across VIX regime buckets. Each regime bucket is a cluster of 4 bars (one per flow source). This reveals whether flow signals degrade in elevated volatility — for example, whether Market Tide accuracy drops from 61% in 15-20 VIX to near-50% in 20-25 VIX, which would justify down-weighting flow signals in high-vol sessions. The 50% dashed reference line marks coin-flip accuracy.",
+  'Focus on: (1) which flow sources are most regime-stable — a source whose accuracy stays above 55% across all VIX buckets is a reliable all-weather signal vs one that is only useful in calm conditions; name the sources in both categories, (2) whether any source actually improves accuracy in elevated VIX (potentially anti-correlated with vol) — this would be a contrarian signal worth elevating in the live prompt during high-VIX sessions, (3) whether the 15-20 VIX bucket (most common regime) shows meaningful differentiation between sources — if accuracy ranges from 45-70% in that bucket, the spread validates the source ranking system, (4) CRITICAL sample size: with ~39 total days split across 3-4 VIX buckets, each bucket may have n=10-15 days; at n=10, Wilson CI half-width is ±15pp, meaning 61% accuracy has CI of [46%, 76%] — flag any bar where the implied CI overlaps 50%, (5) whether the flow reliability ranking from the flow_reliability plot holds within each VIX bucket — if Market Tide is ranked #1 overall but drops to #3 in elevated VIX, the Tier 1/2/3 signal hierarchy needs conditional branching.',
+)}
+
+${plotRefBlock(
+  'pnl_distribution',
+  SRC_PNL_DISTRIBUTION,
+  "P&L distribution histograms from the backtest, one subplot per trading structure (PCS/CCS/IC). Each bar is green if its P&L bin is positive, red if negative. A white dashed line marks zero (break-even); an orange dashed line marks the mean P&L. The corner annotation shows total accumulated P&L for each structure. Win rates and trade counts are in the subplot titles. This shows the distribution shape — bimodal (win/loss binary from spreads), right-skewed, or surprisingly wide — which affects Kelly sizing and drawdown expectations.",
+  'Focus on: (1) the bimodality pattern — credit spread P&L should cluster near +$200 (max credit) and -$1,800 (max loss) creating two distinct humps; if the distribution is smooth/normal, the backtest may have position sizing artifacts, (2) the win/loss count ratio embedded in the bar sizes — cross-validate against win_rate stated in the title, (3) whether any structure has a right-skewed outlier (large positive P&L) that suggests leveraged winners — this would be inconsistent with defined-risk credit spreads and warrants investigation, (4) the mean P&L line position — if the orange line is to the right of zero, expected value per trade is positive; name the approximate value and multiply by trade count for annualized expectation, (5) cross-structure comparison: which structure has the cleanest bimodal distribution (fewest partial fills or adjustment trades), and does the structure with highest win_rate also show the best total P&L — if not, the win rate may be misleading due to different premium sizes.',
+)}
+
+${plotRefBlock(
+  'cluster_transitions',
+  SRC_CLUSTER_TRANSITIONS,
+  "Markov transition probability heatmap for day-type clusters. Each row is a 'from' cluster (today's day type); each column is a 'to' cluster (next trading day's type). Cell (i,j) = P(next day is cluster j | today is cluster i). Row sums to 1.0. High diagonal values indicate regime persistence (today's cluster predicts tomorrow's cluster). High off-diagonal values indicate systematic regime rotation. This is operationally important: if you are in a low-volatility cluster today with 80% probability of staying tomorrow, you have advance notice to continue current strategy sizing.",
+  'Focus on: (1) diagonal dominance — if diagonal cells are all > 0.5, regime persistence is the rule and yesterday\'s cluster is predictive; state the minimum diagonal value and which cluster is LEAST persistent (most likely to switch), (2) the specific high off-diagonal transitions — if cluster 0 → cluster 1 has p=0.60, this is an actionable signal: when in cluster 0, prepare for cluster 1 conditions the next day; name any off-diagonal cell above 0.3 and state its trading implication, (3) whether any cluster is a "trap" state — a cluster where almost all transitions go to a single other cluster (one dominant off-diagonal) would indicate a predictable forced rotation, (4) CRITICAL sample size: with ~39 trading days and k=2-3 clusters, the most common cluster may have 25 days and the rarest 5 days; at n=5 transitions, each cell\'s empirical probability has a 95% CI of roughly ±40%; flag cells based on small n before drawing operational conclusions, (5) whether the transition probabilities align with the VIX regime dynamics observed in other plots — if high-VIX clusters show lower self-transition rates (more unstable), that confirms VIX as a regime-change predictor and warrants heightened monitoring.',
 )}
 
 <output_format>

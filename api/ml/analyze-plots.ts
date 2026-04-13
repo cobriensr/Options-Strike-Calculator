@@ -116,6 +116,14 @@ function getPlotFindings(
     trace_predicted_vs_actual: ['trace', 'dataset'],
     trace_accuracy_by_confidence: ['trace', 'dataset'],
     trace_accuracy_by_vix_regime: ['trace', 'dataset'],
+    trace_signal_strength: ['trace', 'dataset'],
+    trace_rolling_error: ['trace', 'dataset'],
+    trace_error_vs_range: ['trace', 'dataset'],
+    structure_by_vix: ['eda', 'dataset'],
+    rolling_accuracy: ['phase2', 'eda', 'dataset'],
+    flow_by_vix: ['eda', 'dataset'],
+    pnl_distribution: ['backtest', 'dataset'],
+    cluster_transitions: ['clustering', 'dataset'],
   };
 
   const sections = sectionMap[plotName] ?? ['dataset'];

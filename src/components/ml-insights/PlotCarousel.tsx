@@ -26,11 +26,11 @@ const PLOT_GROUPS: PlotGroup[] = [
   { label: 'Overview', plots: ['timeline', 'stationarity', 'correlations'] },
   {
     label: 'Regime',
-    plots: ['range_by_regime', 'gex_vs_range', 'day_of_week'],
+    plots: ['range_by_regime', 'gex_vs_range', 'day_of_week', 'structure_by_vix'],
   },
   {
     label: 'Flow & Pool',
-    plots: ['flow_reliability', 'dark_pool_vs_range'],
+    plots: ['flow_reliability', 'dark_pool_vs_range', 'flow_by_vix'],
   },
   {
     label: 'Performance',
@@ -39,6 +39,8 @@ const PLOT_GROUPS: PlotGroup[] = [
       'confidence_over_time',
       'backtest_equity',
       'failure_heatmap',
+      'rolling_accuracy',
+      'pnl_distribution',
     ],
   },
   {
@@ -47,6 +49,7 @@ const PLOT_GROUPS: PlotGroup[] = [
       'clusters_pca',
       'clusters_heatmap',
       'feature_importance_comparison',
+      'cluster_transitions',
     ],
   },
   {
@@ -64,6 +67,9 @@ const PLOT_GROUPS: PlotGroup[] = [
       'trace_predicted_vs_actual',
       'trace_accuracy_by_confidence',
       'trace_accuracy_by_vix_regime',
+      'trace_signal_strength',
+      'trace_rolling_error',
+      'trace_error_vs_range',
     ],
   },
 ];
