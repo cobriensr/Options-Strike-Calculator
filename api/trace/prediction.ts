@@ -13,6 +13,7 @@ const PredictionSchema = z.object({
   predicted_close: z.number().positive(),
   confidence: z.enum(['high', 'medium', 'low']),
   notes: z.string().optional(),
+  gamma_regime: z.enum(['positive', 'negative']).nullable().optional(),
 });
 
 export default async function handler(
@@ -32,6 +33,7 @@ export default async function handler(
           tp.current_price::float,
           tp.actual_close::float,
           tp.created_at,
+          tp.gamma_regime,
           tf.vix::float   AS vix,
           tf.vix1d::float AS vix1d
         FROM trace_predictions tp
@@ -55,17 +57,19 @@ export default async function handler(
         .json({ error: 'Invalid input', details: parsed.error.format() });
       return;
     }
-    const { date, predicted_close, confidence, notes } = parsed.data;
+    const { date, predicted_close, confidence, notes, gamma_regime } =
+      parsed.data;
     try {
       const [row] = await sql`
-        INSERT INTO trace_predictions (date, predicted_close, confidence, notes)
-        VALUES (${date}, ${predicted_close}, ${confidence}, ${notes ?? null})
+        INSERT INTO trace_predictions (date, predicted_close, confidence, notes, gamma_regime)
+        VALUES (${date}, ${predicted_close}, ${confidence}, ${notes ?? null}, ${gamma_regime ?? null})
         ON CONFLICT (date) DO UPDATE SET
           predicted_close = EXCLUDED.predicted_close,
           confidence      = EXCLUDED.confidence,
           notes           = EXCLUDED.notes,
+          gamma_regime    = EXCLUDED.gamma_regime,
           updated_at      = now()
-        RETURNING date::text, predicted_close::float, confidence, notes, actual_close::float, current_price::float
+        RETURNING date::text, predicted_close::float, confidence, notes, actual_close::float, current_price::float, gamma_regime
       `;
       res.status(200).json(row);
     } catch (err) {
