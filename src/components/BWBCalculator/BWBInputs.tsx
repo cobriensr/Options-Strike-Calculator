@@ -290,7 +290,7 @@ export default function BWBInputs({
             key={row.label}
             className="mb-2 grid grid-cols-[auto_1fr] items-center gap-x-3"
           >
-            <div className="w-[70px]">
+            <div className="whitespace-nowrap">
               <span className="text-primary font-sans text-sm font-semibold">
                 {row.label}
               </span>
