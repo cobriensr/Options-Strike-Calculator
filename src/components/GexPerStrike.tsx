@@ -724,14 +724,14 @@ export default memo(function GexPerStrike({
             className="inline-block h-2 w-2 rounded-sm"
             style={{ background: theme.green }}
           />
-          +Gamma
+          <span>+Gamma</span>
         </span>
         <span className="flex items-center gap-1">
           <span
             className="inline-block h-2 w-2 rounded-sm"
             style={{ background: theme.red }}
           />
-          -Gamma
+          <span>-Gamma</span>
         </span>
         {showCharm && (
           <span className="flex items-center gap-1">
@@ -739,7 +739,7 @@ export default memo(function GexPerStrike({
               className="inline-block h-[3px] w-2 rounded-sm"
               style={{ background: CHARM_POS }}
             />
-            Charm
+            <span>Charm</span>
           </span>
         )}
         {showVanna && (
@@ -751,7 +751,7 @@ export default memo(function GexPerStrike({
                 borderColor: VANNA_POS,
               }}
             />
-            Vanna
+            <span>Vanna</span>
           </span>
         )}
         {showDex && (
@@ -763,7 +763,7 @@ export default memo(function GexPerStrike({
                 borderColor: DEX_POS,
               }}
             />
-            DEX
+            <span>DEX</span>
           </span>
         )}
         <span className="ml-auto flex items-center gap-1">
@@ -771,7 +771,7 @@ export default memo(function GexPerStrike({
             className="inline-block h-2.5 w-px"
             style={{ background: theme.accent }}
           />
-          SPOT
+          <span>SPOT</span>
         </span>
       </div>
 
@@ -838,6 +838,8 @@ export default memo(function GexPerStrike({
             return (
               <div
                 key={d.strike}
+                role="row"
+                tabIndex={0}
                 aria-label={`Strike ${d.strike} row`}
                 className="relative flex cursor-crosshair items-center transition-colors duration-150"
                 style={{
@@ -850,6 +852,12 @@ export default memo(function GexPerStrike({
                 }}
                 onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
                 onMouseLeave={() => setHovered(null)}
+                onFocus={(e) => {
+                  setHovered(i);
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setMousePos({ x: rect.right, y: rect.top });
+                }}
+                onBlur={() => setHovered(null)}
               >
                 {/* GEX bar */}
                 <div

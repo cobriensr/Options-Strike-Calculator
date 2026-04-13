@@ -72,7 +72,7 @@ export default function ResultsSection({
             >
               &#x25BE;
             </span>
-            All Delta Strikes
+            <span>All Delta Strikes</span>
           </div>
 
           {!collapsed && (

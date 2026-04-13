@@ -79,7 +79,7 @@ export function parseCboeCsv(csv: string): Vix1dDailyMap {
     const l = Number.parseFloat(lowStr.trim());
     const c = Number.parseFloat(closeStr.trim());
 
-    if (isNaN(o) || isNaN(h) || isNaN(l) || isNaN(c)) continue;
+    if (Number.isNaN(o) || Number.isNaN(h) || Number.isNaN(l) || Number.isNaN(c)) continue;
 
     result[iso] = { o, h, l, c };
   }

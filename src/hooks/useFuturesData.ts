@@ -35,7 +35,7 @@ export interface FuturesDataState {
   updatedAt: string | null;
   loading: boolean;
   error: string | null;
-  refetch: () => void;
+  refetch: () => Promise<void>;
 }
 
 export function useFuturesData(): FuturesDataState {

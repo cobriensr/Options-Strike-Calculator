@@ -253,27 +253,23 @@ export default function FuturesCalculator() {
               Futures P&amp;L Calculator
             </h2>
           </div>
-          <div onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={handleClear}
-              className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
-            >
-              Clear
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); handleClear(); }}
+            className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
+          >
+            Clear
+          </button>
         </div>
 
         {/* Row 2: symbol chips inline */}
-        <div
-          onClick={(e) => e.stopPropagation()}
-          className="flex gap-1"
-        >
+        <div className="flex gap-1">
           {(['ES', 'MES', 'NQ', 'MNQ'] as const).map((sym) => (
             <button
               key={sym}
               type="button"
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 setSymbol(sym);
                 clearPrices();
               }}

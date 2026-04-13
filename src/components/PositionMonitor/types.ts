@@ -54,7 +54,7 @@ export type OrderStatus =
   | 'REJECTED'
   | 'EXPIRED'
   | 'WORKING'
-  | (string & {});
+  | string;
 
 /** A single order from Account Order History */
 export interface OrderEntry {

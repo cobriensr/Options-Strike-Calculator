@@ -163,8 +163,10 @@ export function computeZeroGammaStrike(
 
   // Multiple crossings (distorted profile): return the one closest to spot.
   // That's the flip actually governing current hedging mechanics.
-  return crossings.reduce((closest, current) =>
-    Math.abs(current - spot) < Math.abs(closest - spot) ? current : closest,
+  return crossings.reduce(
+    (closest, current) =>
+      Math.abs(current - spot) < Math.abs(closest - spot) ? current : closest,
+    crossings[0]!,
   );
 }
 
@@ -247,10 +249,12 @@ export function analyzeZeroGamma(
   const zeroGammaStrike =
     crossings.length === 1
       ? crossings[0]!
-      : crossings.reduce((closest, current) =>
-          Math.abs(current - spot) < Math.abs(closest - spot)
-            ? current
-            : closest,
+      : crossings.reduce(
+          (closest, current) =>
+            Math.abs(current - spot) < Math.abs(closest - spot)
+              ? current
+              : closest,
+          crossings[0]!,
         );
 
   const distancePoints = spot - zeroGammaStrike;

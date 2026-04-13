@@ -35,7 +35,7 @@ export interface MLInsightsState {
   pipelineDate: string | null;
   loading: boolean;
   error: string | null;
-  refetch: () => void;
+  refetch: () => Promise<void>;
 }
 
 export function useMLInsights(): MLInsightsState {

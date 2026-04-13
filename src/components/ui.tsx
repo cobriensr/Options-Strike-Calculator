@@ -53,28 +53,17 @@ export const SectionBox = memo(function SectionBox({
     >
       <div
         className={
-          (isOpen ? 'mb-3.5 ' : '') +
-          'flex items-center justify-between' +
-          (collapsible ? ' cursor-pointer select-none' : '')
-        }
-        onClick={collapsible ? toggle : undefined}
-        role={collapsible ? 'button' : undefined}
-        tabIndex={collapsible ? 0 : undefined}
-        aria-label={collapsible ? `Toggle ${label}` : undefined}
-        aria-expanded={collapsible ? isOpen : undefined}
-        onKeyDown={
-          collapsible
-            ? (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  toggle();
-                }
-              }
-            : undefined
+          (isOpen ? 'mb-3.5 ' : '') + 'flex items-center justify-between'
         }
       >
-        <div className="flex items-center gap-2.5">
-          {collapsible && (
+        {collapsible ? (
+          <button
+            type="button"
+            className="flex flex-1 cursor-pointer select-none items-center gap-2.5 text-left"
+            onClick={toggle}
+            aria-label={`Toggle ${label}`}
+            aria-expanded={isOpen}
+          >
             <span
               className="text-muted text-[12px] transition-transform duration-200"
               style={{ transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }}
@@ -82,35 +71,54 @@ export const SectionBox = memo(function SectionBox({
             >
               &#x25BE;
             </span>
-          )}
-          <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
-            {label}
-          </h2>
-          {badge && (
-            <span
-              className={
-                'rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold' +
-                (badgeColor ? '' : ' text-accent bg-accent-bg')
-              }
-              style={
-                badgeColor
-                  ? {
-                      color: badgeColor,
-                      backgroundColor: `color-mix(in srgb, ${badgeColor} 15%, transparent)`,
-                    }
-                  : undefined
-              }
-            >
-              {badge}
-            </span>
-          )}
-        </div>
-        {/* Wrap headerRight to stop clicks from toggling collapse */}
-        {headerRight && collapsible ? (
-          <div onClick={(e) => e.stopPropagation()}>{headerRight}</div>
+            <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+              {label}
+            </h2>
+            {badge && (
+              <span
+                className={
+                  'rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold' +
+                  (badgeColor ? '' : ' text-accent bg-accent-bg')
+                }
+                style={
+                  badgeColor
+                    ? {
+                        color: badgeColor,
+                        backgroundColor: `color-mix(in srgb, ${badgeColor} 15%, transparent)`,
+                      }
+                    : undefined
+                }
+              >
+                {badge}
+              </span>
+            )}
+          </button>
         ) : (
-          headerRight
+          <div className="flex items-center gap-2.5">
+            <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+              {label}
+            </h2>
+            {badge && (
+              <span
+                className={
+                  'rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold' +
+                  (badgeColor ? '' : ' text-accent bg-accent-bg')
+                }
+                style={
+                  badgeColor
+                    ? {
+                        color: badgeColor,
+                        backgroundColor: `color-mix(in srgb, ${badgeColor} 15%, transparent)`,
+                      }
+                    : undefined
+                }
+              >
+                {badge}
+              </span>
+            )}
+          </div>
         )}
+        {headerRight}
       </div>
       {isOpen && <div className="flex min-h-0 flex-1 flex-col">{children}</div>}
     </section>
