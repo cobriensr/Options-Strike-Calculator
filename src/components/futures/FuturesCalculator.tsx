@@ -135,6 +135,12 @@ export default function FuturesCalculator() {
   const exitValid = Number.isFinite(exit) && exit > 0;
   const contractsValid = Number.isFinite(contracts) && contracts >= 1;
 
+  const clearPrices = useCallback(() => {
+    setEntryInput('');
+    setExitInput('');
+    setAdverseInput('');
+  }, []);
+
   const handleClear = useCallback(() => {
     setEntryInput('');
     setExitInput('');
@@ -194,7 +200,16 @@ export default function FuturesCalculator() {
       entryValid && adverseValid && contractsValid
         ? calcTrade(spec, entry, adverse, direction, contracts)
         : null,
-    [entryValid, adverseValid, contractsValid, spec, entry, adverse, direction, contracts],
+    [
+      entryValid,
+      adverseValid,
+      contractsValid,
+      spec,
+      entry,
+      adverse,
+      direction,
+      contracts,
+    ],
   );
 
   const chipClass = (active: boolean) =>
@@ -203,7 +218,8 @@ export default function FuturesCalculator() {
       ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
       : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt');
 
-  const feePerSide = spec.exchangeFee + spec.nfaFee + spec.clearingFee;
+  const feePerSide =
+    spec.exchangeFee + spec.nfaFee + spec.clearingFee + spec.brokerCommission;
 
   return (
     <section
@@ -251,7 +267,10 @@ export default function FuturesCalculator() {
               <button
                 key={sym}
                 type="button"
-                onClick={() => setSymbol(sym)}
+                onClick={() => {
+                  setSymbol(sym);
+                  clearPrices();
+                }}
                 className={chipClass(symbol === sym)}
               >
                 {sym}
@@ -318,7 +337,10 @@ export default function FuturesCalculator() {
                 <button
                   key={d}
                   type="button"
-                  onClick={() => setDirection(d)}
+                  onClick={() => {
+                    setDirection(d);
+                    clearPrices();
+                  }}
                   className={
                     'cursor-pointer rounded-md border-[1.5px] px-4 py-1.5 font-sans text-[11px] font-bold tracking-[0.06em] uppercase transition-colors duration-100 ' +
                     (direction === d

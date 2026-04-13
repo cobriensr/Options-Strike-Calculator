@@ -171,16 +171,20 @@ describe('FuturesCalculator — symbol switching', () => {
     expect(screen.getByText('$50')).toBeInTheDocument();
   });
 
-  it('switching symbol updates tick ladder values', async () => {
+  it('switching symbol clears prices then uses new spec', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
-
     // ES 1-tick gross = $12.50
     expect(screen.getByText('+$12.50')).toBeInTheDocument();
 
+    // Switch to NQ — prices are cleared
     await user.click(screen.getByRole('button', { name: 'NQ' }));
+    expect(screen.getByLabelText('Entry Price')).toHaveValue('');
+
+    // Re-enter price under NQ spec
+    await fillEntry(user, '21000');
     // NQ 1-tick gross = $5.00
     expect(screen.getByText('+$5.00')).toBeInTheDocument();
   });
@@ -189,33 +193,36 @@ describe('FuturesCalculator — symbol switching', () => {
 // ── Direction toggle ──────────────────────────────────────────────────────────
 
 describe('FuturesCalculator — direction toggle', () => {
-  it('switching to short changes exit price direction in tick ladder', async () => {
+  it('switching to short clears prices; short tick ladder exits below entry', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
-    // Long: exit for +1 tick = 5500.25
+    // Long: +1 tick exit is above entry
     expect(screen.getByText('5,500.25')).toBeInTheDocument();
 
+    // Switch to short — prices clear
     await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
-    // Short: exit for +1 tick = 5499.75
+    expect(screen.getByLabelText('Entry Price')).toHaveValue('');
+
+    // Re-enter price under short direction
+    await fillEntry(user, '5500');
+    // Short: +1 tick exit is BELOW entry
     expect(screen.getByText('5,499.75')).toBeInTheDocument();
   });
 
-  it('switching to short flips full P&L sign', async () => {
+  it('short direction gives a loss when price rises', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
+    // Start as short, then enter prices
+    await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
     await fillEntry(user, '5500');
     await fillExit(user, '5510');
 
-    // Long: price rose 10pts → gross +$500
-    expect(screen.getByText('+$500.00')).toBeInTheDocument();
-
-    // Switch to short: same prices → now a loss
-    await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
-    // Gross = -$500, net = -$503.18
+    // Short with price rising: gross -$500 (adverse move)
     expect(screen.getByText('-$500.00')).toBeInTheDocument();
+    expect(screen.getByText('-$505.76')).toBeInTheDocument();
   });
 });
 
@@ -260,7 +267,7 @@ describe('FuturesCalculator — tick ladder', () => {
 
     await fillEntry(user, '5500');
     // break-even = 5500 + 3.18/50 = 5500.0636
-    expect(screen.getByText('5,500.06')).toBeInTheDocument();
+    expect(screen.getByText('5,500.12')).toBeInTheDocument();
   });
 
   it('hides tick ladder when both entry and exit are entered', async () => {
@@ -282,8 +289,8 @@ describe('FuturesCalculator — tick ladder', () => {
       target: { value: '3' },
     });
 
-    // 3× $1.59 each side → total -$9.54
-    expect(screen.getByText('-$9.54')).toBeInTheDocument();
+    // 3× $2.88 each side → total -$17.28
+    expect(screen.getByText('-$17.28')).toBeInTheDocument();
   });
 });
 
@@ -318,7 +325,7 @@ describe('FuturesCalculator — full P&L results', () => {
     await fillExit(user, '5510');
 
     // Net = $500 - $3.18 = $496.82
-    expect(screen.getByText('+$496.82')).toBeInTheDocument();
+    expect(screen.getByText('+$494.24')).toBeInTheDocument();
   });
 
   it('shows buy-side and sell-side fee rows', async () => {
@@ -354,7 +361,7 @@ describe('FuturesCalculator — full P&L results', () => {
 
     expect(screen.getByText('Return on margin')).toBeInTheDocument();
     // ROM = 496.82 / 500 * 100 = 99.36%
-    expect(screen.getByText('+99.36%')).toBeInTheDocument();
+    expect(screen.getByText('+98.85%')).toBeInTheDocument();
   });
 
   it('shows points and ticks moved', async () => {
@@ -375,8 +382,8 @@ describe('FuturesCalculator — full P&L results', () => {
     await fillEntry(user, '5510');
     await fillExit(user, '5500');
 
-    // Long with price falling: gross -$500, net -$503.18
-    expect(screen.getByText('-$503.18')).toBeInTheDocument();
+    // Long with price falling: gross -$500, net -$505.76
+    expect(screen.getByText('-$505.76')).toBeInTheDocument();
   });
 
   it('NQ results use correct $20/point multiplier', async () => {
@@ -389,7 +396,7 @@ describe('FuturesCalculator — full P&L results', () => {
 
     // 10 pts × $20 = $200 gross, net = $200 - $3.18 = $196.82
     expect(screen.getByText('+$200.00')).toBeInTheDocument();
-    expect(screen.getByText('+$196.82')).toBeInTheDocument();
+    expect(screen.getByText('+$194.24')).toBeInTheDocument();
   });
 
   it('scales correctly with 2 contracts', async () => {
@@ -404,7 +411,7 @@ describe('FuturesCalculator — full P&L results', () => {
 
     // 2 contracts: gross $1000, fees $6.36, net $993.64
     expect(screen.getByText('+$1,000.00')).toBeInTheDocument();
-    expect(screen.getByText('+$993.64')).toBeInTheDocument();
+    expect(screen.getByText('+$988.48')).toBeInTheDocument();
     expect(screen.getByText('$1,000.00')).toBeInTheDocument(); // margin (2 × $500)
   });
 
@@ -500,31 +507,31 @@ describe('FuturesCalculator — contracts input', () => {
 // ── Fee display accuracy ──────────────────────────────────────────────────────
 
 describe('FuturesCalculator — fee display', () => {
-  it('spec bar shows $1.59 fee per side', () => {
+  it('spec bar shows $2.88 fee per side', () => {
     render(<FuturesCalculator />);
-    expect(screen.getByText('$1.59')).toBeInTheDocument();
+    expect(screen.getByText('$2.88')).toBeInTheDocument();
   });
 
-  it('fee rows display -$1.59 each for 1-contract ES trade', async () => {
+  it('fee rows display -$2.88 each for 1-contract ES trade', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
     await fillExit(user, '5510');
 
-    // Two fee rows: buy-side and sell-side, each -$1.59
-    const feeAmounts = screen.getAllByText('-$1.59');
+    // Two fee rows: buy-side and sell-side, each -$2.88
+    const feeAmounts = screen.getAllByText('-$2.88');
     expect(feeAmounts).toHaveLength(2);
   });
 
-  it('round-trip total fee row shows -$3.18 for 1 contract', async () => {
+  it('round-trip total fee row shows -$5.76 for 1 contract', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
     await fillExit(user, '5510');
 
-    expect(screen.getByText('-$3.18')).toBeInTheDocument();
+    expect(screen.getByText('-$5.76')).toBeInTheDocument();
   });
 });
 
@@ -544,12 +551,11 @@ describe('FuturesCalculator — adverse excursion', () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
-    await fillEntry(user, '5500');
+    // Switch to short first, then enter price (direction change clears prices)
     await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
+    await fillEntry(user, '5500');
 
-    expect(
-      screen.getByLabelText('Highest Price Reached'),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Highest Price Reached')).toBeInTheDocument();
   });
 
   it('does not show adverse input when no entry is provided', () => {
@@ -573,11 +579,11 @@ describe('FuturesCalculator — adverse excursion', () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
-    // Long ES: entry 5500, lowest 5490 → -10 pts × $50 = -$500 gross, net -$503.18
+    // Long ES: entry 5500, lowest 5490 → -10 pts × $50 = -$500 gross, net -$505.76
     await fillEntry(user, '5500');
     await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
 
-    expect(screen.getByText('-$503.18')).toBeInTheDocument();
+    expect(screen.getByText('-$505.76')).toBeInTheDocument();
   });
 
   it('shows correct adverse gross exposure', async () => {
@@ -625,6 +631,6 @@ describe('FuturesCalculator — adverse excursion', () => {
     // Short ES: entry 5500, highest 5510 → -10 pts adverse → -$500 gross
     await user.type(screen.getByLabelText('Highest Price Reached'), '5510');
 
-    expect(screen.getByText('-$503.18')).toBeInTheDocument();
+    expect(screen.getByText('-$505.76')).toBeInTheDocument();
   });
 });

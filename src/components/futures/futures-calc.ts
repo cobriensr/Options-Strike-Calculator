@@ -6,8 +6,8 @@
  *   NQ: $20/point, 0.25 tick / $5.00  tick value, day margin $1,000/contract
  *
  * Fees per contract per side:
- *   Exchange $1.38 + NFA $0.02 + Clearing $0.19 = $1.59
- *   Round-trip: $3.18 per contract
+ *   Exchange $1.38 + NFA $0.02 + Clearing $0.19 + Broker commission $1.29 = $2.88
+ *   Round-trip: $5.76 per contract
  */
 
 export type FuturesSymbol = 'ES' | 'NQ';
@@ -23,6 +23,7 @@ export interface ContractSpec {
   readonly exchangeFee: number;
   readonly nfaFee: number;
   readonly clearingFee: number;
+  readonly brokerCommission: number;
 }
 
 export const SPECS: Record<FuturesSymbol, ContractSpec> = {
@@ -36,6 +37,7 @@ export const SPECS: Record<FuturesSymbol, ContractSpec> = {
     exchangeFee: 1.38,
     nfaFee: 0.02,
     clearingFee: 0.19,
+    brokerCommission: 1.29,
   },
   NQ: {
     label: '/NQ',
@@ -47,12 +49,16 @@ export const SPECS: Record<FuturesSymbol, ContractSpec> = {
     exchangeFee: 1.38,
     nfaFee: 0.02,
     clearingFee: 0.19,
+    brokerCommission: 1.29,
   },
 };
 
-/** Per-side commission for a given number of contracts. */
+/** Per-side cost for a given number of contracts (exchange + NFA + clearing + broker). */
 export function feesPerSide(spec: ContractSpec, contracts: number): number {
-  return (spec.exchangeFee + spec.nfaFee + spec.clearingFee) * contracts;
+  return (
+    (spec.exchangeFee + spec.nfaFee + spec.clearingFee + spec.brokerCommission) *
+    contracts
+  );
 }
 
 /** Total round-trip commission (buy + sell). */
