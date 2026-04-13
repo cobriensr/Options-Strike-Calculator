@@ -1438,4 +1438,16 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 57,
+    description:
+      'Add gamma_regime column to trace_predictions for GEX environment context',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE trace_predictions
+        ADD COLUMN IF NOT EXISTS gamma_regime VARCHAR(10)
+          CHECK (gamma_regime IN ('positive', 'negative'))
+      `,
+    ],
+  },
 ];
