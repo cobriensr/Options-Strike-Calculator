@@ -133,9 +133,9 @@ describe('GexLandscape', () => {
   });
 
   describe('spot indicator', () => {
-    it('marks the nearest strike to current price with SPOT label', () => {
+    it('marks the nearest strike to current price with ATM label', () => {
       renderLandscape();
-      expect(screen.getByText('← SPOT')).toBeDefined();
+      expect(screen.getByText('ATM')).toBeDefined();
     });
   });
 

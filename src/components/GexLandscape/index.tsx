@@ -2,19 +2,20 @@
  * GexLandscape — Strike classification table using the 4-quadrant
  * gamma × charm framework (Negative/Positive Gamma × Negative/Positive Charm).
  *
- * Each strike within ±200 pts of spot is labelled as one of:
- *   Max Launchpad   — neg gamma + pos charm  (accelerant that builds into close)
- *   Fading Launchpad — neg gamma + neg charm (accelerant that weakens over time)
- *   Sticky Pin       — pos gamma + pos charm (wall that strengthens into close)
- *   Weakening Pin    — pos gamma + neg charm (wall losing grip as day ages)
+ * Each strike within ±50 pts of spot is labelled as one of:
+ *   Max Launchpad    — neg gamma + pos charm  (accelerant that builds into close)
+ *   Fading Launchpad — neg gamma + neg charm  (accelerant that weakens over time)
+ *   Sticky Pin       — pos gamma + pos charm  (wall that strengthens into close)
+ *   Weakening Pin    — pos gamma + neg charm  (wall losing grip as day ages)
  *
  * Direction context (Ceiling / Floor) is overlaid based on strike vs. spot.
- * Vol reinforcement signals whether intraday flow confirms standing OI structure.
+ * GEX Δ% shows the % change in net gamma since the previous 1-min snapshot.
+ * Vol reinforcement signals whether intraday flow confirms OI structure.
  *
  * Reuses the same gexStrike data passed to GexPerStrike — no extra fetch.
  */
 
-import { memo, useMemo, useEffect, useRef } from 'react';
+import { memo, useMemo, useEffect, useRef, useState } from 'react';
 import { SectionBox } from '../ui';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 
@@ -46,8 +47,8 @@ export interface GexLandscapeProps {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** Max points from spot to include in the table. */
-const PRICE_WINDOW = 200;
+/** Max points from spot to include in the table (≈20 strikes at 5-pt intervals). */
+const PRICE_WINDOW = 50;
 
 /** Points from spot within which a strike is considered "at money". */
 const SPOT_BAND = 12;
@@ -108,11 +109,7 @@ const CLASS_META: Record<GexClassification, ClassMeta> = {
     badgeText: 'text-emerald-400',
     rowBg: 'bg-emerald-500/5',
     signal: (dir) =>
-      dir === 'ceiling'
-        ? 'Hard Ceiling'
-        : dir === 'floor'
-          ? 'Hard Floor'
-          : 'Pin Zone',
+      dir === 'ceiling' ? 'Hard Ceiling' : dir === 'floor' ? 'Hard Floor' : 'Pin Zone',
   },
   'weakening-pin': {
     badge: 'Weakening Pin',
@@ -137,6 +134,13 @@ function fmtGex(n: number): string {
   if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(1)}M`;
   if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(0)}K`;
   return `${sign}${abs.toFixed(0)}`;
+}
+
+function fmtPct(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—';
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '−' : '+';
+  return abs >= 10 ? `${sign}${abs.toFixed(0)}%` : `${sign}${abs.toFixed(1)}%`;
 }
 
 function fmtTime(iso: string): string {
@@ -166,35 +170,61 @@ const GexLandscape = memo(function GexLandscape({
   onScrubLive,
 }: GexLandscapeProps) {
   const spotRowRef = useRef<HTMLDivElement>(null);
+  // Scroll to ATM row only once on initial data arrival; never on scrub.
+  const hasScrolledRef = useRef(false);
+  // Previous snapshot strikes for Δ% computation.
+  const prevStrikesRef = useRef<GexStrikeLevel[]>([]);
+  const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(new Map());
 
   const currentPrice = strikes[0]?.price ?? 0;
 
   // Filter to ±PRICE_WINDOW pts, sort descending: ceiling at top, floor at bottom.
-  const rows = useMemo(() => {
-    return strikes
-      .filter((s) => Math.abs(s.strike - currentPrice) <= PRICE_WINDOW)
-      .sort((a, b) => b.strike - a.strike);
-  }, [strikes, currentPrice]);
+  const rows = useMemo(
+    () =>
+      strikes
+        .filter((s) => Math.abs(s.strike - currentPrice) <= PRICE_WINDOW)
+        .sort((a, b) => b.strike - a.strike),
+    [strikes, currentPrice],
+  );
 
-  // Find the strike closest to spot for the SPOT indicator.
+  // Find the strike closest to spot for the ATM indicator.
   const spotStrike = useMemo(() => {
     if (!rows.length) return null;
     return rows.reduce((best, s) =>
-      Math.abs(s.strike - currentPrice) < Math.abs(best.strike - currentPrice)
-        ? s
-        : best,
+      Math.abs(s.strike - currentPrice) < Math.abs(best.strike - currentPrice) ? s : best,
     );
   }, [rows, currentPrice]);
 
-  // Scroll spot row into view whenever data refreshes.
+  // Scroll ATM row into view only on initial data arrival.
   useEffect(() => {
+    if (hasScrolledRef.current) return;
     if (!loading && rows.length > 0 && spotRowRef.current) {
-      spotRowRef.current.scrollIntoView?.({
-        block: 'center',
-        behavior: 'smooth',
-      });
+      spotRowRef.current.scrollIntoView?.({ block: 'center', behavior: 'instant' });
+      hasScrolledRef.current = true;
     }
   }, [loading, rows.length]);
+
+  // Compute GEX Δ% whenever strikes updates (new snapshot from poll).
+  useEffect(() => {
+    const prev = prevStrikesRef.current;
+    if (prev.length === 0 || strikes.length === 0) {
+      prevStrikesRef.current = strikes;
+      return;
+    }
+    const prevByStrike = new Map(prev.map((s) => [s.strike, s.netGamma]));
+    const deltas = new Map<number, number | null>();
+    for (const s of strikes) {
+      const prevGamma = prevByStrike.get(s.strike);
+      deltas.set(
+        s.strike,
+        prevGamma === undefined || prevGamma === 0
+          ? null
+          : ((s.netGamma - prevGamma) / Math.abs(prevGamma)) * 100,
+      );
+    }
+    setGexDeltaMap(deltas);
+    prevStrikesRef.current = strikes;
+  }, [strikes]);
 
   // ── Header controls ────────────────────────────────────────────────────────
 
@@ -214,11 +244,7 @@ const GexLandscape = memo(function GexLandscape({
           <span
             className="font-mono text-[11px]"
             style={{
-              color: isLive
-                ? '#00e676'
-                : isScrubbed
-                  ? '#ffd740'
-                  : 'var(--color-secondary)',
+              color: isLive ? '#00e676' : isScrubbed ? '#ffd740' : 'var(--color-secondary)',
             }}
           >
             {fmtTime(timestamp)} CT
@@ -272,7 +298,7 @@ const GexLandscape = memo(function GexLandscape({
       <button
         onClick={onRefresh}
         disabled={loading}
-        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? 'animate-spin' : ''}`}
+        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? ' animate-spin' : ''}`}
         title="Refresh"
         aria-label="Refresh GEX landscape"
       >
@@ -296,9 +322,7 @@ const GexLandscape = memo(function GexLandscape({
   if (error) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
-        <div className="text-danger py-4 text-center font-mono text-[13px]">
-          {error}
-        </div>
+        <div className="text-danger py-4 text-center font-mono text-[13px]">{error}</div>
       </SectionBox>
     );
   }
@@ -315,21 +339,22 @@ const GexLandscape = memo(function GexLandscape({
 
   // ── Table ──────────────────────────────────────────────────────────────────
 
-  // Column grid: Strike | Classification | Signal | GEX | Charm | Vol
-  const cols = 'grid-cols-[76px_130px_1fr_88px_76px_56px]';
+  // Strike | Classification | Signal | Net GEX | GEX Δ% | Charm | Vol
+  const cols = 'grid-cols-[76px_130px_1fr_88px_68px_76px_56px]';
 
   return (
     <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
       <div className="border-edge overflow-hidden rounded-lg border">
         {/* Sticky column header */}
         <div
-          className={`border-edge-heavy bg-surface-alt sticky top-0 grid border-b font-mono text-[10px] font-semibold tracking-wider uppercase ${cols}`}
+          className={`border-edge-heavy bg-surface-alt sticky top-0 grid border-b font-mono text-[10px] font-semibold uppercase tracking-wider ${cols}`}
           style={{ color: 'var(--color-tertiary)' }}
         >
           <div className="px-3 py-2 text-right">Strike</div>
           <div className="px-3 py-2">Classification</div>
           <div className="px-3 py-2">Signal</div>
           <div className="px-3 py-2 text-right">Net GEX</div>
+          <div className="px-3 py-2 text-right">GEX Δ%</div>
           <div className="px-3 py-2 text-right">Charm</div>
           <div className="px-3 py-2 text-center">Vol</div>
         </div>
@@ -345,6 +370,7 @@ const GexLandscape = memo(function GexLandscape({
             const dir = getDirection(s.strike, currentPrice);
             const cls = classify(s.netGamma, s.netCharm);
             const meta = CLASS_META[cls];
+            const pct = gexDeltaMap.get(s.strike) ?? null;
 
             return (
               <div
@@ -353,21 +379,19 @@ const GexLandscape = memo(function GexLandscape({
                 role="listitem"
                 className={[
                   `border-edge/30 hover:bg-surface-alt/60 grid border-b transition-colors ${cols}`,
-                  isSpot
-                    ? 'border-l-2 border-l-white/30 bg-white/[0.06]'
-                    : meta.rowBg,
+                  isSpot ? 'border-l-2 border-l-sky-400/40 bg-sky-500/10' : meta.rowBg,
                 ].join(' ')}
               >
-                {/* Strike */}
-                <div className="flex items-center justify-end gap-1 px-3 py-1.5">
+                {/* Strike + ATM label */}
+                <div className="flex flex-col items-end justify-center px-3 py-1">
                   <span
-                    className={`font-mono text-[12px] font-semibold ${isSpot ? 'text-primary' : 'text-secondary'}`}
+                    className={`font-mono text-[12px] font-semibold ${isSpot ? 'text-sky-300' : 'text-secondary'}`}
                   >
                     {s.strike.toLocaleString()}
                   </span>
                   {isSpot && (
-                    <span className="font-mono text-[9px] font-bold text-white/50">
-                      ← SPOT
+                    <span className="font-mono text-[9px] font-bold text-sky-400/80">
+                      ATM
                     </span>
                   )}
                 </div>
@@ -405,11 +429,26 @@ const GexLandscape = memo(function GexLandscape({
                 <div className="flex items-center justify-end px-3 py-1.5">
                   <span
                     className="font-mono text-[11px]"
-                    style={{
-                      color: s.netGamma >= 0 ? '#4ade80' : '#fbbf24',
-                    }}
+                    style={{ color: s.netGamma >= 0 ? '#4ade80' : '#fbbf24' }}
                   >
                     {fmtGex(s.netGamma)}
+                  </span>
+                </div>
+
+                {/* GEX Δ% */}
+                <div className="flex items-center justify-end px-3 py-1.5">
+                  <span
+                    className="font-mono text-[11px]"
+                    style={{
+                      color:
+                        pct === null
+                          ? 'var(--color-muted)'
+                          : pct >= 0
+                            ? 'rgba(74,222,128,0.85)'
+                            : 'rgba(248,113,113,0.85)',
+                    }}
+                  >
+                    {fmtPct(pct)}
                   </span>
                 </div>
 
@@ -419,9 +458,7 @@ const GexLandscape = memo(function GexLandscape({
                     className="font-mono text-[11px]"
                     style={{
                       color:
-                        s.netCharm >= 0
-                          ? 'rgba(74,222,128,0.75)'
-                          : 'rgba(248,113,113,0.75)',
+                        s.netCharm >= 0 ? 'rgba(74,222,128,0.75)' : 'rgba(248,113,113,0.75)',
                     }}
                   >
                     {fmtGex(s.netCharm)}
@@ -464,22 +501,13 @@ const GexLandscape = memo(function GexLandscape({
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 px-1">
+      {/* Legend — centered */}
+      <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 px-1">
         {(
           [
-            [
-              'max-launchpad',
-              'Neg γ + Pos θ_t — accelerant, builds into close',
-            ],
-            [
-              'fading-launchpad',
-              'Neg γ + Neg θ_t — accelerant that weakens over time',
-            ],
-            [
-              'sticky-pin',
-              'Pos γ + Pos θ_t — wall that strengthens into close',
-            ],
+            ['max-launchpad', 'Neg γ + Pos θ_t — accelerant, builds into close'],
+            ['fading-launchpad', 'Neg γ + Neg θ_t — accelerant that weakens over time'],
+            ['sticky-pin', 'Pos γ + Pos θ_t — wall that strengthens into close'],
             ['weakening-pin', 'Pos γ + Neg θ_t — wall losing grip as day ages'],
           ] as [GexClassification, string][]
         ).map(([cls, desc]) => {
