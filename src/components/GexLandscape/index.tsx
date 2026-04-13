@@ -108,7 +108,11 @@ const CLASS_META: Record<GexClassification, ClassMeta> = {
     badgeText: 'text-emerald-400',
     rowBg: 'bg-emerald-500/5',
     signal: (dir) =>
-      dir === 'ceiling' ? 'Hard Ceiling' : dir === 'floor' ? 'Hard Floor' : 'Pin Zone',
+      dir === 'ceiling'
+        ? 'Hard Ceiling'
+        : dir === 'floor'
+          ? 'Hard Floor'
+          : 'Pin Zone',
   },
   'weakening-pin': {
     badge: 'Weakening Pin',
@@ -176,14 +180,19 @@ const GexLandscape = memo(function GexLandscape({
   const spotStrike = useMemo(() => {
     if (!rows.length) return null;
     return rows.reduce((best, s) =>
-      Math.abs(s.strike - currentPrice) < Math.abs(best.strike - currentPrice) ? s : best,
+      Math.abs(s.strike - currentPrice) < Math.abs(best.strike - currentPrice)
+        ? s
+        : best,
     );
   }, [rows, currentPrice]);
 
   // Scroll spot row into view whenever data refreshes.
   useEffect(() => {
     if (!loading && rows.length > 0 && spotRowRef.current) {
-      spotRowRef.current.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+      spotRowRef.current.scrollIntoView?.({
+        block: 'center',
+        behavior: 'smooth',
+      });
     }
   }, [loading, rows.length]);
 
@@ -263,7 +272,7 @@ const GexLandscape = memo(function GexLandscape({
       <button
         onClick={onRefresh}
         disabled={loading}
-        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? ' animate-spin' : ''}`}
+        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? 'animate-spin' : ''}`}
         title="Refresh"
         aria-label="Refresh GEX landscape"
       >
@@ -287,7 +296,9 @@ const GexLandscape = memo(function GexLandscape({
   if (error) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
-        <div className="text-danger py-4 text-center font-mono text-[13px]">{error}</div>
+        <div className="text-danger py-4 text-center font-mono text-[13px]">
+          {error}
+        </div>
       </SectionBox>
     );
   }
@@ -312,7 +323,7 @@ const GexLandscape = memo(function GexLandscape({
       <div className="border-edge overflow-hidden rounded-lg border">
         {/* Sticky column header */}
         <div
-          className={`border-edge-heavy bg-surface-alt sticky top-0 grid border-b font-mono text-[10px] font-semibold uppercase tracking-wider ${cols}`}
+          className={`border-edge-heavy bg-surface-alt sticky top-0 grid border-b font-mono text-[10px] font-semibold tracking-wider uppercase ${cols}`}
           style={{ color: 'var(--color-tertiary)' }}
         >
           <div className="px-3 py-2 text-right">Strike</div>
@@ -324,7 +335,11 @@ const GexLandscape = memo(function GexLandscape({
         </div>
 
         {/* Scrollable rows */}
-        <div className="max-h-[540px] overflow-y-auto" role="list" aria-label="GEX strike landscape">
+        <div
+          className="max-h-[540px] overflow-y-auto"
+          role="list"
+          aria-label="GEX strike landscape"
+        >
           {rows.map((s) => {
             const isSpot = s.strike === spotStrike?.strike;
             const dir = getDirection(s.strike, currentPrice);
@@ -403,7 +418,10 @@ const GexLandscape = memo(function GexLandscape({
                   <span
                     className="font-mono text-[11px]"
                     style={{
-                      color: s.netCharm >= 0 ? 'rgba(74,222,128,0.75)' : 'rgba(248,113,113,0.75)',
+                      color:
+                        s.netCharm >= 0
+                          ? 'rgba(74,222,128,0.75)'
+                          : 'rgba(248,113,113,0.75)',
                     }}
                   >
                     {fmtGex(s.netCharm)}
@@ -450,9 +468,18 @@ const GexLandscape = memo(function GexLandscape({
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 px-1">
         {(
           [
-            ['max-launchpad', 'Neg γ + Pos θ_t — accelerant, builds into close'],
-            ['fading-launchpad', 'Neg γ + Neg θ_t — accelerant that weakens over time'],
-            ['sticky-pin', 'Pos γ + Pos θ_t — wall that strengthens into close'],
+            [
+              'max-launchpad',
+              'Neg γ + Pos θ_t — accelerant, builds into close',
+            ],
+            [
+              'fading-launchpad',
+              'Neg γ + Neg θ_t — accelerant that weakens over time',
+            ],
+            [
+              'sticky-pin',
+              'Pos γ + Pos θ_t — wall that strengthens into close',
+            ],
             ['weakening-pin', 'Pos γ + Neg θ_t — wall losing grip as day ages'],
           ] as [GexClassification, string][]
         ).map(([cls, desc]) => {
