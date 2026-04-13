@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-13T00:50:53+00:00",
+  "generated_at": "2026-04-13T01:02:30+00:00",
   "dataset": {
     "total_days": 69,
     "labeled_days": 39,
@@ -189,10 +189,14 @@
     }
   ],
   "health": {
-    "status": "PASS",
-    "warnings": [],
+    "status": "WARN",
+    "warnings": [
+      "Day Labels: 2 business days stale (max 1)",
+      "Feature completeness below 90% on 3 of last 10 days",
+      "'dp_support_resistance_ratio' is 40% null in last 10 days"
+    ],
     "failures": [],
-    "run_time": "2026-04-12 19:50:48"
+    "run_time": "2026-04-13 01:01:46"
   },
   "pipeline_sections": [
     "health",
@@ -206,53 +210,120 @@
   ],
   "phase2": {
     "per_model": {
-      "DecisionTree": {
-        "accuracy": 0.28,
-        "log_loss": 6.7493,
+      "Logistic Reg (L2)": {
+        "accuracy": 0.5333,
+        "log_loss": 3.9324,
         "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.4,
+          "CALL CREDIT SPREAD": 0.533,
+          "PUT CREDIT SPREAD": 0.571,
+          "IRON CONDOR": 0.0
+        }
+      },
+      "Random Forest (15)": {
+        "accuracy": 0.5333,
+        "log_loss": 0.9019,
+        "per_class_f1": {
+          "CALL CREDIT SPREAD": 0.632,
+          "PUT CREDIT SPREAD": 0.364,
+          "IRON CONDOR": 0.0
+        }
+      },
+      "Naive Bayes": {
+        "accuracy": 0.7333,
+        "log_loss": 6.1793,
+        "per_class_f1": {
+          "CALL CREDIT SPREAD": 0.778,
+          "PUT CREDIT SPREAD": 0.667,
+          "IRON CONDOR": 0.0
+        }
+      },
+      "Decision Tree (d=2)": {
+        "accuracy": 0.1333,
+        "log_loss": 10.8294,
+        "per_class_f1": {
+          "CALL CREDIT SPREAD": 0.286,
           "PUT CREDIT SPREAD": 0.0,
-          "IRON CONDOR": 0.3
+          "IRON CONDOR": 0.0
         }
       },
       "XGBoost": {
-        "accuracy": 0.28,
-        "log_loss": 6.7493,
+        "accuracy": 0.5333,
+        "log_loss": 0.8369,
         "per_class_f1": {
-          "CALL CREDIT SPREAD": 0.4,
-          "PUT CREDIT SPREAD": 0.0,
-          "IRON CONDOR": 0.3
+          "CALL CREDIT SPREAD": 0.667,
+          "PUT CREDIT SPREAD": 0.222,
+          "IRON CONDOR": 0.0
         }
       }
     },
-    "best_model": "DecisionTree",
-    "best_accuracy": 0.28,
-    "majority_baseline": 0.44,
-    "walk_forward_folds": 25,
+    "best_model": "Naive Bayes",
+    "best_accuracy": 0.7333,
+    "majority_baseline": 0.5333,
+    "walk_forward_folds": 15,
     "top_features": [
       {
-        "feature": "vix",
-        "importance": 0.2
+        "feature": "num__qqq_ncp_t1",
+        "importance": 0.0668
       },
       {
-        "feature": "vix1d",
-        "importance": 0.2
+        "feature": "num__neg_gamma_nearest_dist",
+        "importance": 0.0486
       },
       {
-        "feature": "gex_oi_t1",
-        "importance": 0.2
+        "feature": "num__prev_day_vix_change",
+        "importance": 0.0482
       },
       {
-        "feature": "gex_oi_t2",
-        "importance": 0.2
+        "feature": "num__gamma_asymmetry",
+        "importance": 0.0468
       },
       {
-        "feature": "sigma",
-        "importance": 0.2
+        "feature": "num__gex_vol_t2",
+        "importance": 0.0464
+      },
+      {
+        "feature": "num__pcr_open",
+        "importance": 0.0397
+      },
+      {
+        "feature": "num__mt_ncp_t2",
+        "importance": 0.0343
+      },
+      {
+        "feature": "num__dp_top_cluster_dist",
+        "importance": 0.0328
+      },
+      {
+        "feature": "cat__prev_day_direction_DOWN",
+        "importance": 0.0328
+      },
+      {
+        "feature": "num__charm_max_pos_dist",
+        "importance": 0.029
+      },
+      {
+        "feature": "num__vix1d",
+        "importance": 0.0286
+      },
+      {
+        "feature": "num__realized_vol_10d",
+        "importance": 0.0281
+      },
+      {
+        "feature": "num__mt_ncp_t1",
+        "importance": 0.0274
+      },
+      {
+        "feature": "num__pcr_spike_count",
+        "importance": 0.0269
+      },
+      {
+        "feature": "num__zero_dte_ncp_t2",
+        "importance": 0.0233
       }
     ],
-    "n_labeled_days": 45,
-    "n_features": 5
+    "n_labeled_days": 35,
+    "n_features": 119
   },
   "eda": {
     "structure_accuracy": {
@@ -472,52 +543,52 @@
       {
         "name": "cone_consumption",
         "generated": true,
-        "file_size_kb": 82.7
+        "file_size_kb": 92.0
       },
       {
         "name": "confidence_over_time",
         "generated": true,
-        "file_size_kb": 81.3
+        "file_size_kb": 88.6
       },
       {
         "name": "correlations",
         "generated": true,
-        "file_size_kb": 343.3
+        "file_size_kb": 391.0
       },
       {
         "name": "dark_pool_vs_range",
         "generated": true,
-        "file_size_kb": 108.2
+        "file_size_kb": 119.4
       },
       {
         "name": "day_of_week",
         "generated": true,
-        "file_size_kb": 55.3
+        "file_size_kb": 63.0
       },
       {
         "name": "failure_heatmap",
         "generated": true,
-        "file_size_kb": 60.0
+        "file_size_kb": 64.4
       },
       {
         "name": "feature_importance_comparison",
         "generated": true,
-        "file_size_kb": 158.2
+        "file_size_kb": 186.6
       },
       {
         "name": "flow_by_vix",
         "generated": true,
-        "file_size_kb": 58.1
+        "file_size_kb": 63.1
       },
       {
         "name": "flow_reliability",
         "generated": true,
-        "file_size_kb": 94.0
+        "file_size_kb": 106.4
       },
       {
         "name": "gex_vs_range",
         "generated": true,
-        "file_size_kb": 106.5
+        "file_size_kb": 117.0
       },
       {
         "name": "phase2_shap",
@@ -547,72 +618,72 @@
       {
         "name": "prev_day_transition",
         "generated": true,
-        "file_size_kb": 136.3
+        "file_size_kb": 147.1
       },
       {
         "name": "range_by_regime",
         "generated": true,
-        "file_size_kb": 113.6
+        "file_size_kb": 132.6
       },
       {
         "name": "rolling_accuracy",
         "generated": true,
-        "file_size_kb": 51.3
+        "file_size_kb": 57.9
       },
       {
         "name": "stationarity",
         "generated": true,
-        "file_size_kb": 497.0
+        "file_size_kb": 520.1
       },
       {
         "name": "structure_by_vix",
         "generated": true,
-        "file_size_kb": 53.4
+        "file_size_kb": 57.6
       },
       {
         "name": "structure_confidence",
         "generated": true,
-        "file_size_kb": 72.9
+        "file_size_kb": 79.8
       },
       {
         "name": "timeline",
         "generated": true,
-        "file_size_kb": 222.7
+        "file_size_kb": 236.4
       },
       {
         "name": "trace_accuracy_by_confidence",
         "generated": true,
-        "file_size_kb": 50.1
+        "file_size_kb": 49.8
       },
       {
         "name": "trace_accuracy_by_vix_regime",
         "generated": true,
-        "file_size_kb": 56.9
+        "file_size_kb": 56.5
       },
       {
         "name": "trace_error_distribution",
         "generated": true,
-        "file_size_kb": 43.1
+        "file_size_kb": 42.4
       },
       {
         "name": "trace_error_vs_range",
         "generated": true,
-        "file_size_kb": 77.1
+        "file_size_kb": 84.7
       },
       {
         "name": "trace_predicted_vs_actual",
         "generated": true,
-        "file_size_kb": 95.1
+        "file_size_kb": 102.4
       },
       {
         "name": "trace_rolling_error",
         "generated": true,
-        "file_size_kb": 74.8
+        "file_size_kb": 84.3
       },
       {
         "name": "trace_signal_strength",
         "generated": true,
-        "file_size_kb": 69.8
+        "file_size_kb": 66.4
       }
     ],
     "count": 32
@@ -693,24 +764,24 @@
   },
   "trace": {
     "n_days": 67,
-    "mae": 3.0,
-    "median_ae": 2.7,
-    "std_error": 3.47,
-    "mean_signed_error": 1.06,
-    "direction_correct": 0.9403,
+    "mae": 36.49,
+    "median_ae": 2.81,
+    "std_error": 192.74,
+    "mean_signed_error": -32.46,
+    "direction_correct": 0.9254,
     "hit_rates": {
-      "within_5pt": 0.8657,
-      "within_10pt": 0.9851,
-      "within_15pt": 1.0,
-      "within_20pt": 1.0
+      "within_5pt": 0.8358,
+      "within_10pt": 0.9552,
+      "within_15pt": 0.9701,
+      "within_20pt": 0.9701
     },
     "by_confidence": {
       "high": {
         "n": 24,
-        "mae": 2.15,
-        "median_ae": 2.16,
-        "direction_correct": 1.0,
-        "hit_10pt": 1.0
+        "mae": 95.65,
+        "median_ae": 2.62,
+        "direction_correct": 0.9583,
+        "hit_10pt": 0.9167
       },
       "medium": {
         "n": 37,
@@ -730,15 +801,15 @@
     "by_vix_regime": {
       "<15": {
         "n": 2,
-        "mae": 1.23,
+        "mae": 548.26,
         "direction_correct": 1.0,
-        "hit_10pt": 1.0
+        "hit_10pt": 0.5
       },
       "15-20": {
         "n": 32,
-        "mae": 2.41,
-        "direction_correct": 0.9688,
-        "hit_10pt": 0.9688
+        "mae": 38.34,
+        "direction_correct": 0.9375,
+        "hit_10pt": 0.9375
       },
       "20-25": {
         "n": 22,
@@ -772,7 +843,7 @@
       },
       "30+": {
         "n": 32,
-        "direction_correct": 1.0
+        "direction_correct": 0.9688
       }
     },
     "date_range": {
