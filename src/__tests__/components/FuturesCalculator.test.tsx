@@ -584,16 +584,16 @@ describe('FuturesCalculator — fee display', () => {
 // ── Adverse excursion ─────────────────────────────────────────────────────────
 
 describe('FuturesCalculator — adverse excursion', () => {
-  it('shows "Lowest Price Reached" label when Long', async () => {
+  it('shows "Adverse / Stop (Low)" label when Long', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
 
-    expect(screen.getByLabelText('Lowest Price Reached')).toBeInTheDocument();
+    expect(screen.getByLabelText('Adverse / Stop (Low)')).toBeInTheDocument();
   });
 
-  it('shows "Highest Price Reached" label when Short', async () => {
+  it('shows "Adverse / Stop (High)" label when Short', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
 
@@ -601,13 +601,13 @@ describe('FuturesCalculator — adverse excursion', () => {
     await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
     await fillEntry(user, '5500');
 
-    expect(screen.getByLabelText('Highest Price Reached')).toBeInTheDocument();
+    expect(screen.getByLabelText('Adverse / Stop (High)')).toBeInTheDocument();
   });
 
   it('does not show adverse input when no entry is provided', () => {
     render(<FuturesCalculator />);
     expect(
-      screen.queryByLabelText('Lowest Price Reached'),
+      screen.queryByLabelText('Adverse / Stop (Low)'),
     ).not.toBeInTheDocument();
   });
 
@@ -616,7 +616,7 @@ describe('FuturesCalculator — adverse excursion', () => {
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
-    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
 
     expect(screen.getByText(/Max Adverse Excursion/i)).toBeInTheDocument();
   });
@@ -627,7 +627,7 @@ describe('FuturesCalculator — adverse excursion', () => {
 
     // Long ES: entry 5500, lowest 5490 → -10 pts × $50 = -$500 gross, net -$505.76
     await fillEntry(user, '5500');
-    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
 
     expect(screen.getByText('-$505.76')).toBeInTheDocument();
   });
@@ -638,7 +638,7 @@ describe('FuturesCalculator — adverse excursion', () => {
 
     // Long ES: entry 5500, lowest 5490 → -$500 gross
     await fillEntry(user, '5500');
-    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
 
     expect(screen.getByText('-$500.00')).toBeInTheDocument();
   });
@@ -649,7 +649,7 @@ describe('FuturesCalculator — adverse excursion', () => {
 
     // Long ES: entry 5500, lowest 5490 → -10.00 pts / -40 ticks
     await fillEntry(user, '5500');
-    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
 
     expect(screen.getByText('-10.00 pts / -40 ticks')).toBeInTheDocument();
   });
@@ -659,12 +659,12 @@ describe('FuturesCalculator — adverse excursion', () => {
     render(<FuturesCalculator />);
 
     await fillEntry(user, '5500');
-    await user.type(screen.getByLabelText('Lowest Price Reached'), '5490');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
     await user.click(screen.getByRole('button', { name: 'Clear' }));
 
     // After clear, adverse field is gone (entry cleared → entryValid=false)
     expect(
-      screen.queryByLabelText('Lowest Price Reached'),
+      screen.queryByLabelText('Adverse / Stop (Low)'),
     ).not.toBeInTheDocument();
   });
 
@@ -675,8 +675,182 @@ describe('FuturesCalculator — adverse excursion', () => {
     await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
     await fillEntry(user, '5500');
     // Short ES: entry 5500, highest 5510 → -10 pts adverse → -$500 gross
-    await user.type(screen.getByLabelText('Highest Price Reached'), '5510');
+    await user.type(screen.getByLabelText('Adverse / Stop (High)'), '5510');
 
     expect(screen.getByText('-$505.76')).toBeInTheDocument();
+  });
+});
+
+// ── MFE (Favorable excursion) ─────────────────────────────────────────────────
+
+describe('FuturesCalculator — favorable excursion (MFE)', () => {
+  it('shows "Favorable / Target (High)" label when Long after entry', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+
+    expect(
+      screen.getByLabelText('Favorable / Target (High)'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows "Favorable / Target (Low)" label when Short after entry', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await user.click(screen.getByRole('button', { name: 'Short (Sell)' }));
+    await fillEntry(user, '5500');
+
+    expect(
+      screen.getByLabelText('Favorable / Target (Low)'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows MFE panel when favorable price is entered', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.type(
+      screen.getByLabelText('Favorable / Target (High)'),
+      '5520',
+    );
+
+    expect(screen.getByText(/Max Favorable Excursion/i)).toBeInTheDocument();
+  });
+
+  it('shows correct MFE net P&L for ES long (20-point favorable move)', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    // Long ES: entry 5500, favorable 5520 → +20 pts × $50 = $1000 gross, net $994.24
+    await fillEntry(user, '5500');
+    await user.type(
+      screen.getByLabelText('Favorable / Target (High)'),
+      '5520',
+    );
+
+    expect(screen.getByText('+$994.24')).toBeInTheDocument();
+  });
+
+  it('MFE panel shows in green', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.type(
+      screen.getByLabelText('Favorable / Target (High)'),
+      '5520',
+    );
+
+    expect(screen.getByText(/Max Favorable Excursion/i)).toBeInTheDocument();
+    expect(screen.getByText('Net upside (after fees)')).toBeInTheDocument();
+  });
+
+  it('clears favorable input when Clear is clicked', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.type(
+      screen.getByLabelText('Favorable / Target (High)'),
+      '5520',
+    );
+    await user.click(screen.getByRole('button', { name: 'Clear' }));
+
+    expect(
+      screen.queryByLabelText('Favorable / Target (High)'),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ── R:R ratio ─────────────────────────────────────────────────────────────────
+
+describe('FuturesCalculator — R:R ratio', () => {
+  it('shows R:R in trade results when entry + exit + adverse all provided', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await fillExit(user, '5520');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
+
+    // reward 20 pts / risk 10 pts = 2.00:1
+    expect(screen.getByText('2.00:1')).toBeInTheDocument();
+  });
+
+  it('does not show R:R without adverse price', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await fillExit(user, '5520');
+
+    expect(screen.queryByText(/Risk:Reward/)).not.toBeInTheDocument();
+  });
+
+  it('shows R:R label "Risk:Reward (vs stop)"', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await fillExit(user, '5510');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
+
+    expect(screen.getByText('Risk:Reward (vs stop)')).toBeInTheDocument();
+  });
+});
+
+// ── Position sizing ───────────────────────────────────────────────────────────
+
+describe('FuturesCalculator — position sizing', () => {
+  it('shows position sizing panel when entry + adverse + max risk are provided', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
+    await user.type(screen.getByLabelText('Max $ Risk'), '500');
+
+    expect(screen.getByText('Position Sizing')).toBeInTheDocument();
+  });
+
+  it('does not show position sizing without max risk', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
+
+    expect(screen.queryByText('Position Sizing')).not.toBeInTheDocument();
+  });
+
+  it('shows "budget too small" when risk per contract exceeds budget', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    // ES, 10-pt stop: risk = 10×$50 + $5.76 = $505.76 → $200 budget → 0 contracts
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
+    await user.type(screen.getByLabelText('Max $ Risk'), '200');
+
+    expect(screen.getByText('budget too small')).toBeInTheDocument();
+  });
+
+  it('clears max risk and hides panel when Clear is clicked', async () => {
+    const user = userEvent.setup();
+    render(<FuturesCalculator />);
+
+    await fillEntry(user, '5500');
+    await user.type(screen.getByLabelText('Adverse / Stop (Low)'), '5490');
+    await user.type(screen.getByLabelText('Max $ Risk'), '500');
+    expect(screen.getByText('Position Sizing')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Clear' }));
+
+    // Second row unmounts when entry is cleared
+    expect(screen.queryByText('Position Sizing')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Max $ Risk')).not.toBeInTheDocument();
   });
 });

@@ -13,6 +13,8 @@ import {
   breakEvenPrice,
   calcTrade,
   calcTickRow,
+  riskRewardRatio,
+  maxContractsFromRisk,
 } from './futures-calc';
 import type { FuturesSymbol, Direction } from './futures-calc';
 
@@ -124,6 +126,8 @@ export default function FuturesCalculator() {
   const [entryInput, setEntryInput] = useState('');
   const [exitInput, setExitInput] = useState('');
   const [adverseInput, setAdverseInput] = useState('');
+  const [favorableInput, setFavorableInput] = useState('');
+  const [maxRiskInput, setMaxRiskInput] = useState('');
   const [contracts, setContracts] = useState(1);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -139,12 +143,15 @@ export default function FuturesCalculator() {
     setEntryInput('');
     setExitInput('');
     setAdverseInput('');
+    setFavorableInput('');
   }, []);
 
   const handleClear = useCallback(() => {
     setEntryInput('');
     setExitInput('');
     setAdverseInput('');
+    setFavorableInput('');
+    setMaxRiskInput('');
     setContracts(1);
   }, []);
 
@@ -206,6 +213,58 @@ export default function FuturesCalculator() {
       contracts,
     ],
   );
+
+  // MFE — highest price reached (long) / lowest price reached (short)
+  const favorable = Number.parseFloat(favorableInput);
+  const favorableValid = Number.isFinite(favorable) && favorable > 0;
+  const favorableCalc = useMemo(
+    () =>
+      entryValid && favorableValid && contractsValid
+        ? calcTrade(spec, entry, favorable, direction, contracts)
+        : null,
+    [
+      entryValid,
+      favorableValid,
+      contractsValid,
+      spec,
+      entry,
+      favorable,
+      direction,
+      contracts,
+    ],
+  );
+
+  // R:R ratio — reward points / risk points (entry + exit + adverse all required)
+  const rrRatio = useMemo(() => {
+    if (!entryValid || !exitValid || !adverseValid) return null;
+    return riskRewardRatio(entry, exit, adverse, direction);
+  }, [entryValid, exitValid, adverseValid, entry, exit, adverse, direction]);
+
+  // Position sizing — max contracts within a dollar risk budget
+  const maxRisk = Number.parseFloat(maxRiskInput);
+  const maxRiskValid = Number.isFinite(maxRisk) && maxRisk > 0;
+  const positionSize = useMemo(() => {
+    if (!entryValid || !adverseValid || !maxRiskValid) return null;
+    return {
+      contracts: maxContractsFromRisk(spec, entry, adverse, direction, maxRisk),
+      riskPerContract: (() => {
+        const stopPts =
+          direction === 'long' ? entry - adverse : adverse - entry;
+        return stopPts > 0
+          ? stopPts * spec.pointValue + roundTripFees(spec, 1)
+          : 0;
+      })(),
+    };
+  }, [
+    entryValid,
+    adverseValid,
+    maxRiskValid,
+    spec,
+    entry,
+    adverse,
+    direction,
+    maxRisk,
+  ]);
 
   const chipClass = (active: boolean) =>
     'cursor-pointer rounded-md border-[1.5px] px-2.5 py-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase transition-colors duration-100 ' +
@@ -360,10 +419,8 @@ export default function FuturesCalculator() {
             </div>
           </div>
 
-          {/* Price + contracts + adverse inputs — all on one row */}
-          <div
-            className={`grid gap-3 ${entryValid ? 'grid-cols-4' : 'grid-cols-3'}`}
-          >
+          {/* Row 1: Entry | Exit | Contracts */}
+          <div className="grid grid-cols-3 gap-3">
             <PriceInput
               id="fc-entry"
               label="Entry Price"
@@ -414,22 +471,44 @@ export default function FuturesCalculator() {
                 </button>
               </div>
             </div>
-            {entryValid && (
+          </div>
+
+          {/* Row 2: Adverse (MAE) | Favorable (MFE) | Max $ Risk — shown when entry valid */}
+          {entryValid && (
+            <div className="grid grid-cols-3 gap-3">
               <PriceInput
                 id="fc-adverse"
                 label={
                   direction === 'long'
-                    ? 'Lowest Price Reached'
-                    : 'Highest Price Reached'
+                    ? 'Adverse / Stop (Low)'
+                    : 'Adverse / Stop (High)'
                 }
                 value={adverseInput}
                 onChange={setAdverseInput}
                 placeholder={direction === 'long' ? '5490.00' : '5510.00'}
               />
-            )}
-          </div>
+              <PriceInput
+                id="fc-favorable"
+                label={
+                  direction === 'long'
+                    ? 'Favorable / Target (High)'
+                    : 'Favorable / Target (Low)'
+                }
+                value={favorableInput}
+                onChange={setFavorableInput}
+                placeholder={direction === 'long' ? '5520.00' : '5480.00'}
+              />
+              <PriceInput
+                id="fc-maxrisk"
+                label="Max $ Risk"
+                value={maxRiskInput}
+                onChange={setMaxRiskInput}
+                placeholder="500.00"
+              />
+            </div>
+          )}
 
-          {/* ── MAE results panel ── */}
+          {/* ── MAE panel ── */}
           {adverseCalc && (
             <div
               className="rounded-xl border p-4"
@@ -460,6 +539,80 @@ export default function FuturesCalculator() {
                   label="Net exposure (after fees)"
                   value={fmtDollar(adverseCalc.net, true)}
                   color={pnlColor(adverseCalc.net)}
+                  bold
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ── MFE panel ── */}
+          {favorableCalc && (
+            <div
+              className="rounded-xl border p-4"
+              style={{
+                backgroundColor: tint(theme.green, '08'),
+                borderColor: tint(theme.green, '20'),
+              }}
+            >
+              <div
+                className="mb-2 font-sans text-[10px] font-bold tracking-[0.10em] uppercase"
+                style={{ color: theme.green }}
+              >
+                Max Favorable Excursion · {contracts} contract
+                {contracts !== 1 ? 's' : ''}
+              </div>
+              <div className="divide-edge divide-y">
+                <ResultRow
+                  label="Favorable move"
+                  value={`${favorableCalc.points >= 0 ? '+' : ''}${fmtPrice(favorableCalc.points)} pts / ${favorableCalc.ticks >= 0 ? '+' : ''}${favorableCalc.ticks.toFixed(0)} ticks`}
+                  color={pnlColor(favorableCalc.points)}
+                />
+                <ResultRow
+                  label="Gross upside"
+                  value={fmtDollar(favorableCalc.gross, true)}
+                  color={pnlColor(favorableCalc.gross)}
+                />
+                <ResultRow
+                  label="Net upside (after fees)"
+                  value={fmtDollar(favorableCalc.net, true)}
+                  color={pnlColor(favorableCalc.net)}
+                  bold
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ── Position sizing panel ── */}
+          {positionSize !== null && (
+            <div
+              className="rounded-xl border p-4"
+              style={{
+                backgroundColor: tint(theme.accent, '08'),
+                borderColor: tint(theme.accent, '20'),
+              }}
+            >
+              <div
+                className="mb-2 font-sans text-[10px] font-bold tracking-[0.10em] uppercase"
+                style={{ color: theme.accent }}
+              >
+                Position Sizing
+              </div>
+              <div className="divide-edge divide-y">
+                <ResultRow
+                  label="Risk per contract (stop loss + fees)"
+                  value={fmtDollar(positionSize.riskPerContract)}
+                  color={theme.red}
+                />
+                <ResultRow
+                  label={`Max contracts within ${fmtDollar(maxRisk)} budget`}
+                  value={
+                    positionSize.contracts > 0
+                      ? `${positionSize.contracts} contract${positionSize.contracts !== 1 ? 's' : ''}`
+                      : 'budget too small'
+                  }
+                  color={
+                    positionSize.contracts > 0 ? theme.green : theme.textMuted
+                  }
                   bold
                 />
               </div>
@@ -530,7 +683,7 @@ export default function FuturesCalculator() {
                 </span>
               </div>
 
-              {/* Margin & ROM */}
+              {/* Margin, ROM & R:R */}
               <div
                 className="mt-2 divide-y"
                 style={{ borderColor: theme.border }}
@@ -539,6 +692,23 @@ export default function FuturesCalculator() {
                   label="Day margin required"
                   value={fmtDollar(calc.marginRequired)}
                 />
+                {rrRatio !== null && (
+                  <ResultRow
+                    label="Risk:Reward (vs stop)"
+                    value={
+                      rrRatio > 0
+                        ? `${rrRatio.toFixed(2)}:1`
+                        : `${rrRatio.toFixed(2)}:1 (loss)`
+                    }
+                    color={
+                      rrRatio >= 1
+                        ? theme.green
+                        : rrRatio > 0
+                          ? theme.caution
+                          : theme.red
+                    }
+                  />
+                )}
                 <ResultRow
                   label="Return on margin"
                   value={`${calc.returnOnMarginPct >= 0 ? '+' : ''}${calc.returnOnMarginPct.toFixed(2)}%`}

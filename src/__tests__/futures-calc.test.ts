@@ -9,6 +9,8 @@ import {
   breakEvenPrice,
   calcTrade,
   calcTickRow,
+  riskRewardRatio,
+  maxContractsFromRisk,
 } from '../components/futures/futures-calc';
 
 // ── Contract specs ─────────────────────────────────────────────────────────
@@ -247,5 +249,83 @@ describe('calcTickRow', () => {
     const row1 = calcTickRow(SPECS.ES, 5500, 'long', 1, 8);
     const row3 = calcTickRow(SPECS.ES, 5500, 'long', 3, 8);
     expect(row3.gross).toBeCloseTo(row1.gross * 3, 10);
+  });
+});
+
+// ── riskRewardRatio ────────────────────────────────────────────────────────
+
+describe('riskRewardRatio', () => {
+  it('returns 2.0 for a long with 20-pt reward and 10-pt risk', () => {
+    // entry 5500, target 5520 (+20 pts reward), stop 5490 (−10 pts risk)
+    expect(riskRewardRatio(5500, 5520, 5490, 'long')).toBeCloseTo(2.0, 10);
+  });
+
+  it('returns 1.0 for equal reward and risk', () => {
+    expect(riskRewardRatio(5500, 5510, 5490, 'long')).toBeCloseTo(1.0, 10);
+  });
+
+  it('returns < 1 when reward is smaller than risk', () => {
+    // reward: 5 pts, risk: 10 pts → 0.5
+    expect(riskRewardRatio(5500, 5505, 5490, 'long')).toBeCloseTo(0.5, 10);
+  });
+
+  it('works for short direction', () => {
+    // short entry 5500, target 5480 (−20 pts = reward), stop 5510 (+10 pts = risk)
+    expect(riskRewardRatio(5500, 5480, 5510, 'short')).toBeCloseTo(2.0, 10);
+  });
+
+  it('returns 0 when stop distance is zero', () => {
+    expect(riskRewardRatio(5500, 5510, 5500, 'long')).toBe(0);
+  });
+
+  it('returns negative when trade exits on the wrong side of entry (loss)', () => {
+    // long entry 5500, exit 5490 (below entry = loss), stop 5490
+    // reward: −10, risk: 10 → −1.0
+    expect(riskRewardRatio(5500, 5490, 5490, 'long')).toBeCloseTo(-1.0, 10);
+  });
+});
+
+// ── maxContractsFromRisk ───────────────────────────────────────────────────
+
+describe('maxContractsFromRisk', () => {
+  it('MES: floors to 9 contracts with $500 budget and 10-point stop', () => {
+    // riskPerContract = 10 * 5 + 3.02 = 53.02 → floor(500 / 53.02) = 9
+    expect(
+      maxContractsFromRisk(SPECS.MES, 5500, 5490, 'long', 500),
+    ).toBe(9);
+  });
+
+  it('ES: floors to 1 contract with $200 budget and 2-point stop', () => {
+    // riskPerContract = 2 * 50 + 5.76 = 105.76 → floor(200 / 105.76) = 1
+    expect(
+      maxContractsFromRisk(SPECS.ES, 5500, 5498, 'long', 200),
+    ).toBe(1);
+  });
+
+  it('returns 0 when budget is smaller than one contract risk', () => {
+    // riskPerContract = 10 * 50 + 5.76 = 505.76 → floor(200 / 505.76) = 0
+    expect(
+      maxContractsFromRisk(SPECS.ES, 5500, 5490, 'long', 200),
+    ).toBe(0);
+  });
+
+  it('works for short direction', () => {
+    // short: stop is above entry. entry 5500, stop 5510 → 10-pt risk on MES
+    expect(
+      maxContractsFromRisk(SPECS.MES, 5500, 5510, 'short', 500),
+    ).toBe(9);
+  });
+
+  it('returns 0 for zero or negative stop distance', () => {
+    // stop == entry → no risk distance
+    expect(
+      maxContractsFromRisk(SPECS.ES, 5500, 5500, 'long', 500),
+    ).toBe(0);
+  });
+
+  it('returns 0 for zero or negative budget', () => {
+    expect(
+      maxContractsFromRisk(SPECS.ES, 5500, 5490, 'long', 0),
+    ).toBe(0);
   });
 });

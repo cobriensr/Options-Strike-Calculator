@@ -153,6 +153,40 @@ export function calcTrade(
   return { gross, fees, net, points, ticks, marginRequired, returnOnMarginPct };
 }
 
+/**
+ * Reward-to-risk ratio: how many points of reward per point of risk.
+ * Returns 0 when the stop distance is zero (undefined risk).
+ */
+export function riskRewardRatio(
+  entry: number,
+  target: number,
+  stop: number,
+  direction: Direction,
+): number {
+  const rewardPts = direction === 'long' ? target - entry : entry - target;
+  const riskPts = direction === 'long' ? entry - stop : stop - entry;
+  if (riskPts <= 0) return 0;
+  return rewardPts / riskPts;
+}
+
+/**
+ * Maximum number of contracts tradeable within a dollar risk budget.
+ * Risk per contract = (stop-distance × point-value) + round-trip fees.
+ * Returns 0 when the stop distance is zero or the budget is insufficient.
+ */
+export function maxContractsFromRisk(
+  spec: ContractSpec,
+  entry: number,
+  stop: number,
+  direction: Direction,
+  maxDollarRisk: number,
+): number {
+  const stopPts = direction === 'long' ? entry - stop : stop - entry;
+  if (stopPts <= 0 || maxDollarRisk <= 0) return 0;
+  const dollarRiskPerContract = stopPts * spec.pointValue + roundTripFees(spec, 1);
+  return Math.max(0, Math.floor(maxDollarRisk / dollarRiskPerContract));
+}
+
 export interface TickRow {
   readonly ticks: number;
   readonly points: number;
