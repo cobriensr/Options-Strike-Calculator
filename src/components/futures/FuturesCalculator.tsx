@@ -230,7 +230,7 @@ export default function FuturesCalculator() {
       <div
         className={
           (collapsed ? '' : 'mb-3.5 ') +
-          'flex cursor-pointer items-center justify-between select-none'
+          'flex cursor-pointer flex-col gap-2 select-none'
         }
         onClick={() => setCollapsed((v) => !v)}
         role="button"
@@ -244,46 +244,49 @@ export default function FuturesCalculator() {
           }
         }}
       >
-        <div className="flex items-center gap-2.5">
-          <span
-            className="text-muted text-[12px] transition-transform duration-200"
-            style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
-            aria-hidden="true"
-          >
-            &#x25BE;
-          </span>
-          <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
-            Futures P&amp;L Calculator
-          </h2>
+        {/* Row 1: title + clear */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span
+              className="text-muted text-[12px] transition-transform duration-200"
+              style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+              aria-hidden="true"
+            >
+              &#x25BE;
+            </span>
+            <h2 className="text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase">
+              Futures P&amp;L Calculator
+            </h2>
+          </div>
+          <div onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={handleClear}
+              className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
+            >
+              Clear
+            </button>
+          </div>
         </div>
 
+        {/* Row 2: symbol chips inline */}
         <div
           onClick={(e) => e.stopPropagation()}
-          className="flex items-center gap-2"
+          className="flex gap-1"
         >
-          {/* Symbol chips — 2×2 grid to keep header compact */}
-          <div className="grid grid-cols-2 gap-1">
-            {(['ES', 'NQ', 'MES', 'MNQ'] as const).map((sym) => (
-              <button
-                key={sym}
-                type="button"
-                onClick={() => {
-                  setSymbol(sym);
-                  clearPrices();
-                }}
-                className={chipClass(symbol === sym)}
-              >
-                {sym}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={handleClear}
-            className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
-          >
-            Clear
-          </button>
+          {(['ES', 'MES', 'NQ', 'MNQ'] as const).map((sym) => (
+            <button
+              key={sym}
+              type="button"
+              onClick={() => {
+                setSymbol(sym);
+                clearPrices();
+              }}
+              className={chipClass(symbol === sym)}
+            >
+              {sym}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -366,8 +369,10 @@ export default function FuturesCalculator() {
             </div>
           </div>
 
-          {/* Price + contracts inputs */}
-          <div className="grid grid-cols-3 gap-3">
+          {/* Price + contracts + adverse inputs — all on one row */}
+          <div
+            className={`grid gap-3 ${entryValid ? 'grid-cols-4' : 'grid-cols-3'}`}
+          >
             <PriceInput
               id="fc-entry"
               label="Entry Price"
@@ -399,11 +404,7 @@ export default function FuturesCalculator() {
                 className="bg-input border-edge-strong hover:border-edge-heavy text-primary w-full rounded-lg border-[1.5px] px-3 py-[11px] font-mono text-sm transition-[border-color] duration-150 outline-none"
               />
             </div>
-          </div>
-
-          {/* ── Adverse excursion ── */}
-          {entryValid && (
-            <div>
+            {entryValid && (
               <PriceInput
                 id="fc-adverse"
                 label={
@@ -415,41 +416,43 @@ export default function FuturesCalculator() {
                 onChange={setAdverseInput}
                 placeholder={direction === 'long' ? '5490.00' : '5510.00'}
               />
-              {adverseCalc && (
-                <div
-                  className="mt-2 rounded-xl border p-4"
-                  style={{
-                    backgroundColor: tint(theme.red, '08'),
-                    borderColor: tint(theme.red, '20'),
-                  }}
-                >
-                  <div
-                    className="mb-2 font-sans text-[10px] font-bold tracking-[0.10em] uppercase"
-                    style={{ color: theme.red }}
-                  >
-                    Max Adverse Excursion · {contracts} contract
-                    {contracts !== 1 ? 's' : ''}
-                  </div>
-                  <div className="divide-edge divide-y">
-                    <ResultRow
-                      label="Adverse move"
-                      value={`${adverseCalc.points >= 0 ? '+' : ''}${fmtPrice(adverseCalc.points)} pts / ${adverseCalc.ticks >= 0 ? '+' : ''}${adverseCalc.ticks.toFixed(0)} ticks`}
-                      color={pnlColor(adverseCalc.points)}
-                    />
-                    <ResultRow
-                      label="Gross exposure"
-                      value={fmtDollar(adverseCalc.gross, true)}
-                      color={pnlColor(adverseCalc.gross)}
-                    />
-                    <ResultRow
-                      label="Net exposure (after fees)"
-                      value={fmtDollar(adverseCalc.net, true)}
-                      color={pnlColor(adverseCalc.net)}
-                      bold
-                    />
-                  </div>
-                </div>
-              )}
+            )}
+          </div>
+
+          {/* ── MAE results panel ── */}
+          {adverseCalc && (
+            <div
+              className="rounded-xl border p-4"
+              style={{
+                backgroundColor: tint(theme.red, '08'),
+                borderColor: tint(theme.red, '20'),
+              }}
+            >
+              <div
+                className="mb-2 font-sans text-[10px] font-bold tracking-[0.10em] uppercase"
+                style={{ color: theme.red }}
+              >
+                Max Adverse Excursion · {contracts} contract
+                {contracts !== 1 ? 's' : ''}
+              </div>
+              <div className="divide-edge divide-y">
+                <ResultRow
+                  label="Adverse move"
+                  value={`${adverseCalc.points >= 0 ? '+' : ''}${fmtPrice(adverseCalc.points)} pts / ${adverseCalc.ticks >= 0 ? '+' : ''}${adverseCalc.ticks.toFixed(0)} ticks`}
+                  color={pnlColor(adverseCalc.points)}
+                />
+                <ResultRow
+                  label="Gross exposure"
+                  value={fmtDollar(adverseCalc.gross, true)}
+                  color={pnlColor(adverseCalc.gross)}
+                />
+                <ResultRow
+                  label="Net exposure (after fees)"
+                  value={fmtDollar(adverseCalc.net, true)}
+                  color={pnlColor(adverseCalc.net)}
+                  bold
+                />
+              </div>
             </div>
           )}
 
