@@ -11,6 +11,7 @@ import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 
 type Confidence = 'high' | 'medium' | 'low';
+type GammaRegime = 'positive' | 'negative';
 
 interface TracePrediction {
   date: string;
@@ -21,6 +22,7 @@ interface TracePrediction {
   current_price: number | null;
   vix: number | null;
   vix1d: number | null;
+  gamma_regime: 'positive' | 'negative' | null;
 }
 
 function todayLocal(): string {
@@ -36,6 +38,7 @@ export default function TracePinForm() {
   const [date, setDate] = useState(todayLocal);
   const [predictedClose, setPredictedClose] = useState('');
   const [confidence, setConfidence] = useState<Confidence>('medium');
+  const [gammaRegime, setGammaRegime] = useState<GammaRegime | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [saved, setSaved] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -83,7 +86,7 @@ export default function TracePinForm() {
         const res = await fetch('/api/trace/prediction', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date, predicted_close: value, confidence }),
+          body: JSON.stringify({ date, predicted_close: value, confidence, gamma_regime: gammaRegime }),
         });
         if (!res.ok) {
           const data = (await res.json().catch(() => ({}))) as {
@@ -93,6 +96,7 @@ export default function TracePinForm() {
         } else {
           setSaved(true);
           setPredictedClose('');
+          setGammaRegime(null);
           void loadPredictions();
         }
       } catch {
@@ -105,6 +109,7 @@ export default function TracePinForm() {
       date,
       predictedClose,
       confidence,
+      gammaRegime,
       confirmOverwrite,
       predictions,
       loadPredictions,
@@ -227,6 +232,28 @@ export default function TracePinForm() {
           </select>
         </label>
 
+        <label className="flex flex-col gap-1">
+          <span
+            className="font-sans text-[10px] tracking-wide uppercase"
+            style={{ color: theme.textMuted }}
+          >
+            GEX Regime
+          </span>
+          <select
+            value={gammaRegime ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              setGammaRegime(v === '' ? null : (v as GammaRegime));
+            }}
+            className="border-edge rounded border px-2 py-1.5 font-sans text-[12px]"
+            style={{ color: theme.text, backgroundColor: theme.surfaceAlt }}
+          >
+            <option value="">—</option>
+            <option value="positive">Positive</option>
+            <option value="negative">Negative</option>
+          </select>
+        </label>
+
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2">
             <button
@@ -308,6 +335,7 @@ export default function TracePinForm() {
                   'Error',
                   'Conf',
                   'VIX',
+                  'GEX',
                   '',
                 ].map((h) => (
                   <th
@@ -405,6 +433,23 @@ export default function TracePinForm() {
                       style={{ color: vixColor }}
                     >
                       {p.vix != null ? p.vix.toFixed(1) : '—'}
+                    </td>
+                    <td
+                      className="py-1.5 pr-4 font-sans text-[10px]"
+                      style={{
+                        color:
+                          p.gamma_regime === 'positive'
+                            ? theme.green
+                            : p.gamma_regime === 'negative'
+                              ? theme.red
+                              : theme.textMuted,
+                      }}
+                    >
+                      {p.gamma_regime === 'positive'
+                        ? '+GEX'
+                        : p.gamma_regime === 'negative'
+                          ? '-GEX'
+                          : '—'}
                     </td>
                     <td className="py-1.5 pl-2">
                       <button

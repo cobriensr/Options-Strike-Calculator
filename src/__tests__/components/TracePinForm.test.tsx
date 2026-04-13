@@ -22,6 +22,7 @@ function makePrediction(overrides = {}) {
     current_price: 5880,
     vix: null,
     vix1d: null,
+    gamma_regime: null,
     ...overrides,
   };
 }
@@ -105,6 +106,13 @@ describe('TracePinForm: rendering', () => {
     });
     const btn = screen.getByRole('button', { name: /save/i });
     expect(btn).toBeDisabled();
+  });
+
+  it('renders the GEX Regime select', async () => {
+    await act(async () => {
+      render(<TracePinForm />);
+    });
+    expect(screen.getByLabelText(/gex regime/i)).toBeInTheDocument();
   });
 });
 
@@ -221,6 +229,44 @@ describe('TracePinForm: predictions table', () => {
     expect(
       screen.getByRole('button', { name: /delete prediction for 2026-01-15/i }),
     ).toBeInTheDocument();
+  });
+
+  it('shows +GEX for positive gamma regime', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            makePrediction({ gamma_regime: 'positive' }),
+          ]),
+      }),
+    );
+
+    await act(async () => {
+      render(<TracePinForm />);
+    });
+
+    expect(screen.getByText('+GEX')).toBeInTheDocument();
+  });
+
+  it('shows -GEX for negative gamma regime', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            makePrediction({ gamma_regime: 'negative' }),
+          ]),
+      }),
+    );
+
+    await act(async () => {
+      render(<TracePinForm />);
+    });
+
+    expect(screen.getByText('-GEX')).toBeInTheDocument();
   });
 });
 
