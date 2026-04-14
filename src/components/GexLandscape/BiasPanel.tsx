@@ -215,7 +215,9 @@ function DriftTargetColumn({
               className="flex items-baseline gap-1.5"
               title={CLS_TOOLTIP[t.cls]}
             >
-              <span className={`font-mono text-[12px] font-semibold ${strikeColor}`}>
+              <span
+                className={`font-mono text-[12px] font-semibold ${strikeColor}`}
+              >
                 {t.strike.toLocaleString()}
               </span>
               <span
@@ -287,7 +289,10 @@ function TrendColumn({
         {label}
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className="font-mono text-[9px]" style={{ color: 'var(--color-muted)' }}>
+        <span
+          className="font-mono text-[9px]"
+          style={{ color: 'var(--color-muted)' }}
+        >
           Floor
         </span>
         <span
@@ -298,7 +303,10 @@ function TrendColumn({
         </span>
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className="font-mono text-[9px]" style={{ color: 'var(--color-muted)' }}>
+        <span
+          className="font-mono text-[9px]"
+          style={{ color: 'var(--color-muted)' }}
+        >
           Ceil
         </span>
         <span
