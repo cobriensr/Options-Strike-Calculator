@@ -36,7 +36,6 @@ export interface GexLandscapeProps {
   selectedDate: string;
   onDateChange: (date: string) => void;
   isLive: boolean;
-  isToday: boolean;
   isScrubbed: boolean;
   canScrubPrev: boolean;
   canScrubNext: boolean;

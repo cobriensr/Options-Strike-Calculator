@@ -152,9 +152,7 @@ async function detectRatioROC(
       `${prevRatio.toFixed(2)} -> ${current.ratio.toFixed(2)}`,
       `(${ratioDelta > 0 ? '+' : ''}${ratioDelta.toFixed(2)} in ~1min).`,
       `Driver: ${driver}.`,
-      direction === 'BEARISH'
-        ? 'Watch PCS stops.'
-        : 'Watch CCS stops.',
+      direction === 'BEARISH' ? 'Watch PCS stops.' : 'Watch CCS stops.',
     ].join(' '),
     currentValues: {
       ratio: current.ratio,
@@ -317,7 +315,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Surge check runs second — confirms the move over the full 5-min window.
     // Both have independent cooldowns so both can fire on the same tick.
     const rocAlert = await detectRatioROC(today, reading);
-    const rocAlerted = rocAlert ? await writeAlertIfNew(today, rocAlert) : false;
+    const rocAlerted = rocAlert
+      ? await writeAlertIfNew(today, rocAlert)
+      : false;
 
     const alert = await detectRatioSurge(today, reading);
     const alerted = alert ? await writeAlertIfNew(today, alert) : false;
