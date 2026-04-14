@@ -233,7 +233,8 @@ interface BiasMetrics {
     | 'breakout-risk-up'
     | 'breakdown-risk-down'
     | 'rangebound'
-    | 'volatile';
+    | 'volatile'
+    | 'gex-floor-below';
   regime: 'positive' | 'negative'; // sign of total net GEX across all strikes
   totalNetGex: number;
   gravityStrike: number; // strike with the largest absolute GEX
@@ -298,6 +299,13 @@ const VERDICT_META: Record<BiasMetrics['verdict'], VerdictMeta> = {
     border: 'border-amber-500/30',
     desc: 'Negative GEX regime — dealers amplify moves in both directions; follow breakouts',
   },
+  'gex-floor-below': {
+    label: '↑ FLOOR BELOW',
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-500/15',
+    border: 'border-emerald-500/30',
+    desc: 'Largest GEX wall is below spot — acting as support floor; price has upside freedom',
+  },
 };
 
 const VERDICT_TOOLTIP: Record<BiasMetrics['verdict'], string> = {
@@ -313,6 +321,8 @@ const VERDICT_TOOLTIP: Record<BiasMetrics['verdict'], string> = {
     'Total GEX is positive and the biggest wall is close to spot. MMs are countering moves from both sides — selling into rallies, buying into dips. Expect a choppy day. Fade moves toward the edges rather than chasing breakouts.',
   volatile:
     'Total GEX is negative and the biggest concentration is near spot. MMs amplify moves without a clear directional pull. A breakout in either direction can accelerate fast. Wait for a clear move before committing to a direction.',
+  'gex-floor-below':
+    'The biggest GEX wall is below current price and acting as a support floor — dealers are net long gamma there and will buy dips toward it. Price has already broken above it and has upside freedom toward ceiling targets. Watch for the ceiling drift targets above as the next magnetic levels.',
 };
 
 /**
@@ -358,6 +368,8 @@ function computeSmoothedStrikes(
  *             Above + Positive → gex-pull-up        (MMs pull price up to wall)
  *             Above + Negative → breakout-risk-up    (no dampener above; acceleration risk)
  *             Below + Positive → gex-pull-down       (MMs pull price down to wall)
+ *               └─ override: if price has broken above the wall (>SPOT_BAND), the wall
+ *                  is now a support floor → gex-floor-below (upside freedom)
  *             Below + Negative → breakdown-risk-down (no dampener below; breakdown risk)
  *             ATM   + Positive → rangebound
  *             ATM   + Negative → volatile
@@ -397,6 +409,13 @@ function computeBias(
     verdict = regime === 'negative' ? 'breakout-risk-up' : 'gex-pull-up';
   } else {
     verdict = regime === 'negative' ? 'breakdown-risk-down' : 'gex-pull-down';
+  }
+
+  // Floor left-behind correction: in positive regime, when the largest wall is
+  // below spot and price has already broken above it, that wall is now a support
+  // floor — not a downward magnet. The effective bias flips upward.
+  if (verdict === 'gex-pull-down') {
+    verdict = 'gex-floor-below';
   }
 
   // Drift targets: top 2 above and below spot by |netGamma|
