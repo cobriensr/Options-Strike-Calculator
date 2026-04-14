@@ -92,6 +92,84 @@ async function storeRatioReading(
   `;
 }
 
+// ── ROC (1-min rate-of-change) detection ────────────────────
+
+/**
+ * Compares the current reading to the most recent prior tick (~1 min ago).
+ * Fires an early 'ratio_roc' warning when the 1-minute delta exceeds
+ * RATIO_ROC_MIN_DELTA, giving 4-5 minutes of lead time over detectRatioSurge.
+ */
+async function detectRatioROC(
+  today: string,
+  current: RatioReading,
+): Promise<AlertPayload | null> {
+  if (current.ratio == null) return null;
+
+  const sql = getDb();
+
+  // Fetch the most recent prior tick, skipping the one we just inserted
+  // (30-second offset prevents self-comparison on the freshly committed row).
+  const prev = await sql`
+    SELECT ratio, abs_npp, abs_ncp FROM flow_ratio_monitor
+    WHERE date = ${today}
+      AND ratio IS NOT NULL
+      AND timestamp < NOW() - make_interval(secs => 30)
+    ORDER BY timestamp DESC LIMIT 1
+  `;
+
+  if (prev.length === 0) return null;
+
+  const prevRatio = Number(prev[0]!.ratio);
+  const prevNpp = Number(prev[0]!.abs_npp);
+  const prevNcp = Number(prev[0]!.abs_ncp);
+  const ratioDelta = current.ratio - prevRatio;
+
+  if (Math.abs(ratioDelta) < ALERT_THRESHOLDS.RATIO_ROC_MIN_DELTA) return null;
+
+  const nppChange = current.absNpp - prevNpp;
+  const ncpChange = current.absNcp - prevNcp;
+  const maxPremiumDelta = Math.max(Math.abs(nppChange), Math.abs(ncpChange));
+  if (maxPremiumDelta < ALERT_THRESHOLDS.RATIO_ROC_PREMIUM_MIN) return null;
+
+  const direction = classifyDirection(
+    current.absNpp,
+    current.absNcp,
+    prevNpp,
+    prevNcp,
+  );
+  const driver =
+    Math.abs(nppChange) > Math.abs(ncpChange)
+      ? `NPP ${nppChange >= 0 ? '+' : ''}$${(nppChange / 1e6).toFixed(1)}M`
+      : `NCP ${ncpChange >= 0 ? '+' : ''}$${(ncpChange / 1e6).toFixed(1)}M`;
+
+  return {
+    type: 'ratio_roc',
+    severity: 'warning',
+    direction,
+    title: `EARLY ${direction}: Ratio accelerating ${prevRatio.toFixed(2)} -> ${current.ratio.toFixed(2)}`,
+    body: [
+      `0DTE P/C ratio accelerating ${ratioDelta > 0 ? 'up' : 'down'}`,
+      `${prevRatio.toFixed(2)} -> ${current.ratio.toFixed(2)}`,
+      `(${ratioDelta > 0 ? '+' : ''}${ratioDelta.toFixed(2)} in ~1min).`,
+      `Driver: ${driver}.`,
+      direction === 'BEARISH'
+        ? 'Watch PCS stops.'
+        : 'Watch CCS stops.',
+    ].join(' '),
+    currentValues: {
+      ratio: current.ratio,
+      absNpp: current.absNpp,
+      absNcp: current.absNcp,
+      spxPrice: current.spxPrice,
+    },
+    deltaValues: {
+      ratioDelta,
+      nppDelta: nppChange,
+      ncpDelta: ncpChange,
+    },
+  };
+}
+
 // ── Surge detection ─────────────────────────────────────────
 
 function classifyDirection(
@@ -234,6 +312,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const reading: RatioReading = { absNpp, absNcp, ratio, spxPrice };
 
     await storeRatioReading(today, reading);
+
+    // ROC check runs first — fires early if 1-min delta is steep enough.
+    // Surge check runs second — confirms the move over the full 5-min window.
+    // Both have independent cooldowns so both can fire on the same tick.
+    const rocAlert = await detectRatioROC(today, reading);
+    const rocAlerted = rocAlert ? await writeAlertIfNew(today, rocAlert) : false;
+
     const alert = await detectRatioSurge(today, reading);
     const alerted = alert ? await writeAlertIfNew(today, alert) : false;
     const combined = alerted
@@ -248,6 +333,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       absNpp,
       absNcp,
       spxPrice,
+      rocAlerted,
       alerted,
       combined,
       durationMs,
@@ -259,6 +345,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       absNpp,
       absNcp,
       spxPrice,
+      rocAlerted,
       alerted,
       combined,
       durationMs,

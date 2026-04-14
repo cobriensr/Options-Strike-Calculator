@@ -30,6 +30,17 @@ export const ALERT_THRESHOLDS = {
    *  filter excludes SPY/SPXW flow. $5M was unreachable; $1M catches
    *  real institutional moves while filtering routine noise. */
   RATIO_PREMIUM_MIN: 1_000_000,
+  /** Minimum 1-minute ratio rate-of-change to fire an early ROC alert.
+   *  Calibrated 2026-04-14 against the observed 10:36 AM surge where
+   *  the 5-min delta was +28.19 (~5.6/min). Setting the floor at 2.0
+   *  leaves a 2x buffer above expected noise (<1/min) while still
+   *  catching the first minute of a genuine institutional move. Tune
+   *  after accumulating live 1-min tick data. */
+  RATIO_ROC_MIN_DELTA: 2.0,
+  /** Minimum driver-side premium change ($) to qualify a 1-min ROC alert.
+   *  Proportionally smaller than RATIO_PREMIUM_MIN ($1M) since we are
+   *  measuring a single minute of premium movement. */
+  RATIO_ROC_PREMIUM_MIN: 500_000,
   /** Suppress duplicate alerts of same type within this window (minutes) */
   COOLDOWN_MINUTES: 5,
   /** Window for combined alert: both IV spike + ratio surge within this window (minutes) */

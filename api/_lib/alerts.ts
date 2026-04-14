@@ -12,7 +12,7 @@ import { ALERT_THRESHOLDS } from './alert-thresholds.js';
 
 // ── Types ──────────────────────────────────────────────────
 
-export type AlertType = 'iv_spike' | 'ratio_surge' | 'combined';
+export type AlertType = 'iv_spike' | 'ratio_surge' | 'ratio_roc' | 'combined';
 export type AlertSeverity = 'warning' | 'critical' | 'extreme';
 export type AlertDirection = 'BEARISH' | 'BULLISH' | 'NEUTRAL';
 

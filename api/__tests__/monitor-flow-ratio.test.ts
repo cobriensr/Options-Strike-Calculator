@@ -149,6 +149,7 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
       .mockResolvedValueOnce([]); // detectRatioSurge SELECT prev
 
     const res = mockResponse();
@@ -175,8 +176,7 @@ describe('monitor-flow-ratio handler', () => {
     ]);
 
     mockSql
-      .mockResolvedValueOnce([]) // storeRatioReading INSERT
-      .mockResolvedValueOnce([]); // detectRatioSurge: ratio is null, returns early
+      .mockResolvedValueOnce([]); // storeRatioReading INSERT; ratio=null so both ROC and surge return early
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -200,6 +200,7 @@ describe('monitor-flow-ratio handler', () => {
     // absNpp=55M, absNcp=43M, ratio = 55/43 ≈ 1.279
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
       .mockResolvedValueOnce([
         {
           // detectRatioSurge: prev reading
@@ -208,13 +209,14 @@ describe('monitor-flow-ratio handler', () => {
           abs_ncp: '43000000',
         },
       ]);
-    // delta = 1.279 - 1.15 = 0.129 < 0.7 — ratio gate blocks
+    // delta = 1.279 - 1.15 = 0.129 < 0.7 — surge gate blocks
+    // ROC mock returns [] so ROC also does not fire
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ alerted: false });
+    expect(res._json).toMatchObject({ rocAlerted: false, alerted: false });
     expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
   });
 
@@ -229,6 +231,7 @@ describe('monitor-flow-ratio handler', () => {
     // absNpp=1.0M, absNcp=0.5M, ratio=2.0
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
       .mockResolvedValueOnce([
         {
           ratio: '0.6',
@@ -236,16 +239,16 @@ describe('monitor-flow-ratio handler', () => {
           abs_ncp: '500000',
         },
       ]);
-    // ratioDelta = 2.0 - 0.6 = 1.4 ≫ 0.7 ✓ (ratio gate passes)
+    // ratioDelta = 2.0 - 0.6 = 1.4 ≫ 0.7 ✓ (surge ratio gate passes)
     // nppChange = 1.0M - 0.3M = 0.7M
     // ncpChange = 0.5M - 0.5M = 0
-    // max driver premium = 0.7M < 1M → premium floor blocks
+    // max driver premium = 0.7M < 1M → surge premium floor blocks
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ alerted: false });
+    expect(res._json).toMatchObject({ rocAlerted: false, alerted: false });
     expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
   });
 
@@ -263,6 +266,7 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
       .mockResolvedValueOnce([
         {
           ratio: '1.0',
@@ -303,6 +307,7 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
       .mockResolvedValueOnce([
         {
           // detectRatioSurge: prev reading, ratio = 1.0
@@ -343,6 +348,7 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
       .mockResolvedValueOnce([
         {
           // detectRatioSurge: prev reading, ratio = 1.222
@@ -380,13 +386,16 @@ describe('monitor-flow-ratio handler', () => {
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
 
-    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        ratio: '1.0',
-        abs_npp: '50000000',
-        abs_ncp: '50000000',
-      },
-    ]);
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
+      .mockResolvedValueOnce([
+        {
+          ratio: '1.0',
+          abs_npp: '50000000',
+          abs_ncp: '50000000',
+        },
+      ]);
     // delta = 2.0 - 1.0 = 1.0 >= 0.9 → critical tier
     // NPP delta = 50M (≫ 1M) → premium floor passes
 
@@ -413,13 +422,16 @@ describe('monitor-flow-ratio handler', () => {
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
 
-    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        ratio: '1.10',
-        abs_npp: '50000000',
-        abs_ncp: '45000000',
-      },
-    ]);
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
+      .mockResolvedValueOnce([
+        {
+          ratio: '1.10',
+          abs_npp: '50000000',
+          abs_ncp: '45000000',
+        },
+      ]);
     // absNpp=90M, absNcp=45M, ratio=2.0, delta=0.9
     // nppDelta = 90M-50M = 40M, ncpDelta = 45M-45M = 0
     // |nppDelta| > |ncpDelta|, nppDelta > 0 → BEARISH
@@ -443,13 +455,16 @@ describe('monitor-flow-ratio handler', () => {
     ]);
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
 
-    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        ratio: '1.30',
-        abs_npp: '78000000',
-        abs_ncp: '60000000',
-      },
-    ]);
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
+      .mockResolvedValueOnce([
+        {
+          ratio: '1.30',
+          abs_npp: '78000000',
+          abs_ncp: '60000000',
+        },
+      ]);
     // absNpp=78M, absNcp=20M, ratio=3.9, delta=2.6 ≫ 0.7 (critical tier)
     // nppDelta = 78M-78M = 0, ncpDelta = 20M-60M = -40M
     // |ncpDelta| > |nppDelta|, ncpDelta < 0 → BEARISH
@@ -469,13 +484,14 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
       .mockResolvedValueOnce([]); // detectRatioSurge: no prev
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ alerted: false });
+    expect(res._json).toMatchObject({ rocAlerted: false, alerted: false });
     expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
   });
 
@@ -522,13 +538,16 @@ describe('monitor-flow-ratio handler', () => {
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
     vi.mocked(checkForCombinedAlert).mockResolvedValue(true);
 
-    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        ratio: '1.0',
-        abs_npp: '50000000',
-        abs_ncp: '50000000',
-      },
-    ]);
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
+      .mockResolvedValueOnce([
+        {
+          ratio: '1.0',
+          abs_npp: '50000000',
+          abs_ncp: '50000000',
+        },
+      ]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -545,6 +564,7 @@ describe('monitor-flow-ratio handler', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
       .mockResolvedValueOnce([]); // detectRatioSurge: no prev
 
     const res = mockResponse();
@@ -552,6 +572,184 @@ describe('monitor-flow-ratio handler', () => {
 
     expect(vi.mocked(checkForCombinedAlert)).not.toHaveBeenCalled();
     expect(res._json).toMatchObject({ combined: false });
+  });
+
+  // ── ROC early-warning detection ──────────────────────────
+
+  it('fires ROC alert when 1-min delta >= 2.0 and driver premium >= $500K', async () => {
+    // Current: absNpp=30M, absNcp=10M, ratio=3.0
+    // ROC prev (1-min ago): ratio=0.5 → delta=2.5 ≥ 2.0 ✓
+    // nppChange = 30M - 10M = 20M ≫ 500K ✓
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '10000000',
+        net_put_premium: '-30000000',
+      }),
+    ]);
+    vi.mocked(writeAlertIfNew).mockResolvedValue(true);
+
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([
+        {
+          // detectRatioROC: prev tick ~1 min ago
+          ratio: '0.5',
+          abs_npp: '10000000',
+          abs_ncp: '10000000',
+        },
+      ])
+      .mockResolvedValueOnce([]); // detectRatioSurge: no 5-min prev yet
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ rocAlerted: true, alerted: false });
+    expect(vi.mocked(writeAlertIfNew)).toHaveBeenCalledWith(
+      '2026-03-24',
+      expect.objectContaining({
+        type: 'ratio_roc',
+        severity: 'warning',
+        direction: 'BEARISH',
+      }),
+    );
+  });
+
+  it('does NOT fire ROC alert when 1-min delta < 2.0', async () => {
+    // delta = 1.8 - 1.6 = 0.2 < 2.0 → ROC gate blocks
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '50000000',
+        net_put_premium: '-90000000',
+      }),
+    ]);
+    // absNpp=90M, absNcp=50M, ratio=1.8
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([
+        {
+          // detectRatioROC: prev tick 1-min ago, ratio close to current
+          ratio: '1.6',
+          abs_npp: '80000000',
+          abs_ncp: '50000000',
+        },
+      ])
+      .mockResolvedValueOnce([]); // detectRatioSurge: no 5-min prev
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._json).toMatchObject({ rocAlerted: false });
+    const rocCall = vi
+      .mocked(writeAlertIfNew)
+      .mock.calls.find(([, a]) => a.type === 'ratio_roc');
+    expect(rocCall).toBeUndefined();
+  });
+
+  it('does NOT fire ROC alert when delta passes but premium floor blocks', async () => {
+    // Tiny premium swing with a big ratio jump (low-volume noise)
+    // ratio: 0.2 → 2.5 = delta 2.3 ≥ 2.0 ✓ but premium < 500K
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '200000',
+        net_put_premium: '-500000',
+      }),
+    ]);
+    // absNpp=500K, absNcp=200K, ratio=2.5
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([
+        {
+          // detectRatioROC: prev tick
+          ratio: '0.2',
+          abs_npp: '200000',
+          abs_ncp: '200000',
+        },
+      ])
+      // nppChange = 500K - 200K = 300K < 500K → ROC premium floor blocks
+      .mockResolvedValueOnce([]); // detectRatioSurge: no 5-min prev
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._json).toMatchObject({ rocAlerted: false, alerted: false });
+    expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
+  });
+
+  it('ROC alert is always warning severity regardless of delta magnitude', async () => {
+    // Extreme 1-min move: ratio 0.1 → 50 = delta 49.9 — still warning
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '5000000',
+        net_put_premium: '-250000000',
+      }),
+    ]);
+    // absNpp=250M, absNcp=5M, ratio=50
+    vi.mocked(writeAlertIfNew).mockResolvedValue(true);
+
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([
+        {
+          ratio: '0.1',
+          abs_npp: '5000000',
+          abs_ncp: '5000000',
+        },
+      ])
+      .mockResolvedValueOnce([]); // detectRatioSurge: no 5-min prev
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(vi.mocked(writeAlertIfNew)).toHaveBeenCalledWith(
+      '2026-03-24',
+      expect.objectContaining({ type: 'ratio_roc', severity: 'warning' }),
+    );
+  });
+
+  it('ROC and surge can both fire on the same tick when thresholds are met', async () => {
+    // Current: ratio=5.0; ROC prev (1-min ago): ratio=2.5 → ROC delta=2.5 ≥ 2.0 ✓
+    // Surge prev (5-min ago): ratio=1.0 → surge delta=4.0 ≥ 0.7 ✓
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        net_call_premium: '20000000',
+        net_put_premium: '-100000000',
+      }),
+    ]);
+    // absNpp=100M, absNcp=20M, ratio=5.0
+    vi.mocked(writeAlertIfNew).mockResolvedValue(true);
+
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([
+        {
+          // detectRatioROC: 1-min ago
+          ratio: '2.5',
+          abs_npp: '60000000',
+          abs_ncp: '20000000',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          // detectRatioSurge: 5-min ago
+          ratio: '1.0',
+          abs_npp: '20000000',
+          abs_ncp: '20000000',
+        },
+      ]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._json).toMatchObject({ rocAlerted: true, alerted: true });
+    expect(vi.mocked(writeAlertIfNew)).toHaveBeenCalledWith(
+      '2026-03-24',
+      expect.objectContaining({ type: 'ratio_roc' }),
+    );
+    expect(vi.mocked(writeAlertIfNew)).toHaveBeenCalledWith(
+      '2026-03-24',
+      expect.objectContaining({ type: 'ratio_surge' }),
+    );
   });
 
   it('returns combined: false when alert fires but no iv_spike exists', async () => {
@@ -565,13 +763,16 @@ describe('monitor-flow-ratio handler', () => {
     vi.mocked(writeAlertIfNew).mockResolvedValue(true);
     vi.mocked(checkForCombinedAlert).mockResolvedValue(false);
 
-    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        ratio: '1.0',
-        abs_npp: '50000000',
-        abs_ncp: '50000000',
-      },
-    ]);
+    mockSql
+      .mockResolvedValueOnce([]) // storeRatioReading INSERT
+      .mockResolvedValueOnce([]) // detectRatioROC SELECT prev (no prior tick)
+      .mockResolvedValueOnce([
+        {
+          ratio: '1.0',
+          abs_npp: '50000000',
+          abs_ncp: '50000000',
+        },
+      ]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
