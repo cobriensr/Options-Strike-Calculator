@@ -91,7 +91,7 @@ is also rejected.
 
 ## Adopted rule
 
-```
+```text
 VIX close      Short-gamma 0DTE rule
 ─────────────  ──────────────────────────────────────────────
 < 15           Safe to hold iron flies / short straddles to
@@ -231,6 +231,76 @@ a different vendor.
 **Decision:** keep the VIX-only banner. GEX doesn't clear the bar for a
 two-variable production gate on ~250 days of data. Revisit if 1+ years
 of accumulated snapshot data becomes available.
+
+## Phase 6: MOO (Market-on-Open) persistence — also null
+
+Prompted by a UW community member reporting success "sniping SPX after
+MOC numbers are released" and asking whether opening-cross imbalance
+might be the real setup signal we were missing.
+
+Method: filter the imbalance cache to `auction_type == 'O'` (opening
+cross messages, 9:25–9:29 ET), snapshot each day at 9:29:30, compute
+intraday targets from QQQ 1-min bars, correlate.
+
+Results on 1,998 days:
+
+| Test                                | Result |
+| ----------------------------------- | ------ |
+| MOO sign → day return agreement     | 51.7%  |
+| MOO sign → 10am return agreement    | 50.2%  |
+| MOO sign → MOC sign agreement       | 53.9%  |
+| Pearson r(MOO, return_day)          | −0.014 |
+| Pearson r(\|MOO\|, intraday range)  | +0.143 |
+| Incremental R^2 over VIX (range)    | +0.008 |
+
+Direction: coin flip. Persistence to MOC: effectively zero. Only real
+signal is `|MOO| -> |range|` (r=+0.14) — same magnitude-implies-vol
+pattern we already see in MOC, and already captured by VIX.
+
+Also notable: 70% of QQQ days have essentially zero MOO imbalance at
+the 9:29:30 snapshot — the book pairs down as the cross approaches the
+open. So there's nothing to trade on 7 days out of 10 anyway.
+
+## Phase 7: 0DTE directional options simulation — null
+
+The community member trades 0DTE SPX options, and a weak signal on
+underlying can become +EV through long-option convexity. Simulated:
+
+- **A. MOC-directional**: at 15:50 ET, long ATM call if MOC signed
+  imbalance > 0 else put; hold to close (10-min window).
+- **B. MOC-random**: same window, random direction (control).
+- **C. MOO-directional**: at 9:30 ET, same rules, 6.5h window.
+- **D. MOO-random**: MOO window, random direction (control).
+
+Pricing via Black-Scholes ATM (`~0.399 * sigma * S * sqrt(T)`) using
+VIX as IV. Payoff = intrinsic at close (0DTE cash-settled).
+
+| Strategy         | n    | mean P&L | win rate | edge vs random |
+| ---------------- | ---- | -------- | -------- | -------------- |
+| MOC_directional  | 1603 | −0.55    | 33%      | +0.53 (t≈1.58) |
+| MOC_random       | 1980 | −1.08    | 30%      | —              |
+| MOO_directional  | 678  | −6.61    | 33%      | +0.66 (t≈0.21) |
+| MOO_random       | 1980 | −7.27    | 31%      | —              |
+
+**Both directional edges are tiny and not statistically significant**
+(t < 2), and both strategies are negative-EV in absolute terms because
+ATM 0DTE options bleed theta faster than the weak directional signal
+can compensate. After 1–2 bps SPX 0DTE round-trip friction, the edge
+is decisively negative.
+
+**Convexity does not rescue the signal.** If a retail trader is making
+money "sniping MOC" they are likely doing something the mechanical
+test can't capture: selective entry (10–20% of days), non-mechanical
+exits, OTM lottery-ticket structures with different risk/reward, or
+confirmation from price action after the imbalance prints. Survivorship
+bias in self-reported P&L is also always on the table.
+
+**Final decision:** seven phases across five hours and ~$14 of data
+produced one shipped rule (VIX banner) and six clean null results. The
+asymmetry is durable: **avoiding the blowup (defensive) is cheap and
+effective; capturing symmetric profit (offensive) requires tools and
+positioning that retail structurally doesn't have.** Thread fully
+closed.
 
 ## Takeaway
 
