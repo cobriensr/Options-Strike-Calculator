@@ -63,7 +63,7 @@ of days), the 95th-pct MAE lift vs baseline is +5 bps. Closing iron flies
 
 Same target (realized MAE), pulled against daily VIX close:
 
-```
+```text
 Pearson  r(vix_close → mae_down_bps) = +0.560   R² = 0.31
 Spearman r                            = +0.467
 ```
@@ -159,7 +159,7 @@ Stress because of a handful of +200 bps outliers. Median is still
 toward zero, not away from it):
 
 - VIX is 30-day constant-maturity, not 0DTE 10-min. Real 0DTE implieds
-  in Stress regimes typically spike 10–30% *above* VIX due to inverted
+  in Stress regimes typically spike 10–30% _above_ VIX due to inverted
   term structure — meaning the true straddle cost is higher than I
   modeled, and the true edge is smaller.
 - Bid-ask on QQQ 0DTE options is ~1–2 bps round-trip, eating ~half the
@@ -178,6 +178,59 @@ The asymmetry worth noting: **avoiding the bad outcome on the short
 side is cheap (just gate on VIX); capturing the symmetric opportunity
 on the long side is not.** Market makers and HFT capture the long side;
 retail gets the short-side protection.
+
+## Phase 5: Does dealer gamma augment the VIX gate? — null
+
+One more plausible angle closed out. Pulled a $10 UW export of 1 year
+of SPX daily aggregated dealer gamma (2025-04-15 → 2026-04-14: 250
+days × `call_gex`, `put_gex`, `net_gex`, `put_call_gex_ratio`), asking:
+
+> Does net dealer gamma predict SPX daily range BEYOND what VIX already
+> captures? If yes, the VIX-only banner becomes a two-variable gate.
+
+Caveat on the data: UW confirmed it's end-of-day only, so GEX is lagged
+by one trading day before joining to make correlations tradeable (same-
+day GEX and same-day range are contaminated — EOD snapshots partially
+reflect the day's own move).
+
+**Results on 249 lagged days:**
+
+```text
+R^2(VIX only)                = 0.4425
+R^2(VIX + net_gex + |gex|)   = 0.4480
+Incremental R^2 from GEX     = +0.0055
+```
+
+VIX alone explains ~44% of SPX daily-range variance. Adding GEX adds
+half a percentage point. Below the +0.02 threshold we'd want to justify
+a two-variable gate in production.
+
+Median SPX daily range by (VIX regime × gamma sign), lagged:
+
+| VIX bucket | gamma sign  | n   | median range | p95 range |
+| ---------- | ----------- | --- | ------------ | --------- |
+| Calm       | long_gamma  | 21  | 51 bps       | 102       |
+| Calm       | short_gamma | 4   | 79 bps       | 139       |
+| Normal     | long_gamma  | 128 | 73 bps       | 142       |
+| Normal     | short_gamma | 24  | 92 bps       | 171       |
+| Elevated   | long_gamma  | 17  | 119 bps      | 234       |
+| Elevated   | short_gamma | 50  | 131 bps      | 244       |
+| Stress     | short_gamma | 5   | 196 bps      | 270       |
+
+Short-gamma days have higher range within each VIX bucket
+(monotonically, unlike the same-day analysis), but the split is
+~10–25% wider — real but small. VIX already captures most of it.
+
+**What's NOT in this data** (confirmed by UW): strike-level intraday
+GEX. Only daily aggregated scalars. So the original "pin-riding via
+GEX-predicted strike" hypothesis cannot be tested with a historical
+data pull from UW. Only path to that test is accumulating snapshots
+via the existing cron for 6–12 months, or sourcing raw OI data from
+a different vendor.
+
+**Decision:** keep the VIX-only banner. GEX doesn't clear the bar for a
+two-variable production gate on ~250 days of data. Revisit if 1+ years
+of accumulated snapshot data becomes available.
 
 ## Takeaway
 
