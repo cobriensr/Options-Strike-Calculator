@@ -31,20 +31,20 @@ NASDAQ `ind_match_price` and `upper/lower_collar` fields are **never
 populated for ETFs** — this is a venue convention, not a data bug. The
 usable clearing-price field is `cont_book_clr_price` (92% populated).
 SPY imbalance on `XNAS.ITCH` is also ~0 for 75% of days because SPY's
-*primary* closing cross happens on NYSE Arca, not NASDAQ. QQQ NOII is the
+_primary_ closing cross happens on NYSE Arca, not NASDAQ. QQQ NOII is the
 only clean series in this dataset.
 
 ## Results — the null
 
 Against **realized_mae_down_bps** (max adverse excursion, 15:50→16:00 ET):
 
-| Feature                      | Pearson r | Spearman r |
-| ---------------------------- | --------- | ---------- |
-| T50_signed_imbalance         | −0.143    | −0.162     |
-| imbalance_delta_50_to_55     | +0.011    | +0.032     |
-| T50_cont_drift_bps           | −0.209\*  | −0.152\*   |
-| T50_paired_ratio             |  0.000    | −0.022     |
-| side_flipped (boolean)       | +0.002    | +0.007     |
+| Feature                  | Pearson r | Spearman r |
+| ------------------------ | --------- | ---------- |
+| T50_signed_imbalance     | −0.143    | −0.162     |
+| imbalance_delta_50_to_55 | +0.011    | +0.032     |
+| T50_cont_drift_bps       | −0.209\*  | −0.152\*   |
+| T50_paired_ratio         | 0.000     | −0.022     |
+| side_flipped (boolean)   | +0.002    | +0.007     |
 
 \* Only 19% of days have this populated; likely survivorship bias toward calm days.
 
@@ -73,12 +73,12 @@ any imbalance feature tested.
 
 Bucket breakdown:
 
-| VIX regime       | n   | median MAE | p95 MAE | p99 MAE  |
-| ---------------- | --- | ---------- | ------- | -------- |
-| Calm (<15)       | 505 | 7.6        | 20      | 30       |
-| Normal (15–20)   | 726 | 9.6        | 28      | 41       |
-| Elevated (20–30) | 598 | 15.4       | 45      | 69       |
-| Stress (>30)     | 151 | 25.2       | 80      | **192**  |
+| VIX regime       | n   | median MAE | p95 MAE | p99 MAE |
+| ---------------- | --- | ---------- | ------- | ------- |
+| Calm (<15)       | 505 | 7.6        | 20      | 30      |
+| Normal (15–20)   | 726 | 9.6        | 28      | 41      |
+| Elevated (20–30) | 598 | 15.4       | 45      | 69      |
+| Stress (>30)     | 151 | 25.2       | 80      | **192** |
 
 - Median MAE scales 3.3× Calm → Stress.
 - 99th-pct MAE scales **6.4×** (30 bps → 192 bps).
