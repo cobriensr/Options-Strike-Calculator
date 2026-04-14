@@ -66,7 +66,12 @@ function formatTime(iso: string | null): string {
 function priceCtxFromCandles(candles: SPXCandle[]): PriceMovementContext {
   const latest = candles.at(-1);
   if (!latest) {
-    return { deltaSpot_1m: 0, deltaSpot_3m: 0, deltaSpot_5m: 0, deltaSpot_20m: 0 };
+    return {
+      deltaSpot_1m: 0,
+      deltaSpot_3m: 0,
+      deltaSpot_5m: 0,
+      deltaSpot_20m: 0,
+    };
   }
   const spotAt = (n: number) => candles.at(-(n + 1))?.close ?? latest.close;
   return {
@@ -157,11 +162,16 @@ export const GexTarget = memo(function GexTarget({
     }
 
     // Sort by fresh score desc and find the highest-scoring eligible target.
-    // Primary: must be non-NONE, growing wall, AND in the direction price is
-    // moving (priceConfirm >= 0). This prevents below-spot strikes from being
-    // selected in a rising market and vice versa.
-    // Fallback: drop the priceConfirm gate in flat/ambiguous markets where no
-    // strike passes all three conditions.
+    // Primary gates:
+    //   1. Non-NONE tier
+    //   2. Growing wall (attractingMomentum > 0)
+    //   3. In the direction price is moving (priceConfirm >= 0)
+    //   4. At least one strike away from spot (|distFromSpot| >= 5) so we
+    //      recommend a forward-looking level instead of a strike price is
+    //      already pinned on. At-spot strikes have priceConfirm = 0 by
+    //      construction, so they always slip past the direction gate alone.
+    // Fallback: drop the direction + at-spot gates in flat/ambiguous markets
+    // where no strike passes all four conditions.
     const byScore = leaderboard
       .slice()
       .sort((a, b) => Math.abs(b.finalScore) - Math.abs(a.finalScore));
@@ -170,7 +180,8 @@ export const GexTarget = memo(function GexTarget({
         (s) =>
           s.tier !== 'NONE' &&
           computeAttractingMomentum(s.features) > 0 &&
-          priceConfirm(s.features, priceCtx) >= 0,
+          priceConfirm(s.features, priceCtx) >= 0 &&
+          Math.abs(s.features.distFromSpot) >= 5,
       ) ??
       byScore.find(
         (s) => s.tier !== 'NONE' && computeAttractingMomentum(s.features) > 0,
