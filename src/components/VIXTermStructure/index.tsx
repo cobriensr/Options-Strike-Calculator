@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { theme } from '../../themes';
+import { useVixTrajectory } from '../../hooks/useVixTrajectory';
 import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
 import type { Signal } from './classifiers';
 import {
@@ -19,6 +20,7 @@ interface Props {
   readonly initialVvix?: number; // Auto-fill from live data
   readonly termShape?: string | null; // Term structure shape from useComputedSignals
   readonly termShapeAdvice?: string | null;
+  readonly marketOpen?: boolean; // Gates the intraday trajectory poll
 }
 
 /**
@@ -35,7 +37,9 @@ export default function VIXTermStructure({
   initialVvix,
   termShape,
   termShapeAdvice,
+  marketOpen = false,
 }: Props) {
+  const trajectory = useVixTrajectory(marketOpen);
   const [vix1dInput, setVix1dInput] = useState('18.50');
   const [vix9dInput, setVix9dInput] = useState('20.10');
   const vix1dEdited = useRef(false);
@@ -257,6 +261,7 @@ export default function VIXTermStructure({
                 label={vix1dResult.label}
                 color={vix1dResult.color}
                 advice={vix1dResult.advice}
+                trajectory={trajectory.ratio1d}
               />
             )}
             {vix9dResult && (
@@ -267,6 +272,7 @@ export default function VIXTermStructure({
                 label={vix9dResult.label}
                 color={vix9dResult.color}
                 advice={vix9dResult.advice}
+                trajectory={trajectory.ratio9d}
               />
             )}
           </div>

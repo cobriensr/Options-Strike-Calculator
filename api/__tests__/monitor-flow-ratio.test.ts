@@ -175,8 +175,7 @@ describe('monitor-flow-ratio handler', () => {
       }),
     ]);
 
-    mockSql
-      .mockResolvedValueOnce([]); // storeRatioReading INSERT; ratio=null so both ROC and surge return early
+    mockSql.mockResolvedValueOnce([]); // storeRatioReading INSERT; ratio=null so both ROC and surge return early
 
     const res = mockResponse();
     await handler(makeCronReq(), res);

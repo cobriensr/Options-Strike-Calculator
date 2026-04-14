@@ -221,6 +221,83 @@ function parseEntryTimeMinutes(t: string): number {
   return h * 60 + min;
 }
 
+// ============================================================
+// RECENT VIX SNAPSHOTS (intraday trajectory)
+// ============================================================
+
+export interface VixTrajectoryRow {
+  entryTime: string;
+  vix: number;
+  vix1d: number | null;
+  vix9d: number | null;
+  spx: number | null;
+}
+
+/**
+ * Fetch today's intraday VIX snapshots in chronological order.
+ * Used by the VIX ratio trajectory indicator to compute rolling
+ * deltas browser-side. Only includes rows where `vix` is non-null
+ * and at least one of `vix1d` / `vix9d` is populated — otherwise
+ * the row has no ratio to display.
+ *
+ * `limit` caps the return size at the most-recent N rows. Default
+ * 120 covers a full 10-hour session at 5-minute cadence with room
+ * for the session's typical oversampling near the open and close.
+ */
+export async function getRecentVixSnapshots(
+  date: string,
+  limit = 120,
+): Promise<VixTrajectoryRow[]> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT entry_time,
+           vix::text        AS vix,
+           vix1d::text      AS vix1d,
+           vix9d::text      AS vix9d,
+           spx::text        AS spx
+    FROM market_snapshots
+    WHERE date = ${date}
+      AND vix IS NOT NULL
+      AND (vix1d IS NOT NULL OR vix9d IS NOT NULL)
+    ORDER BY entry_time ASC
+    LIMIT ${limit}
+  `;
+
+  return rows
+    .map((r) => {
+      const row = r as {
+        entry_time: string;
+        vix: string;
+        vix1d: string | null;
+        vix9d: string | null;
+        spx: string | null;
+      };
+      const t = parseEntryTimeMinutes(row.entry_time);
+      const vix = Number(row.vix);
+      if (Number.isNaN(t) || Number.isNaN(vix) || vix <= 0) return null;
+      const vix1d = row.vix1d == null ? null : Number(row.vix1d);
+      const vix9d = row.vix9d == null ? null : Number(row.vix9d);
+      const spx = row.spx == null ? null : Number(row.spx);
+      return {
+        entryTime: row.entry_time,
+        vix,
+        vix1d: vix1d != null && !Number.isNaN(vix1d) ? vix1d : null,
+        vix9d: vix9d != null && !Number.isNaN(vix9d) ? vix9d : null,
+        spx: spx != null && !Number.isNaN(spx) ? spx : null,
+        _sortKey: t,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+    .sort((a, b) => a._sortKey - b._sortKey)
+    .map((r) => ({
+      entryTime: r.entryTime,
+      vix: r.vix,
+      vix1d: r.vix1d,
+      vix9d: r.vix9d,
+      spx: r.spx,
+    }));
+}
+
 /**
  * Derive VIX OHLC for a given date from recorded market_snapshots.
  * open  = VIX at the earliest snapshot
