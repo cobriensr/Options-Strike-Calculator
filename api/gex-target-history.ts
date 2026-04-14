@@ -166,10 +166,6 @@ interface GexTargetFeatureRow {
   math_version: string;
   strike: Numeric;
 
-  rank_in_mode: Numeric;
-  rank_by_size: Numeric;
-  is_target: boolean;
-
   /** Raw net GEX from the JOIN — replaces the stale stored value. */
   gex_dollars: Numeric;
   /** Call-side GEX from the JOIN (display only). */
@@ -205,17 +201,6 @@ interface GexTargetFeatureRow {
   dist_from_spot: Numeric;
   spot_price: Numeric;
   minutes_after_noon_ct: Numeric;
-
-  flow_confluence: Numeric;
-  price_confirm: Numeric;
-  charm_score: Numeric;
-  dominance: Numeric;
-  clarity: Numeric;
-  proximity: Numeric;
-
-  final_score: Numeric;
-  tier: string;
-  wall_side: string;
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -284,6 +269,11 @@ function numOrNull(value: NumericOrNull): number | null {
  * that `MagnetFeatures` does NOT have a singular `prevGexDollars` field
  * anymore — only the four per-horizon variants. Don't accidentally
  * reintroduce the old field name.
+ *
+ * Derived scoring fields (ranking, components, finalScore, tier, wallSide)
+ * were dropped from the DB in migration #58. The `StrikeScore` type still
+ * requires them, so we fill them with sentinel defaults — the browser
+ * recomputes every derived field from the raw features before display.
  */
 function rowToStrikeScore(row: GexTargetFeatureRow): StrikeScore {
   const strike = num(row.strike);
@@ -319,31 +309,35 @@ function rowToStrikeScore(row: GexTargetFeatureRow): StrikeScore {
       minutesAfterNoonCT: num(row.minutes_after_noon_ct),
     },
     components: {
-      flowConfluence: num(row.flow_confluence),
-      priceConfirm: num(row.price_confirm),
-      charmScore: num(row.charm_score),
-      dominance: num(row.dominance),
-      clarity: num(row.clarity),
-      proximity: num(row.proximity),
+      flowConfluence: 0,
+      priceConfirm: 0,
+      charmScore: 0,
+      dominance: 0,
+      clarity: 0,
+      proximity: 0,
     },
-    finalScore: num(row.final_score),
-    tier: row.tier as Tier,
-    wallSide: row.wall_side as WallSide,
-    rankByScore: Number(row.rank_in_mode),
-    rankBySize: Number(row.rank_by_size),
-    isTarget: Boolean(row.is_target),
+    finalScore: 0,
+    tier: 'NONE' as Tier,
+    wallSide: 'NEUTRAL' as WallSide,
+    rankByScore: 0,
+    rankBySize: 0,
+    isTarget: false,
   };
 }
 
 /**
- * Group up to 30 rows for one snapshot into the three per-mode
- * `TargetScore` objects the frontend consumes. Returns null for any
- * mode that has no rows in the snapshot.
+ * Group rows for one snapshot into the three per-mode `TargetScore`
+ * objects the frontend consumes. Returns null for any mode that has no
+ * rows in the snapshot.
  *
- * Within each mode, rows are sorted by `rank_in_mode` ASC so the
- * leaderboard order matches what the live scoring pipeline produced.
- * The `target` is the row marked `is_target = true` (which, by Phase 1
- * convention, is also the rank-1 row when its tier is not `NONE`).
+ * Migration #58 dropped the `rank_in_mode` and `is_target` columns, so
+ * leaderboard ordering is no longer stored. We sort by `|gex_dollars|`
+ * descending as a deterministic ordering fallback — the browser
+ * recomputes its own ranking before display so the exact order here
+ * doesn't affect the UI, it just needs to be stable.
+ *
+ * `target` is always null from the server: the browser computes the
+ * target itself from the raw features in each `StrikeScore`.
  */
 function groupRowsByMode(rows: GexTargetFeatureRow[]): {
   oi: TargetScore | null;
@@ -364,16 +358,13 @@ function groupRowsByMode(rows: GexTargetFeatureRow[]): {
 
   const buildScore = (modeRows: GexTargetFeatureRow[]): TargetScore | null => {
     if (modeRows.length === 0) return null;
-    // Sort by rank_in_mode ASC so the leaderboard mirrors the live
-    // scoring pipeline's output ordering. We do this even if the SQL
-    // result already came back ordered, because callers can pass us
-    // unordered rows from a wider SELECT *.
+    // Deterministic fallback ordering — by |gex_dollars| desc. The
+    // browser re-ranks before display, so this only needs to be stable.
     const sorted = [...modeRows].sort(
-      (a, b) => Number(a.rank_in_mode) - Number(b.rank_in_mode),
+      (a, b) => Math.abs(num(b.gex_dollars)) - Math.abs(num(a.gex_dollars)),
     );
     const leaderboard = sorted.map(rowToStrikeScore);
-    const target = leaderboard.find((s) => s.isTarget) ?? null;
-    return { target, leaderboard };
+    return { target: null, leaderboard };
   };
 
   return {
@@ -535,7 +526,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const allRows = (await sql`
           SELECT
             gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
-            gtf.rank_in_mode, gtf.rank_by_size, gtf.is_target,
             CASE gtf.mode
               -- OI mode: use greek_exposure_strike × spot × 0.01 to convert raw
               -- gamma exposure (gamma × OI × 100) to dealer dollar hedging
@@ -565,10 +555,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
             gtf.delta_pct_1m, gtf.delta_pct_5m, gtf.delta_pct_20m, gtf.delta_pct_60m,
             gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,
-            gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct,
-            gtf.flow_confluence, gtf.price_confirm, gtf.charm_score,
-            gtf.dominance, gtf.clarity, gtf.proximity,
-            gtf.final_score, gtf.tier, gtf.wall_side
+            gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct
           FROM gex_target_features gtf
           LEFT JOIN gex_strike_0dte gso
             ON  gso.date      = gtf.date
@@ -579,7 +566,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND ges.expiry = gtf.date
             AND ges.strike::numeric = gtf.strike::numeric
           WHERE gtf.date = ${date}
-          ORDER BY gtf.timestamp ASC, gtf.mode ASC, gtf.rank_in_mode ASC
+          ORDER BY gtf.timestamp ASC, gtf.mode ASC, gtf.strike ASC
         `) as GexTargetFeatureRow[];
 
         // Group rows by their normalized timestamp key.
@@ -623,7 +610,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const featureRows = (await sql`
         SELECT
           gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
-          gtf.rank_in_mode, gtf.rank_by_size, gtf.is_target,
           CASE gtf.mode
             -- OI mode: use greek_exposure_strike × spot × 0.01 to convert raw
             -- gamma exposure (gamma × OI × 100) to dealer dollar hedging
@@ -653,10 +639,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
           gtf.delta_pct_1m, gtf.delta_pct_5m, gtf.delta_pct_20m, gtf.delta_pct_60m,
           gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,
-          gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct,
-          gtf.flow_confluence, gtf.price_confirm, gtf.charm_score,
-          gtf.dominance, gtf.clarity, gtf.proximity,
-          gtf.final_score, gtf.tier, gtf.wall_side
+          gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct
         FROM gex_target_features gtf
         LEFT JOIN gex_strike_0dte gso
           ON  gso.date      = gtf.date
@@ -667,7 +650,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND ges.expiry = gtf.date
           AND ges.strike::numeric = gtf.strike::numeric
         WHERE gtf.date = ${date} AND gtf.timestamp = ${timestamp}
-        ORDER BY gtf.mode ASC, gtf.rank_in_mode ASC
+        ORDER BY gtf.mode ASC, gtf.strike ASC
       `) as GexTargetFeatureRow[];
 
       // ── 6. Reconstruct the three per-mode TargetScore objects ─────

@@ -106,7 +106,6 @@ interface RawStrikeRow {
 // INSERT column list (buildInsertSql) and the row-flattening params
 // pushed by pushRowParams. Breakdown:
 //   5  identity     (date, timestamp, mode, math_version, strike)
-//   3  ranking      (rank_in_mode, rank_by_size, is_target)
 //   1  gex_dollars
 //   4  delta_gex_*
 //   6  prev_gex_dollars_*  (1m, 5m, 10m, 15m, 20m, 60m)
@@ -114,10 +113,12 @@ interface RawStrikeRow {
 //   4  call_ratio, charm_net, delta_net, vanna_net
 //   3  dist_from_spot, spot_price, minutes_after_noon_ct
 //   4  nearest-wall (pos_dist, pos_gex, neg_dist, neg_gex)
-//   6  component scores
-//   3  final_score, tier, wall_side
-// Total: 43
-const COLUMNS_PER_ROW = 43;
+// Total: 31
+// Derived scoring columns (ranking, components, final_score, tier,
+// wall_side) were dropped in migration #58 — scoring is now computed
+// browser-side from these raw features so the stored values would be
+// stale under `ON CONFLICT DO NOTHING`.
+const COLUMNS_PER_ROW = 31;
 
 // ── loadSnapshotHistory ─────────────────────────────────────────────────
 
@@ -447,8 +448,9 @@ function computeNearestWalls(
 }
 
 /**
- * Push the 39 column values for a single feature row onto the shared
- * params array. Column order must match `buildInsertSql` exactly.
+ * Push the 31 raw-feature column values for a single feature row onto
+ * the shared params array. Column order must match `buildInsertSql`
+ * exactly.
  */
 function pushRowParams(
   params: unknown[],
@@ -458,7 +460,7 @@ function pushRowParams(
   score: StrikeScore,
   wall: NearestWallContext,
 ): void {
-  const { features, components } = score;
+  const { features } = score;
   params.push(
     // Identity
     date,
@@ -466,10 +468,6 @@ function pushRowParams(
     mode,
     GEX_TARGET_CONFIG.mathVersion,
     features.strike,
-    // Ranking
-    score.rankByScore,
-    score.rankBySize,
-    score.isTarget,
     // Layer 2 — core feature
     features.gexDollars,
     // Layer 2 — delta horizons
@@ -500,17 +498,6 @@ function pushRowParams(
     wall.posGex,
     wall.negDist,
     wall.negGex,
-    // Layer 3 — component scores
-    components.flowConfluence,
-    components.priceConfirm,
-    components.charmScore,
-    components.dominance,
-    components.clarity,
-    components.proximity,
-    // Layer 3 — composite outputs
-    score.finalScore,
-    score.tier,
-    score.wallSide,
   );
 }
 
@@ -522,7 +509,6 @@ function buildInsertSql(valuesClauses: string[]): string {
   return `
     INSERT INTO gex_target_features (
       date, timestamp, mode, math_version, strike,
-      rank_in_mode, rank_by_size, is_target,
       gex_dollars,
       delta_gex_1m, delta_gex_5m, delta_gex_20m, delta_gex_60m,
       prev_gex_dollars_1m, prev_gex_dollars_5m,
@@ -532,10 +518,7 @@ function buildInsertSql(valuesClauses: string[]): string {
       call_ratio, charm_net, delta_net, vanna_net,
       dist_from_spot, spot_price, minutes_after_noon_ct,
       nearest_pos_wall_dist, nearest_pos_wall_gex,
-      nearest_neg_wall_dist, nearest_neg_wall_gex,
-      flow_confluence, price_confirm, charm_score,
-      dominance, clarity, proximity,
-      final_score, tier, wall_side
+      nearest_neg_wall_dist, nearest_neg_wall_gex
     )
     VALUES ${valuesClauses.join(',')}
     ON CONFLICT (date, timestamp, mode, strike, math_version) DO NOTHING
