@@ -942,19 +942,27 @@ describe('useGexTarget: refresh', () => {
 
 describe('useGexTarget: opening strikes', () => {
   it('derives openingCallStrike and openingPutStrike from first snapshot leaderboard', async () => {
-    // callRatio: 0.8 → most call-dominant = callStrike
-    // callRatio: -0.6 → most put-dominant = putStrike
+    // Largest |callGexDollars| → Call Wall; largest |putGexDollars| → Put Wall.
     const callDominantStrike = makeStrike({
       strike: 5900,
-      features: makeFeatures({ callRatio: 0.8 }),
+      features: makeFeatures({
+        callGexDollars: 900_000_000,
+        putGexDollars: 100_000_000,
+      }),
     });
     const putDominantStrike = makeStrike({
       strike: 5600,
-      features: makeFeatures({ callRatio: -0.6 }),
+      features: makeFeatures({
+        callGexDollars: 50_000_000,
+        putGexDollars: 800_000_000,
+      }),
     });
     const neutralStrike = makeStrike({
       strike: 5750,
-      features: makeFeatures({ callRatio: 0.0 }),
+      features: makeFeatures({
+        callGexDollars: 200_000_000,
+        putGexDollars: 200_000_000,
+      }),
     });
 
     mockFetch.mockResolvedValue({

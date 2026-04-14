@@ -282,7 +282,7 @@ export const PriceChart = memo(function PriceChart({
       });
     }
 
-    // Opening call wall (highest call-volume strike at open) — cyan dashed
+    // Call wall (highest dealer call-gamma-OI strike at open) — cyan dashed
     if (openingCallStrike !== null) {
       lines.push(
         candleSeriesRef.current!.createPriceLine({
@@ -291,12 +291,12 @@ export const PriceChart = memo(function PriceChart({
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
-          title: `HC Vol ${openingCallStrike}`,
+          title: `Call Wall ${openingCallStrike}`,
         }),
       );
     }
 
-    // Opening put wall (highest put-volume strike at open) — orange dashed
+    // Put wall (highest dealer put-gamma-OI strike at open) — orange dashed
     if (openingPutStrike !== null) {
       lines.push(
         candleSeriesRef.current!.createPriceLine({
@@ -305,7 +305,7 @@ export const PriceChart = memo(function PriceChart({
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
-          title: `HP Vol ${openingPutStrike}`,
+          title: `Put Wall ${openingPutStrike}`,
         }),
       );
     }

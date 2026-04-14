@@ -368,24 +368,31 @@ export function useGexTarget(
       setTimestamps(data.timestamps ?? []);
       setAvailableDates(data.availableDates ?? []);
 
-      // Opening strikes: from the first snapshot's OI leaderboard, find the
-      // strike with the most positive callRatio (call-dominant) and most
-      // negative callRatio (put-dominant). These stay fixed for the day so
-      // the price chart can draw static call/put wall reference lines.
+      // Opening walls: from the first snapshot's OI leaderboard, find the
+      // strike with the largest dealer call-gamma-OI exposure (Call Wall)
+      // and the largest dealer put-gamma-OI exposure (Put Wall). In
+      // OI mode, callGexDollars and putGexDollars are UW's gamma × OI
+      // dollar-weighted exposures — exactly where dealer hedging pressure
+      // concentrates, so price tends to gravitate toward or pin at these
+      // strikes. `Math.abs` normalizes sign conventions across the two
+      // fields. The walls stay fixed for the day so the price chart can
+      // draw static reference lines.
       const firstSnap = (data.snapshots ?? [])[0] ?? null;
       if (firstSnap?.oi?.leaderboard && firstSnap.oi.leaderboard.length > 0) {
         const board = firstSnap.oi.leaderboard;
-        let maxCallRatio = -Infinity;
-        let minCallRatio = Infinity;
+        let maxCallGex = -Infinity;
+        let maxPutGex = -Infinity;
         let callStrike: number | null = null;
         let putStrike: number | null = null;
         for (const row of board) {
-          if (row.features.callRatio > maxCallRatio) {
-            maxCallRatio = row.features.callRatio;
+          const callMag = Math.abs(row.features.callGexDollars);
+          const putMag = Math.abs(row.features.putGexDollars);
+          if (callMag > maxCallGex) {
+            maxCallGex = callMag;
             callStrike = row.strike;
           }
-          if (row.features.callRatio < minCallRatio) {
-            minCallRatio = row.features.callRatio;
+          if (putMag > maxPutGex) {
+            maxPutGex = putMag;
             putStrike = row.strike;
           }
         }
