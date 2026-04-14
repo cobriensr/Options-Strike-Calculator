@@ -1154,25 +1154,27 @@ export function scoreMode(snapshots: GexSnapshot[], mode: Mode): TargetScore {
     entry.rankBySize = i + 1;
   });
 
-  // Target selection: highest |finalScore| entry that satisfies three gates:
-  //   (a) tier is not NONE — meaningful conviction above the noise floor
-  //   (b) priceConfirm >= 0 — price is not explicitly moving AWAY from
-  //       this strike. A negative priceConfirm means spot is retreating
-  //       from the strike, making it an anti-magnet regardless of how
-  //       large its |gexDollars| or flow magnitude is. The >= 0 condition
-  //       (rather than > 0) allows flat-price or at-spot scenarios where
-  //       the GEX signal alone justifies a target call.
-  //   (c) flow alignment gate — gexDollars × flowConfluence >= 0 ensures
-  //       the wall is growing in its own direction. A call wall with
-  //       negative flowConfluence is a collapsing wall; a put wall with
-  //       positive flowConfluence is also collapsing. This is the safety
-  //       net that catches historically-dominant but rapidly-shrinking
-  //       strikes that slip through the momentum-based dominance scorer.
+  // Target selection: highest |finalScore| entry that satisfies two gates:
+  //   (a) tier is not NONE — meaningful conviction above the noise floor.
+  //   (b) attractingMomentum > 0 — the wall must be actively growing in
+  //       its own direction over the 5m or 20m horizon. A call wall where
+  //       deltaGex_5m and deltaGex_20m are both ≤ 0 has zero attracting
+  //       momentum and is shrinking; it is ineligible regardless of its
+  //       historical size or current charm signal.
+  //
+  // NOTE: priceConfirm is deliberately NOT a hard gate. It contributes to
+  // the finalScore (0.25 weight), so a wall where price is temporarily
+  // moving away scores lower but remains eligible. Hard-gating on
+  // priceConfirm wrongly excludes a growing wall above spot during a
+  // pullback — exactly the scenario where GEX physics should predict
+  // price returning to the wall. The attractingMomentum gate (5m/20m)
+  // is more robust than the 1m-dominated flowConfluence gate that it
+  // replaces, and is internally consistent with the dominance scorer
+  // which uses the same computeAttractingMomentum metric.
   const topTarget = sortedByScore.find(
     (entry) =>
       entry.tier !== 'NONE' &&
-      entry.components.priceConfirm >= 0 &&
-      entry.features.gexDollars * entry.components.flowConfluence >= 0,
+      computeAttractingMomentum(entry.features) > 0,
   );
   if (topTarget) {
     topTarget.isTarget = true;

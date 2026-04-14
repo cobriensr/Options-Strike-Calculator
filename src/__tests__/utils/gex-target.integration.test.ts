@@ -861,11 +861,11 @@ describe('integration: anti-magnet veto', () => {
     // LOW tier floor.
     //
     // Key assertions:
-    //   - leaderboard[0] is 4990 (highest |finalScore|, the anti-magnet)
-    //   - leaderboard[0].components.priceConfirm < 0 (confirmed anti)
-    //   - target is 5010, NOT 4990 (priceConfirm >= 0 gate excludes 4990)
-    //   - |finalScore| of 4990 > |finalScore| of 5010 (proves the fix
-    //     is doing work — without it the wrong strike wins)
+    //   - leaderboard entry for 4990 has priceConfirm < 0 (confirmed anti)
+    //   - target is 5010, NOT 4990
+    //     (attractingMomentum > 0 gate excludes 4990: it is shrinking, so
+    //     deltaGex_5m < 0 for a positive gexDollars wall → momentum = 0)
+    //   - 5010 has positive priceConfirm (spot rising toward above-spot wall)
     const snapshots = makeHistory({
       count: 10,
       startUtcIso: '2026-04-08T19:40:00Z',
