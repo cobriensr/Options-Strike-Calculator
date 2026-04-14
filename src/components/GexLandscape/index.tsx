@@ -217,22 +217,27 @@ function findClosestSnapshot(
 
 // ── Structural bias ───────────────────────────────────────────────────────────
 
+interface DriftTarget {
+  strike: number;
+  cls: GexClassification;
+  netGamma: number;
+}
+
 interface BiasMetrics {
-  verdict: 'bullish' | 'bearish' | 'rangebound' | 'volatile' | 'neutral';
-  floorRatio: number; // 0–1: share of charm-weighted pin GEX that is below spot
+  verdict:
+    | 'gex-pull-up'
+    | 'gex-pull-down'
+    | 'breakout-risk-up'
+    | 'breakdown-risk-down'
+    | 'rangebound'
+    | 'volatile';
+  regime: 'positive' | 'negative'; // sign of total net GEX across all strikes
+  totalNetGex: number;
   gravityStrike: number; // strike with the largest absolute GEX
   gravityOffset: number; // signed distance from spot (+ = above, − = below)
   gravityGex: number; // netGamma at that strike
-  nearestSupport: {
-    strike: number;
-    cls: GexClassification;
-    hardening: boolean;
-  } | null;
-  nearestResistance: {
-    strike: number;
-    cls: GexClassification;
-    hardening: boolean;
-  } | null;
+  upsideTargets: DriftTarget[]; // top 2 above spot by |netGamma|
+  downsideTargets: DriftTarget[]; // top 2 below spot by |netGamma|
   floorTrend: number | null; // avg 1m Δ% for below-spot strikes
   ceilingTrend: number | null; // avg 1m Δ% for above-spot strikes
 }
@@ -246,40 +251,47 @@ interface VerdictMeta {
 }
 
 const VERDICT_META: Record<BiasMetrics['verdict'], VerdictMeta> = {
-  bullish: {
-    label: 'BULLISH LEAN',
+  'gex-pull-up': {
+    label: '↑ GEX PULL',
     color: 'text-emerald-400',
     bg: 'bg-emerald-500/15',
     border: 'border-emerald-500/30',
-    desc: 'Floor is stronger — MMs defend below while ceiling may crack',
+    desc: 'Largest GEX wall is above spot — MMs will pull price toward it',
   },
-  bearish: {
-    label: 'BEARISH LEAN',
+  'gex-pull-down': {
+    label: '↓ GEX PULL',
     color: 'text-red-400',
     bg: 'bg-red-500/15',
     border: 'border-red-500/30',
-    desc: 'Ceiling is heavier — MMs cap above while floor may give',
+    desc: 'Largest GEX wall is below spot — MMs will pull price toward it',
   },
-  rangebound: {
-    label: 'RANGE-BOUND',
-    color: 'text-sky-400',
-    bg: 'bg-sky-500/15',
-    border: 'border-sky-500/30',
-    desc: 'MMs pinning from both sides — fade moves toward the edges',
-  },
-  volatile: {
-    label: 'VOLATILE',
+  'breakout-risk-up': {
+    label: '↑ BREAKOUT RISK',
     color: 'text-amber-400',
     bg: 'bg-amber-500/15',
     border: 'border-amber-500/30',
-    desc: 'Launchpads dominate — follow breakouts, do not fade moves',
+    desc: 'Neg GEX regime — dealers amplify moves; largest wall above spot may give',
   },
-  neutral: {
-    label: 'NEUTRAL',
-    color: 'text-secondary',
-    bg: 'bg-surface-alt',
-    border: 'border-edge',
-    desc: 'Balanced structure — no clear directional edge from GEX alone',
+  'breakdown-risk-down': {
+    label: '↓ BREAKDOWN RISK',
+    color: 'text-orange-400',
+    bg: 'bg-orange-500/15',
+    border: 'border-orange-500/30',
+    desc: 'Neg GEX regime — dealers amplify moves; largest wall below spot may give',
+  },
+  rangebound: {
+    label: '● RANGE-BOUND',
+    color: 'text-sky-400',
+    bg: 'bg-sky-500/15',
+    border: 'border-sky-500/30',
+    desc: 'Positive GEX regime — dealers counter moves; price pinned near largest wall',
+  },
+  volatile: {
+    label: '⚡ VOLATILE',
+    color: 'text-amber-400',
+    bg: 'bg-amber-500/15',
+    border: 'border-amber-500/30',
+    desc: 'Negative GEX regime — dealers amplify moves in both directions; follow breakouts',
   },
 };
 
@@ -314,14 +326,21 @@ function computeSmoothedStrikes(
 /**
  * Synthesise a directional bias verdict from the current strike landscape.
  *
- * Score logic:
- *   Bullish factors  = strong floor below (positive-GEX pins below spot)
- *                    + explosive ceiling above (negative-GEX launchpads above spot)
- *   Bearish factors  = strong ceiling above (positive-GEX pins above spot)
- *                    + explosive floor below (negative-GEX launchpads below spot)
+ * Algorithm:
+ *   Regime  = sign of total net GEX across all strikes in the window
+ *             Positive → dealers counter moves (dampened / range-bound day)
+ *             Negative → dealers amplify moves  (trending / volatile day)
  *
- * Each level's GEX is charm-weighted so hardening levels carry more influence
- * (1.25×) and weakening levels carry less (0.75×).
+ *   Gravity = strike with the largest |netGamma| above or below spot
+ *             This is where MMs have the heaviest hedge book — price drifts toward it
+ *
+ *   Verdict = gravity direction × regime
+ *             Above + Positive → gex-pull-up        (MMs pull price up to wall)
+ *             Above + Negative → breakout-risk-up    (no dampener above; acceleration risk)
+ *             Below + Positive → gex-pull-down       (MMs pull price down to wall)
+ *             Below + Negative → breakdown-risk-down (no dampener below; breakdown risk)
+ *             ATM   + Positive → rangebound
+ *             ATM   + Negative → volatile
  */
 function computeBias(
   rows: GexStrikeLevel[],
@@ -330,50 +349,14 @@ function computeBias(
 ): BiasMetrics {
   const above = rows.filter((s) => s.strike > currentPrice + SPOT_BAND);
   const below = rows.filter((s) => s.strike < currentPrice - SPOT_BAND);
-  const cw = (s: GexStrikeLevel) => (s.netCharm >= 0 ? 1.25 : 0.75);
 
-  // Charm-weighted pin GEX (positive = structural resistance/support)
-  const ceilingPin = above.reduce(
-    (sum, s) => sum + Math.max(0, s.netGamma) * cw(s),
-    0,
-  );
-  const floorPin = below.reduce(
-    (sum, s) => sum + Math.max(0, s.netGamma) * cw(s),
-    0,
-  );
+  // Regime: sign of total net GEX
+  let totalNetGex = 0;
+  for (const s of rows) totalNetGex += s.netGamma;
+  const regime: 'positive' | 'negative' =
+    totalNetGex >= 0 ? 'positive' : 'negative';
 
-  // Charm-weighted launch GEX (negative = accelerant; use abs value)
-  const ceilingLaunch = above.reduce(
-    (sum, s) => sum + Math.max(0, -s.netGamma) * cw(s),
-    0,
-  );
-  const floorLaunch = below.reduce(
-    (sum, s) => sum + Math.max(0, -s.netGamma) * cw(s),
-    0,
-  );
-
-  const totalPin = ceilingPin + floorPin;
-  const totalLaunch = ceilingLaunch + floorLaunch;
-  const launchPct =
-    totalPin + totalLaunch > 0 ? totalLaunch / (totalPin + totalLaunch) : 0;
-
-  const bullScore = floorPin + ceilingLaunch;
-  const bearScore = ceilingPin + floorLaunch;
-  const dirTotal = bullScore + bearScore;
-  const balanceRatio = dirTotal > 0 ? bullScore / dirTotal : 0.5;
-
-  let verdict: BiasMetrics['verdict'];
-  if (launchPct > 0.65) verdict = 'volatile';
-  else if (balanceRatio > 0.58) verdict = 'bullish';
-  else if (balanceRatio < 0.42) verdict = 'bearish';
-  else if (totalPin >= totalLaunch) verdict = 'rangebound';
-  else verdict = 'neutral';
-
-  // Balance bar ratio (pin GEX only)
-  const totalPinForRatio = floorPin + ceilingPin;
-  const floorRatio = totalPinForRatio > 0 ? floorPin / totalPinForRatio : 0.5;
-
-  // GEX gravity: strike with largest absolute GEX in the full window
+  // GEX gravity: strike with the largest absolute GEX above or below spot
   let gravityRow: GexStrikeLevel | null = null;
   for (const s of [...above, ...below]) {
     if (
@@ -383,35 +366,51 @@ function computeBias(
       gravityRow = s;
     }
   }
+  const gravityOffset = gravityRow ? gravityRow.strike - currentPrice : 0;
 
-  // Nearest non-ATM levels on each side (closest to spot)
-  const nearestResistanceRow = above.at(-1) ?? null; // lowest above (descending sort)
-  const nearestSupportRow = below[0] ?? null; // highest below (descending sort)
+  // Verdict: gravity direction × regime
+  let verdict: BiasMetrics['verdict'];
+  if (Math.abs(gravityOffset) <= SPOT_BAND) {
+    verdict = regime === 'negative' ? 'volatile' : 'rangebound';
+  } else if (gravityOffset > 0) {
+    verdict = regime === 'negative' ? 'breakout-risk-up' : 'gex-pull-up';
+  } else {
+    verdict = regime === 'negative' ? 'breakdown-risk-down' : 'gex-pull-down';
+  }
 
-  const toLevel = (s: GexStrikeLevel) => ({
+  // Drift targets: top 2 above and below spot by |netGamma|
+  const byAbsGex = (a: GexStrikeLevel, b: GexStrikeLevel) =>
+    Math.abs(b.netGamma) - Math.abs(a.netGamma);
+  const toTarget = (s: GexStrikeLevel): DriftTarget => ({
     strike: s.strike,
     cls: classify(s.netGamma, s.netCharm),
-    hardening: s.netCharm >= 0,
+    netGamma: s.netGamma,
   });
+  const upsideTargets = [...above].sort(byAbsGex).slice(0, 2).map(toTarget);
+  const downsideTargets = [...below].sort(byAbsGex).slice(0, 2).map(toTarget);
 
   // Aggregate 1m Δ% trends above and below spot
   const avg = (vals: (number | null | undefined)[]) => {
-    const nums = vals.filter((v): v is number => v !== null && v !== undefined);
-    return nums.length > 0
-      ? nums.reduce((a, b) => a + b, 0) / nums.length
-      : null;
+    let sum = 0;
+    let count = 0;
+    for (const v of vals) {
+      if (v !== null && v !== undefined) {
+        sum += v;
+        count++;
+      }
+    }
+    return count > 0 ? sum / count : null;
   };
 
   return {
     verdict,
-    floorRatio,
+    regime,
+    totalNetGex,
     gravityStrike: gravityRow?.strike ?? currentPrice,
-    gravityOffset: gravityRow ? gravityRow.strike - currentPrice : 0,
+    gravityOffset,
     gravityGex: gravityRow?.netGamma ?? 0,
-    nearestSupport: nearestSupportRow ? toLevel(nearestSupportRow) : null,
-    nearestResistance: nearestResistanceRow
-      ? toLevel(nearestResistanceRow)
-      : null,
+    upsideTargets,
+    downsideTargets,
     floorTrend: avg(below.map((s) => gexDeltaMap.get(s.strike))),
     ceilingTrend: avg(above.map((s) => gexDeltaMap.get(s.strike))),
   };
@@ -728,10 +727,6 @@ const GexLandscape = memo(function GexLandscape({
       {/* ── Bias synthesis panel ─────────────────────────────────────────── */}
       {(() => {
         const vm = VERDICT_META[bias.verdict];
-        const floorPct = Math.round(bias.floorRatio * 100);
-        const ceilPct = 100 - floorPct;
-        // Floor trend: positive = floor hardening (bullish) = green
-        // Ceiling trend: positive = ceiling hardening (bearish) = amber; negative = softening (bullish) = green
         const floorTrendColor =
           bias.floorTrend === null
             ? 'var(--color-muted)'
@@ -746,115 +741,29 @@ const GexLandscape = memo(function GexLandscape({
               : '#fbbf24';
         return (
           <div className={`mb-3 rounded-lg border p-3 ${vm.bg} ${vm.border}`}>
-            {/* Verdict */}
-            <div className="mb-2.5 flex items-center gap-2.5">
+            {/* Verdict + Regime */}
+            <div className="mb-2.5 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className={`rounded border px-2 py-0.5 font-mono text-[11px] font-bold ${vm.color} ${vm.bg} ${vm.border}`}
+                >
+                  {vm.label}
+                </span>
+                <span className="text-secondary font-mono text-[11px]">
+                  {vm.desc}
+                </span>
+              </div>
               <span
-                className={`rounded border px-2 py-0.5 font-mono text-[11px] font-bold ${vm.color} ${vm.bg} ${vm.border}`}
+                className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${bias.regime === 'positive' ? 'bg-sky-500/20 text-sky-400' : 'bg-amber-500/20 text-amber-400'}`}
               >
-                {vm.label}
-              </span>
-              <span className="text-secondary font-mono text-[11px]">
-                {vm.desc}
+                {bias.regime === 'positive'
+                  ? 'POS GEX — dampened'
+                  : 'NEG GEX — trending'}
               </span>
             </div>
 
             {/* Metrics row */}
-            <div className="grid grid-cols-[1fr_auto_1fr_1px_auto_1px_auto] items-start gap-x-4">
-              {/* Nearest support */}
-              <div>
-                <div
-                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
-                  style={{ color: 'var(--color-tertiary)' }}
-                >
-                  Support
-                </div>
-                {bias.nearestSupport ? (
-                  <>
-                    <div className="font-mono text-[13px] font-semibold text-emerald-400">
-                      {bias.nearestSupport.strike.toLocaleString()}
-                    </div>
-                    <div
-                      className="font-mono text-[10px]"
-                      style={{ color: 'var(--color-secondary)' }}
-                    >
-                      {CLASS_META[bias.nearestSupport.cls].badge}
-                      {' · '}
-                      {bias.nearestSupport.hardening
-                        ? 'hardening'
-                        : 'softening'}
-                    </div>
-                  </>
-                ) : (
-                  <div
-                    className="font-mono text-[13px]"
-                    style={{ color: 'var(--color-muted)' }}
-                  >
-                    —
-                  </div>
-                )}
-              </div>
-
-              {/* Floor vs ceiling balance bar — centered */}
-              <div className="flex min-w-[120px] flex-col items-center">
-                <div
-                  className="mb-1 font-mono text-[9px] font-semibold tracking-wider uppercase"
-                  style={{ color: 'var(--color-tertiary)' }}
-                >
-                  Floor vs Ceiling
-                </div>
-                <div className="flex h-2 w-full overflow-hidden rounded-full bg-black/20">
-                  <div
-                    className="h-full bg-emerald-500/60 transition-all duration-500"
-                    style={{ width: `${floorPct}%` }}
-                  />
-                  <div
-                    className="h-full bg-amber-500/60 transition-all duration-500"
-                    style={{ width: `${ceilPct}%` }}
-                  />
-                </div>
-                <div className="mt-0.5 flex w-full justify-between font-mono text-[9px]">
-                  <span className="text-emerald-400/80">{floorPct}% floor</span>
-                  <span className="text-amber-400/80">{ceilPct}% ceiling</span>
-                </div>
-              </div>
-
-              {/* Nearest resistance */}
-              <div className="text-right">
-                <div
-                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
-                  style={{ color: 'var(--color-tertiary)' }}
-                >
-                  Resistance
-                </div>
-                {bias.nearestResistance ? (
-                  <>
-                    <div className="font-mono text-[13px] font-semibold text-amber-400">
-                      {bias.nearestResistance.strike.toLocaleString()}
-                    </div>
-                    <div
-                      className="font-mono text-[10px]"
-                      style={{ color: 'var(--color-secondary)' }}
-                    >
-                      {CLASS_META[bias.nearestResistance.cls].badge}
-                      {' · '}
-                      {bias.nearestResistance.hardening
-                        ? 'hardening'
-                        : 'softening'}
-                    </div>
-                  </>
-                ) : (
-                  <div
-                    className="font-mono text-[13px]"
-                    style={{ color: 'var(--color-muted)' }}
-                  >
-                    —
-                  </div>
-                )}
-              </div>
-
-              {/* Divider */}
-              <div className="h-full w-px bg-white/10" />
-
+            <div className="grid grid-cols-[auto_1px_1fr_1px_1fr_1px_auto] items-start gap-x-4">
               {/* GEX gravity */}
               <div>
                 <div
@@ -883,7 +792,91 @@ const GexLandscape = memo(function GexLandscape({
               {/* Divider */}
               <div className="h-full w-px bg-white/10" />
 
-              {/* Floor / ceiling trends */}
+              {/* Upside drift targets */}
+              <div>
+                <div
+                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
+                  style={{ color: 'var(--color-tertiary)' }}
+                >
+                  ↑ Drift Targets
+                </div>
+                {bias.upsideTargets.length === 0 ? (
+                  <div
+                    className="font-mono text-[12px]"
+                    style={{ color: 'var(--color-muted)' }}
+                  >
+                    —
+                  </div>
+                ) : (
+                  bias.upsideTargets.map((t) => (
+                    <div key={t.strike} className="flex items-baseline gap-1.5">
+                      <span className="font-mono text-[12px] font-semibold text-emerald-400">
+                        {t.strike.toLocaleString()}
+                      </span>
+                      <span
+                        className={`font-mono text-[9px] ${CLASS_META[t.cls].badgeText}`}
+                      >
+                        {CLASS_META[t.cls].badge}
+                      </span>
+                      <span
+                        className="font-mono text-[9px]"
+                        style={{
+                          color: t.netGamma >= 0 ? '#4ade80' : '#fbbf24',
+                        }}
+                      >
+                        {fmtGex(t.netGamma)}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Divider */}
+              <div className="h-full w-px bg-white/10" />
+
+              {/* Downside drift targets */}
+              <div>
+                <div
+                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
+                  style={{ color: 'var(--color-tertiary)' }}
+                >
+                  ↓ Drift Targets
+                </div>
+                {bias.downsideTargets.length === 0 ? (
+                  <div
+                    className="font-mono text-[12px]"
+                    style={{ color: 'var(--color-muted)' }}
+                  >
+                    —
+                  </div>
+                ) : (
+                  bias.downsideTargets.map((t) => (
+                    <div key={t.strike} className="flex items-baseline gap-1.5">
+                      <span className="font-mono text-[12px] font-semibold text-red-400">
+                        {t.strike.toLocaleString()}
+                      </span>
+                      <span
+                        className={`font-mono text-[9px] ${CLASS_META[t.cls].badgeText}`}
+                      >
+                        {CLASS_META[t.cls].badge}
+                      </span>
+                      <span
+                        className="font-mono text-[9px]"
+                        style={{
+                          color: t.netGamma >= 0 ? '#4ade80' : '#fbbf24',
+                        }}
+                      >
+                        {fmtGex(t.netGamma)}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Divider */}
+              <div className="h-full w-px bg-white/10" />
+
+              {/* 1m Trend */}
               <div>
                 <div
                   className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
