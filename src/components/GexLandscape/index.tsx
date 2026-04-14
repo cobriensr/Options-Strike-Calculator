@@ -295,6 +295,21 @@ const VERDICT_META: Record<BiasMetrics['verdict'], VerdictMeta> = {
   },
 };
 
+const VERDICT_TOOLTIP: Record<BiasMetrics['verdict'], string> = {
+  'gex-pull-up':
+    'The biggest GEX wall is above current price. MMs are long gamma there — as price rises toward it, they buy shares to stay hedged, which helps pull price up. Watch your upside drift targets for where price may go.',
+  'gex-pull-down':
+    'The biggest GEX wall is below current price. MMs are long gamma there — as price falls toward it, they sell shares to stay hedged, which helps pull price down. Watch your downside drift targets for where price may go.',
+  'breakout-risk-up':
+    'Total GEX is negative — MMs are short gamma and amplify moves instead of dampening them. The biggest concentration is above spot. If price breaks through that level, dealers buy more and add fuel to the rally.',
+  'breakdown-risk-down':
+    'Total GEX is negative — MMs are short gamma and amplify moves instead of dampening them. The biggest concentration is below spot. If price breaks through that level, dealers sell more and add fuel to the decline.',
+  rangebound:
+    'Total GEX is positive and the biggest wall is close to spot. MMs are countering moves from both sides — selling into rallies, buying into dips. Expect a choppy day. Fade moves toward the edges rather than chasing breakouts.',
+  volatile:
+    'Total GEX is negative and the biggest concentration is near spot. MMs amplify moves without a clear directional pull. A breakout in either direction can accelerate fast. Wait for a clear move before committing to a direction.',
+};
+
 /**
  * Average netGamma and netCharm for each strike across the current snapshot
  * and all buffer entries within `windowMs` (default 5 minutes).
@@ -745,7 +760,8 @@ const GexLandscape = memo(function GexLandscape({
             <div className="mb-2.5 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5">
                 <span
-                  className={`rounded border px-2 py-0.5 font-mono text-[11px] font-bold ${vm.color} ${vm.bg} ${vm.border}`}
+                  className={`cursor-help rounded border px-2 py-0.5 font-mono text-[11px] font-bold ${vm.color} ${vm.bg} ${vm.border}`}
+                  title={VERDICT_TOOLTIP[bias.verdict]}
                 >
                   {vm.label}
                 </span>
@@ -754,7 +770,12 @@ const GexLandscape = memo(function GexLandscape({
                 </span>
               </div>
               <span
-                className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${bias.regime === 'positive' ? 'bg-sky-500/20 text-sky-400' : 'bg-amber-500/20 text-amber-400'}`}
+                className={`shrink-0 cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${bias.regime === 'positive' ? 'bg-sky-500/20 text-sky-400' : 'bg-amber-500/20 text-amber-400'}`}
+                title={
+                  bias.regime === 'positive'
+                    ? 'MMs are net long gamma — they trade against moves, buying dips and selling rips like shock absorbers. Expect tighter ranges and faded breakouts today.'
+                    : 'MMs are net short gamma — they trade with moves, buying rallies and selling drops like fuel. Expect wider ranges and breakouts that accelerate today.'
+                }
               >
                 {bias.regime === 'positive'
                   ? 'POS GEX — dampened'
@@ -765,7 +786,10 @@ const GexLandscape = memo(function GexLandscape({
             {/* Metrics row */}
             <div className="grid grid-cols-[auto_1px_1fr_1px_1fr_1px_auto] items-start gap-x-4">
               {/* GEX gravity */}
-              <div>
+              <div
+                className="cursor-help"
+                title="The single strike with the largest absolute GEX in the window. This is where MMs have the heaviest hedge book and do the most delta hedging. Price naturally drifts toward this level over the session."
+              >
                 <div
                   className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
@@ -793,7 +817,9 @@ const GexLandscape = memo(function GexLandscape({
               <div className="h-full w-px bg-white/10" />
 
               {/* Upside drift targets */}
-              <div>
+              <div
+                title="Top 2 strikes above spot by absolute GEX — where the most MM hedging activity sits overhead. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
+              >
                 <div
                   className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
@@ -809,7 +835,11 @@ const GexLandscape = memo(function GexLandscape({
                   </div>
                 ) : (
                   bias.upsideTargets.map((t) => (
-                    <div key={t.strike} className="flex items-baseline gap-1.5">
+                    <div
+                      key={t.strike}
+                      className="flex items-baseline gap-1.5"
+                      title={CLS_TOOLTIP[t.cls]}
+                    >
                       <span className="font-mono text-[12px] font-semibold text-emerald-400">
                         {t.strike.toLocaleString()}
                       </span>
@@ -835,7 +865,9 @@ const GexLandscape = memo(function GexLandscape({
               <div className="h-full w-px bg-white/10" />
 
               {/* Downside drift targets */}
-              <div>
+              <div
+                title="Top 2 strikes below spot by absolute GEX — where the most MM hedging activity sits below you. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
+              >
                 <div
                   className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
@@ -851,7 +883,11 @@ const GexLandscape = memo(function GexLandscape({
                   </div>
                 ) : (
                   bias.downsideTargets.map((t) => (
-                    <div key={t.strike} className="flex items-baseline gap-1.5">
+                    <div
+                      key={t.strike}
+                      className="flex items-baseline gap-1.5"
+                      title={CLS_TOOLTIP[t.cls]}
+                    >
                       <span className="font-mono text-[12px] font-semibold text-red-400">
                         {t.strike.toLocaleString()}
                       </span>
@@ -877,7 +913,10 @@ const GexLandscape = memo(function GexLandscape({
               <div className="h-full w-px bg-white/10" />
 
               {/* 1m Trend */}
-              <div>
+              <div
+                className="cursor-help"
+                title="Average % change in net GEX for strikes above (Ceil) and below (Floor) spot vs. the last 1-minute snapshot. Floor growing (green) = support hardening. Ceiling growing (amber) = resistance building. Ceiling shrinking (green) = that overhead wall is weakening."
+              >
                 <div
                   className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
