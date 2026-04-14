@@ -26,6 +26,8 @@ import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
+import { toETTime } from './utils/time';
+import { getETTotalMinutes } from './utils/timezone';
 import DateTimeSection from './components/DateTimeSection';
 import EventDayWarning from './components/EventDayWarning';
 import SpotPriceSection from './components/SpotPriceSection';
@@ -288,6 +290,24 @@ export default function StrikeCalculator() {
     vix1dStatic,
   });
 
+  // True whenever the selected date+time is in the past — drives BACKTEST
+  // badge independently of whether candle data is available. This decouples
+  // "are we viewing a historical moment?" (UI state) from "do we have price
+  // data for it?" (data state).
+  const isBacktestMode = useMemo(() => {
+    if (!vix.selectedDate) return false;
+    const todayET = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    if (vix.selectedDate < todayET) return true;
+    if (vix.selectedDate > todayET) return false;
+    // Today: backtest when selected time is more than 5 min in the past
+    const { etHour, etMinute } = toETTime(timeHour, timeMinute, timeAmPm, timezone);
+    const selectedMin = etHour * 60 + etMinute;
+    const currentMin = getETTotalMinutes(new Date());
+    return selectedMin < currentMin - 5;
+  }, [vix.selectedDate, timeHour, timeMinute, timeAmPm, timezone]);
+
   // Auto-save market snapshot for authenticated owner (fire-and-forget)
   const signals = useComputedSignals({
     vix: Number.parseFloat(dVix) || undefined,
@@ -494,13 +514,13 @@ export default function StrikeCalculator() {
               </h1>
             </div>
             <div className="flex items-center gap-1.5 sm:gap-2">
-              {historySnapshot && (
+              {isBacktestMode && (
                 <StatusBadge label="BACKTEST" color={theme.backtest} dot />
               )}
-              {historyData.loading && (
+              {isBacktestMode && historyData.loading && (
                 <StatusBadge label="Loading…" color={theme.textMuted} />
               )}
-              {historyData.error && !historyData.loading && (
+              {isBacktestMode && historyData.error && !historyData.loading && (
                 <StatusBadge
                   label="NO INTRADAY"
                   color={theme.red}
@@ -508,7 +528,7 @@ export default function StrikeCalculator() {
                   title={historyData.error}
                 />
               )}
-              {!historySnapshot && !historyData.error && market.hasData && (
+              {!isBacktestMode && market.hasData && (
                 <StatusBadge
                   // FE-STATE-001: three-state live badge.
                   //   Market closed             → CLOSED (muted)

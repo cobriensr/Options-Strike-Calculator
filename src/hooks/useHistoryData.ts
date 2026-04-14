@@ -208,7 +208,7 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
     const todayET = now.toLocaleDateString('en-CA', {
       timeZone: 'America/New_York',
     });
-    if (selectedDate >= todayET) {
+    if (selectedDate > todayET) {
       setHistory(null);
       setError(null);
       return;

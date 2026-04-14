@@ -151,17 +151,42 @@ describe('useHistoryData: basic behavior', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('returns null for today (uses live data instead)', () => {
+  it('fetches today and returns null when no candles are available', async () => {
+    // Today is now fetched so users can scrub back to earlier times within
+    // the current trading session. The default 401 mock simulates a fresh
+    // environment or pre-market state where no candles exist yet.
     const today = new Date().toLocaleDateString('en-CA', {
       timeZone: 'America/New_York',
     });
     const { result } = renderHook(() => useHistoryData(today));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
     expect(result.current.history).toBeNull();
     expect(result.current.hasHistory).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalledWith(
-      expect.stringContaining('/api/history'),
-      expect.anything(),
-    );
+  });
+
+  it('returns hasHistory true when today has intraday candles', async () => {
+    // On a weekday with market data, today fetches successfully so the
+    // user can time-scrub within the current session.
+    mockHistoryFetch(mockHistory);
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    const dow = new Date().getDay();
+    // Skip on weekends — the weekend guard exits before fetching
+    if (dow === 0 || dow === 6) return;
+
+    const { result } = renderHook(() => useHistoryData(today));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.hasHistory).toBe(true);
+    expect(result.current.history).not.toBeNull();
   });
 
   it('returns null for future dates', () => {
