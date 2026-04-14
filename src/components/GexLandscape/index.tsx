@@ -221,6 +221,7 @@ interface DriftTarget {
   strike: number;
   cls: GexClassification;
   netGamma: number;
+  volReinforcement: 'reinforcing' | 'opposing' | 'neutral';
 }
 
 interface BiasMetrics {
@@ -403,6 +404,7 @@ function computeBias(
     strike: s.strike,
     cls: classify(s.netGamma, s.netCharm),
     netGamma: s.netGamma,
+    volReinforcement: s.volReinforcement,
   });
   const upsideTargets = [...above].sort(byAbsGex).slice(0, 2).map(toTarget);
   const downsideTargets = [...below].sort(byAbsGex).slice(0, 2).map(toTarget);
@@ -794,9 +796,11 @@ const GexLandscape = memo(function GexLandscape({
                     : 'MMs are net short gamma — they trade with moves, buying rallies and selling drops like fuel. Expect wider ranges and breakouts that accelerate today.'
                 }
               >
-                {bias.regime === 'positive'
-                  ? 'POS GEX — dampened'
-                  : 'NEG GEX — trending'}
+                {bias.regime === 'positive' ? 'POS GEX — dampened' : 'NEG GEX — trending'}
+                {' '}
+                <span className="font-normal opacity-70">
+                  {fmtGex(bias.totalNetGex)}
+                </span>
               </span>
             </div>
 
@@ -851,30 +855,59 @@ const GexLandscape = memo(function GexLandscape({
                     —
                   </div>
                 ) : (
-                  bias.upsideTargets.map((t) => (
-                    <div
-                      key={t.strike}
-                      className="flex items-baseline gap-1.5"
-                      title={CLS_TOOLTIP[t.cls]}
-                    >
-                      <span className="font-mono text-[12px] font-semibold text-emerald-400">
-                        {t.strike.toLocaleString()}
-                      </span>
-                      <span
-                        className={`font-mono text-[9px] ${CLASS_META[t.cls].badgeText}`}
+                  bias.upsideTargets.map((t) => {
+                    const isConfluence =
+                      t.strike === maxChanged1mStrike ||
+                      t.strike === maxChanged5mStrike;
+                    return (
+                      <div
+                        key={t.strike}
+                        className="flex items-baseline gap-1.5"
+                        title={CLS_TOOLTIP[t.cls]}
                       >
-                        {CLASS_META[t.cls].badge}
-                      </span>
-                      <span
-                        className="font-mono text-[9px]"
-                        style={{
-                          color: t.netGamma >= 0 ? '#4ade80' : '#fbbf24',
-                        }}
-                      >
-                        {fmtGex(t.netGamma)}
-                      </span>
-                    </div>
-                  ))
+                        <span className="font-mono text-[12px] font-semibold text-emerald-400">
+                          {t.strike.toLocaleString()}
+                        </span>
+                        <span
+                          className={`font-mono text-[9px] ${CLASS_META[t.cls].badgeText}`}
+                        >
+                          {CLASS_META[t.cls].badge}
+                        </span>
+                        <span
+                          className="font-mono text-[9px]"
+                          style={{
+                            color: t.netGamma >= 0 ? '#4ade80' : '#fbbf24',
+                          }}
+                        >
+                          {fmtGex(t.netGamma)}
+                        </span>
+                        {t.volReinforcement === 'reinforcing' && (
+                          <span
+                            className="font-mono text-[9px] text-emerald-400"
+                            title="Volume confirms OI structure here"
+                          >
+                            ✓
+                          </span>
+                        )}
+                        {t.volReinforcement === 'opposing' && (
+                          <span
+                            className="font-mono text-[9px] text-red-400"
+                            title="Volume contradicts OI structure here"
+                          >
+                            ✗
+                          </span>
+                        )}
+                        {isConfluence && (
+                          <span
+                            className="font-mono text-[9px] text-amber-400"
+                            title="Most actively changing GEX level — high-conviction target"
+                          >
+                            ⚡
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })
                 )}
               </div>
 
@@ -899,30 +932,59 @@ const GexLandscape = memo(function GexLandscape({
                     —
                   </div>
                 ) : (
-                  bias.downsideTargets.map((t) => (
-                    <div
-                      key={t.strike}
-                      className="flex items-baseline gap-1.5"
-                      title={CLS_TOOLTIP[t.cls]}
-                    >
-                      <span className="font-mono text-[12px] font-semibold text-red-400">
-                        {t.strike.toLocaleString()}
-                      </span>
-                      <span
-                        className={`font-mono text-[9px] ${CLASS_META[t.cls].badgeText}`}
+                  bias.downsideTargets.map((t) => {
+                    const isConfluence =
+                      t.strike === maxChanged1mStrike ||
+                      t.strike === maxChanged5mStrike;
+                    return (
+                      <div
+                        key={t.strike}
+                        className="flex items-baseline gap-1.5"
+                        title={CLS_TOOLTIP[t.cls]}
                       >
-                        {CLASS_META[t.cls].badge}
-                      </span>
-                      <span
-                        className="font-mono text-[9px]"
-                        style={{
-                          color: t.netGamma >= 0 ? '#4ade80' : '#fbbf24',
-                        }}
-                      >
-                        {fmtGex(t.netGamma)}
-                      </span>
-                    </div>
-                  ))
+                        <span className="font-mono text-[12px] font-semibold text-red-400">
+                          {t.strike.toLocaleString()}
+                        </span>
+                        <span
+                          className={`font-mono text-[9px] ${CLASS_META[t.cls].badgeText}`}
+                        >
+                          {CLASS_META[t.cls].badge}
+                        </span>
+                        <span
+                          className="font-mono text-[9px]"
+                          style={{
+                            color: t.netGamma >= 0 ? '#4ade80' : '#fbbf24',
+                          }}
+                        >
+                          {fmtGex(t.netGamma)}
+                        </span>
+                        {t.volReinforcement === 'reinforcing' && (
+                          <span
+                            className="font-mono text-[9px] text-emerald-400"
+                            title="Volume confirms OI structure here"
+                          >
+                            ✓
+                          </span>
+                        )}
+                        {t.volReinforcement === 'opposing' && (
+                          <span
+                            className="font-mono text-[9px] text-red-400"
+                            title="Volume contradicts OI structure here"
+                          >
+                            ✗
+                          </span>
+                        )}
+                        {isConfluence && (
+                          <span
+                            className="font-mono text-[9px] text-amber-400"
+                            title="Most actively changing GEX level — high-conviction target"
+                          >
+                            ⚡
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })
                 )}
               </div>
 
