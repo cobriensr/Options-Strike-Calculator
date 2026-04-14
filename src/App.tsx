@@ -302,7 +302,12 @@ export default function StrikeCalculator() {
     if (vix.selectedDate < todayET) return true;
     if (vix.selectedDate > todayET) return false;
     // Today: backtest when selected time is more than 5 min in the past
-    const { etHour, etMinute } = toETTime(timeHour, timeMinute, timeAmPm, timezone);
+    const { etHour, etMinute } = toETTime(
+      timeHour,
+      timeMinute,
+      timeAmPm,
+      timezone,
+    );
     const selectedMin = etHour * 60 + etMinute;
     const currentMin = getETTotalMinutes(new Date());
     return selectedMin < currentMin - 5;

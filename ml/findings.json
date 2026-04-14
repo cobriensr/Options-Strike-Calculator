@@ -3,10 +3,7 @@
   "dataset": {
     "total_days": 70,
     "labeled_days": 40,
-    "date_range": [
-      "2026-01-02",
-      "2026-04-13"
-    ],
+    "date_range": ["2026-01-02", "2026-04-13"],
     "overall_accuracy": 0.925
   },
   "structure_accuracy": {

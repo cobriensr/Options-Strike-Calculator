@@ -178,7 +178,7 @@ export function useGexPerStrike(
   const isScrubbed = scrubTimestamp != null;
 
   const fetchData = useCallback(
-    async (tsOverride?: string | null) => {
+    async (tsOverride?: string | null, externalSignal?: AbortSignal) => {
       try {
         const qs = new URLSearchParams();
         // Always send the date so the server doesn't have to guess ET.
@@ -186,9 +186,14 @@ export function useGexPerStrike(
         qs.set('date', selectedDate);
         if (tsOverride) qs.set('ts', tsOverride);
         const params = qs.size > 0 ? `?${qs}` : '';
+        // Combine the effect-cleanup signal with the original 5s timeout so
+        // we still abort stale requests on date change AND cap request duration.
+        const signal = externalSignal
+          ? AbortSignal.any([externalSignal, AbortSignal.timeout(5_000)])
+          : AbortSignal.timeout(5_000);
         const res = await fetch(`/api/gex-per-strike${params}`, {
           credentials: 'same-origin',
-          signal: AbortSignal.timeout(5_000),
+          signal,
         });
 
         if (!mountedRef.current) return;
@@ -211,6 +216,8 @@ export function useGexPerStrike(
         setTimestamps(data.timestamps ?? []);
         setError(null);
       } catch (err) {
+        // Intentional abort from effect cleanup — not an error worth surfacing.
+        if (err instanceof DOMException && err.name === 'AbortError') return;
         if (mountedRef.current) setError(getErrorMessage(err));
       } finally {
         if (mountedRef.current) setLoading(false);
@@ -238,37 +245,50 @@ export function useGexPerStrike(
       return;
     }
 
+    // Each effect invocation owns its own AbortController. When this effect
+    // cleans up (date change, scrub, marketOpen flip), controller.abort()
+    // cancels any in-flight fetch so stale responses never overwrite fresh
+    // state — the classic "last fetch wins" race condition.
+    const controller = new AbortController();
+    const { signal } = controller;
+
     // Scrubbing: fetch the exact pinned snapshot, no polling. The user is
     // explicitly inspecting one moment in time.
     if (scrubTimestamp != null) {
       setLoading(true);
-      fetchData(scrubTimestamp);
-      return;
+      fetchData(scrubTimestamp, signal);
+      return () => controller.abort();
     }
 
     // Past date: one-shot fetch with the requested time, no polling — there's
     // nothing new to poll for, the day's data is fully written.
     if (!isToday) {
       setLoading(true);
-      fetchData();
-      return;
+      fetchData(undefined, signal);
+      return () => controller.abort();
     }
 
     // Today, market closed: one-shot fetch. Same reasoning — no fresh
     // snapshots are being produced, polling would just hit the cache.
     if (!marketOpen) {
       setLoading(true);
-      fetchData();
-      return;
+      fetchData(undefined, signal);
+      return () => controller.abort();
     }
 
     // Today, market open, not scrubbed → live polling. Each poll fetches
     // the latest snapshot for the day (no `?time=` param), so the displayed
     // timestamp actually advances as the cron writes new snapshots. Users
     // who want to inspect a past moment use the scrub controls below.
-    fetchData();
-    const id = setInterval(() => fetchData(), POLL_INTERVALS.GEX_STRIKE);
-    return () => clearInterval(id);
+    fetchData(undefined, signal);
+    const id = setInterval(
+      () => fetchData(undefined, signal),
+      POLL_INTERVALS.GEX_STRIKE,
+    );
+    return () => {
+      controller.abort();
+      clearInterval(id);
+    };
   }, [isOwner, marketOpen, isToday, scrubTimestamp, fetchData]);
 
   // Wall-clock ticker — only runs when freshness could plausibly flip. In

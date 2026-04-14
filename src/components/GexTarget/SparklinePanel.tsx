@@ -149,9 +149,20 @@ export interface SparklinePanelProps {
 export const SparklinePanel = memo(function SparklinePanel({
   leaderboard,
 }: SparklinePanelProps) {
-  // Use the leaderboard order directly — already sorted by |gexDollars|
-  // from the parent so all panels display the same strike order.
-  const top5 = leaderboard;
+  // Sort ascending by strike so the panel reads like a price ladder,
+  // consistent with UrgencyPanel: lowest strike at top, highest at bottom.
+  const top5 = useMemo(
+    () => [...leaderboard].sort((a, b) => a.strike - b.strike),
+    [leaderboard],
+  );
+
+  const spot = leaderboard[0]?.features.spot ?? 0;
+  const atmStrike = useMemo(() => {
+    if (!top5.length || spot === 0) return null;
+    return top5.reduce((best, s) =>
+      Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best,
+    ).strike;
+  }, [top5, spot]);
 
   return (
     <SectionBox label="20-MIN SPARKLINES">
@@ -197,16 +208,17 @@ export const SparklinePanel = memo(function SparklinePanel({
                   ? theme.green
                   : theme.red;
 
+            const isAtm = s.strike === atmStrike;
             return (
               <div
                 key={s.strike}
-                className="flex items-center gap-2"
+                className={`flex items-center gap-2 rounded px-1 -mx-1${isAtm ? 'bg-sky-500/10' : ''}`}
                 aria-label={`Strike ${s.strike}`}
               >
                 {/* Strike label */}
                 <span
                   className="w-[36px] shrink-0 font-mono text-[11px]"
-                  style={{ color: theme.textSecondary }}
+                  style={{ color: isAtm ? '#7dd3fc' : theme.textSecondary }}
                 >
                   {s.strike}
                 </span>

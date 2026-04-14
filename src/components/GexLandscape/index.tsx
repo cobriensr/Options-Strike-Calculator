@@ -466,8 +466,12 @@ const GexLandscape = memo(function GexLandscape({
   const hasScrolledRef = useRef(false);
   // Rolling buffer of recent snapshots for Δ% computations (1m and 5m).
   const snapshotBufferRef = useRef<Snapshot[]>([]);
-  const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(new Map());
-  const [gexDelta5mMap, setGexDelta5mMap] = useState<Map<number, number | null>>(new Map());
+  const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(
+    new Map(),
+  );
+  const [gexDelta5mMap, setGexDelta5mMap] = useState<
+    Map<number, number | null>
+  >(new Map());
   // 5-minute smoothed strikes — updated in the snapshot effect so the ref read
   // happens inside an effect (not during render), satisfying react-hooks/purity.
   const [smoothedRows, setSmoothedRows] = useState<GexStrikeLevel[]>([]);
@@ -591,7 +595,9 @@ const GexLandscape = memo(function GexLandscape({
     // Smooth only the strikes within the display window (same filter as rows)
     // so the bias panel never shows out-of-range strikes.
     const price = strikes[0]?.price ?? 0;
-    const windowStrikes = strikes.filter((s) => Math.abs(s.strike - price) <= PRICE_WINDOW);
+    const windowStrikes = strikes.filter(
+      (s) => Math.abs(s.strike - price) <= PRICE_WINDOW,
+    );
     setSmoothedRows(computeSmoothedStrikes(windowStrikes, buf, now));
   }, [strikes, timestamp]);
 

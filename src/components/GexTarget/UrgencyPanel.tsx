@@ -16,15 +16,10 @@ function formatDeltaPct(val: number | null): string {
 export const UrgencyPanel = memo(function UrgencyPanel({
   leaderboard,
 }: Readonly<UrgencyPanelProps>) {
-  // Sort the shared strike universe by |5m % change| descending so the most
-  // active strikes appear first.
+  // Sort ascending by strike so the panel reads like a price ladder:
+  // lowest strike (floor) at top, highest (ceiling) at bottom.
   const top5 = useMemo(
-    () =>
-      [...leaderboard].sort(
-        (a, b) =>
-          Math.abs(b.features.deltaPct_5m ?? 0) -
-          Math.abs(a.features.deltaPct_5m ?? 0),
-      ),
+    () => [...leaderboard].sort((a, b) => a.strike - b.strike),
     [leaderboard],
   );
 
@@ -34,6 +29,15 @@ export const UrgencyPanel = memo(function UrgencyPanel({
     );
     return max === 0 ? 1 : max;
   }, [top5]);
+
+  // Spot is the same for every row — grab it off the first entry.
+  const spot = leaderboard[0]?.features.spot ?? 0;
+  const atmStrike = useMemo(() => {
+    if (!top5.length || spot === 0) return null;
+    return top5.reduce((best, s) =>
+      Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best,
+    ).strike;
+  }, [top5, spot]);
 
   if (top5.length === 0) {
     return (
@@ -59,12 +63,16 @@ export const UrgencyPanel = memo(function UrgencyPanel({
           const barColor = isPos ? theme.green : theme.red;
           const dimmed = raw === null;
 
+          const isAtm = s.strike === atmStrike;
           return (
-            <div key={s.strike} className="flex flex-col gap-0.5">
+            <div
+              key={s.strike}
+              className={`flex flex-col gap-0.5 rounded px-1 -mx-1${isAtm ? 'bg-sky-500/10' : ''}`}
+            >
               <div className="flex items-center justify-between">
                 <span
                   className="font-mono text-[12px]"
-                  style={{ color: theme.text }}
+                  style={{ color: isAtm ? '#7dd3fc' : theme.text }}
                 >
                   {s.strike}
                 </span>
