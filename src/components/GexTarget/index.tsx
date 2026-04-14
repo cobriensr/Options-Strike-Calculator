@@ -25,12 +25,15 @@ import {
   dominance,
   clarity,
   proximity,
+  priceConfirm,
   assignTier,
   assignWallSide,
   GEX_TARGET_CONFIG,
   type TargetScore,
   type StrikeScore,
+  type PriceMovementContext,
 } from '../../utils/gex-target';
+import type { SPXCandle } from '../../hooks/useGexTarget';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -53,6 +56,25 @@ function formatTime(iso: string | null): string {
   } catch {
     return '';
   }
+}
+
+// ── Price context ──────────────────────────────────────────
+// Derives a PriceMovementContext from the visible 1-min SPX candles so that
+// priceConfirm can be recomputed fresh in the browser rather than using the
+// stale value stored in gex_target_features (which could be out of range for
+// rows written before the formula was finalized).
+function priceCtxFromCandles(candles: SPXCandle[]): PriceMovementContext {
+  const latest = candles.at(-1);
+  if (!latest) {
+    return { deltaSpot_1m: 0, deltaSpot_3m: 0, deltaSpot_5m: 0, deltaSpot_20m: 0 };
+  }
+  const spotAt = (n: number) => candles.at(-(n + 1))?.close ?? latest.close;
+  return {
+    deltaSpot_1m: latest.close - spotAt(1),
+    deltaSpot_3m: latest.close - spotAt(3),
+    deltaSpot_5m: latest.close - spotAt(5),
+    deltaSpot_20m: latest.close - spotAt(20),
+  };
 }
 
 // ── Main component ─────────────────────────────────────────
@@ -93,13 +115,11 @@ export const GexTarget = memo(function GexTarget({
   const setVol = useCallback(() => setMode('vol'), []);
   const setDir = useCallback(() => setMode('dir'), []);
 
-  // Recompute scores browser-side so the displayed finalScore, tier, and
-  // wallSide reflect the current algorithm rather than a stale DB value.
-  // priceConfirm is the one component we can't recompute (it needs the
-  // board-level spot-price history that only the cron holds), so we reuse
-  // the stored value for that term. Everything else — flowConfluence,
-  // charmScore, dominance, clarity, proximity — is derived purely from
-  // the per-strike features already in the API response.
+  // Recompute all scoring components browser-side so the displayed finalScore,
+  // tier, and wallSide always reflect the current algorithm, not stale DB
+  // values. priceConfirm is derived from visibleCandles (1-min SPX bars
+  // already in the hook), giving the same calculation the cron would produce
+  // for the same timestamp.
   const activeScore: TargetScore | null = useMemo(() => {
     const raw = mode === 'oi' ? oi : mode === 'vol' ? vol : dir;
     if (!raw) return null;
@@ -117,11 +137,12 @@ export const GexTarget = memo(function GexTarget({
     );
 
     const { weights } = GEX_TARGET_CONFIG;
+    const priceCtx = priceCtxFromCandles(visibleCandles);
 
     for (const s of leaderboard) {
       const dom = dominance(s.features, peerMomenta);
       const fc = flowConfluence(s.features);
-      const pc = s.components.priceConfirm; // stored — no price history in browser
+      const pc = priceConfirm(s.features, priceCtx);
       const charm = charmScore(s.features);
       const clar = clarity(s.features);
       const prox = proximity(s.features);
@@ -145,7 +166,7 @@ export const GexTarget = memo(function GexTarget({
     if (topTarget) topTarget.isTarget = true;
 
     return { target: topTarget ?? null, leaderboard };
-  }, [mode, oi, vol, dir]);
+  }, [mode, oi, vol, dir, visibleCandles]);
 
   const activeLeaderboard: StrikeScore[] = useMemo(
     () => activeScore?.leaderboard ?? [],
