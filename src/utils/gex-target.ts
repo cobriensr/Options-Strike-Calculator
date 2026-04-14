@@ -978,7 +978,7 @@ export function pickUniverse(
  * threshold falls into the LOWER tier. This matches the spec's
  * inequalities literally.
  */
-function assignTier(finalScore: number): Tier {
+export function assignTier(finalScore: number): Tier {
   const abs = Math.abs(finalScore);
   const { high, medium, low } = GEX_TARGET_CONFIG.tierThresholds;
   if (abs > high) return 'HIGH';
@@ -992,7 +992,7 @@ function assignTier(finalScore: number): Tier {
  * NEUTRAL regardless of gamma sign, so the panel never shows a wall
  * label for a churning strike.
  */
-function assignWallSide(tier: Tier, gexDollars: number): WallSide {
+export function assignWallSide(tier: Tier, gexDollars: number): WallSide {
   if (tier === 'NONE') return 'NEUTRAL';
   if (gexDollars > 0) return 'CALL';
   if (gexDollars < 0) return 'PUT';

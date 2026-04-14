@@ -20,6 +20,14 @@ import { StrikeBox } from './StrikeBox';
 import { PriceChart } from './PriceChart';
 import {
   computeAttractingMomentum,
+  flowConfluence,
+  charmScore,
+  dominance,
+  clarity,
+  proximity,
+  assignTier,
+  assignWallSide,
+  GEX_TARGET_CONFIG,
   type TargetScore,
   type StrikeScore,
 } from '../../utils/gex-target';
@@ -85,26 +93,57 @@ export const GexTarget = memo(function GexTarget({
   const setVol = useCallback(() => setMode('vol'), []);
   const setDir = useCallback(() => setMode('dir'), []);
 
-  // Re-derive target from the leaderboard using the current gate so stale
-  // DB rows (written by a prior algorithm version) never surface a declining
-  // wall. The API's stored `is_target` is always overridden here.
+  // Recompute scores browser-side so the displayed finalScore, tier, and
+  // wallSide reflect the current algorithm rather than a stale DB value.
+  // priceConfirm is the one component we can't recompute (it needs the
+  // board-level spot-price history that only the cron holds), so we reuse
+  // the stored value for that term. Everything else — flowConfluence,
+  // charmScore, dominance, clarity, proximity — is derived purely from
+  // the per-strike features already in the API response.
   const activeScore: TargetScore | null = useMemo(() => {
     const raw = mode === 'oi' ? oi : mode === 'vol' ? vol : dir;
     if (!raw) return null;
+
     // Spread-copy every entry so we don't mutate shared API response objects.
     const leaderboard: StrikeScore[] = raw.leaderboard.map((s) => ({
       ...s,
       isTarget: false,
     }));
-    // Sort by rankByScore ascending (rank 1 = highest score) and find the
-    // first entry that passes the attracting-momentum gate.
-    const byRank = leaderboard
+
+    // Build the peer momentum array once for the full universe so dominance
+    // is computed relative to every strike, not just surviving candidates.
+    const peerMomenta = leaderboard.map((s) =>
+      computeAttractingMomentum(s.features),
+    );
+
+    const { weights } = GEX_TARGET_CONFIG;
+
+    for (const s of leaderboard) {
+      const dom = dominance(s.features, peerMomenta);
+      const fc = flowConfluence(s.features);
+      const pc = s.components.priceConfirm; // stored — no price history in browser
+      const charm = charmScore(s.features);
+      const clar = clarity(s.features);
+      const prox = proximity(s.features);
+      const freshScore =
+        weights.flowConfluence * fc * dom * prox +
+        weights.priceConfirm * pc * dom * prox +
+        weights.charmScore * charm * prox +
+        weights.clarity * (clar - 0.5);
+      s.finalScore = freshScore;
+      s.tier = assignTier(freshScore);
+      s.wallSide = assignWallSide(s.tier, s.features.gexDollars);
+    }
+
+    // Sort by fresh score desc and find the highest-scoring eligible target.
+    const byScore = leaderboard
       .slice()
-      .sort((a, b) => a.rankByScore - b.rankByScore);
-    const topTarget = byRank.find(
+      .sort((a, b) => Math.abs(b.finalScore) - Math.abs(a.finalScore));
+    const topTarget = byScore.find(
       (s) => s.tier !== 'NONE' && computeAttractingMomentum(s.features) > 0,
     );
     if (topTarget) topTarget.isTarget = true;
+
     return { target: topTarget ?? null, leaderboard };
   }, [mode, oi, vol, dir]);
 
