@@ -54,6 +54,8 @@ export interface AnalysisContext {
     callSkew25d: number; // call25dIV - atmIV (vol pts)
     skewRatio: number; // |putSkew| / |callSkew|
   };
+  /** Pre-formatted structural bias summary from GEX Landscape, passed as-is to analyze. */
+  gexLandscapeBias?: string | null;
 }
 
 export interface UploadedImage {

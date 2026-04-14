@@ -43,6 +43,8 @@ export interface GexLandscapeProps {
   onScrubPrev: () => void;
   onScrubNext: () => void;
   onScrubLive: () => void;
+  /** Called whenever the structural bias summary changes; pass to analyze. */
+  onBiasChange?: (summary: string | null) => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -464,6 +466,47 @@ function fmtTime(iso: string): string {
   });
 }
 
+/** Serializes BiasMetrics to a compact plain-text summary for the analyze prompt. */
+function formatBiasForClaude(b: BiasMetrics): string {
+  const clsLabel: Record<GexClassification, string> = {
+    'max-launchpad': 'Max Launchpad',
+    'fading-launchpad': 'Fading Launchpad',
+    'sticky-pin': 'Sticky Pin',
+    'weakening-pin': 'Weakening Pin',
+  };
+  const fmtTarget = (t: DriftTarget) => {
+    const volTag =
+      t.volReinforcement === 'reinforcing'
+        ? ', vol reinforcing'
+        : t.volReinforcement === 'opposing'
+          ? ', vol opposing'
+          : '';
+    return `${t.strike.toLocaleString()} (${clsLabel[t.cls]}${volTag})`;
+  };
+  const meta = VERDICT_META[b.verdict];
+  const gravDir = b.gravityOffset >= 0 ? 'above' : 'below';
+  const lines = [
+    `Verdict: ${meta.label} — ${meta.desc}`,
+    `Regime: ${b.regime === 'positive' ? 'Positive' : 'Negative'} GEX (${fmtGex(b.totalNetGex)} total) | Gravity: ${b.gravityStrike.toLocaleString()} (${Math.abs(b.gravityOffset)} pts ${gravDir} spot, ${fmtGex(b.gravityGex)})`,
+  ];
+  if (b.upsideTargets.length > 0)
+    lines.push(`Upside targets: ${b.upsideTargets.map(fmtTarget).join(', ')}`);
+  if (b.downsideTargets.length > 0)
+    lines.push(
+      `Downside targets: ${b.downsideTargets.map(fmtTarget).join(', ')}`,
+    );
+  const t1: string[] = [];
+  if (b.ceilingTrend !== null) t1.push(`ceiling ${fmtPct(b.ceilingTrend)}`);
+  if (b.floorTrend !== null) t1.push(`floor ${fmtPct(b.floorTrend)}`);
+  if (t1.length > 0) lines.push(`1m GEX trend: ${t1.join(' | ')}`);
+  const t5: string[] = [];
+  if (b.ceilingTrend5m !== null)
+    t5.push(`ceiling ${fmtPct(b.ceilingTrend5m)}`);
+  if (b.floorTrend5m !== null) t5.push(`floor ${fmtPct(b.floorTrend5m)}`);
+  if (t5.length > 0) lines.push(`5m GEX trend: ${t5.join(' | ')}`);
+  return lines.join('\n');
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const GexLandscape = memo(function GexLandscape({
@@ -481,6 +524,7 @@ const GexLandscape = memo(function GexLandscape({
   onScrubPrev,
   onScrubNext,
   onScrubLive,
+  onBiasChange,
 }: GexLandscapeProps) {
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
@@ -559,6 +603,12 @@ const GexLandscape = memo(function GexLandscape({
     const base = smoothedRows.length > 0 ? smoothedRows : rows;
     return computeBias(base, currentPrice, gexDeltaMap, gexDelta5mMap);
   }, [smoothedRows, rows, currentPrice, gexDeltaMap, gexDelta5mMap]);
+
+  // Notify parent whenever the structural bias verdict changes so it can be
+  // forwarded to the analyze endpoint as part of AnalysisContext.
+  useEffect(() => {
+    onBiasChange?.(formatBiasForClaude(bias));
+  }, [bias, onBiasChange]);
 
   // When the viewed date changes, reset scroll and all Δ% tracking so the new
   // date's first snapshot gets a clean baseline instead of comparing against

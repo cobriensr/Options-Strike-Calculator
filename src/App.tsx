@@ -358,6 +358,7 @@ export default function StrikeCalculator() {
   const [csvPositionSummary, setCsvPositionSummary] = useState<string | null>(
     null,
   );
+  const [gexBiasContext, setGexBiasContext] = useState<string | null>(null);
   const handleAnalysisSaved = useCallback(() => {
     setHistoryRefreshKey((k) => k + 1);
     toast.show('Analysis saved', 'success');
@@ -476,6 +477,7 @@ export default function StrikeCalculator() {
     historySnapshot,
     events: market.data.events?.events,
     chain: chainData.chain,
+    gexLandscapeBias: gexBiasContext,
   });
 
   return (
@@ -904,6 +906,7 @@ export default function StrikeCalculator() {
                     onScrubPrev={gexStrike.scrubPrev}
                     onScrubNext={gexStrike.scrubNext}
                     onScrubLive={gexStrike.scrubLive}
+                    onBiasChange={setGexBiasContext}
                   />
                 </ErrorBoundary>
               </>

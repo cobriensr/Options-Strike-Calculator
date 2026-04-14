@@ -27,6 +27,7 @@ export interface UseAnalysisContextParams {
   historySnapshot: HistorySnapshot | null;
   events: readonly EventItem[] | undefined;
   chain: ChainResponse | null;
+  gexLandscapeBias?: string | null;
 }
 
 export function useAnalysisContext({
@@ -43,6 +44,7 @@ export function useAnalysisContext({
   historySnapshot,
   events,
   chain,
+  gexLandscapeBias,
 }: UseAnalysisContextParams): AnalysisContext {
   return useMemo(
     () =>
@@ -141,6 +143,7 @@ export function useAnalysisContext({
             skewRatio,
           };
         })(),
+        gexLandscapeBias: gexLandscapeBias ?? undefined,
       }) satisfies AnalysisContext,
     [
       selectedDate,
@@ -156,6 +159,7 @@ export function useAnalysisContext({
       historySnapshot,
       events,
       chain,
+      gexLandscapeBias,
     ],
   );
 }
