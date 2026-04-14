@@ -518,6 +518,7 @@ function makePriceCtx(
     deltaSpot_1m: 0,
     deltaSpot_3m: 0,
     deltaSpot_5m: 0,
+    deltaSpot_20m: 0,
     ...overrides,
   };
 }

@@ -190,6 +190,9 @@ export interface PriceMovementContext {
   deltaSpot_1m: number;
   deltaSpot_3m: number;
   deltaSpot_5m: number;
+  /** 20-minute trend anchor — prevents short-term consolidation from
+   * disqualifying a strike that has been attracting flow all session. */
+  deltaSpot_20m: number;
 }
 
 // ── Component scorers ─────────────────────────────────────────────────
@@ -303,9 +306,12 @@ export function flowConfluence(features: MagnetFeatures): number {
  * direction as the strike's position relative to spot (rallying toward
  * an above-spot strike or falling toward a below-spot strike).
  *
- * The weighted move prioritizes the most-recent 1-minute move
- * (`0.5·Δ1m + 0.3·Δ3m + 0.2·Δ5m`) so stale rallies don't keep
- * confirming strikes that have already been left behind.
+ * The weighted move blends a short-term signal with a 20-minute trend
+ * anchor (`0.3·Δ1m + 0.2·Δ3m + 0.2·Δ5m + 0.3·Δ20m`). The 20m term
+ * prevents a brief consolidation at the highs (normal after a rally)
+ * from flip-flopping `priceConfirm` negative for an otherwise-valid
+ * trending target. The 1m term retains responsiveness so the scorer
+ * doesn't blindly confirm strikes that price has clearly left behind.
  *
  * Returns `0` when:
  * - The weighted move is exactly 0 (price flat)
@@ -318,9 +324,10 @@ export function priceConfirm(
   priceCtx: PriceMovementContext,
 ): number {
   const priceMove =
-    0.5 * priceCtx.deltaSpot_1m +
-    0.3 * priceCtx.deltaSpot_3m +
-    0.2 * priceCtx.deltaSpot_5m;
+    0.3 * priceCtx.deltaSpot_1m +
+    0.2 * priceCtx.deltaSpot_3m +
+    0.2 * priceCtx.deltaSpot_5m +
+    0.3 * priceCtx.deltaSpot_20m;
 
   if (priceMove === 0) {
     return 0;
@@ -1024,7 +1031,12 @@ function computePriceMovementContext(
 ): PriceMovementContext {
   const latest = snapshots.at(-1);
   if (!latest) {
-    return { deltaSpot_1m: 0, deltaSpot_3m: 0, deltaSpot_5m: 0 };
+    return {
+      deltaSpot_1m: 0,
+      deltaSpot_3m: 0,
+      deltaSpot_5m: 0,
+      deltaSpot_20m: 0,
+    };
   }
 
   const spotAtOffset = (offset: number): number => {
@@ -1037,6 +1049,9 @@ function computePriceMovementContext(
     deltaSpot_1m: latest.price - spotAtOffset(1),
     deltaSpot_3m: latest.price - spotAtOffset(3),
     deltaSpot_5m: latest.price - spotAtOffset(5),
+    // Falls back to 0 (same as current price) when fewer than 20
+    // snapshots are available (early-session start-up window).
+    deltaSpot_20m: latest.price - spotAtOffset(20),
   };
 }
 

@@ -59,6 +59,7 @@ function makePriceCtx(
     deltaSpot_1m: 0,
     deltaSpot_3m: 0,
     deltaSpot_5m: 0,
+    deltaSpot_20m: 0,
     ...overrides,
   };
 }
@@ -261,13 +262,13 @@ describe('priceConfirm', () => {
     expect(priceConfirm(features, ctx)).toBe(0);
   });
 
-  it('weights the 1-minute move twice as heavily as the 5-minute move', () => {
-    // move = 0.5*1 + 0.3*0 + 0.2*0 = 0.5
+  it('weights the 1-minute move more heavily than the 5-minute move', () => {
+    // move = 0.3*1 + 0.2*0 + 0.2*0 + 0.3*0 = 0.3
     const fastOnly = priceConfirm(
       makeFeatures({ strike: 5010, spot: 5000 }),
       makePriceCtx({ deltaSpot_1m: 1 }),
     );
-    // move = 0.5*0 + 0.3*0 + 0.2*1 = 0.2
+    // move = 0.3*0 + 0.2*0 + 0.2*1 + 0.3*0 = 0.2
     const slowOnly = priceConfirm(
       makeFeatures({ strike: 5010, spot: 5000 }),
       makePriceCtx({ deltaSpot_5m: 1 }),
