@@ -749,6 +749,100 @@ describe('integration: empty and minimal input', () => {
   });
 });
 
+// ── Scenario 9 — Historically-dominant but collapsing call wall ──────
+
+describe('integration: historically-dominant shrinking wall is not selected as target', () => {
+  it('selects the growing wall over the larger but collapsing wall', () => {
+    // Reproduces the 6850/6875 real-world failure mode that motivated the
+    // momentum-weighted dominance redesign:
+    //
+    //   - Strike 6850 is the #1 wall by absolute GEX size (rankBySize=1)
+    //     but its GEX has been falling for 20 minutes (flowConfluence < 0).
+    //     With zero attracting momentum, the momentum-dominance scorer
+    //     gives it dominance=0, nulling out the flow and price terms.
+    //     The charm term (negative, aligned with the shrinking wall's
+    //     direction) still produces a non-trivial negative |finalScore|,
+    //     and the flow alignment gate (gexDollars × flowConfluence < 0)
+    //     also independently excludes it from target selection.
+    //
+    //   - Strike 6855 is smaller by absolute GEX but is gaining market-
+    //     maker dollar placement every minute. It has non-zero attracting
+    //     momentum, dominance=1.0 against the peer array, positive charm,
+    //     and call-heavy volume → positive finalScore above the LOW
+    //     threshold → selected as target.
+    //
+    // Key assertions:
+    //   1. 6850 has rankBySize=1 (proves "was historically dominant").
+    //   2. 6850's flowConfluence < 0 (confirms the shrinking signal).
+    //   3. target is NOT 6850.
+    //   4. target IS 6855 (the growing wall), with positive finalScore.
+    const snapshots = makeHistory({
+      count: 61,
+      // Base 19:00 UTC; the 60th snapshot lands at 20:00 UTC = 15:00 CDT
+      // = 3:00 PM CT → minutesAfterNoonCT clamps to 180, charm at full weight.
+      startUtcIso: '2026-04-08T19:00:00Z',
+      spotAt: () => 6845, // Flat spot → priceConfirm = 0 (passes >= 0 gate).
+      mkRows: (i, spot) => {
+        const rows: GexStrikeRow[] = [];
+
+        // 6850: dominant by size, but declining for the last 20 snapshots.
+        // gamma(i) = 50e6 flat until i=40, then drops 1%/step.
+        const gamma6850 = i < 40 ? 50e6 : 50e6 * (1 - (i - 40) * 0.01);
+        rows.push(
+          makeRow({
+            strike: 6850,
+            price: spot,
+            callGammaOi: gamma6850,
+            // Negative charm: decaying delta opposes the call gamma sign,
+            // dragging charmScore negative and pushing |finalScore| above
+            // the NONE threshold even with dominance=0.
+            callCharmOi: -5e8,
+            // No volume: clarity=0, W4 bias term is negative (−0.075).
+          }),
+        );
+
+        // 6855: smaller wall (10 pts above flat spot), growing linearly.
+        // gexDollars at latest = 1e5 × 61 ≈ 6.1e6 (< 6850's 40e6).
+        const gamma6855 = 1e5 * (i + 1);
+        rows.push(
+          makeRow({
+            strike: 6855,
+            price: spot,
+            callGammaOi: gamma6855,
+            callGammaVol: 1e4, // Call-heavy volume: clarity=1, positive bias.
+            callCharmOi: 3e8, // Positive charm aligned with gamma sign.
+          }),
+        );
+
+        // Eight filler strikes far from spot or tiny gamma.
+        const peerStrikes = [6780, 6790, 6800, 6810, 6820, 6870, 6880, 6890];
+        for (const k of peerStrikes) {
+          rows.push(makeRow({ strike: k, price: spot, callGammaOi: 1e5 }));
+        }
+        return rows;
+      },
+    });
+
+    const result = computeGexTarget(snapshots);
+
+    // 1. 6850 is the largest wall by absolute GEX (proof it "was dominant").
+    const entry6850 = result.oi.leaderboard.find((s) => s.strike === 6850);
+    expect(entry6850).toBeDefined();
+    expect(entry6850?.rankBySize).toBe(1);
+
+    // 2. 6850's flow is unambiguously negative — it is a shrinking wall.
+    expect(entry6850?.components.flowConfluence).toBeLessThan(0);
+
+    // 3. Despite its historical size, 6850 is NOT the recommended target.
+    expect(result.oi.target?.strike).not.toBe(6850);
+
+    // 4. The growing wall (6855) IS the target with a positive finalScore.
+    expect(result.oi.target?.strike).toBe(6855);
+    expect(result.oi.target?.finalScore).toBeGreaterThan(0);
+    expect(result.oi.target?.components.flowConfluence).toBeGreaterThan(0);
+  });
+});
+
 // ── Scenario 8 — Anti-magnet veto (price running away from strike) ────
 
 describe('integration: anti-magnet veto', () => {
@@ -818,20 +912,17 @@ describe('integration: anti-magnet veto', () => {
 
     const result = computeGexTarget(snapshots);
 
-    // 4990 has the highest |finalScore| due to dominant size and
-    // strongly aligned-negative flow + priceConfirm terms.
-    expect(result.oi.leaderboard[0]?.strike).toBe(4990);
-    expect(result.oi.leaderboard[0]?.components.priceConfirm).toBeLessThan(0);
+    // 4990 is in the leaderboard (it's in the universe by |gexDollars|),
+    // and its priceConfirm is negative (spot rising away from a below-spot
+    // strike). This is the anti-magnet signal: the priceConfirm gate should
+    // exclude it from target selection.
+    const entry4990 = result.oi.leaderboard.find((s) => s.strike === 4990);
+    expect(entry4990).toBeDefined();
+    expect(entry4990?.components.priceConfirm).toBeLessThan(0);
 
-    // Despite ranking first by |score|, 4990 must NOT be the target.
+    // 4990 must NOT be the target regardless of how it scores.
     expect(result.oi.target).not.toBeNull();
     expect(result.oi.target?.strike).toBe(5010);
     expect(result.oi.target?.components.priceConfirm).toBeGreaterThan(0);
-
-    // Prove the fix is doing work: the anti-magnet's |score| is larger
-    // than the target's, so the old abs-first code would have picked 4990.
-    expect(Math.abs(result.oi.leaderboard[0]?.finalScore ?? 0)).toBeGreaterThan(
-      Math.abs(result.oi.target?.finalScore ?? 0),
-    );
   });
 });

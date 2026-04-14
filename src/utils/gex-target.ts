@@ -382,44 +382,81 @@ export function charmScore(features: MagnetFeatures): number {
 }
 
 /**
- * Compute the dominance component for a strike: "how much does this
- * strike stand out from its 10-strike peer group?".
+ * Compute the attracting momentum for a strike: the weighted dollar-delta
+ * flowing INTO the wall (in the direction of the wall's polarity).
  *
- * Normalizes `|gexDollars|` against the peer distribution, where the
- * peer median maps to 0 and the peer max maps to 1. Strikes below the
- * median are clamped to 0 (not negative) — "below average" shouldn't
- * subtract from the composite; a sub-median strike just gets no
- * dominance bonus.
+ * A call wall (`gexDollars > 0`) attracts momentum when its `deltaGex`
+ * is positive (GEX growing more positive). A put wall (`gexDollars < 0`)
+ * attracts momentum when its `deltaGex` is negative (GEX growing more
+ * negative). Flow running counter to the wall's polarity is ignored —
+ * a shrinking wall has zero attracting momentum regardless of the
+ * magnitude of its collapse.
  *
- * The degenerate "all ten strikes equal" case returns 0.5 so a flat
- * universe doesn't nuke every composite score through the multiplicative
- * gate.
+ * Uses the 5m (60%) and 20m (40%) horizons for a medium-term view:
+ * stable enough to reflect session-level intent, responsive enough to
+ * capture fresh buildup within the hour.
  *
- * `peerGexDollars` must contain this strike's own `|gexDollars|` value
- * (the universe median/max are computed over the full 10-strike set,
- * including the strike being scored).
+ * Output: non-negative dollar value. Returns 0 when `gexDollars = 0`
+ * (neutral wall), when both delta horizons are null, or when all
+ * flow is against the wall.
+ */
+export function computeAttractingMomentum(features: MagnetFeatures): number {
+  const wallSign = Math.sign(features.gexDollars);
+  if (wallSign === 0) return 0;
+
+  const d5m = features.deltaGex_5m ?? 0;
+  const d20m = features.deltaGex_20m ?? 0;
+
+  // Only count deltas that grow the wall in its own direction.
+  const attract5m = wallSign * d5m > 0 ? Math.abs(d5m) : 0;
+  const attract20m = wallSign * d20m > 0 ? Math.abs(d20m) : 0;
+
+  return 0.6 * attract5m + 0.4 * attract20m;
+}
+
+/**
+ * Compute the dominance component for a strike: "what share of the
+ * board's total attracting momentum is concentrated here?".
+ *
+ * Replaces the prior absolute-GEX-size approach with momentum-weighted
+ * dominance so that strikes gaining market-maker dollar placement rank
+ * above strikes that historically dominated but are now losing GEX.
+ *
+ * Normalizes this strike's `computeAttractingMomentum` against the peer
+ * distribution (median → 0, max → 1), mirroring the linear percentile
+ * structure of the prior `|gexDollars|` formula. Strikes below the
+ * median attracting momentum are clamped to 0.
+ *
+ * Two degenerate cases:
+ * - `momentaMax = 0`: no strike on the board has attracting momentum
+ *   (early session, or every wall is shrinking). Returns 0 rather than
+ *   0.5 — the composite falls back to charm + clarity only.
+ * - `momentaMax = momentaMedian`: all peers have equal momentum.
+ *   Returns 0.5 so a flat board doesn't gate the composite to 0.
+ *
+ * `peerMomenta` must include this strike's own `computeAttractingMomentum`
+ * value (the distribution is computed over the full 10-strike universe).
  *
  * Output range: `[0, 1]`.
  */
 export function dominance(
   features: MagnetFeatures,
-  peerGexDollars: number[],
+  peerMomenta: number[],
 ): number {
-  if (peerGexDollars.length === 0) {
-    return 0;
-  }
+  if (peerMomenta.length === 0) return 0;
 
-  const peerMedian = median(peerGexDollars);
-  const peerMax = Math.max(...peerGexDollars);
+  const momentaMax = Math.max(...peerMomenta);
 
-  // Degenerate: the entire universe has identical |GEX $|. Return 0.5
-  // so the composite doesn't get gated to 0 by a flat board.
-  if (peerMax === peerMedian) {
-    return 0.5;
-  }
+  // No attracting momentum anywhere on the board.
+  if (momentaMax === 0) return 0;
 
-  const raw =
-    (Math.abs(features.gexDollars) - peerMedian) / (peerMax - peerMedian);
+  const momentaMedian = median(peerMomenta);
+
+  // All peers have identical momentum — flat board, give everyone 0.5.
+  if (momentaMax === momentaMedian) return 0.5;
+
+  const thisMomentum = computeAttractingMomentum(features);
+  const raw = (thisMomentum - momentaMedian) / (momentaMax - momentaMedian);
   return Math.max(0, Math.min(1, raw));
 }
 
@@ -968,20 +1005,20 @@ function assignWallSide(tier: Tier, gexDollars: number): WallSide {
  * `StrikeScore` with `rankByScore` and `rankBySize` temporarily set to
  * 0 — `scoreMode` fills those in after sorting the full universe.
  *
- * `peerGexDollars` MUST include this strike's own `|gexDollars|`; it's
- * the universe-wide array used by `dominance` to compute the peer
- * median and max.
+ * `peerMomenta` MUST include this strike's own `computeAttractingMomentum`
+ * value; it's the universe-wide array used by `dominance` to compute the
+ * peer median and max for momentum-weighted dominance.
  */
 export function scoreStrike(
   features: MagnetFeatures,
   priceCtx: PriceMovementContext,
-  peerGexDollars: number[],
+  peerMomenta: number[],
 ): StrikeScore {
   const components: ComponentScores = {
     flowConfluence: flowConfluence(features),
     priceConfirm: priceConfirm(features, priceCtx),
     charmScore: charmScore(features),
-    dominance: dominance(features, peerGexDollars),
+    dominance: dominance(features, peerMomenta),
     clarity: clarity(features),
     proximity: proximity(features),
   };
@@ -1088,15 +1125,15 @@ export function scoreMode(snapshots: GexSnapshot[], mode: Mode): TargetScore {
   const priceCtx = computePriceMovementContext(snapshots);
 
   // Extract features for every strike in the universe first so we can
-  // build the peer |gexDollars| array before scoring (dominance needs
-  // the full peer set).
+  // build the peer momentum array before scoring (dominance needs the
+  // full peer set to compute median and max).
   const featuresList: MagnetFeatures[] = universe.map((strike) =>
     extractFeatures(snapshots, mode, strike),
   );
-  const peerGexDollars = featuresList.map((f) => Math.abs(f.gexDollars));
+  const peerMomenta = featuresList.map(computeAttractingMomentum);
 
   const unranked: StrikeScore[] = featuresList.map((features) =>
-    scoreStrike(features, priceCtx, peerGexDollars),
+    scoreStrike(features, priceCtx, peerMomenta),
   );
 
   // Rank by score: sort by |finalScore| desc, assign 1..N.
@@ -1117,7 +1154,7 @@ export function scoreMode(snapshots: GexSnapshot[], mode: Mode): TargetScore {
     entry.rankBySize = i + 1;
   });
 
-  // Target selection: highest |finalScore| entry that satisfies two gates:
+  // Target selection: highest |finalScore| entry that satisfies three gates:
   //   (a) tier is not NONE — meaningful conviction above the noise floor
   //   (b) priceConfirm >= 0 — price is not explicitly moving AWAY from
   //       this strike. A negative priceConfirm means spot is retreating
@@ -1125,8 +1162,17 @@ export function scoreMode(snapshots: GexSnapshot[], mode: Mode): TargetScore {
   //       large its |gexDollars| or flow magnitude is. The >= 0 condition
   //       (rather than > 0) allows flat-price or at-spot scenarios where
   //       the GEX signal alone justifies a target call.
+  //   (c) flow alignment gate — gexDollars × flowConfluence >= 0 ensures
+  //       the wall is growing in its own direction. A call wall with
+  //       negative flowConfluence is a collapsing wall; a put wall with
+  //       positive flowConfluence is also collapsing. This is the safety
+  //       net that catches historically-dominant but rapidly-shrinking
+  //       strikes that slip through the momentum-based dominance scorer.
   const topTarget = sortedByScore.find(
-    (entry) => entry.tier !== 'NONE' && entry.components.priceConfirm >= 0,
+    (entry) =>
+      entry.tier !== 'NONE' &&
+      entry.components.priceConfirm >= 0 &&
+      entry.features.gexDollars * entry.components.flowConfluence >= 0,
   );
   if (topTarget) {
     topTarget.isTarget = true;

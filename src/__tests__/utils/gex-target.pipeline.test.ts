@@ -528,11 +528,15 @@ describe('scoreStrike', () => {
     // Every factor cranks in the same positive direction. Each horizon
     // is +50% growth, which with renormalized weights gives weighted_pct
     // ≈ 0.50 → tanh(1.67) ≈ 0.93, comfortably HIGH.
+    // deltaGex_5m/20m give this strike attracting momentum = 0.6×5e9+0.4×2e9=3.8e9
+    // so dominance = 1.0 against the peer array.
     const features = makeFeatures({
       strike: 5000,
       spot: 5000,
       distFromSpot: 0,
       gexDollars: 10e9,
+      deltaGex_5m: 5e9,
+      deltaGex_20m: 2e9,
       deltaPct_1m: 0.5,
       deltaPct_5m: 0.5,
       deltaPct_20m: 0.5,
@@ -546,7 +550,8 @@ describe('scoreStrike', () => {
       deltaSpot_3m: 3,
       deltaSpot_5m: 3,
     });
-    const peers = [10e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9];
+    // peerMomenta: this strike's momentum = 3.8e9; peers are 10× smaller.
+    const peers = [3.8e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9];
     const score = scoreStrike(features, ctx, peers);
     expect(score.tier).toBe('HIGH');
     expect(score.wallSide).toBe('CALL');
@@ -562,11 +567,15 @@ describe('scoreStrike', () => {
     // The wallSide is taken from the SIGN of gexDollars, not the sign
     // of finalScore, so it reads PUT regardless of which way the
     // composite points.
+    // deltaGex_5m/20m are negative (growing more negative = put wall attracting):
+    // momentum = 0.6×5e9 + 0.4×2e9 = 3.8e9, same magnitude as the call wall case.
     const features = makeFeatures({
       strike: 4990,
       spot: 5000,
       distFromSpot: -10,
       gexDollars: -10e9,
+      deltaGex_5m: -5e9,
+      deltaGex_20m: -2e9,
       deltaPct_1m: -0.5,
       deltaPct_5m: -0.5,
       deltaPct_20m: -0.5,
@@ -583,7 +592,8 @@ describe('scoreStrike', () => {
       deltaSpot_3m: -3,
       deltaSpot_5m: -3,
     });
-    const peers = [10e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9];
+    // peerMomenta: this strike's momentum = 3.8e9; peers are 10× smaller.
+    const peers = [3.8e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9];
     const score = scoreStrike(features, ctx, peers);
     // The composite has competing contributions: flow is strongly
     // negative (-0.93), charm is strongly negative (-1.0), price
@@ -598,14 +608,17 @@ describe('scoreStrike', () => {
   });
 
   it('returns NONE tier with wallSide NEUTRAL when every component is zero', () => {
-    // clarity = 0, (clarity - 0.5) = -0.5, weights.clarity = 0.15.
-    // finalScore = 0.15 × -0.5 = -0.075. |-0.075| = 0.075 → NONE.
+    // clarity = 0 → (clarity - 0.5) = -0.5, weights.clarity = 0.15.
+    // dominance = 0 (max momentum = 0 → dormant board).
+    // finalScore = W4 × -0.5 = -0.075. |-0.075| = 0.075 → NONE.
     const features = makeFeatures({
       gexDollars: 1e9,
       callRatio: 0,
+      // deltaGex_5m and deltaGex_20m default to 0 → momentum = 0.
     });
     const ctx = makePriceCtx();
-    const peers = [1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9];
+    // All peer momenta are 0 → momentaMax = 0 → dominance = 0.
+    const peers = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     const score = scoreStrike(features, ctx, peers);
     expect(score.tier).toBe('NONE');
     expect(score.wallSide).toBe('NEUTRAL');
@@ -639,11 +652,15 @@ describe('scoreStrike', () => {
     // tanh(weighted_pct/0.3) = 0.2 → weighted_pct ≈ 0.0619.
     // With all four horizons at 0.0619 × prev = 0.619e8 deltas (prev=1e9),
     // we get flowConfluence ≈ 0.2. Final should be ≈ 0.155 → LOW.
+    // deltaGex_5m=1e9, deltaGex_20m=1e9 → momentum = 0.6+0.4 = 1e9.
+    // peerMomenta max = 1e9 = thisMomentum, median = 0 → dominance = 1.0.
     const features = makeFeatures({
       strike: 5000,
       spot: 5000,
       distFromSpot: 0,
       gexDollars: 1e9,
+      deltaGex_5m: 1e9,
+      deltaGex_20m: 1e9,
       deltaPct_1m: 0.0619,
       deltaPct_5m: 0.0619,
       deltaPct_20m: 0.0619,
@@ -651,10 +668,8 @@ describe('scoreStrike', () => {
       callRatio: 1,
     });
     const ctx = makePriceCtx();
-    // Single-strike universe → peerMedian = peerMax → dominance = 0.5.
-    // That breaks the assumption. Use a universe where this strike is
-    // clearly at the max so dominance = 1.
-    const peers = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1e9];
+    // This strike has momentum=1e9; all others have 0 → dominance = 1.0.
+    const peers = [1e9, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     const score = scoreStrike(features, ctx, peers);
     // Expect LOW tier (just past the 0.15 threshold).
     expect(['LOW', 'MEDIUM']).toContain(score.tier);
@@ -663,7 +678,7 @@ describe('scoreStrike', () => {
   it('starts with rankByScore = 0, rankBySize = 0, isTarget = false (filled in by scoreMode)', () => {
     const features = makeFeatures();
     const ctx = makePriceCtx();
-    const peers = [1e9];
+    const peers = [0];
     const score = scoreStrike(features, ctx, peers);
     expect(score.rankByScore).toBe(0);
     expect(score.rankBySize).toBe(0);
@@ -673,7 +688,7 @@ describe('scoreStrike', () => {
   it('copies the features verbatim into the returned StrikeScore', () => {
     const features = makeFeatures({ strike: 5050, charmNet: 12345 });
     const ctx = makePriceCtx();
-    const score = scoreStrike(features, ctx, [1e9]);
+    const score = scoreStrike(features, ctx, [0]);
     expect(score.features.strike).toBe(5050);
     expect(score.features.charmNet).toBe(12345);
   });

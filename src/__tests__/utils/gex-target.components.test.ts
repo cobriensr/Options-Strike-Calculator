@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   charmScore,
   clarity,
+  computeAttractingMomentum,
   dominance,
   flowConfluence,
   priceConfirm,
@@ -374,62 +375,191 @@ describe('charmScore', () => {
   });
 });
 
-// ── dominance (C.3.4) ────────────────────────────────────────
+// ── computeAttractingMomentum ────────────────────────────────────────
+//
+// Computes how much dollar-flow is moving INTO a wall in its own polarity.
+// Call walls attract when deltaGex is positive; put walls attract when it
+// is negative. Counter-flow (GEX shrinking) contributes zero — a dying
+// wall is not a magnet.
 
-describe('dominance', () => {
-  it('returns 1.0 when this strike has the largest |GEX $| in the peer group', () => {
-    // 10-strike universe, this strike is the max.
-    const peers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 100];
-    const features = makeFeatures({ gexDollars: 100 });
-    expect(dominance(features, peers)).toBe(1.0);
+describe('computeAttractingMomentum', () => {
+  it('returns 0 when gexDollars is 0 (neutral wall, no direction to align with)', () => {
+    const features = makeFeatures({
+      gexDollars: 0,
+      deltaGex_5m: 5e9,
+      deltaGex_20m: 2e9,
+    });
+    expect(computeAttractingMomentum(features)).toBe(0);
   });
 
-  it('returns 0.0 when this strike equals the peer median', () => {
-    // Even-length → median = avg of middle two.
-    const peers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    // median = (5 + 6) / 2 = 5.5.
-    const features = makeFeatures({ gexDollars: 5.5 });
-    expect(dominance(features, peers)).toBe(0.0);
+  it('computes 0.6·|Δ5m| + 0.4·|Δ20m| for a call wall with both deltas attracting', () => {
+    // Call wall (positive gexDollars): attracts when deltas are positive.
+    // 0.6 × 5e9 + 0.4 × 2e9 = 3e9 + 0.8e9 = 3.8e9
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 5e9,
+      deltaGex_20m: 2e9,
+    });
+    expect(computeAttractingMomentum(features)).toBeCloseTo(3.8e9, -3);
+  });
+
+  it('computes the same result for a put wall gaining negative GEX', () => {
+    // Put wall (negative gexDollars): wallSign = −1. A negative delta
+    // grows the put wall → wallSign × delta = (−1)(−5e9) = 5e9 > 0.
+    const features = makeFeatures({
+      gexDollars: -1e9,
+      deltaGex_5m: -5e9,
+      deltaGex_20m: -2e9,
+    });
+    expect(computeAttractingMomentum(features)).toBeCloseTo(3.8e9, -3);
+  });
+
+  it('ignores counter-flow: a call wall losing GEX has zero attracting momentum', () => {
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: -3e9,
+      deltaGex_20m: -1e9,
+    });
+    expect(computeAttractingMomentum(features)).toBe(0);
+  });
+
+  it('handles mixed deltas: only the attracting horizon contributes', () => {
+    // Call wall: 5m attracts (+4e9), 20m counter-flow (−2e9 → ignored).
+    // 0.6 × 4e9 + 0.4 × 0 = 2.4e9
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 4e9,
+      deltaGex_20m: -2e9,
+    });
+    expect(computeAttractingMomentum(features)).toBeCloseTo(2.4e9, -3);
+  });
+
+  it('treats null deltas as 0 (missing horizon contributes nothing)', () => {
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: null,
+      deltaGex_20m: null,
+    });
+    expect(computeAttractingMomentum(features)).toBe(0);
+  });
+});
+
+// ── dominance (C.3.4) ────────────────────────────────────────
+//
+// Ranks a strike's attracting momentum against the peer distribution.
+// Median → 0, max → 1; below median → clamped to 0. Two degenerate
+// cases: max=0 (dormant board) → 0; max=median (flat board) → 0.5.
+
+describe('dominance', () => {
+  it('returns 1.0 when this strike has the largest attracting momentum in the peer group', () => {
+    // Features: call wall, deltaGex_5m=5e9, deltaGex_20m=5e9 → 0.6×5e9+0.4×5e9=5e9.
+    // peerMomenta max = 5e9 = thisMomentum → raw = 1.0.
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 5e9,
+      deltaGex_20m: 5e9,
+    });
+    const peerMomenta = [0, 0.5e9, 1e9, 2e9, 3e9, 3.5e9, 4e9, 4.5e9, 4.9e9, 5e9];
+    expect(dominance(features, peerMomenta)).toBe(1.0);
+  });
+
+  it('returns 0.0 when this strike has attracting momentum equal to the peer median', () => {
+    // peerMomenta [0..9e9], median = (4e9+5e9)/2 = 4.5e9.
+    // Features: 0.6×4.5e9 + 0.4×4.5e9 = 4.5e9 → raw = 0.
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 4.5e9,
+      deltaGex_20m: 4.5e9,
+    });
+    const peerMomenta = [0, 1e9, 2e9, 3e9, 4e9, 5e9, 6e9, 7e9, 8e9, 9e9];
+    expect(dominance(features, peerMomenta)).toBe(0.0);
   });
 
   it('clamps to 0 when this strike is below the peer median (never negative)', () => {
-    const peers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    const features = makeFeatures({ gexDollars: 1 });
-    expect(dominance(features, peers)).toBe(0);
+    // Features: no attracting deltas → momentum=0. Median=4.5e9 → raw < 0 → 0.
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 0,
+      deltaGex_20m: 0,
+    });
+    const peerMomenta = [0, 1e9, 2e9, 3e9, 4e9, 5e9, 6e9, 7e9, 8e9, 9e9];
+    expect(dominance(features, peerMomenta)).toBe(0);
   });
 
-  it('returns 0.5 in the degenerate case where all peers are equal', () => {
-    const peers = [7, 7, 7, 7, 7, 7, 7, 7, 7, 7];
-    const features = makeFeatures({ gexDollars: 7 });
-    expect(dominance(features, peers)).toBe(0.5);
+  it('returns 0.5 in the degenerate case where all peers have equal momentum', () => {
+    // momentaMax === momentaMedian → special case returns 0.5.
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 7e9,
+      deltaGex_20m: 7e9,
+    });
+    const peerMomenta = [7e9, 7e9, 7e9, 7e9, 7e9, 7e9, 7e9, 7e9, 7e9, 7e9];
+    expect(dominance(features, peerMomenta)).toBe(0.5);
   });
 
-  it('uses |gexDollars| so negative-signed strikes score the same as positive', () => {
-    const peers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 100];
-    const pos = makeFeatures({ gexDollars: 100 });
-    const neg = makeFeatures({ gexDollars: -100 });
-    expect(dominance(neg, peers)).toBe(dominance(pos, peers));
+  it('returns 0 when momentaMax is 0 (no attracting momentum anywhere on the board)', () => {
+    // Distinct from the "all equal" case: max=0 returns 0 (dormant board),
+    // not 0.5, so the composite falls back to charm + clarity only.
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 0,
+      deltaGex_20m: 0,
+    });
+    const peerMomenta = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    expect(dominance(features, peerMomenta)).toBe(0);
+  });
+
+  it('symmetrically scores a put wall gaining momentum the same as a call wall gaining momentum', () => {
+    // Both produce momentum = 0.6×5e9 + 0.4×2e9 = 3.8e9.
+    const callWall = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 5e9,
+      deltaGex_20m: 2e9,
+    });
+    const putWall = makeFeatures({
+      gexDollars: -1e9,
+      deltaGex_5m: -5e9,
+      deltaGex_20m: -2e9,
+    });
+    const peerMomenta = [0, 1e9, 2e9, 3.8e9];
+    expect(dominance(callWall, peerMomenta)).toBeCloseTo(
+      dominance(putWall, peerMomenta),
+      10,
+    );
   });
 
   it('returns a value in (0, 1) for a strike between the median and the max', () => {
-    // peers = [1..10], median = 5.5, max = 10.
-    // |10| strike = 1.0, |5.5| = 0.0, |7.75| ≈ 0.5.
-    const peers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    const features = makeFeatures({ gexDollars: 7.75 });
-    expect(dominance(features, peers)).toBeCloseTo(0.5, 10);
+    // peerMomenta [0..9e9]: median=4.5e9, max=9e9.
+    // Features: 0.6×6.75e9 + 0.4×6.75e9 = 6.75e9.
+    // raw = (6.75e9 − 4.5e9) / (9e9 − 4.5e9) = 2.25/4.5 = 0.5.
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 6.75e9,
+      deltaGex_20m: 6.75e9,
+    });
+    const peerMomenta = [0, 1e9, 2e9, 3e9, 4e9, 5e9, 6e9, 7e9, 8e9, 9e9];
+    expect(dominance(features, peerMomenta)).toBeCloseTo(0.5, 10);
   });
 
-  it('returns 0 when peerGexDollars is empty (defensive guard)', () => {
-    const features = makeFeatures({ gexDollars: 100 });
+  it('returns 0 when peerMomenta is empty (defensive guard)', () => {
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 5e9,
+      deltaGex_20m: 2e9,
+    });
     expect(dominance(features, [])).toBe(0);
   });
 
   it('handles an odd-length peer array correctly (median = middle element)', () => {
-    // peers = [1, 2, 3, 4, 5], odd-length → median = 3, max = 5.
-    // For gexDollars = 4: raw = (4 - 3) / (5 - 3) = 0.5.
-    const peers = [1, 2, 3, 4, 5];
-    const features = makeFeatures({ gexDollars: 4 });
-    expect(dominance(features, peers)).toBeCloseTo(0.5, 10);
+    // peerMomenta = [0, 1e9, 3e9, 4e9, 5e9]: median=3e9, max=5e9.
+    // Features: 0.6×4e9 + 0.4×4e9 = 4e9. raw = (4e9−3e9)/(5e9−3e9) = 0.5.
+    const features = makeFeatures({
+      gexDollars: 1e9,
+      deltaGex_5m: 4e9,
+      deltaGex_20m: 4e9,
+    });
+    const peerMomenta = [0, 1e9, 3e9, 4e9, 5e9];
+    expect(dominance(features, peerMomenta)).toBeCloseTo(0.5, 10);
   });
 });
 
