@@ -125,8 +125,59 @@ VIX close      Short-gamma 0DTE rule
   targets MAE/MFE/return from 1-min bars).
 - `ml/src/moc_eda.py` — 8 plots + correlation matrices.
 - `ml/src/moc_regime_vix.py` — VIX regime split + conditional correlations.
-- `ml/plots/moc/*.png` — 11 plots, tracked in git.
+- `ml/src/moc_vol_premium.py` — Tier 0 long-vol mirror analysis.
+- `ml/plots/moc/*.png` — 14 plots, tracked in git.
 - `ml/data/*.parquet` — cached data, gitignored.
+
+## Phase 4 (Tier 0): Long-vol mirror — also null-ish
+
+After the short-gamma thread closed, we ran the symmetric question: "is
+there a retail edge in BUYING vol into MOC?" The idea was that if
+MAE/range distributions blow out in elevated-VIX regimes, maybe options
+systematically underprice that tail.
+
+Method: computed realized 10-min |return| vs VIX-implied 10-min sigma
+(`VIX * sqrt(10 / (252 * 390))`) and simulated a naive "buy ATM straddle
+at 15:50, hold to close" strategy. Straddle cost approximated via the
+Black-Scholes ATM formula (`sqrt(2/π) * sigma * S`).
+
+| VIX regime | n   | mean P&L     | median P&L   | win rate | Sharpe/trade |
+| ---------- | --- | ------------ | ------------ | -------- | ------------ |
+| Calm       | 510 | −2.5 bps     | −4.5 bps     | 27%      | −0.33        |
+| Normal     | 728 | −3.4 bps     | −5.5 bps     | 25%      | −0.38        |
+| Elevated   | 601 | −2.8 bps     | −6.3 bps     | 33%      | −0.20        |
+| **Stress** | 152 | **+4.1 bps** | **−5.6 bps** | **37%**  | **+0.10**    |
+
+The ratio (realized / implied) rises monotonically with VIX regime (0.45
+in Calm → 0.64 in Stress), directionally consistent with "options
+underprice tail regimes." But at the median, options are _always_
+overpriced (ratio < 1), and the long-straddle P&L is only positive in
+Stress because of a handful of +200 bps outliers. Median is still
+−5.6 bps in Stress; win rate is 37%.
+
+**Known overstatements in Tier 0** (all push the Stress edge further
+toward zero, not away from it):
+
+- VIX is 30-day constant-maturity, not 0DTE 10-min. Real 0DTE implieds
+  in Stress regimes typically spike 10–30% *above* VIX due to inverted
+  term structure — meaning the true straddle cost is higher than I
+  modeled, and the true edge is smaller.
+- Bid-ask on QQQ 0DTE options is ~1–2 bps round-trip, eating ~half the
+  apparent edge.
+- No slippage modeled.
+- Best-day outlier of +240 bps dominates the mean — removing it drops
+  Stress mean to ~+2.5 bps.
+
+**Conclusion on long-vol mirror:** technically +EV in Stress regime on
+the surface, but the quality of the edge (negative median, 37% win rate,
+fat-tail dependence, Sharpe ~0.1) is classic "tail of tail" that works
+on paper and fails in practice for retail. Closing without Tier 1
+options data.
+
+The asymmetry worth noting: **avoiding the bad outcome on the short
+side is cheap (just gate on VIX); capturing the symmetric opportunity
+on the long side is not.** Market makers and HFT capture the long side;
+retail gets the short-side protection.
 
 ## Takeaway
 
