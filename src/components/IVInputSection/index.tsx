@@ -234,6 +234,7 @@ export default function IVInputSection({
             }
             termShape={termShape}
             termShapeAdvice={termShapeAdvice}
+            marketOpen={market.marketOpen && !historySnapshot}
           />
         </div>
       )}

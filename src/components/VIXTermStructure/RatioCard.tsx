@@ -1,6 +1,13 @@
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 
+export interface RatioTrajectory {
+  /** Signed delta (current − baseline). */
+  delta: number;
+  /** Elapsed minutes between baseline and current snapshot. */
+  spanMin: number;
+}
+
 interface Props {
   title: string;
   subtitle: string;
@@ -8,6 +15,30 @@ interface Props {
   label: string;
   color: string;
   advice: string;
+  trajectory?: RatioTrajectory | null;
+}
+
+/**
+ * Thresholds for colorizing the trajectory line. Rising ratios are
+ * flagged because term-structure tightening (ratio → 1.0+) is the
+ * regime change the trader cares about; falling ratios normalize.
+ */
+const TRAJECTORY_MUTED_BELOW = 0.02;
+const TRAJECTORY_RED_ABOVE = 0.1;
+const TRAJECTORY_CAUTION_ABOVE = 0.05;
+
+function trajectoryColor(delta: number): string {
+  const abs = Math.abs(delta);
+  if (abs < TRAJECTORY_MUTED_BELOW) return theme.textMuted;
+  if (delta > 0) return abs >= TRAJECTORY_RED_ABOVE ? theme.red : theme.caution;
+  return abs >= TRAJECTORY_CAUTION_ABOVE ? theme.green : theme.textMuted;
+}
+
+function formatDelta(delta: number): string {
+  const rounded = Math.round(delta * 100) / 100;
+  if (rounded === 0) return '\u00B10.00';
+  const sign = rounded > 0 ? '+' : '\u2212';
+  return `${sign}${Math.abs(rounded).toFixed(2)}`;
 }
 
 export default function RatioCard({
@@ -17,7 +48,11 @@ export default function RatioCard({
   label,
   color,
   advice,
+  trajectory,
 }: Readonly<Props>) {
+  const trajectoryHue = trajectory
+    ? trajectoryColor(trajectory.delta)
+    : theme.textMuted;
   return (
     <div className="bg-surface border-edge rounded-[10px] border p-3 sm:p-3.5">
       <div className="mb-2 flex items-start justify-between">
@@ -35,11 +70,23 @@ export default function RatioCard({
         </span>
       </div>
 
-      <div
-        className="mb-1.5 font-mono text-[22px] font-extrabold"
-        style={{ color }}
-      >
-        {ratio.toFixed(2)}x
+      <div className="mb-1.5 flex items-baseline gap-2">
+        <div className="font-mono text-[22px] font-extrabold" style={{ color }}>
+          {ratio.toFixed(2)}x
+        </div>
+        {trajectory && (
+          <div
+            className="font-mono text-[10px] font-semibold tracking-tight"
+            style={{ color: trajectoryHue }}
+            aria-label={`15-minute change ${formatDelta(trajectory.delta)}`}
+          >
+            {formatDelta(trajectory.delta)}
+            <span className="text-muted ml-1 font-sans font-normal">
+              {'/ '}
+              {trajectory.spanMin}m
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Ratio bar visualization */}
