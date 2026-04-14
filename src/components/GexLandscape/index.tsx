@@ -240,6 +240,8 @@ interface BiasMetrics {
   downsideTargets: DriftTarget[]; // top 2 below spot by |netGamma|
   floorTrend: number | null; // avg 1m Δ% for below-spot strikes
   ceilingTrend: number | null; // avg 1m Δ% for above-spot strikes
+  floorTrend5m: number | null; // avg 5m Δ% for below-spot strikes
+  ceilingTrend5m: number | null; // avg 5m Δ% for above-spot strikes
 }
 
 interface VerdictMeta {
@@ -361,6 +363,7 @@ function computeBias(
   rows: GexStrikeLevel[],
   currentPrice: number,
   gexDeltaMap: Map<number, number | null>,
+  gexDelta5mMap: Map<number, number | null>,
 ): BiasMetrics {
   const above = rows.filter((s) => s.strike > currentPrice + SPOT_BAND);
   const below = rows.filter((s) => s.strike < currentPrice - SPOT_BAND);
@@ -428,6 +431,8 @@ function computeBias(
     downsideTargets,
     floorTrend: avg(below.map((s) => gexDeltaMap.get(s.strike))),
     ceilingTrend: avg(above.map((s) => gexDeltaMap.get(s.strike))),
+    floorTrend5m: avg(below.map((s) => gexDelta5mMap.get(s.strike))),
+    ceilingTrend5m: avg(above.map((s) => gexDelta5mMap.get(s.strike))),
   };
 }
 
@@ -550,8 +555,8 @@ const GexLandscape = memo(function GexLandscape({
   // flip the verdict. Falls back to raw rows until enough history accumulates.
   const bias = useMemo(() => {
     const base = smoothedRows.length > 0 ? smoothedRows : rows;
-    return computeBias(base, currentPrice, gexDeltaMap);
-  }, [smoothedRows, rows, currentPrice, gexDeltaMap]);
+    return computeBias(base, currentPrice, gexDeltaMap, gexDelta5mMap);
+  }, [smoothedRows, rows, currentPrice, gexDeltaMap, gexDelta5mMap]);
 
   // When the viewed date changes, reset scroll and all Δ% tracking so the new
   // date's first snapshot gets a clean baseline instead of comparing against
@@ -754,6 +759,18 @@ const GexLandscape = memo(function GexLandscape({
             : bias.ceilingTrend <= 0
               ? '#4ade80'
               : '#fbbf24';
+        const floorTrend5mColor =
+          bias.floorTrend5m === null
+            ? 'var(--color-muted)'
+            : bias.floorTrend5m >= 0
+              ? '#4ade80'
+              : '#f87171';
+        const ceilTrend5mColor =
+          bias.ceilingTrend5m === null
+            ? 'var(--color-muted)'
+            : bias.ceilingTrend5m <= 0
+              ? '#4ade80'
+              : '#fbbf24';
         return (
           <div className={`mb-3 rounded-lg border p-3 ${vm.bg} ${vm.border}`}>
             {/* Verdict + Regime */}
@@ -784,7 +801,7 @@ const GexLandscape = memo(function GexLandscape({
             </div>
 
             {/* Metrics row */}
-            <div className="grid grid-cols-[auto_1px_1fr_1px_1fr_1px_auto] items-start gap-x-4">
+            <div className="grid grid-cols-[auto_1px_1fr_1px_1fr_1px_auto_1px_auto] items-start gap-x-4">
               {/* GEX gravity */}
               <div
                 className="cursor-help"
@@ -949,6 +966,50 @@ const GexLandscape = memo(function GexLandscape({
                     style={{ color: ceilTrendColor }}
                   >
                     {fmtPct(bias.ceilingTrend)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Divider */}
+              <div className="h-full w-px bg-white/10" />
+
+              {/* 5m Trend */}
+              <div
+                className="cursor-help"
+                title="Average % change in net GEX for strikes above (Ceil) and below (Floor) spot vs. the snapshot 5 minutes ago. Confirms whether the 1m trend is part of a sustained move or just a brief spike."
+              >
+                <div
+                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
+                  style={{ color: 'var(--color-tertiary)' }}
+                >
+                  5m Trend
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <span
+                    className="font-mono text-[9px]"
+                    style={{ color: 'var(--color-muted)' }}
+                  >
+                    Floor
+                  </span>
+                  <span
+                    className="font-mono text-[12px] font-semibold"
+                    style={{ color: floorTrend5mColor }}
+                  >
+                    {fmtPct(bias.floorTrend5m)}
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <span
+                    className="font-mono text-[9px]"
+                    style={{ color: 'var(--color-muted)' }}
+                  >
+                    Ceil
+                  </span>
+                  <span
+                    className="font-mono text-[12px] font-semibold"
+                    style={{ color: ceilTrend5mColor }}
+                  >
+                    {fmtPct(bias.ceilingTrend5m)}
                   </span>
                 </div>
               </div>
