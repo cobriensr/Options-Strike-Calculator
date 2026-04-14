@@ -244,14 +244,14 @@ intraday targets from QQQ 1-min bars, correlate.
 
 Results on 1,998 days:
 
-| Test                                | Result |
-| ----------------------------------- | ------ |
-| MOO sign → day return agreement     | 51.7%  |
-| MOO sign → 10am return agreement    | 50.2%  |
-| MOO sign → MOC sign agreement       | 53.9%  |
-| Pearson r(MOO, return_day)          | −0.014 |
-| Pearson r(\|MOO\|, intraday range)  | +0.143 |
-| Incremental R^2 over VIX (range)    | +0.008 |
+| Test                               | Result |
+| ---------------------------------- | ------ |
+| MOO sign → day return agreement    | 51.7%  |
+| MOO sign → 10am return agreement   | 50.2%  |
+| MOO sign → MOC sign agreement      | 53.9%  |
+| Pearson r(MOO, return_day)         | −0.014 |
+| Pearson r(\|MOO\|, intraday range) | +0.143 |
+| Incremental R^2 over VIX (range)   | +0.008 |
 
 Direction: coin flip. Persistence to MOC: effectively zero. Only real
 signal is `|MOO| -> |range|` (r=+0.14) — same magnitude-implies-vol
@@ -275,12 +275,12 @@ underlying can become +EV through long-option convexity. Simulated:
 Pricing via Black-Scholes ATM (`~0.399 * sigma * S * sqrt(T)`) using
 VIX as IV. Payoff = intrinsic at close (0DTE cash-settled).
 
-| Strategy         | n    | mean P&L | win rate | edge vs random |
-| ---------------- | ---- | -------- | -------- | -------------- |
-| MOC_directional  | 1603 | −0.55    | 33%      | +0.53 (t≈1.58) |
-| MOC_random       | 1980 | −1.08    | 30%      | —              |
-| MOO_directional  | 678  | −6.61    | 33%      | +0.66 (t≈0.21) |
-| MOO_random       | 1980 | −7.27    | 31%      | —              |
+| Strategy        | n    | mean P&L | win rate | edge vs random |
+| --------------- | ---- | -------- | -------- | -------------- |
+| MOC_directional | 1603 | −0.55    | 33%      | +0.53 (t≈1.58) |
+| MOC_random      | 1980 | −1.08    | 30%      | —              |
+| MOO_directional | 678  | −6.61    | 33%      | +0.66 (t≈0.21) |
+| MOO_random      | 1980 | −7.27    | 31%      | —              |
 
 **Both directional edges are tiny and not statistically significant**
 (t < 2), and both strategies are negative-EV in absolute terms because
