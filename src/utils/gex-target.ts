@@ -1171,23 +1171,6 @@ export function scoreMode(snapshots: GexSnapshot[], mode: Mode): TargetScore {
   // is more robust than the 1m-dominated flowConfluence gate that it
   // replaces, and is internally consistent with the dominance scorer
   // which uses the same computeAttractingMomentum metric.
-  // DEBUG — remove after diagnosing live gate behavior
-  if (mode === 'oi') {
-    console.group('[GEX-TARGET DEBUG] gate evaluation (OI mode)');
-    for (const entry of sortedByScore) {
-      const mom = computeAttractingMomentum(entry.features);
-      console.log(
-        `strike=${entry.strike}  tier=${entry.tier}  score=${entry.finalScore.toFixed(3)}` +
-          `  gexDollars=${entry.features.gexDollars.toFixed(0)}` +
-          `  deltaGex_5m=${(entry.features.deltaGex_5m ?? null)?.toFixed(0) ?? 'null'}` +
-          `  deltaGex_20m=${(entry.features.deltaGex_20m ?? null)?.toFixed(0) ?? 'null'}` +
-          `  deltaPct_5m=${entry.features.deltaPct_5m?.toFixed(3) ?? 'null'}` +
-          `  attractMom=${mom.toFixed(0)}` +
-          `  gatePass=${entry.tier !== 'NONE' && mom > 0}`,
-      );
-    }
-    console.groupEnd();
-  }
 
   const topTarget = sortedByScore.find(
     (entry) =>

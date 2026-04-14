@@ -18,7 +18,11 @@ import { UrgencyPanel } from './UrgencyPanel';
 import { SparklinePanel } from './SparklinePanel';
 import { StrikeBox } from './StrikeBox';
 import { PriceChart } from './PriceChart';
-import type { TargetScore, StrikeScore } from '../../utils/gex-target';
+import {
+  computeAttractingMomentum,
+  type TargetScore,
+  type StrikeScore,
+} from '../../utils/gex-target';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -81,8 +85,29 @@ export const GexTarget = memo(function GexTarget({
   const setVol = useCallback(() => setMode('vol'), []);
   const setDir = useCallback(() => setMode('dir'), []);
 
-  const activeScore: TargetScore | null =
-    mode === 'oi' ? oi : mode === 'vol' ? vol : dir;
+  // Re-derive target from the leaderboard using the current gate so stale
+  // DB rows (written by a prior algorithm version) never surface a declining
+  // wall. The API's stored `is_target` is always overridden here.
+  const activeScore: TargetScore | null = useMemo(() => {
+    const raw = mode === 'oi' ? oi : mode === 'vol' ? vol : dir;
+    if (!raw) return null;
+    // Spread-copy every entry so we don't mutate shared API response objects.
+    const leaderboard: StrikeScore[] = raw.leaderboard.map((s) => ({
+      ...s,
+      isTarget: false,
+    }));
+    // Sort by rankByScore ascending (rank 1 = highest score) and find the
+    // first entry that passes the attracting-momentum gate.
+    const byRank = leaderboard
+      .slice()
+      .sort((a, b) => a.rankByScore - b.rankByScore);
+    const topTarget = byRank.find(
+      (s) => s.tier !== 'NONE' && computeAttractingMomentum(s.features) > 0,
+    );
+    if (topTarget) topTarget.isTarget = true;
+    return { target: topTarget ?? null, leaderboard };
+  }, [mode, oi, vol, dir]);
+
   const activeLeaderboard: StrikeScore[] = useMemo(
     () => activeScore?.leaderboard ?? [],
     [activeScore],
