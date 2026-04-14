@@ -899,7 +899,6 @@ export default function StrikeCalculator() {
                     selectedDate={gexStrike.selectedDate}
                     onDateChange={gexStrike.setSelectedDate}
                     isLive={gexStrike.isLive}
-                    isToday={gexStrike.isToday}
                     isScrubbed={gexStrike.isScrubbed}
                     canScrubPrev={gexStrike.canScrubPrev}
                     canScrubNext={gexStrike.canScrubNext}

@@ -72,7 +72,6 @@ const defaultProps: GexLandscapeProps = {
   selectedDate: '2026-04-13',
   onDateChange: vi.fn(),
   isLive: true,
-  isToday: true,
   isScrubbed: false,
   canScrubPrev: false,
   canScrubNext: false,
