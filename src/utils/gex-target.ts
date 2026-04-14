@@ -1102,13 +1102,22 @@ export function scoreMode(snapshots: GexSnapshot[], mode: Mode): TargetScore {
     entry.rankBySize = i + 1;
   });
 
-  // Target selection: #1-by-score, but only if its tier is not NONE.
-  const topByScore = sortedByScore[0];
-  if (topByScore && topByScore.tier !== 'NONE') {
-    topByScore.isTarget = true;
+  // Target selection: highest |finalScore| entry that satisfies two gates:
+  //   (a) tier is not NONE — meaningful conviction above the noise floor
+  //   (b) priceConfirm >= 0 — price is not explicitly moving AWAY from
+  //       this strike. A negative priceConfirm means spot is retreating
+  //       from the strike, making it an anti-magnet regardless of how
+  //       large its |gexDollars| or flow magnitude is. The >= 0 condition
+  //       (rather than > 0) allows flat-price or at-spot scenarios where
+  //       the GEX signal alone justifies a target call.
+  const topTarget = sortedByScore.find(
+    (entry) => entry.tier !== 'NONE' && entry.components.priceConfirm >= 0,
+  );
+  if (topTarget) {
+    topTarget.isTarget = true;
   }
 
-  const target = topByScore && topByScore.tier !== 'NONE' ? topByScore : null;
+  const target = topTarget ?? null;
 
   return { target, leaderboard: sortedByScore };
 }

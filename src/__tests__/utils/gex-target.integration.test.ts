@@ -748,3 +748,90 @@ describe('integration: empty and minimal input', () => {
     expect(result.dir.leaderboard).toEqual([]);
   });
 });
+
+// ── Scenario 8 — Anti-magnet veto (price running away from strike) ────
+
+describe('integration: anti-magnet veto', () => {
+  it('rejects the highest-|score| strike when its priceConfirm is negative', () => {
+    // Scenario: strike 4990 (below spot) is the dominant wall and has
+    // the highest |finalScore| because (a) it is decaying rapidly at
+    // 30%/step (large negative flowConfluence) and (b) spot is rising
+    // away from it (negative priceConfirm). Both terms add up to a large
+    // negative finalScore. Under the old abs-first selection rule, 4990
+    // would be the target.
+    //
+    // Strike 5010 (above spot) is growing at 30%/step with strong call
+    // volume. Its dominance is lower (it is not yet the largest wall),
+    // so its |finalScore| is smaller than 4990's. But priceConfirm is
+    // positive (spot heading toward it), and the composite clears the
+    // LOW tier floor.
+    //
+    // Key assertions:
+    //   - leaderboard[0] is 4990 (highest |finalScore|, the anti-magnet)
+    //   - leaderboard[0].components.priceConfirm < 0 (confirmed anti)
+    //   - target is 5010, NOT 4990 (priceConfirm >= 0 gate excludes 4990)
+    //   - |finalScore| of 4990 > |finalScore| of 5010 (proves the fix
+    //     is doing work — without it the wrong strike wins)
+    const snapshots = makeHistory({
+      count: 10,
+      startUtcIso: '2026-04-08T19:40:00Z',
+      // Flat for first 5 snapshots, then rises 0.2 pts/step so
+      // priceConfirm is cleanly non-zero at the latest snapshot.
+      spotAt: (i) => (i < 5 ? 5000 : 5000 + (i - 5) * 0.2),
+      mkRows: (i, spot) => {
+        const rows: GexStrikeRow[] = [];
+        // Anti-magnet: dominant wall below spot, decaying 30%/step.
+        // callGammaOi = 20e6 × 1.3^(9−i) → 20e6 at latest, 73.97e6
+        // at 5-step-prior, so Δ% per step ≈ −23% (1m) and −73% (5m)
+        // → flowConfluence ≈ −0.78. No call volume → clarity = 0
+        // → clarity term = −0.075, which amplifies |finalScore|.
+        // Rising spot → priceConfirm < 0 (strike is below spot).
+        rows.push(
+          makeRow({
+            strike: 4990,
+            price: spot,
+            callGammaOi: 20e6 * Math.pow(1.3, 9 - i),
+          }),
+        );
+        // Magnet: smaller wall above spot, growing 30%/step.
+        // callGammaOi = 1e6 × 1.3^i → 10.6e6 at latest (smaller than
+        // 4990's 20e6 → lower dominance). Strong call volume so
+        // clarity = 1.0 → clarity term = +0.075. Rising spot →
+        // priceConfirm > 0 (strike is above spot).
+        rows.push(
+          makeRow({
+            strike: 5010,
+            price: spot,
+            callGammaOi: 1e6 * Math.pow(1.3, i),
+            callGammaVol: 1e4,
+          }),
+        );
+        // Eight tiny peer strikes far from spot so proximity crushes
+        // their contributions and they don't affect the key assertions.
+        const peerStrikes = [5050, 5060, 5070, 5080, 5090, 5100, 5110, 5120];
+        for (const k of peerStrikes) {
+          rows.push(makeRow({ strike: k, price: spot, callGammaOi: 1e4 }));
+        }
+        return rows;
+      },
+    });
+
+    const result = computeGexTarget(snapshots);
+
+    // 4990 has the highest |finalScore| due to dominant size and
+    // strongly aligned-negative flow + priceConfirm terms.
+    expect(result.oi.leaderboard[0]?.strike).toBe(4990);
+    expect(result.oi.leaderboard[0]?.components.priceConfirm).toBeLessThan(0);
+
+    // Despite ranking first by |score|, 4990 must NOT be the target.
+    expect(result.oi.target).not.toBeNull();
+    expect(result.oi.target?.strike).toBe(5010);
+    expect(result.oi.target?.components.priceConfirm).toBeGreaterThan(0);
+
+    // Prove the fix is doing work: the anti-magnet's |score| is larger
+    // than the target's, so the old abs-first code would have picked 4990.
+    expect(Math.abs(result.oi.leaderboard[0]?.finalScore ?? 0)).toBeGreaterThan(
+      Math.abs(result.oi.target?.finalScore ?? 0),
+    );
+  });
+});
