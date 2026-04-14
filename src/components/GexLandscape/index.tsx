@@ -389,9 +389,13 @@ function computeBias(
   const regime: 'positive' | 'negative' =
     totalNetGex >= 0 ? 'positive' : 'negative';
 
-  // GEX gravity: strike with the largest absolute GEX above or below spot
+  // GEX gravity: strike with the largest absolute GEX anywhere in the window.
+  // Include strikes within SPOT_BAND of spot — the strongest pin is often
+  // right at or near ATM, and excluding it would give a misleading gravity.
+  // The ATM-proximity check later naturally maps small |gravityOffset| to
+  // a `rangebound` / `volatile` verdict.
   let gravityRow: GexStrikeLevel | null = null;
-  for (const s of [...above, ...below]) {
+  for (const s of rows) {
     if (
       gravityRow === null ||
       Math.abs(s.netGamma) > Math.abs(gravityRow.netGamma)

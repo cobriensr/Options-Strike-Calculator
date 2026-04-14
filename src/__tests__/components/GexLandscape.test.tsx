@@ -135,7 +135,9 @@ describe('GexLandscape', () => {
   describe('spot indicator', () => {
     it('marks the nearest strike to current price with ATM label', () => {
       renderLandscape();
-      expect(screen.getByText('ATM')).toBeDefined();
+      // "ATM" may appear in both the spot row and the GEX Gravity panel
+      // (when the gravity strike is at spot). At least one must exist.
+      expect(screen.getAllByText('ATM').length).toBeGreaterThan(0);
     });
   });
 
