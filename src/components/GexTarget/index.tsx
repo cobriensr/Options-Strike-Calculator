@@ -157,12 +157,24 @@ export const GexTarget = memo(function GexTarget({
     }
 
     // Sort by fresh score desc and find the highest-scoring eligible target.
+    // Primary: must be non-NONE, growing wall, AND in the direction price is
+    // moving (priceConfirm >= 0). This prevents below-spot strikes from being
+    // selected in a rising market and vice versa.
+    // Fallback: drop the priceConfirm gate in flat/ambiguous markets where no
+    // strike passes all three conditions.
     const byScore = leaderboard
       .slice()
       .sort((a, b) => Math.abs(b.finalScore) - Math.abs(a.finalScore));
-    const topTarget = byScore.find(
-      (s) => s.tier !== 'NONE' && computeAttractingMomentum(s.features) > 0,
-    );
+    const topTarget =
+      byScore.find(
+        (s) =>
+          s.tier !== 'NONE' &&
+          computeAttractingMomentum(s.features) > 0 &&
+          priceConfirm(s.features, priceCtx) >= 0,
+      ) ??
+      byScore.find(
+        (s) => s.tier !== 'NONE' && computeAttractingMomentum(s.features) > 0,
+      );
     if (topTarget) topTarget.isTarget = true;
 
     return { target: topTarget ?? null, leaderboard };
