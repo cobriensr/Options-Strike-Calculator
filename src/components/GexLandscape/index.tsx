@@ -109,7 +109,11 @@ const CLASS_META: Record<GexClassification, ClassMeta> = {
     badgeText: 'text-emerald-400',
     rowBg: 'bg-emerald-500/5',
     signal: (dir) =>
-      dir === 'ceiling' ? 'Hard Ceiling' : dir === 'floor' ? 'Hard Floor' : 'Pin Zone',
+      dir === 'ceiling'
+        ? 'Hard Ceiling'
+        : dir === 'floor'
+          ? 'Hard Floor'
+          : 'Pin Zone',
   },
   'weakening-pin': {
     badge: 'Weakening Pin',
@@ -129,37 +133,37 @@ const CLASS_META: Record<GexClassification, ClassMeta> = {
 
 const CLS_TOOLTIP: Record<GexClassification, string> = {
   'max-launchpad':
-    'Neg γ + Pos charm — dealers are short gamma (pro-cyclical: buy rallies, sell drops) AND their delta is growing as the day ages. Price accelerates through this level; it is not a wall.',
+    'Market makers will ADD fuel to a move here, not resist it — and that pressure grows as the day goes on. If price breaks through, expect acceleration, not a bounce.',
   'fading-launchpad':
-    'Neg γ + Neg charm — dealers are short gamma (amplify moves) but charm is draining their delta over time. Launch risk fades toward close; strongest early session.',
+    'Market makers will amplify moves here, but only early in the session. Their hedging pressure fades as the day wears on, so this level is most dangerous in the morning.',
   'sticky-pin':
-    'Pos γ + Pos charm — dealers are long gamma (counter-cyclical: sell rallies, buy dips) AND their hedging power grows with time. Strongest wall; gets stickier into close.',
+    'Market makers are actively pushing back against any move through this level, and that resistance gets stronger as the day progresses. The most reliable wall on the board.',
   'weakening-pin':
-    'Pos γ + Neg charm — dealers are long gamma (dampen moves) but charm is bleeding off their delta. Pin may hold early; loses grip toward close.',
+    'Market makers are dampening moves here, but their ability to hold the line fades over time. Can act as support or resistance early in the day; less reliable into the close.',
 };
 
 function signalTooltip(cls: GexClassification, dir: Direction): string {
   const mechanic =
     cls === 'max-launchpad' || cls === 'fading-launchpad'
-      ? 'Neg gamma: pro-cyclical dealers amplify whichever direction price is moving.'
-      : 'Pos gamma: counter-cyclical dealers sell strength and buy weakness, damping moves.';
+      ? 'Market makers add fuel to moves here — they buy when price rises and sell when it falls.'
+      : 'Market makers absorb moves here — they sell into rallies and buy into dips.';
   const position =
     dir === 'ceiling'
-      ? 'Strike is above spot — functions as resistance.'
+      ? 'This strike is above current price — it is overhead resistance.'
       : dir === 'floor'
-        ? 'Strike is below spot — functions as support.'
-        : 'Strike is at the money — directional pressure is symmetric.';
+        ? 'This strike is below current price — it is downside support.'
+        : 'This strike is right at the money — pressure is balanced in both directions.';
   const charm =
     cls === 'max-launchpad' || cls === 'sticky-pin'
-      ? 'Charm is positive — this structure strengthens as the session ages.'
-      : 'Charm is negative — this structure weakens as the session ages.';
+      ? 'The influence at this level builds as the session ages.'
+      : 'The influence at this level fades as the session ages.';
   return `${mechanic} ${position} ${charm}`;
 }
 
 function charmTooltip(netCharm: number): string {
   return netCharm >= 0
-    ? 'Charm + (positive): dealer delta grows over time. More futures buying is required as the day ages — upward delta pressure builds into close.'
-    : 'Charm − (negative): dealer delta shrinks over time. Hedging pressure bleeds off toward close — structural influence fades.';
+    ? 'Positive: market maker hedging pressure at this level is growing throughout the day — the structural effect gets stronger into the close.'
+    : 'Negative: market maker hedging pressure at this level is draining throughout the day — the structural effect weakens into the close.';
 }
 
 // ── Delta helpers ─────────────────────────────────────────────────────────────
@@ -260,8 +264,12 @@ const GexLandscape = memo(function GexLandscape({
   const hasScrolledRef = useRef(false);
   // Rolling buffer of recent snapshots for Δ% computations (1m and 5m).
   const snapshotBufferRef = useRef<Snapshot[]>([]);
-  const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(new Map());
-  const [gexDelta5mMap, setGexDelta5mMap] = useState<Map<number, number | null>>(new Map());
+  const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(
+    new Map(),
+  );
+  const [gexDelta5mMap, setGexDelta5mMap] = useState<
+    Map<number, number | null>
+  >(new Map());
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -278,7 +286,9 @@ const GexLandscape = memo(function GexLandscape({
   const spotStrike = useMemo(() => {
     if (!rows.length) return null;
     return rows.reduce((best, s) =>
-      Math.abs(s.strike - currentPrice) < Math.abs(best.strike - currentPrice) ? s : best,
+      Math.abs(s.strike - currentPrice) < Math.abs(best.strike - currentPrice)
+        ? s
+        : best,
     );
   }, [rows, currentPrice]);
 
@@ -328,7 +338,10 @@ const GexLandscape = memo(function GexLandscape({
   useEffect(() => {
     if (hasScrolledRef.current) return;
     if (!loading && rows.length > 0 && spotRowRef.current) {
-      spotRowRef.current.scrollIntoView?.({ block: 'center', behavior: 'instant' });
+      spotRowRef.current.scrollIntoView?.({
+        block: 'center',
+        behavior: 'instant',
+      });
       hasScrolledRef.current = true;
     }
   }, [loading, rows.length]);
@@ -349,11 +362,15 @@ const GexLandscape = memo(function GexLandscape({
 
     // 1m delta — compare against the most recent buffered snapshot.
     const prev1m = buf.at(-1);
-    setGexDeltaMap(prev1m ? computeDeltaMap(strikes, prev1m.strikes) : new Map());
+    setGexDeltaMap(
+      prev1m ? computeDeltaMap(strikes, prev1m.strikes) : new Map(),
+    );
 
     // 5m delta — find the snapshot closest to 5 minutes ago.
     const snap5m = findClosestSnapshot(buf, now - 5 * 60 * 1000);
-    setGexDelta5mMap(snap5m ? computeDeltaMap(strikes, snap5m.strikes) : new Map());
+    setGexDelta5mMap(
+      snap5m ? computeDeltaMap(strikes, snap5m.strikes) : new Map(),
+    );
 
     // Push current snapshot and persist the updated buffer.
     buf.push({ strikes, ts: now });
@@ -378,7 +395,11 @@ const GexLandscape = memo(function GexLandscape({
           <span
             className="font-mono text-[11px]"
             style={{
-              color: isLive ? '#00e676' : isScrubbed ? '#ffd740' : 'var(--color-secondary)',
+              color: isLive
+                ? '#00e676'
+                : isScrubbed
+                  ? '#ffd740'
+                  : 'var(--color-secondary)',
             }}
           >
             {fmtTime(timestamp)} CT
@@ -432,7 +453,7 @@ const GexLandscape = memo(function GexLandscape({
       <button
         onClick={onRefresh}
         disabled={loading}
-        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? ' animate-spin' : ''}`}
+        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? 'animate-spin' : ''}`}
         title="Refresh"
         aria-label="Refresh GEX landscape"
       >
@@ -456,7 +477,9 @@ const GexLandscape = memo(function GexLandscape({
   if (error) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
-        <div className="text-danger py-4 text-center font-mono text-[13px]">{error}</div>
+        <div className="text-danger py-4 text-center font-mono text-[13px]">
+          {error}
+        </div>
       </SectionBox>
     );
   }
@@ -481,7 +504,7 @@ const GexLandscape = memo(function GexLandscape({
       <div className="border-edge overflow-hidden rounded-lg border">
         {/* Sticky column header */}
         <div
-          className={`border-edge-heavy bg-surface-alt sticky top-0 grid border-b font-mono text-[10px] font-semibold uppercase tracking-wider ${cols}`}
+          className={`border-edge-heavy bg-surface-alt sticky top-0 grid border-b font-mono text-[10px] font-semibold tracking-wider uppercase ${cols}`}
           style={{ color: 'var(--color-tertiary)' }}
         >
           <div className="px-3 py-2 text-right">Strike</div>
@@ -631,7 +654,9 @@ const GexLandscape = memo(function GexLandscape({
                     className="cursor-help font-mono text-[11px]"
                     style={{
                       color:
-                        s.netCharm >= 0 ? 'rgba(74,222,128,0.75)' : 'rgba(248,113,113,0.75)',
+                        s.netCharm >= 0
+                          ? 'rgba(74,222,128,0.75)'
+                          : 'rgba(248,113,113,0.75)',
                     }}
                     title={charmTooltip(s.netCharm)}
                   >
@@ -679,9 +704,18 @@ const GexLandscape = memo(function GexLandscape({
       <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 px-1">
         {(
           [
-            ['max-launchpad', 'Neg γ + Pos θ_t — accelerant, builds into close'],
-            ['fading-launchpad', 'Neg γ + Neg θ_t — accelerant that weakens over time'],
-            ['sticky-pin', 'Pos γ + Pos θ_t — wall that strengthens into close'],
+            [
+              'max-launchpad',
+              'Neg γ + Pos θ_t — accelerant, builds into close',
+            ],
+            [
+              'fading-launchpad',
+              'Neg γ + Neg θ_t — accelerant that weakens over time',
+            ],
+            [
+              'sticky-pin',
+              'Pos γ + Pos θ_t — wall that strengthens into close',
+            ],
             ['weakening-pin', 'Pos γ + Neg θ_t — wall losing grip as day ages'],
           ] as [GexClassification, string][]
         ).map(([cls, desc]) => {
