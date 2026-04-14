@@ -459,7 +459,9 @@ describe('dominance', () => {
       deltaGex_5m: 5e9,
       deltaGex_20m: 5e9,
     });
-    const peerMomenta = [0, 0.5e9, 1e9, 2e9, 3e9, 3.5e9, 4e9, 4.5e9, 4.9e9, 5e9];
+    const peerMomenta = [
+      0, 0.5e9, 1e9, 2e9, 3e9, 3.5e9, 4e9, 4.5e9, 4.9e9, 5e9,
+    ];
     expect(dominance(features, peerMomenta)).toBe(1.0);
   });
 

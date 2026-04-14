@@ -551,7 +551,10 @@ describe('scoreStrike', () => {
       deltaSpot_5m: 3,
     });
     // peerMomenta: this strike's momentum = 3.8e9; peers are 10× smaller.
-    const peers = [3.8e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9];
+    const peers = [
+      3.8e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9,
+      0.38e9,
+    ];
     const score = scoreStrike(features, ctx, peers);
     expect(score.tier).toBe('HIGH');
     expect(score.wallSide).toBe('CALL');
@@ -593,7 +596,10 @@ describe('scoreStrike', () => {
       deltaSpot_5m: -3,
     });
     // peerMomenta: this strike's momentum = 3.8e9; peers are 10× smaller.
-    const peers = [3.8e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9];
+    const peers = [
+      3.8e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9, 0.38e9,
+      0.38e9,
+    ];
     const score = scoreStrike(features, ctx, peers);
     // The composite has competing contributions: flow is strongly
     // negative (-0.93), charm is strongly negative (-1.0), price

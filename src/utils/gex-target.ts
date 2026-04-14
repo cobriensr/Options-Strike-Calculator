@@ -1191,8 +1191,7 @@ export function scoreMode(snapshots: GexSnapshot[], mode: Mode): TargetScore {
 
   const topTarget = sortedByScore.find(
     (entry) =>
-      entry.tier !== 'NONE' &&
-      computeAttractingMomentum(entry.features) > 0,
+      entry.tier !== 'NONE' && computeAttractingMomentum(entry.features) > 0,
   );
   if (topTarget) {
     topTarget.isTarget = true;

@@ -500,8 +500,7 @@ function formatBiasForClaude(b: BiasMetrics): string {
   if (b.floorTrend !== null) t1.push(`floor ${fmtPct(b.floorTrend)}`);
   if (t1.length > 0) lines.push(`1m GEX trend: ${t1.join(' | ')}`);
   const t5: string[] = [];
-  if (b.ceilingTrend5m !== null)
-    t5.push(`ceiling ${fmtPct(b.ceilingTrend5m)}`);
+  if (b.ceilingTrend5m !== null) t5.push(`ceiling ${fmtPct(b.ceilingTrend5m)}`);
   if (b.floorTrend5m !== null) t5.push(`floor ${fmtPct(b.floorTrend5m)}`);
   if (t5.length > 0) lines.push(`5m GEX trend: ${t5.join(' | ')}`);
   return lines.join('\n');
@@ -846,8 +845,9 @@ const GexLandscape = memo(function GexLandscape({
                     : 'MMs are net short gamma — they trade with moves, buying rallies and selling drops like fuel. Expect wider ranges and breakouts that accelerate today.'
                 }
               >
-                {bias.regime === 'positive' ? 'POS GEX — dampened' : 'NEG GEX — trending'}
-                {' '}
+                {bias.regime === 'positive'
+                  ? 'POS GEX — dampened'
+                  : 'NEG GEX — trending'}{' '}
                 <span className="font-normal opacity-70">
                   {fmtGex(bias.totalNetGex)}
                 </span>
@@ -888,9 +888,7 @@ const GexLandscape = memo(function GexLandscape({
               <div className="h-full w-px bg-white/10" />
 
               {/* Upside drift targets */}
-              <div
-                title="Top 2 strikes above spot by absolute GEX — where the most MM hedging activity sits overhead. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
-              >
+              <div title="Top 2 strikes above spot by absolute GEX — where the most MM hedging activity sits overhead. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second.">
                 <div
                   className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
@@ -965,9 +963,7 @@ const GexLandscape = memo(function GexLandscape({
               <div className="h-full w-px bg-white/10" />
 
               {/* Downside drift targets */}
-              <div
-                title="Top 2 strikes below spot by absolute GEX — where the most MM hedging activity sits below you. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
-              >
+              <div title="Top 2 strikes below spot by absolute GEX — where the most MM hedging activity sits below you. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second.">
                 <div
                   className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
