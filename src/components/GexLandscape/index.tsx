@@ -219,14 +219,22 @@ function findClosestSnapshot(
 
 interface BiasMetrics {
   verdict: 'bullish' | 'bearish' | 'rangebound' | 'volatile' | 'neutral';
-  floorRatio: number;        // 0–1: share of charm-weighted pin GEX that is below spot
-  gravityStrike: number;     // strike with the largest absolute GEX
-  gravityOffset: number;     // signed distance from spot (+ = above, − = below)
-  gravityGex: number;        // netGamma at that strike
-  nearestSupport: { strike: number; cls: GexClassification; hardening: boolean } | null;
-  nearestResistance: { strike: number; cls: GexClassification; hardening: boolean } | null;
-  floorTrend: number | null;     // avg 1m Δ% for below-spot strikes
-  ceilingTrend: number | null;   // avg 1m Δ% for above-spot strikes
+  floorRatio: number; // 0–1: share of charm-weighted pin GEX that is below spot
+  gravityStrike: number; // strike with the largest absolute GEX
+  gravityOffset: number; // signed distance from spot (+ = above, − = below)
+  gravityGex: number; // netGamma at that strike
+  nearestSupport: {
+    strike: number;
+    cls: GexClassification;
+    hardening: boolean;
+  } | null;
+  nearestResistance: {
+    strike: number;
+    cls: GexClassification;
+    hardening: boolean;
+  } | null;
+  floorTrend: number | null; // avg 1m Δ% for below-spot strikes
+  ceilingTrend: number | null; // avg 1m Δ% for above-spot strikes
 }
 
 interface VerdictMeta {
@@ -276,6 +284,34 @@ const VERDICT_META: Record<BiasMetrics['verdict'], VerdictMeta> = {
 };
 
 /**
+ * Average netGamma and netCharm for each strike across the current snapshot
+ * and all buffer entries within `windowMs` (default 5 minutes).
+ *
+ * Smoothing makes the structural bias verdict stable: small minute-to-minute
+ * GEX fluctuations won't flip the signal. The Δ% columns in the table still
+ * show raw real-time changes — only the verdict inputs are smoothed.
+ */
+function computeSmoothedStrikes(
+  current: GexStrikeLevel[],
+  buf: Snapshot[],
+  nowTs: number,
+  windowMs = 5 * 60 * 1000,
+): GexStrikeLevel[] {
+  const recent = buf.filter((snap) => snap.ts >= nowTs - windowMs);
+  if (recent.length === 0) return current;
+  return current.map((s) => {
+    const history = recent
+      .map((snap) => snap.strikes.find((r) => r.strike === s.strike))
+      .filter((r): r is GexStrikeLevel => r !== undefined);
+    if (history.length === 0) return s;
+    const all = [s, ...history];
+    const avgGamma = all.reduce((sum, r) => sum + r.netGamma, 0) / all.length;
+    const avgCharm = all.reduce((sum, r) => sum + r.netCharm, 0) / all.length;
+    return { ...s, netGamma: avgGamma, netCharm: avgCharm };
+  });
+}
+
+/**
  * Synthesise a directional bias verdict from the current strike landscape.
  *
  * Score logic:
@@ -297,16 +333,29 @@ function computeBias(
   const cw = (s: GexStrikeLevel) => (s.netCharm >= 0 ? 1.25 : 0.75);
 
   // Charm-weighted pin GEX (positive = structural resistance/support)
-  const ceilingPin = above.reduce((sum, s) => sum + Math.max(0, s.netGamma) * cw(s), 0);
-  const floorPin = below.reduce((sum, s) => sum + Math.max(0, s.netGamma) * cw(s), 0);
+  const ceilingPin = above.reduce(
+    (sum, s) => sum + Math.max(0, s.netGamma) * cw(s),
+    0,
+  );
+  const floorPin = below.reduce(
+    (sum, s) => sum + Math.max(0, s.netGamma) * cw(s),
+    0,
+  );
 
   // Charm-weighted launch GEX (negative = accelerant; use abs value)
-  const ceilingLaunch = above.reduce((sum, s) => sum + Math.max(0, -s.netGamma) * cw(s), 0);
-  const floorLaunch = below.reduce((sum, s) => sum + Math.max(0, -s.netGamma) * cw(s), 0);
+  const ceilingLaunch = above.reduce(
+    (sum, s) => sum + Math.max(0, -s.netGamma) * cw(s),
+    0,
+  );
+  const floorLaunch = below.reduce(
+    (sum, s) => sum + Math.max(0, -s.netGamma) * cw(s),
+    0,
+  );
 
   const totalPin = ceilingPin + floorPin;
   const totalLaunch = ceilingLaunch + floorLaunch;
-  const launchPct = totalPin + totalLaunch > 0 ? totalLaunch / (totalPin + totalLaunch) : 0;
+  const launchPct =
+    totalPin + totalLaunch > 0 ? totalLaunch / (totalPin + totalLaunch) : 0;
 
   const bullScore = floorPin + ceilingLaunch;
   const bearScore = ceilingPin + floorLaunch;
@@ -327,14 +376,17 @@ function computeBias(
   // GEX gravity: strike with largest absolute GEX in the full window
   let gravityRow: GexStrikeLevel | null = null;
   for (const s of [...above, ...below]) {
-    if (gravityRow === null || Math.abs(s.netGamma) > Math.abs(gravityRow.netGamma)) {
+    if (
+      gravityRow === null ||
+      Math.abs(s.netGamma) > Math.abs(gravityRow.netGamma)
+    ) {
       gravityRow = s;
     }
   }
 
   // Nearest non-ATM levels on each side (closest to spot)
   const nearestResistanceRow = above.at(-1) ?? null; // lowest above (descending sort)
-  const nearestSupportRow = below[0] ?? null;         // highest below (descending sort)
+  const nearestSupportRow = below[0] ?? null; // highest below (descending sort)
 
   const toLevel = (s: GexStrikeLevel) => ({
     strike: s.strike,
@@ -345,7 +397,9 @@ function computeBias(
   // Aggregate 1m Δ% trends above and below spot
   const avg = (vals: (number | null | undefined)[]) => {
     const nums = vals.filter((v): v is number => v !== null && v !== undefined);
-    return nums.length > 0 ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+    return nums.length > 0
+      ? nums.reduce((a, b) => a + b, 0) / nums.length
+      : null;
   };
 
   return {
@@ -355,7 +409,9 @@ function computeBias(
     gravityOffset: gravityRow ? gravityRow.strike - currentPrice : 0,
     gravityGex: gravityRow?.netGamma ?? 0,
     nearestSupport: nearestSupportRow ? toLevel(nearestSupportRow) : null,
-    nearestResistance: nearestResistanceRow ? toLevel(nearestResistanceRow) : null,
+    nearestResistance: nearestResistanceRow
+      ? toLevel(nearestResistanceRow)
+      : null,
     floorTrend: avg(below.map((s) => gexDeltaMap.get(s.strike))),
     ceilingTrend: avg(above.map((s) => gexDeltaMap.get(s.strike))),
   };
@@ -410,12 +466,11 @@ const GexLandscape = memo(function GexLandscape({
   const hasScrolledRef = useRef(false);
   // Rolling buffer of recent snapshots for Δ% computations (1m and 5m).
   const snapshotBufferRef = useRef<Snapshot[]>([]);
-  const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(
-    new Map(),
-  );
-  const [gexDelta5mMap, setGexDelta5mMap] = useState<
-    Map<number, number | null>
-  >(new Map());
+  const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(new Map());
+  const [gexDelta5mMap, setGexDelta5mMap] = useState<Map<number, number | null>>(new Map());
+  // 5-minute smoothed strikes — updated in the snapshot effect so the ref read
+  // happens inside an effect (not during render), satisfying react-hooks/purity.
+  const [smoothedRows, setSmoothedRows] = useState<GexStrikeLevel[]>([]);
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -473,10 +528,12 @@ const GexLandscape = memo(function GexLandscape({
   }, [gexDelta5mMap, rows]);
 
   // Structural bias synthesis — directional verdict + key levels + trends.
-  const bias = useMemo(
-    () => computeBias(rows, currentPrice, gexDeltaMap),
-    [rows, currentPrice, gexDeltaMap],
-  );
+  // Uses smoothedRows (5-min avg) so small per-snapshot GEX fluctuations don't
+  // flip the verdict. Falls back to raw rows until enough history accumulates.
+  const bias = useMemo(() => {
+    const base = smoothedRows.length > 0 ? smoothedRows : rows;
+    return computeBias(base, currentPrice, gexDeltaMap);
+  }, [smoothedRows, rows, currentPrice, gexDeltaMap]);
 
   // When the viewed date changes, reset scroll and all Δ% tracking so the new
   // date's first snapshot gets a clean baseline instead of comparing against
@@ -486,6 +543,7 @@ const GexLandscape = memo(function GexLandscape({
     snapshotBufferRef.current = [];
     setGexDeltaMap(new Map());
     setGexDelta5mMap(new Map());
+    setSmoothedRows([]);
   }, [selectedDate]);
 
   // Scroll ATM row into view only on initial data arrival.
@@ -529,6 +587,12 @@ const GexLandscape = memo(function GexLandscape({
     // Push current snapshot and persist the updated buffer.
     buf.push({ strikes, ts: now });
     snapshotBufferRef.current = buf;
+
+    // Smooth only the strikes within the display window (same filter as rows)
+    // so the bias panel never shows out-of-range strikes.
+    const price = strikes[0]?.price ?? 0;
+    const windowStrikes = strikes.filter((s) => Math.abs(s.strike - price) <= PRICE_WINDOW);
+    setSmoothedRows(computeSmoothedStrikes(windowStrikes, buf, now));
   }, [strikes, timestamp]);
 
   // ── Header controls ────────────────────────────────────────────────────────
@@ -675,7 +739,7 @@ const GexLandscape = memo(function GexLandscape({
               ? '#4ade80'
               : '#fbbf24';
         return (
-          <div className={`border mb-3 rounded-lg p-3 ${vm.bg} ${vm.border}`}>
+          <div className={`mb-3 rounded-lg border p-3 ${vm.bg} ${vm.border}`}>
             {/* Verdict */}
             <div className="mb-2.5 flex items-center gap-2.5">
               <span
@@ -683,7 +747,9 @@ const GexLandscape = memo(function GexLandscape({
               >
                 {vm.label}
               </span>
-              <span className="text-secondary font-mono text-[11px]">{vm.desc}</span>
+              <span className="text-secondary font-mono text-[11px]">
+                {vm.desc}
+              </span>
             </div>
 
             {/* Metrics row */}
@@ -691,7 +757,7 @@ const GexLandscape = memo(function GexLandscape({
               {/* Nearest support */}
               <div>
                 <div
-                  className="mb-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider"
+                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
                 >
                   Support
@@ -701,21 +767,31 @@ const GexLandscape = memo(function GexLandscape({
                     <div className="font-mono text-[13px] font-semibold text-emerald-400">
                       {bias.nearestSupport.strike.toLocaleString()}
                     </div>
-                    <div className="font-mono text-[10px]" style={{ color: 'var(--color-secondary)' }}>
+                    <div
+                      className="font-mono text-[10px]"
+                      style={{ color: 'var(--color-secondary)' }}
+                    >
                       {CLASS_META[bias.nearestSupport.cls].badge}
                       {' · '}
-                      {bias.nearestSupport.hardening ? 'hardening' : 'softening'}
+                      {bias.nearestSupport.hardening
+                        ? 'hardening'
+                        : 'softening'}
                     </div>
                   </>
                 ) : (
-                  <div className="font-mono text-[13px]" style={{ color: 'var(--color-muted)' }}>—</div>
+                  <div
+                    className="font-mono text-[13px]"
+                    style={{ color: 'var(--color-muted)' }}
+                  >
+                    —
+                  </div>
                 )}
               </div>
 
               {/* Floor vs ceiling balance bar — centered */}
               <div className="flex min-w-[120px] flex-col items-center">
                 <div
-                  className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-wider"
+                  className="mb-1 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
                 >
                   Floor vs Ceiling
@@ -739,7 +815,7 @@ const GexLandscape = memo(function GexLandscape({
               {/* Nearest resistance */}
               <div className="text-right">
                 <div
-                  className="mb-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider"
+                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
                 >
                   Resistance
@@ -749,14 +825,24 @@ const GexLandscape = memo(function GexLandscape({
                     <div className="font-mono text-[13px] font-semibold text-amber-400">
                       {bias.nearestResistance.strike.toLocaleString()}
                     </div>
-                    <div className="font-mono text-[10px]" style={{ color: 'var(--color-secondary)' }}>
+                    <div
+                      className="font-mono text-[10px]"
+                      style={{ color: 'var(--color-secondary)' }}
+                    >
                       {CLASS_META[bias.nearestResistance.cls].badge}
                       {' · '}
-                      {bias.nearestResistance.hardening ? 'hardening' : 'softening'}
+                      {bias.nearestResistance.hardening
+                        ? 'hardening'
+                        : 'softening'}
                     </div>
                   </>
                 ) : (
-                  <div className="font-mono text-[13px]" style={{ color: 'var(--color-muted)' }}>—</div>
+                  <div
+                    className="font-mono text-[13px]"
+                    style={{ color: 'var(--color-muted)' }}
+                  >
+                    —
+                  </div>
                 )}
               </div>
 
@@ -766,18 +852,25 @@ const GexLandscape = memo(function GexLandscape({
               {/* GEX gravity */}
               <div>
                 <div
-                  className="mb-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider"
+                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
                 >
                   GEX Gravity
                 </div>
-                <div className="font-mono text-[13px] font-semibold" style={{ color: 'var(--color-primary)' }}>
+                <div
+                  className="font-mono text-[13px] font-semibold"
+                  style={{ color: 'var(--color-primary)' }}
+                >
                   {bias.gravityOffset === 0
                     ? 'ATM'
                     : `${bias.gravityOffset > 0 ? '↑' : '↓'} ${Math.abs(bias.gravityOffset)}pts`}
                 </div>
-                <div className="font-mono text-[10px]" style={{ color: 'var(--color-secondary)' }}>
-                  {bias.gravityStrike.toLocaleString()} · {fmtGex(bias.gravityGex)}
+                <div
+                  className="font-mono text-[10px]"
+                  style={{ color: 'var(--color-secondary)' }}
+                >
+                  {bias.gravityStrike.toLocaleString()} ·{' '}
+                  {fmtGex(bias.gravityGex)}
                 </div>
               </div>
 
@@ -787,20 +880,36 @@ const GexLandscape = memo(function GexLandscape({
               {/* Floor / ceiling trends */}
               <div>
                 <div
-                  className="mb-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider"
+                  className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                   style={{ color: 'var(--color-tertiary)' }}
                 >
                   1m Trend
                 </div>
                 <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono text-[9px]" style={{ color: 'var(--color-muted)' }}>Floor</span>
-                  <span className="font-mono text-[12px] font-semibold" style={{ color: floorTrendColor }}>
+                  <span
+                    className="font-mono text-[9px]"
+                    style={{ color: 'var(--color-muted)' }}
+                  >
+                    Floor
+                  </span>
+                  <span
+                    className="font-mono text-[12px] font-semibold"
+                    style={{ color: floorTrendColor }}
+                  >
                     {fmtPct(bias.floorTrend)}
                   </span>
                 </div>
                 <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono text-[9px]" style={{ color: 'var(--color-muted)' }}>Ceil</span>
-                  <span className="font-mono text-[12px] font-semibold" style={{ color: ceilTrendColor }}>
+                  <span
+                    className="font-mono text-[9px]"
+                    style={{ color: 'var(--color-muted)' }}
+                  >
+                    Ceil
+                  </span>
+                  <span
+                    className="font-mono text-[12px] font-semibold"
+                    style={{ color: ceilTrendColor }}
+                  >
                     {fmtPct(bias.ceilingTrend)}
                   </span>
                 </div>
