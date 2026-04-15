@@ -129,12 +129,16 @@ export default defineConfig({
     sourcemap: 'hidden',
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom'],
-          sentry: ['@sentry/react'],
-          export: ['xlsx'],
-          analytics: ['@vercel/analytics', '@vercel/speed-insights'],
-          'vix-data': ['./src/data/vixRangeStats'],
+        manualChunks(id) {
+          if (id.includes('lightweight-charts')) return 'charts';
+          if (
+            id.includes('node_modules/react') ||
+            id.includes('node_modules/scheduler')
+          )
+            return 'vendor';
+          if (id.includes('@sentry')) return 'sentry';
+          if (id.includes('xlsx')) return 'export';
+          if (id.includes('src/data/vixRangeStats')) return 'vix-data';
         },
       },
     },
