@@ -1,9 +1,12 @@
 {
-  "generated_at": "2026-04-14T02:40:38+00:00",
+  "generated_at": "2026-04-15T02:41:12+00:00",
   "dataset": {
-    "total_days": 70,
+    "total_days": 71,
     "labeled_days": 40,
-    "date_range": ["2026-01-02", "2026-04-13"],
+    "date_range": [
+      "2026-01-02",
+      "2026-04-14"
+    ],
     "overall_accuracy": 0.925
   },
   "structure_accuracy": {
@@ -188,11 +191,13 @@
   "health": {
     "status": "WARN",
     "warnings": [
-      "Feature completeness below 90% on 3 of last 10 days",
+      "Day Labels: 2 business days stale (max 1)",
+      "Feature completeness below 90% on 4 of last 10 days",
+      "Recent label coverage (40%) is lower than overall (56%)",
       "'dp_support_resistance_ratio' is 30% null in last 10 days"
     ],
     "failures": [],
-    "run_time": "2026-04-14 02:39:50"
+    "run_time": "2026-04-15 02:39:58"
   },
   "pipeline_sections": [
     "health",
@@ -503,19 +508,35 @@
     ]
   },
   "clustering": {
-    "best_k": 1,
+    "best_k": 2,
     "algorithm": "KMeans",
-    "fallback_reason": "k=2 rejected (min size 4 < 5), k=3 rejected (min size 4 < 5), k=4 rejected (min size 4 < 5), k=5 rejected (min size 4 < 5), k=6 rejected (min size 1 < 5)",
-    "silhouette": null,
-    "calinski_harabasz": null,
-    "davies_bouldin": null,
-    "cluster_sizes": null,
-    "stability": null,
-    "split_half_holdout_sil": null,
-    "gmm_bic": null,
-    "permutation_p": null,
-    "chi_squared": {},
-    "n_samples": 40,
+    "fallback_reason": null,
+    "silhouette": 0.397,
+    "calinski_harabasz": 15.3,
+    "davies_bouldin": 0.869,
+    "cluster_sizes": [
+      36,
+      5
+    ],
+    "stability": 0.976,
+    "split_half_holdout_sil": 0.192,
+    "gmm_bic": 997.0,
+    "permutation_p": 0.51,
+    "chi_squared": {
+      "range_category": {
+        "chi2": 1.69,
+        "p": 0.4287
+      },
+      "settlement_direction": {
+        "chi2": 0.24,
+        "p": 0.6228
+      },
+      "recommended_structure": {
+        "chi2": 3.33,
+        "p": 0.1894
+      }
+    },
+    "n_samples": 41,
     "n_pca_components": 5,
     "n_features": 120
   },
@@ -527,14 +548,19 @@
         "file_size_kb": 179.0
       },
       {
+        "name": "cluster_transitions",
+        "generated": true,
+        "file_size_kb": 30.9
+      },
+      {
         "name": "clusters_heatmap",
         "generated": true,
-        "file_size_kb": 45.6
+        "file_size_kb": 54.4
       },
       {
         "name": "clusters_pca",
         "generated": true,
-        "file_size_kb": 146.0
+        "file_size_kb": 136.0
       },
       {
         "name": "cone_consumption",
@@ -549,17 +575,17 @@
       {
         "name": "correlations",
         "generated": true,
-        "file_size_kb": 393.6
+        "file_size_kb": 391.3
       },
       {
         "name": "dark_pool_vs_range",
         "generated": true,
-        "file_size_kb": 119.8
+        "file_size_kb": 120.6
       },
       {
         "name": "day_of_week",
         "generated": true,
-        "file_size_kb": 63.0
+        "file_size_kb": 63.5
       },
       {
         "name": "failure_heatmap",
@@ -619,7 +645,7 @@
       {
         "name": "range_by_regime",
         "generated": true,
-        "file_size_kb": 131.6
+        "file_size_kb": 132.1
       },
       {
         "name": "rolling_accuracy",
@@ -629,7 +655,7 @@
       {
         "name": "stationarity",
         "generated": true,
-        "file_size_kb": 525.3
+        "file_size_kb": 532.6
       },
       {
         "name": "structure_by_vix",
@@ -644,7 +670,7 @@
       {
         "name": "timeline",
         "generated": true,
-        "file_size_kb": 233.7
+        "file_size_kb": 238.4
       },
       {
         "name": "trace_accuracy_by_confidence",
@@ -682,7 +708,7 @@
         "file_size_kb": 66.4
       }
     ],
-    "count": 32
+    "count": 33
   },
   "backtest": {
     "strategies": {
@@ -713,50 +739,50 @@
   "pin_analysis": {
     "pin_accuracy_by_method": {
       "peak_gamma": {
-        "avg_distance": 14.1,
-        "median_distance": 11.3,
-        "within_10": 0.385,
-        "within_20": 0.846,
-        "n_days": 13
+        "avg_distance": 14.3,
+        "median_distance": 11.9,
+        "within_10": 0.357,
+        "within_20": 0.857,
+        "n_days": 14
       },
       "pos_peak": {
-        "avg_distance": 40.8,
-        "median_distance": 11.3,
-        "within_10": 0.385,
-        "within_20": 0.692,
-        "n_days": 13
+        "avg_distance": 39.1,
+        "median_distance": 11.4,
+        "within_10": 0.357,
+        "within_20": 0.714,
+        "n_days": 14
       },
       "pos_centroid": {
-        "avg_distance": 42.7,
+        "avg_distance": 40.1,
         "median_distance": 12.0,
-        "within_10": 0.385,
-        "within_20": 0.692,
-        "n_days": 13
+        "within_10": 0.429,
+        "within_20": 0.714,
+        "n_days": 14
       },
       "prox_centroid": {
-        "avg_distance": 10.8,
-        "median_distance": 7.7,
-        "within_10": 0.615,
-        "within_20": 0.846,
-        "n_days": 13
+        "avg_distance": 10.3,
+        "median_distance": 7.5,
+        "within_10": 0.643,
+        "within_20": 0.857,
+        "n_days": 14
       },
       "charm_centroid": {
-        "avg_distance": 10.9,
-        "median_distance": 8.0,
-        "within_10": 0.615,
-        "within_20": 0.846,
-        "n_days": 13
+        "avg_distance": 10.3,
+        "median_distance": 7.4,
+        "within_10": 0.643,
+        "within_20": 0.857,
+        "n_days": 14
       },
       "gamma_centroid": {
-        "avg_distance": 12.3,
-        "median_distance": 11.8,
-        "within_10": 0.385,
-        "within_20": 0.846,
-        "n_days": 13
+        "avg_distance": 11.9,
+        "median_distance": 11.0,
+        "within_10": 0.429,
+        "within_20": 0.857,
+        "n_days": 14
       }
     },
     "asymmetry_correlation": null,
-    "n_days": 42
+    "n_days": 43
   },
   "trace": {
     "n_days": 67,

@@ -52,13 +52,13 @@ type GexMode = 'oi' | 'vol' | 'dir';
 
 interface FeatureRowOverrides {
   mode?: GexMode;
+  // `rank` only controls the test-local strike/gex magnitude so the
+  // fallback ordering (by |gex_dollars| desc) in the endpoint gives
+  // rank-1 rows larger gex than higher-ranked ones. Derived columns were
+  // dropped in migration #58 so rank is no longer stored on the row.
   rank?: number;
-  isTarget?: boolean;
-  tier?: 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
-  wallSide?: 'CALL' | 'PUT' | 'NEUTRAL';
   strike?: number;
   spotPrice?: number;
-  finalScore?: number;
   // Phase 1.5 nullable horizon fields — surfaced so the round-trip
   // test can lock in their reconstruction.
   deltaPct1m?: number | null;
@@ -76,6 +76,7 @@ interface FeatureRowOverrides {
   charmNet?: number;
   deltaNet?: number;
   vannaNet?: number;
+  gexDollars?: number;
 }
 
 /**
@@ -86,12 +87,8 @@ function makeFeatureRow(overrides: FeatureRowOverrides = {}) {
   const {
     mode = 'oi',
     rank = 1,
-    isTarget = rank === 1,
-    tier = 'HIGH',
-    wallSide = 'CALL',
     strike = 5800,
     spotPrice = 5790,
-    finalScore = 0.65,
     deltaPct1m = 0.12,
     deltaPct5m = 0.08,
     deltaPct20m = 0.04,
@@ -106,6 +103,10 @@ function makeFeatureRow(overrides: FeatureRowOverrides = {}) {
     charmNet = 5_000_000,
     deltaNet = 2_000_000_000,
     vannaNet = 1_500_000,
+    // Fallback ordering in the endpoint is by |gex_dollars| desc.
+    // Derive a rank-sensitive magnitude so rank-1 has the largest
+    // |gex| and thus sorts first.
+    gexDollars = 1_200_000_000 - (rank - 1) * 100_000_000,
   } = overrides;
 
   return {
@@ -115,11 +116,7 @@ function makeFeatureRow(overrides: FeatureRowOverrides = {}) {
     math_version: 'v1',
     strike: String(strike),
 
-    rank_in_mode: rank,
-    rank_by_size: rank,
-    is_target: isTarget,
-
-    gex_dollars: '1200000000',
+    gex_dollars: String(gexDollars),
 
     delta_gex_1m: '120000000',
     delta_gex_5m: '76000000',
@@ -151,17 +148,6 @@ function makeFeatureRow(overrides: FeatureRowOverrides = {}) {
     dist_from_spot: String(strike - spotPrice),
     spot_price: String(spotPrice),
     minutes_after_noon_ct: '60',
-
-    flow_confluence: '0.55',
-    price_confirm: '0.40',
-    charm_score: '0.30',
-    dominance: '0.80',
-    clarity: '0.20',
-    proximity: '0.85',
-
-    final_score: String(finalScore),
-    tier,
-    wall_side: wallSide,
   };
 }
 
@@ -179,10 +165,7 @@ function makeFullSnapshotRows() {
         makeFeatureRow({
           mode,
           rank,
-          isTarget: rank === 1,
-          tier: rank === 1 ? 'HIGH' : 'MEDIUM',
           strike: 5800 + rank * 5,
-          finalScore: 0.9 - rank * 0.05,
         }),
       );
     }
@@ -411,18 +394,20 @@ describe('GET /api/gex-target-history', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('groups rows by mode and sorts each leaderboard by rank', async () => {
+  it('groups rows by mode and sorts each leaderboard by |gex_dollars| desc', async () => {
     mockSql.mockResolvedValueOnce([{ date: '2026-04-08' }]);
     mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-08T19:00:00Z' }]);
     // Intentionally pass rows out of order so the sort step is exercised.
+    // `rank` in makeFeatureRow drives the default gex_dollars magnitude,
+    // so rank-1 rows sort first in the fallback ordering.
     mockSql.mockResolvedValueOnce([
-      makeFeatureRow({ mode: 'vol', rank: 2, strike: 5810, isTarget: false }),
-      makeFeatureRow({ mode: 'oi', rank: 3, strike: 5815, isTarget: false }),
-      makeFeatureRow({ mode: 'dir', rank: 1, strike: 5805, isTarget: true }),
-      makeFeatureRow({ mode: 'oi', rank: 1, strike: 5800, isTarget: true }),
-      makeFeatureRow({ mode: 'vol', rank: 1, strike: 5805, isTarget: true }),
-      makeFeatureRow({ mode: 'oi', rank: 2, strike: 5810, isTarget: false }),
-      makeFeatureRow({ mode: 'dir', rank: 2, strike: 5810, isTarget: false }),
+      makeFeatureRow({ mode: 'vol', rank: 2, strike: 5810 }),
+      makeFeatureRow({ mode: 'oi', rank: 3, strike: 5815 }),
+      makeFeatureRow({ mode: 'dir', rank: 1, strike: 5805 }),
+      makeFeatureRow({ mode: 'oi', rank: 1, strike: 5800 }),
+      makeFeatureRow({ mode: 'vol', rank: 1, strike: 5805 }),
+      makeFeatureRow({ mode: 'oi', rank: 2, strike: 5810 }),
+      makeFeatureRow({ mode: 'dir', rank: 2, strike: 5810 }),
     ]);
 
     const res = mockResponse();
@@ -431,33 +416,25 @@ describe('GET /api/gex-target-history', () => {
     expect(res._status).toBe(200);
     const body = res._json as ResponseShape;
 
-    expect(body.oi?.leaderboard.map((s) => s.rankByScore)).toEqual([1, 2, 3]);
-    expect(body.vol?.leaderboard.map((s) => s.rankByScore)).toEqual([1, 2]);
-    expect(body.dir?.leaderboard.map((s) => s.rankByScore)).toEqual([1, 2]);
+    // Leaderboards are ordered by |gex_dollars| desc — rank-1 rows first.
+    expect(body.oi?.leaderboard.map((s) => s.strike)).toEqual([
+      5800, 5810, 5815,
+    ]);
+    expect(body.vol?.leaderboard.map((s) => s.strike)).toEqual([5805, 5810]);
+    expect(body.dir?.leaderboard.map((s) => s.strike)).toEqual([5805, 5810]);
 
-    expect(body.oi?.target?.strike).toBe(5800);
-    expect(body.vol?.target?.strike).toBe(5805);
-    expect(body.dir?.target?.strike).toBe(5805);
+    // target is always null — the browser computes it from raw features.
+    expect(body.oi?.target).toBeNull();
+    expect(body.vol?.target).toBeNull();
+    expect(body.dir?.target).toBeNull();
   });
 
-  it('keeps target null when the top-ranked row is tier NONE', async () => {
+  it('target is always null regardless of leaderboard contents', async () => {
     mockSql.mockResolvedValueOnce([{ date: '2026-04-08' }]);
     mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-08T19:00:00Z' }]);
     mockSql.mockResolvedValueOnce([
-      makeFeatureRow({
-        mode: 'oi',
-        rank: 1,
-        tier: 'NONE',
-        isTarget: false,
-        strike: 5800,
-      }),
-      makeFeatureRow({
-        mode: 'oi',
-        rank: 2,
-        tier: 'NONE',
-        isTarget: false,
-        strike: 5810,
-      }),
+      makeFeatureRow({ mode: 'oi', rank: 1, strike: 5800 }),
+      makeFeatureRow({ mode: 'oi', rank: 2, strike: 5810 }),
     ]);
 
     const res = mockResponse();
@@ -465,12 +442,16 @@ describe('GET /api/gex-target-history', () => {
 
     expect(res._status).toBe(200);
     const body = res._json as ResponseShape;
+    // Derived scoring columns were dropped in migration #58 — the
+    // server can't know what the target is anymore, so it always
+    // returns null. Browser computes the target from raw features.
     expect(body.oi?.target).toBeNull();
     expect(body.oi?.leaderboard).toHaveLength(2);
+    // tier defaults to 'NONE' since the DB no longer stores it.
     expect(body.oi?.leaderboard[0]?.tier).toBe('NONE');
   });
 
-  it('reconstructs every StrikeScore field including Phase 1.5 nullable horizons', async () => {
+  it('reconstructs every raw feature field including Phase 1.5 nullable horizons', async () => {
     mockSql.mockResolvedValueOnce([{ date: '2026-04-08' }]);
     mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-08T19:00:00Z' }]);
     // One row with a known mix of populated and null horizons.
@@ -478,7 +459,6 @@ describe('GET /api/gex-target-history', () => {
       makeFeatureRow({
         mode: 'oi',
         rank: 1,
-        isTarget: true,
         deltaPct20m: null,
         deltaPct60m: null,
         prevGexDollars20m: null,
@@ -491,12 +471,21 @@ describe('GET /api/gex-target-history', () => {
 
     expect(res._status).toBe(200);
     const body = res._json as ResponseShape;
-    const target = body.oi?.target;
-    expect(target).not.toBeNull();
-    expect(target?.strike).toBe(5800);
-    expect(target?.isTarget).toBe(true);
+    // Derived scoring columns were dropped in migration #58, so target
+    // is always null — pull the first leaderboard row instead and
+    // verify raw feature round-tripping off of that.
+    const entry = body.oi?.leaderboard[0];
+    expect(entry).toBeDefined();
+    expect(entry?.strike).toBe(5800);
+    // Derived defaults — filled client-side before display.
+    expect(entry?.isTarget).toBe(false);
+    expect(entry?.finalScore).toBe(0);
+    expect(entry?.tier).toBe('NONE');
+    expect(entry?.wallSide).toBe('NEUTRAL');
+    expect(entry?.rankByScore).toBe(0);
+    expect(entry?.rankBySize).toBe(0);
 
-    const features = target?.features as {
+    const features = entry?.features as {
       strike: number;
       spot: number;
       distFromSpot: number;
@@ -535,7 +524,8 @@ describe('GET /api/gex-target-history', () => {
     expect(features.vannaNet).toBe(1_500_000);
     expect(features.minutesAfterNoonCT).toBe(60);
 
-    const components = target?.components as {
+    // Components default to zero since the DB no longer stores them.
+    const components = entry?.components as {
       flowConfluence: number;
       priceConfirm: number;
       charmScore: number;
@@ -543,15 +533,12 @@ describe('GET /api/gex-target-history', () => {
       clarity: number;
       proximity: number;
     };
-    expect(components.flowConfluence).toBeCloseTo(0.55);
-    expect(components.priceConfirm).toBeCloseTo(0.4);
-    expect(components.charmScore).toBeCloseTo(0.3);
-    expect(components.dominance).toBeCloseTo(0.8);
-    expect(components.clarity).toBeCloseTo(0.2);
-    expect(components.proximity).toBeCloseTo(0.85);
-
-    expect(target?.tier).toBe('HIGH');
-    expect(target?.wallSide).toBe('CALL');
+    expect(components.flowConfluence).toBe(0);
+    expect(components.priceConfirm).toBe(0);
+    expect(components.charmScore).toBe(0);
+    expect(components.dominance).toBe(0);
+    expect(components.clarity).toBe(0);
+    expect(components.proximity).toBe(0);
   });
 
   it('includes candles fetched from spx-candles.ts', async () => {
@@ -718,7 +705,6 @@ describe('GET /api/gex-target-history', () => {
             makeFeatureRow({
               mode,
               rank,
-              isTarget: rank === 1,
               strike: 5800 + rank * 5,
               spotPrice,
             }),

@@ -574,6 +574,16 @@ describe('db.ts', () => {
       expect(mockSql).toHaveBeenCalledTimes(193);
       // Migrations #3 and #15-60 each call sql.transaction() once for atomic execution
       expect(mockSql.transaction).toHaveBeenCalledTimes(47);
+        '#58: Drop derived scoring columns from gex_target_features — scoring now happens browser-side from raw features so these columns are dead weight subject to formula-rot',
+      ]);
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) = 185
+      // Migration #3 was converted from run: to statements: (BE-CRON-010);
+      // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
+      // toward the 185 total — the only delta is that they route through
+      // sql.transaction() instead of sequential awaits.
+      expect(mockSql).toHaveBeenCalledTimes(185);
+      // Migrations #3 and #15-58 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(45);main
     });
 
     it('propagates errors from migration SQL', async () => {

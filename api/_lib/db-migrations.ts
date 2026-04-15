@@ -1567,6 +1567,26 @@ export const MIGRATIONS: Migration[] = [
           ADD COLUMN IF NOT EXISTS nope_am_mean         DECIMAL(14, 10),
           ADD COLUMN IF NOT EXISTS nope_am_sign_flips   INTEGER,
           ADD COLUMN IF NOT EXISTS nope_am_cum_delta    DECIMAL(18, 4)
+          
+      'Drop derived scoring columns from gex_target_features — scoring now happens browser-side from raw features so these columns are dead weight subject to formula-rot',
+    statements: (sql) => [
+      sql`
+        DROP INDEX IF EXISTS idx_gex_target_features_mode_target
+      `,
+      sql`
+        ALTER TABLE gex_target_features
+          DROP COLUMN IF EXISTS rank_in_mode,
+          DROP COLUMN IF EXISTS rank_by_size,
+          DROP COLUMN IF EXISTS is_target,
+          DROP COLUMN IF EXISTS flow_confluence,
+          DROP COLUMN IF EXISTS price_confirm,
+          DROP COLUMN IF EXISTS charm_score,
+          DROP COLUMN IF EXISTS dominance,
+          DROP COLUMN IF EXISTS clarity,
+          DROP COLUMN IF EXISTS proximity,
+          DROP COLUMN IF EXISTS final_score,
+          DROP COLUMN IF EXISTS tier,
+          DROP COLUMN IF EXISTS wall_side
       `,
     ],
   },

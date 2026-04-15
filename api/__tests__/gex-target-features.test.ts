@@ -275,11 +275,11 @@ describe('writeFeatureRows', () => {
     // per-insert — tests override when they need a specific shape.
     mockQuery.mockImplementation(
       async (_text: string, params: unknown[] = []) => {
-        const cols = 43;
+        const cols = 31;
         const rowCount = Math.floor(params.length / cols);
         return Array.from({ length: rowCount }, (_v, i) => {
           // Walk the params to find the mode of the i-th row (position 2
-          // inside each 43-column block).
+          // inside each 31-column block).
           const mode = params[i * cols + 2] as string;
           return { id: i + 1, mode };
         });
@@ -324,10 +324,10 @@ describe('writeFeatureRows', () => {
     expect(sqlText).toMatch(/DO NOTHING/);
     expect(sqlText).toMatch(/RETURNING id, mode/);
 
-    // With 9 strikes × 3 modes we expect 27 flattened rows × 43 cols.
+    // With 9 strikes × 3 modes we expect 27 flattened rows × 31 cols.
     const p = params as unknown[];
-    expect(p.length % 43).toBe(0);
-    const rowCount = p.length / 43;
+    expect(p.length % 31).toBe(0);
+    const rowCount = p.length / 31;
     expect(rowCount).toBe(27);
     expect(result.written).toBe(27);
     expect(result.skipped).toBe(0);
@@ -382,7 +382,7 @@ describe('writeFeatureRows', () => {
     );
   });
 
-  it('row flattening: identity, Layer 2, and Layer 3 columns land in the right slots', async () => {
+  it('row flattening: identity and Layer 2 columns land in the right slots', async () => {
     const snapshots = buildSnapshotHistory(5);
     const timestamp = snapshots.at(-1)!.timestamp;
     await writeFeatureRows(snapshots, '2026-03-24', timestamp);
@@ -395,16 +395,13 @@ describe('writeFeatureRows', () => {
     expect(['oi', 'vol', 'dir']).toContain(p[2]);
     expect(p[3]).toBe('v1');
     expect(typeof p[4]).toBe('number');
-    // Ranking ($6..$8)
-    expect(typeof p[5]).toBe('number'); // rank_in_mode
-    expect(typeof p[6]).toBe('number'); // rank_by_size
-    expect(typeof p[7]).toBe('boolean'); // is_target
-    // Layer 2 anchor: gex_dollars at slot $9
-    expect(typeof p[8]).toBe('number');
-    // Layer 3 tail: final_score, tier, wall_side at slots $41..$43
-    expect(typeof p[40]).toBe('number');
-    expect(['HIGH', 'MEDIUM', 'LOW', 'NONE']).toContain(p[41]);
-    expect(['CALL', 'PUT', 'NEUTRAL']).toContain(p[42]);
+    // Layer 2 anchor: gex_dollars at slot $6
+    expect(typeof p[5]).toBe('number');
+    // Layer 2 tail: nearest-wall block at $28..$31 (pos_dist, pos_gex,
+    // neg_dist, neg_gex). The values themselves may be null for a given
+    // universe; here we just assert the slot exists by checking that the
+    // flattened row length hits exactly 31 columns.
+    expect(p.length % 31).toBe(0);
   });
 
   it('nearest-wall: picks the closest call wall above spot and put wall below spot', async () => {
@@ -470,15 +467,15 @@ describe('writeFeatureRows', () => {
     const [, params] = mockQuery.mock.calls[0]!;
     const p = params as unknown[];
     // Every row in the same (snapshot × mode) gets identical wall
-    // metadata. Slots 31..34 are the nearest wall block for the first
+    // metadata. Slots 28..31 are the nearest wall block for the first
     // row: nearest_pos_wall_dist, nearest_pos_wall_gex,
     // nearest_neg_wall_dist, nearest_neg_wall_gex.
-    expect(p[30]).toBe(2); // 5802 − 5800
-    expect(typeof p[31]).toBe('number');
-    expect((p[31] as number) > 0).toBe(true);
-    expect(p[32]).toBe(2); // 5800 − 5798
-    expect(typeof p[33]).toBe('number');
-    expect((p[33] as number) > 0).toBe(true);
+    expect(p[27]).toBe(2); // 5802 − 5800
+    expect(typeof p[28]).toBe('number');
+    expect((p[28] as number) > 0).toBe(true);
+    expect(p[29]).toBe(2); // 5800 − 5798
+    expect(typeof p[30]).toBe('number');
+    expect((p[30] as number) > 0).toBe(true);
   });
 
   it('nearest-wall: stores null when no wall exists on a given side', async () => {
@@ -529,10 +526,10 @@ describe('writeFeatureRows', () => {
     const [, params] = mockQuery.mock.calls[0]!;
     const p = params as unknown[];
     // Positive wall present (5805 is closest)
-    expect(p[30]).toBe(5);
-    expect(typeof p[31]).toBe('number');
+    expect(p[27]).toBe(5);
+    expect(typeof p[28]).toBe('number');
     // No negative wall on any strike — both neg slots must be null
-    expect(p[32]).toBeNull();
-    expect(p[33]).toBeNull();
+    expect(p[29]).toBeNull();
+    expect(p[30]).toBeNull();
   });
 });
