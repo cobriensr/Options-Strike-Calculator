@@ -487,6 +487,7 @@ describe('db.ts', () => {
         { id: 58 },
         { id: 59 },
         { id: 60 },
+        { id: 61 },
       ]);
 
       const applied = await migrateDb();
@@ -562,28 +563,19 @@ describe('db.ts', () => {
         '#55: Add prev_gex_dollars_10m and prev_gex_dollars_15m columns to gex_target_features for 5-minute sparkline resolution',
         '#56: Create trace_predictions table for manual TRACE Delta Pressure EOD pin predictions',
         '#57: Add gamma_regime column to trace_predictions for GEX environment context',
-        '#58: Create flow_alerts table for UW 0-1 DTE SPXW repeated-hit flow ingestion',
-        '#59: Create nope_ticks table for UW SPY NOPE per-minute time series (ML feature source)',
-        '#60: Add NOPE-derived columns to training_features (4 checkpoint values + 3 AM aggregates)',
-      ]);
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 7 (#58: CREATE+5 INDEX+INSERT) + 2 (#59: CREATE+INSERT) + 2 (#60: ALTER+INSERT) = 193
-      // Migration #3 was converted from run: to statements: (BE-CRON-010);
-      // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
-      // toward the 193 total — the only delta is that they route through
-      // sql.transaction() instead of sequential awaits.
-      expect(mockSql).toHaveBeenCalledTimes(193);
-      // Migrations #3 and #15-60 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(47);
         '#58: Drop derived scoring columns from gex_target_features — scoring now happens browser-side from raw features so these columns are dead weight subject to formula-rot',
+        '#59: Create flow_alerts table for UW 0-1 DTE SPXW repeated-hit flow ingestion',
+        '#60: Create nope_ticks table for UW SPY NOPE per-minute time series (ML feature source)',
+        '#61: Add NOPE-derived columns to training_features (4 checkpoint values + 3 AM aggregates)',
       ]);
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) = 185
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) = 196
       // Migration #3 was converted from run: to statements: (BE-CRON-010);
       // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
-      // toward the 185 total — the only delta is that they route through
+      // toward the 196 total — the only delta is that they route through
       // sql.transaction() instead of sequential awaits.
-      expect(mockSql).toHaveBeenCalledTimes(185);
-      // Migrations #3 and #15-58 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(45);main
+      expect(mockSql).toHaveBeenCalledTimes(196);
+      // Migrations #3 and #15-61 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(48);
     });
 
     it('propagates errors from migration SQL', async () => {

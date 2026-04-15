@@ -1453,6 +1453,31 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 58,
     description:
+      'Drop derived scoring columns from gex_target_features — scoring now happens browser-side from raw features so these columns are dead weight subject to formula-rot',
+    statements: (sql) => [
+      sql`
+        DROP INDEX IF EXISTS idx_gex_target_features_mode_target
+      `,
+      sql`
+        ALTER TABLE gex_target_features
+          DROP COLUMN IF EXISTS rank_in_mode,
+          DROP COLUMN IF EXISTS rank_by_size,
+          DROP COLUMN IF EXISTS is_target,
+          DROP COLUMN IF EXISTS flow_confluence,
+          DROP COLUMN IF EXISTS price_confirm,
+          DROP COLUMN IF EXISTS charm_score,
+          DROP COLUMN IF EXISTS dominance,
+          DROP COLUMN IF EXISTS clarity,
+          DROP COLUMN IF EXISTS proximity,
+          DROP COLUMN IF EXISTS final_score,
+          DROP COLUMN IF EXISTS tier,
+          DROP COLUMN IF EXISTS wall_side
+      `,
+    ],
+  },
+  {
+    id: 59,
+    description:
       'Create flow_alerts table for UW 0-1 DTE SPXW repeated-hit flow ingestion',
     statements: (sql) => [
       sql`
@@ -1530,7 +1555,7 @@ export const MIGRATIONS: Migration[] = [
     ],
   },
   {
-    id: 59,
+    id: 60,
     description:
       'Create nope_ticks table for UW SPY NOPE per-minute time series (ML feature source)',
     statements: (sql) => [
@@ -1554,7 +1579,7 @@ export const MIGRATIONS: Migration[] = [
     ],
   },
   {
-    id: 60,
+    id: 61,
     description:
       'Add NOPE-derived columns to training_features (4 checkpoint values + 3 AM aggregates)',
     statements: (sql) => [
@@ -1567,26 +1592,6 @@ export const MIGRATIONS: Migration[] = [
           ADD COLUMN IF NOT EXISTS nope_am_mean         DECIMAL(14, 10),
           ADD COLUMN IF NOT EXISTS nope_am_sign_flips   INTEGER,
           ADD COLUMN IF NOT EXISTS nope_am_cum_delta    DECIMAL(18, 4)
-          
-      'Drop derived scoring columns from gex_target_features — scoring now happens browser-side from raw features so these columns are dead weight subject to formula-rot',
-    statements: (sql) => [
-      sql`
-        DROP INDEX IF EXISTS idx_gex_target_features_mode_target
-      `,
-      sql`
-        ALTER TABLE gex_target_features
-          DROP COLUMN IF EXISTS rank_in_mode,
-          DROP COLUMN IF EXISTS rank_by_size,
-          DROP COLUMN IF EXISTS is_target,
-          DROP COLUMN IF EXISTS flow_confluence,
-          DROP COLUMN IF EXISTS price_confirm,
-          DROP COLUMN IF EXISTS charm_score,
-          DROP COLUMN IF EXISTS dominance,
-          DROP COLUMN IF EXISTS clarity,
-          DROP COLUMN IF EXISTS proximity,
-          DROP COLUMN IF EXISTS final_score,
-          DROP COLUMN IF EXISTS tier,
-          DROP COLUMN IF EXISTS wall_side
       `,
     ],
   },
