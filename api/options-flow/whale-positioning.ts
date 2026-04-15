@@ -15,7 +15,10 @@
  * are computed inline from UW's response.
  *
  * Query params:
- *   ?min_premium=1000000  (default 1_000_000, min 0)
+ *   ?min_premium=1000000  (default 1_000_000, min 500_000 — matches the
+ *                          whale cron's hardcoded threshold and the UI
+ *                          slider floor; prevents a crafted request from
+ *                          dumping the full UW flow-alerts feed)
  *   ?max_dte=7            (default 7, 0-30)
  *   ?limit=20             (default 20, 1-50)
  *
@@ -48,7 +51,7 @@ import {
 // ============================================================
 
 const querySchema = z.object({
-  min_premium: z.coerce.number().int().min(0).default(1_000_000),
+  min_premium: z.coerce.number().int().min(500_000).default(1_000_000),
   max_dte: z.coerce.number().int().min(0).max(30).default(7),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });

@@ -158,6 +158,79 @@ describe('GET /api/options-flow/whale-positioning', () => {
     expect(mockUwFetch).not.toHaveBeenCalled();
   });
 
+  it('returns 400 for min_premium below the $500K floor', async () => {
+    // The Zod floor was tightened from 0 → 500_000 so a crafted request
+    // can't dump the full UW flow-alerts feed by setting min_premium=0.
+    const req = mockRequest({
+      method: 'GET',
+      query: { min_premium: '0' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toMatchObject({ error: 'Invalid query' });
+    expect(mockUwFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for min_premium just below the $500K floor', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { min_premium: '499999' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(mockUwFetch).not.toHaveBeenCalled();
+  });
+
+  it('accepts min_premium exactly at the $500K floor', async () => {
+    mockUwFetch.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { min_premium: '500000' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockUwFetch).toHaveBeenCalledTimes(1);
+    const [, path] = mockUwFetch.mock.calls[0]! as [string, string];
+    expect(path).toContain('min_premium=500000');
+  });
+
+  it('accepts min_premium at and above $1M (existing contract)', async () => {
+    mockUwFetch.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { min_premium: '1000000' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockUwFetch).toHaveBeenCalledTimes(1);
+    const [, path] = mockUwFetch.mock.calls[0]! as [string, string];
+    expect(path).toContain('min_premium=1000000');
+  });
+
+  it('applies the default min_premium=1_000_000 when no query param is provided', async () => {
+    mockUwFetch.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { min_premium: number };
+    expect(body.min_premium).toBe(1_000_000);
+    const [, path] = mockUwFetch.mock.calls[0]! as [string, string];
+    expect(path).toContain('min_premium=1000000');
+  });
+
   it('returns 400 for invalid max_dte (too large)', async () => {
     const req = mockRequest({
       method: 'GET',

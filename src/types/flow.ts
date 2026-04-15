@@ -63,7 +63,13 @@ export interface WhaleAlert {
   total_premium: number;
   total_ask_side_prem: number;
   total_bid_side_prem: number;
-  ask_side_ratio: number;
+  /**
+   * Ratio of premium filled at/above ask, `askPrem / totalPrem`. Null when
+   * total_premium is zero or non-finite — the server explicitly returns
+   * null rather than coercing to 0 so downstream sorts and UI renderers
+   * can distinguish "no signal" from "100% bid-side".
+   */
+  ask_side_ratio: number | null;
   total_size: number;
   volume: number;
   open_interest: number;

@@ -89,8 +89,8 @@ function formatPremium(n: number): string {
   return `$${Math.round(n)}`;
 }
 
-function formatAskPct(ratio: number): string {
-  if (!Number.isFinite(ratio)) return '—';
+function formatAskPct(ratio: number | null): string {
+  if (ratio == null || !Number.isFinite(ratio)) return '—';
   return `${(ratio * 100).toFixed(1)}%`;
 }
 
@@ -188,7 +188,16 @@ function shortRule(rule: string): string {
 // SORT HELPERS
 // ============================================================
 
-function getSortValue(row: WhaleAlert, col: SortColumn): number {
+/**
+ * Numeric sort key for a non-nullable column. `ask_side_ratio` is handled
+ * separately in `sortAlerts` because the server returns null for alerts
+ * with zero / non-finite total_premium — a null can't be meaningfully
+ * compared against a signed ratio in either direction.
+ */
+function getSortValue(
+  row: WhaleAlert,
+  col: Exclude<SortColumn, 'ask_side_ratio'>,
+): number {
   switch (col) {
     case 'strike':
       return row.strike;
@@ -200,8 +209,6 @@ function getSortValue(row: WhaleAlert, col: SortColumn): number {
       return row.distance_from_spot;
     case 'total_premium':
       return row.total_premium;
-    case 'ask_side_ratio':
-      return row.ask_side_ratio;
     case 'total_size':
       return row.total_size;
     case 'volume_oi_ratio':
@@ -216,6 +223,28 @@ function sortAlerts(
   col: SortColumn,
   dir: SortDirection,
 ): WhaleAlert[] {
+  if (col === 'ask_side_ratio') {
+    // Null ask_side_ratio rows always sink to the bottom regardless of
+    // direction — mirrors the Net GEX null-partition in OptionsFlowTable.
+    // Partition first, sort the present values per direction, then append
+    // the null tail unchanged.
+    const withRatio: { row: WhaleAlert; ratio: number }[] = [];
+    const withoutRatio: WhaleAlert[] = [];
+    for (const row of rows) {
+      if (row.ask_side_ratio == null) {
+        withoutRatio.push(row);
+      } else {
+        withRatio.push({ row, ratio: row.ask_side_ratio });
+      }
+    }
+    withRatio.sort((a, b) => {
+      if (a.ratio === b.ratio) return 0;
+      return a.ratio < b.ratio ? -1 : 1;
+    });
+    const ordered = dir === 'desc' ? withRatio.reverse() : withRatio;
+    return [...ordered.map((x) => x.row), ...withoutRatio];
+  }
+
   const sorted = [...rows].sort((a, b) => {
     const av = getSortValue(a, col);
     const bv = getSortValue(b, col);

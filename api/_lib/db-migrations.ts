@@ -1485,7 +1485,12 @@ export const MIGRATIONS: Migration[] = [
           -- Primary key
           id                     BIGSERIAL PRIMARY KEY,
 
-          -- Identity & rule (from UW list response)
+          -- Identity & rule (from UW list response).
+          -- NOTE: uw_alert_id and rule_id are reserved for future enrichment
+          -- via UW's detail endpoint (/api/option-trades/flow-alerts/{id}).
+          -- The current list-endpoint cron does not populate them; a
+          -- secondary cron or backfill script can fill them later without
+          -- a migration.
           uw_alert_id            UUID,
           rule_id                UUID,
           alert_rule             TEXT NOT NULL,
@@ -1496,13 +1501,17 @@ export const MIGRATIONS: Migration[] = [
           expiry                 DATE NOT NULL,
           type                   TEXT NOT NULL,
 
-          -- Timing
+          -- Timing.
+          -- NOTE: start_time and end_time are reserved for the UW detail
+          -- endpoint (list endpoint only exposes created_at).
           created_at             TIMESTAMPTZ NOT NULL,
           start_time             TIMESTAMPTZ,
           end_time               TIMESTAMPTZ,
           ingested_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-          -- Pricing & volatility
+          -- Pricing & volatility.
+          -- NOTE: bid, ask, iv_start, iv_end are reserved for UW detail
+          -- endpoint enrichment (list endpoint exposes price only).
           price                  NUMERIC,
           underlying_price       NUMERIC,
           bid                    NUMERIC,
@@ -1605,7 +1614,12 @@ export const MIGRATIONS: Migration[] = [
           -- Primary key
           id                     BIGSERIAL PRIMARY KEY,
 
-          -- Identity & rule (from UW list response)
+          -- Identity & rule (from UW list response).
+          -- NOTE: uw_alert_id and rule_id are reserved for future enrichment
+          -- via UW's detail endpoint (/api/option-trades/flow-alerts/{id}).
+          -- Mirrors the flow_alerts schema (migration #59). The whale cron
+          -- only consumes the list endpoint; a secondary cron or backfill
+          -- script can populate these later without a migration.
           uw_alert_id            UUID,
           rule_id                UUID,
           alert_rule             TEXT NOT NULL,
@@ -1616,14 +1630,18 @@ export const MIGRATIONS: Migration[] = [
           expiry                 DATE NOT NULL,
           type                   TEXT NOT NULL,
 
-          -- Timing
+          -- Timing.
+          -- NOTE: start_time and end_time are reserved for the UW detail
+          -- endpoint (list endpoint only exposes created_at).
           created_at             TIMESTAMPTZ NOT NULL,
           start_time             TIMESTAMPTZ,
           end_time               TIMESTAMPTZ,
           ingested_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
           age_minutes_at_ingest  INTEGER,
 
-          -- Pricing & volatility
+          -- Pricing & volatility.
+          -- NOTE: bid, ask, iv_start, iv_end are reserved for UW detail
+          -- endpoint enrichment (list endpoint exposes price only).
           price                  NUMERIC,
           underlying_price       NUMERIC,
           bid                    NUMERIC,

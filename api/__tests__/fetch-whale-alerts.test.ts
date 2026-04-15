@@ -349,6 +349,26 @@ describe('fetch-whale-alerts handler', () => {
     expect(res._json).toMatchObject({ fetched: 2, inserted: 1 });
   });
 
+  // ── cronGuard rejection ────────────────────────────────────
+
+  it('bails without calling uwFetch or getDb when cronGuard returns null', async () => {
+    // When cronGuard rejects (bad CRON_SECRET, non-GET, etc.) it writes
+    // the response itself and returns null. The handler must treat that
+    // as the terminal state and do no further work.
+    mockCronGuard.mockReturnValueOnce(null);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer wrong' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockCronGuard).toHaveBeenCalledOnce();
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   // ── URL assertions ─────────────────────────────────────────
 
   it('never includes rule_name in the UW path and always sets min_premium + max_dte', async () => {

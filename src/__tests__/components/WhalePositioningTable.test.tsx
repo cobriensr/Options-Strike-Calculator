@@ -335,4 +335,84 @@ describe('WhalePositioningTable', () => {
     render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
     expect(screen.getByText('15m ago')).toBeInTheDocument();
   });
+
+  describe('ask_side_ratio null-handling in sort', () => {
+    // Server returns ask_side_ratio: null when total_premium is 0 / non-finite.
+    // Those rows must sink to the bottom regardless of sort direction — a
+    // null can't be meaningfully compared against a signed ratio.
+    //
+    // Make all three rows pass the default $1M slider so nothing is filtered
+    // out before sorting. Use distinct strikes so we can identify row order.
+    const buildMixedAlerts = (): WhaleAlert[] => [
+      makeAlert({
+        option_chain: 'HIGH',
+        strike: 5700,
+        total_premium: 1_500_000,
+        ask_side_ratio: 0.9,
+      }),
+      makeAlert({
+        option_chain: 'NULL',
+        strike: 5710,
+        total_premium: 1_500_000,
+        ask_side_ratio: null,
+      }),
+      makeAlert({
+        option_chain: 'LOW',
+        strike: 5720,
+        total_premium: 1_500_000,
+        ask_side_ratio: 0.5,
+      }),
+    ];
+
+    it('sinks null ask_side_ratio to the bottom on desc sort', async () => {
+      const user = userEvent.setup();
+      render(
+        <WhalePositioningTable {...BASE_PROPS} alerts={buildMixedAlerts()} />,
+      );
+
+      // Click once → desc. null row should be last, 0.9 first, 0.5 middle.
+      await user.click(screen.getByRole('button', { name: /ask %/i }));
+
+      const bodyRows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(bodyRows).toHaveLength(3);
+      expect(within(bodyRows[0]!).getByText('5,700')).toBeInTheDocument(); // 0.9
+      expect(within(bodyRows[1]!).getByText('5,720')).toBeInTheDocument(); // 0.5
+      // null row renders em-dash in the Ask % cell and sorts to the bottom.
+      expect(within(bodyRows[2]!).getByText('5,710')).toBeInTheDocument();
+    });
+
+    it('keeps null ask_side_ratio at the bottom on asc sort', async () => {
+      const user = userEvent.setup();
+      render(
+        <WhalePositioningTable {...BASE_PROPS} alerts={buildMixedAlerts()} />,
+      );
+
+      const btn = screen.getByRole('button', { name: /ask %/i });
+      // First click → desc, second click → asc.
+      await user.click(btn);
+      await user.click(btn);
+
+      const bodyRows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(bodyRows).toHaveLength(3);
+      expect(within(bodyRows[0]!).getByText('5,720')).toBeInTheDocument(); // 0.5
+      expect(within(bodyRows[1]!).getByText('5,700')).toBeInTheDocument(); // 0.9
+      // Null still last — direction doesn't flip the partition.
+      expect(within(bodyRows[2]!).getByText('5,710')).toBeInTheDocument();
+    });
+
+    it('renders em-dash for null ask_side_ratio rows', () => {
+      const alerts = [
+        makeAlert({
+          option_chain: 'A',
+          strike: 5700,
+          total_premium: 1_500_000,
+          ask_side_ratio: null,
+        }),
+      ];
+      render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+      // The Ask % cell for this single row should render an em-dash.
+      const bodyRow = screen.getAllByRole('row').slice(1)[0]!;
+      expect(within(bodyRow).getByText('—')).toBeInTheDocument();
+    });
+  });
 });
