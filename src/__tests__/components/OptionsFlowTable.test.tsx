@@ -196,4 +196,116 @@ describe('OptionsFlowTable', () => {
     );
     expect(screen.getByText(/6,850\.25/)).toBeInTheDocument();
   });
+
+  it('renders a Net GEX column header', () => {
+    render(
+      <OptionsFlowTable {...BASE_PROPS} strikes={[makeStrike({ strike: 6900 })]} />,
+    );
+    expect(
+      screen.getByRole('columnheader', { name: /net gex/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders signed-dollar GEX with emerald color when strike is in lookup map', () => {
+    const strikes = [makeStrike({ strike: 6900 })];
+    render(
+      <OptionsFlowTable
+        {...BASE_PROPS}
+        strikes={strikes}
+        gexByStrike={new Map([[6900, 120_000_000]])}
+      />,
+    );
+    const cell = screen.getByText('+$120M');
+    expect(cell).toBeInTheDocument();
+    expect(cell.className).toMatch(/text-emerald-400/);
+  });
+
+  it('renders em-dash when strike is not present in the lookup map', () => {
+    const strikes = [
+      makeStrike({ strike: 6900, score: 90 }),
+      makeStrike({ strike: 6800, score: 50 }),
+    ];
+    render(
+      <OptionsFlowTable
+        {...BASE_PROPS}
+        strikes={strikes}
+        gexByStrike={new Map([[6900, 120_000_000]])}
+      />,
+    );
+    // 6800 has no entry -> em-dash. Find that row's cells and check the
+    // Net GEX cell (index 1, 0-based, after Strike).
+    const bodyRows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+    const row6800 = bodyRows.find((r) =>
+      within(r).queryByText('6,800'),
+    )!;
+    const cells = within(row6800).getAllByRole('cell');
+    expect(cells[1]!.textContent).toBe('—');
+  });
+
+  it('renders rose-400 color and signed-minus for negative GEX', () => {
+    const strikes = [makeStrike({ strike: 6800 })];
+    render(
+      <OptionsFlowTable
+        {...BASE_PROPS}
+        strikes={strikes}
+        gexByStrike={new Map([[6800, -80_000_000]])}
+      />,
+    );
+    const cell = screen.getByText('-$80M');
+    expect(cell).toBeInTheDocument();
+    expect(cell.className).toMatch(/text-rose-400/);
+  });
+
+  it('renders em-dash in every Net GEX cell when gexByStrike prop is omitted', () => {
+    const strikes = [
+      makeStrike({ strike: 6900 }),
+      makeStrike({ strike: 6800, type: 'put' }),
+      makeStrike({ strike: 6700, type: 'put' }),
+    ];
+    render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+    const bodyRows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+    for (const row of bodyRows) {
+      const cells = within(row).getAllByRole('cell');
+      // Net GEX is column index 1 (after Strike at 0).
+      expect(cells[1]!.textContent).toBe('—');
+    }
+  });
+
+  it('sort by Net GEX places rows missing a lookup entry at the bottom in both directions', async () => {
+    const user = userEvent.setup();
+    const strikes = [
+      makeStrike({ strike: 6900, score: 10 }),
+      makeStrike({ strike: 6800, score: 20 }),
+      makeStrike({ strike: 6700, score: 30 }),
+    ];
+    const gexByStrike = new Map<number, number>([
+      [6900, 120_000_000],
+      [6800, -80_000_000],
+      // 6700 is intentionally absent — must sort last regardless of direction
+    ]);
+    render(
+      <OptionsFlowTable
+        {...BASE_PROPS}
+        strikes={strikes}
+        gexByStrike={gexByStrike}
+      />,
+    );
+
+    const netGexBtn = screen.getByRole('button', { name: /net gex/i });
+    // First click → desc. Present values descending: +120M (6900), -80M (6800),
+    // missing (6700) last.
+    await user.click(netGexBtn);
+    let rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+    expect(within(rows[0]!).getByText('6,900')).toBeInTheDocument();
+    expect(within(rows[1]!).getByText('6,800')).toBeInTheDocument();
+    expect(within(rows[2]!).getByText('6,700')).toBeInTheDocument();
+
+    // Second click → asc. Present values ascending: -80M (6800), +120M (6900),
+    // missing (6700) still last.
+    await user.click(netGexBtn);
+    rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+    expect(within(rows[0]!).getByText('6,800')).toBeInTheDocument();
+    expect(within(rows[1]!).getByText('6,900')).toBeInTheDocument();
+    expect(within(rows[2]!).getByText('6,700')).toBeInTheDocument();
+  });
 });

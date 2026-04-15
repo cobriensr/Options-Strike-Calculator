@@ -24,6 +24,7 @@ import { useOptionsFlow } from './hooks/useOptionsFlow';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
+import { useGexTarget } from './hooks/useGexTarget';
 import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
@@ -218,6 +219,20 @@ export default function StrikeCalculator() {
   const optionsFlow = useOptionsFlow({
     marketOpen: market.data.quotes?.marketOpen ?? false,
   });
+  // OptionsFlowTable shows dealer GEX at each ranked strike so flow-vs-GEX
+  // confluence is visible at a glance (strong flow into a positive-GEX magnet
+  // reads differently than flow into a negative-GEX wall). The OI-mode
+  // leaderboard is the canonical source of signed gexDollars.
+  const gexTargetForFlow = useGexTarget(
+    market.data.quotes?.marketOpen ?? false,
+  );
+  const gexByStrikeForFlow = useMemo(() => {
+    const map = new Map<number, number>();
+    gexTargetForFlow.oi?.leaderboard.forEach((s) => {
+      map.set(s.strike, s.features.gexDollars);
+    });
+    return map;
+  }, [gexTargetForFlow.oi]);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -938,6 +953,7 @@ export default function StrikeCalculator() {
                       windowMinutes={optionsFlow.data?.windowMinutes}
                       isLoading={optionsFlow.isLoading}
                       error={optionsFlow.error}
+                      gexByStrike={gexByStrikeForFlow}
                     />
                   </div>
                 </ErrorBoundary>
