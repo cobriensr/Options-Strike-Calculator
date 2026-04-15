@@ -405,6 +405,35 @@ export default function StrikeCalculator() {
   }, []);
 
   const [migrateRunning, setMigrateRunning] = useState(false);
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const handleBackfillFeatures = useCallback(async () => {
+    if (backfillRunning) return;
+    setBackfillRunning(true);
+    try {
+      const res = await fetch('/api/journal/backfill-features', {
+        method: 'POST',
+      });
+      const body = (await res.json()) as {
+        dates?: number;
+        featuresBuilt?: number;
+        errors?: number;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      toast.show(
+        `Built features for ${body.featuresBuilt ?? 0} of ${body.dates ?? 0} dates` +
+          (body.errors ? ` (${body.errors} errors)` : ''),
+        body.errors && body.errors > 0 ? 'info' : 'success',
+      );
+    } catch (err) {
+      toast.show(
+        `Backfill failed: ${err instanceof Error ? err.message : String(err)}`,
+        'error',
+      );
+    } finally {
+      setBackfillRunning(false);
+    }
+  }, [backfillRunning, toast]);
   const handleRunMigrations = useCallback(async () => {
     if (migrateRunning) return;
     setMigrateRunning(true);
@@ -659,6 +688,40 @@ export default function StrikeCalculator() {
                   </svg>
                   <span className="text-[11px] font-semibold">
                     {migrateRunning ? 'Running…' : 'Migrate DB'}
+                  </span>
+                </button>
+              )}
+              {isOwner && (
+                <button
+                  onClick={handleBackfillFeatures}
+                  disabled={backfillRunning}
+                  aria-label="Recompute training_features for all dates"
+                  title="Backfill training_features (rebuilds NOPE + flow + GEX feature columns for every date)"
+                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M2 8a6 6 0 1 0 1.5-3.97"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    />
+                    <path
+                      d="M1 1v4h4"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span className="text-[11px] font-semibold">
+                    {backfillRunning ? 'Building…' : 'Backfill'}
                   </span>
                 </button>
               )}

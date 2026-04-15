@@ -69,6 +69,7 @@ if (import.meta.env.PROD)
       { path: '/api/journal/status', method: 'GET' },
       { path: '/api/journal/init', method: 'POST' },
       { path: '/api/journal/migrate', method: 'POST' },
+      { path: '/api/journal/backfill-features', method: 'POST' },
       { path: '/api/analyses', method: 'GET' },
       { path: '/api/snapshot', method: 'POST' },
       { path: '/api/analyze', method: 'POST' },
