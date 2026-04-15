@@ -20,9 +20,11 @@ import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
+import { useOptionsFlow } from './hooks/useOptionsFlow';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
+import { useGexTarget } from './hooks/useGexTarget';
 import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
@@ -37,15 +39,14 @@ import PreMarketInput from './components/PreMarketInput';
 import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
 import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
-import BWBCalculator from './components/BWBCalculator';
+import VixRegimeBanner from './components/VixRegimeBanner';
 import TradingScheduleSection from './components/TradingScheduleSection';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
-import GexPerStrike from './components/GexPerStrike';
-import { GexTarget } from './components/GexTarget';
-import GexLandscape from './components/GexLandscape';
+import { OptionsFlowTable } from './components/OptionsFlow/OptionsFlowTable';
+import { FlowDirectionalRollup } from './components/OptionsFlow/FlowDirectionalRollup';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
@@ -65,6 +66,12 @@ const MLInsights = lazy(() => import('./components/MLInsights'));
 const FuturesPanel = lazy(
   () => import('./components/FuturesCalculator/FuturesPanel'),
 );
+const GexPerStrike = lazy(() => import('./components/GexPerStrike'));
+const GexTarget = lazy(() =>
+  import('./components/GexTarget').then((m) => ({ default: m.GexTarget })),
+);
+const GexLandscape = lazy(() => import('./components/GexLandscape'));
+const BWBCalculator = lazy(() => import('./components/BWBCalculator'));
 
 function SchwabAuthLink({
   ariaLabel,
@@ -211,6 +218,23 @@ export default function StrikeCalculator() {
   // vix.selectedDate. Picking a past date here is a backtest browsing
   // action and must not re-anchor the Black-Scholes math elsewhere.
   const gexStrike = useGexPerStrike(market.data.quotes?.marketOpen ?? false);
+  const optionsFlow = useOptionsFlow({
+    marketOpen: market.data.quotes?.marketOpen ?? false,
+  });
+  // OptionsFlowTable shows dealer GEX at each ranked strike so flow-vs-GEX
+  // confluence is visible at a glance (strong flow into a positive-GEX magnet
+  // reads differently than flow into a negative-GEX wall). The OI-mode
+  // leaderboard is the canonical source of signed gexDollars.
+  const gexTargetForFlow = useGexTarget(
+    market.data.quotes?.marketOpen ?? false,
+  );
+  const gexByStrikeForFlow = useMemo(() => {
+    const map = new Map<number, number>();
+    gexTargetForFlow.oi?.leaderboard.forEach((s) => {
+      map.set(s.strike, s.features.gexDollars);
+    });
+    return map;
+  }, [gexTargetForFlow.oi]);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -854,23 +878,25 @@ export default function StrikeCalculator() {
               <>
                 <span id="sec-gex" className="block scroll-mt-28" />
                 <ErrorBoundary label="0DTE GEX Per Strike">
-                  <GexPerStrike
-                    strikes={gexStrike.strikes}
-                    loading={gexStrike.loading}
-                    error={gexStrike.error}
-                    timestamp={gexStrike.timestamp}
-                    onRefresh={gexStrike.refresh}
-                    selectedDate={gexStrike.selectedDate}
-                    onDateChange={gexStrike.setSelectedDate}
-                    isLive={gexStrike.isLive}
-                    isToday={gexStrike.isToday}
-                    isScrubbed={gexStrike.isScrubbed}
-                    canScrubPrev={gexStrike.canScrubPrev}
-                    canScrubNext={gexStrike.canScrubNext}
-                    onScrubPrev={gexStrike.scrubPrev}
-                    onScrubNext={gexStrike.scrubNext}
-                    onScrubLive={gexStrike.scrubLive}
-                  />
+                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                    <GexPerStrike
+                      strikes={gexStrike.strikes}
+                      loading={gexStrike.loading}
+                      error={gexStrike.error}
+                      timestamp={gexStrike.timestamp}
+                      onRefresh={gexStrike.refresh}
+                      selectedDate={gexStrike.selectedDate}
+                      onDateChange={gexStrike.setSelectedDate}
+                      isLive={gexStrike.isLive}
+                      isToday={gexStrike.isToday}
+                      isScrubbed={gexStrike.isScrubbed}
+                      canScrubPrev={gexStrike.canScrubPrev}
+                      canScrubNext={gexStrike.canScrubNext}
+                      onScrubPrev={gexStrike.scrubPrev}
+                      onScrubNext={gexStrike.scrubNext}
+                      onScrubLive={gexStrike.scrubLive}
+                    />
+                  </Suspense>
                 </ErrorBoundary>
               </>
             )}
@@ -879,9 +905,11 @@ export default function StrikeCalculator() {
               <>
                 <span id="sec-gex-target" className="block scroll-mt-28" />
                 <ErrorBoundary label="GEX Target">
-                  <GexTarget
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                  />
+                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                    <GexTarget
+                      marketOpen={market.data.quotes?.marketOpen ?? false}
+                    />
+                  </Suspense>
                 </ErrorBoundary>
               </>
             )}
@@ -890,23 +918,52 @@ export default function StrikeCalculator() {
               <>
                 <span id="sec-gex-landscape" className="block scroll-mt-28" />
                 <ErrorBoundary label="GEX Landscape">
-                  <GexLandscape
-                    strikes={gexStrike.strikes}
-                    loading={gexStrike.loading}
-                    error={gexStrike.error}
-                    timestamp={gexStrike.timestamp}
-                    onRefresh={gexStrike.refresh}
-                    selectedDate={gexStrike.selectedDate}
-                    onDateChange={gexStrike.setSelectedDate}
-                    isLive={gexStrike.isLive}
-                    isScrubbed={gexStrike.isScrubbed}
-                    canScrubPrev={gexStrike.canScrubPrev}
-                    canScrubNext={gexStrike.canScrubNext}
-                    onScrubPrev={gexStrike.scrubPrev}
-                    onScrubNext={gexStrike.scrubNext}
-                    onScrubLive={gexStrike.scrubLive}
-                    onBiasChange={setGexBiasContext}
-                  />
+                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                    <GexLandscape
+                      strikes={gexStrike.strikes}
+                      loading={gexStrike.loading}
+                      error={gexStrike.error}
+                      timestamp={gexStrike.timestamp}
+                      onRefresh={gexStrike.refresh}
+                      selectedDate={gexStrike.selectedDate}
+                      onDateChange={gexStrike.setSelectedDate}
+                      isLive={gexStrike.isLive}
+                      isScrubbed={gexStrike.isScrubbed}
+                      canScrubPrev={gexStrike.canScrubPrev}
+                      canScrubNext={gexStrike.canScrubNext}
+                      onScrubPrev={gexStrike.scrubPrev}
+                      onScrubNext={gexStrike.scrubNext}
+                      onScrubLive={gexStrike.scrubLive}
+                      onBiasChange={setGexBiasContext}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
+              </>
+            )}
+
+            {isOwner && (market.hasData || !!historySnapshot) && (
+              <>
+                <span id="sec-options-flow" className="block scroll-mt-28" />
+                <ErrorBoundary label="Options Flow">
+                  <div className="flex flex-col gap-2">
+                    {optionsFlow.data && (
+                      <FlowDirectionalRollup
+                        rollup={optionsFlow.data.rollup}
+                        spot={optionsFlow.data.spot}
+                        alertCount={optionsFlow.data.alertCount}
+                      />
+                    )}
+                    <OptionsFlowTable
+                      strikes={optionsFlow.data?.strikes ?? []}
+                      spot={optionsFlow.data?.spot ?? null}
+                      lastUpdated={optionsFlow.data?.lastUpdated ?? null}
+                      alertCount={optionsFlow.data?.alertCount ?? 0}
+                      windowMinutes={optionsFlow.data?.windowMinutes}
+                      isLoading={optionsFlow.isLoading}
+                      error={optionsFlow.error}
+                      gexByStrike={gexByStrikeForFlow}
+                    />
+                  </div>
                 </ErrorBoundary>
               </>
             )}
@@ -967,11 +1024,18 @@ export default function StrikeCalculator() {
               </Suspense>
             </ErrorBoundary>
 
+            {/* VIX regime gate — visible above BWB + Results so it's the
+                last thing seen before selling any short-gamma structure.
+                Evidence: ml/docs/MOC-IMBALANCE-FINDING.md */}
+            <VixRegimeBanner vix={vixInput} />
+
             {isOwner && (
               <>
                 <span id="sec-bwb" className="block scroll-mt-28" />
                 <ErrorBoundary label="BWB Calculator">
-                  <BWBCalculator selectedDate={vix.selectedDate} />
+                  <Suspense fallback={<SkeletonSection lines={5} tall />}>
+                    <BWBCalculator selectedDate={vix.selectedDate} />
+                  </Suspense>
                 </ErrorBoundary>
               </>
             )}

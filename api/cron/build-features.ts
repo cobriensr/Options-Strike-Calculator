@@ -44,6 +44,10 @@ import { engineerFlowFeatures } from '../_lib/build-features-flow.js';
 import { engineerGexFeatures } from '../_lib/build-features-gex.js';
 import { engineerPhase2Features } from '../_lib/build-features-phase2.js';
 import { engineerMonitorFeatures } from '../_lib/build-features-monitor.js';
+import {
+  engineerNopeFeatures,
+  type NopeTickRow,
+} from '../_lib/build-features-nope.js';
 import { reportCronRun } from '../_lib/axiom.js';
 
 export const config = { maxDuration: 300 };
@@ -277,6 +281,16 @@ async function buildFeaturesForDate(
 
   // 10. Monitor features: IV dynamics + flow ratio dynamics
   await engineerMonitorFeatures(sql, dateStr, features);
+
+  // 11. NOPE features: SPY hedging-pressure checkpoints + AM aggregates
+  const nopeRows = (await sql`
+    SELECT timestamp, nope, call_delta, put_delta
+    FROM nope_ticks
+    WHERE ticker = 'SPY'
+      AND (timestamp AT TIME ZONE 'America/New_York')::date = ${dateStr}
+    ORDER BY timestamp ASC
+  `) as NopeTickRow[];
+  Object.assign(features, engineerNopeFeatures(nopeRows, dateStr));
 
   // 11. Futures features (~32 features from futures_bars,
   //     futures_snapshots, futures_options_daily)
@@ -520,7 +534,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       oic_oi_change_pcr, oic_net_premium, oic_call_premium, oic_put_premium,
       oic_ask_ratio, oic_multi_leg_pct, oic_top_strike_dist, oic_concentration,
       iv_ts_slope_0d_30d, iv_ts_contango, iv_ts_spread,
-      uw_rv_30d, uw_iv_rv_spread, uw_iv_overpricing_pct, iv_rank
+      uw_rv_30d, uw_iv_rv_spread, uw_iv_overpricing_pct, iv_rank,
+      nope_t1, nope_t2, nope_t3, nope_t4,
+      nope_am_mean, nope_am_sign_flips, nope_am_cum_delta
     ) VALUES (
       ${f.date}, ${f.vix}, ${f.vix1d}, ${f.vix9d}, ${f.vvix},
       ${f.vix1d_vix_ratio}, ${f.vix_vix9d_ratio},
@@ -578,7 +594,9 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       ${f.oic_put_premium}, ${f.oic_ask_ratio}, ${f.oic_multi_leg_pct},
       ${f.oic_top_strike_dist}, ${f.oic_concentration},
       ${f.iv_ts_slope_0d_30d}, ${f.iv_ts_contango}, ${f.iv_ts_spread},
-      ${f.uw_rv_30d}, ${f.uw_iv_rv_spread}, ${f.uw_iv_overpricing_pct}, ${f.iv_rank}
+      ${f.uw_rv_30d}, ${f.uw_iv_rv_spread}, ${f.uw_iv_overpricing_pct}, ${f.iv_rank},
+      ${f.nope_t1}, ${f.nope_t2}, ${f.nope_t3}, ${f.nope_t4},
+      ${f.nope_am_mean}, ${f.nope_am_sign_flips}, ${f.nope_am_cum_delta}
     )
     -- COALESCE on every column: only overwrite when the new value is non-null.
     -- The fail-soft helpers in build-features-phase2.ts return undefined for
@@ -749,7 +767,14 @@ async function upsertFeatures(f: FeatureRow): Promise<void> {
       uw_rv_30d = COALESCE(EXCLUDED.uw_rv_30d, training_features.uw_rv_30d),
       uw_iv_rv_spread = COALESCE(EXCLUDED.uw_iv_rv_spread, training_features.uw_iv_rv_spread),
       uw_iv_overpricing_pct = COALESCE(EXCLUDED.uw_iv_overpricing_pct, training_features.uw_iv_overpricing_pct),
-      iv_rank = COALESCE(EXCLUDED.iv_rank, training_features.iv_rank)
+      iv_rank = COALESCE(EXCLUDED.iv_rank, training_features.iv_rank),
+      nope_t1 = COALESCE(EXCLUDED.nope_t1, training_features.nope_t1),
+      nope_t2 = COALESCE(EXCLUDED.nope_t2, training_features.nope_t2),
+      nope_t3 = COALESCE(EXCLUDED.nope_t3, training_features.nope_t3),
+      nope_t4 = COALESCE(EXCLUDED.nope_t4, training_features.nope_t4),
+      nope_am_mean = COALESCE(EXCLUDED.nope_am_mean, training_features.nope_am_mean),
+      nope_am_sign_flips = COALESCE(EXCLUDED.nope_am_sign_flips, training_features.nope_am_sign_flips),
+      nope_am_cum_delta = COALESCE(EXCLUDED.nope_am_cum_delta, training_features.nope_am_cum_delta)
   `;
 }
 

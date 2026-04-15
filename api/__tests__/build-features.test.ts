@@ -870,10 +870,13 @@ describe('build-features handler', () => {
     // Call 19: flow_ratio_monitor (monitor)
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 20: upsertFeatures INSERT
+    // Call 20: nope_ticks (NOPE engineer)
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 21: extractLabelsForDate — analyses (no review found)
+    // Call 21: upsertFeatures INSERT
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 22: extractLabelsForDate — analyses (no review found)
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -893,9 +896,8 @@ describe('build-features handler', () => {
     });
 
     // 2 preamble + 1 distinct dates + 7 buildFeatures + 10 phase2 (with vvix,
-    // incl. oicRows/tsRows/ivMonRow/rvRow) + 1 upsert + 1 labels + 1 monitor = 23
-    // (monitor engineerMonitorFeatures makes 2 queries but may short-circuit)
-    expect(mockSql).toHaveBeenCalledTimes(23);
+    // incl. oicRows/tsRows/ivMonRow/rvRow) + 2 monitor + 1 nope + 1 upsert + 1 labels = 24
+    expect(mockSql).toHaveBeenCalledTimes(24);
   });
 
   it('extracts labels from review analyses with outcomes', async () => {
@@ -910,7 +912,7 @@ describe('build-features handler', () => {
     // Calls 2-18 (buildFeaturesForDate): all empty
     // (7 original + fallback + 5 Phase 2 + 4 phase2 new + 2 monitor;
     //  vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 17; i++) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 18; i++) mockSql.mockResolvedValueOnce([]);
 
     // Call 19: upsertFeatures INSERT
     mockSql.mockResolvedValueOnce([]);
@@ -983,7 +985,7 @@ describe('build-features handler', () => {
     // Calls 2-18: buildFeaturesForDate queries → empty
     // (7 original + fallback + 5 Phase 2 + 4 phase2 new + 2 monitor;
     //  vvixHistory skipped when vvix is null)
-    for (let i = 0; i < 17; i++) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 18; i++) mockSql.mockResolvedValueOnce([]);
     // Call 19: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -1037,7 +1039,7 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
     // Calls 2-18: buildFeaturesForDate queries → empty
-    for (let i = 0; i < 17; i++) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 18; i++) mockSql.mockResolvedValueOnce([]);
     // Call 19: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -1084,7 +1086,7 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
     // Calls 2-18: buildFeaturesForDate queries → empty
-    for (let i = 0; i < 17; i++) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 18; i++) mockSql.mockResolvedValueOnce([]);
     // Call 19: upsertFeatures
     mockSql.mockResolvedValueOnce([]);
 
@@ -1175,7 +1177,10 @@ describe('build-features handler', () => {
     // Call 19: flow_ratio_monitor (monitor) → empty
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 20: upsertFeatures INSERT — capture the features being upserted
+    // Call 20: nope_ticks (NOPE engineer) → empty
+    mockSql.mockResolvedValueOnce([]);
+
+    // Call 21: upsertFeatures INSERT — capture the features being upserted
     let upsertedFeatures: Record<string, unknown> | null = null;
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       // The tagged template literal passes strings as first arg, values as rest
@@ -1188,7 +1193,7 @@ describe('build-features handler', () => {
       return Promise.resolve([]);
     });
 
-    // Call 13: extractLabelsForDate — analyses → empty
+    // Call 22: extractLabelsForDate — analyses → empty
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({

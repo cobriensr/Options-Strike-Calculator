@@ -106,6 +106,14 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-flow-alerts",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-nope",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/auto-prefill-premarket",
       "schedule": "30 13 * * 1-5"
     },

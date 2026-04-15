@@ -3,9 +3,9 @@
 
 PYTHON ?= .venv/bin/python
 
-.PHONY: all eda cluster visualize health milestone backtest early pin backfill trace lint format test test-cov test-html review clean help
+.PHONY: all eda cluster visualize health milestone backtest early pin nope flow backfill trace lint format test test-cov test-html review clean help
 
-all: health eda cluster visualize early backtest pin trace ## Run full analysis pipeline
+all: health eda cluster visualize early backtest pin nope flow trace ## Run full analysis pipeline
 
 eda: ## Run exploratory data analysis
 	$(PYTHON) src/eda.py
@@ -33,6 +33,12 @@ early-shap: ## Run Phase 2 early experiment with SHAP plots
 
 pin: ## Run settlement pin risk / gamma correlation analysis
 	$(PYTHON) src/pin_analysis.py
+
+nope: ## Run NOPE EDA (directional, agreement, regime plots)
+	$(PYTHON) src/nope_eda.py
+
+flow: ## Run flow EDA (distributions, time-of-day, directional, returns)
+	$(PYTHON) src/flow_eda.py
 
 backfill: ## Backfill VIX data into training_features for TRACE prediction dates
 	$(PYTHON) trace/backfill_vix.py

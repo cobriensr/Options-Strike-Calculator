@@ -56,6 +56,7 @@ __snapshots__/
 # ML
 ml/.venv/
 ml/*.csv
+ml/data/
 ml/trace/results/
 ml/trace/images/
 ml/__pycache__/
@@ -69,4 +70,4 @@ ml/.coverage
 
 # Superpowers
 .superpowers/
-docs/
+/docs/

@@ -38,6 +38,7 @@ import {
 import type { DarkPoolCluster } from './darkpool.js';
 import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
 import { getOiChangeData, formatOiChangeForClaude } from './db-oi-change.js';
+import { getRecentNope, formatNopeForClaude } from './db-nope.js';
 import logger from './logger.js';
 import {
   getActiveLessons,
@@ -690,6 +691,7 @@ export async function buildAnalysisContext(
   let futuresContext: string | null = null;
   let priorDayFlowContext: string | null = null;
   let economicCalendarContext: string | null = null;
+  let nopeContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
@@ -711,6 +713,7 @@ export async function buildAnalysisContext(
       strikeRows,
       allExpiryStrikeRows,
       netGexRows,
+      nopeRows,
     ] = await Promise.all([
       getFlowData(analysisDate, 'market_tide', asOf),
       getFlowData(analysisDate, 'market_tide_otm', asOf),
@@ -726,6 +729,7 @@ export async function buildAnalysisContext(
       getStrikeExposures(analysisDate, 'SPX', asOf),
       getAllExpiryStrikeExposures(analysisDate, 'SPX', asOf),
       getNetGexHeatmap(analysisDate), // upsert table — no timestamp, always latest
+      getRecentNope('SPY', 60, asOf), // last-hour SPY NOPE trajectory
     ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,
@@ -786,6 +790,7 @@ export async function buildAnalysisContext(
       allExpiryStrikeRows,
       strikeRows,
     );
+    nopeContext = formatNopeForClaude(nopeRows);
 
     // Zero-gamma (GEX flip) analysis — ENH-SIGNAL-001.
     // Uses the same strikeRows already fetched above; no extra DB round-trip.
@@ -1210,6 +1215,7 @@ export async function buildAnalysisContext(
   if (!futuresContext) unavailable.push('Futures Context');
   if (!priorDayFlowContext) unavailable.push('Prior-Day Flow Trend');
   if (!economicCalendarContext) unavailable.push('Economic Calendar');
+  if (!nopeContext) unavailable.push('SPY NOPE');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -1268,6 +1274,7 @@ ${qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact
 ${spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside SPY (AAPL, MSFT, NVDA, etc), not on SPY itself. When SPY Net Flow is bullish but SPY ETF Tide is bearish, the SPY call buying is likely hedging — the underlying stocks are seeing directional put buying. Use as a confirmation/divergence layer against SPY Net Flow.\n\n${spyEtfTideContext}\n` : ''}
 ${qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${qqqEtfTideContext}\n` : ''}
 ${zeroDteIndexContext ? `\n## 0DTE Index-Only Net Flow (from API)\nPure 0DTE flow from index products (SPX, NDX) only — excludes weekly/monthly expirations and ETFs/equities. When this diverges from aggregate SPX Net Flow, the aggregate signal contains longer-dated hedging noise. Trust 0DTE index flow for same-session directional reads. When both agree, highest conviction.\n\n${zeroDteIndexContext}\n` : ''}
+${nopeContext ? `\n## SPY NOPE — Net Options Pricing Effect (from API — 1-min resolution)\nIntraday dealer hedging pressure derived from options delta per unit of underlying stock volume. SPY is used as the SPX proxy because SPX has no tradeable shares. See <spy_nope> in the system prompt for full interpretation rules — the short version: positive NOPE = bullish tape pressure (dealers buying shares), negative NOPE = bearish tape pressure (dealers selling shares). Use this as a confirmation layer alongside Market Tide and SPX Net Flow.\n\n${nopeContext}\n` : ''}
 ${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${greekExposureContext}\n` : ''}
 ${greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${greekFlowContext}\n` : ''}
 ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}

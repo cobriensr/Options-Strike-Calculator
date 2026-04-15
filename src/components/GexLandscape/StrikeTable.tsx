@@ -50,7 +50,12 @@ export function StrikeTable({
         <div className="px-3 py-2 text-right">Strike</div>
         <div className="px-3 py-2">Classification</div>
         <div className="px-3 py-2">Signal</div>
-        <div className="px-3 py-2 text-right">Net GEX</div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
+          title="Dollar Γ at current spot: γ × OI × 100 × spot² × 0.01 (from /spot-exposures/strike). Gamma is evaluated at SPOT, so values spike sharply at ATM and decay fast. Shows where dealer hedging is concentrated RIGHT NOW. Different metric than the GEX Strike Board's GEX $ — that one uses strike-fixed gamma and converts to dealer hedge dollars per 1% SPX move."
+        >
+          Dollar Γ
+        </div>
         <div className="px-3 py-2 text-right">1m Δ%</div>
         <div className="px-3 py-2 text-right">5m Δ%</div>
         <div className="px-3 py-2 text-right">Charm</div>
