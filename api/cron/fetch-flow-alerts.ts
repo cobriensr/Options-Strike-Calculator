@@ -25,10 +25,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { cronGuard, uwFetch, withRetry } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
-import {
-  computeDerived,
-  type UwFlowAlert,
-} from '../_lib/flow-alert-derive.js';
+import { computeDerived, type UwFlowAlert } from '../_lib/flow-alert-derive.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 

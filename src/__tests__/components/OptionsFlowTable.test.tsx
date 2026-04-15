@@ -199,7 +199,10 @@ describe('OptionsFlowTable', () => {
 
   it('renders a Net GEX column header', () => {
     render(
-      <OptionsFlowTable {...BASE_PROPS} strikes={[makeStrike({ strike: 6900 })]} />,
+      <OptionsFlowTable
+        {...BASE_PROPS}
+        strikes={[makeStrike({ strike: 6900 })]}
+      />,
     );
     expect(
       screen.getByRole('columnheader', { name: /net gex/i }),
@@ -235,9 +238,7 @@ describe('OptionsFlowTable', () => {
     // 6800 has no entry -> em-dash. Find that row's cells and check the
     // Net GEX cell (index 1, 0-based, after Strike).
     const bodyRows = screen.getAllByRole('row').slice(1) as HTMLElement[];
-    const row6800 = bodyRows.find((r) =>
-      within(r).queryByText('6,800'),
-    )!;
+    const row6800 = bodyRows.find((r) => within(r).queryByText('6,800'))!;
     const cells = within(row6800).getAllByRole('cell');
     expect(cells[1]!.textContent).toBe('—');
   });
