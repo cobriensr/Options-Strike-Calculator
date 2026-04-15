@@ -352,7 +352,7 @@ export function WhalePositioningTable({
       <div className="border-edge/60 bg-surface-alt/40 flex flex-wrap items-center gap-3 border-b px-3 py-2">
         <label
           htmlFor="whale-min-premium"
-          className="text-tertiary font-sans text-[10px] font-semibold tracking-wider uppercase whitespace-nowrap"
+          className="text-tertiary font-sans text-[10px] font-semibold tracking-wider whitespace-nowrap uppercase"
         >
           Premium ≥{' '}
           <span className="text-secondary font-mono text-[11px] normal-case">
@@ -374,7 +374,7 @@ export function WhalePositioningTable({
           aria-valuemax={SLIDER_MAX}
           aria-valuenow={sliderPremium}
           aria-valuetext={formatSliderPremium(sliderPremium)}
-          className="accent-sky-400 flex-1 min-w-[120px] max-w-[320px] cursor-pointer"
+          className="max-w-[320px] min-w-[120px] flex-1 cursor-pointer accent-sky-400"
         />
         <span className="text-muted font-mono text-[10px]">
           {formatSliderPremium(SLIDER_MIN)} – {formatSliderPremium(SLIDER_MAX)}

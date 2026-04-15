@@ -159,7 +159,7 @@ function MatchRow({ match }: { match: ConfluenceMatch }) {
       <span className="text-muted text-[10px]">({match.whale_dte}d)</span>
 
       {/* Strike delta */}
-      <span className="text-muted text-[10px] ml-auto">
+      <span className="text-muted ml-auto text-[10px]">
         Δ {formatSignedInt(match.strike_delta)}
       </span>
 
@@ -199,10 +199,7 @@ export function FlowConfluencePanel({
     >
       {/* Hidden match count for programmatic / test access — the visible
           count now surfaces in the SectionBox badge. */}
-      <span
-        className="sr-only"
-        data-testid="confluence-match-count"
-      >
+      <span className="sr-only" data-testid="confluence-match-count">
         {matches.length} {matches.length === 1 ? 'match' : 'matches'}
       </span>
 

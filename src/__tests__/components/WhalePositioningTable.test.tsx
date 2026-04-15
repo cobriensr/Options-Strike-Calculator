@@ -280,9 +280,7 @@ describe('WhalePositioningTable', () => {
   });
 
   it('shows a filtered-empty message when slider cuts all alerts', () => {
-    const alerts = [
-      makeAlert({ option_chain: 'A', total_premium: 1_200_000 }),
-    ];
+    const alerts = [makeAlert({ option_chain: 'A', total_premium: 1_200_000 })];
     render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
 
     const slider = screen.getByLabelText(

@@ -158,7 +158,7 @@ function MetaRow({
       {spot != null && (
         <span>
           Spot{' '}
-          <strong className="text-sky-300 font-semibold">
+          <strong className="font-semibold text-sky-300">
             {spot.toFixed(2)}
           </strong>
         </span>
