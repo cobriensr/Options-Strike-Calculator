@@ -17,9 +17,11 @@
  *   before insert to keep the table clean.
  *
  * Error handling:
- *   Each symbol is fetched independently via Promise.allSettled. If one
- *   symbol fails, the other three still commit. Per-symbol errors are
- *   logged and sent to Sentry but do not fail the whole run.
+ *   Each symbol is fetched independently via Promise.all with a per-symbol
+ *   try/catch inside `processSymbol` (so the promise never rejects — it
+ *   always resolves to a SymbolResult, with an `error` field on failure).
+ *   If one symbol fails, the other three still commit. Per-symbol errors
+ *   are logged and sent to Sentry but do not fail the whole run.
  *
  * Idempotence:
  *   INSERT ... ON CONFLICT (ts, symbol) DO NOTHING — safe to rerun.
@@ -273,6 +275,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Data quality check: only fire when we stored enough rows for the
     // day. Uses a nonzero "close" value as the liveness signal.
     if (totals.stored > 10) {
+      // Liveness check: $ADD, $VOLD, $TRIN are effectively never 0 intraday,
+      // and a $TICK reading of exactly 0 is rare. If the aggregate nonzero
+      // count across all 4 symbols drops to 0 while `total` is large, Schwab
+      // is returning synthetic/empty bars — surface it via checkDataQuality.
       const qcRows = await getDb()`
         SELECT COUNT(*) AS total,
                COUNT(*) FILTER (WHERE close <> 0) AS nonzero

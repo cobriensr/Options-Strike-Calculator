@@ -35,7 +35,7 @@ const addBar = (ts: string, close: number): InternalBar => ({
  * to advance the 60s poll interval use vi.advanceTimersByTimeAsync.
  */
 async function flushPromises(): Promise<void> {
-  // Two ticks covers the fetch → json() → setState chain.
+  // Three microtask boundaries cover the fetch → res.json() → setState chain.
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
