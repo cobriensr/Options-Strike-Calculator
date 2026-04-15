@@ -16,5 +16,4 @@ export const MARKET_INTERNALS_THRESHOLDS = {
   tick: { elevated: 400, extreme: 600, blowoff: 1000 },
 } as const;
 
-export const POLL_INTERVAL_MS = 60_000;
 export const PINNED_THRESHOLD_MINUTES = 3;
