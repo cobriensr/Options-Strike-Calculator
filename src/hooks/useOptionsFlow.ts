@@ -19,39 +19,11 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import type { RankedStrike, DirectionalRollup } from '../types/flow';
 
-// ============================================================
-// TYPES — Mirror of api/_lib/flow-scoring.ts — keep in sync
-// ============================================================
-
-export interface RankedStrike {
-  strike: number;
-  type: 'call' | 'put';
-  distance_from_spot: number;
-  distance_pct: number;
-  total_premium: number;
-  ask_side_ratio: number;
-  volume_oi_ratio: number;
-  hit_count: number;
-  has_ascending_fill: boolean;
-  has_descending_fill: boolean;
-  has_multileg: boolean;
-  is_itm: boolean;
-  score: number;
-  first_seen_at: string;
-  last_seen_at: string;
-}
-
-export interface DirectionalRollup {
-  bullish_count: number;
-  bearish_count: number;
-  bullish_premium: number;
-  bearish_premium: number;
-  lean: 'bullish' | 'bearish' | 'neutral';
-  confidence: number;
-  top_bullish_strike: number | null;
-  top_bearish_strike: number | null;
-}
+// Re-export so existing consumers that imported these types from the hook
+// module keep working (e.g. OptionsFlowTable, FlowDirectionalRollup, tests).
+export type { RankedStrike, DirectionalRollup };
 
 // ============================================================
 // HOOK PUBLIC TYPES

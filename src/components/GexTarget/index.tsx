@@ -12,7 +12,7 @@
 import { memo, useState, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { SectionBox, Chip, StatusBadge } from '../ui';
-import { useGexTarget } from '../../hooks/useGexTarget';
+import type { UseGexTargetReturn } from '../../hooks/useGexTarget';
 import { useNopeIntraday } from '../../hooks/useNopeIntraday';
 import { TargetTile } from './TargetTile';
 import { UrgencyPanel } from './UrgencyPanel';
@@ -40,6 +40,13 @@ import type { SPXCandle } from '../../hooks/useGexTarget';
 
 export interface GexTargetProps {
   marketOpen: boolean;
+  /**
+   * The full `useGexTarget` return value, lifted to App.tsx so a single hook
+   * call drives both this panel AND the OptionsFlowTable's GEX column. Before
+   * lifting, the hook was called twice (here + App) producing two independent
+   * polling intervals and two state trees.
+   */
+  gexTarget: UseGexTargetReturn;
 }
 
 type Mode = 'oi' | 'vol' | 'dir';
@@ -87,6 +94,7 @@ function priceCtxFromCandles(candles: SPXCandle[]): PriceMovementContext {
 
 export const GexTarget = memo(function GexTarget({
   marketOpen,
+  gexTarget,
 }: GexTargetProps) {
   const [mode, setMode] = useState<Mode>('oi');
 
@@ -113,7 +121,7 @@ export const GexTarget = memo(function GexTarget({
     previousClose,
     openingCallStrike,
     openingPutStrike,
-  } = useGexTarget(marketOpen);
+  } = gexTarget;
 
   // SPY NOPE intraday overlay for PriceChart. Independent fetch — failure
   // here doesn't impact the GEX panels.

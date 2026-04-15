@@ -23,10 +23,7 @@
  * Pure presentational, no hooks, no fetch.
  */
 
-import type {
-  DirectionalRollup,
-  RankedStrike,
-} from '../../hooks/useOptionsFlow';
+import type { RankedStrike } from '../../hooks/useOptionsFlow';
 import { classifyAggression } from '../../utils/flow-aggression';
 
 // ============================================================
@@ -34,7 +31,6 @@ import { classifyAggression } from '../../utils/flow-aggression';
 // ============================================================
 
 export interface FlowDirectionalRollupProps {
-  rollup: DirectionalRollup;
   strikes: RankedStrike[];
   spot: number | null;
   alertCount: number;
@@ -83,7 +79,8 @@ function bucketize(strikes: RankedStrike[]): {
   const absorbed = emptyBucket();
   for (const s of strikes) {
     const klass = classifyAggression(s.ask_side_ratio);
-    if (klass === 'mixed') continue;
+    // null (missing data) and 'mixed' are both treated the same — no bucket.
+    if (klass === null || klass === 'mixed') continue;
     const target = klass === 'aggressive' ? aggressive : absorbed;
     if (s.type === 'call') {
       target.callCount += 1;

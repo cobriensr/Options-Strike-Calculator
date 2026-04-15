@@ -520,6 +520,9 @@ export function OptionsFlowTable({
                   ? 'border-l-2 border-l-emerald-400/60'
                   : '';
                 const aggression = classifyAggression(s.ask_side_ratio);
+                // `null` (missing data) and `'mixed'` both render quiet — no
+                // row tint and no badge — so missing-data rows don't visually
+                // collide with truly-absorbed rows.
                 const aggressionTint =
                   aggression === 'aggressive'
                     ? 'bg-emerald-500/[0.03]'
@@ -584,7 +587,7 @@ export function OptionsFlowTable({
                     </td>
                     <td className="px-2 py-1.5">
                       <div className="flex flex-wrap gap-1">
-                        {aggression !== 'mixed' && (
+                        {aggression !== null && aggression !== 'mixed' && (
                           <TagBadge
                             label={AGGRESSION_LABEL[aggression]}
                             variant={aggression}

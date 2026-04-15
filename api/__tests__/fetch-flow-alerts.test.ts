@@ -249,7 +249,14 @@ describe('fetch-flow-alerts handler', () => {
     expect(mockUwFetch).toHaveBeenCalledTimes(2);
     const secondCallPath = mockUwFetch.mock.calls[1]![1] as string;
     expect(secondCallPath).toContain('older_than=');
-    expect(secondCallPath).toContain(encodeURIComponent(oldestCreatedAt));
+    // Should pass oldest - 1ms to guard against collisions on identical
+    // created_at values with an inclusive `older_than`.
+    const expectedOlderThan = new Date(
+      new Date(oldestCreatedAt).getTime() - 1,
+    ).toISOString();
+    expect(secondCallPath).toContain(encodeURIComponent(expectedOlderThan));
+    // And it should NOT match the raw oldest timestamp (proves the adjustment ran).
+    expect(secondCallPath).not.toContain(encodeURIComponent(oldestCreatedAt));
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ fetched: 201, inserted: 201 });
   });

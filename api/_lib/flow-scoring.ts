@@ -11,6 +11,12 @@
  * No DB access, no network, no `Date.now()`. All functions are deterministic.
  */
 
+import type { RankedStrike, DirectionalRollup } from '../../src/types/flow.js';
+
+// Re-export so existing consumers (api/options-flow/top-strikes.ts) keep
+// working without chasing the type to its new home.
+export type { RankedStrike, DirectionalRollup };
+
 // --- Input ------------------------------------------------------------------
 
 export interface FlowAlertRow {
@@ -69,35 +75,9 @@ export interface Aggregated {
 }
 
 // --- Output -----------------------------------------------------------------
-
-export interface RankedStrike {
-  strike: number;
-  type: 'call' | 'put';
-  distance_from_spot: number;
-  distance_pct: number;
-  total_premium: number;
-  ask_side_ratio: number;
-  volume_oi_ratio: number;
-  hit_count: number;
-  has_ascending_fill: boolean;
-  has_descending_fill: boolean;
-  has_multileg: boolean;
-  is_itm: boolean;
-  score: number;
-  first_seen_at: string;
-  last_seen_at: string;
-}
-
-export interface DirectionalRollup {
-  bullish_count: number;
-  bearish_count: number;
-  bullish_premium: number;
-  bearish_premium: number;
-  lean: 'bullish' | 'bearish' | 'neutral';
-  confidence: number;
-  top_bullish_strike: number | null;
-  top_bearish_strike: number | null;
-}
+//
+// `RankedStrike` and `DirectionalRollup` are defined in src/types/flow.ts
+// (shared with the frontend hook) and re-exported at the top of this file.
 
 // --- Tunables ---------------------------------------------------------------
 

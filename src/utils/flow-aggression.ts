@@ -18,7 +18,19 @@ export const AGGRESSION_THRESHOLDS = {
 
 export type Aggression = 'aggressive' | 'absorbed' | 'mixed';
 
-export function classifyAggression(askSideRatio: number): Aggression {
+/**
+ * Classify a strike's ask-side ratio into an aggression bucket.
+ *
+ * Returns `null` when `askSideRatio` is `null` (missing data). Before this
+ * guard, a null-coerced-to-zero ratio was tagged "absorbed", making
+ * truly-absorbed rows visually indistinguishable from rows where the ratio
+ * was simply unavailable. Callers should treat a `null` return the same as
+ * `'mixed'` — quiet, no badge, no row tint.
+ */
+export function classifyAggression(
+  askSideRatio: number | null,
+): Aggression | null {
+  if (askSideRatio === null) return null;
   if (askSideRatio >= AGGRESSION_THRESHOLDS.AGGRESSIVE) return 'aggressive';
   if (askSideRatio <= AGGRESSION_THRESHOLDS.ABSORBED) return 'absorbed';
   return 'mixed';

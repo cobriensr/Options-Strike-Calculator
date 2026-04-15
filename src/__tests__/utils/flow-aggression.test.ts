@@ -39,6 +39,12 @@ describe('classifyAggression', () => {
     expect(classifyAggression(1)).toBe('aggressive');
   });
 
+  it('returns null when askSideRatio is null (missing data)', () => {
+    // Before this guard, null→0 coerced to "absorbed", making missing-data
+    // rows visually indistinguishable from truly-absorbed ones.
+    expect(classifyAggression(null)).toBeNull();
+  });
+
   it('exposes labels for every variant', () => {
     expect(AGGRESSION_LABEL.aggressive).toBe('AGG');
     expect(AGGRESSION_LABEL.absorbed).toBe('ABS');

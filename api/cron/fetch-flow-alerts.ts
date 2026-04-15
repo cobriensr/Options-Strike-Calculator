@@ -72,12 +72,17 @@ async function fetchAllNewAlerts(
 
     if (batch.length < PAGE_SIZE) break;
 
-    // Paginate backwards from the oldest row in this batch.
+    // Paginate backwards from the oldest row in this batch. Subtract 1ms so
+    // a full batch sharing an identical `created_at` can't infinite-loop on
+    // an inclusive `older_than` (UW uses microsecond precision, so collisions
+    // are vanishingly rare but theoretically possible).
     const oldest = batch.reduce(
       (acc, row) => (row.created_at < acc ? row.created_at : acc),
       batch[0]!.created_at,
     );
-    olderThan = oldest;
+    const oldestTs = new Date(oldest);
+    oldestTs.setMilliseconds(oldestTs.getMilliseconds() - 1);
+    olderThan = oldestTs.toISOString();
   }
 
   return collected.slice(0, SAFETY_CAP);

@@ -1,26 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { FlowDirectionalRollup } from '../../components/OptionsFlow/FlowDirectionalRollup';
-import type {
-  DirectionalRollup,
-  RankedStrike,
-} from '../../hooks/useOptionsFlow';
-
-function makeRollup(
-  overrides: Partial<DirectionalRollup> = {},
-): DirectionalRollup {
-  return {
-    bullish_count: 4,
-    bearish_count: 1,
-    bullish_premium: 12_400_000,
-    bearish_premium: 2_100_000,
-    lean: 'bullish',
-    confidence: 0.78,
-    top_bullish_strike: 6900,
-    top_bearish_strike: 6800,
-    ...overrides,
-  };
-}
+import type { RankedStrike } from '../../hooks/useOptionsFlow';
 
 function makeStrike(overrides: Partial<RankedStrike> = {}): RankedStrike {
   return {
@@ -45,26 +26,12 @@ function makeStrike(overrides: Partial<RankedStrike> = {}): RankedStrike {
 
 describe('FlowDirectionalRollup', () => {
   it('shows "No spot data" when spot is null', () => {
-    render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={[]}
-        spot={null}
-        alertCount={10}
-      />,
-    );
+    render(<FlowDirectionalRollup strikes={[]} spot={null} alertCount={10} />);
     expect(screen.getByText(/no spot data/i)).toBeInTheDocument();
   });
 
   it('shows "No alerts in window" when alertCount is 0', () => {
-    render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={[]}
-        spot={6850}
-        alertCount={0}
-      />,
-    );
+    render(<FlowDirectionalRollup strikes={[]} spot={6850} alertCount={0} />);
     expect(screen.getByText(/no alerts in window/i)).toBeInTheDocument();
   });
 
@@ -74,12 +41,7 @@ describe('FlowDirectionalRollup', () => {
       makeStrike({ strike: 6850, ask_side_ratio: 0.45, type: 'put' }),
     ];
     render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={strikes}
-        spot={6850}
-        alertCount={2}
-      />,
+      <FlowDirectionalRollup strikes={strikes} spot={6850} alertCount={2} />,
     );
     expect(
       screen.getByText(/all flow is mixed — no clear aggression signal/i),
@@ -108,12 +70,7 @@ describe('FlowDirectionalRollup', () => {
       }),
     ];
     render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={strikes}
-        spot={6850}
-        alertCount={3}
-      />,
+      <FlowDirectionalRollup strikes={strikes} spot={6850} alertCount={3} />,
     );
     const label = screen.getByText('CALL-HEAVY AGGRESSION');
     expect(label).toBeInTheDocument();
@@ -143,12 +100,7 @@ describe('FlowDirectionalRollup', () => {
       }),
     ];
     render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={strikes}
-        spot={6850}
-        alertCount={3}
-      />,
+      <FlowDirectionalRollup strikes={strikes} spot={6850} alertCount={3} />,
     );
     const label = screen.getByText('PUT-HEAVY AGGRESSION');
     expect(label).toBeInTheDocument();
@@ -172,12 +124,7 @@ describe('FlowDirectionalRollup', () => {
       }),
     ];
     render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={strikes}
-        spot={6850}
-        alertCount={2}
-      />,
+      <FlowDirectionalRollup strikes={strikes} spot={6850} alertCount={2} />,
     );
     expect(screen.getByText('NO AGGRESSIVE FLOW')).toBeInTheDocument();
   });
@@ -198,12 +145,7 @@ describe('FlowDirectionalRollup', () => {
       }),
     ];
     render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={strikes}
-        spot={6850}
-        alertCount={2}
-      />,
+      <FlowDirectionalRollup strikes={strikes} spot={6850} alertCount={2} />,
     );
     const label = screen.getByText('AGGRESSION BALANCED');
     expect(label).toBeInTheDocument();
@@ -227,12 +169,7 @@ describe('FlowDirectionalRollup', () => {
       }),
     ];
     render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={strikes}
-        spot={6850}
-        alertCount={2}
-      />,
+      <FlowDirectionalRollup strikes={strikes} spot={6850} alertCount={2} />,
     );
     expect(screen.getByText('AGGRESSIVE')).toBeInTheDocument();
     expect(screen.getByText('ABSORBED')).toBeInTheDocument();
@@ -243,12 +180,7 @@ describe('FlowDirectionalRollup', () => {
       makeStrike({ strike: 6900, ask_side_ratio: 0.9, type: 'call' }),
     ];
     render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={strikes}
-        spot={6850}
-        alertCount={1}
-      />,
+      <FlowDirectionalRollup strikes={strikes} spot={6850} alertCount={1} />,
     );
     expect(
       screen.getByText(/buyer at ask.*seller at bid/i),
@@ -271,12 +203,7 @@ describe('FlowDirectionalRollup', () => {
       }),
     ];
     render(
-      <FlowDirectionalRollup
-        rollup={makeRollup()}
-        strikes={strikes}
-        spot={6850}
-        alertCount={2}
-      />,
+      <FlowDirectionalRollup strikes={strikes} spot={6850} alertCount={2} />,
     );
     expect(screen.getByText(/\$12\.4M/)).toBeInTheDocument();
     expect(screen.getByText(/\$2\.1M/)).toBeInTheDocument();

@@ -242,6 +242,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const strikes = rankStrikes(alerts, limit);
+      // Note: rollup reflects only the top-N scored strikes (not the full window).
+      // By design — the "lean" should reflect what's strongest, not every minor cluster.
       const rollup = computeDirectionalRollup(strikes, spot);
 
       return res.status(200).json({

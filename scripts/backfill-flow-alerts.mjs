@@ -246,7 +246,12 @@ async function main() {
       break;
     }
 
-    olderThan = oldest;
+    // Subtract 1ms so a full batch sharing an identical `created_at` can't
+    // infinite-loop on an inclusive `older_than` (UW uses microsecond
+    // precision, so collisions are vanishingly rare but theoretically possible).
+    const oldestTs = new Date(oldest);
+    oldestTs.setMilliseconds(oldestTs.getMilliseconds() - 1);
+    olderThan = oldestTs.toISOString();
   }
 
   const skipped = totalFetched - totalInserted;

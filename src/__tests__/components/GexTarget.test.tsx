@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { GexTarget } from '../../components/GexTarget';
 import type { UseGexTargetReturn } from '../../hooks/useGexTarget';
@@ -10,9 +10,12 @@ import type {
 } from '../../utils/gex-target';
 
 // ── Mocks ─────────────────────────────────────────────────
+// Note: useGexTarget is NO LONGER mocked — GexTarget receives the hook's
+// return value as a `gexTarget` prop (lifted to App.tsx). Tests build a
+// UseGexTargetReturn fixture and pass it in directly.
 
-vi.mock('../../hooks/useGexTarget', () => ({
-  useGexTarget: vi.fn(),
+vi.mock('../../hooks/useNopeIntraday', () => ({
+  useNopeIntraday: () => ({ points: [] }),
 }));
 
 vi.mock('../../components/GexTarget/TargetTile', () => ({
@@ -34,8 +37,6 @@ vi.mock('../../components/GexTarget/StrikeBox', () => ({
 vi.mock('../../components/GexTarget/PriceChart', () => ({
   PriceChart: () => <div data-testid="price-chart" />,
 }));
-
-import { useGexTarget } from '../../hooks/useGexTarget';
 
 // ── Fixture helpers ────────────────────────────────────────
 
@@ -146,21 +147,21 @@ function makeHookResult(
   };
 }
 
-// ── Setup ─────────────────────────────────────────────────
-
-beforeEach(() => {
-  vi.mocked(useGexTarget).mockReturnValue(makeHookResult());
-});
-
 // ── Tests ─────────────────────────────────────────────────
 
 describe('GexTarget: loading state', () => {
   it('renders loading indicator and no panel content', () => {
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({ loading: true, oi: null, vol: null, dir: null }),
+    render(
+      <GexTarget
+        marketOpen={false}
+        gexTarget={makeHookResult({
+          loading: true,
+          oi: null,
+          vol: null,
+          dir: null,
+        })}
+      />,
     );
-
-    render(<GexTarget marketOpen={false} />);
 
     expect(screen.getByText(/loading gex target/i)).toBeInTheDocument();
     expect(screen.queryByTestId('target-tile')).not.toBeInTheDocument();
@@ -173,11 +174,16 @@ describe('GexTarget: loading state', () => {
 describe('GexTarget: error state', () => {
   it('renders the error message and a retry button', () => {
     const refresh = vi.fn();
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({ loading: false, error: 'Network error', refresh }),
+    render(
+      <GexTarget
+        marketOpen={false}
+        gexTarget={makeHookResult({
+          loading: false,
+          error: 'Network error',
+          refresh,
+        })}
+      />,
     );
-
-    render(<GexTarget marketOpen={false} />);
 
     expect(screen.getByText('Network error')).toBeInTheDocument();
     const retryBtn = screen.getByRole('button', { name: /retry/i });
@@ -188,11 +194,12 @@ describe('GexTarget: error state', () => {
 
 describe('GexTarget: live state', () => {
   it('shows LIVE badge and all four sub-panel testids', () => {
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({ isLive: true, isScrubbed: false }),
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({ isLive: true, isScrubbed: false })}
+      />,
     );
-
-    render(<GexTarget marketOpen={true} />);
 
     expect(screen.getByText(/● live/i)).toBeInTheDocument();
     expect(screen.getByTestId('target-tile')).toBeInTheDocument();
@@ -204,11 +211,16 @@ describe('GexTarget: live state', () => {
 
 describe('GexTarget: backtest state', () => {
   it('shows BACKTEST badge when not live, not scrubbed, and viewing a past date', () => {
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({ isLive: false, isToday: false, isScrubbed: false }),
+    render(
+      <GexTarget
+        marketOpen={false}
+        gexTarget={makeHookResult({
+          isLive: false,
+          isToday: false,
+          isScrubbed: false,
+        })}
+      />,
     );
-
-    render(<GexTarget marketOpen={false} />);
 
     expect(screen.getByText('BACKTEST')).toBeInTheDocument();
   });
@@ -216,11 +228,12 @@ describe('GexTarget: backtest state', () => {
 
 describe('GexTarget: scrubbed state', () => {
   it('shows SCRUBBED badge when isScrubbed is true', () => {
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({ isLive: false, isScrubbed: true }),
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({ isLive: false, isScrubbed: true })}
+      />,
     );
-
-    render(<GexTarget marketOpen={true} />);
 
     expect(screen.getByText('SCRUBBED')).toBeInTheDocument();
   });
@@ -228,7 +241,7 @@ describe('GexTarget: scrubbed state', () => {
 
 describe('GexTarget: mode toggle', () => {
   it('switches from OI to VOL when VOL chip is clicked', () => {
-    render(<GexTarget marketOpen={true} />);
+    render(<GexTarget marketOpen={true} gexTarget={makeHookResult()} />);
 
     const volChip = screen.getByRole('button', { name: 'VOL' });
     expect(volChip).toHaveAttribute('aria-pressed', 'false');
@@ -243,7 +256,7 @@ describe('GexTarget: mode toggle', () => {
   });
 
   it('switches from OI to DIR when DIR chip is clicked', () => {
-    render(<GexTarget marketOpen={true} />);
+    render(<GexTarget marketOpen={true} gexTarget={makeHookResult()} />);
 
     const dirChip = screen.getByRole('button', { name: 'DIR' });
     expect(dirChip).toHaveAttribute('aria-pressed', 'false');
@@ -261,11 +274,12 @@ describe('GexTarget: mode toggle', () => {
 describe('GexTarget: scrubber controls', () => {
   it('calls scrubPrev when prev button is clicked and canScrubPrev is true', () => {
     const scrubPrev = vi.fn();
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({ canScrubPrev: true, scrubPrev }),
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({ canScrubPrev: true, scrubPrev })}
+      />,
     );
-
-    render(<GexTarget marketOpen={true} />);
 
     const prevBtn = screen.getByRole('button', {
       name: /previous snapshot/i,
@@ -276,11 +290,12 @@ describe('GexTarget: scrubber controls', () => {
   });
 
   it('disables the next snapshot button when canScrubNext is false', () => {
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({ canScrubNext: false }),
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({ canScrubNext: false })}
+      />,
     );
-
-    render(<GexTarget marketOpen={true} />);
 
     const nextBtn = screen.getByRole('button', { name: /next snapshot/i });
     expect(nextBtn).toBeDisabled();
@@ -289,27 +304,29 @@ describe('GexTarget: scrubber controls', () => {
 
 describe('GexTarget: data-availability banner', () => {
   it('shows banner when selectedDate is not in availableDates', () => {
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({
-        availableDates: ['2026-04-07'],
-        selectedDate: '2026-04-01',
-      }),
+    render(
+      <GexTarget
+        marketOpen={false}
+        gexTarget={makeHookResult({
+          availableDates: ['2026-04-07'],
+          selectedDate: '2026-04-01',
+        })}
+      />,
     );
-
-    render(<GexTarget marketOpen={false} />);
 
     expect(screen.getByText(/no data for this date/i)).toBeInTheDocument();
   });
 
   it('hides banner when selectedDate is in availableDates', () => {
-    vi.mocked(useGexTarget).mockReturnValue(
-      makeHookResult({
-        availableDates: ['2026-04-07'],
-        selectedDate: '2026-04-07',
-      }),
+    render(
+      <GexTarget
+        marketOpen={false}
+        gexTarget={makeHookResult({
+          availableDates: ['2026-04-07'],
+          selectedDate: '2026-04-07',
+        })}
+      />,
     );
-
-    render(<GexTarget marketOpen={false} />);
 
     expect(
       screen.queryByText(/no data for this date/i),

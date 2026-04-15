@@ -221,20 +221,19 @@ export default function StrikeCalculator() {
   const optionsFlow = useOptionsFlow({
     marketOpen: market.data.quotes?.marketOpen ?? false,
   });
-  // OptionsFlowTable shows dealer GEX at each ranked strike so flow-vs-GEX
-  // confluence is visible at a glance (strong flow into a positive-GEX magnet
-  // reads differently than flow into a negative-GEX wall). The OI-mode
-  // leaderboard is the canonical source of signed gexDollars.
-  const gexTargetForFlow = useGexTarget(
-    market.data.quotes?.marketOpen ?? false,
-  );
+  // Single source of truth for GEX target data. Drives both the GexTarget
+  // panel AND the OptionsFlowTable's Net GEX column so flow-vs-GEX confluence
+  // is visible at a glance (strong flow into a positive-GEX magnet reads
+  // differently than flow into a negative-GEX wall). Calling the hook once
+  // here prevents dual polling intervals and divergent state trees.
+  const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
   const gexByStrikeForFlow = useMemo(() => {
     const map = new Map<number, number>();
-    gexTargetForFlow.oi?.leaderboard.forEach((s) => {
+    gexTarget.oi?.leaderboard.forEach((s) => {
       map.set(s.strike, s.features.gexDollars);
     });
     return map;
-  }, [gexTargetForFlow.oi]);
+  }, [gexTarget.oi]);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -971,6 +970,7 @@ export default function StrikeCalculator() {
                   <Suspense fallback={<SkeletonSection lines={6} tall />}>
                     <GexTarget
                       marketOpen={market.data.quotes?.marketOpen ?? false}
+                      gexTarget={gexTarget}
                     />
                   </Suspense>
                 </ErrorBoundary>
@@ -1011,7 +1011,6 @@ export default function StrikeCalculator() {
                   <div className="flex flex-col gap-2">
                     {optionsFlow.data && (
                       <FlowDirectionalRollup
-                        rollup={optionsFlow.data.rollup}
                         strikes={optionsFlow.data.strikes}
                         spot={optionsFlow.data.spot}
                         alertCount={optionsFlow.data.alertCount}
