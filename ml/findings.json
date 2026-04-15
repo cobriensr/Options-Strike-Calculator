@@ -1,9 +1,12 @@
 {
-  "generated_at": "2026-04-15T06:33:40+00:00",
+  "generated_at": "2026-04-15T06:59:54+00:00",
   "dataset": {
     "total_days": 71,
     "labeled_days": 40,
-    "date_range": ["2026-01-02", "2026-04-14"],
+    "date_range": [
+      "2026-01-02",
+      "2026-04-14"
+    ],
     "overall_accuracy": 0.925
   },
   "structure_accuracy": {
@@ -205,7 +208,8 @@
     "plots",
     "backtest",
     "pin_analysis",
-    "flow_eda"
+    "flow_eda",
+    "nope_eda"
   ],
   "phase2": {
     "per_model": {
@@ -512,7 +516,10 @@
     "silhouette": 0.397,
     "calinski_harabasz": 15.3,
     "davies_bouldin": 0.869,
-    "cluster_sizes": [36, 5],
+    "cluster_sizes": [
+      36,
+      5
+    ],
     "stability": 0.976,
     "split_half_holdout_sil": 0.192,
     "gmm_bic": 997.0,
@@ -914,7 +921,7 @@
         "n": 113,
         "groups": {
           "RepeatedHits|call": {
-            "mean_ret_fwd_15": -1.4906766759912108e-6,
+            "mean_ret_fwd_15": -1.4906766759912108e-06,
             "n": 26
           },
           "RepeatedHits|put": {
@@ -944,6 +951,71 @@
         "n": 113,
         "pearson_r": 0.2497343518874334,
         "p_value": 0.007639445457749538
+      }
+    }
+  },
+  "nope_eda": {
+    "n_rows_total": 71,
+    "n_rows_with_nope": 28,
+    "features": [
+      "nope_t1",
+      "nope_t2",
+      "nope_t3",
+      "nope_t4",
+      "nope_am_mean",
+      "nope_am_sign_flips",
+      "nope_am_cum_delta"
+    ],
+    "results": {
+      "q1": {
+        "question": "q1_direction_by_sign",
+        "n": 28,
+        "baseline_up_rate": 0.5,
+        "positive_nope_up_rate": 0.6363636363636364,
+        "negative_nope_up_rate": 0.4117647058823529,
+        "p_value": 0.44007119247393844
+      },
+      "q2": {
+        "question": "q2_mt_agreement",
+        "n": 28,
+        "agree_bull_correct_rate": 0.6666666666666666,
+        "agree_bear_correct_rate": 0.5555555555555556,
+        "disagree_up_rate": 0.4,
+        "agree_bull_n": 9,
+        "agree_bear_n": 9,
+        "disagree_n": 10
+      },
+      "q3": {
+        "question": "q3_flips_vs_range",
+        "n": 28,
+        "spearman_rho": -0.14516446838526184,
+        "p_value": 0.46110122265245884
+      },
+      "q4": {
+        "question": "q4_cumdelta_vs_move",
+        "n": 28,
+        "pearson_r": 0.23718800449908164,
+        "p_value": 0.22425393024238777
+      },
+      "q5": {
+        "question": "q5_magnitude_vs_move",
+        "n": 28,
+        "spearman_rho": -0.058018609742747675,
+        "p_value": 0.7693267977372071,
+        "bucket_means": {
+          "low |NOPE|": {
+            "mean_abs_move": 50.051,
+            "n": 10
+          },
+          "mid |NOPE|": {
+            "mean_abs_move": 38.760000000000005,
+            "n": 9
+          },
+          "high |NOPE|": {
+            "mean_abs_move": 41.97333333333333,
+            "n": 9
+          }
+        }
       }
     }
   }
