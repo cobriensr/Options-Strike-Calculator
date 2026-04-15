@@ -3,10 +3,7 @@
   "dataset": {
     "total_days": 71,
     "labeled_days": 40,
-    "date_range": [
-      "2026-01-02",
-      "2026-04-14"
-    ],
+    "date_range": ["2026-01-02", "2026-04-14"],
     "overall_accuracy": 0.925
   },
   "structure_accuracy": {
@@ -516,10 +513,7 @@
     "silhouette": 0.397,
     "calinski_harabasz": 15.3,
     "davies_bouldin": 0.869,
-    "cluster_sizes": [
-      36,
-      5
-    ],
+    "cluster_sizes": [36, 5],
     "stability": 0.976,
     "split_half_holdout_sil": 0.192,
     "gmm_bic": 997.0,
@@ -921,7 +915,7 @@
         "n": 113,
         "groups": {
           "RepeatedHits|call": {
-            "mean_ret_fwd_15": -1.4906766759912108e-06,
+            "mean_ret_fwd_15": -1.4906766759912108e-6,
             "n": 26
           },
           "RepeatedHits|put": {
