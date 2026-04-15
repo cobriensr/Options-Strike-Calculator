@@ -23,7 +23,10 @@
  * Pure presentational, no hooks, no fetch.
  */
 
-import type { DirectionalRollup, RankedStrike } from '../../hooks/useOptionsFlow';
+import type {
+  DirectionalRollup,
+  RankedStrike,
+} from '../../hooks/useOptionsFlow';
 import { classifyAggression } from '../../utils/flow-aggression';
 
 // ============================================================
@@ -111,8 +114,7 @@ function leanMetaFor(lean: OverallLean): {
       return {
         label: 'CALL-HEAVY AGGRESSION',
         icon: '▲',
-        badgeClass:
-          'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
+        badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
       };
     case 'put-heavy':
       return {
