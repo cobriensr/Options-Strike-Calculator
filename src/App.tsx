@@ -50,6 +50,7 @@ import { OptionsFlowTable } from './components/OptionsFlow/OptionsFlowTable';
 import { FlowDirectionalRollup } from './components/OptionsFlow/FlowDirectionalRollup';
 import { WhalePositioningTable } from './components/OptionsFlow/WhalePositioningTable';
 import { FlowConfluencePanel } from './components/OptionsFlow/FlowConfluencePanel';
+import { MarketInternalsBadge } from './components/MarketInternals/MarketInternalsBadge';
 import { findConfluences } from './utils/flow-confluence';
 import { classifyAggression } from './utils/flow-aggression';
 import type { RankedStrike } from './hooks/useOptionsFlow';
@@ -1113,6 +1114,12 @@ export default function StrikeCalculator() {
                       alertCount={optionsFlow.data?.alertCount ?? 0}
                     />
                   </SectionBox>
+                </ErrorBoundary>
+
+                <ErrorBoundary label="Market Internals">
+                  <MarketInternalsBadge
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
                 </ErrorBoundary>
 
                 <ErrorBoundary label="Flow Confluence">
