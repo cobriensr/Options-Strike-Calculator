@@ -1012,6 +1012,7 @@ export default function StrikeCalculator() {
                     {optionsFlow.data && (
                       <FlowDirectionalRollup
                         rollup={optionsFlow.data.rollup}
+                        strikes={optionsFlow.data.strikes}
                         spot={optionsFlow.data.spot}
                         alertCount={optionsFlow.data.alertCount}
                       />

@@ -22,6 +22,11 @@
 
 import { useMemo, useState } from 'react';
 import type { RankedStrike } from '../../hooks/useOptionsFlow';
+import {
+  AGGRESSION_LABEL,
+  AGGRESSION_TOOLTIP,
+  classifyAggression,
+} from '../../utils/flow-aggression';
 
 // ============================================================
 // TYPES
@@ -262,9 +267,17 @@ function SortableHeader({
 function TagBadge({
   label,
   variant,
+  title,
 }: {
   label: string;
-  variant: 'itm' | 'multileg' | 'ascending' | 'descending';
+  variant:
+    | 'itm'
+    | 'multileg'
+    | 'ascending'
+    | 'descending'
+    | 'aggressive'
+    | 'absorbed';
+  title?: string;
 }) {
   const variantClass = {
     itm: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
@@ -272,9 +285,13 @@ function TagBadge({
     ascending:
       'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30',
     descending: 'bg-orange-500/15 text-orange-300 border border-orange-500/30',
+    aggressive:
+      'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40',
+    absorbed: 'bg-amber-500/15 text-amber-300 border border-amber-500/40',
   }[variant];
   return (
     <span
+      title={title}
       className={`inline-block rounded-full px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap ${variantClass}`}
     >
       {label}
@@ -502,6 +519,13 @@ export function OptionsFlowTable({
                 const rowHighlight = s.has_ascending_fill
                   ? 'border-l-2 border-l-emerald-400/60'
                   : '';
+                const aggression = classifyAggression(s.ask_side_ratio);
+                const aggressionTint =
+                  aggression === 'aggressive'
+                    ? 'bg-emerald-500/[0.03]'
+                    : aggression === 'absorbed'
+                      ? 'bg-amber-500/[0.03]'
+                      : '';
                 const gexValue = gexByStrike?.get(s.strike);
                 // Em-dash for missing; colored signed-dollar otherwise. The
                 // leading +/- in formatGex is the non-color affordance so
@@ -521,7 +545,7 @@ export function OptionsFlowTable({
                 return (
                   <tr
                     key={`${s.strike}-${s.type}`}
-                    className={`border-edge/30 hover:bg-surface-alt/60 border-b transition-colors ${rowHighlight}`}
+                    className={`border-edge/30 hover:bg-surface-alt/60 border-b transition-colors ${rowHighlight} ${aggressionTint}`}
                   >
                     <td className="text-secondary px-2 py-1.5 text-right font-semibold">
                       {s.strike.toLocaleString(undefined, {
@@ -560,6 +584,13 @@ export function OptionsFlowTable({
                     </td>
                     <td className="px-2 py-1.5">
                       <div className="flex flex-wrap gap-1">
+                        {aggression !== 'mixed' && (
+                          <TagBadge
+                            label={AGGRESSION_LABEL[aggression]}
+                            variant={aggression}
+                            title={AGGRESSION_TOOLTIP[aggression]}
+                          />
+                        )}
                         {s.is_itm && <TagBadge label="ITM" variant="itm" />}
                         {s.has_multileg && (
                           <TagBadge label="Multileg" variant="multileg" />

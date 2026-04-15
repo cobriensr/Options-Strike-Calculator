@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { FlowDirectionalRollup } from '../../components/OptionsFlow/FlowDirectionalRollup';
-import type { DirectionalRollup } from '../../hooks/useOptionsFlow';
+import type {
+  DirectionalRollup,
+  RankedStrike,
+} from '../../hooks/useOptionsFlow';
 
 function makeRollup(
   overrides: Partial<DirectionalRollup> = {},
@@ -19,55 +22,33 @@ function makeRollup(
   };
 }
 
+function makeStrike(overrides: Partial<RankedStrike> = {}): RankedStrike {
+  return {
+    strike: 6900,
+    type: 'call',
+    distance_from_spot: 50,
+    distance_pct: 0.0073,
+    total_premium: 1_000_000,
+    ask_side_ratio: 0.85,
+    volume_oi_ratio: 0.3,
+    hit_count: 3,
+    has_ascending_fill: false,
+    has_descending_fill: false,
+    has_multileg: false,
+    is_itm: false,
+    score: 70,
+    first_seen_at: '2026-04-14T14:30:00Z',
+    last_seen_at: '2026-04-14T14:45:00Z',
+    ...overrides,
+  };
+}
+
 describe('FlowDirectionalRollup', () => {
-  it('renders a green BULLISH badge when lean=bullish', () => {
-    render(
-      <FlowDirectionalRollup
-        rollup={makeRollup({ lean: 'bullish' })}
-        spot={6850}
-        alertCount={10}
-      />,
-    );
-
-    const label = screen.getByText('BULLISH');
-    expect(label).toBeInTheDocument();
-    // Badge wrapper (parent of the text) should have an emerald/green class
-    const badge = label.closest('div');
-    expect(badge?.className).toMatch(/emerald-|green-/);
-  });
-
-  it('renders a red BEARISH badge when lean=bearish', () => {
-    render(
-      <FlowDirectionalRollup
-        rollup={makeRollup({ lean: 'bearish' })}
-        spot={6850}
-        alertCount={10}
-      />,
-    );
-    const label = screen.getByText('BEARISH');
-    expect(label).toBeInTheDocument();
-    const badge = label.closest('div');
-    expect(badge?.className).toMatch(/rose-|red-/);
-  });
-
-  it('renders a slate NEUTRAL badge when lean=neutral', () => {
-    render(
-      <FlowDirectionalRollup
-        rollup={makeRollup({ lean: 'neutral' })}
-        spot={6850}
-        alertCount={10}
-      />,
-    );
-    const label = screen.getByText('NEUTRAL');
-    expect(label).toBeInTheDocument();
-    const badge = label.closest('div');
-    expect(badge?.className).toMatch(/slate-/);
-  });
-
   it('shows "No spot data" when spot is null', () => {
     render(
       <FlowDirectionalRollup
         rollup={makeRollup()}
+        strikes={[]}
         spot={null}
         alertCount={10}
       />,
@@ -79,6 +60,7 @@ describe('FlowDirectionalRollup', () => {
     render(
       <FlowDirectionalRollup
         rollup={makeRollup()}
+        strikes={[]}
         spot={6850}
         alertCount={0}
       />,
@@ -86,58 +68,217 @@ describe('FlowDirectionalRollup', () => {
     expect(screen.getByText(/no alerts in window/i)).toBeInTheDocument();
   });
 
-  it('shows both top bullish and top bearish strikes when both are present', () => {
+  it('shows "All flow is mixed" when no aggressive and no absorbed flow', () => {
+    const strikes = [
+      makeStrike({ strike: 6900, ask_side_ratio: 0.5 }),
+      makeStrike({ strike: 6850, ask_side_ratio: 0.45, type: 'put' }),
+    ];
     render(
       <FlowDirectionalRollup
-        rollup={makeRollup({
-          top_bullish_strike: 6900,
-          top_bearish_strike: 6800,
-        })}
+        rollup={makeRollup()}
+        strikes={strikes}
         spot={6850}
-        alertCount={5}
+        alertCount={2}
       />,
     );
-    expect(screen.getByText(/6,900C/)).toBeInTheDocument();
-    expect(screen.getByText(/6,800P/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/all flow is mixed — no clear aggression signal/i),
+    ).toBeInTheDocument();
+  });
+
+  it('renders CALL-HEAVY AGGRESSION emerald badge when aggressive calls dominate', () => {
+    const strikes = [
+      makeStrike({
+        strike: 6900,
+        ask_side_ratio: 0.9,
+        type: 'call',
+        total_premium: 10_000_000,
+      }),
+      makeStrike({
+        strike: 6910,
+        ask_side_ratio: 0.85,
+        type: 'call',
+        total_premium: 5_000_000,
+      }),
+      makeStrike({
+        strike: 6800,
+        ask_side_ratio: 0.8,
+        type: 'put',
+        total_premium: 500_000,
+      }),
+    ];
+    render(
+      <FlowDirectionalRollup
+        rollup={makeRollup()}
+        strikes={strikes}
+        spot={6850}
+        alertCount={3}
+      />,
+    );
+    const label = screen.getByText('CALL-HEAVY AGGRESSION');
+    expect(label).toBeInTheDocument();
+    const badge = label.closest('div');
+    expect(badge?.className).toMatch(/emerald-/);
+  });
+
+  it('renders PUT-HEAVY AGGRESSION rose badge when aggressive puts dominate', () => {
+    const strikes = [
+      makeStrike({
+        strike: 6800,
+        ask_side_ratio: 0.9,
+        type: 'put',
+        total_premium: 12_000_000,
+      }),
+      makeStrike({
+        strike: 6790,
+        ask_side_ratio: 0.8,
+        type: 'put',
+        total_premium: 3_000_000,
+      }),
+      makeStrike({
+        strike: 6900,
+        ask_side_ratio: 0.85,
+        type: 'call',
+        total_premium: 300_000,
+      }),
+    ];
+    render(
+      <FlowDirectionalRollup
+        rollup={makeRollup()}
+        strikes={strikes}
+        spot={6850}
+        alertCount={3}
+      />,
+    );
+    const label = screen.getByText('PUT-HEAVY AGGRESSION');
+    expect(label).toBeInTheDocument();
+    const badge = label.closest('div');
+    expect(badge?.className).toMatch(/rose-/);
+  });
+
+  it('renders NO AGGRESSIVE FLOW badge when only absorbed flow is present', () => {
+    const strikes = [
+      makeStrike({
+        strike: 6900,
+        ask_side_ratio: 0.1,
+        type: 'call',
+        total_premium: 2_000_000,
+      }),
+      makeStrike({
+        strike: 6800,
+        ask_side_ratio: 0.2,
+        type: 'put',
+        total_premium: 1_500_000,
+      }),
+    ];
+    render(
+      <FlowDirectionalRollup
+        rollup={makeRollup()}
+        strikes={strikes}
+        spot={6850}
+        alertCount={2}
+      />,
+    );
+    expect(screen.getByText('NO AGGRESSIVE FLOW')).toBeInTheDocument();
+  });
+
+  it('renders AGGRESSION BALANCED badge when aggressive calls and puts are comparable', () => {
+    const strikes = [
+      makeStrike({
+        strike: 6900,
+        ask_side_ratio: 0.9,
+        type: 'call',
+        total_premium: 2_000_000,
+      }),
+      makeStrike({
+        strike: 6800,
+        ask_side_ratio: 0.85,
+        type: 'put',
+        total_premium: 2_000_000,
+      }),
+    ];
+    render(
+      <FlowDirectionalRollup
+        rollup={makeRollup()}
+        strikes={strikes}
+        spot={6850}
+        alertCount={2}
+      />,
+    );
+    const label = screen.getByText('AGGRESSION BALANCED');
+    expect(label).toBeInTheDocument();
+    const badge = label.closest('div');
+    expect(badge?.className).toMatch(/slate-/);
+  });
+
+  it('renders both AGGRESSIVE and ABSORBED lines when both populations present', () => {
+    const strikes = [
+      makeStrike({
+        strike: 6900,
+        ask_side_ratio: 0.9,
+        type: 'call',
+        total_premium: 5_000_000,
+      }),
+      makeStrike({
+        strike: 6800,
+        ask_side_ratio: 0.15,
+        type: 'put',
+        total_premium: 8_000_000,
+      }),
+    ];
+    render(
+      <FlowDirectionalRollup
+        rollup={makeRollup()}
+        strikes={strikes}
+        spot={6850}
+        alertCount={2}
+      />,
+    );
+    expect(screen.getByText('AGGRESSIVE')).toBeInTheDocument();
+    expect(screen.getByText('ABSORBED')).toBeInTheDocument();
+  });
+
+  it('renders the helper text when data is present', () => {
+    const strikes = [
+      makeStrike({ strike: 6900, ask_side_ratio: 0.9, type: 'call' }),
+    ];
+    render(
+      <FlowDirectionalRollup
+        rollup={makeRollup()}
+        strikes={strikes}
+        spot={6850}
+        alertCount={1}
+      />,
+    );
+    expect(
+      screen.getByText(/buyer at ask.*seller at bid/i),
+    ).toBeInTheDocument();
   });
 
   it('formats premium totals in compact form', () => {
+    const strikes = [
+      makeStrike({
+        strike: 6900,
+        ask_side_ratio: 0.9,
+        type: 'call',
+        total_premium: 12_400_000,
+      }),
+      makeStrike({
+        strike: 6800,
+        ask_side_ratio: 0.85,
+        type: 'put',
+        total_premium: 2_100_000,
+      }),
+    ];
     render(
       <FlowDirectionalRollup
-        rollup={makeRollup({
-          bullish_premium: 12_400_000,
-          bearish_premium: 2_100_000,
-        })}
+        rollup={makeRollup()}
+        strikes={strikes}
         spot={6850}
-        alertCount={5}
+        alertCount={2}
       />,
     );
     expect(screen.getByText(/\$12\.4M/)).toBeInTheDocument();
     expect(screen.getByText(/\$2\.1M/)).toBeInTheDocument();
-    // The raw cents value should NOT be in the DOM
-    expect(screen.queryByText(/12400000/)).not.toBeInTheDocument();
-  });
-
-  it('renders the confidence percentage', () => {
-    render(
-      <FlowDirectionalRollup
-        rollup={makeRollup({ confidence: 0.78 })}
-        spot={6850}
-        alertCount={10}
-      />,
-    );
-    expect(screen.getByText('78%')).toBeInTheDocument();
-  });
-
-  it('renders bullish and bearish counts side-by-side', () => {
-    render(
-      <FlowDirectionalRollup
-        rollup={makeRollup({ bullish_count: 4, bearish_count: 1 })}
-        spot={6850}
-        alertCount={5}
-      />,
-    );
-    expect(screen.getByText(/4 bullish/)).toBeInTheDocument();
-    expect(screen.getByText(/1 bearish/)).toBeInTheDocument();
   });
 });

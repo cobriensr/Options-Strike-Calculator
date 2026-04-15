@@ -272,6 +272,50 @@ describe('OptionsFlowTable', () => {
     }
   });
 
+  it('renders AGG badge and emerald row tint for aggressive strikes', () => {
+    const strikes = [
+      makeStrike({ strike: 6900, ask_side_ratio: 0.85 }),
+      makeStrike({ strike: 6850, ask_side_ratio: 0.45, type: 'put' }),
+      makeStrike({ strike: 6800, ask_side_ratio: 0.15, type: 'put' }),
+    ];
+    render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+    const bodyRows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+    const aggRow = bodyRows.find((r) => within(r).queryByText('6,900'))!;
+    expect(within(aggRow).getByText('AGG')).toBeInTheDocument();
+    expect(aggRow.className).toMatch(/bg-emerald-500\/\[0\.03\]/);
+  });
+
+  it('renders ABS badge and amber row tint for absorbed strikes', () => {
+    const strikes = [
+      makeStrike({ strike: 6900, ask_side_ratio: 0.85 }),
+      makeStrike({ strike: 6850, ask_side_ratio: 0.45, type: 'put' }),
+      makeStrike({ strike: 6800, ask_side_ratio: 0.15, type: 'put' }),
+    ];
+    render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+    const bodyRows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+    const absRow = bodyRows.find((r) => within(r).queryByText('6,800'))!;
+    expect(within(absRow).getByText('ABS')).toBeInTheDocument();
+    expect(absRow.className).toMatch(/bg-amber-500\/\[0\.03\]/);
+  });
+
+  it('renders no aggression badge and no tint for mixed strikes', () => {
+    const strikes = [
+      makeStrike({ strike: 6900, ask_side_ratio: 0.85 }),
+      makeStrike({ strike: 6850, ask_side_ratio: 0.45, type: 'put' }),
+      makeStrike({ strike: 6800, ask_side_ratio: 0.15, type: 'put' }),
+    ];
+    render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+    const bodyRows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+    const mixedRow = bodyRows.find((r) => within(r).queryByText('6,850'))!;
+    expect(within(mixedRow).queryByText('AGG')).not.toBeInTheDocument();
+    expect(within(mixedRow).queryByText('ABS')).not.toBeInTheDocument();
+    expect(mixedRow.className).not.toMatch(/bg-emerald-500\/\[0\.03\]/);
+    expect(mixedRow.className).not.toMatch(/bg-amber-500\/\[0\.03\]/);
+  });
+
   it('sort by Net GEX places rows missing a lookup entry at the bottom in both directions', async () => {
     const user = userEvent.setup();
     const strikes = [
