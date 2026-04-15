@@ -183,7 +183,7 @@ export const MarketInternalsBadge: FC<MarketInternalsBadgeProps> = ({
       {!showError && loading && !hasAnyBar && (
         <>
           {INTERNAL_SYMBOLS.map((sym) => (
-            <Cell key={sym} symbol={sym} bar={null} stale={false} />
+            <Cell key={sym} symbol={sym} bar={null} stale={!marketOpen} />
           ))}
         </>
       )}

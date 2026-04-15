@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import { useMarketInternals } from '../../hooks/useMarketInternals';
+import { POLL_INTERVALS } from '../../constants';
 import type { InternalBar } from '../../types/market-internals';
 
 function buildResponse(bars: InternalBar[], asOf = '2026-04-15T18:00:00Z') {
@@ -167,5 +168,38 @@ describe('useMarketInternals', () => {
 
     expect(result.current.error).not.toBeNull();
     expect(result.current.error).toMatch(/Failed to fetch/);
+  });
+
+  it('cancels in-flight fetch and stops polling after unmount', async () => {
+    // Spy on AbortController.abort so we can assert the cleanup path
+    // fired (covers the "cancel in-flight fetch" half of the contract).
+    const abortSpy = vi.spyOn(AbortController.prototype, 'abort');
+
+    fetchMock.mockResolvedValue(
+      buildResponse([tickBar('2026-04-15T17:59:00Z', 100)]),
+    );
+
+    const { unmount } = renderHook(() =>
+      useMarketInternals({ marketOpen: true }),
+    );
+
+    // Initial mount fetch must resolve before we unmount — otherwise
+    // we're asserting polling never started in the first place.
+    await flushPromises();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    // Cleanup aborts the most recent controller.
+    expect(abortSpy).toHaveBeenCalled();
+
+    // Advance past 2 full poll intervals — the cleared interval must
+    // not fire any further fetches.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVALS.MARKET_INTERNALS * 2);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    abortSpy.mockRestore();
   });
 });
