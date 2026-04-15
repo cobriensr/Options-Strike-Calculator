@@ -1005,7 +1005,7 @@ export default function StrikeCalculator() {
             )}
 
             {isOwner && (market.hasData || !!historySnapshot) && (
-              <>
+              <div className="border-edge/40 mt-8 border-t pt-6">
                 <span id="sec-options-flow" className="block scroll-mt-28" />
                 <ErrorBoundary label="Options Flow">
                   <div className="flex flex-col gap-2">
@@ -1029,7 +1029,7 @@ export default function StrikeCalculator() {
                     />
                   </div>
                 </ErrorBoundary>
-              </>
+              </div>
             )}
 
             {isOwner && (
