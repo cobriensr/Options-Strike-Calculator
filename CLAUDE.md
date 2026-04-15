@@ -62,6 +62,27 @@ npm run format       # prettier --write
 
 Every code change follows this implement-verify-review loop. No exceptions. This applies to the main session and all subagents that write code.
 
+### Plan First (Large Changes)
+
+For any change that spans **3+ files, introduces a new feature end-to-end, or was scoped across multiple conversation turns**, write a plan doc to `docs/superpowers/specs/` BEFORE starting the Get It Right loop. Context compaction can silently drop the scoping conversation — the plan doc is the durable handoff to the next session (or this session post-compaction).
+
+The plan must include:
+
+- **Goal** — one sentence on what this feature does and why
+- **Phases** — numbered, each independently shippable, with rough scope estimates
+- **Files to create/modify** — concrete list, grouped by phase
+- **Data dependencies** — new tables, migrations, env vars, external APIs
+- **Open questions** — anything undecided, with default picks noted
+- **Thresholds / constants** — any magic numbers agreed on during scoping
+
+Skip the plan doc only for:
+
+- Bug fixes within a single file
+- Refactors contained to one module
+- Config-only changes (`.json`, `.md`, ESLint/Prettier tweaks)
+
+When in doubt, write the plan. A plan doc is ~10 minutes; rediscovering scope is much more.
+
 ### The Loop
 
 **1. Implement** — Write the code. Investigate first, understand existing patterns, then make changes.
