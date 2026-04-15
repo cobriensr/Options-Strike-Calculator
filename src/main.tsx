@@ -87,6 +87,7 @@ if (import.meta.env.PROD)
       { path: '/api/nope-intraday', method: 'GET' },
       { path: '/api/options-flow/top-strikes', method: 'GET' },
       { path: '/api/options-flow/whale-positioning', method: 'GET' },
+      { path: '/api/market-internals/history', method: 'GET' },
       { path: '/api/ml/trigger-analyze', method: 'POST' },
     ],
   });
