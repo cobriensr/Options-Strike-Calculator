@@ -39,8 +39,6 @@ type SortDirection = 'asc' | 'desc';
 
 export interface WhalePositioningTableProps {
   alerts: WhaleAlert[];
-  spot: number | null;
-  lastUpdated: string | null;
   totalPremium: number;
   alertCount: number;
   isLoading: boolean;
@@ -138,21 +136,6 @@ function formatAge(minutes: number): string {
   const mins = Math.round(minutes - hours * 60);
   if (mins === 0) return `${hours}h ago`;
   return `${hours}h ${mins}m ago`;
-}
-
-function formatTime(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return (
-    new Intl.DateTimeFormat('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-      timeZone: 'America/Chicago',
-    }).format(d) + ' CT'
-  );
 }
 
 // ============================================================
@@ -318,8 +301,6 @@ function SortableHeader({
 
 export function WhalePositioningTable({
   alerts,
-  spot,
-  lastUpdated,
   totalPremium,
   alertCount,
   isLoading,
@@ -365,50 +346,9 @@ export function WhalePositioningTable({
     <div
       className={`border-edge bg-surface overflow-hidden rounded-lg border ${className ?? ''}`}
     >
-      {/* Header strip */}
-      <div className="border-edge-heavy bg-surface-alt flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-secondary font-sans text-[12px] font-semibold tracking-wider uppercase">
-            Whale Positioning
-          </h3>
-          <span className="text-muted font-mono text-[10px]">
-            today · 0-7 DTE
-          </span>
-        </div>
-        <div className="flex items-center gap-3 font-mono text-[10px]">
-          {spot !== null && (
-            <span className="text-secondary">
-              Spot{' '}
-              <span className="text-sky-300">
-                {spot.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </span>
-            </span>
-          )}
-          <span
-            className="text-muted"
-            data-testid="whale-alert-count"
-            title={`Server reported ${alertCount} ${alertCount === 1 ? 'alert' : 'alerts'} in window`}
-          >
-            {totalCount === visibleCount
-              ? `${totalCount} ${totalCount === 1 ? 'alert' : 'alerts'} ≥ ${formatSliderPremium(sliderPremium)}`
-              : `${visibleCount} of ${totalCount} alerts ≥ ${formatSliderPremium(sliderPremium)}`}
-          </span>
-          {totalPremium > 0 && (
-            <span className="text-secondary">
-              Σ{' '}
-              <span className="text-amber-300">
-                {formatPremium(totalPremium)}
-              </span>
-            </span>
-          )}
-          <span className="text-muted">Updated {formatTime(lastUpdated)}</span>
-        </div>
-      </div>
-
-      {/* Min-premium slider */}
+      {/* Min-premium slider — visible count, total, and the slider itself
+          are filter-dependent so they stay inside the body rather than
+          bubbling up to the SectionBox header. */}
       <div className="border-edge/60 bg-surface-alt/40 flex flex-wrap items-center gap-3 border-b px-3 py-2">
         <label
           htmlFor="whale-min-premium"
@@ -439,6 +379,23 @@ export function WhalePositioningTable({
         <span className="text-muted font-mono text-[10px]">
           {formatSliderPremium(SLIDER_MIN)} – {formatSliderPremium(SLIDER_MAX)}
         </span>
+        <span
+          className="text-muted ml-auto font-mono text-[10px]"
+          data-testid="whale-alert-count"
+          title={`Server reported ${alertCount} ${alertCount === 1 ? 'alert' : 'alerts'} in window`}
+        >
+          {totalCount === visibleCount
+            ? `${totalCount} ${totalCount === 1 ? 'alert' : 'alerts'} ≥ ${formatSliderPremium(sliderPremium)}`
+            : `${visibleCount} of ${totalCount} alerts ≥ ${formatSliderPremium(sliderPremium)}`}
+        </span>
+        {totalPremium > 0 && (
+          <span className="text-secondary font-mono text-[10px]">
+            Σ{' '}
+            <span className="text-amber-300">
+              {formatPremium(totalPremium)}
+            </span>
+          </span>
+        )}
       </div>
 
       {/* Body */}

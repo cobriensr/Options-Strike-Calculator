@@ -30,7 +30,6 @@ import {
 export interface FlowConfluencePanelProps {
   intradayStrikes: RankedStrike[];
   whaleAlerts: WhaleAlert[];
-  spot: number | null;
   className?: string;
 }
 
@@ -183,7 +182,6 @@ function MatchRow({ match }: { match: ConfluenceMatch }) {
 export function FlowConfluencePanel({
   intradayStrikes,
   whaleAlerts,
-  spot,
   className,
 }: FlowConfluencePanelProps) {
   const matches = useMemo(
@@ -199,37 +197,14 @@ export function FlowConfluencePanel({
       className={`border-edge bg-surface overflow-hidden rounded-lg border ${className ?? ''}`}
       aria-label="Retail whale confluence"
     >
-      {/* Header strip */}
-      <div className="border-edge-heavy bg-surface-alt flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-secondary font-sans text-[12px] font-semibold tracking-wider uppercase">
-            Retail ↔ Whale Confluence
-          </h3>
-          <span className="text-muted font-mono text-[10px]">
-            strikes where retail and whale flow converge
-          </span>
-        </div>
-        <div className="flex items-center gap-3 font-mono text-[10px]">
-          <span
-            className="text-muted"
-            data-testid="confluence-match-count"
-          >
-            {matches.length}{' '}
-            {matches.length === 1 ? 'match' : 'matches'}
-          </span>
-          {spot !== null && (
-            <span className="text-secondary">
-              Spot{' '}
-              <span className="text-sky-300">
-                {spot.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </span>
-            </span>
-          )}
-        </div>
-      </div>
+      {/* Hidden match count for programmatic / test access — the visible
+          count now surfaces in the SectionBox badge. */}
+      <span
+        className="sr-only"
+        data-testid="confluence-match-count"
+      >
+        {matches.length} {matches.length === 1 ? 'match' : 'matches'}
+      </span>
 
       {/* Body */}
       {!hasRetail && !hasWhale && (

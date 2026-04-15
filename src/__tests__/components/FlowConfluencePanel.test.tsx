@@ -63,13 +63,7 @@ function makeWhale(overrides: Partial<WhaleAlert> = {}): WhaleAlert {
 
 describe('FlowConfluencePanel', () => {
   it('renders "waiting" empty state when both retail and whale are empty', () => {
-    render(
-      <FlowConfluencePanel
-        intradayStrikes={[]}
-        whaleAlerts={[]}
-        spot={7001}
-      />,
-    );
+    render(<FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} />);
     expect(
       screen.getByText(/waiting on retail and whale flow/i),
     ).toBeInTheDocument();
@@ -80,7 +74,6 @@ describe('FlowConfluencePanel', () => {
       <FlowConfluencePanel
         intradayStrikes={[]}
         whaleAlerts={[makeWhale()]}
-        spot={7001}
       />,
     );
     expect(screen.getByText(/loading retail flow/i)).toBeInTheDocument();
@@ -92,7 +85,6 @@ describe('FlowConfluencePanel', () => {
       <FlowConfluencePanel
         intradayStrikes={[makeRetail()]}
         whaleAlerts={[]}
-        spot={7001}
       />,
     );
     expect(screen.getByText(/no whale data yet/i)).toBeInTheDocument();
@@ -127,11 +119,7 @@ describe('FlowConfluencePanel', () => {
       }),
     ];
     render(
-      <FlowConfluencePanel
-        intradayStrikes={retail}
-        whaleAlerts={whales}
-        spot={7001}
-      />,
+      <FlowConfluencePanel intradayStrikes={retail} whaleAlerts={whales} />,
     );
     const rows = screen.getAllByTestId('confluence-row');
     expect(rows).toHaveLength(3);
@@ -159,11 +147,7 @@ describe('FlowConfluencePanel', () => {
       }),
     ];
     render(
-      <FlowConfluencePanel
-        intradayStrikes={retail}
-        whaleAlerts={whales}
-        spot={7050}
-      />,
+      <FlowConfluencePanel intradayStrikes={retail} whaleAlerts={whales} />,
     );
 
     const badges = screen.getAllByTestId('confluence-badge');
@@ -198,11 +182,7 @@ describe('FlowConfluencePanel', () => {
       }),
     ];
     render(
-      <FlowConfluencePanel
-        intradayStrikes={retail}
-        whaleAlerts={whales}
-        spot={7001}
-      />,
+      <FlowConfluencePanel intradayStrikes={retail} whaleAlerts={whales} />,
     );
     const badges = screen.getAllByTestId('confluence-badge');
     expect(badges).toHaveLength(1);
@@ -218,11 +198,7 @@ describe('FlowConfluencePanel', () => {
     const retail = [makeRetail({ strike: 7000 })];
     const whales = [makeWhale({ strike: 6500 })]; // |delta|=500 > 50
     render(
-      <FlowConfluencePanel
-        intradayStrikes={retail}
-        whaleAlerts={whales}
-        spot={7001}
-      />,
+      <FlowConfluencePanel intradayStrikes={retail} whaleAlerts={whales} />,
     );
     expect(
       screen.getByText(/no confluence matches in current window/i),
@@ -252,11 +228,7 @@ describe('FlowConfluencePanel', () => {
       );
     }
     render(
-      <FlowConfluencePanel
-        intradayStrikes={retail}
-        whaleAlerts={whales}
-        spot={7075}
-      />,
+      <FlowConfluencePanel intradayStrikes={retail} whaleAlerts={whales} />,
     );
     const rows = screen.getAllByTestId('confluence-row');
     expect(rows).toHaveLength(10);
@@ -277,25 +249,10 @@ describe('FlowConfluencePanel', () => {
       }),
     ];
     render(
-      <FlowConfluencePanel
-        intradayStrikes={retail}
-        whaleAlerts={whales}
-        spot={7001}
-      />,
+      <FlowConfluencePanel intradayStrikes={retail} whaleAlerts={whales} />,
     );
     const badge = screen.getByTestId('confluence-badge');
     expect(badge.getAttribute('data-kind')).toBe('CONTRARIAN');
     expect(badge.className).toMatch(/indigo/);
-  });
-
-  it('renders spot price in header when provided', () => {
-    render(
-      <FlowConfluencePanel
-        intradayStrikes={[]}
-        whaleAlerts={[]}
-        spot={7001.25}
-      />,
-    );
-    expect(screen.getByText('7,001.25')).toBeInTheDocument();
   });
 });

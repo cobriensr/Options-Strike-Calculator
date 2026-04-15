@@ -100,7 +100,7 @@ describe('useWhalePositioning', () => {
 
     const calledUrl = fetchMock.mock.calls[0]?.[0] as string;
     expect(calledUrl).toContain('/api/options-flow/whale-positioning');
-    expect(calledUrl).toContain('min_premium=1000000');
+    expect(calledUrl).toContain('min_premium=500000');
     expect(calledUrl).toContain('max_dte=7');
     expect(calledUrl).toContain('limit=20');
 

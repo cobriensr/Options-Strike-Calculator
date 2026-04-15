@@ -48,9 +48,6 @@ type SortDirection = 'asc' | 'desc';
 
 export interface OptionsFlowTableProps {
   strikes: RankedStrike[];
-  spot: number | null;
-  lastUpdated: string | null;
-  alertCount: number;
   isLoading: boolean;
   error: Error | null;
   windowMinutes?: number;
@@ -115,21 +112,6 @@ function formatSignedInt(n: number): string {
   const rounded = Math.round(n);
   if (rounded === 0) return '0';
   return rounded > 0 ? `+${rounded}` : `${rounded}`;
-}
-
-function formatTime(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return (
-    new Intl.DateTimeFormat('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-      timeZone: 'America/Chicago',
-    }).format(d) + ' CT'
-  );
 }
 
 // ============================================================
@@ -307,9 +289,6 @@ const DEFAULT_WINDOW_MINUTES = 15;
 
 export function OptionsFlowTable({
   strikes,
-  spot,
-  lastUpdated,
-  alertCount,
   isLoading,
   error,
   windowMinutes = DEFAULT_WINDOW_MINUTES,
@@ -343,35 +322,6 @@ export function OptionsFlowTable({
     <div
       className={`border-edge bg-surface overflow-hidden rounded-lg border ${className ?? ''}`}
     >
-      {/* Header strip */}
-      <div className="border-edge-heavy bg-surface-alt flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-secondary font-sans text-[12px] font-semibold tracking-wider uppercase">
-            Options Flow
-          </h3>
-          <span className="text-muted font-mono text-[10px]">
-            last {windowMinutes} min
-          </span>
-        </div>
-        <div className="flex items-center gap-3 font-mono text-[10px]">
-          {spot !== null && (
-            <span className="text-secondary">
-              Spot{' '}
-              <span className="text-sky-300">
-                {spot.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </span>
-            </span>
-          )}
-          <span className="text-muted">
-            {alertCount} {alertCount === 1 ? 'alert' : 'alerts'}
-          </span>
-          <span className="text-muted">Updated {formatTime(lastUpdated)}</span>
-        </div>
-      </div>
-
       {/* Body */}
       {showError && (
         <div

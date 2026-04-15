@@ -50,8 +50,11 @@ import { OptionsFlowTable } from './components/OptionsFlow/OptionsFlowTable';
 import { FlowDirectionalRollup } from './components/OptionsFlow/FlowDirectionalRollup';
 import { WhalePositioningTable } from './components/OptionsFlow/WhalePositioningTable';
 import { FlowConfluencePanel } from './components/OptionsFlow/FlowConfluencePanel';
+import { findConfluences } from './utils/flow-confluence';
+import { classifyAggression } from './utils/flow-aggression';
+import type { RankedStrike } from './hooks/useOptionsFlow';
 import NotificationPermission from './components/NotificationPermission';
-import { StatusBadge } from './components/ui';
+import { SectionBox, StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
 import type { CollapseSignal } from './components/collapse-context';
 import { useToast } from './hooks/useToast';
@@ -118,6 +121,80 @@ function SchwabAuthLink({
       <span className="text-[11px] font-semibold">{text}</span>
     </a>
   );
+}
+
+/**
+ * Compact spot / alert-count / updated-at row used by the Options Flow and
+ * Whale Positioning SectionBox headers. Renders nothing for missing fields
+ * so we don't produce empty placeholders when the window is quiet.
+ */
+function formatFlowTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return (
+    new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'America/Chicago',
+    }).format(d) + ' CT'
+  );
+}
+
+function MetaRow({
+  spot,
+  count,
+  updated,
+}: {
+  spot: number | null | undefined;
+  count: number | undefined;
+  updated: string | null | undefined;
+}) {
+  const time = formatFlowTime(updated);
+  if (spot == null && count == null && !time) return null;
+  return (
+    <div className="text-muted flex items-center gap-3 font-mono text-[11px]">
+      {spot != null && (
+        <span>
+          Spot{' '}
+          <strong className="text-sky-300 font-semibold">
+            {spot.toFixed(2)}
+          </strong>
+        </span>
+      )}
+      {count != null && (
+        <span>
+          {count} {count === 1 ? 'alert' : 'alerts'}
+        </span>
+      )}
+      {time && <span>Updated {time}</span>}
+    </div>
+  );
+}
+
+/**
+ * Compact lean label for the Flow Aggression SectionBox badge. Mirrors
+ * the lean logic inside FlowDirectionalRollup but projected down to a
+ * single short string. Returns `null` when there's no useful signal so
+ * the badge slot collapses rather than rendering a noisy placeholder.
+ */
+const LEAN_RATIO_THRESHOLD = 1.5;
+function flowAggressionBadge(strikes?: RankedStrike[]): string | null {
+  if (!strikes?.length) return null;
+  let callPremium = 0;
+  let putPremium = 0;
+  let count = 0;
+  for (const s of strikes) {
+    if (classifyAggression(s.ask_side_ratio) !== 'aggressive') continue;
+    count += 1;
+    if (s.type === 'call') callPremium += s.total_premium;
+    else putPremium += s.total_premium;
+  }
+  if (count === 0) return null;
+  if (callPremium > putPremium * LEAN_RATIO_THRESHOLD) return 'CALL-HEAVY';
+  if (putPremium > callPremium * LEAN_RATIO_THRESHOLD) return 'PUT-HEAVY';
+  return 'BALANCED';
 }
 
 // ============================================================
@@ -240,6 +317,16 @@ export default function StrikeCalculator() {
     });
     return map;
   }, [gexTarget.oi]);
+  // Compute confluence match count here for the Retail × Whale section
+  // badge. The FlowConfluencePanel re-derives this for rendering; the work
+  // is O(retail × whale) per small arrays so the duplicate memo is cheap
+  // and keeps the component's props narrow.
+  const confluenceMatchCount = useMemo(() => {
+    const retail = optionsFlow.data?.strikes ?? [];
+    const whaleAlerts = whale.data?.strikes ?? [];
+    if (retail.length === 0 || whaleAlerts.length === 0) return 0;
+    return findConfluences(retail, whaleAlerts).length;
+  }, [optionsFlow.data?.strikes, whale.data?.strikes]);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -1011,55 +1098,86 @@ export default function StrikeCalculator() {
             )}
 
             {isOwner && (market.hasData || !!historySnapshot) && (
-              <div className="border-edge/40 mt-8 border-t pt-6">
+              <>
                 <span id="sec-options-flow" className="block scroll-mt-28" />
-                <ErrorBoundary label="Options Flow">
-                  <div className="flex flex-col gap-2">
-                    {optionsFlow.data && (
-                      <FlowDirectionalRollup
-                        strikes={optionsFlow.data.strikes}
-                        spot={optionsFlow.data.spot}
-                        alertCount={optionsFlow.data.alertCount}
-                      />
-                    )}
-                    <ErrorBoundary label="Flow Confluence">
-                      <FlowConfluencePanel
-                        intradayStrikes={optionsFlow.data?.strikes ?? []}
-                        whaleAlerts={whale.data?.strikes ?? []}
-                        spot={
-                          optionsFlow.data?.spot ?? whale.data?.spot ?? null
-                        }
-                      />
-                    </ErrorBoundary>
-                    <OptionsFlowTable
+
+                <ErrorBoundary label="Flow Aggression">
+                  <SectionBox
+                    label="Flow Aggression"
+                    badge={flowAggressionBadge(optionsFlow.data?.strikes)}
+                    collapsible
+                  >
+                    <FlowDirectionalRollup
                       strikes={optionsFlow.data?.strikes ?? []}
                       spot={optionsFlow.data?.spot ?? null}
-                      lastUpdated={optionsFlow.data?.lastUpdated ?? null}
                       alertCount={optionsFlow.data?.alertCount ?? 0}
+                    />
+                  </SectionBox>
+                </ErrorBoundary>
+
+                <ErrorBoundary label="Flow Confluence">
+                  <SectionBox
+                    label="Retail × Whale Confluence"
+                    badge={
+                      confluenceMatchCount > 0
+                        ? `${confluenceMatchCount} ${confluenceMatchCount === 1 ? 'match' : 'matches'}`
+                        : null
+                    }
+                    collapsible
+                  >
+                    <FlowConfluencePanel
+                      intradayStrikes={optionsFlow.data?.strikes ?? []}
+                      whaleAlerts={whale.data?.strikes ?? []}
+                    />
+                  </SectionBox>
+                </ErrorBoundary>
+
+                <ErrorBoundary label="Options Flow">
+                  <SectionBox
+                    label="Options Flow"
+                    badge="0-1 DTE · 15m"
+                    headerRight={
+                      <MetaRow
+                        spot={optionsFlow.data?.spot}
+                        count={optionsFlow.data?.alertCount}
+                        updated={optionsFlow.data?.lastUpdated}
+                      />
+                    }
+                    collapsible
+                  >
+                    <OptionsFlowTable
+                      strikes={optionsFlow.data?.strikes ?? []}
                       windowMinutes={optionsFlow.data?.windowMinutes}
                       isLoading={optionsFlow.isLoading}
                       error={optionsFlow.error}
                       gexByStrike={gexByStrikeForFlow}
                     />
-                  </div>
-                  <div className="mt-6">
-                    <h3 className="text-tertiary mb-2 font-sans text-[10px] font-semibold tracking-widest uppercase">
-                      Whale Positioning · 0-7 DTE · ≥ $1M
-                    </h3>
-                    <ErrorBoundary label="Whale Positioning">
-                      <WhalePositioningTable
-                        alerts={whale.data?.strikes ?? []}
-                        spot={whale.data?.spot ?? null}
-                        lastUpdated={whale.data?.lastUpdated ?? null}
-                        totalPremium={whale.data?.totalPremium ?? 0}
-                        alertCount={whale.data?.alertCount ?? 0}
-                        isLoading={whale.isLoading}
-                        error={whale.error}
-                      />
-                    </ErrorBoundary>
-                  </div>
+                  </SectionBox>
                 </ErrorBoundary>
-              </div>
+
+                <ErrorBoundary label="Whale Positioning">
+                  <SectionBox
+                    label="Whale Positioning"
+                    badge="0-7 DTE · ≥$1M"
+                    headerRight={
+                      <MetaRow
+                        spot={whale.data?.spot}
+                        count={whale.data?.alertCount}
+                        updated={whale.data?.lastUpdated}
+                      />
+                    }
+                    collapsible
+                  >
+                    <WhalePositioningTable
+                      alerts={whale.data?.strikes ?? []}
+                      totalPremium={whale.data?.totalPremium ?? 0}
+                      alertCount={whale.data?.alertCount ?? 0}
+                      isLoading={whale.isLoading}
+                      error={whale.error}
+                    />
+                  </SectionBox>
+                </ErrorBoundary>
+              </>
             )}
 
             {isOwner && (

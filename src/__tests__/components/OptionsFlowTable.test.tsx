@@ -26,9 +26,6 @@ function makeStrike(overrides: Partial<RankedStrike> = {}): RankedStrike {
 }
 
 const BASE_PROPS = {
-  spot: 6850 as number | null,
-  lastUpdated: '2026-04-14T14:45:23Z' as string | null,
-  alertCount: 12,
   isLoading: false,
   error: null,
 } as const;
@@ -173,28 +170,6 @@ describe('OptionsFlowTable', () => {
     const putBadge = screen.getByLabelText('Put');
     expect(callBadge.className).toMatch(/emerald-400|green-400/);
     expect(putBadge.className).toMatch(/rose-400|red-400/);
-  });
-
-  it('displays the alert count in the header', () => {
-    render(
-      <OptionsFlowTable
-        {...BASE_PROPS}
-        strikes={[makeStrike()]}
-        alertCount={42}
-      />,
-    );
-    expect(screen.getByText(/42 alerts/)).toBeInTheDocument();
-  });
-
-  it('displays the spot price in the header when provided', () => {
-    render(
-      <OptionsFlowTable
-        {...BASE_PROPS}
-        strikes={[makeStrike()]}
-        spot={6850.25}
-      />,
-    );
-    expect(screen.getByText(/6,850\.25/)).toBeInTheDocument();
   });
 
   it('renders a Net GEX column header', () => {

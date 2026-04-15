@@ -194,7 +194,7 @@ export function FlowDirectionalRollup({
 
   return (
     <div
-      className={`border-edge bg-surface flex flex-col gap-2 rounded-lg border px-3 py-2 ${className ?? ''}`}
+      className={`flex flex-col gap-2 ${className ?? ''}`}
       role="status"
       aria-label="Options flow directional rollup"
     >

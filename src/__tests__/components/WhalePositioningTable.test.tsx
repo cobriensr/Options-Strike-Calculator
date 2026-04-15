@@ -34,8 +34,6 @@ function makeAlert(overrides: Partial<WhaleAlert> = {}): WhaleAlert {
 }
 
 const BASE_PROPS = {
-  spot: 5680 as number | null,
-  lastUpdated: '2026-04-14T14:45:23Z' as string | null,
   totalPremium: 15_000_000,
   alertCount: 12,
   isLoading: false,
@@ -189,7 +187,7 @@ describe('WhalePositioningTable', () => {
     expect(putBadge.className).toMatch(/rose-400|red-400/);
   });
 
-  it('displays the visible-alert count in the header', () => {
+  it('displays the visible-alert count alongside the slider', () => {
     const alerts = [
       makeAlert({ option_chain: 'A', strike: 5700, total_premium: 2_000_000 }),
       makeAlert({ option_chain: 'B', strike: 5710, total_premium: 1_500_000 }),
