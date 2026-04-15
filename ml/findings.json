@@ -1,12 +1,9 @@
 {
-  "generated_at": "2026-04-15T02:41:12+00:00",
+  "generated_at": "2026-04-15T06:33:40+00:00",
   "dataset": {
     "total_days": 71,
     "labeled_days": 40,
-    "date_range": [
-      "2026-01-02",
-      "2026-04-14"
-    ],
+    "date_range": ["2026-01-02", "2026-04-14"],
     "overall_accuracy": 0.925
   },
   "structure_accuracy": {
@@ -207,7 +204,8 @@
     "clustering",
     "plots",
     "backtest",
-    "pin_analysis"
+    "pin_analysis",
+    "flow_eda"
   ],
   "phase2": {
     "per_model": {
@@ -514,10 +512,7 @@
     "silhouette": 0.397,
     "calinski_harabasz": 15.3,
     "davies_bouldin": 0.869,
-    "cluster_sizes": [
-      36,
-      5
-    ],
+    "cluster_sizes": [36, 5],
     "stability": 0.976,
     "split_half_holdout_sil": 0.192,
     "gmm_bic": 997.0,
@@ -871,6 +866,85 @@
     "date_range": {
       "start": "2026-01-02",
       "end": "2026-04-10"
+    }
+  },
+  "flow_eda": {
+    "n_rows_total": 124,
+    "results": {
+      "q1": {
+        "question": "q1_distributions",
+        "n": 124,
+        "premium_median": 175585.0,
+        "premium_p95": 1345229.4999999986,
+        "ask_ratio_median": 0.36875788605260607,
+        "distance_pct_median": -0.001067928209941356,
+        "alert_rule_counts": {
+          "RepeatedHits": 73,
+          "RepeatedHitsAscendingFill": 22,
+          "RepeatedHitsDescendingFill": 29
+        }
+      },
+      "q2": {
+        "question": "q2_time_of_day",
+        "n": 124,
+        "minute_median": 739.5,
+        "hour_counts_ct": {
+          "8": 5,
+          "9": 9,
+          "10": 19,
+          "11": 27,
+          "12": 14,
+          "13": 12,
+          "14": 28,
+          "15": 10
+        }
+      },
+      "q3": {
+        "question": "q3_directional",
+        "n": 124,
+        "counts": {
+          "bearish": 67,
+          "bullish": 30,
+          "neutral": 27
+        },
+        "bullish_bearish_ratio": 0.44776119402985076
+      },
+      "q4": {
+        "question": "q4_returns_by_rule",
+        "n": 113,
+        "groups": {
+          "RepeatedHits|call": {
+            "mean_ret_fwd_15": -1.4906766759912108e-6,
+            "n": 26
+          },
+          "RepeatedHits|put": {
+            "mean_ret_fwd_15": 0.00037168216719642204,
+            "n": 43
+          },
+          "RepeatedHitsAscendingFill|call": {
+            "mean_ret_fwd_15": 0.0002625825990857068,
+            "n": 5
+          },
+          "RepeatedHitsAscendingFill|put": {
+            "mean_ret_fwd_15": 0.000105053543521304,
+            "n": 15
+          },
+          "RepeatedHitsDescendingFill|call": {
+            "mean_ret_fwd_15": 0.0004061097046529212,
+            "n": 13
+          },
+          "RepeatedHitsDescendingFill|put": {
+            "mean_ret_fwd_15": 0.0004301106835790397,
+            "n": 11
+          }
+        }
+      },
+      "q5": {
+        "question": "q5_premium_vs_return",
+        "n": 113,
+        "pearson_r": 0.2497343518874334,
+        "p_value": 0.007639445457749538
+      }
     }
   }
 }
