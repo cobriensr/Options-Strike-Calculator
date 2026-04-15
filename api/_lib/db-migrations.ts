@@ -1450,4 +1450,124 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 58,
+    description:
+      'Create flow_alerts table for UW 0-1 DTE SPXW repeated-hit flow ingestion',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS flow_alerts (
+          -- Primary key
+          id                     BIGSERIAL PRIMARY KEY,
+
+          -- Identity & rule (from UW list response)
+          uw_alert_id            UUID,
+          rule_id                UUID,
+          alert_rule             TEXT NOT NULL,
+          ticker                 TEXT NOT NULL,
+          issue_type             TEXT,
+          option_chain           TEXT NOT NULL,
+          strike                 NUMERIC NOT NULL,
+          expiry                 DATE NOT NULL,
+          type                   TEXT NOT NULL,
+
+          -- Timing
+          created_at             TIMESTAMPTZ NOT NULL,
+          start_time             TIMESTAMPTZ,
+          end_time               TIMESTAMPTZ,
+          ingested_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+          -- Pricing & volatility
+          price                  NUMERIC,
+          underlying_price       NUMERIC,
+          bid                    NUMERIC,
+          ask                    NUMERIC,
+          iv_start               NUMERIC,
+          iv_end                 NUMERIC,
+
+          -- Premium & size
+          total_premium          NUMERIC NOT NULL,
+          total_ask_side_prem    NUMERIC,
+          total_bid_side_prem    NUMERIC,
+          total_size             INTEGER,
+          trade_count            INTEGER,
+          expiry_count           INTEGER,
+          volume                 INTEGER,
+          open_interest          INTEGER,
+          volume_oi_ratio        NUMERIC,
+
+          -- Flags
+          has_sweep              BOOLEAN,
+          has_floor              BOOLEAN,
+          has_multileg           BOOLEAN,
+          has_singleleg          BOOLEAN,
+          all_opening_trades     BOOLEAN,
+
+          -- Denormalized derived (computed at ingest for ML speed)
+          ask_side_ratio         NUMERIC,
+          bid_side_ratio         NUMERIC,
+          net_premium            NUMERIC,
+          dte_at_alert           INTEGER,
+          distance_from_spot     NUMERIC,
+          distance_pct           NUMERIC,
+          moneyness              NUMERIC,
+          is_itm                 BOOLEAN,
+          minute_of_day          INTEGER,
+          session_elapsed_min    INTEGER,
+          day_of_week            INTEGER,
+
+          -- Safety net
+          raw_response           JSONB,
+
+          UNIQUE (option_chain, created_at)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS idx_flow_alerts_created_at ON flow_alerts (created_at DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_flow_alerts_expiry_strike ON flow_alerts (expiry, strike)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_flow_alerts_alert_rule ON flow_alerts (alert_rule)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_flow_alerts_type_created_at ON flow_alerts (type, created_at DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_flow_alerts_minute_of_day ON flow_alerts (minute_of_day)`,
+    ],
+  },
+  {
+    id: 59,
+    description:
+      'Create nope_ticks table for UW SPY NOPE per-minute time series (ML feature source)',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS nope_ticks (
+          ticker            TEXT            NOT NULL,
+          timestamp         TIMESTAMPTZ     NOT NULL,
+          call_vol          INTEGER         NOT NULL,
+          put_vol           INTEGER         NOT NULL,
+          stock_vol         INTEGER         NOT NULL,
+          call_delta        NUMERIC(20, 4)  NOT NULL,
+          put_delta         NUMERIC(20, 4)  NOT NULL,
+          call_fill_delta   NUMERIC(20, 4)  NOT NULL,
+          put_fill_delta    NUMERIC(20, 4)  NOT NULL,
+          nope              NUMERIC(20, 10) NOT NULL,
+          nope_fill         NUMERIC(20, 10) NOT NULL,
+          ingested_at       TIMESTAMPTZ     NOT NULL DEFAULT now(),
+          PRIMARY KEY (ticker, timestamp)
+        )
+      `,
+    ],
+  },
+  {
+    id: 60,
+    description:
+      'Add NOPE-derived columns to training_features (4 checkpoint values + 3 AM aggregates)',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE training_features
+          ADD COLUMN IF NOT EXISTS nope_t1              DECIMAL(14, 10),
+          ADD COLUMN IF NOT EXISTS nope_t2              DECIMAL(14, 10),
+          ADD COLUMN IF NOT EXISTS nope_t3              DECIMAL(14, 10),
+          ADD COLUMN IF NOT EXISTS nope_t4              DECIMAL(14, 10),
+          ADD COLUMN IF NOT EXISTS nope_am_mean         DECIMAL(14, 10),
+          ADD COLUMN IF NOT EXISTS nope_am_sign_flips   INTEGER,
+          ADD COLUMN IF NOT EXISTS nope_am_cum_delta    DECIMAL(18, 4)
+      `,
+    ],
+  },
 ];

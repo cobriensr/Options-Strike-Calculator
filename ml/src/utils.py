@@ -135,6 +135,21 @@ VOL_SURFACE_FEATURES: list[str] = [
     "iv_rank",
 ]
 
+# ── NOPE (Net Options Pricing Effect) Features ───────────
+# SPY NOPE tracks intraday dealer hedging pressure from options delta
+# flow per unit of underlying stock volume. Positive = dealers buying
+# stock to hedge (bullish tape pressure). Four checkpoint snapshots +
+# three AM-window aggregates (09:30–11:30 ET).
+NOPE_FEATURES: list[str] = [
+    "nope_t1",  # NOPE at 10:00 ET
+    "nope_t2",  # NOPE at 10:30 ET
+    "nope_t3",  # NOPE at 11:00 ET
+    "nope_t4",  # NOPE at 11:30 ET
+    "nope_am_mean",  # Mean NOPE over 09:30–11:30 window
+    "nope_am_sign_flips",  # Count of sign flips over AM window
+    "nope_am_cum_delta",  # Σ (call_delta − put_delta) over AM window
+]
+
 # ── Futures Feature Groups ────────────────────────────────
 
 ES_FEATURES: list[str] = [

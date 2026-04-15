@@ -194,6 +194,26 @@ Interaction with existing signals:
 
 For structure selection and management, delta flow supplements Rule 8 (flow weighting) and Rule 11 (charm confirmation). When delta flow disagrees with charm, trust charm for structural walls and delta flow for momentum/conviction timing.
 </zero_dte_delta_flow>
+<spy_nope>
+SPY NOPE (Net Options Pricing Effect) measures intraday dealer hedging pressure derived from options delta flow per unit of underlying stock volume. Formula: NOPE = (Σ call_volume × call_delta − Σ put_volume × put_delta) / stock_volume, computed per minute. SPY is the proxy because SPX has no tradeable shares — dealers hedge SPX options via SPY and ES futures.
+
+Interpretation:
+- Positive NOPE: dealers face net-long directional demand → must BUY shares to hedge → bullish tape pressure on the underlying. Magnitude scales with pressure intensity.
+- Negative NOPE: dealers face net-short directional demand → must SELL shares to hedge → bearish tape pressure.
+- Sign flips within the window: each flip marks a regime shift in hedging demand. 3+ flips in a 15-min window indicate choppy, indecisive flow — reduce directional conviction.
+- Trajectory direction matters more than level: rising NOPE (becoming more positive or less negative) is a bullish pressure buildup signal. Falling NOPE is bearish pressure buildup.
+
+Magnitude calibration (SPY):
+- |NOPE| > 0.0005 = meaningfully directional intraday pressure.
+- |NOPE| between 0.0001 and 0.0005 = present but modest pressure.
+- |NOPE| < 0.0001 = effectively neutral.
+
+Interaction with existing signals:
+- NOPE complements premium-based flow (Market Tide, SPX/SPY Net Flow). Premium flow tells you WHO bought; NOPE tells you what dealers MUST DO to hedge the resulting positioning. Agreement between bullish Market Tide and rising NOPE = highest conviction for short-term directional tape pressure.
+- When NOPE DISAGREES with Market Tide, NOPE is often the more honest read of mechanical pressure. Example: bullish Market Tide + falling NOPE often precedes a failed rally — the Market Tide premium is coming from closing puts (which creates no dealer hedging demand) rather than opening calls. Note the conflict and reduce confidence one level.
+- NOPE is a confirmation layer, not a primary directional signal. Do not flip your structure recommendation based on NOPE alone — Rule 8 flow weighting still determines the primary directional call. Use NOPE to gauge the mechanical pressure behind flow conviction.
+- NOPE is intrinsically short-horizon (1-min resolution, hour-scale useful window). Weight it most heavily for entry timing and management decisions within the next 30-60 minutes. It decays in relevance for end-of-day pin forecasting.
+</spy_nope>
 <periscope>
 Periscope reveals actual Market Maker net positioning and net greek exposure in SPX with updates every 10 minutes. This is provided as an IMAGE requiring visual extraction.
 Gamma bars (right side profile):

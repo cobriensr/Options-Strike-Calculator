@@ -50,6 +50,11 @@ vi.mock('../_lib/db-strike-helpers.js', () => ({
   formatNetGexHeatmapForClaude: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock('../_lib/db-nope.js', () => ({
+  getRecentNope: vi.fn().mockResolvedValue([]),
+  formatNopeForClaude: vi.fn().mockReturnValue(null),
+}));
+
 vi.mock('../_lib/embeddings.js', () => ({
   generateEmbedding: vi.fn().mockResolvedValue(null),
   findSimilarAnalyses: vi.fn().mockResolvedValue([]),
@@ -177,6 +182,7 @@ import {
   formatAllExpiryStrikesForClaude,
   formatGreekFlowForClaude,
 } from '../_lib/db-strike-helpers.js';
+import { formatNopeForClaude } from '../_lib/db-nope.js';
 
 /** Parse the final NDJSON line from the response chunks (skips keepalive pings). */
 function parseNdjsonResponse(res: {
@@ -999,6 +1005,7 @@ describe('POST /api/analyze', () => {
     vi.mocked(formatAllExpiryStrikesForClaude).mockReturnValueOnce(
       'ALL_EXP_DATA',
     );
+    vi.mocked(formatNopeForClaude).mockReturnValueOnce('NOPE_DATA');
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
@@ -1020,10 +1027,12 @@ describe('POST /api/analyze', () => {
     expect(contextBlock).toContain('SPOT_GEX_DATA');
     expect(contextBlock).toContain('STRIKE_DATA');
     expect(contextBlock).toContain('ALL_EXP_DATA');
+    expect(contextBlock).toContain('NOPE_DATA');
     expect(contextBlock).toContain('Market Tide Data');
     expect(contextBlock).toContain('SPX Net Flow Data');
     expect(contextBlock).toContain('Per-Strike Greek Profile');
     expect(contextBlock).toContain('All-Expiry Per-Strike Profile');
+    expect(contextBlock).toContain('SPY NOPE');
   });
 
   // ── Events, backtest, dataNote context fields ─────────────

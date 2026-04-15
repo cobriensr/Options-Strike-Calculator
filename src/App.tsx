@@ -20,6 +20,7 @@ import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
+import { useOptionsFlow } from './hooks/useOptionsFlow';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
@@ -47,6 +48,8 @@ import DarkPoolLevels from './components/DarkPoolLevels';
 import GexPerStrike from './components/GexPerStrike';
 import { GexTarget } from './components/GexTarget';
 import GexLandscape from './components/GexLandscape';
+import { OptionsFlowTable } from './components/OptionsFlow/OptionsFlowTable';
+import { FlowDirectionalRollup } from './components/OptionsFlow/FlowDirectionalRollup';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
@@ -212,6 +215,9 @@ export default function StrikeCalculator() {
   // vix.selectedDate. Picking a past date here is a backtest browsing
   // action and must not re-anchor the Black-Scholes math elsewhere.
   const gexStrike = useGexPerStrike(market.data.quotes?.marketOpen ?? false);
+  const optionsFlow = useOptionsFlow({
+    marketOpen: market.data.quotes?.marketOpen ?? false,
+  });
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -908,6 +914,32 @@ export default function StrikeCalculator() {
                     onScrubLive={gexStrike.scrubLive}
                     onBiasChange={setGexBiasContext}
                   />
+                </ErrorBoundary>
+              </>
+            )}
+
+            {isOwner && (market.hasData || !!historySnapshot) && (
+              <>
+                <span id="sec-options-flow" className="block scroll-mt-28" />
+                <ErrorBoundary label="Options Flow">
+                  <div className="flex flex-col gap-2">
+                    {optionsFlow.data && (
+                      <FlowDirectionalRollup
+                        rollup={optionsFlow.data.rollup}
+                        spot={optionsFlow.data.spot}
+                        alertCount={optionsFlow.data.alertCount}
+                      />
+                    )}
+                    <OptionsFlowTable
+                      strikes={optionsFlow.data?.strikes ?? []}
+                      spot={optionsFlow.data?.spot ?? null}
+                      lastUpdated={optionsFlow.data?.lastUpdated ?? null}
+                      alertCount={optionsFlow.data?.alertCount ?? 0}
+                      windowMinutes={optionsFlow.data?.windowMinutes}
+                      isLoading={optionsFlow.isLoading}
+                      error={optionsFlow.error}
+                    />
+                  </div>
                 </ErrorBoundary>
               </>
             )}
