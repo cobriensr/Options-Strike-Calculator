@@ -1595,4 +1595,84 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 62,
+    description:
+      'Create whale_alerts table for UW ≥$1M premium SPXW flow persistence (0-7 DTE, all rules)',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS whale_alerts (
+          -- Primary key
+          id                     BIGSERIAL PRIMARY KEY,
+
+          -- Identity & rule (from UW list response)
+          uw_alert_id            UUID,
+          rule_id                UUID,
+          alert_rule             TEXT NOT NULL,
+          ticker                 TEXT NOT NULL,
+          issue_type             TEXT,
+          option_chain           TEXT NOT NULL,
+          strike                 NUMERIC NOT NULL,
+          expiry                 DATE NOT NULL,
+          type                   TEXT NOT NULL,
+
+          -- Timing
+          created_at             TIMESTAMPTZ NOT NULL,
+          start_time             TIMESTAMPTZ,
+          end_time               TIMESTAMPTZ,
+          ingested_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+          age_minutes_at_ingest  INTEGER,
+
+          -- Pricing & volatility
+          price                  NUMERIC,
+          underlying_price       NUMERIC,
+          bid                    NUMERIC,
+          ask                    NUMERIC,
+          iv_start               NUMERIC,
+          iv_end                 NUMERIC,
+
+          -- Premium & size
+          total_premium          NUMERIC NOT NULL,
+          total_ask_side_prem    NUMERIC,
+          total_bid_side_prem    NUMERIC,
+          total_size             INTEGER,
+          trade_count            INTEGER,
+          expiry_count           INTEGER,
+          volume                 INTEGER,
+          open_interest          INTEGER,
+          volume_oi_ratio        NUMERIC,
+
+          -- Flags
+          has_sweep              BOOLEAN,
+          has_floor              BOOLEAN,
+          has_multileg           BOOLEAN,
+          has_singleleg          BOOLEAN,
+          all_opening_trades     BOOLEAN,
+
+          -- Denormalized derived (computed at ingest for ML speed)
+          ask_side_ratio         NUMERIC,
+          bid_side_ratio         NUMERIC,
+          net_premium            NUMERIC,
+          dte_at_alert           INTEGER,
+          distance_from_spot     NUMERIC,
+          distance_pct           NUMERIC,
+          moneyness              NUMERIC,
+          is_itm                 BOOLEAN,
+          minute_of_day          INTEGER,
+          session_elapsed_min    INTEGER,
+          day_of_week            INTEGER,
+
+          -- Safety net
+          raw_response           JSONB,
+
+          UNIQUE (option_chain, created_at)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS idx_whale_alerts_created_at ON whale_alerts (created_at DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_whale_alerts_expiry_strike ON whale_alerts (expiry, strike)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_whale_alerts_alert_rule ON whale_alerts (alert_rule)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_whale_alerts_type_created_at ON whale_alerts (type, created_at DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_whale_alerts_premium ON whale_alerts (total_premium DESC)`,
+    ],
+  },
 ];

@@ -110,6 +110,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-whale-alerts",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-nope",
       "schedule": "* 13-21 * * 1-5"
     },

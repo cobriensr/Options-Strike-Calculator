@@ -49,6 +49,31 @@ export interface WhalePositioningTableProps {
 }
 
 // ============================================================
+// SLIDER CONSTANTS
+// ============================================================
+
+/**
+ * Min-premium slider bounds. Floor matches the hook's backend-fetch floor
+ * ($500K); at floor value the table shows every returned alert. Ceiling is
+ * $10M — beyond that the signal is rarely relevant intraday. Step is
+ * $100K so sub-$1M granularity is reachable but the slider still feels
+ * snappy rather than continuous.
+ */
+const SLIDER_MIN = 500_000;
+const SLIDER_MAX = 10_000_000;
+const SLIDER_STEP = 100_000;
+const SLIDER_DEFAULT = 1_000_000;
+
+function formatSliderPremium(n: number): string {
+  if (n >= 1_000_000) {
+    const millions = n / 1_000_000;
+    // `$1.0M`, `$2.5M`, `$10.0M` — keep a single decimal for consistency
+    return `$${millions.toFixed(1)}M`;
+  }
+  return `$${Math.round(n / 1_000)}K`;
+}
+
+// ============================================================
 // FORMATTERS
 // ============================================================
 
@@ -274,6 +299,7 @@ export function WhalePositioningTable({
 }: WhalePositioningTableProps) {
   const [sortColumn, setSortColumn] = useState<SortColumn>('total_premium');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+  const [sliderPremium, setSliderPremium] = useState<number>(SLIDER_DEFAULT);
 
   const handleSort = (col: SortColumn) => {
     if (col === sortColumn) {
@@ -284,14 +310,27 @@ export function WhalePositioningTable({
     }
   };
 
-  const sortedAlerts = useMemo(
-    () => sortAlerts(alerts, sortColumn, sortDirection),
-    [alerts, sortColumn, sortDirection],
+  // Apply the slider filter before sorting so the visible count + sort
+  // both reflect the filtered subset. At slider floor this is a no-op.
+  const filteredAlerts = useMemo(
+    () => alerts.filter((a) => a.total_premium >= sliderPremium),
+    [alerts, sliderPremium],
   );
 
+  const sortedAlerts = useMemo(
+    () => sortAlerts(filteredAlerts, sortColumn, sortDirection),
+    [filteredAlerts, sortColumn, sortDirection],
+  );
+
+  const visibleCount = filteredAlerts.length;
+  const totalCount = alerts.length;
   const showEmpty = !isLoading && !error && alerts.length === 0;
   const showLoading = isLoading && alerts.length === 0;
   const showError = !!error;
+  // When some alerts exist but none pass the slider, render a distinct
+  // "no matches" state instead of the "no whale flow today" empty message.
+  const showFilteredEmpty =
+    !showError && !showLoading && totalCount > 0 && visibleCount === 0;
 
   return (
     <div
@@ -304,7 +343,7 @@ export function WhalePositioningTable({
             Whale Positioning
           </h3>
           <span className="text-muted font-mono text-[10px]">
-            today · premium ≥ $1M · 0-7 DTE
+            today · 0-7 DTE
           </span>
         </div>
         <div className="flex items-center gap-3 font-mono text-[10px]">
@@ -319,8 +358,14 @@ export function WhalePositioningTable({
               </span>
             </span>
           )}
-          <span className="text-muted">
-            {alertCount} {alertCount === 1 ? 'alert' : 'alerts'}
+          <span
+            className="text-muted"
+            data-testid="whale-alert-count"
+            title={`Server reported ${alertCount} ${alertCount === 1 ? 'alert' : 'alerts'} in window`}
+          >
+            {totalCount === visibleCount
+              ? `${totalCount} ${totalCount === 1 ? 'alert' : 'alerts'} ≥ ${formatSliderPremium(sliderPremium)}`
+              : `${visibleCount} of ${totalCount} alerts ≥ ${formatSliderPremium(sliderPremium)}`}
           </span>
           {totalPremium > 0 && (
             <span className="text-secondary">
@@ -332,6 +377,39 @@ export function WhalePositioningTable({
           )}
           <span className="text-muted">Updated {formatTime(lastUpdated)}</span>
         </div>
+      </div>
+
+      {/* Min-premium slider */}
+      <div className="border-edge/60 bg-surface-alt/40 flex flex-wrap items-center gap-3 border-b px-3 py-2">
+        <label
+          htmlFor="whale-min-premium"
+          className="text-tertiary font-sans text-[10px] font-semibold tracking-wider uppercase whitespace-nowrap"
+        >
+          Premium ≥{' '}
+          <span className="text-secondary font-mono text-[11px] normal-case">
+            {formatSliderPremium(sliderPremium)}
+          </span>
+        </label>
+        <input
+          id="whale-min-premium"
+          type="range"
+          min={SLIDER_MIN}
+          max={SLIDER_MAX}
+          step={SLIDER_STEP}
+          value={sliderPremium}
+          onChange={(e) =>
+            setSliderPremium(Number.parseInt(e.target.value, 10))
+          }
+          aria-label="Minimum whale premium filter"
+          aria-valuemin={SLIDER_MIN}
+          aria-valuemax={SLIDER_MAX}
+          aria-valuenow={sliderPremium}
+          aria-valuetext={formatSliderPremium(sliderPremium)}
+          className="accent-sky-400 flex-1 min-w-[120px] max-w-[320px] cursor-pointer"
+        />
+        <span className="text-muted font-mono text-[10px]">
+          {formatSliderPremium(SLIDER_MIN)} – {formatSliderPremium(SLIDER_MAX)}
+        </span>
       </div>
 
       {/* Body */}
@@ -358,11 +436,21 @@ export function WhalePositioningTable({
           className="text-muted px-3 py-6 text-center font-sans text-[12px]"
           role="status"
         >
-          No whale-sized flow today (≥$1M, ≤7 DTE)
+          No whale-sized flow today (≥$500K, ≤7 DTE)
         </div>
       )}
 
-      {!showError && !showEmpty && !showLoading && (
+      {showFilteredEmpty && (
+        <div
+          className="text-muted px-3 py-6 text-center font-sans text-[12px]"
+          role="status"
+        >
+          No alerts at or above {formatSliderPremium(sliderPremium)} — drag the
+          slider left to widen the filter.
+        </div>
+      )}
+
+      {!showError && !showEmpty && !showLoading && !showFilteredEmpty && (
         <div className="max-h-[540px] overflow-auto">
           <table
             className="w-full border-collapse font-mono text-[11px]"

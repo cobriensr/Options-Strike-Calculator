@@ -49,6 +49,7 @@ import DarkPoolLevels from './components/DarkPoolLevels';
 import { OptionsFlowTable } from './components/OptionsFlow/OptionsFlowTable';
 import { FlowDirectionalRollup } from './components/OptionsFlow/FlowDirectionalRollup';
 import { WhalePositioningTable } from './components/OptionsFlow/WhalePositioningTable';
+import { FlowConfluencePanel } from './components/OptionsFlow/FlowConfluencePanel';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
@@ -1021,6 +1022,15 @@ export default function StrikeCalculator() {
                         alertCount={optionsFlow.data.alertCount}
                       />
                     )}
+                    <ErrorBoundary label="Flow Confluence">
+                      <FlowConfluencePanel
+                        intradayStrikes={optionsFlow.data?.strikes ?? []}
+                        whaleAlerts={whale.data?.strikes ?? []}
+                        spot={
+                          optionsFlow.data?.spot ?? whale.data?.spot ?? null
+                        }
+                      />
+                    </ErrorBoundary>
                     <OptionsFlowTable
                       strikes={optionsFlow.data?.strikes ?? []}
                       spot={optionsFlow.data?.spot ?? null}

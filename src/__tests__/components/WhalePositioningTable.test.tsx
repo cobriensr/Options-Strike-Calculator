@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { WhalePositioningTable } from '../../components/OptionsFlow/WhalePositioningTable';
 import type { WhaleAlert } from '../../types/flow';
@@ -189,15 +189,112 @@ describe('WhalePositioningTable', () => {
     expect(putBadge.className).toMatch(/rose-400|red-400/);
   });
 
-  it('displays the alert count in the header', () => {
-    render(
-      <WhalePositioningTable
-        {...BASE_PROPS}
-        alerts={[makeAlert()]}
-        alertCount={42}
-      />,
-    );
-    expect(screen.getByText(/42 alerts/)).toBeInTheDocument();
+  it('displays the visible-alert count in the header', () => {
+    const alerts = [
+      makeAlert({ option_chain: 'A', strike: 5700, total_premium: 2_000_000 }),
+      makeAlert({ option_chain: 'B', strike: 5710, total_premium: 1_500_000 }),
+      makeAlert({ option_chain: 'C', strike: 5720, total_premium: 5_000_000 }),
+    ];
+    render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+    // All 3 alerts are ≥ $1M (default slider value), so unfiltered count shown.
+    const countEl = screen.getByTestId('whale-alert-count');
+    expect(countEl.textContent).toMatch(/3 alerts ≥ \$1\.0M/);
+  });
+
+  it('renders the slider with a default value of $1M', () => {
+    const alerts = [makeAlert({ option_chain: 'A', total_premium: 2_500_000 })];
+    render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+    const slider = screen.getByLabelText(
+      /minimum whale premium/i,
+    ) as HTMLInputElement;
+    expect(slider).toBeInTheDocument();
+    expect(slider.type).toBe('range');
+    expect(slider.value).toBe('1000000');
+    expect(slider).toHaveAttribute('min', '500000');
+    expect(slider).toHaveAttribute('max', '10000000');
+    // Visible label echoes the slider value
+    const label = screen.getByText(/Premium ≥/i);
+    expect(label.textContent).toContain('$1.0M');
+  });
+
+  it('filters alerts below the slider value after a drag', () => {
+    const alerts = [
+      makeAlert({
+        option_chain: 'BIG',
+        strike: 5700,
+        total_premium: 6_000_000,
+      }),
+      makeAlert({
+        option_chain: 'MID',
+        strike: 5650,
+        total_premium: 2_000_000,
+      }),
+      makeAlert({
+        option_chain: 'SMALL',
+        strike: 5750,
+        total_premium: 750_000,
+      }),
+    ];
+    render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+    // At default $1M, SMALL (750K) is filtered out → 2 rows remain.
+    expect(screen.getAllByRole('row')).toHaveLength(1 + 2);
+
+    const slider = screen.getByLabelText(
+      /minimum whale premium/i,
+    ) as HTMLInputElement;
+    // fireEvent.change simulates the drag endpoint — userEvent v14 doesn't
+    // reliably move range inputs with discrete drags.
+    fireEvent.change(slider, { target: { value: '5000000' } });
+
+    // Only BIG (6M) ≥ $5M → 1 data row + 1 header row.
+    const rows = screen.getAllByRole('row');
+    expect(rows).toHaveLength(1 + 1);
+    const countEl = screen.getByTestId('whale-alert-count');
+    expect(countEl.textContent).toMatch(/1 of 3 alerts ≥ \$5\.0M/);
+  });
+
+  it('shows all returned alerts when slider is at the $500K floor', () => {
+    const alerts = [
+      makeAlert({
+        option_chain: 'BIG',
+        strike: 5700,
+        total_premium: 6_000_000,
+      }),
+      makeAlert({
+        option_chain: 'SMALL',
+        strike: 5750,
+        total_premium: 600_000,
+      }),
+    ];
+    render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+    const slider = screen.getByLabelText(
+      /minimum whale premium/i,
+    ) as HTMLInputElement;
+    fireEvent.change(slider, { target: { value: '500000' } });
+
+    const rows = screen.getAllByRole('row');
+    expect(rows).toHaveLength(1 + 2);
+    const countEl = screen.getByTestId('whale-alert-count');
+    // At floor, display collapses to the "N alerts" form (no "X of Y")
+    expect(countEl.textContent).toMatch(/^2 alerts ≥ \$500K$/);
+  });
+
+  it('shows a filtered-empty message when slider cuts all alerts', () => {
+    const alerts = [
+      makeAlert({ option_chain: 'A', total_premium: 1_200_000 }),
+    ];
+    render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+    const slider = screen.getByLabelText(
+      /minimum whale premium/i,
+    ) as HTMLInputElement;
+    fireEvent.change(slider, { target: { value: '10000000' } });
+
+    expect(screen.getByText(/drag the slider left/i)).toBeInTheDocument();
+    // The underlying table is not rendered when nothing matches the filter.
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   it('renders the rule badge with short abbreviated label', () => {

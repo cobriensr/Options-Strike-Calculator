@@ -64,7 +64,10 @@ interface WhalePositioningApiResponse {
 // CONSTANTS
 // ============================================================
 
-const DEFAULT_MIN_PREMIUM = 1_000_000;
+// Lowered from $1M → $500K so the whale-table min-premium slider has a
+// lower floor to slide from. The UI filters client-side above this floor;
+// the $1M baseline is enforced by the slider's default value.
+const DEFAULT_MIN_PREMIUM = 500_000;
 const DEFAULT_MAX_DTE = 7;
 const DEFAULT_LIMIT = 20;
 const DEFAULT_POLL_INTERVAL_MS = 120_000;
