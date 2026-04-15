@@ -108,6 +108,12 @@ vi.mock('../_lib/db-oi-change.js', () => ({
   formatOiChangeForClaude: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock('../_lib/db-nope.js', () => ({
+  getRecentNope: vi.fn().mockResolvedValue([]),
+  getSessionNope: vi.fn().mockResolvedValue([]),
+  formatNopeForClaude: vi.fn().mockReturnValue(null),
+}));
+
 vi.mock('../../src/utils/zero-gamma.js', () => ({
   analyzeZeroGamma: vi.fn().mockReturnValue({ flipStrike: null }),
 }));
