@@ -13,6 +13,7 @@ import { memo, useState, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { SectionBox, Chip, StatusBadge } from '../ui';
 import { useGexTarget } from '../../hooks/useGexTarget';
+import { useNopeIntraday } from '../../hooks/useNopeIntraday';
 import { TargetTile } from './TargetTile';
 import { UrgencyPanel } from './UrgencyPanel';
 import { SparklinePanel } from './SparklinePanel';
@@ -113,6 +114,10 @@ export const GexTarget = memo(function GexTarget({
     openingCallStrike,
     openingPutStrike,
   } = useGexTarget(marketOpen);
+
+  // SPY NOPE intraday overlay for PriceChart. Independent fetch — failure
+  // here doesn't impact the GEX panels.
+  const { points: nopePoints } = useNopeIntraday({ marketOpen });
 
   // ── Mode selection ───────────────────────────────────────
 
@@ -408,6 +413,7 @@ export const GexTarget = memo(function GexTarget({
             score={activeScore}
             openingCallStrike={openingCallStrike}
             openingPutStrike={openingPutStrike}
+            nopePoints={nopePoints}
           />
         </div>
 

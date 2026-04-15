@@ -23,10 +23,14 @@ const {
   mockRemove,
   mockCandleSeries,
   mockVwapSeries,
+  mockNopeSeries,
   mockChart,
 } = vi.hoisted(() => {
   const mockSetData = vi.fn();
   const mockCreatePriceLine = vi.fn().mockReturnValue({});
+  // NOPE series uses its OWN createPriceLine spy so the zero-line creation
+  // doesn't pollute count assertions on the candle-series spy.
+  const mockNopeCreatePriceLine = vi.fn().mockReturnValue({});
   const mockRemovePriceLine = vi.fn();
   const mockApplyOptions = vi.fn();
   const mockRemove = vi.fn();
@@ -38,6 +42,10 @@ const {
   };
 
   const mockVwapSeries = { setData: mockSetData };
+  const mockNopeSeries = {
+    setData: mockSetData,
+    createPriceLine: mockNopeCreatePriceLine,
+  };
 
   const mockTimeScale = {
     fitContent: vi.fn(),
@@ -58,6 +66,7 @@ const {
     mockRemove,
     mockCandleSeries,
     mockVwapSeries,
+    mockNopeSeries,
     mockChart,
   };
 });
@@ -151,7 +160,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockChart.addSeries
     .mockReturnValueOnce(mockCandleSeries)
-    .mockReturnValue(mockVwapSeries);
+    .mockReturnValueOnce(mockVwapSeries)
+    .mockReturnValue(mockNopeSeries);
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────

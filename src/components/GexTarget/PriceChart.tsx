@@ -32,6 +32,7 @@ import type {
 import { SectionBox } from '../ui';
 import { theme } from '../../themes';
 import type { SPXCandle } from '../../hooks/useGexTarget';
+import type { NopePoint } from '../../hooks/useNopeIntraday';
 import type { TargetScore } from '../../utils/gex-target';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -51,6 +52,12 @@ export interface PriceChartProps {
    * Drawn as a fixed orange line for the full session.
    */
   openingPutStrike: number | null;
+  /**
+   * Per-minute SPY NOPE points. When non-empty, render in a sub-pane below
+   * the candles (own y-axis, ~±0.001 range) with a zero reference line so
+   * sign and trajectory are immediately readable. Empty array hides the pane.
+   */
+  nopePoints?: NopePoint[];
 }
 
 // ── 5-minute resampler ────────────────────────────────────────────────────
@@ -153,11 +160,14 @@ export const PriceChart = memo(function PriceChart({
   score,
   openingCallStrike,
   openingPutStrike,
+  nopePoints = [],
 }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
   const vwapSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
+  const nopeSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
+  const nopeZeroLineRef = useRef<IPriceLine | null>(null);
   const priceLineRefs = useRef<IPriceLine[]>([]);
   // Track whether the chart has received its first data load so fitContent()
   // is only called once. Subsequent candle updates (e.g. scrubbing) must not
@@ -195,11 +205,39 @@ export const PriceChart = memo(function PriceChart({
     });
     vwapSeriesRef.current = vs;
 
+    // NOPE series in a separate pane (index 1) below the candles. The
+    // pane gets its own y-axis so the ~±0.001 NOPE magnitude doesn't
+    // conflict with SPX prices in the ~5000 range. Pane is created
+    // implicitly by passing { pane: 1 } to addSeries — lightweight-charts
+    // v5 reuses any existing pane with that index.
+    const ns = chart.addSeries(
+      LineSeries,
+      {
+        color: '#00bcd4',
+        lineWidth: 2,
+        priceFormat: { type: 'price', precision: 6, minMove: 0.000001 },
+      },
+      1, // pane index — second pane below the main candle pane
+    );
+    nopeSeriesRef.current = ns;
+    // Zero reference line on the NOPE pane — sign flips happen at zero,
+    // so making the divider visible is the entire point of the overlay.
+    nopeZeroLineRef.current = ns.createPriceLine({
+      price: 0,
+      color: 'rgba(255,255,255,0.4)',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: false,
+      title: '',
+    });
+
     return () => {
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       vwapSeriesRef.current = null;
+      nopeSeriesRef.current = null;
+      nopeZeroLineRef.current = null;
       priceLineRefs.current = [];
     };
   }, []); // create once
@@ -245,6 +283,20 @@ export const PriceChart = memo(function PriceChart({
       initialFitDoneRef.current = true;
     }
   }, [candles]);
+
+  // ── Update NOPE series ───────────────────────────────────────────────
+  // When nopePoints is empty we clear the series rather than leaving stale
+  // data showing — important because the parent may pass [] to indicate
+  // "no NOPE data for this date" without unmounting the chart.
+
+  useEffect(() => {
+    if (!nopeSeriesRef.current) return;
+    const data = nopePoints.map((p) => ({
+      time: Math.floor(new Date(p.timestamp).getTime() / 1000) as UTCTimestamp,
+      value: p.nope,
+    }));
+    nopeSeriesRef.current.setData(data);
+  }, [nopePoints]);
 
   // ── Overlay lines (GEX levels + opening walls + previous close) ────────
 

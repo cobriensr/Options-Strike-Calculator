@@ -263,6 +263,8 @@ export const POLL_INTERVALS = {
   GEX_STRIKE: 60_000,
   /** GexTarget history refresh (useGexTarget) — matches the 1-min cron cadence */
   GEX_TARGET: 60_000,
+  /** SPY NOPE intraday refresh (useNopeIntraday) — matches fetch-nope cron */
+  NOPE: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */
