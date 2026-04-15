@@ -21,6 +21,7 @@ import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useOptionsFlow } from './hooks/useOptionsFlow';
+import { useWhalePositioning } from './hooks/useWhalePositioning';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
@@ -47,6 +48,7 @@ import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import { OptionsFlowTable } from './components/OptionsFlow/OptionsFlowTable';
 import { FlowDirectionalRollup } from './components/OptionsFlow/FlowDirectionalRollup';
+import { WhalePositioningTable } from './components/OptionsFlow/WhalePositioningTable';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
@@ -219,6 +221,9 @@ export default function StrikeCalculator() {
   // action and must not re-anchor the Black-Scholes math elsewhere.
   const gexStrike = useGexPerStrike(market.data.quotes?.marketOpen ?? false);
   const optionsFlow = useOptionsFlow({
+    marketOpen: market.data.quotes?.marketOpen ?? false,
+  });
+  const whale = useWhalePositioning({
     marketOpen: market.data.quotes?.marketOpen ?? false,
   });
   // Single source of truth for GEX target data. Drives both the GexTarget
@@ -1026,6 +1031,22 @@ export default function StrikeCalculator() {
                       error={optionsFlow.error}
                       gexByStrike={gexByStrikeForFlow}
                     />
+                  </div>
+                  <div className="mt-6">
+                    <h3 className="text-tertiary mb-2 font-sans text-[10px] font-semibold tracking-widest uppercase">
+                      Whale Positioning · 0-7 DTE · ≥ $1M
+                    </h3>
+                    <ErrorBoundary label="Whale Positioning">
+                      <WhalePositioningTable
+                        alerts={whale.data?.strikes ?? []}
+                        spot={whale.data?.spot ?? null}
+                        lastUpdated={whale.data?.lastUpdated ?? null}
+                        totalPremium={whale.data?.totalPremium ?? 0}
+                        alertCount={whale.data?.alertCount ?? 0}
+                        isLoading={whale.isLoading}
+                        error={whale.error}
+                      />
+                    </ErrorBoundary>
                   </div>
                 </ErrorBoundary>
               </div>

@@ -86,6 +86,7 @@ if (import.meta.env.PROD)
       { path: '/api/gex-target-history', method: 'GET' },
       { path: '/api/nope-intraday', method: 'GET' },
       { path: '/api/options-flow/top-strikes', method: 'GET' },
+      { path: '/api/options-flow/whale-positioning', method: 'GET' },
       { path: '/api/ml/trigger-analyze', method: 'POST' },
     ],
   });

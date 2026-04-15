@@ -38,3 +38,58 @@ export interface DirectionalRollup {
   top_bullish_strike: number | null;
   top_bearish_strike: number | null;
 }
+
+// ============================================================
+// Whale Positioning (0-7 DTE, >=$1M premium institutional flow)
+// ============================================================
+
+/**
+ * Single whale-sized options-flow alert row. Mirrors the API contract from
+ * `GET /api/options-flow/whale-positioning`, which aggregates per
+ * option_chain (strike+expiry+side) over the session window.
+ *
+ * The `alert_rule` is the UW rule identifier (e.g. `RepeatedHits`,
+ * `FloorTradeLargeCap`) that surfaced the underlying prints. The frontend
+ * maps these to short badge labels for compact display.
+ */
+export interface WhaleAlert {
+  option_chain: string;
+  strike: number;
+  type: 'call' | 'put';
+  expiry: string; // ISO date, e.g. "2026-04-20"
+  dte_at_alert: number;
+  created_at: string; // ISO UTC timestamp
+  age_minutes: number;
+  total_premium: number;
+  total_ask_side_prem: number;
+  total_bid_side_prem: number;
+  ask_side_ratio: number;
+  total_size: number;
+  volume: number;
+  open_interest: number;
+  volume_oi_ratio: number;
+  has_sweep: boolean;
+  has_floor: boolean;
+  has_multileg: boolean;
+  alert_rule: string;
+  underlying_price: number;
+  distance_from_spot: number;
+  distance_pct: number;
+  is_itm: boolean;
+}
+
+/**
+ * Frontend-facing shape for whale positioning data. The hook converts the
+ * raw snake_case API payload into this camelCase shape at the boundary so
+ * consuming components don't have to reason about two naming conventions.
+ */
+export interface WhalePositioningData {
+  strikes: WhaleAlert[];
+  totalPremium: number;
+  alertCount: number;
+  lastUpdated: string | null;
+  spot: number | null;
+  windowMinutes: number;
+  minPremium: number;
+  maxDte: number;
+}
