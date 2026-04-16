@@ -91,12 +91,20 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     if (!market.data.quotes) return;
     const q = market.data.quotes;
 
-    // Auto-fill from API — overwrites defaults but respects user edits
-    if (q.spy && !spotEdited.current) setSpotPrice(q.spy.price.toFixed(2));
-    if (q.spx && !spxEdited.current) setSpxDirect(q.spx.price.toFixed(0));
+    // During active sessions (pre-market / regular / after-hours), always
+    // apply live quotes so prices stay current on every 60s poll. The edited
+    // guards only apply when the market is closed — after-hours exploration
+    // or when the initial fetch races with a manual keystroke.
+    const live = market.session !== 'closed';
 
-    // VIX — overwrites defaults but respects user edits
-    if (q.vix && !vixEdited.current) setVixInput(q.vix.price.toFixed(2));
+    if (q.spy && (live || !spotEdited.current))
+      setSpotPrice(q.spy.price.toFixed(2));
+    if (q.spx && (live || !spxEdited.current))
+      setSpxDirect(q.spx.price.toFixed(0));
+
+    // VIX — same live-session override
+    if (q.vix && (live || !vixEdited.current))
+      setVixInput(q.vix.price.toFixed(2));
 
     // Auto-use VIX1D as σ when available (most accurate 0DTE IV).
     // Updates on every quote refresh — VIX1D changes intraday.
@@ -112,8 +120,10 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       });
       setSelectedDate(today);
     }
-    // Auto-set current time in CT
-    if (timeHour === '10' && timeMinute === '00') {
+    // Keep current CT time in sync during active sessions so DTE
+    // calculations stay accurate on every 60s poll. When the market
+    // is closed, only set time once from the default 10:00 value.
+    if (live || (timeHour === '10' && timeMinute === '00')) {
       const now = new Date();
       const ct = getCTTime(now);
       let h = ct.hour;
@@ -130,6 +140,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refs (spotEdited, spxEdited, vixEdited) are stable; listing them is misleading
   }, [
     market.data.quotes,
+    market.session,
     selectedDate,
     setSelectedDate,
     setSpotPrice,

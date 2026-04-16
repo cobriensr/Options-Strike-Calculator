@@ -235,13 +235,9 @@ describe('useAutoFill', () => {
     expect(setters.setVixInput).toHaveBeenCalledWith('18.50');
   });
 
-  it('does not overwrite existing user input in the live-fill effect', () => {
-    // The first effect (live auto-fill) skips non-empty fields.
-    // The second effect (history restore) may still call setSpotPrice
-    // when hasHistory=false and quotes exist — that's the "restore live"
-    // path. Here we only check that the first effect respects non-empty inputs
-    // by verifying VIX is not overwritten (setVixInput), since the second
-    // effect doesn't touch VIX.
+  it('does not overwrite existing user input when market is closed', () => {
+    // When session is 'closed', the edited guards apply — manual input
+    // is preserved for after-hours exploration.
     const market = createMarket(mockQuotes);
     const vix = createVix();
 
@@ -264,6 +260,38 @@ describe('useAutoFill', () => {
 
     // VIX field is only set by the first effect, so if non-empty it should be skipped
     expect(setters.setVixInput).not.toHaveBeenCalled();
+  });
+
+  it('always applies live quotes during active sessions even when edited', () => {
+    // During pre-market / regular / after-hours, live quotes always
+    // overwrite — the trader expects current prices on every 60s poll.
+    const market: MarketDataState = {
+      ...createMarket(mockQuotes),
+      session: 'regular',
+      marketOpen: true,
+    };
+    const vix = createVix();
+
+    renderHook(() =>
+      useAutoFill({
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
+        timeHour: '2',
+        timeMinute: '15',
+        timeAmPm: 'PM',
+        timezone: 'CT',
+        ...setters,
+        market,
+        vix,
+        historyData: createHistoryData(),
+        vix1dStatic: createVix1dStatic(),
+      }),
+    );
+
+    expect(setters.setSpotPrice).toHaveBeenCalledWith('580.00');
+    expect(setters.setSpxDirect).toHaveBeenCalledWith('5820');
+    expect(setters.setVixInput).toHaveBeenCalledWith('18.50');
   });
 
   it('auto-switches to direct IV mode when VIX1D is available', () => {
@@ -377,7 +405,7 @@ describe('useAutoFill', () => {
     expect(setters.setTimezone).toHaveBeenCalledWith('CT');
   });
 
-  it('does not touch time when already set to non-default', () => {
+  it('does not touch time when already set to non-default and market closed', () => {
     const market = createMarket(mockQuotes);
 
     renderHook(() =>
@@ -399,6 +427,39 @@ describe('useAutoFill', () => {
 
     expect(setters.setTimeHour).not.toHaveBeenCalled();
     expect(setters.setTimeMinute).not.toHaveBeenCalled();
+  });
+
+  it('advances time on each poll during active sessions', () => {
+    // During regular hours, time should sync to current CT on every
+    // 60s quote refresh so DTE calculations stay accurate.
+    const market: MarketDataState = {
+      ...createMarket(mockQuotes),
+      session: 'regular',
+      marketOpen: true,
+    };
+
+    renderHook(() =>
+      useAutoFill({
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
+        timeHour: '11',
+        timeMinute: '00',
+        timeAmPm: 'AM',
+        timezone: 'CT',
+        ...setters,
+        market,
+        vix: createVix({ selectedDate: '2026-03-17' }),
+        historyData: createHistoryData(),
+        vix1dStatic: createVix1dStatic(),
+      }),
+    );
+
+    // 16:30 UTC in March (CDT) = 11:30 AM CT — time advances from 11:00
+    expect(setters.setTimeHour).toHaveBeenCalledWith('11');
+    expect(setters.setTimeMinute).toHaveBeenCalledWith('30');
+    expect(setters.setTimeAmPm).toHaveBeenCalledWith('AM');
+    expect(setters.setTimezone).toHaveBeenCalledWith('CT');
   });
 
   it('does nothing when no market data', () => {
