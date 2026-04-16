@@ -2,9 +2,15 @@
  * GET /api/cron/fetch-market-internals
  *
  * Fetches 1-minute OHLC bars for the four NYSE market internals
- * ($TICK, $ADD, $VOLD, $TRIN) from Schwab /pricehistory and stores
- * them in the `market_internals` table. Runs every minute during
- * regular-session hours.
+ * ($TICK, $ADD, $VOLD, $TRIN) and stores them in the
+ * `market_internals` table. Runs every minute during regular-session
+ * hours.
+ *
+ * Data source split:
+ *   - $TICK, $TRIN → Schwab /pricehistory (returns intraday 1-min bars)
+ *   - $ADD, $VOLD  → Schwab /quotes (pricehistory only returns completed
+ *     sessions for these symbols). We synthesize a flat bar
+ *     (open=high=low=close=lastPrice) from the quote snapshot.
  *
  * Why per-minute polling:
  *   - $TICK/$ADD/$VOLD/$TRIN change second-by-second during the session.
@@ -42,7 +48,8 @@ import {
 } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { getETTotalMinutes } from '../../src/utils/timezone.js';
-import { INTERNAL_SYMBOLS } from '../../src/constants/market-internals.js';
+// INTERNAL_SYMBOLS is used by other modules; the cron now splits into
+// PRICEHISTORY_SYMBOLS and QUOTES_ONLY_SYMBOLS defined below.
 import type { InternalSymbol } from '../../src/types/market-internals.js';
 
 // ── Types ───────────────────────────────────────────────────
@@ -84,6 +91,16 @@ interface SymbolResult {
 // 9:30 AM = 9*60+30 = 570, 4:00 PM = 16*60 = 960.
 const SESSION_OPEN_MIN = 570;
 const SESSION_CLOSE_MIN = 960;
+
+// Schwab pricehistory returns intraday bars for TICK/TRIN but only
+// completed sessions for ADD/VOLD. The latter use /quotes instead.
+const PRICEHISTORY_SYMBOLS: InternalSymbol[] = ['$TICK', '$TRIN'];
+const QUOTES_ONLY_SYMBOLS: InternalSymbol[] = ['$ADD', '$VOLD'];
+
+/** Schwab quote response shape (subset of fields we need). */
+interface SchwabQuoteEntry {
+  quote?: { lastPrice?: number };
+}
 
 // ── Fetch helper ────────────────────────────────────────────
 
@@ -231,6 +248,108 @@ async function processSymbol(
   }
 }
 
+// ── Quote-based pipeline for $ADD/$VOLD ────────────────────
+
+/**
+ * Fetch current values for symbols that Schwab pricehistory doesn't
+ * serve intraday, and synthesize flat bars (open=high=low=close).
+ */
+async function processQuoteSymbols(
+  symbols: InternalSymbol[],
+): Promise<SymbolResult[]> {
+  if (symbols.length === 0) return [];
+
+  const symbolList = symbols.map((s) => encodeURIComponent(s)).join(',');
+  try {
+    const result = await withRetry(() =>
+      schwabFetch<Record<string, SchwabQuoteEntry>>(
+        `/quotes?symbols=${symbolList}&fields=quote`,
+      ),
+    );
+
+    if (!result.ok) {
+      return symbols.map((symbol) => ({
+        symbol,
+        fetched: 0,
+        filtered: 0,
+        stored: 0,
+        skipped: 0,
+        error: `Schwab quotes ${result.status}: ${result.error}`,
+      }));
+    }
+
+    const now = new Date();
+    now.setSeconds(0, 0); // Truncate to minute boundary
+    const ts = now.toISOString();
+
+    const results: SymbolResult[] = [];
+    for (const symbol of symbols) {
+      const price = result.data[symbol]?.quote?.lastPrice;
+      if (price == null || !Number.isFinite(price)) {
+        results.push({
+          symbol,
+          fetched: 1,
+          filtered: 0,
+          stored: 0,
+          skipped: 0,
+          error: `No valid lastPrice for ${symbol}`,
+        });
+        continue;
+      }
+
+      try {
+        const row: InternalBarRow = {
+          ts,
+          symbol,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+        };
+        const { stored, skipped } = await withRetry(() => storeBars([row]));
+        results.push({
+          symbol,
+          fetched: 1,
+          filtered: 0,
+          stored,
+          skipped,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          { err, symbol },
+          'fetch-market-internals: quote store failure',
+        );
+        Sentry.captureException(err);
+        results.push({
+          symbol,
+          fetched: 1,
+          filtered: 0,
+          stored: 0,
+          skipped: 0,
+          error: msg,
+        });
+      }
+    }
+    return results;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { err, symbols },
+      'fetch-market-internals: quotes fetch failure',
+    );
+    Sentry.captureException(err);
+    return symbols.map((symbol) => ({
+      symbol,
+      fetched: 0,
+      filtered: 0,
+      stored: 0,
+      skipped: 0,
+      error: msg,
+    }));
+  }
+}
+
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -244,9 +363,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const endMs = Date.now();
     const startMs = endMs - 90 * 60 * 1000; // last 90 minutes
 
-    const results = await Promise.all(
-      INTERNAL_SYMBOLS.map((symbol) => processSymbol(symbol, startMs, endMs)),
-    );
+    // Fetch both groups in parallel:
+    // - pricehistory symbols ($TICK, $TRIN) get full OHLC bars
+    // - quotes-only symbols ($ADD, $VOLD) get current-value snapshots
+    const [priceHistoryResults, quoteResults] = await Promise.all([
+      Promise.all(
+        PRICEHISTORY_SYMBOLS.map((s) => processSymbol(s, startMs, endMs)),
+      ),
+      processQuoteSymbols(QUOTES_ONLY_SYMBOLS),
+    ]);
+
+    const results = [...priceHistoryResults, ...quoteResults];
 
     const totals = results.reduce(
       (acc, r) => ({
