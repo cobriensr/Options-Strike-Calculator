@@ -24,5 +24,6 @@
     "exactOptionalPropertyTypes": false,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "api", "e2e"]
+  "include": ["src", "api", "e2e"],
+  "exclude": ["api/debug"]
 }

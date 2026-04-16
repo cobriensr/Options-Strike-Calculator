@@ -20,7 +20,9 @@
  *
  * Total API calls per invocation: 1
  *
- * Schedule: every 5 minutes during market hours (in vercel.json)
+ * Schedule: once daily at 13:30 UTC (8:30 AM CT, market open) — static
+ * endpoint returns a frozen daily snapshot that does not tick intraday.
+ * For live intraday GEX, see fetch-strike-exposure.ts (spot-exposures).
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */

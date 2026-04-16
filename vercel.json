@@ -19,7 +19,7 @@
     },
     {
       "path": "/api/cron/fetch-greek-exposure-strike",
-      "schedule": "* 13-21 * * 1-5"
+      "schedule": "30 13 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-net-flow",

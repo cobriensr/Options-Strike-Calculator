@@ -1518,17 +1518,21 @@ describe('getNetGexHeatmap', () => {
     vi.clearAllMocks();
   });
 
-  it('queries greek_exposure_strike for date = expiry and maps rows', async () => {
+  it('queries strike_exposures latest timestamp and computes derived fields', async () => {
+    // 1st call: MAX(timestamp)
+    mockSql.mockResolvedValueOnce([
+      { latest_ts: '2026-04-10T18:00:00.000Z' },
+    ]);
+    // 2nd call: data rows
     mockSql.mockResolvedValueOnce([
       {
         strike: 6800,
-        call_gex: '5000000000',
-        put_gex: '-2000000000',
-        net_gex: '3000000000',
-        abs_gex: '7000000000',
-        call_gex_fraction: '0.714285',
-        net_delta: '1200000',
-        net_charm: '40000',
+        call_gamma_oi: '5000000000',
+        put_gamma_oi: '-2000000000',
+        call_delta_oi: '1200000',
+        put_delta_oi: '0',
+        call_charm_oi: '40000',
+        put_charm_oi: '0',
       },
     ]);
 
@@ -1536,27 +1540,34 @@ describe('getNetGexHeatmap', () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.strike).toBe(6800);
-    expect(rows[0]!.netGex).toBeCloseTo(3_000_000_000);
-    expect(rows[0]!.callGexFraction).toBeCloseTo(0.714285);
+    expect(rows[0]!.callGex).toBe(5_000_000_000);
+    expect(rows[0]!.putGex).toBe(-2_000_000_000);
+    expect(rows[0]!.netGex).toBe(3_000_000_000);
+    expect(rows[0]!.absGex).toBe(7_000_000_000);
+    expect(rows[0]!.callGexFraction).toBeCloseTo(5 / 7);
+    expect(rows[0]!.netDelta).toBe(1_200_000);
+    expect(rows[0]!.netCharm).toBe(40_000);
   });
 
-  it('returns empty array when no rows', async () => {
-    mockSql.mockResolvedValueOnce([]);
+  it('returns empty array when no timestamp exists', async () => {
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
     const rows = await getNetGexHeatmap('2026-04-10');
     expect(rows).toEqual([]);
   });
 
-  it('handles null call_gex_fraction', async () => {
+  it('computes null callGexFraction when absGex is zero', async () => {
+    mockSql.mockResolvedValueOnce([
+      { latest_ts: '2026-04-10T18:00:00.000Z' },
+    ]);
     mockSql.mockResolvedValueOnce([
       {
         strike: 6800,
-        call_gex: '0',
-        put_gex: '0',
-        net_gex: '0',
-        abs_gex: '0',
-        call_gex_fraction: null,
-        net_delta: '0',
-        net_charm: '0',
+        call_gamma_oi: '0',
+        put_gamma_oi: '0',
+        call_delta_oi: '0',
+        put_delta_oi: '0',
+        call_charm_oi: '0',
+        put_charm_oi: '0',
       },
     ]);
     const rows = await getNetGexHeatmap('2026-04-10');

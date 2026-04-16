@@ -828,7 +828,7 @@ export function formatZeroGammaForClaude(
   return lines.join('\n');
 }
 
-// ── Net GEX Heatmap (greek_exposure_strike) ──────────────────────────────────
+// ── Net GEX Heatmap (strike_exposures — live spot data) ─────────────────────
 
 export interface NetGexRow {
   strike: number;
@@ -842,32 +842,46 @@ export interface NetGexRow {
 }
 
 function mapNetGexRow(r: Record<string, unknown>): NetGexRow {
+  const callGex = Number(r.call_gamma_oi) || 0;
+  const putGex = Number(r.put_gamma_oi) || 0;
+  const netGex = callGex + putGex;
+  const absGex = Math.abs(callGex) + Math.abs(putGex);
   return {
     strike: Number(r.strike),
-    callGex: Number(r.call_gex),
-    putGex: Number(r.put_gex),
-    netGex: Number(r.net_gex),
-    absGex: Number(r.abs_gex),
-    callGexFraction:
-      r.call_gex_fraction != null ? Number(r.call_gex_fraction) : null,
-    netDelta: Number(r.net_delta),
-    netCharm: Number(r.net_charm),
+    callGex,
+    putGex,
+    netGex,
+    absGex,
+    callGexFraction: absGex > 0 ? callGex / absGex : null,
+    netDelta: (Number(r.call_delta_oi) || 0) + (Number(r.put_delta_oi) || 0),
+    netCharm: (Number(r.call_charm_oi) || 0) + (Number(r.put_charm_oi) || 0),
   };
 }
 
 /**
- * Fetch the latest 0DTE per-strike net GEX snapshot from greek_exposure_strike.
- * Returns all strikes for today's expiry ordered by strike ascending.
- * The table uses ON CONFLICT DO UPDATE so each (date, expiry, strike) always
- * reflects the most recent cron run — no timestamp filtering needed.
+ * Fetch the latest 0DTE per-strike net GEX snapshot from strike_exposures.
+ * Uses the most recent intraday timestamp for the given date (same pattern
+ * as getStrikeExposures). Derived fields (netGex, absGex, callGexFraction)
+ * are computed from the raw call_gamma_oi / put_gamma_oi columns.
  */
 export async function getNetGexHeatmap(date: string): Promise<NetGexRow[]> {
   const db = getDb();
+
+  const tsRows = await db`
+    SELECT MAX(timestamp) AS latest_ts
+    FROM strike_exposures
+    WHERE date = ${date} AND ticker = 'SPX' AND expiry = ${date}
+  `;
+  const latestTs = tsRows[0]?.latest_ts;
+  if (!latestTs) return [];
+
   const rows = await db`
-    SELECT strike, call_gex, put_gex, net_gex, abs_gex,
-           call_gex_fraction, net_delta, net_charm
-    FROM greek_exposure_strike
-    WHERE date = ${date} AND expiry = ${date}
+    SELECT strike, call_gamma_oi, put_gamma_oi,
+           call_delta_oi, put_delta_oi,
+           call_charm_oi, put_charm_oi
+    FROM strike_exposures
+    WHERE date = ${date} AND ticker = 'SPX'
+      AND expiry = ${date} AND timestamp = ${latestTs}
     ORDER BY strike ASC
   `;
   return rows.map(mapNetGexRow);
@@ -887,7 +901,7 @@ export function formatNetGexHeatmapForClaude(rows: NetGexRow[]): string | null {
   if (rows.length === 0) return null;
 
   const lines: string[] = [];
-  lines.push('SPX 0DTE Net GEX Heatmap (from API — current cron snapshot):');
+  lines.push('SPX 0DTE Net GEX Heatmap (live spot — latest intraday snapshot):');
   lines.push(
     '  Positive net_gex = net long gamma → dealers buy dips / sell rips → price suppression (pin / support / resistance)',
   );
