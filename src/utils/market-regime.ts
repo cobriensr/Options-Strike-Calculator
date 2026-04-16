@@ -153,7 +153,7 @@ export function classifyRegime(bars: InternalBar[]): RegimeResult {
     evidence.push(`ADD flatness ${addFlatness.toFixed(2)}`);
   }
 
-  const rangeScore = tickMeanReversionRate * addFlatness;
+  let rangeScore = tickMeanReversionRate * addFlatness;
 
   // ------------------------------------------------------------------
   // trend_score components
@@ -186,12 +186,23 @@ export function classifyRegime(bars: InternalBar[]): RegimeResult {
     );
   }
 
-  const trendScore = pctTimeTickExtreme * voldDirectional;
+  let trendScore = pctTimeTickExtreme * voldDirectional;
 
   // ------------------------------------------------------------------
   // neutral_score + regime selection
   // ------------------------------------------------------------------
-  const neutralScore = Math.max(0, 1 - rangeScore - trendScore);
+  let neutralScore = Math.max(0, 1 - rangeScore - trendScore);
+
+  // Normalize so scores always sum to 1.0 — rangeScore + trendScore
+  // can exceed 1 when both signals are strong, which would leave
+  // neutralScore clamped at 0 and the triple summing past 1.
+  const rawSum = rangeScore + trendScore + neutralScore;
+  if (rawSum > 0) {
+    rangeScore /= rawSum;
+    trendScore /= rawSum;
+    neutralScore /= rawSum;
+  }
+
   const scores = {
     range: rangeScore,
     trend: trendScore,
@@ -199,8 +210,7 @@ export function classifyRegime(bars: InternalBar[]): RegimeResult {
   };
 
   const maxScore = Math.max(rangeScore, trendScore, neutralScore);
-  const sumScores = rangeScore + trendScore + neutralScore;
-  const confidence = sumScores > 0 ? maxScore / sumScores : 0;
+  const confidence = maxScore;
 
   let regime: RegimeType = 'neutral';
   if (maxScore === rangeScore) regime = 'range';

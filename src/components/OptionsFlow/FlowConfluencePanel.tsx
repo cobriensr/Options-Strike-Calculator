@@ -22,8 +22,7 @@ import {
   type ConfluenceMatch,
   type ConfluenceRelationship,
 } from '../../utils/flow-confluence';
-import { classifyRegime } from '../../utils/market-regime';
-import type { InternalBar } from '../../types/market-internals';
+import type { RegimeResult } from '../../types/market-internals';
 
 // ============================================================
 // TYPES
@@ -33,8 +32,8 @@ export interface FlowConfluencePanelProps {
   intradayStrikes: RankedStrike[];
   whaleAlerts: WhaleAlert[];
   className?: string;
-  /** Market internals bars from the shared hook in App.tsx. */
-  bars?: InternalBar[];
+  /** Regime classification from the shared computation in App.tsx. */
+  regime?: RegimeResult;
 }
 
 type BadgeKind = 'AGREE' | 'HEDGE' | 'CONTRARIAN';
@@ -209,17 +208,13 @@ export function FlowConfluencePanel({
   intradayStrikes,
   whaleAlerts,
   className,
-  bars,
+  regime,
 }: FlowConfluencePanelProps) {
   const matches = useMemo(
     () => findConfluences(intradayStrikes, whaleAlerts),
     [intradayStrikes, whaleAlerts],
   );
 
-  const regime = useMemo(
-    () => (bars && bars.length > 0 ? classifyRegime(bars) : null),
-    [bars],
-  );
   const annotation = regime ? REGIME_ANNOTATION[regime.regime] : null;
 
   const hasRetail = intradayStrikes.length > 0;

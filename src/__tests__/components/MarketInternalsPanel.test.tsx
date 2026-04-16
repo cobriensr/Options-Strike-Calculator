@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { MarketInternalsPanel } from '../../components/MarketInternals/MarketInternalsPanel';
-import type {
-  MarketInternalsPanelProps,
-} from '../../components/MarketInternals/MarketInternalsPanel';
+import type { MarketInternalsPanelProps } from '../../components/MarketInternals/MarketInternalsPanel';
 import type {
   InternalBar,
   InternalSymbol,
@@ -23,7 +21,6 @@ const mockEvents = vi.hoisted(() => ({
 
 vi.mock('../../utils/market-regime', () => ({
   classifyTickBand: vi.fn(() => 'neutral'),
-  classifyRegime: vi.fn(() => mockRegime.current),
 }));
 
 vi.mock('../../utils/extreme-detector', () => ({
@@ -46,6 +43,7 @@ function defaultProps(
     error: null,
     asOf: '2026-04-15T18:00:00Z',
     marketOpen: true,
+    regime: mockRegime.current!,
     ...overrides,
   };
 }

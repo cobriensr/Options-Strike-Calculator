@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { FlowConfluencePanel } from '../../components/OptionsFlow/FlowConfluencePanel';
 import type { RankedStrike, WhaleAlert } from '../../types/flow';
 import type { InternalBar } from '../../types/market-internals';
+import { classifyRegime } from '../../utils/market-regime';
 
 // ============================================================
 // MARKET INTERNALS FIXTURES
@@ -332,11 +333,12 @@ describe('FlowConfluencePanel', () => {
   });
 
   it('renders range-day annotation with cyan styling', () => {
+    const regime = classifyRegime(makeRangeDayBars());
     render(
       <FlowConfluencePanel
         intradayStrikes={[]}
         whaleAlerts={[]}
-        bars={makeRangeDayBars()}
+        regime={regime}
       />,
     );
     const annotation = screen.getByTestId('regime-annotation');
@@ -347,11 +349,12 @@ describe('FlowConfluencePanel', () => {
   });
 
   it('renders trend-day annotation with violet styling', () => {
+    const regime = classifyRegime(makeTrendDayBars());
     render(
       <FlowConfluencePanel
         intradayStrikes={[]}
         whaleAlerts={[]}
-        bars={makeTrendDayBars()}
+        regime={regime}
       />,
     );
     const annotation = screen.getByTestId('regime-annotation');
@@ -363,15 +366,16 @@ describe('FlowConfluencePanel', () => {
 
   it('renders neutral annotation when data is insufficient', () => {
     // Only 3 TICK bars — not enough for regime classification
+    const regime = classifyRegime([
+      makeTickBar(100, 0),
+      makeTickBar(-50, 1),
+      makeTickBar(200, 2),
+    ]);
     render(
       <FlowConfluencePanel
         intradayStrikes={[]}
         whaleAlerts={[]}
-        bars={[
-          makeTickBar(100, 0),
-          makeTickBar(-50, 1),
-          makeTickBar(200, 2),
-        ]}
+        regime={regime}
       />,
     );
     const annotation = screen.getByTestId('regime-annotation');

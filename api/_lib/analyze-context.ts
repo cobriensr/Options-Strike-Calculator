@@ -881,8 +881,8 @@ export async function buildAnalysisContext(
 
     // Market internals regime classification
     if (marketInternalsRows.length > 0) {
-      const bars = marketInternalsRows as InternalBar[];
-      marketInternalsContext = formatMarketInternalsForClaude(bars);
+      marketInternalsContext =
+        formatMarketInternalsForClaude(marketInternalsRows);
     }
 
     // Zero-gamma (GEX flip) analysis — ENH-SIGNAL-001.

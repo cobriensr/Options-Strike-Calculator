@@ -6,6 +6,7 @@
  */
 
 import { getDb } from './db.js';
+import type { InternalSymbol } from '../../src/types/market-internals.js';
 
 // ============================================================
 // FLOW DATA (UW API time series)
@@ -315,7 +316,7 @@ function formatGreekValue(value: number): string {
 export async function getMarketInternalsToday(date: string): Promise<
   Array<{
     ts: string;
-    symbol: string;
+    symbol: InternalSymbol;
     open: number;
     high: number;
     low: number;
@@ -332,7 +333,7 @@ export async function getMarketInternalsToday(date: string): Promise<
 
   return rows.map((r) => ({
     ts: r.ts as string,
-    symbol: r.symbol as string,
+    symbol: r.symbol as InternalSymbol,
     open: Number(r.open),
     high: Number(r.high),
     low: Number(r.low),

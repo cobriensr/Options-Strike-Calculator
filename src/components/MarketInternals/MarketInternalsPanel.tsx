@@ -12,7 +12,6 @@
 
 import { useMemo } from 'react';
 import type { FC } from 'react';
-import { classifyRegime } from '../../utils/market-regime';
 import { detectExtremes } from '../../utils/extreme-detector';
 import type {
   ExtremeEvent,
@@ -162,9 +161,9 @@ function EventRow({ event }: { event: ExtremeEvent }) {
 // MAIN
 // ============================================================
 
-export interface MarketInternalsPanelProps
-  extends UseMarketInternalsResult {
+export interface MarketInternalsPanelProps extends UseMarketInternalsResult {
   marketOpen: boolean;
+  regime: RegimeResult;
 }
 
 export const MarketInternalsPanel: FC<MarketInternalsPanelProps> = ({
@@ -174,10 +173,8 @@ export const MarketInternalsPanel: FC<MarketInternalsPanelProps> = ({
   error,
   asOf,
   marketOpen,
+  regime,
 }) => {
-
-  const regime = useMemo(() => classifyRegime(bars), [bars]);
-
   const events = useMemo(() => {
     const raw = detectExtremes(bars, regime.regime);
     // Newest-first for the event log.
