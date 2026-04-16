@@ -8,14 +8,17 @@ import {
 } from './bwb-math';
 import BWBInputs from './BWBInputs';
 import BWBResults from './BWBResults';
+import VixRegimeBanner from '../VixRegimeBanner';
 import { SectionBox } from '../ui';
 
 interface BWBCalculatorProps {
   selectedDate?: string;
+  vix?: string | number | null;
 }
 
 export default function BWBCalculator({
   selectedDate,
+  vix,
 }: Readonly<BWBCalculatorProps>) {
   const [strategy, setStrategy] = useState<StrategyMode>('bwb');
   const [side, setSide] = useState<BWBSide>('calls');
@@ -194,6 +197,8 @@ export default function BWBCalculator({
         </div>
       }
     >
+      <VixRegimeBanner vix={vix} />
+
       <BWBInputs
         strategy={strategy}
         side={side}

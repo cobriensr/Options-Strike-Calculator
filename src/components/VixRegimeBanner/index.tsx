@@ -59,7 +59,7 @@ export default function VixRegimeBanner({ vix }: Readonly<Props>) {
     <div
       role="note"
       aria-label={`VIX regime: ${regime.label}. ${regime.rule}.`}
-      className={`rounded-[10px] border p-3.5 ${isDanger ? 'animate-pulse' : ''}`}
+      className={`mb-3 rounded-[10px] border p-3.5 ${isDanger ? 'animate-pulse' : ''}`}
       style={{ backgroundColor: p.bg, borderColor: p.border }}
       data-testid="vix-regime-banner"
       data-regime={regime.key}

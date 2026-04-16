@@ -40,7 +40,6 @@ import PreMarketInput from './components/PreMarketInput';
 import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
 import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
-import VixRegimeBanner from './components/VixRegimeBanner';
 import TradingScheduleSection from './components/TradingScheduleSection';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -1243,17 +1242,15 @@ export default function StrikeCalculator() {
               </Suspense>
             </ErrorBoundary>
 
-            {/* VIX regime gate — visible above BWB + Results so it's the
-                last thing seen before selling any short-gamma structure.
-                Evidence: ml/docs/MOC-IMBALANCE-FINDING.md */}
-            <VixRegimeBanner vix={vixInput} />
-
             {isOwner && (
               <>
                 <span id="sec-bwb" className="block scroll-mt-28" />
                 <ErrorBoundary label="BWB Calculator">
                   <Suspense fallback={<SkeletonSection lines={5} tall />}>
-                    <BWBCalculator selectedDate={vix.selectedDate} />
+                    <BWBCalculator
+                      selectedDate={vix.selectedDate}
+                      vix={vixInput}
+                    />
                   </Suspense>
                 </ErrorBoundary>
               </>
