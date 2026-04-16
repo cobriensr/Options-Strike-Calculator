@@ -102,18 +102,19 @@ afterEach(() => {
 // ============================================================
 
 describe('useOptionsFlow', () => {
-  it('does not fetch when marketOpen is false', async () => {
-    const { result } = renderHook(() => useOptionsFlow({ marketOpen: false }));
+  it('fetches once (no polling) when marketOpen is false', async () => {
+    const { result } = renderHook(() =>
+      useOptionsFlow({ marketOpen: false, pollIntervalMs: 10_000 }),
+    );
 
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    // One-shot only — no polling while market is closed
     await act(async () => {
-      vi.advanceTimersByTime(100);
+      vi.advanceTimersByTime(60_000);
     });
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(result.current.data).toBeNull();
-    expect(result.current.isLoading).toBe(false);
-    expect(result.current.error).toBeNull();
-    expect(result.current.lastFetchedAt).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('fetches on mount when marketOpen=true with default params', async () => {
@@ -217,18 +218,19 @@ describe('useOptionsFlow', () => {
     );
 
     await waitFor(() => expect(result.current.data).not.toBeNull());
-    const callsWhileOpen = fetchMock.mock.calls.length;
-    expect(callsWhileOpen).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // Flip to closed
+    // Flip to closed — triggers one-shot fetch (new effect run), then no polling
     rerender({ marketOpen: false });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
     await act(async () => {
       vi.advanceTimersByTime(60_000);
     });
 
-    // No additional fetches after closing
-    expect(fetchMock.mock.calls.length).toBe(callsWhileOpen);
+    // No further fetches beyond the one-shot
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     // Data still present
     expect(result.current.data).not.toBeNull();
   });
@@ -240,16 +242,13 @@ describe('useOptionsFlow', () => {
       { initialProps: { marketOpen: false } },
     );
 
-    // No fetch initially
-    await act(async () => {
-      vi.advanceTimersByTime(100);
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
+    // One-shot fetch while closed
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     // Flip to open — should fetch immediately
     rerender({ marketOpen: true });
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(result.current.data).not.toBeNull());
 
     // And continues polling
@@ -257,7 +256,7 @@ describe('useOptionsFlow', () => {
       vi.advanceTimersByTime(10_000);
     });
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
   });
 
   it('cleans up interval and aborts in-flight request on unmount', async () => {

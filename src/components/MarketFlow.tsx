@@ -218,14 +218,17 @@ const MarketFlow = memo(function MarketFlow({
   // When scrubbing, show the scrubTimestamp. When live, show the latest.
   const displayTimestamp = useMemo(() => {
     if (scrubTimestamp) return scrubTimestamp;
-    // In live mode, show the newest timestamp from either source.
-    const flowLast = optionsFlow.data?.lastUpdated;
-    const whaleLast = whale.data?.lastUpdated;
-    if (flowLast && whaleLast) {
-      return flowLast > whaleLast ? flowLast : whaleLast;
-    }
-    return flowLast ?? whaleLast ?? null;
-  }, [scrubTimestamp, optionsFlow.data?.lastUpdated, whale.data?.lastUpdated]);
+    // In live mode, use the latest merged timestamp so the value matches
+    // the <select> options (which are minute-truncated buckets from the DB).
+    // Falls back to raw lastUpdated only when no timestamps exist yet.
+    if (mergedTimestamps.length > 0) return mergedTimestamps.at(-1)!;
+    return optionsFlow.data?.lastUpdated ?? whale.data?.lastUpdated ?? null;
+  }, [
+    scrubTimestamp,
+    mergedTimestamps,
+    optionsFlow.data?.lastUpdated,
+    whale.data?.lastUpdated,
+  ]);
 
   // ---------- scrub navigation ----------
   const scrubIndex = useMemo(() => {

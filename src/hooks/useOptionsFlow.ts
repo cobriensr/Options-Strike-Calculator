@@ -11,8 +11,8 @@
  *      with `?date=`. No polling.
  *   3. Live mode (today or no date, no asOf, marketOpen true) — fetch +
  *      poll every `pollIntervalMs`.
- *   4. Market closed (today or no date, no asOf, marketOpen false) — no
- *      fetch, preserve existing data.
+ *   4. Market closed (today or no date, no asOf, marketOpen false) —
+ *      one-shot fetch, no polling. Post-session review is a primary use case.
  *
  * Errors surface via `error` but do not clear `data` — stale data is more
  * useful than an empty panel. The next polling tick re-attempts the fetch.
@@ -217,8 +217,8 @@ export function useOptionsFlow(
       };
     }
 
-    // ── 4. Market closed ─────────────────────────────────────────
-    // No fetch — preserve existing data from a previous session.
+    // ── 4. Market closed — one-shot fetch for post-session review ──
+    void fetchNow(controller.signal);
     return () => {
       controller.abort();
       abortControllerRef.current = null;
