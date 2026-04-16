@@ -128,8 +128,8 @@ describe('classifyRegime', () => {
     // TICK flips sign nearly every bar — classic range-bound oscillation.
     // Every-other-bar flips give MRR ~0.9, well above the 0.3 threshold.
     const tickCloses = [
-      250, -280, 260, -250, 270, -260, 240, -270, 250, -260, 300, -310,
-      290, -320, 310, -290, 300, -300, 280, -310,
+      250, -280, 260, -250, 270, -260, 240, -270, 250, -260, 300, -310, 290,
+      -320, 310, -290, 300, -300, 280, -310,
     ];
     const tickBars = makeTickBars(tickCloses);
 
@@ -184,23 +184,23 @@ describe('classifyRegime', () => {
     // TICK mostly positive, drifting slightly — few sign flips, low MRR.
     // Not pinned extreme either (all values well below 600).
     const tickCloses = [
-      50, 80, 60, 90, 40, 70, 100, 55, 85, 65, 75, 45, 95, 60, 80, 50, 70,
-      90, 55, 85,
+      50, 80, 60, 90, 40, 70, 100, 55, 85, 65, 75, 45, 95, 60, 80, 50, 70, 90,
+      55, 85,
     ];
     const tickBars = makeTickBars(tickCloses);
 
     // ADD moderately drifting — not flat enough for range, not steep
     // enough for trend.
     const addCloses = [
-      500, 520, 540, 560, 550, 570, 590, 580, 600, 610, 605, 620, 615,
-      630, 625, 640, 635, 650, 645, 660,
+      500, 520, 540, 560, 550, 570, 590, 580, 600, 610, 605, 620, 615, 630, 625,
+      640, 635, 650, 645, 660,
     ];
     const addBars = makeSymbolBars('$ADD', addCloses);
 
     // VOLD flat.
     const voldCloses = [
-      1000, 1005, 1010, 1008, 1012, 1006, 1009, 1011, 1007, 1013, 1005,
-      1010, 1008, 1012, 1006, 1009, 1011, 1007, 1013, 1010,
+      1000, 1005, 1010, 1008, 1012, 1006, 1009, 1011, 1007, 1013, 1005, 1010,
+      1008, 1012, 1006, 1009, 1011, 1007, 1013, 1010,
     ];
     const voldBars = makeSymbolBars('$VOLD', voldCloses);
 
