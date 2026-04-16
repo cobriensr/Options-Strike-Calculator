@@ -46,6 +46,7 @@ function makeApiResponse(overrides: Record<string, unknown> = {}) {
     window_minutes: 390,
     min_premium: 1_000_000,
     max_dte: 7,
+    timestamps: ['2026-04-14T14:00:00Z', '2026-04-14T14:30:00Z'],
     ...overrides,
   };
 }
@@ -265,5 +266,104 @@ describe('useWhalePositioning', () => {
 
     expect(result.current.error).toBeNull();
     expect(result.current.data).toBeNull();
+  });
+
+  it('parses timestamps from the API response', async () => {
+    const ts = ['2026-04-14T14:00:00Z', '2026-04-14T14:30:00Z'];
+    fetchMock.mockResolvedValue(
+      buildResponse({ body: makeApiResponse({ timestamps: ts }) }),
+    );
+
+    const { result } = renderHook(() =>
+      useWhalePositioning({ marketOpen: true }),
+    );
+
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+    expect(result.current.data?.timestamps).toEqual(ts);
+  });
+
+  it('passes selectedDate as ?date= query param', async () => {
+    renderHook(() =>
+      useWhalePositioning({
+        marketOpen: false,
+        selectedDate: '2026-04-10',
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const calledUrl = fetchMock.mock.calls[0]?.[0] as string;
+    expect(calledUrl).toContain('date=2026-04-10');
+  });
+
+  it('passes asOf as ?as_of= query param in scrub mode', async () => {
+    renderHook(() =>
+      useWhalePositioning({
+        marketOpen: true,
+        selectedDate: '2026-04-14',
+        asOf: '2026-04-14T14:30:00Z',
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const calledUrl = fetchMock.mock.calls[0]?.[0] as string;
+    expect(calledUrl).toContain('date=2026-04-14');
+    expect(calledUrl).toContain(
+      'as_of=' + encodeURIComponent('2026-04-14T14:30:00Z'),
+    );
+  });
+
+  it('does not poll in scrub mode even when marketOpen=true', async () => {
+    renderHook(() =>
+      useWhalePositioning({
+        marketOpen: true,
+        selectedDate: '2026-04-14',
+        asOf: '2026-04-14T14:30:00Z',
+        pollIntervalMs: 10_000,
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // Still only the initial one-shot fetch.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll for a past selectedDate even when marketOpen=true', async () => {
+    // Use a date that cannot be today.
+    renderHook(() =>
+      useWhalePositioning({
+        marketOpen: true,
+        selectedDate: '2020-01-01',
+        pollIntervalMs: 10_000,
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes a refresh() that re-triggers a fetch', async () => {
+    const { result } = renderHook(() =>
+      useWhalePositioning({ marketOpen: false }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 });

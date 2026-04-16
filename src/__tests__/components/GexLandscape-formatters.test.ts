@@ -90,6 +90,7 @@ describe('formatBiasForClaude', () => {
       ceilingTrend: null,
       floorTrend5m: null,
       ceilingTrend5m: null,
+      priceTrend: null,
       ...overrides,
     };
   }
@@ -176,6 +177,39 @@ describe('formatBiasForClaude', () => {
     const out = formatBiasForClaude(bias);
     expect(out).toMatch(/7,000 \(Max Launchpad\)/);
     expect(out).not.toMatch(/vol reinforcing|vol opposing/);
+  });
+
+  it('includes price trend line when priceTrend is non-flat', () => {
+    const bias = baseBias({
+      verdict: 'drifting-down',
+      priceTrend: {
+        direction: 'down',
+        changePct: -0.14,
+        changePts: -9.8,
+        consistency: 0.8,
+      },
+    });
+    const out = formatBiasForClaude(bias);
+    expect(out).toMatch(/Price trend: DRIFTING DOWN/);
+    expect(out).toMatch(/-9\.8 pts/);
+  });
+
+  it('omits price trend line when priceTrend is null', () => {
+    const out = formatBiasForClaude(baseBias());
+    expect(out).not.toMatch(/Price trend:/);
+  });
+
+  it('omits price trend line when direction is flat', () => {
+    const bias = baseBias({
+      priceTrend: {
+        direction: 'flat',
+        changePct: 0,
+        changePts: 0,
+        consistency: 0,
+      },
+    });
+    const out = formatBiasForClaude(bias);
+    expect(out).not.toMatch(/Price trend:/);
   });
 
   // Suppress the locale-string console output from unused imports

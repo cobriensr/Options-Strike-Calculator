@@ -4,13 +4,15 @@
  * Polls `GET /api/options-flow/top-strikes` every 60s during market hours
  * and exposes the ranked strikes + directional rollup to consumers.
  *
- * Gated on `marketOpen`:
- *   - Off hours: no fetch, `data === null`, no interval running.
- *   - On hours: initial fetch on mount, then poll at `pollIntervalMs`.
- *
- * Transitions:
- *   - `marketOpen: false → true` — immediate fetch + start polling.
- *   - `marketOpen: true → false` — stop polling, preserve last-fetched `data`.
+ * Effect dispatch ladder (modeled on useGexPerStrike):
+ *   1. Scrub mode (`asOf` is non-null string) — one-shot fetch with
+ *      `?date=&as_of=`. No polling.
+ *   2. Past date (`selectedDate` is NOT today in ET) — one-shot fetch
+ *      with `?date=`. No polling.
+ *   3. Live mode (today or no date, no asOf, marketOpen true) — fetch +
+ *      poll every `pollIntervalMs`.
+ *   4. Market closed (today or no date, no asOf, marketOpen false) — no
+ *      fetch, preserve existing data.
  *
  * Errors surface via `error` but do not clear `data` — stale data is more
  * useful than an empty panel. The next polling tick re-attempts the fetch.
@@ -18,7 +20,7 @@
  * Unmount: clears the interval and aborts any in-flight request.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RankedStrike, DirectionalRollup } from '../types/flow';
 
 // Re-export so existing consumers that imported these types from the hook
@@ -36,6 +38,7 @@ export interface OptionsFlowData {
   windowMinutes: number;
   lastUpdated: string | null;
   alertCount: number;
+  timestamps: string[];
 }
 
 export interface UseOptionsFlowOptions {
@@ -43,6 +46,10 @@ export interface UseOptionsFlowOptions {
   limit?: number;
   windowMinutes?: 5 | 15 | 30 | 60;
   pollIntervalMs?: number;
+  /** YYYY-MM-DD date. When provided, passed as `?date=` to the API. */
+  selectedDate?: string;
+  /** ISO timestamp for scrub mode. When non-null, passed as `?as_of=`. */
+  asOf?: string | null;
 }
 
 export interface UseOptionsFlowResult {
@@ -50,6 +57,8 @@ export interface UseOptionsFlowResult {
   isLoading: boolean;
   error: Error | null;
   lastFetchedAt: Date | null;
+  /** Abort any in-flight request and trigger a fresh fetch. */
+  refresh: () => void;
 }
 
 // ============================================================
@@ -63,6 +72,7 @@ interface TopStrikesApiResponse {
   window_minutes: number;
   last_updated: string | null;
   alert_count: number;
+  timestamps: string[];
 }
 
 // ============================================================
@@ -77,6 +87,13 @@ const DEFAULT_POLL_INTERVAL_MS = 60_000;
 // HOOK
 // ============================================================
 
+/** Compute today's ET date as YYYY-MM-DD. */
+function getTodayET(): string {
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+}
+
 export function useOptionsFlow(
   options: UseOptionsFlowOptions,
 ): UseOptionsFlowResult {
@@ -85,6 +102,8 @@ export function useOptionsFlow(
     limit = DEFAULT_LIMIT,
     windowMinutes = DEFAULT_WINDOW_MINUTES,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    selectedDate,
+    asOf,
   } = options;
 
   const [data, setData] = useState<OptionsFlowData | null>(null);
@@ -97,39 +116,39 @@ export function useOptionsFlow(
   // Track the current AbortController so we can cancel in-flight fetches
   // on unmount or when a new fetch supersedes it.
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Bump this counter to force a re-fetch from the refresh() callback.
+  const [refreshToken, setRefreshToken] = useState(0);
 
-  useEffect(() => {
-    if (!marketOpen) {
-      // Off-hours: nothing to do. Preserve any existing data from a
-      // previous on-hours session.
-      return;
+  // Derive dispatch-ladder booleans.
+  const todayET = getTodayET();
+  const isScrubMode = typeof asOf === 'string';
+  const isPastDate = selectedDate != null && selectedDate !== todayET;
+
+  const buildUrl = useCallback((): string => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      window_minutes: String(windowMinutes),
+    });
+    if (selectedDate) {
+      params.set('date', selectedDate);
     }
+    if (isScrubMode) {
+      params.set('as_of', asOf);
+    }
+    return `/api/options-flow/top-strikes?${params.toString()}`;
+  }, [limit, windowMinutes, selectedDate, asOf, isScrubMode]);
 
-    isMountedRef.current = true;
-
-    const buildUrl = (): string => {
-      const params = new URLSearchParams({
-        limit: String(limit),
-        window_minutes: String(windowMinutes),
-      });
-      return `/api/options-flow/top-strikes?${params.toString()}`;
-    };
-
-    const fetchNow = async (): Promise<void> => {
-      // Abort any in-flight request; start a fresh controller for this one.
-      abortControllerRef.current?.abort();
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
+  const fetchNow = useCallback(
+    async (signal: AbortSignal): Promise<void> => {
       setIsLoading(true);
       try {
-        const res = await fetch(buildUrl(), { signal: controller.signal });
+        const res = await fetch(buildUrl(), { signal });
         if (!res.ok) {
           throw new Error(`options-flow HTTP ${res.status}`);
         }
         const raw = (await res.json()) as TopStrikesApiResponse;
 
-        if (!isMountedRef.current || controller.signal.aborted) return;
+        if (!isMountedRef.current || signal.aborted) return;
 
         setData({
           strikes: raw.strikes,
@@ -138,12 +157,15 @@ export function useOptionsFlow(
           windowMinutes: raw.window_minutes,
           lastUpdated: raw.last_updated,
           alertCount: raw.alert_count,
+          timestamps: raw.timestamps ?? [],
         });
         setError(null);
         setLastFetchedAt(new Date());
       } catch (err) {
-        // AbortError from unmount or supersession — not a real error, skip.
-        if (err instanceof DOMException && err.name === 'AbortError') return;
+        // AbortError from unmount or supersession — not a real error.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          return;
+        }
         if (!isMountedRef.current) return;
         setError(
           err instanceof Error ? err : new Error('options-flow fetch failed'),
@@ -154,29 +176,75 @@ export function useOptionsFlow(
           setIsLoading(false);
         }
       }
-    };
+    },
+    [buildUrl],
+  );
 
-    // Immediate fetch on mount / when marketOpen flips to true.
-    void fetchNow();
+  useEffect(() => {
+    // Each effect invocation owns its own AbortController. Cleanup
+    // aborts in-flight fetches so stale responses never overwrite state.
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
-    const intervalId = setInterval(() => {
-      void fetchNow();
-    }, pollIntervalMs);
+    // ── 1. Scrub mode ────────────────────────────────────────────
+    if (isScrubMode) {
+      void fetchNow(controller.signal);
+      return () => {
+        controller.abort();
+        abortControllerRef.current = null;
+      };
+    }
 
+    // ── 2. Past date ─────────────────────────────────────────────
+    if (isPastDate) {
+      void fetchNow(controller.signal);
+      return () => {
+        controller.abort();
+        abortControllerRef.current = null;
+      };
+    }
+
+    // ── 3. Live mode ─────────────────────────────────────────────
+    if (marketOpen) {
+      void fetchNow(controller.signal);
+      const intervalId = setInterval(() => {
+        void fetchNow(controller.signal);
+      }, pollIntervalMs);
+      return () => {
+        clearInterval(intervalId);
+        controller.abort();
+        abortControllerRef.current = null;
+      };
+    }
+
+    // ── 4. Market closed ─────────────────────────────────────────
+    // No fetch — preserve existing data from a previous session.
     return () => {
-      clearInterval(intervalId);
-      abortControllerRef.current?.abort();
+      controller.abort();
       abortControllerRef.current = null;
     };
-  }, [marketOpen, limit, windowMinutes, pollIntervalMs]);
+  }, [
+    marketOpen,
+    isScrubMode,
+    isPastDate,
+    pollIntervalMs,
+    fetchNow,
+    refreshToken,
+  ]);
 
-  // Unmount cleanup — flip the mounted flag so any late-resolving promises
-  // from the last fetch short-circuit before calling setState.
+  // Unmount cleanup — flip the mounted flag so any late-resolving
+  // promises from the last fetch short-circuit before calling setState.
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
     };
   }, []);
 
-  return { data, isLoading, error, lastFetchedAt };
+  const refresh = useCallback(() => {
+    abortControllerRef.current?.abort();
+    setRefreshToken((t) => t + 1);
+  }, []);
+
+  return { data, isLoading, error, lastFetchedAt, refresh };
 }

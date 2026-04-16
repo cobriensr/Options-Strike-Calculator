@@ -24,13 +24,14 @@
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import { classify } from './classify';
 import { SPOT_BAND } from './constants';
-import type { BiasMetrics, DriftTarget } from './types';
+import type { BiasMetrics, DriftTarget, PriceTrend } from './types';
 
 export function computeBias(
   rows: GexStrikeLevel[],
   currentPrice: number,
   gexDeltaMap: Map<number, number | null>,
   gexDelta5mMap: Map<number, number | null>,
+  priceTrend: PriceTrend | null = null,
 ): BiasMetrics {
   const above = rows.filter((s) => s.strike > currentPrice + SPOT_BAND);
   const below = rows.filter((s) => s.strike < currentPrice - SPOT_BAND);
@@ -74,6 +75,18 @@ export function computeBias(
     verdict = 'gex-floor-below';
   }
 
+  // Price-drift override: when GEX says range-bound but price is persistently
+  // moving in one direction, the range-bound label is misleading. Override to
+  // drifting-down / drifting-up so the trader knows price is grinding despite
+  // positive GEX dampening.
+  if (
+    verdict === 'rangebound' &&
+    priceTrend &&
+    priceTrend.direction !== 'flat'
+  ) {
+    verdict = priceTrend.direction === 'down' ? 'drifting-down' : 'drifting-up';
+  }
+
   // Drift targets: top 2 above and below spot by |netGamma|
   const byAbsGex = (a: GexStrikeLevel, b: GexStrikeLevel) =>
     Math.abs(b.netGamma) - Math.abs(a.netGamma);
@@ -112,5 +125,6 @@ export function computeBias(
     ceilingTrend: avg(above.map((s) => gexDeltaMap.get(s.strike))),
     floorTrend5m: avg(below.map((s) => gexDelta5mMap.get(s.strike))),
     ceilingTrend5m: avg(above.map((s) => gexDelta5mMap.get(s.strike))),
+    priceTrend,
   };
 }

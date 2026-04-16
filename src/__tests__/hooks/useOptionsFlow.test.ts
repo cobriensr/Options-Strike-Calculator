@@ -56,6 +56,7 @@ function makeApiResponse(overrides: Record<string, unknown> = {}) {
     window_minutes: 15,
     last_updated: '2026-04-14T14:40:00Z',
     alert_count: 42,
+    timestamps: ['2026-04-14T14:30:00Z', '2026-04-14T14:40:00Z'],
     ...overrides,
   };
 }

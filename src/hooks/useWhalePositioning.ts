@@ -6,15 +6,16 @@
  * intraday `useOptionsFlow` hook by surfacing the 2-7 DTE, >=$1M premium
  * positioning that institutional dealers actually leave prints on.
  *
- * Polling semantics:
- *   - `marketOpen === true` — fetch on mount + poll every `pollIntervalMs`
- *     (default 2 min; whale flow aggregates slowly, no value in 10s polls).
- *   - `marketOpen === false` — fetch once on mount so post-session review
- *     still has today's whale tape, but do not set up a polling interval.
- *
- * Transitions:
- *   - `marketOpen: false → true` — immediate fetch + start polling.
- *   - `marketOpen: true → false` — stop polling, keep last `data` in place.
+ * Effect dispatch ladder (highest priority first):
+ *   1. **Scrub mode** — `asOf` is a non-null string: one-shot fetch with
+ *      `?date=selectedDate&as_of=asOf`. No polling.
+ *   2. **Past date** — `selectedDate` is provided and is NOT today in ET:
+ *      one-shot fetch with `?date=selectedDate`. No polling.
+ *   3. **Live mode** — `selectedDate` is today or undefined, `asOf` is
+ *      null/undefined, `marketOpen` is true: fetch + poll every
+ *      `pollIntervalMs` (default 2 min).
+ *   4. **Market closed** — `marketOpen` false, no date/asOf: fetch once on
+ *      mount, no polling.
  *
  * Errors surface via `error` but do not clear `data`. Stale whale data is
  * strictly more useful than an empty panel. AbortError from unmount /
@@ -23,7 +24,7 @@
  * Unmount: clears the interval and aborts any in-flight request.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WhaleAlert, WhalePositioningData } from '../types/flow';
 
 // ============================================================
@@ -36,6 +37,13 @@ export interface UseWhalePositioningOptions {
   maxDte?: number;
   limit?: number;
   pollIntervalMs?: number;
+  /** YYYY-MM-DD date. When provided, passed as `?date=` to the API. */
+  selectedDate?: string;
+  /**
+   * ISO timestamp for scrub mode. When non-null, passed as `?as_of=` to
+   * the API. Triggers a one-shot fetch with no polling.
+   */
+  asOf?: string | null;
 }
 
 export interface UseWhalePositioningResult {
@@ -43,6 +51,8 @@ export interface UseWhalePositioningResult {
   isLoading: boolean;
   error: Error | null;
   lastFetchedAt: Date | null;
+  /** Abort any in-flight request and trigger a fresh fetch. */
+  refresh: () => void;
 }
 
 // ============================================================
@@ -58,6 +68,7 @@ interface WhalePositioningApiResponse {
   window_minutes: number;
   min_premium: number;
   max_dte: number;
+  timestamps: string[];
 }
 
 // ============================================================
@@ -73,6 +84,17 @@ const DEFAULT_LIMIT = 20;
 const DEFAULT_POLL_INTERVAL_MS = 120_000;
 
 // ============================================================
+// HELPERS
+// ============================================================
+
+/** Today's date in ET as YYYY-MM-DD. */
+function todayET(): string {
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+}
+
+// ============================================================
 // HOOK
 // ============================================================
 
@@ -85,6 +107,8 @@ export function useWhalePositioning(
     maxDte = DEFAULT_MAX_DTE,
     limit = DEFAULT_LIMIT,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    selectedDate,
+    asOf,
   } = options;
 
   const [data, setData] = useState<WhalePositioningData | null>(null);
@@ -98,17 +122,36 @@ export function useWhalePositioning(
   // unmount or when a new fetch supersedes it.
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Monotonically increasing counter — bumped by `refresh()` to force the
+  // effect to re-fire without changing any "real" dependency.
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  // Derive the dispatch mode once so both the effect and its deps list
+  // stay in sync.
+  const isScrubMode = typeof asOf === 'string';
+  const isPastDate =
+    !isScrubMode &&
+    typeof selectedDate === 'string' &&
+    selectedDate !== todayET();
+  const isOneShot = isScrubMode || isPastDate;
+
+  const buildUrl = useCallback((): string => {
+    const params = new URLSearchParams({
+      min_premium: String(minPremium),
+      max_dte: String(maxDte),
+      limit: String(limit),
+    });
+    if (selectedDate) {
+      params.set('date', selectedDate);
+    }
+    if (typeof asOf === 'string') {
+      params.set('as_of', asOf);
+    }
+    return `/api/options-flow/whale-positioning?${params.toString()}`;
+  }, [minPremium, maxDte, limit, selectedDate, asOf]);
+
   useEffect(() => {
     isMountedRef.current = true;
-
-    const buildUrl = (): string => {
-      const params = new URLSearchParams({
-        min_premium: String(minPremium),
-        max_dte: String(maxDte),
-        limit: String(limit),
-      });
-      return `/api/options-flow/whale-positioning?${params.toString()}`;
-    };
 
     const fetchNow = async (): Promise<void> => {
       abortControllerRef.current?.abort();
@@ -117,9 +160,11 @@ export function useWhalePositioning(
 
       setIsLoading(true);
       try {
-        const res = await fetch(buildUrl(), { signal: controller.signal });
+        const res = await fetch(buildUrl(), {
+          signal: controller.signal,
+        });
         if (!res.ok) {
-          throw new Error(`whale-positioning HTTP ${res.status}`);
+          throw new Error(`whale-positioning HTTP ${String(res.status)}`);
         }
         const raw = (await res.json()) as WhalePositioningApiResponse;
 
@@ -134,6 +179,7 @@ export function useWhalePositioning(
           windowMinutes: raw.window_minutes,
           minPremium: raw.min_premium,
           maxDte: raw.max_dte,
+          timestamps: raw.timestamps,
         });
         setError(null);
         setLastFetchedAt(new Date());
@@ -158,9 +204,11 @@ export function useWhalePositioning(
     // market is closed. Post-session review is a primary use case.
     void fetchNow();
 
-    if (!marketOpen) {
-      // Closed — single shot, no interval. Cleanup aborts the in-flight
-      // fetch if the effect tears down before it resolves.
+    // ---- dispatch ladder ----
+    // 1. Scrub mode or past date → one-shot, no interval.
+    // 2. Live + market open → poll.
+    // 3. Market closed → single shot (already fired above).
+    if (isOneShot || !marketOpen) {
       return () => {
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
@@ -176,7 +224,7 @@ export function useWhalePositioning(
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
     };
-  }, [marketOpen, minPremium, maxDte, limit, pollIntervalMs]);
+  }, [marketOpen, buildUrl, isOneShot, pollIntervalMs, refreshToken]);
 
   // Unmount cleanup — flip the mounted flag so any late-resolving promises
   // from the final fetch short-circuit before calling setState.
@@ -186,5 +234,13 @@ export function useWhalePositioning(
     };
   }, []);
 
-  return { data, isLoading, error, lastFetchedAt };
+  // Manual refresh — abort in-flight, bump the token to re-trigger the
+  // main effect.
+  const refresh = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setRefreshToken((t) => t + 1);
+  }, []);
+
+  return { data, isLoading, error, lastFetchedAt, refresh };
 }

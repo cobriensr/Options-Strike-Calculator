@@ -1,13 +1,12 @@
 /**
- * HeaderControls — scrub prev/next, live timestamp badge, date picker,
- * live/scrubbed status badges, and manual refresh button.
+ * ScrubControls — reusable time scrubber, date picker, live/scrubbed badge,
+ * and manual refresh button. Designed for SectionBox `headerRight` slots.
  *
- * Rendered inside SectionBox via the `headerRight` slot.
+ * Extracted from GexLandscape/HeaderControls so that any panel with
+ * historical snapshot browsing can reuse the same controls.
  */
 
-import { fmtTime } from './formatters';
-
-export interface HeaderControlsProps {
+export interface ScrubControlsProps {
   timestamp: string | null;
   timestamps: string[];
   selectedDate: string;
@@ -22,9 +21,20 @@ export interface HeaderControlsProps {
   onScrubLive: () => void;
   onRefresh: () => void;
   loading: boolean;
+  /** Used in the refresh button's aria-label, e.g. "Refresh GEX landscape" */
+  sectionLabel: string;
 }
 
-export function HeaderControls({
+/** Format an ISO timestamp to "HH:MM AM/PM CT" in Central Time. */
+function fmtTimeCT(iso: string): string {
+  return new Date(iso).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'America/Chicago',
+  });
+}
+
+export function ScrubControls({
   timestamp,
   timestamps,
   selectedDate,
@@ -39,7 +49,8 @@ export function HeaderControls({
   onScrubLive,
   onRefresh,
   loading,
-}: HeaderControlsProps) {
+  sectionLabel,
+}: ScrubControlsProps) {
   return (
     <div className="flex items-center gap-2">
       {/* Scrubber */}
@@ -68,7 +79,7 @@ export function HeaderControls({
           >
             {timestamps.map((ts) => (
               <option key={ts} value={ts}>
-                {fmtTime(ts)} CT
+                {fmtTimeCT(ts)} CT
               </option>
             ))}
           </select>
@@ -84,7 +95,7 @@ export function HeaderControls({
                     : 'var(--color-secondary)',
               }}
             >
-              {fmtTime(timestamp)} CT
+              {fmtTimeCT(timestamp)} CT
             </span>
           )
         )}
@@ -136,9 +147,9 @@ export function HeaderControls({
       <button
         onClick={onRefresh}
         disabled={loading}
-        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? 'animate-spin' : ''}`}
+        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? ' animate-spin' : ''}`}
         title="Refresh"
-        aria-label="Refresh GEX landscape"
+        aria-label={`Refresh ${sectionLabel}`}
       >
         ↻
       </button>

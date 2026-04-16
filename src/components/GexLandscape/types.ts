@@ -26,6 +26,17 @@ export interface DriftTarget {
   volReinforcement: 'reinforcing' | 'opposing' | 'neutral';
 }
 
+/** Price trend computed from the snapshot buffer's price series. */
+export interface PriceTrend {
+  direction: 'up' | 'down' | 'flat';
+  /** % change from oldest buffered price to current price. */
+  changePct: number;
+  /** Point change from oldest buffered price to current price. */
+  changePts: number;
+  /** Fraction of non-flat intervals in the dominant direction (0–1). */
+  consistency: number;
+}
+
 export interface BiasMetrics {
   verdict:
     | 'gex-pull-up'
@@ -34,7 +45,9 @@ export interface BiasMetrics {
     | 'breakdown-risk-down'
     | 'rangebound'
     | 'volatile'
-    | 'gex-floor-below';
+    | 'gex-floor-below'
+    | 'drifting-down'
+    | 'drifting-up';
   /** Sign of total net GEX across all strikes. */
   regime: 'positive' | 'negative';
   totalNetGex: number;
@@ -56,4 +69,6 @@ export interface BiasMetrics {
   floorTrend5m: number | null;
   /** Avg 5m Δ% for above-spot strikes. */
   ceilingTrend5m: number | null;
+  /** Price trend over the lookback window (null until enough data accumulates). */
+  priceTrend: PriceTrend | null;
 }

@@ -67,5 +67,11 @@ export function formatBiasForClaude(b: BiasMetrics): string {
   if (b.ceilingTrend5m !== null) t5.push(`ceiling ${fmtPct(b.ceilingTrend5m)}`);
   if (b.floorTrend5m !== null) t5.push(`floor ${fmtPct(b.floorTrend5m)}`);
   if (t5.length > 0) lines.push(`5m GEX trend: ${t5.join(' | ')}`);
+  if (b.priceTrend && b.priceTrend.direction !== 'flat') {
+    const dir = b.priceTrend.direction === 'up' ? 'UP' : 'DOWN';
+    lines.push(
+      `Price trend: DRIFTING ${dir} (${b.priceTrend.changePts > 0 ? '+' : ''}${b.priceTrend.changePts.toFixed(1)} pts, ${fmtPct(b.priceTrend.changePct)} over 5m)`,
+    );
+  }
   return lines.join('\n');
 }

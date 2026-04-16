@@ -98,4 +98,5 @@ export interface WhalePositioningData {
   windowMinutes: number;
   minPremium: number;
   maxDte: number;
+  timestamps: string[];
 }

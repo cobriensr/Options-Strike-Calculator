@@ -193,6 +193,7 @@ describe('GET /api/options-flow/top-strikes', () => {
       window_minutes: 15,
       last_updated: null,
       alert_count: 0,
+      timestamps: [],
     });
   });
 

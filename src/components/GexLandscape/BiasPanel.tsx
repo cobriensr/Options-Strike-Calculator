@@ -31,6 +31,12 @@ export function BiasPanel({
   maxChanged5mStrike,
 }: BiasPanelProps) {
   const vm = VERDICT_META[bias.verdict];
+  const isDrifting =
+    bias.verdict === 'drifting-down' || bias.verdict === 'drifting-up';
+  const driftSuffix =
+    isDrifting && bias.priceTrend
+      ? ` (${bias.priceTrend.changePts > 0 ? '+' : ''}${bias.priceTrend.changePts.toFixed(1)} pts / 5m)`
+      : '';
   const floorTrendColor =
     bias.floorTrend === null
       ? 'var(--color-muted)'
@@ -69,6 +75,9 @@ export function BiasPanel({
           </span>
           <span className="text-secondary font-mono text-[11px]">
             {vm.desc}
+            {driftSuffix && (
+              <span className={`font-semibold ${vm.color}`}>{driftSuffix}</span>
+            )}
           </span>
         </div>
         <span

@@ -21,7 +21,7 @@
  *   deltas.ts                — snapshot Δ%, closest-snapshot lookup, 5m smoothing
  *   bias.ts                  — computeBias (structural verdict synthesis)
  *   formatters.ts            — fmtGex / fmtPct / fmtTime / formatBiasForClaude
- *   HeaderControls.tsx       — scrub/date/status/refresh controls
+ *   (ScrubControls)          — shared scrub/date/status/refresh controls (../ScrubControls)
  *   BiasPanel.tsx            — verdict + gravity + drift targets + trends block
  *   StrikeTable.tsx          — sticky-header + scrollable row grid
  *   ClassificationLegend.tsx — bottom legend
@@ -33,17 +33,18 @@ import { SectionBox } from '../ui';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import { BiasPanel } from './BiasPanel';
 import { ClassificationLegend } from './ClassificationLegend';
-import { HeaderControls } from './HeaderControls';
+import { ScrubControls } from '../ScrubControls';
 import { StrikeTable } from './StrikeTable';
 import { computeBias } from './bias';
 import { PRICE_WINDOW } from './constants';
 import {
   computeDeltaMap,
+  computePriceTrend,
   computeSmoothedStrikes,
   findClosestSnapshot,
 } from './deltas';
 import { formatBiasForClaude } from './formatters';
-import type { Snapshot } from './types';
+import type { PriceTrend, Snapshot } from './types';
 
 export interface GexLandscapeProps {
   strikes: GexStrikeLevel[];
@@ -101,6 +102,8 @@ const GexLandscape = memo(function GexLandscape({
   // 5-minute smoothed strikes — updated in the snapshot effect so the ref read
   // happens inside an effect (not during render), satisfying react-hooks/purity.
   const [smoothedRows, setSmoothedRows] = useState<GexStrikeLevel[]>([]);
+  // Price trend from the snapshot buffer — used to override rangebound verdict.
+  const [priceTrend, setPriceTrend] = useState<PriceTrend | null>(null);
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -162,8 +165,21 @@ const GexLandscape = memo(function GexLandscape({
   // flip the verdict. Falls back to raw rows until enough history accumulates.
   const bias = useMemo(() => {
     const base = smoothedRows.length > 0 ? smoothedRows : rows;
-    return computeBias(base, currentPrice, gexDeltaMap, gexDelta5mMap);
-  }, [smoothedRows, rows, currentPrice, gexDeltaMap, gexDelta5mMap]);
+    return computeBias(
+      base,
+      currentPrice,
+      gexDeltaMap,
+      gexDelta5mMap,
+      priceTrend,
+    );
+  }, [
+    smoothedRows,
+    rows,
+    currentPrice,
+    gexDeltaMap,
+    gexDelta5mMap,
+    priceTrend,
+  ]);
 
   // Notify parent whenever the structural bias verdict changes so it can be
   // forwarded to the analyze endpoint as part of AnalysisContext.
@@ -180,6 +196,7 @@ const GexLandscape = memo(function GexLandscape({
     setGexDeltaMap(new Map());
     setGexDelta5mMap(new Map());
     setSmoothedRows([]);
+    setPriceTrend(null);
   }, [selectedDate]);
 
   // Scroll ATM row into view only on initial data arrival.
@@ -231,10 +248,11 @@ const GexLandscape = memo(function GexLandscape({
       (s) => Math.abs(s.strike - price) <= PRICE_WINDOW,
     );
     setSmoothedRows(computeSmoothedStrikes(windowStrikes, buf, now));
+    setPriceTrend(computePriceTrend(price, buf, now));
   }, [strikes, timestamp]);
 
   const headerRight = (
-    <HeaderControls
+    <ScrubControls
       timestamp={timestamp}
       timestamps={timestamps}
       selectedDate={selectedDate}
@@ -249,6 +267,7 @@ const GexLandscape = memo(function GexLandscape({
       onScrubLive={onScrubLive}
       onRefresh={onRefresh}
       loading={loading}
+      sectionLabel="GEX landscape"
     />
   );
 

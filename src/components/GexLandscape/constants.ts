@@ -11,6 +11,12 @@ export const PRICE_WINDOW = 50;
 /** Points from spot within which a strike is considered "at money". */
 export const SPOT_BAND = 12;
 
+/** Minimum absolute SPX points of price change to qualify as "drifting". */
+export const DRIFT_PTS_THRESHOLD = 3;
+
+/** Minimum fraction of non-flat intervals in the dominant direction (0–1). */
+export const DRIFT_CONSISTENCY_THRESHOLD = 0.55;
+
 export interface ClassMeta {
   badge: string;
   badgeBg: string;
@@ -139,6 +145,20 @@ export const VERDICT_META: Record<BiasMetrics['verdict'], VerdictMeta> = {
     border: 'border-emerald-500/30',
     desc: 'Largest GEX wall is below spot — acting as support floor; price has upside freedom',
   },
+  'drifting-down': {
+    label: '↓ DRIFTING DOWN',
+    color: 'text-orange-400',
+    bg: 'bg-orange-500/15',
+    border: 'border-orange-500/30',
+    desc: 'Positive GEX but price grinding lower — dealers dampening, not stopping the move',
+  },
+  'drifting-up': {
+    label: '↑ DRIFTING UP',
+    color: 'text-teal-400',
+    bg: 'bg-teal-500/15',
+    border: 'border-teal-500/30',
+    desc: 'Positive GEX but price grinding higher — dealers dampening, not stopping the move',
+  },
 };
 
 export const VERDICT_TOOLTIP: Record<BiasMetrics['verdict'], string> = {
@@ -156,4 +176,8 @@ export const VERDICT_TOOLTIP: Record<BiasMetrics['verdict'], string> = {
     'Total GEX is negative and the biggest concentration is near spot. MMs amplify moves without a clear directional pull. A breakout in either direction can accelerate fast. Wait for a clear move before committing to a direction.',
   'gex-floor-below':
     'The biggest GEX wall is below current price and acting as a support floor — dealers are net long gamma there and will buy dips toward it. Price has already broken above it and has upside freedom toward ceiling targets. Watch for the ceiling drift targets above as the next magnetic levels.',
+  'drifting-down':
+    'GEX is positive (dealers are dampening moves), but price has been grinding lower despite that support. The GEX walls are slowing the decline, not stopping it. Downside drift targets show where price is heading. Consider this a warning that range-bound conditions are failing to hold.',
+  'drifting-up':
+    'GEX is positive (dealers are dampening moves), but price has been grinding higher despite that resistance. The GEX walls are slowing the rally, not stopping it. Upside drift targets show where price is heading. Consider this a warning that range-bound conditions are failing to hold.',
 };
