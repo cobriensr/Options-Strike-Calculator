@@ -53,7 +53,9 @@ export async function fetchMaxPain(
     });
 
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
+      const text = await res
+        .text()
+        .catch((e) => `[parse error: ${(e as Error).message}]`);
       logger.warn(
         { status: res.status, body: text.slice(0, 200) },
         'Max pain API returned non-OK',

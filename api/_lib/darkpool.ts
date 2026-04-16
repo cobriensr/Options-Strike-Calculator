@@ -101,11 +101,17 @@ export async function fetchDarkPoolBlocks(
     });
 
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
+      const text = await res
+        .text()
+        .catch((e) => `[parse error: ${(e as Error).message}]`);
       logger.warn(
         { status: res.status, body: text.slice(0, 200) },
         'Dark pool API returned non-OK',
       );
+      Sentry.captureMessage('Dark pool API non-OK', {
+        level: 'warning',
+        extra: { status: res.status, body: text.slice(0, 200) },
+      });
       return [];
     }
 
@@ -189,11 +195,22 @@ export async function fetchAllDarkPoolTrades(
       });
 
       if (!res.ok) {
-        const text = await res.text().catch(() => '');
+        const text = await res
+          .text()
+          .catch((e) => `[parse error: ${(e as Error).message}]`);
         logger.warn(
           { status: res.status, body: text.slice(0, 200), page },
           'Dark pool paginated fetch non-OK',
         );
+        Sentry.captureMessage('Dark pool paginated fetch non-OK', {
+          level: 'warning',
+          extra: {
+            status: res.status,
+            body: text.slice(0, 200),
+            page,
+            fetched: all.length,
+          },
+        });
         break;
       }
 
@@ -233,6 +250,8 @@ export async function fetchAllDarkPoolTrades(
     }
   } catch (err) {
     logger.error({ err, fetched: all.length }, 'Dark pool pagination error');
+    Sentry.captureException(err, { extra: { fetched: all.length } });
+    throw err;
   }
 
   // Apply the same quality filters, plus a hard ET-date guard.

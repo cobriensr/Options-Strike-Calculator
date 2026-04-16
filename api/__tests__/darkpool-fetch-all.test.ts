@@ -16,7 +16,21 @@ const mockLogger = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
+const mockSentry = vi.hoisted(() => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
+
 vi.mock('../_lib/logger.js', () => ({ default: mockLogger }));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: mockSentry,
+  metrics: {
+    dbSave: vi.fn(),
+    request: vi.fn(() => vi.fn()),
+    increment: vi.fn(),
+  },
+}));
 
 import {
   fetchAllDarkPoolTrades,
@@ -249,18 +263,23 @@ describe('fetchAllDarkPoolTrades', () => {
     vi.unstubAllGlobals();
   });
 
-  it('handles network error gracefully', async () => {
+  it('throws and captures to Sentry on network error', async () => {
+    mockSentry.captureException.mockClear();
     vi.stubGlobal(
       'fetch',
       vi.fn().mockRejectedValue(new Error('network failure')),
     );
 
-    const result = await fetchAllDarkPoolTrades('key');
-
-    expect(result).toEqual([]);
+    await expect(fetchAllDarkPoolTrades('key')).rejects.toThrow(
+      'network failure',
+    );
     expect(mockLogger.error).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
       expect.stringContaining('Dark pool pagination error'),
+    );
+    expect(mockSentry.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ extra: expect.any(Object) }),
     );
 
     vi.unstubAllGlobals();

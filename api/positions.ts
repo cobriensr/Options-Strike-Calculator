@@ -28,6 +28,7 @@ import {
 import { savePositions, getDb, type PositionLeg } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { parseFullCSV, buildFullSummary } from './_lib/csv-parser.js';
+import { positionCsvSchema } from './_lib/validation.js';
 
 // Re-export for any external consumers
 export { parseTosExpiration } from './_lib/csv-parser.js';
@@ -358,22 +359,31 @@ async function handleCSVUpload(
   fetchTime: string,
 ) {
   try {
-    let csv: string;
-    if (typeof req.body === 'string') {
-      csv = req.body;
-    } else if (req.body?.csv && typeof req.body.csv === 'string') {
-      csv = req.body.csv;
-    } else {
+    const rawCsv =
+      typeof req.body === 'string'
+        ? req.body
+        : typeof req.body?.csv === 'string'
+          ? req.body.csv
+          : null;
+    if (rawCsv === null) {
       return res.status(400).json({
         error: 'Request body must be CSV text or JSON { csv: "..." }',
       });
     }
+
+    const validation = positionCsvSchema.safeParse({ csv: rawCsv });
+    if (!validation.success) {
+      const tooLarge = validation.error.issues.some((i) =>
+        i.message.includes('too large'),
+      );
+      return res.status(tooLarge ? 413 : 400).json({
+        error: 'Invalid CSV payload',
+        issues: validation.error.issues,
+      });
+    }
+    const csv = validation.data.csv;
     if (!csv.trim()) {
       return res.status(400).json({ error: 'Empty CSV body' });
-    }
-    const MAX_CSV_BYTES = 1_024_000;
-    if (csv.length > MAX_CSV_BYTES) {
-      return res.status(413).json({ error: 'CSV too large. Maximum 1MB.' });
     }
 
     // Parse all sections of the CSV holistically

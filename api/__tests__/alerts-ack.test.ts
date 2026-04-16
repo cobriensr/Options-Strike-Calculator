@@ -66,21 +66,30 @@ describe('POST /api/alerts-ack', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST', body: {} }), res);
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Missing or invalid alert id' });
+    expect(res._json).toMatchObject({
+      error: 'Invalid request body',
+      issues: expect.any(Array),
+    });
   });
 
   it('returns 400 when id is a string', async () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST', body: { id: '42' } }), res);
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Missing or invalid alert id' });
+    expect(res._json).toMatchObject({
+      error: 'Invalid request body',
+      issues: expect.any(Array),
+    });
   });
 
   it('returns 400 when id is null', async () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST', body: { id: null } }), res);
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Missing or invalid alert id' });
+    expect(res._json).toMatchObject({
+      error: 'Invalid request body',
+      issues: expect.any(Array),
+    });
   });
 
   it('returns 400 when id is undefined', async () => {
@@ -90,7 +99,10 @@ describe('POST /api/alerts-ack', () => {
       res,
     );
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Missing or invalid alert id' });
+    expect(res._json).toMatchObject({
+      error: 'Invalid request body',
+      issues: expect.any(Array),
+    });
   });
 
   it('returns 400 when id is NaN', async () => {
@@ -100,7 +112,10 @@ describe('POST /api/alerts-ack', () => {
       res,
     );
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Missing or invalid alert id' });
+    expect(res._json).toMatchObject({
+      error: 'Invalid request body',
+      issues: expect.any(Array),
+    });
   });
 
   it('returns 400 when id is Infinity', async () => {
@@ -113,7 +128,10 @@ describe('POST /api/alerts-ack', () => {
       res,
     );
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Missing or invalid alert id' });
+    expect(res._json).toMatchObject({
+      error: 'Invalid request body',
+      issues: expect.any(Array),
+    });
   });
 
   it('returns 404 when alert ID does not exist', async () => {

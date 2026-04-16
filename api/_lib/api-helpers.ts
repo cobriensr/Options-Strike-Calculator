@@ -514,7 +514,9 @@ export async function uwFetch<T>(
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    const text = await res
+      .text()
+      .catch((e) => `[parse error: ${(e as Error).message}]`);
 
     // BE-CRON-002 follow-up: surface UW rate-limit hits to Sentry as a
     // metric + scoped warning so we see budget pressure the moment it

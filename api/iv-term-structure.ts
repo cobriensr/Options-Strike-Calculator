@@ -44,7 +44,9 @@ async function fetchInterpolatedIv(
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    const text = await res
+      .text()
+      .catch((e) => `[parse error: ${(e as Error).message}]`);
     throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
   }
 

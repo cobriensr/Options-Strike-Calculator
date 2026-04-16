@@ -9,6 +9,31 @@
 import { z } from 'zod';
 
 // ============================================================
+// /api/alerts-ack
+// ============================================================
+
+export const alertAckSchema = z.object({
+  id: z.number().int().positive().finite(),
+});
+
+export type AlertAckBody = z.infer<typeof alertAckSchema>;
+
+// ============================================================
+// /api/positions (POST — thinkorswim CSV upload)
+// ============================================================
+
+const MAX_CSV_BYTES = 1_024_000; // 1MB
+
+export const positionCsvSchema = z.object({
+  csv: z
+    .string()
+    .min(1, 'CSV body is empty')
+    .refine((v) => v.length <= MAX_CSV_BYTES, 'CSV too large. Maximum 1MB.'),
+});
+
+export type PositionCsvBody = z.infer<typeof positionCsvSchema>;
+
+// ============================================================
 // /api/analyze
 // ============================================================
 

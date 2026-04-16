@@ -348,7 +348,12 @@ describe('POST /api/positions (CSV upload)', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST', body: '' }), res);
     expect(res._status).toBe(400);
-    expect((res._json as { error: string }).error).toMatch(/empty/i);
+    const body = res._json as {
+      error: string;
+      issues?: Array<{ message: string }>;
+    };
+    expect(body.error).toBe('Invalid CSV payload');
+    expect(body.issues?.[0]?.message).toMatch(/empty/i);
   });
 
   it('returns 400 for CSV without Options section', async () => {

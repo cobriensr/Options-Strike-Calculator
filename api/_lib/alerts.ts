@@ -8,6 +8,7 @@
 
 import { getDb } from './db.js';
 import logger from './logger.js';
+import { Sentry } from './sentry.js';
 import { ALERT_THRESHOLDS } from './alert-thresholds.js';
 
 // ── Types ──────────────────────────────────────────────────
@@ -84,11 +85,21 @@ export async function sendTwilioSms(alert: AlertPayload): Promise<boolean> {
     );
 
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
+      const text = await res
+        .text()
+        .catch((e) => `[parse error: ${(e as Error).message}]`);
       logger.error(
         { status: res.status, body: text.slice(0, 200) },
         'Twilio SMS failed',
       );
+      Sentry.captureMessage('Twilio SMS non-OK', {
+        level: 'error',
+        extra: {
+          status: res.status,
+          body: text.slice(0, 200),
+          alertType: alert.type,
+        },
+      });
       return false;
     }
 

@@ -228,11 +228,17 @@ async function fetchSPXCandlesLive(
     });
 
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
+      const body = await res
+        .text()
+        .catch((e) => `[parse error: ${(e as Error).message}]`);
       logger.warn(
         { status: res.status, body: body.slice(0, 200) },
         'UW candles API returned non-OK',
       );
+      Sentry.captureMessage('UW candles API non-OK', {
+        level: 'warning',
+        extra: { status: res.status, body: body.slice(0, 200) },
+      });
       return { candles: [], previousClose: null };
     }
 

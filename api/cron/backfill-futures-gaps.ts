@@ -96,12 +96,18 @@ async function fetchBars(
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    const text = await res
+      .text()
+      .catch((e) => `[parse error: ${(e as Error).message}]`);
     logger.warn(
       { symbol, status: res.status },
       'Databento API error: %s',
       text.slice(0, 200),
     );
+    Sentry.captureMessage('Databento API non-OK', {
+      level: 'warning',
+      extra: { symbol, status: res.status, body: text.slice(0, 200) },
+    });
     return { bars: [], rejected: 0 };
   }
 

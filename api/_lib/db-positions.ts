@@ -18,9 +18,9 @@ export interface PositionLeg {
   quantity: number;
   averagePrice: number;
   marketValue: number;
-  delta?: number;
-  theta?: number;
-  gamma?: number;
+  delta?: number | undefined;
+  theta?: number | undefined;
+  gamma?: number | undefined;
 }
 
 export interface PositionInput {

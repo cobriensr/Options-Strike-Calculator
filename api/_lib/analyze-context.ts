@@ -669,7 +669,7 @@ export async function buildAnalysisContext(
   images: Array<{
     data: string;
     mediaType: ImageMediaType;
-    label?: string;
+    label?: string | undefined;
   }>,
   context: Record<string, unknown>,
 ): Promise<AnalysisContextResult> {

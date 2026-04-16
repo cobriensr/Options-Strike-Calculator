@@ -15,7 +15,7 @@ const logger = pino({
     level: (label) => ({ level: label }),
   },
   // Omit hostname/pid in serverless (not meaningful)
-  base: undefined,
+  base: null,
 });
 
 export default logger;

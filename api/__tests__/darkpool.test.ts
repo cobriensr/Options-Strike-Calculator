@@ -8,7 +8,21 @@ const mockLogger = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
+const mockSentry = vi.hoisted(() => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
+
 vi.mock('../_lib/logger.js', () => ({ default: mockLogger }));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: mockSentry,
+  metrics: {
+    dbSave: vi.fn(),
+    request: vi.fn(() => vi.fn()),
+    increment: vi.fn(),
+  },
+}));
 
 import {
   fetchDarkPoolBlocks,

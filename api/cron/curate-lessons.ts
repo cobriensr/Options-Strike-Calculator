@@ -86,7 +86,7 @@ interface SupersededLesson {
 interface SkippedLesson {
   text: string;
   reason: string;
-  existingId?: number;
+  existingId?: number | undefined;
 }
 
 interface LessonError {

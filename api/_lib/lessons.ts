@@ -90,10 +90,10 @@ export interface WinRateResult {
  * Returns null if fewer than 5 matching sessions (insufficient sample).
  */
 export async function getHistoricalWinRate(conditions: {
-  vix?: number;
-  gexRegime?: string;
-  structure?: string;
-  dayOfWeek?: string;
+  vix?: number | undefined;
+  gexRegime?: string | undefined;
+  structure?: string | undefined;
+  dayOfWeek?: string | undefined;
 }): Promise<WinRateResult | null> {
   const sql = getDb();
 
@@ -152,10 +152,10 @@ export async function getHistoricalWinRate(conditions: {
 export function formatWinRateForClaude(
   result: WinRateResult,
   conditions: {
-    vix?: number;
-    gexRegime?: string;
-    structure?: string;
-    dayOfWeek?: string;
+    vix?: number | undefined;
+    gexRegime?: string | undefined;
+    structure?: string | undefined;
+    dayOfWeek?: string | undefined;
   },
 ): string {
   const condParts: string[] = [];
