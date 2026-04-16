@@ -227,39 +227,72 @@ describe('BWBCalculator component', () => {
     expect(screen.getByText('Clear')).toBeInTheDocument();
   });
 
-  it('renders 3 strike inputs and a fill price input', () => {
+  it('renders 3 strike inputs and dual fill price inputs', () => {
     render(<BWBCalculator />);
     expect(screen.getByLabelText('Low strike')).toBeInTheDocument();
     expect(screen.getByLabelText('Mid strike')).toBeInTheDocument();
     expect(screen.getByLabelText('High strike')).toBeInTheDocument();
-    expect(screen.getByLabelText('Net fill price')).toBeInTheDocument();
-    expect(screen.getByText('Debit')).toBeInTheDocument();
-    expect(screen.getByText('Credit')).toBeInTheDocument();
+    expect(screen.getByLabelText('BWB fill price')).toBeInTheDocument();
+    expect(screen.getByLabelText('Iron Fly fill price')).toBeInTheDocument();
+    expect(screen.getAllByText('Debit')).toHaveLength(2);
+    expect(screen.getAllByText('Credit')).toHaveLength(2);
   });
 
   it('shows empty state when inputs are incomplete', () => {
     render(<BWBCalculator />);
     expect(
-      screen.getByText(/Enter three strikes and a fill price/),
+      screen.getByText(/Enter three strikes and at least one fill price/),
     ).toBeInTheDocument();
   });
 
-  it('shows results when all inputs are filled', async () => {
+  it('shows BWB results when BWB fill price is entered', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Net fill price'), '1.50');
-    // Default is credit, click Debit
-    await user.click(screen.getByText('Debit'));
+    await user.type(screen.getByLabelText('BWB fill price'), '1.50');
+    // Default is credit, click Debit (first Debit button = BWB)
+    await user.click(screen.getAllByText('Debit')[0]!);
 
     // Should show trade summary
     expect(screen.getByText(/DEBIT/)).toBeInTheDocument();
     // Should show P&L table
     expect(
       screen.getByRole('table', { name: 'BWB P&L at expiry' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows Iron Fly results when IF fill price is entered', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Low strike'), '6480');
+    await user.type(screen.getByLabelText('Mid strike'), '6500');
+    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('Iron Fly fill price'), '8.00');
+
+    expect(
+      screen.getByRole('table', { name: 'Iron Fly P&L at expiry' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows both results side by side when both fills are entered', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('Low strike'), '6480');
+    await user.type(screen.getByLabelText('Mid strike'), '6500');
+    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB fill price'), '0.91');
+    await user.type(screen.getByLabelText('Iron Fly fill price'), '8.00');
+
+    expect(
+      screen.getByRole('table', { name: 'BWB P&L at expiry' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: 'Iron Fly P&L at expiry' }),
     ).toBeInTheDocument();
   });
 
@@ -276,16 +309,20 @@ describe('BWBCalculator component', () => {
     ).toBeInTheDocument();
   });
 
-  it('clear button resets all inputs', async () => {
+  it('clear button resets all inputs including both fill prices', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
+    await user.type(screen.getByLabelText('BWB fill price'), '0.91');
+    await user.type(screen.getByLabelText('Iron Fly fill price'), '8.00');
     await user.click(screen.getByText('Clear'));
 
     expect(screen.getByLabelText('Low strike')).toHaveValue('');
     expect(screen.getByLabelText('Mid strike')).toHaveValue('');
+    expect(screen.getByLabelText('BWB fill price')).toHaveValue('');
+    expect(screen.getByLabelText('Iron Fly fill price')).toHaveValue('');
   });
 
   it('switches between calls and puts', async () => {
@@ -295,7 +332,7 @@ describe('BWBCalculator component', () => {
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Net fill price'), '1.50');
+    await user.type(screen.getByLabelText('BWB fill price'), '1.50');
 
     // Switch to puts — trade summary changes from "Call" to "Put"
     await user.click(screen.getByText('Puts'));
@@ -368,7 +405,7 @@ describe('BWBCalculator component', () => {
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Net fill price'), '1.50');
+    await user.type(screen.getByLabelText('BWB fill price'), '1.50');
 
     expect(screen.getByText('Max Profit')).toBeInTheDocument();
     expect(screen.getByText('Breakevens')).toBeInTheDocument();
@@ -547,7 +584,7 @@ describe('BWBCalculator wing width + credit/debit', () => {
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Net fill price'), '0.91');
+    await user.type(screen.getByLabelText('BWB fill price'), '0.91');
     // Default is credit
     expect(screen.getByText('CREDIT')).toBeInTheDocument();
   });
@@ -559,8 +596,8 @@ describe('BWBCalculator wing width + credit/debit', () => {
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Net fill price'), '1.50');
-    await user.click(screen.getByText('Debit'));
+    await user.type(screen.getByLabelText('BWB fill price'), '1.50');
+    await user.click(screen.getAllByText('Debit')[0]!);
     expect(screen.getByText('DEBIT')).toBeInTheDocument();
   });
 
@@ -571,7 +608,7 @@ describe('BWBCalculator wing width + credit/debit', () => {
     await user.type(screen.getByLabelText('Low strike'), '6480');
     await user.type(screen.getByLabelText('Mid strike'), '6500');
     await user.type(screen.getByLabelText('High strike'), '6540');
-    await user.type(screen.getByLabelText('Net fill price'), '1.50');
+    await user.type(screen.getByLabelText('BWB fill price'), '1.50');
     await user.click(screen.getByText('+'));
     await user.click(screen.getByText('+'));
     // 3 contracts — use getAllByText since it appears in both header and footer

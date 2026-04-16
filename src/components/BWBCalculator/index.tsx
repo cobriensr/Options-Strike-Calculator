@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { BWBSide, StrategyMode, IronFlyMetrics } from './bwb-math';
+import type { BWBSide } from './bwb-math';
 import {
   calcMetrics,
   generatePnlRows,
@@ -11,6 +11,11 @@ import BWBResults from './BWBResults';
 import VixRegimeBanner from '../VixRegimeBanner';
 import { SectionBox } from '../ui';
 
+const INPUT =
+  'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[10px_12px] text-[15px] font-mono outline-none w-full transition-[border-color] duration-150';
+const LABEL =
+  'text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]';
+
 interface BWBCalculatorProps {
   selectedDate?: string;
   vix?: string | number | null;
@@ -20,14 +25,17 @@ export default function BWBCalculator({
   selectedDate,
   vix,
 }: Readonly<BWBCalculatorProps>) {
-  const [strategy, setStrategy] = useState<StrategyMode>('bwb');
   const [side, setSide] = useState<BWBSide>('calls');
   const [lowStrike, setLowStrike] = useState('');
   const [midStrike, setMidStrike] = useState('');
   const [highStrike, setHighStrike] = useState('');
-  const [netInput, setNetInput] = useState('');
-  const [isCredit, setIsCredit] = useState(true);
   const [contracts, setContracts] = useState(1);
+
+  // Dual fill prices — one per strategy
+  const [bwbNetInput, setBwbNetInput] = useState('');
+  const [bwbIsCredit, setBwbIsCredit] = useState(true);
+  const [ifNetInput, setIfNetInput] = useState('');
+  const [ifIsCredit, setIfIsCredit] = useState(true);
 
   // Sweet spot auto-fill state
   const [sweetSpot, setSweetSpot] = useState('');
@@ -66,16 +74,10 @@ export default function BWBCalculator({
 
   const refreshAnchor = useCallback(() => setAnchorKey((k) => k + 1), []);
 
-  // Auto-fill strikes from sweet spot + wing widths
+  // Auto-fill strikes from sweet spot + wing widths (BWB convention)
   const fillStrikes = useCallback(
-    (
-      ss: number,
-      narrow: number,
-      wide: number,
-      s: BWBSide,
-      strat: StrategyMode,
-    ) => {
-      if (strat === 'iron-fly' || s === 'calls') {
+    (ss: number, narrow: number, wide: number, s: BWBSide) => {
+      if (s === 'calls') {
         setLowStrike(String(ss - narrow));
         setMidStrike(String(ss));
         setHighStrike(String(ss + wide));
@@ -91,8 +93,7 @@ export default function BWBCalculator({
   const handleSweetSpotChange = (value: string) => {
     setSweetSpot(value);
     const ss = Number.parseFloat(value);
-    if (Number.isFinite(ss))
-      fillStrikes(ss, narrowWing, wideWing, side, strategy);
+    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, side);
   };
 
   const handleNarrowChange = (value: string) => {
@@ -100,7 +101,7 @@ export default function BWBCalculator({
     if (Number.isFinite(n) && n > 0) {
       setNarrowWing(n);
       const ss = Number.parseFloat(sweetSpot);
-      if (Number.isFinite(ss)) fillStrikes(ss, n, wideWing, side, strategy);
+      if (Number.isFinite(ss)) fillStrikes(ss, n, wideWing, side);
     }
   };
 
@@ -109,23 +110,17 @@ export default function BWBCalculator({
     if (Number.isFinite(w) && w > 0) {
       setWideWing(w);
       const ss = Number.parseFloat(sweetSpot);
-      if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, w, side, strategy);
+      if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, w, side);
     }
   };
 
   const handleSideChange = (s: BWBSide) => {
     setSide(s);
     const ss = Number.parseFloat(sweetSpot);
-    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, s, strategy);
+    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, s);
   };
 
-  const handleStrategyChange = (s: StrategyMode) => {
-    setStrategy(s);
-    const ss = Number.parseFloat(sweetSpot);
-    if (Number.isFinite(ss)) fillStrikes(ss, narrowWing, wideWing, side, s);
-  };
-
-  // Parse inputs
+  // Parse strikes
   const low = Number.parseFloat(lowStrike);
   const mid = Number.parseFloat(midStrike);
   const high = Number.parseFloat(highStrike);
@@ -136,71 +131,65 @@ export default function BWBCalculator({
     Number.isFinite(high) &&
     low < mid &&
     mid < high;
-  const netParsed = Number.parseFloat(netInput);
-  const priceValid = Number.isFinite(netParsed) && netParsed >= 0;
-  const allValid = strikesValid && priceValid;
 
-  const net = allValid ? (isCredit ? netParsed : -netParsed) : 0;
-  const metrics = allValid ? calcMetrics(side, low, mid, high, net) : null;
-  const pnlRows = allValid
-    ? generatePnlRows(side, low, mid, high, net, contracts)
+  // BWB metrics (independent of Iron Fly)
+  const bwbParsed = Number.parseFloat(bwbNetInput);
+  const bwbPriceValid = Number.isFinite(bwbParsed) && bwbParsed >= 0;
+  const bwbValid = strikesValid && bwbPriceValid;
+  const bwbNet = bwbValid ? (bwbIsCredit ? bwbParsed : -bwbParsed) : 0;
+  const bwbMetrics = bwbValid
+    ? calcMetrics(side, low, mid, high, bwbNet)
+    : null;
+  const bwbRows = bwbValid
+    ? generatePnlRows(side, low, mid, high, bwbNet, contracts)
     : [];
-  const ironFlyMetrics: IronFlyMetrics | null =
-    allValid && strategy === 'iron-fly'
-      ? calcIronFlyMetrics(low, mid, high, net)
-      : null;
-  const ironFlyRows =
-    allValid && strategy === 'iron-fly'
-      ? generateIronFlyPnlRows(low, mid, high, net, contracts)
-      : [];
+
+  // Iron Fly metrics (independent of BWB)
+  const ifParsed = Number.parseFloat(ifNetInput);
+  const ifPriceValid = Number.isFinite(ifParsed) && ifParsed >= 0;
+  const ifValid = strikesValid && ifPriceValid;
+  const ifNet = ifValid ? (ifIsCredit ? ifParsed : -ifParsed) : 0;
+  const ifMetrics = ifValid ? calcIronFlyMetrics(low, mid, high, ifNet) : null;
+  const ifRows = ifValid
+    ? generateIronFlyPnlRows(low, mid, high, ifNet, contracts)
+    : [];
+  // BWBResults requires a BWBMetrics prop even for iron-fly (satisfies type
+  // contract but values are never rendered — all iron-fly branches read
+  // from ironFlyMetrics instead). 'calls' is hardcoded since side is irrelevant.
+  const ifBwbMetrics = ifValid
+    ? calcMetrics('calls', low, mid, high, ifNet)
+    : null;
+
+  const eitherValid = bwbValid || ifValid;
 
   const handleClear = () => {
     setSweetSpot('');
     setLowStrike('');
     setMidStrike('');
     setHighStrike('');
-    setNetInput('');
-    setIsCredit(true);
+    setBwbNetInput('');
+    setBwbIsCredit(true);
+    setIfNetInput('');
+    setIfIsCredit(true);
     setContracts(1);
   };
 
   return (
     <SectionBox
-      label={
-        strategy === 'bwb' ? 'Settlement Pin Calculator' : 'Iron Fly Calculator'
-      }
+      label="Settlement Pin Calculator"
       collapsible
       headerRight={
-        <div className="flex items-center gap-2">
-          <div className="flex gap-1">
-            {(['bwb', 'iron-fly'] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => handleStrategyChange(s)}
-                className={
-                  'cursor-pointer rounded-md border-[1.5px] px-2.5 py-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase transition-colors duration-100 ' +
-                  (strategy === s
-                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                    : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
-                }
-              >
-                {s === 'bwb' ? 'BWB' : 'Iron Fly'}
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={handleClear}
-            className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
-          >
-            Clear
-          </button>
-        </div>
+        <button
+          onClick={handleClear}
+          className="border-edge-strong bg-chip-bg text-secondary cursor-pointer rounded-md border-[1.5px] px-3 py-1.5 font-sans text-xs font-semibold hover:border-red-400 hover:text-red-400"
+        >
+          Clear
+        </button>
       }
     >
       <VixRegimeBanner vix={vix} />
 
       <BWBInputs
-        strategy={strategy}
         side={side}
         contracts={contracts}
         sweetSpot={sweetSpot}
@@ -209,8 +198,6 @@ export default function BWBCalculator({
         lowStrike={lowStrike}
         midStrike={midStrike}
         highStrike={highStrike}
-        netInput={netInput}
-        isCredit={isCredit}
         anchor={anchor}
         useCharm={useCharm}
         strikesValid={strikesValid}
@@ -223,33 +210,143 @@ export default function BWBCalculator({
         setMidStrike={setMidStrike}
         setHighStrike={setHighStrike}
         setSweetSpot={setSweetSpot}
-        setNetInput={setNetInput}
-        setIsCredit={setIsCredit}
         setUseCharm={setUseCharm}
         onRefreshAnchor={refreshAnchor}
       />
 
-      {/* Results — only when all inputs are valid */}
-      {allValid && metrics && (
-        <BWBResults
-          strategy={strategy}
-          side={side}
-          contracts={contracts}
-          low={low}
-          mid={mid}
-          high={high}
-          net={net}
-          metrics={metrics}
-          ironFlyMetrics={ironFlyMetrics}
-          pnlRows={strategy === 'iron-fly' ? ironFlyRows : pnlRows}
-          midStrike={midStrike}
-        />
-      )}
+      {/* Dual fill prices */}
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="border-edge rounded-lg border p-3">
+          <div className={LABEL + ' mb-1.5'}>BWB Fill Price</div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="e.g. 0.91"
+              value={bwbNetInput}
+              onChange={(e) => setBwbNetInput(e.target.value)}
+              className={INPUT + ' flex-1'}
+              aria-label="BWB fill price"
+            />
+            <div className="border-edge flex overflow-hidden rounded-md border">
+              <button
+                onClick={() => setBwbIsCredit(false)}
+                className={`cursor-pointer px-3 py-2 text-xs font-semibold transition-colors ${
+                  !bwbIsCredit
+                    ? 'bg-danger/20 text-danger'
+                    : 'text-muted hover:text-primary'
+                }`}
+              >
+                Debit
+              </button>
+              <button
+                onClick={() => setBwbIsCredit(true)}
+                className={`border-edge cursor-pointer border-l px-3 py-2 text-xs font-semibold transition-colors ${
+                  bwbIsCredit
+                    ? 'bg-success/20 text-success'
+                    : 'text-muted hover:text-primary'
+                }`}
+              >
+                Credit
+              </button>
+            </div>
+          </div>
+        </div>
 
-      {/* Empty state */}
-      {!allValid && (
+        <div className="border-edge rounded-lg border p-3">
+          <div className={LABEL + ' mb-1.5'}>Iron Fly Fill Price</div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="e.g. 8.00"
+              value={ifNetInput}
+              onChange={(e) => setIfNetInput(e.target.value)}
+              className={INPUT + ' flex-1'}
+              aria-label="Iron Fly fill price"
+            />
+            <div className="border-edge flex overflow-hidden rounded-md border">
+              <button
+                onClick={() => setIfIsCredit(false)}
+                className={`cursor-pointer px-3 py-2 text-xs font-semibold transition-colors ${
+                  !ifIsCredit
+                    ? 'bg-danger/20 text-danger'
+                    : 'text-muted hover:text-primary'
+                }`}
+              >
+                Debit
+              </button>
+              <button
+                onClick={() => setIfIsCredit(true)}
+                className={`border-edge cursor-pointer border-l px-3 py-2 text-xs font-semibold transition-colors ${
+                  ifIsCredit
+                    ? 'bg-success/20 text-success'
+                    : 'text-muted hover:text-primary'
+                }`}
+              >
+                Credit
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Side-by-side results */}
+      {eitherValid ? (
+        <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <div>
+            <div className="text-accent mb-1 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
+              BWB ({side === 'calls' ? 'Calls' : 'Puts'})
+            </div>
+            {bwbValid && bwbMetrics ? (
+              <BWBResults
+                strategy="bwb"
+                side={side}
+                contracts={contracts}
+                low={low}
+                mid={mid}
+                high={high}
+                net={bwbNet}
+                metrics={bwbMetrics}
+                ironFlyMetrics={null}
+                pnlRows={bwbRows}
+                midStrike={midStrike}
+              />
+            ) : (
+              <div className="text-muted bg-surface-alt rounded-lg p-6 text-center text-sm italic">
+                Enter BWB fill price to see results.
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="text-accent mb-1 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
+              Iron Fly
+            </div>
+            {ifValid && ifMetrics && ifBwbMetrics ? (
+              <BWBResults
+                strategy="iron-fly"
+                side={side}
+                contracts={contracts}
+                low={low}
+                mid={mid}
+                high={high}
+                net={ifNet}
+                metrics={ifBwbMetrics}
+                ironFlyMetrics={ifMetrics}
+                pnlRows={ifRows}
+                midStrike={midStrike}
+              />
+            ) : (
+              <div className="text-muted bg-surface-alt rounded-lg p-6 text-center text-sm italic">
+                Enter Iron Fly fill price to see results.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
         <div className="text-muted mt-4 text-center text-sm italic">
-          Enter three strikes and a fill price to see the P&L profile.
+          Enter three strikes and at least one fill price to see results.
         </div>
       )}
     </SectionBox>

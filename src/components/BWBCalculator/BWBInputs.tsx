@@ -1,4 +1,4 @@
-import type { BWBSide, StrategyMode } from './bwb-math';
+import type { BWBSide } from './bwb-math';
 
 const INPUT =
   'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[10px_12px] text-[15px] font-mono outline-none w-full transition-[border-color] duration-150';
@@ -12,7 +12,6 @@ const LABEL =
   'text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]';
 
 interface BWBInputsProps {
-  strategy: StrategyMode;
   side: BWBSide;
   contracts: number;
   sweetSpot: string;
@@ -21,8 +20,6 @@ interface BWBInputsProps {
   lowStrike: string;
   midStrike: string;
   highStrike: string;
-  netInput: string;
-  isCredit: boolean;
   anchor: {
     strike: number;
     price: number;
@@ -40,14 +37,11 @@ interface BWBInputsProps {
   setMidStrike: (v: string) => void;
   setHighStrike: (v: string) => void;
   setSweetSpot: (v: string) => void;
-  setNetInput: (v: string) => void;
-  setIsCredit: (v: boolean) => void;
   setUseCharm: (v: boolean) => void;
   onRefreshAnchor: () => void;
 }
 
 export default function BWBInputs({
-  strategy,
   side,
   contracts,
   sweetSpot,
@@ -56,8 +50,6 @@ export default function BWBInputs({
   lowStrike,
   midStrike,
   highStrike,
-  netInput,
-  isCredit,
   anchor,
   useCharm,
   strikesValid,
@@ -70,8 +62,6 @@ export default function BWBInputs({
   setMidStrike,
   setHighStrike,
   setSweetSpot,
-  setNetInput,
-  setIsCredit,
   setUseCharm,
   onRefreshAnchor,
 }: Readonly<BWBInputsProps>) {
@@ -79,26 +69,22 @@ export default function BWBInputs({
     <>
       {/* Side toggle + Contracts */}
       <div className="mb-4 flex items-center justify-between gap-4">
-        {strategy === 'bwb' ? (
-          <div className="flex gap-1.5">
-            {(['calls', 'puts'] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => onSideChange(s)}
-                className={
-                  'cursor-pointer rounded-md border-[1.5px] px-4 py-1.5 font-sans text-xs font-semibold transition-colors duration-100 ' +
-                  (side === s
-                    ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                    : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
-                }
-              >
-                {s === 'calls' ? 'Calls' : 'Puts'}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div />
-        )}
+        <div className="flex gap-1.5">
+          {(['calls', 'puts'] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => onSideChange(s)}
+              className={
+                'cursor-pointer rounded-md border-[1.5px] px-4 py-1.5 font-sans text-xs font-semibold transition-colors duration-100 ' +
+                (side === s
+                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
+                  : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
+              }
+            >
+              {s === 'calls' ? 'Calls' : 'Puts'}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-0">
           <span className={LABEL + ' mr-2'}>Contracts</span>
           <button
@@ -211,35 +197,25 @@ export default function BWBInputs({
             />
           </div>
           <div>
-            <div className={LABEL + ' mb-1'}>
-              {strategy === 'iron-fly' ? 'Lower' : 'Narrow'}
-            </div>
+            <div className={LABEL + ' mb-1'}>Narrow</div>
             <input
               type="text"
               inputMode="numeric"
               value={narrowWing}
               onChange={(e) => onNarrowChange(e.target.value)}
               className={INPUT_SM + ' w-full sm:w-[60px]'}
-              aria-label={
-                strategy === 'iron-fly'
-                  ? 'Lower wing width'
-                  : 'Narrow wing width'
-              }
+              aria-label="Narrow wing width"
             />
           </div>
           <div>
-            <div className={LABEL + ' mb-1'}>
-              {strategy === 'iron-fly' ? 'Upper' : 'Wide'}
-            </div>
+            <div className={LABEL + ' mb-1'}>Wide</div>
             <input
               type="text"
               inputMode="numeric"
               value={wideWing}
               onChange={(e) => onWideChange(e.target.value)}
               className={INPUT_SM + ' w-full sm:w-[60px]'}
-              aria-label={
-                strategy === 'iron-fly' ? 'Upper wing width' : 'Wide wing width'
-              }
+              aria-label="Wide wing width"
             />
           </div>
         </div>
@@ -254,34 +230,19 @@ export default function BWBInputs({
         {[
           {
             label: 'Low',
-            sub:
-              strategy === 'iron-fly'
-                ? 'buy 1 put'
-                : side === 'calls'
-                  ? 'buy 1 call'
-                  : 'buy 1 put',
+            sub: side === 'calls' ? 'buy 1 call' : 'buy 1 put',
             strike: lowStrike,
             setStrike: setLowStrike,
           },
           {
             label: 'Mid',
-            sub:
-              strategy === 'iron-fly'
-                ? 'sell put + call'
-                : side === 'calls'
-                  ? 'sell 2 calls'
-                  : 'sell 2 puts',
+            sub: side === 'calls' ? 'sell 2 calls' : 'sell 2 puts',
             strike: midStrike,
             setStrike: setMidStrike,
           },
           {
             label: 'High',
-            sub:
-              strategy === 'iron-fly'
-                ? 'buy 1 call'
-                : side === 'calls'
-                  ? 'buy 1 call'
-                  : 'buy 1 put',
+            sub: side === 'calls' ? 'buy 1 call' : 'buy 1 put',
             strike: highStrike,
             setStrike: setHighStrike,
           },
@@ -310,44 +271,6 @@ export default function BWBInputs({
             />
           </div>
         ))}
-      </div>
-
-      {/* Fill Price */}
-      <div className="border-edge mt-3 rounded-lg border p-3">
-        <div className={LABEL + ' mb-1.5'}>Fill Price</div>
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            inputMode="decimal"
-            placeholder="e.g. 0.91"
-            value={netInput}
-            onChange={(e) => setNetInput(e.target.value)}
-            className={INPUT + ' flex-1'}
-            aria-label="Net fill price"
-          />
-          <div className="border-edge flex overflow-hidden rounded-md border">
-            <button
-              onClick={() => setIsCredit(false)}
-              className={`cursor-pointer px-3 py-2 text-xs font-semibold transition-colors ${
-                !isCredit
-                  ? 'bg-danger/20 text-danger'
-                  : 'text-muted hover:text-primary'
-              }`}
-            >
-              Debit
-            </button>
-            <button
-              onClick={() => setIsCredit(true)}
-              className={`border-edge cursor-pointer border-l px-3 py-2 text-xs font-semibold transition-colors ${
-                isCredit
-                  ? 'bg-success/20 text-success'
-                  : 'text-muted hover:text-primary'
-              }`}
-            >
-              Credit
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* Validation hints */}
