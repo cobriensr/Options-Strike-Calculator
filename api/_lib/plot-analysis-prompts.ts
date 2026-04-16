@@ -708,6 +708,147 @@ const SRC_CLUSTER_TRANSITIONS = `def plot_cluster_transitions(plot_dir: Path, la
     # Skips if k < 2 or fewer than 5 samples
     # Saved to ml/plots/cluster_transitions.png`;
 
+// ── Flow Alerts EDA Source Code Blocks ──────────────────────
+
+const SRC_FLOW_Q1_DISTRIBUTIONS = `def q1_distributions(df: pd.DataFrame) -> dict:
+    premium = pd.to_numeric(df["total_premium"], errors="coerce").dropna()
+    ask_ratio = pd.to_numeric(df["ask_side_ratio"], errors="coerce").dropna()
+    dist_pct = pd.to_numeric(df["distance_pct"], errors="coerce").dropna()
+    rule_counts = df["alert_rule"].value_counts().sort_index()
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+
+    # Top-left: log10(total_premium) histogram (blue, 30 bins)
+    #   Only positive premium values; x-axis is log10 scale
+    # Top-right: ask_side_ratio histogram (orange, 25 bins, range 0-1)
+    #   ask_side_ratio = fraction of volume traded at the ask
+    # Bottom-left: distance_pct histogram (purple, 30 bins)
+    #   distance_pct = (strike - spot) / spot; dashed line at x=0 (ATM)
+    # Bottom-right: alert_rule counts bar chart (green)
+    #   Shows count of alerts per UW alert_rule category
+    fig.suptitle(f"Flow alerts — distributions (N={n})")`;
+
+const SRC_FLOW_Q2_TIME_OF_DAY = `def q2_time_of_day(df: pd.DataFrame) -> dict:
+    mod = pd.to_numeric(df["minute_of_day"], errors="coerce").dropna()
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    # Left: minute-of-day histogram (blue, bins 510..900 step 5)
+    #   510 = 08:30 CT, 900 = 15:00 CT (session bounds)
+    # Right: hour-of-day bar chart (orange, CT hours 8-14)
+    fig.suptitle("Flow alerts — time-of-day")`;
+
+const SRC_FLOW_Q3_DIRECTIONAL = `def q3_directional(df: pd.DataFrame) -> dict:
+    # Classification rule:
+    #   bullish = OTM call (type=call & NOT is_itm)
+    #   bearish = OTM put  (type=put  & NOT is_itm)
+    #   neutral = ITM on either side
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    order = ["bullish", "neutral", "bearish"]
+    colors = [green, gray, red]
+    # Bar chart with count labels above each bar
+    ax.set_title(f"Flow alerts — directional classification (n={n})")`;
+
+const SRC_FLOW_Q4_RETURNS_BY_RULE = `def q4_returns_by_rule(df: pd.DataFrame) -> dict:
+    d = df.dropna(subset=["ret_fwd_15", "alert_rule", "type"])
+    grouped = d.groupby(["alert_rule", "type"])["ret_fwd_15"].agg(["mean", "count"])
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    # Bar chart: x-axis = "rule\\ntype" labels (rotated 15 deg)
+    # Colors: green for calls, red for puts
+    # Y-axis: mean 15-min forward return in basis points (* 10_000)
+    # Horizontal gray line at y=0 (no return)
+    ax.set_title(f"Forward return (15m) by rule × type (n={n})")`;
+
+const SRC_FLOW_Q5_PREMIUM_VS_RETURN = `def q5_premium_vs_return(df: pd.DataFrame) -> dict:
+    d = df[df["total_premium"] > 0].dropna(subset=["total_premium", "ret_fwd_15"])
+    log_prem = np.log10(d["total_premium"])
+    ret = d["ret_fwd_15"]
+    r, p_value = stats.pearsonr(log_prem, ret)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    # Scatter: green dots = calls, red dots = puts
+    # Blue dashed trendline (polyfit degree=1)
+    # Gray horizontal line at y=0
+    # Title includes Pearson r and p-value
+    ax.set_title(
+        f"Premium vs 15m forward return — r={r:.3f}, p={p_value:.3f} (n={n})")`;
+
+// ── NOPE EDA Source Code Blocks ─────────────────────────────
+
+const SRC_NOPE_DIRECTION_BY_SIGN = `def q1_direction_by_sign(df: pd.DataFrame) -> dict:
+    # NOPE = Net Options Pricing Effect (SPY options delta / SPY volume)
+    # nope_t1 = NOPE reading at checkpoint T1 (~10:00 ET)
+    d["nope_sign"] = np.sign(d["nope_t1"].astype(float))
+    d["up_day"] = d["settlement"] > d["day_open"]
+    # Fisher's exact test on 2x2 table (sign x outcome)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    # Two bars: "Negative NOPE" (red), "Positive NOPE" (green)
+    # Y-axis: up-day rate (settlement > open), range 0-1
+    # Gray dashed baseline = overall up-day rate
+    # Percentage labels above each bar
+    # Title includes Fisher's exact p-value if computable`;
+
+const SRC_NOPE_MT_AGREEMENT = `def q2_mt_agreement(df: pd.DataFrame) -> dict:
+    # Tests whether NOPE + Market Tide agreement beats either alone
+    d["nope_bull"] = d["nope_t1"] > 0
+    d["mt_bull"] = d["mt_ncp_t1"] > 0
+    d["up_day"] = d["settlement"] > d["day_open"]
+
+    agree_bull = d[d["nope_bull"] & d["mt_bull"]]      # both bullish
+    agree_bear = d[~d["nope_bull"] & ~d["mt_bull"]]     # both bearish
+    disagree = d[d["nope_bull"] != d["mt_bull"]]         # conflicting
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    # 3 bars: "Agree bullish\\n(n=X)" (green), "Agree bearish\\n(n=X)" (red),
+    #         "Disagree\\n(n=X)" (gray)
+    # Y-axis: correct directional prediction rate (0-1)
+    #   agree-bull correct = up-day rate
+    #   agree-bear correct = down-day rate (inverted)
+    #   disagree = up-day rate (reference only, no prediction)
+    # Blue dashed line = overall up-rate baseline`;
+
+const SRC_NOPE_FLIPS_VS_RANGE = `def q3_flips_vs_range(df: pd.DataFrame) -> dict:
+    flips = d["nope_am_sign_flips"].astype(float)
+    rng = d["day_range_pts"].astype(float)
+    rho, p_value = stats.spearmanr(flips, rng)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    # Scatter: orange dots with blue dashed trendline (polyfit)
+    # X-axis: AM NOPE sign flips (count of sign changes pre-11:00 ET)
+    # Y-axis: Day range (pts)
+    # Title includes Spearman rho and p-value`;
+
+const SRC_NOPE_CUMDELTA_VS_MOVE = `def q4_cumdelta_vs_move(df: pd.DataFrame) -> dict:
+    cum = d["nope_am_cum_delta"].astype(float)  # sum of signed NOPE readings AM
+    move = d["close_vs_open"].astype(float)      # full-session SPX move (pts)
+    r, p_value = stats.pearsonr(cum, move)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    # Scatter: green dots = up days (move > 0), red dots = down days
+    # Blue dashed trendline (polyfit)
+    # Gray crosshair lines at x=0 and y=0
+    # X-axis: AM cumulative NOPE delta (call_delta - put_delta)
+    # Y-axis: Close - Open (pts)
+    # Title includes Pearson r and p-value`;
+
+const SRC_NOPE_MAGNITUDE_VS_MOVE = `def q5_magnitude_vs_move(df: pd.DataFrame) -> dict:
+    mag = d["nope_t1"].abs()
+    abs_move = d["close_vs_open"].abs()
+    rho, p_value = stats.spearmanr(mag, abs_move)
+
+    # Tercile bucketing of |NOPE| magnitude
+    d["mag_bucket"] = pd.qcut(d["mag"], q=3,
+        labels=["low |NOPE|", "mid |NOPE|", "high |NOPE|"])
+    bucket_means = d.groupby("mag_bucket")["abs_move"].agg(["mean", "count"])
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    # 3 bars: blue (low), purple (mid), orange (high)
+    # Y-axis: Mean |close - open| (pts)
+    # Title includes Spearman rho`;
+
 // ── Per-Plot Reference Block Builder ────────────────────────
 
 function plotRefBlock(
@@ -1032,6 +1173,76 @@ ${plotRefBlock(
   SRC_CLUSTER_TRANSITIONS,
   "Markov transition probability heatmap for day-type clusters. Each row is a 'from' cluster (today's day type); each column is a 'to' cluster (next trading day's type). Cell (i,j) = P(next day is cluster j | today is cluster i). Row sums to 1.0. High diagonal values indicate regime persistence (today's cluster predicts tomorrow's cluster). High off-diagonal values indicate systematic regime rotation. This is operationally important: if you are in a low-volatility cluster today with 80% probability of staying tomorrow, you have advance notice to continue current strategy sizing.",
   'Focus on: (1) diagonal dominance — if diagonal cells are all > 0.5, regime persistence is the rule and yesterday\'s cluster is predictive; state the minimum diagonal value and which cluster is LEAST persistent (most likely to switch), (2) the specific high off-diagonal transitions — if cluster 0 → cluster 1 has p=0.60, this is an actionable signal: when in cluster 0, prepare for cluster 1 conditions the next day; name any off-diagonal cell above 0.3 and state its trading implication, (3) whether any cluster is a "trap" state — a cluster where almost all transitions go to a single other cluster (one dominant off-diagonal) would indicate a predictable forced rotation, (4) CRITICAL sample size: with ~39 trading days and k=2-3 clusters, the most common cluster may have 25 days and the rarest 5 days; at n=5 transitions, each cell\'s empirical probability has a 95% CI of roughly ±40%; flag cells based on small n before drawing operational conclusions, (5) whether the transition probabilities align with the VIX regime dynamics observed in other plots — if high-VIX clusters show lower self-transition rates (more unstable), that confirms VIX as a regime-change predictor and warrants heightened monitoring.',
+)}
+
+${plotRefBlock(
+  'flow_q1_distributions',
+  SRC_FLOW_Q1_DISTRIBUTIONS,
+  'Four-panel (2x2) distribution overview of UW (Unusual Whales) 0-1 DTE SPXW repeated-hit flow alerts. These alerts are ingested via cron from the UW API and represent unusual options activity on SPX weekly options expiring today or tomorrow. Top-left: total premium distribution on log10 scale (captures the heavy right tail of institutional-size trades). Top-right: ask-side ratio (fraction of volume at the ask — values near 1.0 indicate aggressive buying). Bottom-left: distance percentage from ATM (negative = ITM, positive = OTM, zero line = at-the-money). Bottom-right: alert rule category counts from UW classification.',
+  'Focus on: (1) the premium distribution shape — is it log-normal as expected, or does it show a bimodal pattern suggesting two distinct populations (retail vs institutional flow)? If the median premium is below $50K, most alerts may be retail noise, (2) the ask-side ratio — if the distribution is concentrated above 0.7, alerts are predominantly aggressive (ask-side) trades which carry stronger directional signal, (3) the distance_pct distribution — are most alerts clustered near ATM (< 1%) or spread across OTM strikes? ATM clustering suggests hedging; OTM concentration suggests directional bets, (4) the alert rule breakdown — which UW rule categories dominate? If one rule accounts for >60% of alerts, the dataset may lack diversity in flow signal types.',
+)}
+
+${plotRefBlock(
+  'flow_q2_time_of_day',
+  SRC_FLOW_Q2_TIME_OF_DAY,
+  'Two-panel time distribution of flow alerts during the CT trading session. Left: minute-level histogram (5-minute bins from 08:30 to 15:00 CT) showing when alerts fire during the day. Right: hourly aggregation. Both are in Central Time. The session bounds match the regular SPX session (08:30-15:00 CT).',
+  'Focus on: (1) the intraday concentration pattern — is there a strong opening burst (08:30-09:00 CT) that decays, or a more uniform distribution? A heavy opening cluster means alerts are reacting to overnight positioning unwind, which has different information content than mid-session alerts, (2) whether there is a lunch lull (11:30-12:30 CT) — the absence of alerts during low-volume periods would confirm they are volume-dependent signals, (3) any late-session spike (14:00-15:00 CT) — this is the 0DTE gamma intensification window, and flow alerts here may carry outsized pin risk information, (4) the practical implication for the live trading system: if 80%+ of alerts fire before 10:00 CT, the T1 checkpoint already captures most flow signal and later checkpoints add little incremental information.',
+)}
+
+${plotRefBlock(
+  'flow_q3_directional',
+  SRC_FLOW_Q3_DIRECTIONAL,
+  'Bar chart classifying all flow alerts as bullish (OTM calls), bearish (OTM puts), or neutral (ITM options on either side). Green/gray/red color coding. The classification uses the is_itm flag and option type from the UW data. This shows the aggregate directional tilt of unusual flow activity across the dataset.',
+  'Focus on: (1) the bullish/bearish ratio — a ratio significantly above 1.0 across the full dataset indicates a structural call-buying bias in SPX weekly options (common in trending bull markets), while near 1.0 suggests balanced flow, (2) the neutral (ITM) fraction — a large neutral bar means many alerts are on ITM options which are typically hedging or rolling activity, not directional bets; if neutral exceeds 30%, the directional signal from flow alerts is diluted, (3) comparison against the base rate of settlement direction — if the dataset is 55% up-settlement and 60% of alerts are bullish, flow alerts may simply mirror the underlying trend rather than providing alpha, (4) sample size — state the total N and whether it is sufficient to trust the ratio as representative of typical market conditions.',
+)}
+
+${plotRefBlock(
+  'flow_q4_returns_by_rule',
+  SRC_FLOW_Q4_RETURNS_BY_RULE,
+  'Bar chart of mean 15-minute forward returns (in basis points) for each combination of UW alert_rule and option type (call/put). Green bars = call alerts, red bars = put alerts. The forward return is measured from the alert timestamp to 15 minutes later. This tests whether different UW alert rule categories carry distinct short-term predictive power for SPX price movement.',
+  'Focus on: (1) which rule × type combinations show positive mean returns — these are the flow signals that actually predict near-term direction; a call alert with positive 15-min return means buying after the alert was profitable on average, (2) the magnitude — returns of ±5 bps over 15 minutes are meaningful for 0DTE SPX options (roughly ±3 pts on a 5800 SPX), (3) whether calls and puts within the same rule show opposite signs (expected if the rule captures genuine directional flow) or same signs (suggests the rule captures volatility events, not direction), (4) CRITICAL: 15-minute returns are noisy and require large n per group for statistical reliability — groups with n < 20 should be flagged as unreliable regardless of how extreme the mean return appears, (5) whether any rule × type combination shows consistently negative returns — this would be an anti-signal worth fading in the live system.',
+)}
+
+${plotRefBlock(
+  'flow_q5_premium_vs_return',
+  SRC_FLOW_Q5_PREMIUM_VS_RETURN,
+  'Scatter plot of log10(total_premium) on x-axis vs 15-minute forward return on y-axis, colored by option type (green = calls, red = puts). Linear trendline (blue dashed) fitted via polyfit. Pearson r and p-value in the title. This tests whether larger premium trades carry stronger directional signal — the hypothesis is that institutional-size flow (high premium) is more informative than retail-size flow.',
+  'Focus on: (1) the Pearson r and p-value — at the dataset n, is the correlation statistically significant? A positive r for calls would mean larger call trades predict upward moves; a negative r would be surprising and worth investigating, (2) the scatter pattern — is it a clean linear relationship (r > 0.3) or a noisy cloud (r < 0.1)? If the cloud dominates, premium size alone does not predict direction, (3) whether separating calls from puts would show different slopes — the aggregate Pearson r may mask opposing relationships in the two groups, (4) the practical threshold: if only trades above $500K premium show a meaningful return pattern, the live system should filter flow alerts by a minimum premium floor before using them for directional bias, (5) outliers — individual large-premium trades with extreme returns may dominate the trendline; note if the regression appears driven by 1-2 points.',
+)}
+
+${plotRefBlock(
+  'nope_direction_by_sign',
+  SRC_NOPE_DIRECTION_BY_SIGN,
+  'Bar chart comparing up-day settlement rates when NOPE (Net Options Pricing Effect) at checkpoint T1 is positive vs negative. NOPE measures the net delta impact of all SPY options flow normalized by SPY share volume — positive NOPE means net call-delta pressure (bullish options positioning), negative means net put-delta pressure. Fisher exact test p-value is shown in the title. Baseline up-day rate shown as gray dashed line.',
+  'Focus on: (1) the directional separation — if positive NOPE days settle up at 65%+ while negative NOPE days settle up at <45%, the signal has genuine predictive power and deserves a slot in the live system Rule 8 signal hierarchy, (2) the Fisher exact p-value — at the dataset n, p < 0.05 means the effect is statistically significant; p > 0.15 means it could be chance, (3) comparison against existing flow sources — the flow_reliability plot shows Market Tide at ~61%; if NOPE exceeds this, it should be weighted higher in the live prompt, (4) the baseline up-rate — if the dataset has a strong bull bias (>60% up days), even a 65% positive-NOPE up-rate may not beat the base rate meaningfully, (5) sample size per bar — with small n, the bars may be misleading; state the counts and whether Wilson CIs overlap 50%.',
+)}
+
+${plotRefBlock(
+  'nope_mt_agreement',
+  SRC_NOPE_MT_AGREEMENT,
+  'Three-bar chart showing correct prediction rates when NOPE and Market Tide (mt_ncp_t1) agree bullish, agree bearish, or disagree at checkpoint T1. For agree-bullish, correct = up-day rate. For agree-bearish, correct = down-day rate (inverted). For disagree, up-day rate is shown as reference only (no prediction made). Overall up-rate baseline shown as blue dashed line.',
+  'Focus on: (1) whether agreement boosts accuracy — if agree-bull correct rate (say 75%) significantly exceeds both NOPE-alone (~60%) and Market Tide-alone (~61%), the conjunction filter adds real value and should be implemented as a Tier 1 signal in the live prompt, (2) the agree-bearish correct rate — this is the harder test since down days are the minority class; a high rate here (>60%) would be especially valuable for CCS selection, (3) the disagree bar — if disagreement up-rate is near 50%, conflicting signals genuinely indicate uncertainty and the system should reduce confidence or sit out, (4) the agree-bull vs agree-bear sample sizes — extreme asymmetry (e.g., 25 agree-bull vs 5 agree-bear) means the bearish agreement rate is unreliable, (5) the operational implication: define the specific conjunction rule ("if NOPE > 0 AND Market Tide > 0, then bullish bias at +X confidence") and the expected P&L impact at 9:1 risk/reward.',
+)}
+
+${plotRefBlock(
+  'nope_flips_vs_range',
+  SRC_NOPE_FLIPS_VS_RANGE,
+  'Scatter plot of morning NOPE sign flips (x-axis) vs full-day SPX range in points (y-axis). AM sign flips count how many times NOPE crossed zero during the pre-11:00 ET morning session — frequent sign changes indicate oscillating options flow with no consistent directional pressure. Orange dots with blue trendline. Spearman rho and p-value in the title.',
+  'Focus on: (1) the Spearman rho sign and significance — a positive rho (more flips → wider range) would validate sign flips as a chop/volatility indicator; the system could use high-flip mornings as a caution signal for iron condor risk, (2) the practical threshold — is there a flip count above which ranges are consistently wider (e.g., >4 flips → range > 30 pts)? This would become a binary rule for the live system, (3) whether the relationship is linear or has a threshold effect — the trendline may be flat for 0-2 flips and steep for 3+, which means a simple correlation underestimates the signal at the extremes, (4) sample size and the flip count distribution — if most days have 0-1 flips and only 3-4 days have 4+ flips, the tail is unreliable, (5) cross-reference with GEX regime: do high-flip + negative-GEX days produce the widest ranges? This interaction would compound the risk signal.',
+)}
+
+${plotRefBlock(
+  'nope_cumdelta_vs_move',
+  SRC_NOPE_CUMDELTA_VS_MOVE,
+  'Scatter plot of AM cumulative NOPE delta (x-axis) vs full-session SPX close-minus-open move in points (y-axis). The cumulative delta sums all signed NOPE readings during the morning session — a large positive value means persistent call-delta pressure, large negative means persistent put-delta pressure. Green dots = up days, red dots = down days. Blue trendline. Pearson r and p-value in title.',
+  'Focus on: (1) the Pearson r direction and significance — a positive r means AM cumulative call-delta pressure predicts upward closes (the intuitive direction); state the exact r and p, (2) the trendline slope in practical terms — how many points of close-open move does each unit of cumulative NOPE delta predict? This translates directly to strike selection offset, (3) whether green (up) and red (down) dots separate cleanly along the trendline or intermix — clean separation validates the signal for directional trading; intermixing means the signal carries noise, (4) outliers — any large cumulative delta day with opposite settlement direction is a failure case worth investigating (market override of options flow signal), (5) comparison against the TRACE predicted close — if both NOPE cumulative delta and TRACE agree on direction, that conjunction may be the highest-conviction filter available to the system.',
+)}
+
+${plotRefBlock(
+  'nope_magnitude_vs_move',
+  SRC_NOPE_MAGNITUDE_VS_MOVE,
+  'Bar chart of mean absolute SPX move (|close - open| in pts) bucketed by NOPE magnitude terciles at T1: low |NOPE|, mid |NOPE|, high |NOPE|. Tests whether stronger NOPE readings (either direction) predict larger absolute moves — the conviction hypothesis. Blue/purple/orange bars. Spearman rho in title.',
+  'Focus on: (1) whether the bars show a monotonic increase (low → mid → high NOPE magnitude → larger absolute moves) — this validates NOPE magnitude as a conviction indicator and the live system could use it for sizing (high |NOPE| = larger position), (2) the magnitude difference — if high |NOPE| days average 25 pts vs low |NOPE| at 15 pts, that 10-pt spread matters for credit spread width selection, (3) Spearman rho significance — at the dataset n, is the rank correlation statistically meaningful or just tercile artifacts with small n? (4) whether this interacts with direction — high magnitude + correct direction = best case; high magnitude + wrong direction = worst case (the 9:1 risk/reward amplifies both), (5) sample size per tercile — each has n/3 days; state the counts and whether any tercile mean is driven by a single outlier day.',
 )}
 
 <output_format>

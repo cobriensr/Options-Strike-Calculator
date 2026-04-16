@@ -124,6 +124,16 @@ function getPlotFindings(
     flow_by_vix: ['eda', 'dataset'],
     pnl_distribution: ['backtest', 'dataset'],
     cluster_transitions: ['clustering', 'dataset'],
+    flow_q1_distributions: ['flow_eda', 'dataset'],
+    flow_q2_time_of_day: ['flow_eda', 'dataset'],
+    flow_q3_directional: ['flow_eda', 'dataset'],
+    flow_q4_returns_by_rule: ['flow_eda', 'dataset'],
+    flow_q5_premium_vs_return: ['flow_eda', 'dataset'],
+    nope_direction_by_sign: ['nope_eda', 'dataset'],
+    nope_mt_agreement: ['nope_eda', 'dataset'],
+    nope_flips_vs_range: ['nope_eda', 'dataset'],
+    nope_cumdelta_vs_move: ['nope_eda', 'dataset'],
+    nope_magnitude_vs_move: ['nope_eda', 'dataset'],
   };
 
   const sections = sectionMap[plotName] ?? ['dataset'];
