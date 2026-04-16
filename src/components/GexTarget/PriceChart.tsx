@@ -30,7 +30,6 @@ import type {
   SeriesType,
 } from 'lightweight-charts';
 import { SectionBox } from '../ui';
-import { theme } from '../../themes';
 import type { SPXCandle } from '../../hooks/useGexTarget';
 import type { NopePoint } from '../../hooks/useNopeIntraday';
 import type { TargetScore } from '../../utils/gex-target';
@@ -197,9 +196,9 @@ export const PriceChart = memo(function PriceChart({
     });
     candleSeriesRef.current = cs;
 
-    // VWAP line series
+    // VWAP line series — use literal hex because canvas can't resolve CSS var()
     const vs = chart.addSeries(LineSeries, {
-      color: theme.chartAmber,
+      color: '#f59e0b',
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
     });
