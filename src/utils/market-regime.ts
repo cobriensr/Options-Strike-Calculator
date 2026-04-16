@@ -64,12 +64,15 @@ function partitionBySymbol(
   return map;
 }
 
-const EMPTY_RESULT: RegimeResult = {
-  regime: 'neutral',
-  confidence: 0,
-  evidence: ['No bars available'],
-  scores: { range: 0, trend: 0, neutral: 1 },
-};
+/** Fresh neutral result — factory to prevent shared-object mutation. */
+function emptyResult(): RegimeResult {
+  return {
+    regime: 'neutral',
+    confidence: 0,
+    evidence: ['No bars available'],
+    scores: { range: 0, trend: 0, neutral: 1 },
+  };
+}
 
 // ============================================================
 // REGIME CLASSIFICATION
@@ -87,7 +90,7 @@ const EMPTY_RESULT: RegimeResult = {
  *   confidence   = max_score / sum_of_scores
  */
 export function classifyRegime(bars: InternalBar[]): RegimeResult {
-  if (bars.length === 0) return EMPTY_RESULT;
+  if (bars.length === 0) return emptyResult();
 
   const bySymbol = partitionBySymbol(bars);
   const tickBars = bySymbol.get('$TICK') ?? [];
@@ -141,7 +144,10 @@ export function classifyRegime(bars: InternalBar[]): RegimeResult {
   if (addBars.length >= 2) {
     const addFirst = addBars[0]?.close ?? 0;
     const addLast = addBars.at(-1)?.close ?? 0;
-    const addMax = Math.max(...addBars.map((b) => Math.abs(b.close)), 1);
+    const addMax = Math.max(
+      addBars.reduce((m, b) => Math.max(m, Math.abs(b.close)), 0),
+      1,
+    );
     addFlatness = 1 - Math.abs(addLast - addFirst) / addMax;
     addFlatness = Math.max(0, Math.min(1, addFlatness));
     evidence.push(`ADD flatness ${addFlatness.toFixed(2)}`);
@@ -169,7 +175,10 @@ export function classifyRegime(bars: InternalBar[]): RegimeResult {
   if (voldBars.length >= 2) {
     const voldFirst = voldBars[0]?.close ?? 0;
     const voldLast = voldBars.at(-1)?.close ?? 0;
-    const voldMax = Math.max(...voldBars.map((b) => Math.abs(b.close)), 1);
+    const voldMax = Math.max(
+      voldBars.reduce((m, b) => Math.max(m, Math.abs(b.close)), 0),
+      1,
+    );
     voldDirectional = Math.abs(voldLast - voldFirst) / voldMax;
     voldDirectional = Math.max(0, Math.min(1, voldDirectional));
     evidence.push(
