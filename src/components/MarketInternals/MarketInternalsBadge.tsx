@@ -5,45 +5,28 @@
  * latest close for each. $TICK gets a threshold-based color band
  * (neutral → elevated → extreme → blowoff) because absolute TICK prints
  * at ±400 / ±600 / ±1000 are the classic reversal vs. trend-day tells.
- * The other three symbols render raw for Task 3; slope-based classification
- * lands in Phase 2.
+ * The other three symbols render raw; slope-based classification is used
+ * by the regime classifier in `src/utils/market-regime.ts` but the badge
+ * still shows raw values.
  *
- * Task 3 scope: presentation only. No regime classification, no event log,
+ * Presentation only. No regime classification, no event log,
  * no `?since=` incremental fetching. Parent passes `marketOpen`; the hook
  * handles polling semantics.
  */
 
 import type { FC } from 'react';
 import { useMarketInternals } from '../../hooks/useMarketInternals';
-import {
-  INTERNAL_SYMBOLS,
-  MARKET_INTERNALS_THRESHOLDS,
-} from '../../constants/market-internals';
+import { INTERNAL_SYMBOLS } from '../../constants/market-internals';
 import type {
   InternalBandState,
   InternalBar,
   InternalSymbol,
 } from '../../types/market-internals';
+import { classifyTickBand } from '../../utils/market-regime';
 
 // ============================================================
-// TICK BAND CLASSIFICATION
+// PRESENTATION HELPERS
 // ============================================================
-
-/**
- * Classify a $TICK close into one of four bands by absolute magnitude.
- * Direction doesn't change the band — TICK at −650 is just as "extreme"
- * as +650. Phase 2 will extract this into `src/utils/market-regime.ts`
- * alongside the $ADD/$VOLD/$TRIN slope classifier.
- */
-function classifyTickBand(tick: number): InternalBandState {
-  if (!Number.isFinite(tick)) return 'neutral';
-  const mag = Math.abs(tick);
-  const { elevated, extreme, blowoff } = MARKET_INTERNALS_THRESHOLDS.tick;
-  if (mag >= blowoff) return 'blowoff';
-  if (mag >= extreme) return 'extreme';
-  if (mag >= elevated) return 'elevated';
-  return 'neutral';
-}
 
 function bandClass(band: InternalBandState): string {
   switch (band) {
