@@ -1,7 +1,7 @@
 /**
  * POST /api/analyze
  *
- * Chart analysis powered by Claude Opus 4.6 with adaptive thinking.
+ * Chart analysis powered by Claude Opus 4.7 with adaptive thinking.
  * Accepts Market Tide, Net Flow, and Periscope screenshots plus
  * calculator context. Returns a comprehensive trading plan.
  *
@@ -198,9 +198,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         } as unknown as Parameters<typeof anthropic.messages.stream>[0])
         .finalMessage();
     let data: Awaited<ReturnType<typeof streamRequest>>;
-    let usedModel = 'claude-opus-4-6';
+    let usedModel = 'claude-opus-4-7';
     try {
-      data = await streamRequest('claude-opus-4-6', 128000, 'medium');
+      data = await streamRequest('claude-opus-4-7', 128000, 'medium');
     } catch (error_) {
       // Only fall back on availability issues — request errors won't succeed on any model
       if (

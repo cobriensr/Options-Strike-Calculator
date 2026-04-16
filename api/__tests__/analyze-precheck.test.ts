@@ -369,7 +369,7 @@ describe('runAnalysisPreCheck — safety and correctness', () => {
     );
   });
 
-  it('uses claude-sonnet-4-6, not claude-opus-4-6', async () => {
+  it('uses claude-sonnet-4-6, not claude-opus-4-7', async () => {
     const anthropic = makeMockAnthropic([
       { stop_reason: 'end_turn', content: [] },
     ]);

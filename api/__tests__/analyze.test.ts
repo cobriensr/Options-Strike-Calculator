@@ -357,7 +357,7 @@ describe('POST /api/analyze', () => {
 
     expect(mockStream).toHaveBeenCalledOnce();
     const params = mockStream.mock.calls[0]![0];
-    expect(params.model).toBe('claude-opus-4-6');
+    expect(params.model).toBe('claude-opus-4-7');
     expect(params.max_tokens).toBe(128000);
     expect(params.thinking).toEqual({ type: 'adaptive' });
     expect(params.messages).toHaveLength(1);
@@ -704,7 +704,7 @@ describe('POST /api/analyze', () => {
     expect(res._status).toBe(200);
     expect(mockStream).toHaveBeenCalledTimes(2);
     // First call is Opus, second is Sonnet fallback
-    expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-6');
+    expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-7');
     expect(mockStream.mock.calls[1]![0].model).toBe('claude-sonnet-4-6');
     const json = parseNdjsonResponse(res) as { model: string };
     expect(json.model).toBe('claude-sonnet-4-6');
@@ -721,7 +721,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(mockStream).toHaveBeenCalledTimes(2);
-    expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-6');
+    expect(mockStream.mock.calls[0]![0].model).toBe('claude-opus-4-7');
     expect(mockStream.mock.calls[1]![0].model).toBe('claude-sonnet-4-6');
     const json = parseNdjsonResponse(res) as { error: string };
     expect(json.error).toContain('Analysis service error (529)');
