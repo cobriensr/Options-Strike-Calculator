@@ -306,7 +306,9 @@ async function main() {
       continue;
     }
 
-    console.log(`  ${preSkipped} already exist, inserting ${newRows.length} new`);
+    console.log(
+      `  ${preSkipped} already exist, inserting ${newRows.length} new`,
+    );
 
     const result = await storeRows(newRows);
     const skipped = newRows.length - result.stored + preSkipped;

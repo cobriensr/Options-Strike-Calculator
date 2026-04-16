@@ -901,7 +901,9 @@ export function formatNetGexHeatmapForClaude(rows: NetGexRow[]): string | null {
   if (rows.length === 0) return null;
 
   const lines: string[] = [];
-  lines.push('SPX 0DTE Net GEX Heatmap (live spot — latest intraday snapshot):');
+  lines.push(
+    'SPX 0DTE Net GEX Heatmap (live spot — latest intraday snapshot):',
+  );
   lines.push(
     '  Positive net_gex = net long gamma → dealers buy dips / sell rips → price suppression (pin / support / resistance)',
   );

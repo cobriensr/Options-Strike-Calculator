@@ -24,7 +24,7 @@ export interface OiChangeRow {
   prevTotalPremium: number;
 }
 
-// ── Fetch ──────────────��────────────────────────────────────
+// ── Fetch ────────────────────────────────────────────────────
 
 /**
  * Get OI change rows for a given date, ordered by absolute OI diff.
@@ -59,7 +59,7 @@ export async function getOiChangeData(date: string): Promise<OiChangeRow[]> {
   }));
 }
 
-// ── Format for Claude ─────────────��─────────────────────────
+// ── Format for Claude ────────────────────────────────────────
 
 /**
  * Format OI change data as a structured text block for Claude's context.
@@ -79,7 +79,7 @@ export function formatOiChangeForClaude(
 
   const lines: string[] = [];
 
-  // ── Summary stats ───────────��──────────────────────────
+  // ── Summary stats ──────────────────────────────────────
   let netCallOi = 0;
   let netPutOi = 0;
   let callPremium = 0;
@@ -113,7 +113,7 @@ export function formatOiChangeForClaude(
     `  Net Premium: ${fmtPremium(netPremium)} (calls ${fmtPremium(callPremium)}, puts ${fmtPremium(putPremium)})`,
   );
 
-  // ── Aggressor direction ─���─────────��────────────────────
+  // ── Aggressor direction ────────────────────────────────
   let aggressorLabel: string;
   let aggressorNote: string;
   if (totalBidVol > 0 && totalAskVol / totalBidVol > 1.5) {
@@ -133,7 +133,7 @@ export function formatOiChangeForClaude(
     `  Aggressor: ${aggressorLabel} (${askBidRatio}x ask/bid) — ${aggressorNote}`,
   );
 
-  // ─�� Multi-leg percentage ───────────────────────────────
+  // ── Multi-leg percentage ───────────────────────────────
   const multiLegPct =
     totalVolume > 0 ? ((totalMultiLeg / totalVolume) * 100).toFixed(0) : '0';
   let multiLegNote: string;
@@ -192,7 +192,7 @@ export function formatOiChangeForClaude(
   return lines.join('\n');
 }
 
-// ── Helpers ──────────��──────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────
 
 /** Format a number with +/- sign and commas. */
 function fmtSigned(value: number): string {

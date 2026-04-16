@@ -1520,9 +1520,7 @@ describe('getNetGexHeatmap', () => {
 
   it('queries strike_exposures latest timestamp and computes derived fields', async () => {
     // 1st call: MAX(timestamp)
-    mockSql.mockResolvedValueOnce([
-      { latest_ts: '2026-04-10T18:00:00.000Z' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-10T18:00:00.000Z' }]);
     // 2nd call: data rows
     mockSql.mockResolvedValueOnce([
       {
@@ -1556,9 +1554,7 @@ describe('getNetGexHeatmap', () => {
   });
 
   it('computes null callGexFraction when absGex is zero', async () => {
-    mockSql.mockResolvedValueOnce([
-      { latest_ts: '2026-04-10T18:00:00.000Z' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-10T18:00:00.000Z' }]);
     mockSql.mockResolvedValueOnce([
       {
         strike: 6800,

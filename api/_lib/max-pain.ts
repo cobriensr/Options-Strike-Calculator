@@ -29,7 +29,7 @@ interface MaxPainResponse {
   date: string;
 }
 
-// ── Fetch ────────────────────��─────────────────────��────────
+// ── Fetch ────────────────────────────────────────────────────
 
 /**
  * Fetch max pain for all SPX expirations.
@@ -77,7 +77,7 @@ export async function fetchMaxPain(
   }
 }
 
-// ── Format for Claude ────���──────────────────────────────────
+// ── Format for Claude ────────────────────────────────────────
 
 /**
  * Format max pain data for Claude's context.

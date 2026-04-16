@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useContext, useRef, useEffect } from 'react';
 import type { CalculationResults } from '../types';
 import { DEFAULTS } from '../constants';
+import { CollapseAllContext } from './collapse-context';
 import ParameterSummary from './ParameterSummary';
 import DeltaStrikesTable from './DeltaStrikesTable';
 import IronCondorSection from './IronCondorSection';
@@ -38,6 +39,15 @@ export default function ResultsSection({
 }: Readonly<Props>) {
   const [collapsed, setCollapsed] = useState(false);
   const toggle = useCallback(() => setCollapsed((v) => !v), []);
+
+  // Respond to app-level "collapse all" / "expand all" broadcast.
+  const signal = useContext(CollapseAllContext);
+  const prevVersionRef = useRef(signal.version);
+  useEffect(() => {
+    if (signal.version === prevVersionRef.current) return;
+    prevVersionRef.current = signal.version;
+    setCollapsed(signal.collapsed);
+  }, [signal]);
 
   return (
     <div id="results" tabIndex={-1} className="mt-6">

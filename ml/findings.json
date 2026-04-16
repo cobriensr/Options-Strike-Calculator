@@ -3,10 +3,7 @@
   "dataset": {
     "total_days": 72,
     "labeled_days": 42,
-    "date_range": [
-      "2026-01-02",
-      "2026-04-15"
-    ],
+    "date_range": ["2026-01-02", "2026-04-15"],
     "overall_accuracy": 0.929
   },
   "structure_accuracy": {
@@ -949,7 +946,7 @@
         "n": 263,
         "groups": {
           "RepeatedHits|call": {
-            "mean_ret_fwd_15": 4.3310691180970657e-05,
+            "mean_ret_fwd_15": 4.3310691180970657e-5,
             "n": 88
           },
           "RepeatedHits|put": {
@@ -957,7 +954,7 @@
             "n": 59
           },
           "RepeatedHitsAscendingFill|call": {
-            "mean_ret_fwd_15": -6.20702320483133e-06,
+            "mean_ret_fwd_15": -6.20702320483133e-6,
             "n": 24
           },
           "RepeatedHitsAscendingFill|put": {
