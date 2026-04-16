@@ -2,10 +2,11 @@
  * PriceChart — Panel 4 of the GexTarget widget.
  *
  * Renders an imperative lightweight-charts candlestick chart with:
- *  - 5-minute SPX candles for the active session (resampled from 1-minute data)
+ *  - 1-minute or 5-minute SPX candles (user-togglable)
  *  - VWAP line (amber, dashed)
- *  - Top-3 GEX strike levels from the active TargetScore
+ *  - Top-5 GEX strike levels from the active TargetScore
  *  - Previous-close reference line
+ *  - Momentum badge in the header showing current signal state
  *
  * The chart is created once on mount and updated imperatively; it is never
  * re-created on re-renders. Overlay lines are removed and re-added whenever
@@ -33,8 +34,12 @@ import { SectionBox } from '../ui';
 import type { SPXCandle } from '../../hooks/useGexTarget';
 import type { NopePoint } from '../../hooks/useNopeIntraday';
 import type { TargetScore } from '../../utils/gex-target';
+import type { CandleMomentum } from '../../utils/candle-momentum';
+import { signalLabel, signalColor } from '../../utils/candle-momentum';
 
 // ── Types ──────────────────────────────────────────────────────────────────
+
+export type CandleInterval = '1m' | '5m';
 
 export interface PriceChartProps {
   candles: SPXCandle[];
@@ -57,6 +62,12 @@ export interface PriceChartProps {
    * sign and trajectory are immediately readable. Empty array hides the pane.
    */
   nopePoints?: NopePoint[];
+  /** Candle interval — '1m' shows raw 1-min candles, '5m' resamples. Default '5m'. */
+  interval?: CandleInterval;
+  /** Callback when the user toggles the interval. */
+  onIntervalChange?: (interval: CandleInterval) => void;
+  /** Current momentum state, computed from 1-min candles by the parent. */
+  momentum?: CandleMomentum | null;
 }
 
 // ── 5-minute resampler ────────────────────────────────────────────────────
@@ -160,6 +171,9 @@ export const PriceChart = memo(function PriceChart({
   openingCallStrike,
   openingPutStrike,
   nopePoints = [],
+  interval = '5m',
+  onIntervalChange,
+  momentum,
 }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -263,8 +277,8 @@ export const PriceChart = memo(function PriceChart({
   useEffect(() => {
     if (!candleSeriesRef.current || candles.length === 0) return;
 
-    const resampled = resampleTo5Min(candles);
-    const data = resampled.map((c) => ({
+    const displayed = interval === '1m' ? candles : resampleTo5Min(candles);
+    const data = displayed.map((c) => ({
       time: Math.floor(c.datetime / 1000) as UTCTimestamp,
       open: c.open,
       high: c.high,
@@ -274,14 +288,14 @@ export const PriceChart = memo(function PriceChart({
     candleSeriesRef.current.setData(data);
 
     if (vwapSeriesRef.current) {
-      vwapSeriesRef.current.setData(computeVWAP(resampled));
+      vwapSeriesRef.current.setData(computeVWAP(displayed));
     }
 
     if (!initialFitDoneRef.current) {
       chartRef.current?.timeScale().fitContent();
       initialFitDoneRef.current = true;
     }
-  }, [candles]);
+  }, [candles, interval]);
 
   // ── Update NOPE series ───────────────────────────────────────────────
   // When nopePoints is empty we clear the series rather than leaving stale
@@ -380,8 +394,62 @@ export const PriceChart = memo(function PriceChart({
 
   // ── Render ───────────────────────────────────────────────────────────
 
+  const headerRight = (
+    <div className="flex items-center gap-2">
+      {/* Momentum badge */}
+      {momentum && momentum.signal !== 'flat' && (
+        <span
+          className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wider"
+          style={{
+            color: signalColor(momentum.signal),
+            background: `${signalColor(momentum.signal)}15`,
+            border: `1px solid ${signalColor(momentum.signal)}40`,
+          }}
+          aria-label={`Momentum: ${signalLabel(momentum.signal)}`}
+        >
+          {signalLabel(momentum.signal)}
+          {momentum.rangeExpanding && ' \u26A1'}
+        </span>
+      )}
+
+      {/* Interval toggle */}
+      {onIntervalChange && (
+        <div className="border-edge flex items-center overflow-hidden rounded border">
+          <button
+            type="button"
+            onClick={() => onIntervalChange('1m')}
+            aria-label="1-minute candles"
+            aria-pressed={interval === '1m'}
+            className={
+              'cursor-pointer px-1.5 py-0.5 font-mono text-[10px] font-bold transition-colors' +
+              (interval === '1m'
+                ? ' bg-[rgba(255,255,255,0.1)] text-white'
+                : ' text-[rgba(255,255,255,0.4)] hover:text-[rgba(255,255,255,0.7)]')
+            }
+          >
+            1m
+          </button>
+          <button
+            type="button"
+            onClick={() => onIntervalChange('5m')}
+            aria-label="5-minute candles"
+            aria-pressed={interval === '5m'}
+            className={
+              'cursor-pointer px-1.5 py-0.5 font-mono text-[10px] font-bold transition-colors' +
+              (interval === '5m'
+                ? ' bg-[rgba(255,255,255,0.1)] text-white'
+                : ' text-[rgba(255,255,255,0.4)] hover:text-[rgba(255,255,255,0.7)]')
+            }
+          >
+            5m
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <SectionBox label="PRICE ACTION">
+    <SectionBox label="PRICE ACTION" headerRight={headerRight}>
       <div
         ref={containerRef}
         className="h-full min-h-[280px] w-full overflow-hidden"

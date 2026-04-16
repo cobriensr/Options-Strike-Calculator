@@ -19,6 +19,8 @@ import { UrgencyPanel } from './UrgencyPanel';
 import { SparklinePanel } from './SparklinePanel';
 import { StrikeBox } from './StrikeBox';
 import { PriceChart } from './PriceChart';
+import type { CandleInterval } from './PriceChart';
+import { computeMomentum } from '../../utils/candle-momentum';
 import {
   computeAttractingMomentum,
   flowConfluence,
@@ -96,6 +98,7 @@ export const GexTarget = memo(function GexTarget({
   gexTarget,
 }: GexTargetProps) {
   const [mode, setMode] = useState<Mode>('oi');
+  const [candleInterval, setCandleInterval] = useState<CandleInterval>('5m');
 
   const {
     oi,
@@ -135,6 +138,15 @@ export const GexTarget = memo(function GexTarget({
     const limit = new Date(timestamp).getTime();
     return nopePoints.filter((p) => new Date(p.timestamp).getTime() <= limit);
   }, [nopePoints, isScrubbed, timestamp]);
+
+  // ── Client-side momentum (from 1-min candles) ────────────
+  // Always computed from visibleCandles (1-min resolution) regardless of
+  // the chart's display interval. This is the early-warning signal — it
+  // updates every poll cycle (~60s) without waiting for the 5-min GEX cron.
+  const momentum = useMemo(
+    () => computeMomentum(visibleCandles),
+    [visibleCandles],
+  );
 
   // ── Mode selection ───────────────────────────────────────
 
@@ -455,6 +467,9 @@ export const GexTarget = memo(function GexTarget({
             openingCallStrike={openingCallStrike}
             openingPutStrike={openingPutStrike}
             nopePoints={visibleNopePoints}
+            interval={candleInterval}
+            onIntervalChange={setCandleInterval}
+            momentum={momentum}
           />
         </div>
 

@@ -290,7 +290,7 @@ const MarketFlow = memo(function MarketFlow({
   const handleRefresh = useCallback(() => {
     optionsFlow.refresh();
     whale.refresh();
-  }, [optionsFlow.refresh, whale.refresh]);
+  }, [optionsFlow, whale]);
 
   const isLoading = optionsFlow.isLoading || whale.isLoading;
   const isLive = !isScrubbed && isToday && marketOpen;

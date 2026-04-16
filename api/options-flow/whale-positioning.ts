@@ -62,19 +62,21 @@ import {
 // QUERY VALIDATION
 // ============================================================
 
-const querySchema = z.object({
-  min_premium: z.coerce.number().int().min(500_000).default(1_000_000),
-  max_dte: z.coerce.number().int().min(0).max(30).default(7),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional(),
-  as_of: z.string().datetime({ offset: true }).optional(),
-}).refine((v) => !(v.as_of && !v.date), {
-  message: 'as_of requires date',
-  path: ['as_of'],
-});
+const querySchema = z
+  .object({
+    min_premium: z.coerce.number().int().min(500_000).default(1_000_000),
+    max_dte: z.coerce.number().int().min(0).max(30).default(7),
+    limit: z.coerce.number().int().min(1).max(50).default(20),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    as_of: z.string().datetime({ offset: true }).optional(),
+  })
+  .refine((v) => !(v.as_of && !v.date), {
+    message: 'as_of requires date',
+    path: ['as_of'],
+  });
 
 // ============================================================
 // RESPONSE SHAPE

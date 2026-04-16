@@ -83,8 +83,8 @@ function quotesOk(addPrice: number, voldPrice: number) {
   return {
     ok: true as const,
     data: {
-      '$ADD': { quote: { lastPrice: addPrice } },
-      '$VOLD': { quote: { lastPrice: voldPrice } },
+      $ADD: { quote: { lastPrice: addPrice } },
+      $VOLD: { quote: { lastPrice: voldPrice } },
     },
   };
 }
@@ -205,12 +205,8 @@ describe('fetch-market-internals handler', () => {
       u.includes('pricehistory'),
     );
     expect(pricehistoryUrls).toHaveLength(2);
-    expect(
-      pricehistoryUrls.some((u) => u.includes('%24TICK')),
-    ).toBe(true);
-    expect(
-      pricehistoryUrls.some((u) => u.includes('%24TRIN')),
-    ).toBe(true);
+    expect(pricehistoryUrls.some((u) => u.includes('%24TICK'))).toBe(true);
+    expect(pricehistoryUrls.some((u) => u.includes('%24TRIN'))).toBe(true);
 
     // One quotes URL containing both $ADD and $VOLD
     const quotesUrls = calledUrls.filter((u) => u.includes('quotes'));
@@ -552,8 +548,8 @@ describe('fetch-market-internals handler', () => {
         return Promise.resolve({
           ok: true,
           data: {
-            '$ADD': { quote: {} },
-            '$VOLD': { quote: {} },
+            $ADD: { quote: {} },
+            $VOLD: { quote: {} },
           },
         });
       }
@@ -599,9 +595,7 @@ describe('fetch-market-internals handler', () => {
     const calledUrls = vi
       .mocked(schwabFetch)
       .mock.calls.map((c) => c[0] as string);
-    const pricehistoryUrl = calledUrls.find((u) =>
-      u.includes('pricehistory'),
-    )!;
+    const pricehistoryUrl = calledUrls.find((u) => u.includes('pricehistory'))!;
 
     expect(pricehistoryUrl).toContain('needExtendedHoursData=false');
     expect(pricehistoryUrl).toContain('periodType=day');
@@ -614,10 +608,7 @@ describe('fetch-market-internals handler', () => {
       url.searchParams.get('startDate') ?? '0',
       10,
     );
-    const endDate = Number.parseInt(
-      url.searchParams.get('endDate') ?? '0',
-      10,
-    );
+    const endDate = Number.parseInt(url.searchParams.get('endDate') ?? '0', 10);
     expect(endDate - startDate).toBe(90 * 60 * 1000);
   });
 });
