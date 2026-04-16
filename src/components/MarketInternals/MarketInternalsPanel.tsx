@@ -189,7 +189,6 @@ export const MarketInternalsPanel: FC<MarketInternalsPanelProps> = ({
       <div className="flex flex-wrap items-start gap-3 px-3 pt-3 pb-2">
         <RegimePill result={regime} />
         <MarketInternalsBadge
-          bars={bars}
           latestBySymbol={latestBySymbol}
           loading={loading}
           error={error}

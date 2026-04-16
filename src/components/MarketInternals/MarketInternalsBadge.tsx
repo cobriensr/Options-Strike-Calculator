@@ -123,7 +123,6 @@ const Cell: FC<CellProps> = ({ symbol, bar, stale }) => {
 // ============================================================
 
 export interface MarketInternalsBadgeProps {
-  bars: InternalBar[];
   latestBySymbol: Record<InternalSymbol, InternalBar | null>;
   loading: boolean;
   error: string | null;

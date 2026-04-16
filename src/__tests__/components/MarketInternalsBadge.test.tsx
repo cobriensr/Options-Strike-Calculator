@@ -18,7 +18,6 @@ function emptyLatest(): Record<InternalSymbol, InternalBar | null> {
 }
 
 const defaultProps = {
-  bars: [],
   latestBySymbol: emptyLatest(),
   loading: false,
   error: null,
