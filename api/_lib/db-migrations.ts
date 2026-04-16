@@ -1715,4 +1715,18 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 64,
+    description:
+      'Widen market_internals OHLC columns to unqualified NUMERIC — $VOLD values exceed NUMERIC(10,4)',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE market_internals
+          ALTER COLUMN open TYPE NUMERIC,
+          ALTER COLUMN high TYPE NUMERIC,
+          ALTER COLUMN low  TYPE NUMERIC,
+          ALTER COLUMN close TYPE NUMERIC
+      `,
+    ],
+  },
 ];
