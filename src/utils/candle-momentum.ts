@@ -65,9 +65,9 @@ export interface CandleMomentum {
    */
   streak: number;
 
-  /** Average true range of the most recent RANGE_WINDOW candles. */
+  /** Average bar range (high - low) of the most recent RANGE_WINDOW candles. */
   avgRange: number;
-  /** Average true range of the RANGE_WINDOW candles before that. */
+  /** Average bar range (high - low) of the RANGE_WINDOW candles before that. */
   avgRangePrev: number;
   /** True when avgRange > avgRangePrev * RANGE_EXPANSION_RATIO. */
   rangeExpanding: boolean;

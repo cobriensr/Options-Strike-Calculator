@@ -48,21 +48,13 @@ describe('computeMomentum', () => {
 
   describe('streak detection', () => {
     it('counts consecutive green candles as positive streak', () => {
-      const candles = [
-        candle(100, 102),
-        candle(102, 104),
-        candle(104, 106),
-      ];
+      const candles = [candle(100, 102), candle(102, 104), candle(104, 106)];
       const m = computeMomentum(candles);
       expect(m.streak).toBe(3);
     });
 
     it('counts consecutive red candles as negative streak', () => {
-      const candles = [
-        candle(106, 104),
-        candle(104, 102),
-        candle(102, 100),
-      ];
+      const candles = [candle(106, 104), candle(104, 102), candle(102, 100)];
       const m = computeMomentum(candles);
       expect(m.streak).toBe(-3);
     });
