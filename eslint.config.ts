@@ -15,7 +15,6 @@ export default [
       '.claude/skills',
       '.claude/worktrees',
       '.clone',
-      'api/debug',
       'sidecar',
       'playwright-report',
       '.scannerwork',
