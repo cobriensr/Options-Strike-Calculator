@@ -22,6 +22,8 @@ import {
   type ConfluenceMatch,
   type ConfluenceRelationship,
 } from '../../utils/flow-confluence';
+import { useMarketInternals } from '../../hooks/useMarketInternals';
+import { classifyRegime } from '../../utils/market-regime';
 
 // ============================================================
 // TYPES
@@ -31,6 +33,7 @@ export interface FlowConfluencePanelProps {
   intradayStrikes: RankedStrike[];
   whaleAlerts: WhaleAlert[];
   className?: string;
+  marketOpen?: boolean;
 }
 
 type BadgeKind = 'AGREE' | 'HEDGE' | 'CONTRARIAN';
@@ -179,15 +182,48 @@ function MatchRow({ match }: { match: ConfluenceMatch }) {
 // MAIN
 // ============================================================
 
+// ============================================================
+// REGIME ANNOTATION
+// ============================================================
+
+const REGIME_ANNOTATION: Record<
+  'range' | 'trend' | 'neutral',
+  { text: string; className: string }
+> = {
+  range: {
+    text: 'Range day — GEX walls are reliable, fade TICK extremes',
+    className: 'text-cyan-400 bg-cyan-500/10',
+  },
+  trend: {
+    text: 'Trend day — flow direction matters more, walls may break',
+    className: 'text-violet-400 bg-violet-500/10',
+  },
+  neutral: {
+    text: 'No clear regime',
+    className: 'text-zinc-500 bg-zinc-500/10',
+  },
+};
+
+// ============================================================
+// MAIN
+// ============================================================
+
 export function FlowConfluencePanel({
   intradayStrikes,
   whaleAlerts,
   className,
+  marketOpen,
 }: FlowConfluencePanelProps) {
   const matches = useMemo(
     () => findConfluences(intradayStrikes, whaleAlerts),
     [intradayStrikes, whaleAlerts],
   );
+
+  const { bars } = useMarketInternals({
+    marketOpen: marketOpen ?? false,
+  });
+  const regime = useMemo(() => classifyRegime(bars), [bars]);
+  const annotation = REGIME_ANNOTATION[regime.regime];
 
   const hasRetail = intradayStrikes.length > 0;
   const hasWhale = whaleAlerts.length > 0;
@@ -202,6 +238,17 @@ export function FlowConfluencePanel({
       <span className="sr-only" data-testid="confluence-match-count">
         {matches.length} {matches.length === 1 ? 'match' : 'matches'}
       </span>
+
+      {/* Regime annotation — compact single-line context */}
+      {bars.length > 0 && (
+        <div
+          className={`px-3 py-1.5 font-sans text-[11px] ${annotation.className}`}
+          data-testid="regime-annotation"
+          data-regime={regime.regime}
+        >
+          {annotation.text}
+        </div>
+      )}
 
       {/* Body */}
       {!hasRetail && !hasWhale && (

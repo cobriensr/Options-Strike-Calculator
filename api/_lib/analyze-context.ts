@@ -61,6 +61,10 @@ import { schwabFetch } from './api-helpers.js';
 import { metrics } from './sentry.js';
 import type { ImageMediaType } from './analyze-prompts.js';
 import { formatFuturesForClaude } from './futures-context.js';
+import { getMarketInternalsToday } from './db-flow.js';
+import { classifyRegime } from '../../src/utils/market-regime.js';
+import { detectExtremes } from '../../src/utils/extreme-detector.js';
+import type { InternalBar } from '../../src/types/market-internals.js';
 
 // Minimal Schwab chain types for 14 DTE directional chain fetch
 interface SchwabContract {
@@ -305,6 +309,86 @@ export function formatEconomicCalendarForClaude(
 
     return line;
   });
+
+  return lines.join('\n');
+}
+
+/**
+ * Format market internals (regime + extremes) as a Claude-readable block.
+ * Returns null if no bars are available.
+ */
+export function formatMarketInternalsForClaude(
+  bars: InternalBar[],
+): string | null {
+  if (bars.length === 0) return null;
+
+  const regime = classifyRegime(bars);
+  const extremes = detectExtremes(bars, regime.regime);
+
+  const regimeLabel =
+    regime.regime === 'range'
+      ? 'RANGE DAY'
+      : regime.regime === 'trend'
+        ? 'TREND DAY'
+        : 'NEUTRAL';
+  const confidencePct = Math.round(regime.confidence * 100);
+
+  const lines: string[] = [
+    `Regime: ${regimeLabel} (confidence: ${confidencePct}%)`,
+    'Evidence:',
+  ];
+  for (const ev of regime.evidence) {
+    lines.push(`- ${ev}`);
+  }
+
+  // Latest readings by symbol
+  const bySymbol = new Map<string, InternalBar>();
+  for (const bar of bars) {
+    bySymbol.set(bar.symbol, bar);
+  }
+
+  const latestLines: string[] = [];
+  const tick = bySymbol.get('$TICK');
+  if (tick)
+    latestLines.push(
+      `$TICK: ${tick.close > 0 ? '+' : ''}${Math.round(tick.close)}`,
+    );
+  const add = bySymbol.get('$ADD');
+  if (add)
+    latestLines.push(
+      `$ADD: ${add.close > 0 ? '+' : ''}${Math.round(add.close).toLocaleString()}`,
+    );
+  const vold = bySymbol.get('$VOLD');
+  if (vold)
+    latestLines.push(
+      `$VOLD: ${vold.close > 0 ? '+' : ''}${Math.round(vold.close).toLocaleString()}`,
+    );
+  const trin = bySymbol.get('$TRIN');
+  if (trin) latestLines.push(`$TRIN: ${trin.close.toFixed(2)}`);
+
+  if (latestLines.length > 0) {
+    lines.push('', 'Current readings (latest bar):');
+    for (const l of latestLines) {
+      lines.push(`- ${l}`);
+    }
+  }
+
+  // Extreme events
+  if (extremes.length > 0) {
+    lines.push('', `Today's extreme events (${extremes.length} total):`);
+    for (const evt of extremes) {
+      const time = new Date(evt.ts).toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+      const pinnedTag = evt.pinned ? ', pinned 5m' : '';
+      lines.push(
+        `- ${time} ET: ${evt.symbol} ${evt.value > 0 ? '+' : ''}${Math.round(evt.value)} (${evt.band}${pinnedTag}) — ${evt.label}`,
+      );
+    }
+  }
 
   return lines.join('\n');
 }
@@ -692,6 +776,7 @@ export async function buildAnalysisContext(
   let priorDayFlowContext: string | null = null;
   let economicCalendarContext: string | null = null;
   let nopeContext: string | null = null;
+  let marketInternalsContext: string | null = null;
 
   // Cone boundaries — populated from pre-market data or context
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
@@ -714,6 +799,7 @@ export async function buildAnalysisContext(
       allExpiryStrikeRows,
       netGexRows,
       nopeRows,
+      marketInternalsRows,
     ] = await Promise.all([
       getFlowData(analysisDate, 'market_tide', asOf),
       getFlowData(analysisDate, 'market_tide_otm', asOf),
@@ -730,6 +816,7 @@ export async function buildAnalysisContext(
       getAllExpiryStrikeExposures(analysisDate, 'SPX', asOf),
       getNetGexHeatmap(analysisDate), // upsert table — no timestamp, always latest
       getRecentNope('SPY', 60, asOf), // last-hour SPY NOPE trajectory
+      getMarketInternalsToday(analysisDate),
     ]);
     marketTideContext = formatFlowDataForClaude(
       tideRows,
@@ -791,6 +878,12 @@ export async function buildAnalysisContext(
       strikeRows,
     );
     nopeContext = formatNopeForClaude(nopeRows);
+
+    // Market internals regime classification
+    if (marketInternalsRows.length > 0) {
+      const bars = marketInternalsRows as InternalBar[];
+      marketInternalsContext = formatMarketInternalsForClaude(bars);
+    }
 
     // Zero-gamma (GEX flip) analysis — ENH-SIGNAL-001.
     // Uses the same strikeRows already fetched above; no extra DB round-trip.
@@ -1216,6 +1309,7 @@ export async function buildAnalysisContext(
   if (!priorDayFlowContext) unavailable.push('Prior-Day Flow Trend');
   if (!economicCalendarContext) unavailable.push('Economic Calendar');
   if (!nopeContext) unavailable.push('SPY NOPE');
+  if (!marketInternalsContext) unavailable.push('NYSE Market Internals');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -1275,6 +1369,7 @@ ${spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min i
 ${qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${qqqEtfTideContext}\n` : ''}
 ${zeroDteIndexContext ? `\n## 0DTE Index-Only Net Flow (from API)\nPure 0DTE flow from index products (SPX, NDX) only — excludes weekly/monthly expirations and ETFs/equities. When this diverges from aggregate SPX Net Flow, the aggregate signal contains longer-dated hedging noise. Trust 0DTE index flow for same-session directional reads. When both agree, highest conviction.\n\n${zeroDteIndexContext}\n` : ''}
 ${nopeContext ? `\n## SPY NOPE — Net Options Pricing Effect (from API — 1-min resolution)\nIntraday dealer hedging pressure derived from options delta per unit of underlying stock volume. SPY is used as the SPX proxy because SPX has no tradeable shares. See <spy_nope> in the system prompt for full interpretation rules — the short version: positive NOPE = bullish tape pressure (dealers buying shares), negative NOPE = bearish tape pressure (dealers selling shares). Use this as a confirmation layer alongside Market Tide and SPX Net Flow.\n\n${nopeContext}\n` : ''}
+${marketInternalsContext ? `\n## NYSE Market Internals — Session Regime Classification\nNYSE breadth indicators ($TICK, $ADD, $VOLD, $TRIN) classify the session as RANGE DAY, TREND DAY, or NEUTRAL. The regime adjusts how to weight other signals — see <market_internals_regime> in the system prompt. On range days, GEX walls are reliable and TICK extremes are fade candidates. On trend days, walls may fail and TICK extremes confirm the trend.\n\n${marketInternalsContext}\n` : ''}
 ${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${greekExposureContext}\n` : ''}
 ${greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${greekFlowContext}\n` : ''}
 ${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}

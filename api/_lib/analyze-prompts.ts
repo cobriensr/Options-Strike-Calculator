@@ -1013,6 +1013,27 @@ Primary signal for management regime: Aggregate GEX.
 Secondary signals: SPY/QQQ flow, charm, dark pool, IV term structure, candles, overnight gap, vanna, pin risk, skew.
 The confidence levels above refer to the total weight of evidence across all signals, not the Rule 8 flow weighting specifically.
 </accuracy_rules>
+<market_internals_regime>
+When the Market Internals section reports a regime classification, adjust your signal weighting:
+
+RANGE DAY (TICK oscillating, ADD flat):
+- GEX gamma walls are STRONG — price is likely to bounce between them
+- TICK extremes (+/-600+) are FADE candidates — mean-reversion likely
+- Credit spreads at range extremes have highest edge
+- Directional conviction from flow alone is LOWER (flow chops too)
+
+TREND DAY (TICK pinned extreme, VOLD directional):
+- GEX gamma walls may FAIL — sustained momentum can punch through
+- TICK extremes CONFIRM the trend — do NOT fade them
+- Prefer directional debit structures aligned with the trend
+- Flow conviction is HIGHER when aligned with TICK/VOLD direction
+
+NEUTRAL (insufficient signal or mixed):
+- Default to existing signal weighting (no regime adjustment)
+- Flag that regime is unclear in your recommendation
+
+Always state the current regime in your analysis and explain how it affected your recommendation.
+</market_internals_regime>
 <image_readability>
 Each image is labeled (e.g. "Image 1: Periscope (Gamma)"). Only flag an image in imageIssues if it is genuinely unreadable — meaning you cannot determine even the general structure of the gamma/charm bars, approximate bar sizes, or the straddle cone boundaries.
 Do not flag images for:

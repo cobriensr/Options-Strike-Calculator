@@ -114,6 +114,23 @@ vi.mock('../_lib/db-nope.js', () => ({
   formatNopeForClaude: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock('../_lib/db-flow.js', () => ({
+  getMarketInternalsToday: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../../src/utils/market-regime.js', () => ({
+  classifyRegime: vi.fn().mockReturnValue({
+    regime: 'neutral',
+    confidence: 0,
+    evidence: [],
+    scores: { range: 0, trend: 0, neutral: 1 },
+  }),
+}));
+
+vi.mock('../../src/utils/extreme-detector.js', () => ({
+  detectExtremes: vi.fn().mockReturnValue([]),
+}));
+
 vi.mock('../../src/utils/zero-gamma.js', () => ({
   analyzeZeroGamma: vi.fn().mockReturnValue({ flipStrike: null }),
 }));

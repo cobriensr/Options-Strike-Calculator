@@ -1,7 +1,90 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { FlowConfluencePanel } from '../../components/OptionsFlow/FlowConfluencePanel';
 import type { RankedStrike, WhaleAlert } from '../../types/flow';
+import type { InternalBar } from '../../types/market-internals';
+
+// ============================================================
+// MOCKS
+// ============================================================
+
+const mockUseMarketInternals = vi.fn();
+vi.mock('../../hooks/useMarketInternals', () => ({
+  useMarketInternals: (...args: unknown[]) => mockUseMarketInternals(...args),
+}));
+
+// ============================================================
+// MARKET INTERNALS FIXTURES
+// ============================================================
+
+function makeTickBar(close: number, minuteOffset = 0): InternalBar {
+  const ts = new Date(
+    `2026-04-15T14:${String(minuteOffset).padStart(2, '0')}:00Z`,
+  ).toISOString();
+  return {
+    ts,
+    symbol: '$TICK',
+    open: close - 10,
+    high: close + 20,
+    low: close - 20,
+    close,
+  };
+}
+
+/** Build a range-day fixture: oscillating TICK, flat ADD. */
+function makeRangeDayBars(): InternalBar[] {
+  const bars: InternalBar[] = [];
+  for (let i = 0; i < 20; i++) {
+    // Alternate positive/negative to create high mean-reversion rate
+    const sign = i % 2 === 0 ? 1 : -1;
+    bars.push(makeTickBar(sign * 200, i));
+  }
+  // Flat ADD
+  bars.push({
+    ts: '2026-04-15T14:00:00Z',
+    symbol: '$ADD',
+    open: 100,
+    high: 150,
+    low: 50,
+    close: 110,
+  });
+  bars.push({
+    ts: '2026-04-15T14:19:00Z',
+    symbol: '$ADD',
+    open: 110,
+    high: 160,
+    low: 60,
+    close: 120,
+  });
+  return bars;
+}
+
+/** Build a trend-day fixture: TICK pinned extreme, VOLD directional. */
+function makeTrendDayBars(): InternalBar[] {
+  const bars: InternalBar[] = [];
+  for (let i = 0; i < 20; i++) {
+    // Always extreme positive — pinned above 600
+    bars.push(makeTickBar(650 + i * 5, i));
+  }
+  // Directional VOLD (starts low, ends high)
+  bars.push({
+    ts: '2026-04-15T14:00:00Z',
+    symbol: '$VOLD',
+    open: 10,
+    high: 50,
+    low: 0,
+    close: 10,
+  });
+  bars.push({
+    ts: '2026-04-15T14:19:00Z',
+    symbol: '$VOLD',
+    open: 400,
+    high: 450,
+    low: 350,
+    close: 450,
+  });
+  return bars;
+}
 
 // ============================================================
 // FIXTURES
@@ -62,6 +145,22 @@ function makeWhale(overrides: Partial<WhaleAlert> = {}): WhaleAlert {
 // ============================================================
 
 describe('FlowConfluencePanel', () => {
+  beforeEach(() => {
+    // Default: no bars (no regime annotation)
+    mockUseMarketInternals.mockReturnValue({
+      bars: [],
+      latestBySymbol: {
+        $TICK: null,
+        $ADD: null,
+        $VOLD: null,
+        $TRIN: null,
+      },
+      loading: false,
+      error: null,
+      asOf: null,
+    });
+  });
+
   it('renders "waiting" empty state when both retail and whale are empty', () => {
     render(<FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} />);
     expect(
@@ -246,5 +345,84 @@ describe('FlowConfluencePanel', () => {
     const badge = screen.getByTestId('confluence-badge');
     expect(badge.getAttribute('data-kind')).toBe('CONTRARIAN');
     expect(badge.className).toMatch(/indigo/);
+  });
+
+  // ============================================================
+  // REGIME ANNOTATION TESTS
+  // ============================================================
+
+  it('does not render regime annotation when bars are empty', () => {
+    render(<FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} />);
+    expect(screen.queryByTestId('regime-annotation')).not.toBeInTheDocument();
+  });
+
+  it('renders range-day annotation with cyan styling', () => {
+    mockUseMarketInternals.mockReturnValue({
+      bars: makeRangeDayBars(),
+      latestBySymbol: {
+        $TICK: null,
+        $ADD: null,
+        $VOLD: null,
+        $TRIN: null,
+      },
+      loading: false,
+      error: null,
+      asOf: '2026-04-15T14:20:00Z',
+    });
+    render(
+      <FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} marketOpen />,
+    );
+    const annotation = screen.getByTestId('regime-annotation');
+    expect(annotation).toBeInTheDocument();
+    expect(annotation.getAttribute('data-regime')).toBe('range');
+    expect(annotation.textContent).toMatch(/range day/i);
+    expect(annotation.className).toMatch(/cyan/);
+  });
+
+  it('renders trend-day annotation with violet styling', () => {
+    mockUseMarketInternals.mockReturnValue({
+      bars: makeTrendDayBars(),
+      latestBySymbol: {
+        $TICK: null,
+        $ADD: null,
+        $VOLD: null,
+        $TRIN: null,
+      },
+      loading: false,
+      error: null,
+      asOf: '2026-04-15T14:20:00Z',
+    });
+    render(
+      <FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} marketOpen />,
+    );
+    const annotation = screen.getByTestId('regime-annotation');
+    expect(annotation).toBeInTheDocument();
+    expect(annotation.getAttribute('data-regime')).toBe('trend');
+    expect(annotation.textContent).toMatch(/trend day/i);
+    expect(annotation.className).toMatch(/violet/);
+  });
+
+  it('renders neutral annotation when data is insufficient', () => {
+    // Only 3 TICK bars — not enough for regime classification
+    mockUseMarketInternals.mockReturnValue({
+      bars: [makeTickBar(100, 0), makeTickBar(-50, 1), makeTickBar(200, 2)],
+      latestBySymbol: {
+        $TICK: null,
+        $ADD: null,
+        $VOLD: null,
+        $TRIN: null,
+      },
+      loading: false,
+      error: null,
+      asOf: '2026-04-15T14:03:00Z',
+    });
+    render(
+      <FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} marketOpen />,
+    );
+    const annotation = screen.getByTestId('regime-annotation');
+    expect(annotation).toBeInTheDocument();
+    expect(annotation.getAttribute('data-regime')).toBe('neutral');
+    expect(annotation.textContent).toMatch(/no clear regime/i);
+    expect(annotation.className).toMatch(/zinc/);
   });
 });

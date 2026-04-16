@@ -306,6 +306,40 @@ function formatGreekValue(value: number): string {
   return `${sign}${abs.toFixed(0)}`;
 }
 
+// ── Market Internals (NYSE breadth indicators) ───────────────
+
+/**
+ * Get all market internals bars for a given date.
+ * Returns rows ordered by timestamp ascending (oldest first).
+ */
+export async function getMarketInternalsToday(date: string): Promise<
+  Array<{
+    ts: string;
+    symbol: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+  }>
+> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT ts, symbol, open, high, low, close
+    FROM market_internals
+    WHERE ts::date = ${date}::date
+    ORDER BY ts ASC
+  `;
+
+  return rows.map((r) => ({
+    ts: r.ts as string,
+    symbol: r.symbol as string,
+    open: Number(r.open),
+    high: Number(r.high),
+    low: Number(r.low),
+    close: Number(r.close),
+  }));
+}
+
 // ── Spot GEX Exposures (intraday panel data) ────────────────
 
 export interface SpotExposureRow {
