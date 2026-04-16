@@ -6,6 +6,7 @@
  */
 
 import { getDb } from './db.js';
+import type { InternalSymbol } from '../../src/types/market-internals.js';
 
 // ============================================================
 // FLOW DATA (UW API time series)
@@ -304,6 +305,40 @@ function formatGreekValue(value: number): string {
   if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
   return `${sign}${abs.toFixed(0)}`;
+}
+
+// ── Market Internals (NYSE breadth indicators) ───────────────
+
+/**
+ * Get all market internals bars for a given date.
+ * Returns rows ordered by timestamp ascending (oldest first).
+ */
+export async function getMarketInternalsToday(date: string): Promise<
+  Array<{
+    ts: string;
+    symbol: InternalSymbol;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+  }>
+> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT ts, symbol, open, high, low, close
+    FROM market_internals
+    WHERE ts::date = ${date}::date
+    ORDER BY ts ASC
+  `;
+
+  return rows.map((r) => ({
+    ts: r.ts as string,
+    symbol: r.symbol as InternalSymbol,
+    open: Number(r.open),
+    high: Number(r.high),
+    low: Number(r.low),
+    close: Number(r.close),
+  }));
 }
 
 // ── Spot GEX Exposures (intraday panel data) ────────────────

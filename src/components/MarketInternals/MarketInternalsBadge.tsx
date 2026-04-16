@@ -3,47 +3,28 @@
  *
  * Shows the 4 session internals ($TICK, $ADD, $VOLD, $TRIN) with the
  * latest close for each. $TICK gets a threshold-based color band
- * (neutral → elevated → extreme → blowoff) because absolute TICK prints
- * at ±400 / ±600 / ±1000 are the classic reversal vs. trend-day tells.
- * The other three symbols render raw for Task 3; slope-based classification
- * lands in Phase 2.
+ * (neutral -> elevated -> extreme -> blowoff) because absolute TICK prints
+ * at +/-400 / +/-600 / +/-1000 are the classic reversal vs. trend-day tells.
+ * The other three symbols render raw; slope-based classification is used
+ * by the regime classifier in `src/utils/market-regime.ts` but the badge
+ * still shows raw values.
  *
- * Task 3 scope: presentation only. No regime classification, no event log,
- * no `?since=` incremental fetching. Parent passes `marketOpen`; the hook
- * handles polling semantics.
+ * Presentation only — the parent panel owns the `useMarketInternals` hook
+ * and passes data down as props to avoid duplicate polling.
  */
 
 import type { FC } from 'react';
-import { useMarketInternals } from '../../hooks/useMarketInternals';
-import {
-  INTERNAL_SYMBOLS,
-  MARKET_INTERNALS_THRESHOLDS,
-} from '../../constants/market-internals';
+import { INTERNAL_SYMBOLS } from '../../constants/market-internals';
 import type {
   InternalBandState,
   InternalBar,
   InternalSymbol,
 } from '../../types/market-internals';
+import { classifyTickBand } from '../../utils/market-regime';
 
 // ============================================================
-// TICK BAND CLASSIFICATION
+// PRESENTATION HELPERS
 // ============================================================
-
-/**
- * Classify a $TICK close into one of four bands by absolute magnitude.
- * Direction doesn't change the band — TICK at −650 is just as "extreme"
- * as +650. Phase 2 will extract this into `src/utils/market-regime.ts`
- * alongside the $ADD/$VOLD/$TRIN slope classifier.
- */
-function classifyTickBand(tick: number): InternalBandState {
-  if (!Number.isFinite(tick)) return 'neutral';
-  const mag = Math.abs(tick);
-  const { elevated, extreme, blowoff } = MARKET_INTERNALS_THRESHOLDS.tick;
-  if (mag >= blowoff) return 'blowoff';
-  if (mag >= extreme) return 'extreme';
-  if (mag >= elevated) return 'elevated';
-  return 'neutral';
-}
 
 function bandClass(band: InternalBandState): string {
   switch (band) {
@@ -78,7 +59,7 @@ const RATIO_FMT = new Intl.NumberFormat(undefined, {
 });
 
 function formatValue(symbol: InternalSymbol, close: number): string {
-  if (!Number.isFinite(close)) return '—';
+  if (!Number.isFinite(close)) return '\u2014';
   switch (symbol) {
     case '$TICK':
       return SIGNED_INT_FMT.format(Math.round(close));
@@ -111,7 +92,7 @@ const Cell: FC<CellProps> = ({ symbol, bar, stale }) => {
     isTick && hasValue ? classifyTickBand(bar.close) : 'neutral';
   const coloredCell = isTick && hasValue;
 
-  const valueText = hasValue ? formatValue(symbol, bar.close) : '—';
+  const valueText = hasValue ? formatValue(symbol, bar.close) : '\u2014';
 
   const cellClass = [
     'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[11px]',
@@ -142,18 +123,22 @@ const Cell: FC<CellProps> = ({ symbol, bar, stale }) => {
 // ============================================================
 
 export interface MarketInternalsBadgeProps {
+  latestBySymbol: Record<InternalSymbol, InternalBar | null>;
+  loading: boolean;
+  error: string | null;
+  asOf: string | null;
   marketOpen: boolean;
   className?: string;
 }
 
 export const MarketInternalsBadge: FC<MarketInternalsBadgeProps> = ({
+  latestBySymbol,
+  loading,
+  error,
+  asOf,
   marketOpen,
   className,
 }) => {
-  const { latestBySymbol, loading, error, asOf } = useMarketInternals({
-    marketOpen,
-  });
-
   const hasAnyBar = INTERNAL_SYMBOLS.some((s) => latestBySymbol[s] !== null);
   // Errors don't clear bars — if we have stale data, keep showing it.
   const showError = error !== null && !hasAnyBar;
@@ -163,10 +148,7 @@ export const MarketInternalsBadge: FC<MarketInternalsBadgeProps> = ({
       role="status"
       aria-live="polite"
       aria-label="Market internals"
-      className={[
-        'border-edge bg-surface flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2',
-        className ?? '',
-      ]
+      className={['flex flex-wrap items-center gap-2', className ?? '']
         .filter(Boolean)
         .join(' ')}
     >

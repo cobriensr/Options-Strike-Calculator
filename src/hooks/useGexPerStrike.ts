@@ -382,6 +382,7 @@ export function useGexPerStrike(
   }, []);
 
   const refresh = useCallback(() => {
+    setLoading(true);
     fetchData(scrubTimestamp ?? undefined);
   }, [fetchData, scrubTimestamp]);
 

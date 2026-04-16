@@ -305,7 +305,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const absNpp = Math.abs(npp);
     const absNcp = Math.abs(ncp);
-    const ratio = absNcp > 0 ? absNpp / absNcp : null;
+    // Guard against near-zero denominators that produce astronomically
+    // large ratios and overflow DECIMAL(8,4). Below $1K in call premium
+    // the ratio is noise, not signal. Safety clamp respects column max.
+    const MIN_DENOMINATOR = 1000;
+    const MAX_RATIO = 9999.9999;
+    const rawRatio = absNcp >= MIN_DENOMINATOR ? absNpp / absNcp : null;
+    const ratio = rawRatio != null ? Math.min(rawRatio, MAX_RATIO) : null;
 
     const reading: RatioReading = { absNpp, absNcp, ratio, spxPrice };
 

@@ -567,7 +567,7 @@ Respond with JSON:
   // Use streaming to prevent TCP idle timeouts on long Opus + thinking calls
   const response = await anthropic.messages
     .stream({
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
       max_tokens: 16000,
       thinking: { type: 'adaptive' },
       output_config: { effort: 'high' },

@@ -283,9 +283,9 @@ describe('plot-analysis-prompts.ts', () => {
       const matches = PLOT_ANALYSIS_SYSTEM_PROMPT.match(
         /<calibration_example\/>/g,
       );
-      // Should have one per plot (33 total)
+      // Should have one per plot (43 total)
       expect(matches).not.toBeNull();
-      expect(matches!.length).toBe(33);
+      expect(matches!.length).toBe(43);
     });
 
     it('does not contain filled calibration example tags when all empty', () => {
@@ -305,8 +305,8 @@ describe('plot-analysis-prompts.ts', () => {
       expect(PLOT_ANALYSIS_SYSTEM_PROMPT.length).toBeGreaterThan(10_000);
     });
 
-    it('is under 100K characters (sanity cap)', () => {
-      expect(PLOT_ANALYSIS_SYSTEM_PROMPT.length).toBeLessThan(100_000);
+    it('is under 120K characters (sanity cap)', () => {
+      expect(PLOT_ANALYSIS_SYSTEM_PROMPT.length).toBeLessThan(120_000);
     });
   });
 });
@@ -342,6 +342,28 @@ describe('plot-analysis-prompts.ts (with calibration)', () => {
         pin_settlement: '',
         pin_time_decay: '',
         pin_composite: '',
+        trace_error_distribution: '',
+        trace_predicted_vs_actual: '',
+        trace_accuracy_by_confidence: '',
+        trace_accuracy_by_vix_regime: '',
+        trace_signal_strength: '',
+        trace_rolling_error: '',
+        trace_error_vs_range: '',
+        structure_by_vix: '',
+        rolling_accuracy: '',
+        flow_by_vix: '',
+        pnl_distribution: '',
+        cluster_transitions: '',
+        flow_q1_distributions: '',
+        flow_q2_time_of_day: '',
+        flow_q3_directional: '',
+        flow_q4_returns_by_rule: '',
+        flow_q5_premium_vs_return: '',
+        nope_direction_by_sign: '',
+        nope_mt_agreement: '',
+        nope_flips_vs_range: '',
+        nope_cumdelta_vs_move: '',
+        nope_magnitude_vs_move: '',
       },
     }));
 
@@ -354,9 +376,9 @@ describe('plot-analysis-prompts.ts (with calibration)', () => {
     );
 
     // Other plots should still use the self-closing tag
-    // 32 empty calibrations + 1 filled = 32 self-closing
+    // 42 empty calibrations + 1 filled = 42 self-closing
     const selfClosing = prompt.match(/<calibration_example\/>/g);
     expect(selfClosing).not.toBeNull();
-    expect(selfClosing!.length).toBe(32);
+    expect(selfClosing!.length).toBe(42);
   });
 });

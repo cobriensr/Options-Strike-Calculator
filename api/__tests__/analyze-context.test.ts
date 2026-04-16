@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect } from 'vitest';
+import { vi, beforeEach, describe, it, expect } from 'vitest';
 
 /**
  * Tests for pure helper functions exported from analyze-context.ts.
@@ -16,6 +16,8 @@ import {
   parseEntryTimeAsUtc,
   formatEconomicCalendarForClaude,
   formatPriorDayFlowForClaude,
+  formatMarketInternalsForClaude,
+  buildAnalysisContext,
 } from '../_lib/analyze-context.js';
 
 // ── numOrUndef ─────────────────────────────────────────────
@@ -29,7 +31,7 @@ describe('numOrUndef', () => {
   });
 
   it('returns undefined for NaN', () => {
-    expect(numOrUndef(NaN)).toBeUndefined();
+    expect(numOrUndef(Number.NaN)).toBeUndefined();
   });
 
   it('returns undefined for Infinity', () => {
@@ -44,6 +46,110 @@ describe('numOrUndef', () => {
     expect(numOrUndef(true)).toBeUndefined();
     expect(numOrUndef({})).toBeUndefined();
     expect(numOrUndef([])).toBeUndefined();
+  });
+});
+
+// ── formatMarketInternalsForClaude ───────────────────────────
+
+describe('formatMarketInternalsForClaude', () => {
+  it('returns null for empty bars', () => {
+    expect(formatMarketInternalsForClaude([])).toBeNull();
+  });
+
+  it('includes regime label, confidence, evidence, readings, and extremes', async () => {
+    // Import the mocked modules so we can override return values
+    const { classifyRegime } = await import('../../src/utils/market-regime.js');
+    const { detectExtremes } =
+      await import('../../src/utils/extreme-detector.js');
+
+    vi.mocked(classifyRegime).mockReturnValueOnce({
+      regime: 'range',
+      confidence: 0.72,
+      evidence: [
+        'TICK oscillating, mean-reversion rate 0.63',
+        'ADD flatness 0.81',
+      ],
+      scores: { range: 0.51, trend: 0.07, neutral: 0.42 },
+    });
+
+    vi.mocked(detectExtremes).mockReturnValueOnce([
+      {
+        ts: '2026-04-15T15:30:00Z',
+        symbol: '$TICK',
+        value: 680,
+        band: 'extreme',
+        label: 'FADE candidate',
+        pinned: false,
+      },
+      {
+        ts: '2026-04-15T16:00:00Z',
+        symbol: '$TICK',
+        value: -720,
+        band: 'extreme',
+        label: 'FADE candidate',
+        pinned: true,
+      },
+    ]);
+
+    const bars = [
+      {
+        ts: '2026-04-15T15:30:00Z',
+        symbol: '$TICK' as const,
+        open: 500,
+        high: 700,
+        low: 450,
+        close: 650,
+      },
+      {
+        ts: '2026-04-15T15:30:00Z',
+        symbol: '$ADD' as const,
+        open: 100,
+        high: 200,
+        low: 50,
+        close: 180,
+      },
+      {
+        ts: '2026-04-15T15:30:00Z',
+        symbol: '$VOLD' as const,
+        open: 10,
+        high: 50,
+        low: -5,
+        close: 35,
+      },
+      {
+        ts: '2026-04-15T15:30:00Z',
+        symbol: '$TRIN' as const,
+        open: 1.1,
+        high: 1.3,
+        low: 0.9,
+        close: 1.05,
+      },
+    ];
+
+    const result = formatMarketInternalsForClaude(bars);
+    expect(result).not.toBeNull();
+
+    // Regime label + confidence
+    expect(result).toContain('Regime: RANGE DAY');
+    expect(result).toContain('confidence: 72%');
+
+    // Evidence lines
+    expect(result).toContain('TICK oscillating, mean-reversion rate 0.63');
+    expect(result).toContain('ADD flatness 0.81');
+
+    // Current readings
+    expect(result).toContain('Current readings');
+    expect(result).toContain('$TICK: +650');
+    expect(result).toContain('$ADD: +180');
+    expect(result).toContain('$VOLD: +35');
+    expect(result).toContain('$TRIN: 1.05');
+
+    // Extreme events
+    expect(result).toContain("Today's extreme events (2 total)");
+    expect(result).toContain('+680');
+    expect(result).toContain('-720');
+    expect(result).toContain('pinned 5m');
+    expect(result).toContain('FADE candidate');
   });
 });
 
@@ -71,8 +177,6 @@ describe('numOrUndef', () => {
 
 // We need to import buildAnalysisContext with mocks for its deps.
 // This is done in a separate describe block with vi.mock calls.
-
-import { vi, beforeEach } from 'vitest';
 
 // ── Mocks for buildAnalysisContext (to reach formatMlFindingsForClaude) ──
 
@@ -112,6 +216,23 @@ vi.mock('../_lib/db-nope.js', () => ({
   getRecentNope: vi.fn().mockResolvedValue([]),
   getSessionNope: vi.fn().mockResolvedValue([]),
   formatNopeForClaude: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock('../_lib/db-flow.js', () => ({
+  getMarketInternalsToday: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../../src/utils/market-regime.js', () => ({
+  classifyRegime: vi.fn().mockReturnValue({
+    regime: 'neutral',
+    confidence: 0,
+    evidence: [],
+    scores: { range: 0, trend: 0, neutral: 1 },
+  }),
+}));
+
+vi.mock('../../src/utils/extreme-detector.js', () => ({
+  detectExtremes: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../../src/utils/zero-gamma.js', () => ({
@@ -188,8 +309,6 @@ vi.mock('../_lib/sentry.js', () => ({
     increment: vi.fn(),
   },
 }));
-
-import { buildAnalysisContext } from '../_lib/analyze-context.js';
 
 describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
   beforeEach(() => {

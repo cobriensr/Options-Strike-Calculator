@@ -23,6 +23,8 @@ import { useChainData } from './hooks/useChainData';
 import { useOptionsFlow } from './hooks/useOptionsFlow';
 import { useWhalePositioning } from './hooks/useWhalePositioning';
 import { useAlertPolling } from './hooks/useAlertPolling';
+import { useMarketInternals } from './hooks/useMarketInternals';
+import { classifyRegime } from './utils/market-regime';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useGexTarget } from './hooks/useGexTarget';
@@ -49,7 +51,7 @@ import { OptionsFlowTable } from './components/OptionsFlow/OptionsFlowTable';
 import { FlowDirectionalRollup } from './components/OptionsFlow/FlowDirectionalRollup';
 import { WhalePositioningTable } from './components/OptionsFlow/WhalePositioningTable';
 import { FlowConfluencePanel } from './components/OptionsFlow/FlowConfluencePanel';
-import { MarketInternalsBadge } from './components/MarketInternals/MarketInternalsBadge';
+import { MarketInternalsPanel } from './components/MarketInternals/MarketInternalsPanel';
 import { findConfluences } from './utils/flow-confluence';
 import { classifyAggression } from './utils/flow-aggression';
 import type { RankedStrike } from './hooks/useOptionsFlow';
@@ -304,6 +306,17 @@ export default function StrikeCalculator() {
   const whale = useWhalePositioning({
     marketOpen: market.data.quotes?.marketOpen ?? false,
   });
+  // Single hook call for market internals — shared by MarketInternalsPanel
+  // and FlowConfluencePanel to avoid duplicate 60-second polling loops.
+  const internals = useMarketInternals({
+    marketOpen: market.data.quotes?.marketOpen ?? false,
+  });
+  // Single regime classification — consumed by MarketInternalsPanel (badge)
+  // and FlowConfluencePanel (annotation) to avoid redundant computation.
+  const regime = useMemo(
+    () => classifyRegime(internals.bars),
+    [internals.bars],
+  );
   // Single source of truth for GEX target data. Drives both the GexTarget
   // panel AND the OptionsFlowTable's Net GEX column so flow-vs-GEX confluence
   // is visible at a glance (strong flow into a positive-GEX magnet reads
@@ -1122,8 +1135,10 @@ export default function StrikeCalculator() {
                 </ErrorBoundary>
 
                 <ErrorBoundary label="Market Internals">
-                  <MarketInternalsBadge
+                  <MarketInternalsPanel
+                    {...internals}
                     marketOpen={market.data.quotes?.marketOpen ?? false}
+                    regime={regime}
                   />
                 </ErrorBoundary>
 
@@ -1140,6 +1155,7 @@ export default function StrikeCalculator() {
                     <FlowConfluencePanel
                       intradayStrikes={optionsFlow.data?.strikes ?? []}
                       whaleAlerts={whale.data?.strikes ?? []}
+                      regime={regime}
                     />
                   </SectionBox>
                 </ErrorBoundary>

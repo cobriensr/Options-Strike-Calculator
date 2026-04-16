@@ -12,7 +12,7 @@
 import { memo, useState, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { SectionBox, Chip, StatusBadge } from '../ui';
-import type { UseGexTargetReturn } from '../../hooks/useGexTarget';
+import type { UseGexTargetReturn, SPXCandle } from '../../hooks/useGexTarget';
 import { useNopeIntraday } from '../../hooks/useNopeIntraday';
 import { TargetTile } from './TargetTile';
 import { UrgencyPanel } from './UrgencyPanel';
@@ -34,7 +34,6 @@ import {
   type StrikeScore,
   type PriceMovementContext,
 } from '../../utils/gex-target';
-import type { SPXCandle } from '../../hooks/useGexTarget';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -128,6 +127,14 @@ export const GexTarget = memo(function GexTarget({
   // SPY NOPE intraday overlay for PriceChart. Independent fetch — failure
   // here doesn't impact the GEX panels.
   const { points: nopePoints } = useNopeIntraday({ marketOpen });
+
+  // Filter NOPE to the scrubbed time window so the overlay tracks the
+  // time picker the same way visibleCandles does for price bars.
+  const visibleNopePoints = useMemo(() => {
+    if (!isScrubbed || !timestamp) return nopePoints;
+    const limit = new Date(timestamp).getTime();
+    return nopePoints.filter((p) => new Date(p.timestamp).getTime() <= limit);
+  }, [nopePoints, isScrubbed, timestamp]);
 
   // ── Mode selection ───────────────────────────────────────
 
@@ -447,7 +454,7 @@ export const GexTarget = memo(function GexTarget({
             score={activeScore}
             openingCallStrike={openingCallStrike}
             openingPutStrike={openingPutStrike}
-            nopePoints={nopePoints}
+            nopePoints={visibleNopePoints}
           />
         </div>
 
