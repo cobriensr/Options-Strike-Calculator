@@ -1,17 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { FlowConfluencePanel } from '../../components/OptionsFlow/FlowConfluencePanel';
 import type { RankedStrike, WhaleAlert } from '../../types/flow';
 import type { InternalBar } from '../../types/market-internals';
-
-// ============================================================
-// MOCKS
-// ============================================================
-
-const mockUseMarketInternals = vi.fn();
-vi.mock('../../hooks/useMarketInternals', () => ({
-  useMarketInternals: (...args: unknown[]) => mockUseMarketInternals(...args),
-}));
 
 // ============================================================
 // MARKET INTERNALS FIXTURES
@@ -145,22 +136,6 @@ function makeWhale(overrides: Partial<WhaleAlert> = {}): WhaleAlert {
 // ============================================================
 
 describe('FlowConfluencePanel', () => {
-  beforeEach(() => {
-    // Default: no bars (no regime annotation)
-    mockUseMarketInternals.mockReturnValue({
-      bars: [],
-      latestBySymbol: {
-        $TICK: null,
-        $ADD: null,
-        $VOLD: null,
-        $TRIN: null,
-      },
-      loading: false,
-      error: null,
-      asOf: null,
-    });
-  });
-
   it('renders "waiting" empty state when both retail and whale are empty', () => {
     render(<FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} />);
     expect(
@@ -357,20 +332,12 @@ describe('FlowConfluencePanel', () => {
   });
 
   it('renders range-day annotation with cyan styling', () => {
-    mockUseMarketInternals.mockReturnValue({
-      bars: makeRangeDayBars(),
-      latestBySymbol: {
-        $TICK: null,
-        $ADD: null,
-        $VOLD: null,
-        $TRIN: null,
-      },
-      loading: false,
-      error: null,
-      asOf: '2026-04-15T14:20:00Z',
-    });
     render(
-      <FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} marketOpen />,
+      <FlowConfluencePanel
+        intradayStrikes={[]}
+        whaleAlerts={[]}
+        bars={makeRangeDayBars()}
+      />,
     );
     const annotation = screen.getByTestId('regime-annotation');
     expect(annotation).toBeInTheDocument();
@@ -380,20 +347,12 @@ describe('FlowConfluencePanel', () => {
   });
 
   it('renders trend-day annotation with violet styling', () => {
-    mockUseMarketInternals.mockReturnValue({
-      bars: makeTrendDayBars(),
-      latestBySymbol: {
-        $TICK: null,
-        $ADD: null,
-        $VOLD: null,
-        $TRIN: null,
-      },
-      loading: false,
-      error: null,
-      asOf: '2026-04-15T14:20:00Z',
-    });
     render(
-      <FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} marketOpen />,
+      <FlowConfluencePanel
+        intradayStrikes={[]}
+        whaleAlerts={[]}
+        bars={makeTrendDayBars()}
+      />,
     );
     const annotation = screen.getByTestId('regime-annotation');
     expect(annotation).toBeInTheDocument();
@@ -404,20 +363,16 @@ describe('FlowConfluencePanel', () => {
 
   it('renders neutral annotation when data is insufficient', () => {
     // Only 3 TICK bars — not enough for regime classification
-    mockUseMarketInternals.mockReturnValue({
-      bars: [makeTickBar(100, 0), makeTickBar(-50, 1), makeTickBar(200, 2)],
-      latestBySymbol: {
-        $TICK: null,
-        $ADD: null,
-        $VOLD: null,
-        $TRIN: null,
-      },
-      loading: false,
-      error: null,
-      asOf: '2026-04-15T14:03:00Z',
-    });
     render(
-      <FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[]} marketOpen />,
+      <FlowConfluencePanel
+        intradayStrikes={[]}
+        whaleAlerts={[]}
+        bars={[
+          makeTickBar(100, 0),
+          makeTickBar(-50, 1),
+          makeTickBar(200, 2),
+        ]}
+      />,
     );
     const annotation = screen.getByTestId('regime-annotation');
     expect(annotation).toBeInTheDocument();

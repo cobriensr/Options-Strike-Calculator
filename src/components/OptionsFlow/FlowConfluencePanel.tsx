@@ -22,8 +22,8 @@ import {
   type ConfluenceMatch,
   type ConfluenceRelationship,
 } from '../../utils/flow-confluence';
-import { useMarketInternals } from '../../hooks/useMarketInternals';
 import { classifyRegime } from '../../utils/market-regime';
+import type { InternalBar } from '../../types/market-internals';
 
 // ============================================================
 // TYPES
@@ -33,7 +33,8 @@ export interface FlowConfluencePanelProps {
   intradayStrikes: RankedStrike[];
   whaleAlerts: WhaleAlert[];
   className?: string;
-  marketOpen?: boolean;
+  /** Market internals bars from the shared hook in App.tsx. */
+  bars?: InternalBar[];
 }
 
 type BadgeKind = 'AGREE' | 'HEDGE' | 'CONTRARIAN';
@@ -179,10 +180,6 @@ function MatchRow({ match }: { match: ConfluenceMatch }) {
 }
 
 // ============================================================
-// MAIN
-// ============================================================
-
-// ============================================================
 // REGIME ANNOTATION
 // ============================================================
 
@@ -212,18 +209,18 @@ export function FlowConfluencePanel({
   intradayStrikes,
   whaleAlerts,
   className,
-  marketOpen,
+  bars,
 }: FlowConfluencePanelProps) {
   const matches = useMemo(
     () => findConfluences(intradayStrikes, whaleAlerts),
     [intradayStrikes, whaleAlerts],
   );
 
-  const { bars } = useMarketInternals({
-    marketOpen: marketOpen ?? false,
-  });
-  const regime = useMemo(() => classifyRegime(bars), [bars]);
-  const annotation = REGIME_ANNOTATION[regime.regime];
+  const regime = useMemo(
+    () => (bars && bars.length > 0 ? classifyRegime(bars) : null),
+    [bars],
+  );
+  const annotation = regime ? REGIME_ANNOTATION[regime.regime] : null;
 
   const hasRetail = intradayStrikes.length > 0;
   const hasWhale = whaleAlerts.length > 0;
@@ -240,7 +237,7 @@ export function FlowConfluencePanel({
       </span>
 
       {/* Regime annotation — compact single-line context */}
-      {bars.length > 0 && (
+      {regime && annotation && (
         <div
           className={`px-3 py-1.5 font-sans text-[11px] ${annotation.className}`}
           data-testid="regime-annotation"

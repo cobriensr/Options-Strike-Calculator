@@ -5,13 +5,13 @@
  * regime pill (range/trend/neutral + confidence) and a scrollable
  * event log of $TICK extreme events labelled with regime context.
  *
- * Owns the single `useMarketInternals` hook call and passes data
- * down to the badge to avoid duplicate 60-second polling loops.
+ * Pure presentational — the parent (App.tsx) owns the single
+ * `useMarketInternals` hook call and passes data down as props to
+ * avoid duplicate 60-second polling loops.
  */
 
 import { useMemo } from 'react';
 import type { FC } from 'react';
-import { useMarketInternals } from '../../hooks/useMarketInternals';
 import { classifyRegime } from '../../utils/market-regime';
 import { detectExtremes } from '../../utils/extreme-detector';
 import type {
@@ -19,6 +19,7 @@ import type {
   RegimeResult,
   RegimeType,
 } from '../../types/market-internals';
+import type { UseMarketInternalsResult } from '../../hooks/useMarketInternals';
 import { MarketInternalsBadge } from './MarketInternalsBadge';
 
 // ============================================================
@@ -161,16 +162,19 @@ function EventRow({ event }: { event: ExtremeEvent }) {
 // MAIN
 // ============================================================
 
-export interface MarketInternalsPanelProps {
+export interface MarketInternalsPanelProps
+  extends UseMarketInternalsResult {
   marketOpen: boolean;
 }
 
 export const MarketInternalsPanel: FC<MarketInternalsPanelProps> = ({
+  bars,
+  latestBySymbol,
+  loading,
+  error,
+  asOf,
   marketOpen,
 }) => {
-  const { bars, latestBySymbol, loading, error, asOf } = useMarketInternals({
-    marketOpen,
-  });
 
   const regime = useMemo(() => classifyRegime(bars), [bars]);
 

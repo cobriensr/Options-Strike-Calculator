@@ -23,6 +23,7 @@ import { useChainData } from './hooks/useChainData';
 import { useOptionsFlow } from './hooks/useOptionsFlow';
 import { useWhalePositioning } from './hooks/useWhalePositioning';
 import { useAlertPolling } from './hooks/useAlertPolling';
+import { useMarketInternals } from './hooks/useMarketInternals';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useGexTarget } from './hooks/useGexTarget';
@@ -302,6 +303,11 @@ export default function StrikeCalculator() {
     marketOpen: market.data.quotes?.marketOpen ?? false,
   });
   const whale = useWhalePositioning({
+    marketOpen: market.data.quotes?.marketOpen ?? false,
+  });
+  // Single hook call for market internals — shared by MarketInternalsPanel
+  // and FlowConfluencePanel to avoid duplicate 60-second polling loops.
+  const internals = useMarketInternals({
     marketOpen: market.data.quotes?.marketOpen ?? false,
   });
   // Single source of truth for GEX target data. Drives both the GexTarget
@@ -1123,6 +1129,7 @@ export default function StrikeCalculator() {
 
                 <ErrorBoundary label="Market Internals">
                   <MarketInternalsPanel
+                    {...internals}
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </ErrorBoundary>
@@ -1140,6 +1147,7 @@ export default function StrikeCalculator() {
                     <FlowConfluencePanel
                       intradayStrikes={optionsFlow.data?.strikes ?? []}
                       whaleAlerts={whale.data?.strikes ?? []}
+                      bars={internals.bars}
                     />
                   </SectionBox>
                 </ErrorBoundary>

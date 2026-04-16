@@ -2,22 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { MarketInternalsPanel } from '../../components/MarketInternals/MarketInternalsPanel';
 import type {
+  MarketInternalsPanelProps,
+} from '../../components/MarketInternals/MarketInternalsPanel';
+import type {
   InternalBar,
   InternalSymbol,
   RegimeResult,
   ExtremeEvent,
 } from '../../types/market-internals';
-import type { UseMarketInternalsResult } from '../../hooks/useMarketInternals';
-
-// ── Hook mock ──────────────────────────────────────────────
-
-const mockResult = vi.hoisted(() => ({
-  current: null as UseMarketInternalsResult | null,
-}));
-
-vi.mock('../../hooks/useMarketInternals', () => ({
-  useMarketInternals: () => mockResult.current,
-}));
 
 // ── Utility mocks ─────────────────────────────────────────
 
@@ -44,14 +36,17 @@ function emptyLatest(): Record<InternalSymbol, InternalBar | null> {
   return { $TICK: null, $ADD: null, $VOLD: null, $TRIN: null };
 }
 
-function setHook(partial: Partial<UseMarketInternalsResult>): void {
-  mockResult.current = {
+function defaultProps(
+  overrides: Partial<MarketInternalsPanelProps> = {},
+): MarketInternalsPanelProps {
+  return {
     bars: [],
     latestBySymbol: emptyLatest(),
     loading: false,
     error: null,
     asOf: '2026-04-15T18:00:00Z',
-    ...partial,
+    marketOpen: true,
+    ...overrides,
   };
 }
 
@@ -78,7 +73,6 @@ function makeEvent(partial: Partial<ExtremeEvent>): ExtremeEvent {
 }
 
 beforeEach(() => {
-  setHook({});
   setRegime({});
   mockEvents.current = [];
 });
@@ -91,7 +85,6 @@ describe('MarketInternalsPanel', () => {
   // ────────────────────────────────────────────────────────
 
   it('shows RANGE DAY regime with confidence percentage', () => {
-    setHook({ bars: [] });
     setRegime({
       regime: 'range',
       confidence: 0.8,
@@ -99,7 +92,7 @@ describe('MarketInternalsPanel', () => {
       scores: { range: 0.5, trend: 0.1, neutral: 0.4 },
     });
 
-    render(<MarketInternalsPanel marketOpen={true} />);
+    render(<MarketInternalsPanel {...defaultProps()} />);
 
     const label = screen.getByTestId('regime-label');
     expect(label.textContent).toBe('RANGE DAY');
@@ -113,7 +106,6 @@ describe('MarketInternalsPanel', () => {
   });
 
   it('shows TREND DAY regime with violet styling', () => {
-    setHook({ bars: [] });
     setRegime({
       regime: 'trend',
       confidence: 0.65,
@@ -121,7 +113,7 @@ describe('MarketInternalsPanel', () => {
       scores: { range: 0.1, trend: 0.6, neutral: 0.3 },
     });
 
-    render(<MarketInternalsPanel marketOpen={true} />);
+    render(<MarketInternalsPanel {...defaultProps()} />);
 
     const label = screen.getByTestId('regime-label');
     expect(label.textContent).toBe('TREND DAY');
@@ -130,7 +122,6 @@ describe('MarketInternalsPanel', () => {
   });
 
   it('shows NEUTRAL regime muted when confidence < 0.3', () => {
-    setHook({ bars: [] });
     setRegime({
       regime: 'neutral',
       confidence: 0.2,
@@ -138,7 +129,7 @@ describe('MarketInternalsPanel', () => {
       scores: { range: 0, trend: 0, neutral: 1 },
     });
 
-    render(<MarketInternalsPanel marketOpen={true} />);
+    render(<MarketInternalsPanel {...defaultProps()} />);
 
     const label = screen.getByTestId('regime-label');
     expect(label.textContent).toBe('NEUTRAL');
@@ -151,7 +142,6 @@ describe('MarketInternalsPanel', () => {
   // ────────────────────────────────────────────────────────
 
   it('shows extreme events with correct labels', () => {
-    setHook({ bars: [] });
     setRegime({ regime: 'range', confidence: 0.7 });
     mockEvents.current = [
       makeEvent({
@@ -166,7 +156,7 @@ describe('MarketInternalsPanel', () => {
       }),
     ];
 
-    render(<MarketInternalsPanel marketOpen={true} />);
+    render(<MarketInternalsPanel {...defaultProps()} />);
 
     const rows = screen.getAllByTestId('extreme-event-row');
     expect(rows).toHaveLength(2);
@@ -178,18 +168,16 @@ describe('MarketInternalsPanel', () => {
   });
 
   it('shows "No extreme events yet" when detectExtremes returns empty', () => {
-    setHook({ bars: [] });
     setRegime({});
     mockEvents.current = [];
 
-    render(<MarketInternalsPanel marketOpen={true} />);
+    render(<MarketInternalsPanel {...defaultProps()} />);
 
     expect(screen.getByTestId('no-extreme-events')).toBeInTheDocument();
     expect(screen.getByText(/no extreme events yet/i)).toBeInTheDocument();
   });
 
   it('renders pinned events with a pinned indicator', () => {
-    setHook({ bars: [] });
     setRegime({ regime: 'trend', confidence: 0.7 });
     mockEvents.current = [
       makeEvent({
@@ -206,7 +194,7 @@ describe('MarketInternalsPanel', () => {
       }),
     ];
 
-    render(<MarketInternalsPanel marketOpen={true} />);
+    render(<MarketInternalsPanel {...defaultProps()} />);
 
     const rows = screen.getAllByTestId('extreme-event-row');
     // Reversed: the pinned event (15:30) is now second in display
@@ -228,11 +216,10 @@ describe('MarketInternalsPanel', () => {
   // ────────────────────────────────────────────────────────
 
   it('shows badge placeholders and empty event log during loading', () => {
-    setHook({ loading: true });
     setRegime({});
     mockEvents.current = [];
 
-    render(<MarketInternalsPanel marketOpen={true} />);
+    render(<MarketInternalsPanel {...defaultProps({ loading: true })} />);
 
     // Badge should render placeholder cells
     expect(screen.getByTestId('market-internal-tick').textContent).toMatch(
@@ -251,7 +238,6 @@ describe('MarketInternalsPanel', () => {
   // ────────────────────────────────────────────────────────
 
   it('renders events newest-first', () => {
-    setHook({ bars: [] });
     setRegime({ regime: 'range', confidence: 0.6 });
     mockEvents.current = [
       makeEvent({
@@ -271,7 +257,7 @@ describe('MarketInternalsPanel', () => {
       }),
     ];
 
-    render(<MarketInternalsPanel marketOpen={true} />);
+    render(<MarketInternalsPanel {...defaultProps()} />);
 
     const rows = screen.getAllByTestId('extreme-event-row');
     expect(rows).toHaveLength(3);
