@@ -22,22 +22,28 @@ function defaultProps(
     canScrubNext: false,
     onScrubPrev: vi.fn(),
     onScrubNext: vi.fn(),
+    onScrubTo: vi.fn(),
     onScrubLive: vi.fn(),
     onRefresh: vi.fn(),
     loading: false,
+    timestamps: ['2026-04-14T20:25:00Z', '2026-04-14T20:30:00Z'],
     ...overrides,
   };
 }
 
 describe('HeaderControls', () => {
-  it('renders the formatted timestamp with a CT suffix when timestamp is set', () => {
+  it('renders a time picker dropdown when timestamps are available', () => {
     render(<HeaderControls {...defaultProps()} />);
-    expect(screen.getByText(/CT$/)).toBeDefined();
+    expect(
+      screen.getByRole('combobox', { name: /jump to snapshot time/i }),
+    ).toBeDefined();
   });
 
-  it('omits the timestamp span when timestamp is null', () => {
+  it('omits the time picker when timestamp is null', () => {
     render(<HeaderControls {...defaultProps({ timestamp: null })} />);
-    expect(screen.queryByText(/CT$/)).toBeNull();
+    expect(
+      screen.queryByRole('combobox', { name: /jump to snapshot time/i }),
+    ).toBeNull();
   });
 
   it('shows the LIVE badge when isLive is true and not scrubbed', () => {

@@ -128,6 +128,8 @@ export interface UseGexPerStrikeReturn {
   scrubPrev: () => void;
   /** Step one snapshot later (clears scrub when at the latest) */
   scrubNext: () => void;
+  /** Jump directly to a specific snapshot timestamp. */
+  scrubTo: (ts: string) => void;
   /**
    * Resume live mode. Clears scrub state AND resets `selectedDate` to today
    * if viewing a past date — the "Live" control is the single way back to
@@ -354,6 +356,18 @@ export function useGexPerStrike(
     });
   }, [timestamps]);
 
+  const scrubTo = useCallback(
+    (ts: string) => {
+      // Jumping to the latest timestamp resumes live mode.
+      if (ts === timestamps.at(-1)) {
+        setScrubTimestamp(null);
+      } else if (timestamps.includes(ts)) {
+        setScrubTimestamp(ts);
+      }
+    },
+    [timestamps],
+  );
+
   const scrubLive = useCallback(() => {
     // Reset to live mode on both axes: clear scrub AND snap date back to
     // today. If the user was on a past date, this also kicks the dispatch
@@ -386,6 +400,7 @@ export function useGexPerStrike(
     canScrubNext,
     scrubPrev,
     scrubNext,
+    scrubTo,
     scrubLive,
     refresh,
   };

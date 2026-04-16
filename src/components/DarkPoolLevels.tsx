@@ -41,6 +41,9 @@ interface Props {
   canScrubNext?: boolean;
   onScrubPrev?: () => void;
   onScrubNext?: () => void;
+  onScrubTo?: (time: string) => void;
+  /** Available HH:MM time slots for the trading session. */
+  timeGrid?: readonly string[];
   onScrubLive?: () => void;
 }
 
@@ -96,6 +99,8 @@ export default memo(function DarkPoolLevels({
   canScrubNext = false,
   onScrubPrev,
   onScrubNext,
+  onScrubTo,
+  timeGrid = [],
   onScrubLive,
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
@@ -179,14 +184,32 @@ export default memo(function DarkPoolLevels({
         >
           &#x25C0;
         </button>
-        <span
-          className="min-w-[44px] text-center font-mono text-[10px]"
-          style={{
-            color: isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800',
-          }}
-        >
-          {scrubTime ?? (updatedAt ? formatTime(updatedAt) : '')}
-        </span>
+        {timeGrid.length > 1 && onScrubTo ? (
+          <select
+            value={scrubTime ?? timeGrid.at(-1) ?? ''}
+            onChange={(e) => onScrubTo(e.target.value)}
+            aria-label="Jump to snapshot time"
+            className="border-edge min-w-[60px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[10px] outline-none"
+            style={{
+              color: isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800',
+            }}
+          >
+            {timeGrid.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span
+            className="min-w-[44px] text-center font-mono text-[10px]"
+            style={{
+              color: isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800',
+            }}
+          >
+            {scrubTime ?? (updatedAt ? formatTime(updatedAt) : '')}
+          </span>
+        )}
         <button
           type="button"
           onClick={onScrubNext}

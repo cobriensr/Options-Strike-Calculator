@@ -139,6 +139,7 @@ function makeHookResult(
     canScrubNext: false,
     scrubPrev: vi.fn(),
     scrubNext: vi.fn(),
+    scrubTo: vi.fn(),
     scrubLive: vi.fn(),
     loading: false,
     error: null,

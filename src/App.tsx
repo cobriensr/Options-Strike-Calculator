@@ -581,8 +581,8 @@ export default function StrikeCalculator() {
     const hasMarketOrSnapshot = market.hasData || !!historySnapshot;
     return [
       { id: 'sec-inputs', label: 'Inputs' },
-      { id: 'sec-settings', label: 'Settings' },
       { id: 'sec-trading-schedule', label: 'Schedule' },
+      { id: 'sec-settings', label: 'Settings' },
       { id: 'sec-risk', label: 'Risk' },
       { id: 'sec-regime', label: 'Regime' },
       ...(isOwner && hasMarketOrSnapshot
@@ -904,6 +904,15 @@ export default function StrikeCalculator() {
               />
             </div>
 
+            <span id="sec-trading-schedule" className="block scroll-mt-28" />
+            <TradingScheduleSection
+              selectedDate={vix.selectedDate}
+              timeHour={timeHour}
+              timeMinute={timeMinute}
+              timeAmPm={timeAmPm}
+              timezone={timezone}
+            />
+
             <EventDayWarning
               selectedDate={vix.selectedDate}
               liveEvents={market.data.events?.events}
@@ -964,15 +973,6 @@ export default function StrikeCalculator() {
               />
             </div>
 
-            <span id="sec-trading-schedule" className="block scroll-mt-28" />
-            <TradingScheduleSection
-              selectedDate={vix.selectedDate}
-              timeHour={timeHour}
-              timeMinute={timeMinute}
-              timeAmPm={timeAmPm}
-              timezone={timezone}
-            />
-
             <span id="sec-risk" className="block scroll-mt-28" />
             <ErrorBoundary label="Risk Calculator">
               <Suspense fallback={<SkeletonSection lines={5} />}>
@@ -1023,6 +1023,8 @@ export default function StrikeCalculator() {
                     canScrubNext={darkPool.canScrubNext}
                     onScrubPrev={darkPool.scrubPrev}
                     onScrubNext={darkPool.scrubNext}
+                    onScrubTo={darkPool.scrubTo}
+                    timeGrid={darkPool.timeGrid}
                     onScrubLive={darkPool.scrubLive}
                   />
                 </ErrorBoundary>
@@ -1039,6 +1041,7 @@ export default function StrikeCalculator() {
                       loading={gexStrike.loading}
                       error={gexStrike.error}
                       timestamp={gexStrike.timestamp}
+                      timestamps={gexStrike.timestamps}
                       onRefresh={gexStrike.refresh}
                       selectedDate={gexStrike.selectedDate}
                       onDateChange={gexStrike.setSelectedDate}
@@ -1049,6 +1052,7 @@ export default function StrikeCalculator() {
                       canScrubNext={gexStrike.canScrubNext}
                       onScrubPrev={gexStrike.scrubPrev}
                       onScrubNext={gexStrike.scrubNext}
+                      onScrubTo={gexStrike.scrubTo}
                       onScrubLive={gexStrike.scrubLive}
                     />
                   </Suspense>
@@ -1080,6 +1084,7 @@ export default function StrikeCalculator() {
                       loading={gexStrike.loading}
                       error={gexStrike.error}
                       timestamp={gexStrike.timestamp}
+                      timestamps={gexStrike.timestamps}
                       onRefresh={gexStrike.refresh}
                       selectedDate={gexStrike.selectedDate}
                       onDateChange={gexStrike.setSelectedDate}
@@ -1089,6 +1094,7 @@ export default function StrikeCalculator() {
                       canScrubNext={gexStrike.canScrubNext}
                       onScrubPrev={gexStrike.scrubPrev}
                       onScrubNext={gexStrike.scrubNext}
+                      onScrubTo={gexStrike.scrubTo}
                       onScrubLive={gexStrike.scrubLive}
                       onBiasChange={setGexBiasContext}
                     />

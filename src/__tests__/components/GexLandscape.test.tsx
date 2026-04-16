@@ -77,7 +77,9 @@ const defaultProps: GexLandscapeProps = {
   canScrubNext: false,
   onScrubPrev: vi.fn(),
   onScrubNext: vi.fn(),
+  onScrubTo: vi.fn(),
   onScrubLive: vi.fn(),
+  timestamps: ['2026-04-13T19:40:00.000Z', '2026-04-13T19:45:00.000Z'],
 };
 
 const collapseSignal: CollapseSignal = { version: 0, collapsed: false };

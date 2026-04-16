@@ -47,6 +47,10 @@ export interface UseDarkPoolLevelsReturn {
   canScrubNext: boolean;
   scrubPrev: () => void;
   scrubNext: () => void;
+  /** Jump directly to a specific HH:MM time slot. */
+  scrubTo: (time: string) => void;
+  /** All available HH:MM time slots for the trading session. */
+  timeGrid: readonly string[];
   scrubLive: () => void;
 }
 
@@ -228,6 +232,15 @@ export function useDarkPoolLevels(
     });
   }, []);
 
+  const scrubTo = useCallback((time: string) => {
+    // Jumping to the last grid slot resumes live mode.
+    if (time === TIME_GRID.at(-1)) {
+      setScrubTime(null);
+    } else if (TIME_GRID.includes(time)) {
+      setScrubTime(time);
+    }
+  }, []);
+
   const scrubLive = useCallback(() => {
     setScrubTime(null);
   }, []);
@@ -254,6 +267,8 @@ export function useDarkPoolLevels(
     canScrubNext,
     scrubPrev,
     scrubNext,
+    scrubTo,
+    timeGrid: TIME_GRID,
     scrubLive,
   };
 }

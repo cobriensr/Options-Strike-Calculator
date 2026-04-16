@@ -56,10 +56,14 @@ interface Props {
   canScrubPrev: boolean;
   /** True when the user is scrubbed and can step forward */
   canScrubNext: boolean;
+  /** All snapshot timestamps for the active date, ascending. */
+  timestamps: string[];
   /** Step one snapshot earlier */
   onScrubPrev: () => void;
   /** Step one snapshot later */
   onScrubNext: () => void;
+  /** Jump directly to a specific snapshot timestamp. */
+  onScrubTo: (ts: string) => void;
   /** Clear scrub and resume live */
   onScrubLive: () => void;
 }
@@ -322,15 +326,17 @@ export default memo(function GexPerStrike({
   isScrubbed,
   canScrubPrev,
   canScrubNext,
+  timestamps,
   onScrubPrev,
   onScrubNext,
+  onScrubTo,
   onScrubLive,
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
   const [viewMode, setViewMode] = useState<ViewMode>('oi');
   const [showCharm, setShowCharm] = useState(true);
   const [showVanna, setShowVanna] = useState(true);
-  const [showDex, setShowDex] = useState(false);
+  const [showDex, setShowDex] = useState(true);
   const [hovered, setHovered] = useState<number | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
@@ -473,13 +479,29 @@ export default memo(function GexPerStrike({
         >
           &#x25C0;
         </button>
-        {timestamp && (
-          <span
-            className="min-w-[44px] text-center font-mono text-[10px]"
+        {timestamps.length > 1 && timestamp ? (
+          <select
+            value={timestamp ?? ''}
+            onChange={(e) => onScrubTo(e.target.value)}
+            aria-label="Jump to snapshot time"
+            className="border-edge min-w-[60px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[10px] outline-none"
             style={{ color: timestampColor }}
           >
-            {formatTime(timestamp)}
-          </span>
+            {timestamps.map((ts) => (
+              <option key={ts} value={ts}>
+                {formatTime(ts)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          timestamp && (
+            <span
+              className="min-w-[44px] text-center font-mono text-[10px]"
+              style={{ color: timestampColor }}
+            >
+              {formatTime(timestamp)}
+            </span>
+          )
         )}
         <button
           onClick={onScrubNext}

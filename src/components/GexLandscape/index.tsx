@@ -50,6 +50,8 @@ export interface GexLandscapeProps {
   loading: boolean;
   error: string | null;
   timestamp: string | null;
+  /** All snapshot timestamps for the active date, ascending. */
+  timestamps: string[];
   onRefresh: () => void;
   selectedDate: string;
   onDateChange: (date: string) => void;
@@ -59,6 +61,8 @@ export interface GexLandscapeProps {
   canScrubNext: boolean;
   onScrubPrev: () => void;
   onScrubNext: () => void;
+  /** Jump directly to a specific snapshot timestamp. */
+  onScrubTo: (ts: string) => void;
   onScrubLive: () => void;
   /** Called whenever the structural bias summary changes; pass to analyze. */
   onBiasChange?: (summary: string | null) => void;
@@ -69,6 +73,7 @@ const GexLandscape = memo(function GexLandscape({
   loading,
   error,
   timestamp,
+  timestamps,
   onRefresh,
   selectedDate,
   onDateChange,
@@ -78,6 +83,7 @@ const GexLandscape = memo(function GexLandscape({
   canScrubNext,
   onScrubPrev,
   onScrubNext,
+  onScrubTo,
   onScrubLive,
   onBiasChange,
 }: GexLandscapeProps) {
@@ -230,6 +236,7 @@ const GexLandscape = memo(function GexLandscape({
   const headerRight = (
     <HeaderControls
       timestamp={timestamp}
+      timestamps={timestamps}
       selectedDate={selectedDate}
       onDateChange={onDateChange}
       isLive={isLive}
@@ -238,6 +245,7 @@ const GexLandscape = memo(function GexLandscape({
       canScrubNext={canScrubNext}
       onScrubPrev={onScrubPrev}
       onScrubNext={onScrubNext}
+      onScrubTo={onScrubTo}
       onScrubLive={onScrubLive}
       onRefresh={onRefresh}
       loading={loading}

@@ -103,6 +103,7 @@ export const GexTarget = memo(function GexTarget({
     vol,
     dir,
     timestamp,
+    timestamps,
     selectedDate,
     setSelectedDate,
     availableDates,
@@ -113,6 +114,7 @@ export const GexTarget = memo(function GexTarget({
     canScrubNext,
     scrubPrev,
     scrubNext,
+    scrubTo,
     scrubLive,
     loading,
     error,
@@ -284,9 +286,12 @@ export const GexTarget = memo(function GexTarget({
         >
           &#x25C0;
         </button>
-        {timestamp && (
-          <span
-            className="min-w-[44px] text-center font-mono text-[10px]"
+        {timestamps.length > 1 && timestamp ? (
+          <select
+            value={timestamp ?? ''}
+            onChange={(e) => scrubTo(e.target.value)}
+            aria-label="Jump to snapshot time"
+            className="border-edge min-w-[60px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[10px] outline-none"
             style={{
               color: isLive
                 ? '#00e676'
@@ -294,11 +299,32 @@ export const GexTarget = memo(function GexTarget({
                   ? '#ffb300'
                   : !isToday
                     ? '#ff9800'
-                    : undefined,
+                    : 'var(--color-secondary)',
             }}
           >
-            {formatTime(timestamp)}
-          </span>
+            {timestamps.map((ts) => (
+              <option key={ts} value={ts}>
+                {formatTime(ts)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          timestamp && (
+            <span
+              className="min-w-[44px] text-center font-mono text-[10px]"
+              style={{
+                color: isLive
+                  ? '#00e676'
+                  : isScrubbed
+                    ? '#ffb300'
+                    : !isToday
+                      ? '#ff9800'
+                      : undefined,
+              }}
+            >
+              {formatTime(timestamp)}
+            </span>
+          )
         )}
         <button
           type="button"

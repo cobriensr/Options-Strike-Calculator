@@ -19,7 +19,9 @@ const defaultScrubProps = {
   canScrubNext: false,
   onScrubPrev: noop,
   onScrubNext: noop,
+  onScrubTo: noop,
   onScrubLive: noop,
+  timestamps: [],
 };
 
 // ── Helpers ───────────────────────────────────────────────
@@ -193,9 +195,11 @@ describe('GexPerStrike: overlay toggles', () => {
         {...defaultScrubProps}
       />,
     );
-    expect(screen.getByText('CHARM')).toBeInTheDocument();
-    expect(screen.getByText('VANNA')).toBeInTheDocument();
-    expect(screen.getByText('DEX')).toBeInTheDocument();
+    // All three overlays default to ON, so button + legend both render.
+    // Use getAllByText since each appears in both the toggle and the legend.
+    expect(screen.getAllByText('CHARM').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('VANNA').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('DEX').length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders OI, VOL, and DIR mode buttons', () => {
@@ -497,7 +501,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={false}
         onScrubPrev={noop}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     expect(
@@ -525,7 +531,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={false}
         onScrubPrev={noop}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     // LIVE label is shown but not as a clickable button
@@ -553,7 +561,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={true}
         onScrubPrev={noop}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     expect(
@@ -580,7 +590,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={false}
         onScrubPrev={noop}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     expect(screen.getByText('BACKTEST')).toBeInTheDocument();
@@ -607,7 +619,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={false}
         onScrubPrev={noop}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     expect(
@@ -632,7 +646,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={false}
         onScrubPrev={noop}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     expect(
@@ -659,7 +675,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={false}
         onScrubPrev={onScrubPrev}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     await user.click(
@@ -687,7 +705,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={true}
         onScrubPrev={noop}
         onScrubNext={onScrubNext}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     await user.click(screen.getByRole('button', { name: /next snapshot/i }));
@@ -713,7 +733,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={true}
         onScrubPrev={noop}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={onScrubLive}
+        timestamps={[]}
       />,
     );
     await user.click(screen.getByRole('button', { name: /resume live/i }));
@@ -737,7 +759,9 @@ describe('GexPerStrike: scrub controls', () => {
         canScrubNext={true}
         onScrubPrev={noop}
         onScrubNext={noop}
+        onScrubTo={noop}
         onScrubLive={noop}
+        timestamps={[]}
       />,
     );
     // Loading state renders the loading view, not the chart, so the scrub
@@ -1414,7 +1438,7 @@ describe('GexPerStrike: GEX flip', () => {
 // ============================================================
 
 describe('GexPerStrike: overlay behavior', () => {
-  it('DEX toggle adds DEX values to right panel', async () => {
+  it('DEX overlay is on by default and toggle removes DEX from legend', async () => {
     const user = userEvent.setup();
     render(
       <GexPerStrike
@@ -1433,16 +1457,16 @@ describe('GexPerStrike: overlay behavior', () => {
       />,
     );
 
-    // Before toggling DEX on, DEX legend item should not appear
-    expect(screen.queryByText(/^DEX$/)).toBeInTheDocument(); // button exists
+    // DEX starts enabled — button + legend both present
+    const dexBefore = screen.getAllByText(/DEX/);
+    expect(dexBefore.length).toBeGreaterThanOrEqual(2);
 
-    // Click DEX button
-    await user.click(screen.getByText('DEX'));
+    // Click DEX button to toggle off
+    await user.click(screen.getByRole('button', { name: 'DEX' }));
 
-    // After DEX is on, the legend should show DEX entry
-    // The button is still there, but now also a legend entry
-    const dexMatches = screen.getAllByText(/DEX/);
-    expect(dexMatches.length).toBeGreaterThanOrEqual(2);
+    // After toggling off, only the button text remains
+    const dexAfter = screen.getAllByText(/DEX/);
+    expect(dexAfter.length).toBeLessThan(dexBefore.length);
   });
 
   it('charm toggle off hides charm from legend', async () => {

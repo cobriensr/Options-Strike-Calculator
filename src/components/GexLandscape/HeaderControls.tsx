@@ -9,6 +9,7 @@ import { fmtTime } from './formatters';
 
 export interface HeaderControlsProps {
   timestamp: string | null;
+  timestamps: string[];
   selectedDate: string;
   onDateChange: (date: string) => void;
   isLive: boolean;
@@ -17,6 +18,7 @@ export interface HeaderControlsProps {
   canScrubNext: boolean;
   onScrubPrev: () => void;
   onScrubNext: () => void;
+  onScrubTo: (ts: string) => void;
   onScrubLive: () => void;
   onRefresh: () => void;
   loading: boolean;
@@ -24,6 +26,7 @@ export interface HeaderControlsProps {
 
 export function HeaderControls({
   timestamp,
+  timestamps,
   selectedDate,
   onDateChange,
   isLive,
@@ -32,6 +35,7 @@ export function HeaderControls({
   canScrubNext,
   onScrubPrev,
   onScrubNext,
+  onScrubTo,
   onScrubLive,
   onRefresh,
   loading,
@@ -48,9 +52,12 @@ export function HeaderControls({
         >
           ‹
         </button>
-        {timestamp && (
-          <span
-            className="font-mono text-[11px]"
+        {timestamps.length > 1 && timestamp ? (
+          <select
+            value={timestamp ?? ''}
+            onChange={(e) => onScrubTo(e.target.value)}
+            aria-label="Jump to snapshot time"
+            className="border-edge min-w-[72px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[11px] outline-none"
             style={{
               color: isLive
                 ? '#00e676'
@@ -59,8 +66,27 @@ export function HeaderControls({
                   : 'var(--color-secondary)',
             }}
           >
-            {fmtTime(timestamp)} CT
-          </span>
+            {timestamps.map((ts) => (
+              <option key={ts} value={ts}>
+                {fmtTime(ts)} CT
+              </option>
+            ))}
+          </select>
+        ) : (
+          timestamp && (
+            <span
+              className="font-mono text-[11px]"
+              style={{
+                color: isLive
+                  ? '#00e676'
+                  : isScrubbed
+                    ? '#ffd740'
+                    : 'var(--color-secondary)',
+              }}
+            >
+              {fmtTime(timestamp)} CT
+            </span>
+          )
         )}
         <button
           onClick={onScrubNext}
