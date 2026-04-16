@@ -20,6 +20,11 @@ export default function ChartConfidenceGrid({ chartConfidence }: Props) {
           ['periscopeCharm', 'Periscope Charm'],
           ['darkPool', 'Dark Pool'],
           ['futuresContext', 'Futures'],
+          ['nopeSignal', 'SPY NOPE'],
+          ['deltaFlow', 'Delta Flow'],
+          ['zeroGamma', 'Zero-Gamma'],
+          ['netGexHeatmap', 'GEX Heatmap'],
+          ['marketInternals', 'Internals'],
           ['deltaPressure', 'Delta Pressure'],
           ['charmPressure', 'Charm Pressure'],
         ] as const

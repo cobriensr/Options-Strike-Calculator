@@ -103,6 +103,11 @@ export interface AnalysisResult {
     pinRisk?: ChartSignal;
     skew?: ChartSignal;
     futuresContext?: ChartSignal;
+    nopeSignal?: ChartSignal;
+    deltaFlow?: ChartSignal;
+    zeroGamma?: ChartSignal;
+    netGexHeatmap?: ChartSignal;
+    marketInternals?: ChartSignal;
     deltaPressure?: ChartSignal;
     charmPressure?: ChartSignal;
   };

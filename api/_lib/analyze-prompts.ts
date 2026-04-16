@@ -31,6 +31,9 @@ STEP 2 — FLOW CONSENSUS:
 Apply Rule 8 weighting (Market Tide 30%, QQQ Net Flow 25%, ETF Tide 20%, SPY 15%, SPX 10%).
 Check Rule 10 hedging divergence (does SPX flow diverge from 3+ other signals? Or from SPX alone if VIX > 25?).
 Check ETF Tide divergence (SPY/QQQ ETF Tide vs Net Flow — hedging divergence favors IC).
+Check 0DTE Delta Flow: does OTM delta agree or diverge from premium flow? If OTM DIVERGENCE label present, trust OTM delta for directional conviction.
+Check SPY NOPE trajectory: does dealer hedging pressure confirm or contradict the flow consensus? Note sign flips and magnitude.
+Check Prior-Day Flow Trend: is the multi-day arc sustaining, reversing, or fading? Does it bias today's structure selection?
 What is the weighted flow direction? What confidence level?
 
 STEP 3 — GAMMA PROFILE:
@@ -38,6 +41,9 @@ Apply Rule 1 (gamma asymmetry — does massive negative gamma on one side overri
 Apply Rule 6 (dominant positive gamma — does a 10x+ wall confirm IC?).
 Identify walls, danger zones, and where the calculator's short strikes would sit.
 Check Rule 7 (stops must avoid negative gamma zones).
+Check Net GEX Heatmap: dollar-scaled per-strike GEX with call/put composition. Does the gamma flip zone agree with the zero-gamma level?
+Check Zero-Gamma Level: how far is spot from the regime flip? What cone fraction? Does it confirm or contradict Aggregate GEX regime?
+Check All-Expiry Per-Strike Profile: do multi-day structural walls align with or diverge from 0DTE walls?
 
 STEP 4 — CHARM CONFIRMATION:
 Apply Rule 11 (does charm pattern confirm or contradict the flow-based structure?).
@@ -47,6 +53,8 @@ Apply Periscope Charm Override if applicable.
 
 STEP 5 — EVENTS, REGIME & TIMING (checked in priority order):
 Check Rule 12 (any scheduled events? Hard exit times?) — highest timing priority.
+Check Economic Calendar (from DB): are there high-severity events (FOMC, CPI, PCE, JOBS, GDP) today? Apply Rule 12 timing adjustments.
+Check Market Internals regime: is $TICK/$ADD/$VOLD/$TRIN classifying this as a RANGE DAY, TREND DAY, or NEUTRAL? Adjust signal weighting per <market_internals_regime>.
 Check Rule 3 (Friday tiers A-E if applicable).
 Check Rule 4 (VIX1D > VIX on Friday = bearish lean for structure selection).
 Apply Rule 16 (what GEX regime? How does it adjust management timing?).
@@ -59,6 +67,11 @@ Does IV term structure confirm or contradict VIX1D signals?
 Does price action (candles/VWAP) confirm or contradict flow direction?
 Does overnight gap analysis affect opening hour bias?
 Do OI concentration strikes create pin risk near short strikes?
+Do futures signals (ES basis, ZN flight-to-safety, RTY breadth, CL/GC/DX) lead or contradict options flow?
+Does OI Change analysis show institutional positioning bias? Ask-dominated = aggressive new positioning; high multi-leg % = spreads not directional bets.
+Does Realized Vol / IV Rank confirm or contradict the premium-selling thesis? RV/IV < 0.85 = overpriced premium (favorable). IV Rank > 70th = elevated (rich premium).
+Does ML Calibration update change any static prompt accuracy numbers? If present, use updated percentages.
+Does SPY NOPE agree with or contradict the flow consensus from Step 2?
 
 STEP 7 — STRUCTURE DECISION:
 Synthesize into IC / CCS / PCS / SIT OUT.
@@ -519,6 +532,35 @@ Intraday Microstructure Patterns (approximate, subject to event-day disruption):
 2:00-3:30 PM ET (Power Hour / Gamma Acceleration): Volume returns. Gamma concentrates near ATM as 0DTE options lose time value. Price moves accelerate. Positive gamma walls weaken. Negative gamma zones intensify. Rule 16 GEX-based time limits are calibrated to this window.
 3:30-4:00 PM ET (MOC / Settlement): MOC imbalances published ~3:50 PM can move SPX 10-20 pts. See settlement_mechanics for specific management guidance. If holding to settlement with adequate cushion (20+ pts), this window is the final theta collection period. If cushion is tight (<15 pts), close manually before 3:50 PM.
 </time_of_day>
+<oi_change>
+OI Change Analysis shows where institutions opened or closed the most SPX option positions from the prior session. This is provided as structured API data from the options chain.
+Key concepts:
+- ASK-DOMINATED volume (traded at/above ask) at a strike = aggressive new positioning. Institutions are initiating, not hedging.
+- BID-DOMINATED volume (traded at/below bid) at a strike = defensive activity or closing. Institutions are exiting or rolling.
+- High multi-leg percentage (>50%) at a strike = institutional SPREAD activity (verticals, combos, ratio spreads), not directional bets. Multi-leg flow creates gamma at both strikes of the spread — the net directional signal is weaker than single-leg positioning.
+How to use for structure selection:
+- Heavy ask-dominated put OI change at a strike 20-40 pts below spot = institutions are buying protective puts there. This level may become a dark-pool-confirmed support level. Favorable for PCS if it aligns with a positive gamma wall.
+- Heavy ask-dominated call OI change at a strike 20-40 pts above spot = institutions building call positions there. This level is a potential acceleration zone (new gamma being added). CCS short calls should avoid this strike.
+- OI Change is a PRIOR SESSION signal — it shows where institutions positioned YESTERDAY. It does not update intraday. Use it for initial strike placement guidance (where institutions have committed capital), not for intraday management.
+How to weight:
+- OI Change is a SECONDARY signal. It provides context for why gamma walls exist at certain strikes (because that's where institutions positioned) but does not override live flow or gamma data. When OI Change positioning aligns with a live gamma wall, confidence in that wall increases. When they disagree, trust the live data.
+</oi_change>
+<prior_day_flow>
+Prior-Day Flow Trend shows the Market Tide intraday arc (open → midday → close) and secondary flow source terminal values for the 2 most recent prior trading days. This is provided as structured API data.
+Key concepts:
+- SESSION TYPE classification (REVERSAL, FADE, TREND DAY, SUSTAINED) describes how the prior day's flow evolved. These labels are derived from the open/midday/close flow arc.
+- CROSS-DAY TREND summary compares the 2 prior days to detect momentum patterns (strengthening, weakening, reversing).
+- Secondary source alignment (SPX Flow, SPY Flow, QQQ Flow, SPY ETF Tide, QQQ ETF Tide) shows whether the most recent prior day's terminal readings were aligned or mixed.
+How to use for structure selection:
+- SUSTAINED bearish close on both prior days + today's opening flow bearish = momentum continuation is the base case. Higher confidence for CCS.
+- REVERSAL on the most recent prior day + today's opening flow in the NEW direction = continuation of the reversal. Higher confidence in the new direction.
+- FADE on the most recent prior day = yesterday's flow peaked midday and retreated. Today's morning flow in the same direction as yesterday's midday peak is likely to fade again. Reduce directional confidence, favor IC.
+- "Mixed signals across sources" on the most recent day = structural disagreement. Reduce directional confidence regardless of today's early flow.
+How to weight:
+- Prior-Day Flow is a CONTEXTUAL signal, not a trading signal. It provides the multi-day backdrop that today's flow sits inside. Use it to calibrate initial confidence (is today's flow continuing a trend or breaking one?) but do NOT let it override live intraday flow that contradicts it. Today's data always wins.
+- When Prior-Day Flow and today's opening flow AGREE: upgrade confidence by one level (LOW → MODERATE).
+- When they DISAGREE: no penalty — today's flow may be establishing a new direction. Note the divergence in observations.
+</prior_day_flow>
 </chart_types>
 <structure_selection_rules>
 These rules are derived from backtesting and override the default flow-based structure selection when applicable.
@@ -968,7 +1010,7 @@ Consider: VIX level, directional conviction, straddle cone proximity, gamma prof
 Before forming any opinion about structure, direction, or confidence, first extract raw values from each data source. This is a two-phase process:
 Phase 1: Value Extraction (do this in your thinking)
 For EACH data source, extract or verify the following values AT THE ENTRY TIME:
-For all API-provided data sources (Market Tide, Net Flow, ETF Tide, 0DTE Flow, Delta Flow, Aggregate GEX, Net Charm, SPX Candles, Dark Pool, Max Pain, IV Term Structure, ES Overnight Gap), use the exact structured values directly — no visual extraction needed. Verify NCP/NPP values, directions, patterns, regime classifications, and key levels as provided in the API data.
+For all API-provided data sources (Market Tide, Market Tide OTM, SPX/SPY/QQQ Net Flow, SPY/QQQ ETF Tide, 0DTE Index Flow, 0DTE Delta Flow, SPY NOPE, Aggregate GEX, Net Charm, Net GEX Heatmap, Zero-Gamma, All-Expiry Per-Strike, SPX Candles, Dark Pool, Max Pain, OI Change, IV Term Structure, Realized Vol, ES Overnight Gap, Futures Context, Prior-Day Flow, Economic Calendar, Market Internals, ML Calibration, GEX Landscape Bias), use the exact structured values directly — no visual extraction needed. Verify NCP/NPP values, directions, patterns, regime classifications, and key levels as provided in the API data.
 Periscope Gamma (from IMAGE — requires visual extraction):
 - Current price level
 - Nearest positive gamma wall: price level and approximate bar size
@@ -1068,6 +1110,11 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "pinRisk": { "signal": "LOW" | "MODERATE" | "HIGH" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Top OI strikes relative to short strike placement — pin magnet proximity" },
     "skew": { "signal": "STEEP_PUT" | "FLAT" | "SYMMETRIC" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "25Δ put skew level and skew ratio — tail risk premium assessment" },
     "futuresContext": { "signal": "RISK_ON" | "RISK_OFF" | "MIXED" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Cross-asset regime summary: ES basis, NQ divergence, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven, DX dollar headwind — which futures signals are active and what they mean for the structure" },
+    "nopeSignal": { "signal": "BULLISH" | "BEARISH" | "NEUTRAL" | "CHOPPY" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "SPY NOPE trajectory and magnitude — does dealer hedging pressure confirm or contradict the flow consensus? Note sign flips and whether NOPE agrees with Market Tide" },
+    "deltaFlow": { "signal": "CONFIRMS" | "CONTRADICTS" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "0DTE Delta Flow OTM signal label (OTM DIVERGENCE, OTM EXCEEDS TOTAL, OTM-DOMINANT, ATM-DOMINANT) and whether it confirms or caveats the Rule 8 flow consensus" },
+    "zeroGamma": { "signal": "SUPPRESSION" | "ACCELERATION" | "KNIFE_EDGE" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Current regime (positive/negative) at spot, cone fraction distance to flip, and whether it confirms or contradicts Aggregate GEX" },
+    "netGexHeatmap": { "signal": "CONFIRMS" | "CONTRADICTS" | "MIXED" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Dollar-scaled per-strike GEX: does the gamma flip zone agree with zero-gamma? Do the top walls match Periscope? Call/put composition at key walls" },
+    "marketInternals": { "signal": "RANGE_DAY" | "TREND_DAY" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "NYSE breadth regime classification — how it adjusts signal weighting per <market_internals_regime>" },
     "deltaPressure": { "signal": "BULLISH" | "BEARISH" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Delta Pressure heatmap read: direction of pressure zone relative to current price, hole/neutral zone location, and whether multi-expiry GEX structure supports or opposes the trade thesis" },
     "charmPressure": { "signal": "PIN_TARGET" | "DRIFT_UP" | "DRIFT_DOWN" | "MIXED" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Charm Pressure heatmap read: convergence boundary strike for EOD pin, blue/red zone alignment with current price, and whether Delta+Charm boundaries overlap for maximum confidence pin confirmation" }
   },
@@ -1135,7 +1182,7 @@ Notes on the response:
 - For "entry" mode: populate everything EXCEPT the "review" field (set to null).
 - For "midday" mode: focus on managementRules updates and whether to add entries. Set review to null.
 - For "review" mode: populate the "review" field with detailed retrospective analysis. entryPlan can be null.
-- The chartConfidence breakdown is always required — it shows which data sources drove the decision. For marketTide, spxNetFlow, spyNetFlow, qqqNetFlow, netCharm, aggregateGex, darkPool, ivTermStructure, spxCandles, overnightGap, vannaExposure, pinRisk, and skew: populate these from the API data sections in the context. Only mark as "NOT PROVIDED" if the corresponding data section is genuinely absent from the context. For periscope and periscopeCharm: populate from the uploaded Periscope images. Mark as "NOT PROVIDED" only if no Periscope images were uploaded. For deltaPressure and charmPressure: populate from the uploaded SpotGamma Delta Pressure and Charm Pressure heatmap images respectively. Mark as "NOT PROVIDED" only if the corresponding image type was not provided.
+- The chartConfidence breakdown is always required — it shows which data sources drove the decision. For marketTide, spxNetFlow, spyNetFlow, qqqNetFlow, netCharm, aggregateGex, darkPool, ivTermStructure, spxCandles, overnightGap, vannaExposure, pinRisk, skew, futuresContext, nopeSignal, deltaFlow, zeroGamma, netGexHeatmap, and marketInternals: populate these from the API data sections in the context. Only mark as "NOT PROVIDED" if the corresponding data section is genuinely absent from the context. For periscope and periscopeCharm: populate from the uploaded Periscope images. Mark as "NOT PROVIDED" only if no Periscope images were uploaded. For deltaPressure and charmPressure: populate from the uploaded SpotGamma Delta Pressure and Charm Pressure heatmap images respectively. Mark as "NOT PROVIDED" only if the corresponding image type was not provided.
 - strikeGuidance.adjustments should reference SPECIFIC SPX price levels from the Periscope image and API per-strike data.
 - managementRules should be actionable if/then statements the trader can follow mechanically.
 - entryPlan should account for the trader's laddered entry style (2-4 entries, typically 9:00 AM, 10:00 AM, 11:00 AM CT).
