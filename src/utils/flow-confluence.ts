@@ -108,12 +108,9 @@ function classifyRelationship(
  * we keep the largest-premium one — the headline print.
  */
 function pairKey(m: ConfluenceMatch): string {
-  return [
-    m.retail_strike,
-    m.retail_side,
-    m.whale_strike,
-    m.whale_side,
-  ].join('|');
+  return [m.retail_strike, m.retail_side, m.whale_strike, m.whale_side].join(
+    '|',
+  );
 }
 
 // ============================================================
@@ -132,7 +129,8 @@ export function findConfluences(
   whaleAlerts: WhaleAlert[],
   opts: FindConfluencesOptions = {},
 ): ConfluenceMatch[] {
-  const proximity = opts.strikeProximity ?? CONFLUENCE_CONSTANTS.STRIKE_PROXIMITY;
+  const proximity =
+    opts.strikeProximity ?? CONFLUENCE_CONSTANTS.STRIKE_PROXIMITY;
   const minWhalePrem =
     opts.minWhalePremium ?? CONFLUENCE_CONSTANTS.MIN_WHALE_PREMIUM;
   const maxMatches = opts.maxMatches ?? CONFLUENCE_CONSTANTS.MAX_MATCHES;

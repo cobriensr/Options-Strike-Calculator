@@ -1693,4 +1693,26 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE INDEX IF NOT EXISTS idx_whale_alerts_premium ON whale_alerts (total_premium DESC)`,
     ],
   },
+  {
+    id: 63,
+    description:
+      'Create market_internals table for live $TICK/$ADD/$VOLD/$TRIN 1-minute OHLC bars',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS market_internals (
+          ts      TIMESTAMPTZ NOT NULL,
+          symbol  TEXT NOT NULL,
+          open    NUMERIC(10, 4) NOT NULL,
+          high    NUMERIC(10, 4) NOT NULL,
+          low     NUMERIC(10, 4) NOT NULL,
+          close   NUMERIC(10, 4) NOT NULL,
+          PRIMARY KEY (ts, symbol)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_market_internals_symbol_ts
+          ON market_internals (symbol, ts DESC)
+      `,
+    ],
+  },
 ];

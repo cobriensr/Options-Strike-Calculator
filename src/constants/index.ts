@@ -265,6 +265,8 @@ export const POLL_INTERVALS = {
   GEX_TARGET: 60_000,
   /** SPY NOPE intraday refresh (useNopeIntraday) — matches fetch-nope cron */
   NOPE: 60_000,
+  /** Market internals refresh ($TICK/$ADD/$VOLD/$TRIN) — matches 1-min cron */
+  MARKET_INTERNALS: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */

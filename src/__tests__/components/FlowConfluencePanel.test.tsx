@@ -71,10 +71,7 @@ describe('FlowConfluencePanel', () => {
 
   it('renders "loading retail" when retail empty but whale present', () => {
     render(
-      <FlowConfluencePanel
-        intradayStrikes={[]}
-        whaleAlerts={[makeWhale()]}
-      />,
+      <FlowConfluencePanel intradayStrikes={[]} whaleAlerts={[makeWhale()]} />,
     );
     expect(screen.getByText(/loading retail flow/i)).toBeInTheDocument();
     expect(screen.queryByText(/no whale data yet/i)).not.toBeInTheDocument();
@@ -82,10 +79,7 @@ describe('FlowConfluencePanel', () => {
 
   it('renders "no whale data" when whale empty but retail present', () => {
     render(
-      <FlowConfluencePanel
-        intradayStrikes={[makeRetail()]}
-        whaleAlerts={[]}
-      />,
+      <FlowConfluencePanel intradayStrikes={[makeRetail()]} whaleAlerts={[]} />,
     );
     expect(screen.getByText(/no whale data yet/i)).toBeInTheDocument();
   });
@@ -188,9 +182,7 @@ describe('FlowConfluencePanel', () => {
     expect(badges).toHaveLength(1);
     expect(badges[0]!.getAttribute('data-kind')).toBe('HEDGE');
     const row = screen.getByTestId('confluence-row');
-    expect(row.getAttribute('data-relationship')).toBe(
-      'retail-call-whale-put',
-    );
+    expect(row.getAttribute('data-relationship')).toBe('retail-call-whale-put');
   });
 
   it('renders empty "no confluence" message when no pairs match', () => {
