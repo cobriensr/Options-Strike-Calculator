@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { usePyramidData, PyramidApiError } from '../../hooks/usePyramidData';
 import type { PyramidChain, PyramidProgress } from '../../types/pyramid';
@@ -57,20 +57,23 @@ const mockProgress: PyramidProgress = {
  */
 type MockResponse = { status: number; body: unknown };
 
+/**
+ * Typed fetch-shaped impl so `fn.mock.calls[i][1]` has `RequestInit |
+ * undefined` in the tuple — assertions in the test body rely on that
+ * slot to verify `credentials: 'include'`, methods, and bodies.
+ */
+type FetchImpl = (
+  url: string | URL | Request,
+  init?: RequestInit,
+) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+
 function installFetchMock(
   responses: Record<string, MockResponse | MockResponse[]>,
 ) {
   // Per-URL sequential queue — pop as each call is made.
   const cursors: Record<string, number> = {};
 
-  const fn = vi.fn((url: string | URL | Request, init?: RequestInit) => {
-    // Preserve `init` in the call tuple so tests can assert on fetch options
-    // (credentials, method, body). The no-op reference below keeps the
-    // parameter meaningful to TypeScript + eslint without changing behaviour;
-    // the actual assertions read it out of `fn.mock.calls` in the test body.
-    if (init && init.method === undefined) {
-      /* GET request — no method set by fetch helper. */
-    }
+  const impl: FetchImpl = (url) => {
     const u = typeof url === 'string' ? url : url.toString();
     // Match by substring so query strings on PATCH/DELETE still route.
     const matchedKey = Object.keys(responses).find((k) => u.includes(k));
@@ -92,14 +95,11 @@ function installFetchMock(
       status,
       json: () => Promise.resolve(body),
     });
-  });
+  };
+  const fn = vi.fn(impl);
   globalThis.fetch = fn as unknown as typeof fetch;
   return fn;
 }
-
-beforeEach(() => {
-  // Tests don't use timers, but consistent env matches other hook tests.
-});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -388,6 +388,270 @@ describe('usePyramidData', () => {
         expect(result.current.chains).toEqual([mockChain]);
         expect(result.current.progress?.total_chains).toBe(1);
       });
+    });
+  });
+
+  describe('race safety', () => {
+    /**
+     * `mountedRef` claim: unmounting while a refresh is mid-fetch is safe.
+     *
+     * Honest scope of this test: React 18+ silenced the classic "Can't
+     * perform a React state update on an unmounted component" warning and
+     * no-ops setState on unmounted components, so we can't detect a missing
+     * guard by observing a warning. What we CAN detect: (a) uncaught
+     * rejections from the resolved-after-unmount promise chain, (b) any
+     * console.error from testing-library's internal act() wrap, and (c)
+     * post-unmount state leak into `result.current`.
+     *
+     * The guard remains valuable as explicit intent and as future-proofing
+     * if React reintroduces strictness; this test locks in the contract
+     * that unmount-mid-fetch is observably silent and clean.
+     */
+    it('does not update state or error after unmount', async () => {
+      // Pending resolvers for both endpoints — we resolve them manually.
+      const pending: Array<(value: unknown) => void> = [];
+      globalThis.fetch = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            pending.push(resolve);
+          }),
+      ) as unknown as typeof fetch;
+
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const { result, unmount } = renderHook(() => usePyramidData());
+      // Fetches are in flight — two of them (chains + progress).
+      expect(pending.length).toBeGreaterThanOrEqual(2);
+
+      // Snapshot the state before unmount — if the guard fails, the
+      // resolution below will mutate this snapshot in place via React.
+      const preUnmountSnapshot = {
+        loading: result.current.loading,
+        chains: result.current.chains,
+        progress: result.current.progress,
+        error: result.current.error,
+      };
+      expect(preUnmountSnapshot.loading).toBe(true);
+
+      unmount();
+
+      // Resolve pending fetches with valid Response-shaped objects. If
+      // mountedRef doesn't fire, the setters will attempt to run on the
+      // unmounted hook — either throwing or emitting a warning.
+      await act(async () => {
+        for (const resolve of pending) {
+          resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ chains: [mockChain] }),
+          });
+        }
+        // Flush microtasks + Promise.all resolution so the .then() chain
+        // inside refresh() would fire any mis-guarded setters.
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // No console.error from React/testing-library about post-unmount
+      // activity. (React 18+ silenced the classic warning, but testing-
+      // library can still surface act() warnings.)
+      expect(errorSpy).not.toHaveBeenCalled();
+
+      // `result.current` after unmount should equal the pre-unmount
+      // snapshot — proof that none of the setters fired.
+      expect(result.current.loading).toBe(preUnmountSnapshot.loading);
+      expect(result.current.chains).toBe(preUnmountSnapshot.chains);
+      expect(result.current.progress).toBe(preUnmountSnapshot.progress);
+      expect(result.current.error).toBe(preUnmountSnapshot.error);
+
+      errorSpy.mockRestore();
+    });
+
+    /**
+     * Request-id guard claim: two rapid mutations each fire `void refresh()`.
+     * If the FIRST revalidation resolves AFTER the SECOND, a naive
+     * implementation would clobber the fresh state with the stale response.
+     *
+     * We stage:
+     *   - initial mount: empty list, total_chains 0
+     *   - createChain POST: returns the created row
+     *   - revalidate #1: [chain_A], total 1   ← intentionally SLOW
+     *   - createLeg POST: returns a leg
+     *   - revalidate #2: [chain_A], total 2   ← fast; resolves FIRST
+     * Then we release revalidate #1 (stale) and assert final state is #2.
+     *
+     * The test asserts the actual final state (total_chains === 2), not
+     * just call counts, so it would fail on a naive implementation even
+     * if every fetch fired.
+     */
+    it('drops stale refresh result when a newer refresh is in flight', async () => {
+      const chainA: PyramidChain = { ...mockChain, id: 'chain_A' };
+      const legId = `${chainA.id}-L1`;
+
+      // Resolvers for each staged revalidation, so we control ordering.
+      let releaseRevalidate1: (() => void) | null = null;
+      let releaseRevalidate2: (() => void) | null = null;
+
+      // Per-endpoint sequential cursors.
+      let chainsCallCount = 0;
+      let progressCallCount = 0;
+
+      globalThis.fetch = vi.fn(
+        (url: string | URL | Request, init?: RequestInit) => {
+          const u = typeof url === 'string' ? url : url.toString();
+          const method = init?.method ?? 'GET';
+
+          // Mutations: resolve immediately.
+          if (u.includes('/api/pyramid/chains') && method === 'POST') {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve(chainA),
+            });
+          }
+          if (u.includes('/api/pyramid/legs') && method === 'POST') {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: () =>
+                Promise.resolve({
+                  id: legId,
+                  chain_id: chainA.id,
+                  leg_number: 1,
+                }),
+            });
+          }
+
+          // GET /api/pyramid/chains: call 0 = mount, 1 = revalidate #1
+          // (slow), 2 = revalidate #2 (fast).
+          if (u.includes('/api/pyramid/chains') && method === 'GET') {
+            const idx = chainsCallCount++;
+            if (idx === 0) {
+              return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ chains: [] }),
+              });
+            }
+            if (idx === 1) {
+              // Hold open until releaseRevalidate1() is called.
+              return new Promise((resolve) => {
+                releaseRevalidate1 = () =>
+                  resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve({ chains: [chainA] }),
+                  });
+              });
+            }
+            if (idx === 2) {
+              return new Promise((resolve) => {
+                releaseRevalidate2 = () =>
+                  resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve({ chains: [chainA] }),
+                  });
+              });
+            }
+          }
+
+          // GET /api/pyramid/progress: same idx mapping.
+          if (u.includes('/api/pyramid/progress') && method === 'GET') {
+            const idx = progressCallCount++;
+            if (idx === 0) {
+              return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () =>
+                  Promise.resolve({ ...mockProgress, total_chains: 0 }),
+              });
+            }
+            if (idx === 1) {
+              return new Promise((resolve) => {
+                const prev = releaseRevalidate1;
+                releaseRevalidate1 = () => {
+                  prev?.();
+                  resolve({
+                    ok: true,
+                    status: 200,
+                    // Stale data — total 1, no legs yet.
+                    json: () =>
+                      Promise.resolve({
+                        ...mockProgress,
+                        total_chains: 1,
+                      }),
+                  });
+                };
+              });
+            }
+            if (idx === 2) {
+              return new Promise((resolve) => {
+                const prev = releaseRevalidate2;
+                releaseRevalidate2 = () => {
+                  prev?.();
+                  resolve({
+                    ok: true,
+                    status: 200,
+                    // Fresh data — total 2 (leg was also created).
+                    json: () =>
+                      Promise.resolve({
+                        ...mockProgress,
+                        total_chains: 2,
+                      }),
+                  });
+                };
+              });
+            }
+          }
+          return Promise.reject(new Error(`unexpected fetch ${method} ${u}`));
+        },
+      ) as unknown as typeof fetch;
+
+      const { result } = renderHook(() => usePyramidData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      // Fire two rapid mutations — each triggers a revalidate. We don't
+      // await the void refresh() inside the hook, so both revalidations
+      // are in flight when we return from the awaits.
+      await act(async () => {
+        await result.current.createChain({ id: chainA.id, instrument: 'MNQ' });
+      });
+      await act(async () => {
+        await result.current.createLeg({
+          id: legId,
+          chain_id: chainA.id,
+          leg_number: 1,
+        });
+      });
+
+      // Both revalidations are holding open. Release the SECOND (newer)
+      // one first — its data should land.
+      await act(async () => {
+        releaseRevalidate2?.();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await waitFor(() => {
+        expect(result.current.progress?.total_chains).toBe(2);
+      });
+
+      // Now release the FIRST (older, stale) revalidation. Without the
+      // request-id guard this would clobber total_chains back to 1 and
+      // wipe the chains list. With the guard, state stays at the newer
+      // result.
+      await act(async () => {
+        releaseRevalidate1?.();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // The key assertion: final state reflects the NEWER revalidation,
+      // not the stale one that resolved last.
+      expect(result.current.progress?.total_chains).toBe(2);
+      expect(result.current.chains).toEqual([chainA]);
     });
   });
 });

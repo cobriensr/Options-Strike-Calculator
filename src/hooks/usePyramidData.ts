@@ -170,33 +170,47 @@ export function usePyramidData(): UsePyramidDataReturn {
   // unmounts mid-fetch (avoids "Can't perform state update on unmounted
   // component" warnings in tests).
   const mountedRef = useRef(true);
+  // Monotonic id for in-flight refresh() calls. Every invocation increments
+  // the counter and captures its own id; state updates are dropped when a
+  // newer refresh has started, so overlapping revalidations (e.g. two rapid
+  // mutations each firing `void refresh()`) can't clobber the newer result
+  // with an older response. `mountedRef` guards against unmount; this guards
+  // against stale-overwrite — both are needed.
+  const reqIdRef = useRef(0);
 
   /**
    * Fetch `/api/pyramid/chains` + `/api/pyramid/progress` in parallel.
    * Success: clears `error` and updates both state slots. Failure: sets
    * `error` with a user-facing message. Never throws — `refresh` is safe
    * to call without a try/catch from UI handlers.
+   *
+   * Race model: each call grabs a request id; if a newer call started
+   * while this one was awaiting, every state write is skipped. The newer
+   * call owns the final state. This matches how SWR/react-query handle
+   * revalidation ordering without their machinery.
    */
   const refresh = useCallback(async () => {
+    reqIdRef.current += 1;
+    const myId = reqIdRef.current;
     setLoading(true);
     try {
       const [chainsResult, progressResult] = await Promise.all([
         pyramidFetch<{ chains: PyramidChain[] }>('/api/pyramid/chains'),
         pyramidFetch<PyramidProgress>('/api/pyramid/progress'),
       ]);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || myId !== reqIdRef.current) return;
       setChains(chainsResult.chains);
       setProgress(progressResult);
       setError(null);
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || myId !== reqIdRef.current) return;
       if (err instanceof PyramidApiError) {
         setError(err.message);
       } else {
         setError(getErrorMessage(err));
       }
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current && myId === reqIdRef.current) setLoading(false);
     }
   }, []);
 
