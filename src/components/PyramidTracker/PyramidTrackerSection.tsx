@@ -8,13 +8,18 @@
  * `'true'` the component renders `null` silently so the feature can be
  * disabled in production without stale UI.
  *
- * Task 2A (this file): collapsible shell + data hook plumbing + loading /
- * error states. Form modals (Task 2B) and list/counter/export (Task 2C)
- * mount into the marked slots below.
+ * Task 2A: collapsible shell + data hook plumbing + loading / error states.
+ * Task 2B (this file): wires the ChainFormModal + LegFormModal — the "+ New
+ * Chain" button opens ChainFormModal in create mode and calls the hook's
+ * `createChain` mutation on save. Leg modal state is scaffolded here so
+ * Task 2C (ChainList) can trigger it without touching this file again.
  */
 
-import { useId, useState } from 'react';
+import { useCallback, useId, useState } from 'react';
+import type { PyramidChain, PyramidLeg } from '../../types/pyramid';
 import { usePyramidData } from '../../hooks/usePyramidData';
+import ChainFormModal from './ChainFormModal';
+import LegFormModal from './LegFormModal';
 
 /**
  * Kill-switch helper. `import.meta.env.VITE_PYRAMID_ENABLED` is injected
@@ -40,11 +45,36 @@ export default function PyramidTrackerSection() {
  * `usePyramidData` fetches anything. Once this function runs, the feature
  * is live and data-loading begins.
  */
+/**
+ * Discriminated union describing the current modal state. `null` means
+ * neither modal is open. Using a union keeps chain/leg modals mutually
+ * exclusive without two independent boolean flags.
+ */
+type ModalState =
+  | null
+  | { kind: 'chain-create' }
+  | { kind: 'chain-edit'; chain: PyramidChain }
+  | { kind: 'leg-create'; chainId: string }
+  | { kind: 'leg-edit'; chainId: string; leg: PyramidLeg };
+
 function PyramidTrackerBody() {
   const [expanded, setExpanded] = useState(false);
   const contentId = useId();
 
-  const { chains, progress, loading, error, refresh } = usePyramidData();
+  const {
+    chains,
+    progress,
+    loading,
+    error,
+    refresh,
+    createChain,
+    updateChain,
+    createLeg,
+    updateLeg,
+  } = usePyramidData();
+
+  const [modal, setModal] = useState<ModalState>(null);
+  const closeModal = useCallback(() => setModal(null), []);
 
   // Surface the chain count in the collapsed header so the user can see
   // their progress without expanding — matches the default noted in the
@@ -146,14 +176,68 @@ function PyramidTrackerBody() {
 
           {!loading && error == null && (
             <>
-              {/* Task 2C slot: ChainList + ProgressCounter mount here. */}
-              {/* Task 2B slot: form modals controlled here. */}
-              <p className="text-muted py-6 text-sm italic">
-                Data layer ready. Forms and list coming in Tasks 2B / 2C.
+              <div className="flex items-center justify-between py-2">
+                <button
+                  type="button"
+                  onClick={() => setModal({ kind: 'chain-create' })}
+                  className="bg-accent cursor-pointer rounded-md px-3 py-1.5 font-sans text-xs font-bold tracking-wider text-white uppercase"
+                >
+                  + New Chain
+                </button>
+                {/* Task 2C slot: ProgressCounter renders summary here. */}
+              </div>
+              {/* Task 2C slot: ChainList + ChainCard + LegTable mount here. */}
+              <p className="text-muted py-4 text-sm italic">
+                List and per-feature counters coming in Task 2C.
               </p>
             </>
           )}
         </div>
+      )}
+
+      {modal?.kind === 'chain-create' && (
+        <ChainFormModal
+          mode="create"
+          open
+          onClose={closeModal}
+          onSubmit={async (values) => {
+            await createChain(values);
+          }}
+        />
+      )}
+      {modal?.kind === 'chain-edit' && (
+        <ChainFormModal
+          mode="edit"
+          open
+          initialChain={modal.chain}
+          onClose={closeModal}
+          onSubmit={async (values) => {
+            await updateChain(modal.chain.id, values);
+          }}
+        />
+      )}
+      {modal?.kind === 'leg-create' && (
+        <LegFormModal
+          mode="create"
+          open
+          chainId={modal.chainId}
+          onClose={closeModal}
+          onSubmit={async (values) => {
+            await createLeg(values);
+          }}
+        />
+      )}
+      {modal?.kind === 'leg-edit' && (
+        <LegFormModal
+          mode="edit"
+          open
+          chainId={modal.chainId}
+          initialLeg={modal.leg}
+          onClose={closeModal}
+          onSubmit={async (values) => {
+            await updateLeg(modal.leg.id, values);
+          }}
+        />
       )}
     </section>
   );

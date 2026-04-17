@@ -212,6 +212,44 @@ describe('PyramidTrackerSection', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('opens the ChainFormModal when the New Chain button is clicked', async () => {
+    mockFetchByUrl({
+      '/api/pyramid/chains': { status: 200, body: { chains: [] } },
+      '/api/pyramid/progress': {
+        status: 200,
+        body: {
+          total_chains: 0,
+          chains_by_day_type: {
+            trend: 0,
+            chop: 0,
+            news: 0,
+            mixed: 0,
+            unspecified: 0,
+          },
+          elapsed_calendar_days: null,
+          fill_rates: {},
+        },
+      },
+    });
+
+    render(<PyramidTrackerSection />);
+    await userEvent.click(
+      await screen.findByRole('button', { name: /Pyramid Trade Tracker/i }),
+    );
+
+    // Button visible after expand.
+    const newChainBtn = await screen.findByRole('button', {
+      name: /new chain/i,
+    });
+    await userEvent.click(newChainBtn);
+
+    // Modal opened.
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /new pyramid chain/i }),
+    ).toBeInTheDocument();
+  });
+
   it('shows a retry button on non-401 error and re-fetches when clicked', async () => {
     // Initial load fails; retry succeeds.
     const fn = vi.fn((url: string | URL | Request) => {
