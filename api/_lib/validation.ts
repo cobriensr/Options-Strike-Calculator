@@ -298,6 +298,37 @@ export const analysisResponseSchema = z.object({
       whatMissed: z.string(),
       optimalTrade: z.string(),
       lessonsLearned: z.array(z.string()),
+      recommendationChain: z
+        .object({
+          entry: z
+            .object({
+              time: z.string(),
+              structure: z.enum([
+                'IRON CONDOR',
+                'PUT CREDIT SPREAD',
+                'CALL CREDIT SPREAD',
+                'SIT OUT',
+              ]),
+              verdict: z.enum(['CORRECT', 'WRONG_RESCUED', 'WRONG_UNRESCUED']),
+              rationale: z.string(),
+            })
+            .nullable(),
+          midday: z
+            .object({
+              time: z.string(),
+              structure: z.enum([
+                'IRON CONDOR',
+                'PUT CREDIT SPREAD',
+                'CALL CREDIT SPREAD',
+                'SIT OUT',
+              ]),
+              verdict: z.enum(['CORRECT', 'WRONG_RESCUED', 'WRONG_UNRESCUED']),
+              rationale: z.string(),
+            })
+            .nullable(),
+        })
+        .nullable()
+        .optional(),
     })
     .nullable(),
   imageIssues: z.array(
