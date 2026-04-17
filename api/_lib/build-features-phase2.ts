@@ -229,21 +229,32 @@ export async function engineerPhase2Features(
         'Max pain: skipping UW fetch (outside 30-trading-day rolling window)',
       );
     } else if (apiKey) {
-      const maxPainEntries = await fetchMaxPain(apiKey, dateStr);
-      const sorted = maxPainEntries
-        .filter((e) => e.expiry >= dateStr)
-        .sort((a, b) => a.expiry.localeCompare(b.expiry));
-      const best = sorted[0];
-      if (best) {
-        const mp = Number.parseFloat(best.max_pain);
-        if (!Number.isNaN(mp)) {
-          features.max_pain_0dte = mp;
-          const spxOpen = features.spx_open as number | undefined;
-          if (spxOpen != null && spxOpen > 0) {
-            features.max_pain_dist = mp - spxOpen;
+      const outcome = await fetchMaxPain(apiKey, dateStr);
+      if (outcome.kind === 'error') {
+        // Don't poison the feature row with placeholder zeros — leave
+        // max_pain_0dte / max_pain_dist undefined so downstream models
+        // see a genuine NaN rather than a fabricated 0.
+        logger.warn(
+          { date: dateStr, reason: outcome.reason },
+          'Max pain feature extraction skipped (UW API error)',
+        );
+      } else if (outcome.kind === 'ok') {
+        const sorted = outcome.data
+          .filter((e) => e.expiry >= dateStr)
+          .sort((a, b) => a.expiry.localeCompare(b.expiry));
+        const best = sorted[0];
+        if (best) {
+          const mp = Number.parseFloat(best.max_pain);
+          if (!Number.isNaN(mp)) {
+            features.max_pain_0dte = mp;
+            const spxOpen = features.spx_open as number | undefined;
+            if (spxOpen != null && spxOpen > 0) {
+              features.max_pain_dist = mp - spxOpen;
+            }
           }
         }
       }
+      // outcome.kind === 'empty' → no entries returned; leave features as-is
     }
   } catch (error_) {
     logger.warn({ err: error_ }, 'Max pain feature extraction failed');

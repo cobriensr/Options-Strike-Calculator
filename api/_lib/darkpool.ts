@@ -15,6 +15,7 @@
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 import { getCTTime, getETDateStr } from '../../src/utils/timezone.js';
+import type { UwFetchOutcome } from './uw-result.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -81,13 +82,18 @@ export interface DarkPoolCluster {
 /**
  * Fetch large SPY dark pool trades for a given date.
  * Filters to $5M+ premium to capture only institutional blocks.
- * Returns raw trades or empty array on failure.
+ *
+ * Returns a discriminated union so callers can distinguish:
+ *   - `ok`    — trades were fetched and at least one passed filters
+ *   - `empty` — fetch succeeded but no trades remain after filtering
+ *               (quiet market / nothing institutional)
+ *   - `error` — non-OK response or network throw (data unavailable)
  */
 export async function fetchDarkPoolBlocks(
   apiKey: string,
   date?: string,
   minPremium: number = 5_000_000,
-): Promise<DarkPoolTrade[]> {
+): Promise<UwFetchOutcome<DarkPoolTrade[]>> {
   try {
     const params = new URLSearchParams({
       min_premium: minPremium.toString(),
@@ -112,7 +118,7 @@ export async function fetchDarkPoolBlocks(
         level: 'warning',
         extra: { status: res.status, body: text.slice(0, 200) },
       });
-      return [];
+      return { kind: 'error', reason: `HTTP ${res.status}` };
     }
 
     const body = await res.json();
@@ -137,7 +143,7 @@ export async function fetchDarkPoolBlocks(
     //
     // Also enforce a hard ET-date guard when a date is specified: UW's
     // date filter can be loose, so we never trust it alone.
-    return trades.filter((t) => {
+    const filtered = trades.filter((t) => {
       if (t.canceled) return false;
       if (t.ext_hour_sold_codes) return false;
       if (
@@ -153,11 +159,15 @@ export async function fetchDarkPoolBlocks(
       if (date && getETDateStr(new Date(t.executed_at)) !== date) return false;
       return true;
     });
+
+    if (filtered.length === 0) return { kind: 'empty' };
+    return { kind: 'ok', data: filtered };
   } catch (err) {
     logger.error({ err }, 'Failed to fetch dark pool data');
     metrics.increment('darkpool.fetch_error');
     Sentry.captureException(err);
-    return [];
+    const reason = err instanceof Error ? err.message : 'network error';
+    return { kind: 'error', reason };
   }
 }
 
@@ -169,15 +179,27 @@ export async function fetchDarkPoolBlocks(
  *
  * @param opts.newerThan - Unix timestamp cursor; only fetch trades after this
  * @param opts.maxPages - safety limit on pagination (default 100 = 50K trades)
+ *
+ * Returns a discriminated union:
+ *   - `ok`    — at least one page fetched successfully (even if a later
+ *               page returned non-OK; partial data is still useful for
+ *               the incremental cron)
+ *   - `empty` — every page succeeded but no trades remain after filtering
+ *   - `error` — the very first page failed (non-OK response)
+ *
+ * Network throws still propagate as `throw` for the cron's outer
+ * `catch`/Sentry handler to pick up and retry — pagination errors
+ * that happen mid-stream without any data collected become `error`.
  */
 export async function fetchAllDarkPoolTrades(
   apiKey: string,
   date?: string,
   opts: { newerThan?: number; maxPages?: number } = {},
-): Promise<DarkPoolTrade[]> {
+): Promise<UwFetchOutcome<DarkPoolTrade[]>> {
   const { newerThan, maxPages = 100 } = opts;
   const all: DarkPoolTrade[] = [];
   let olderThan: number | undefined;
+  let paginationError: string | null = null;
 
   try {
     for (let page = 0; page < maxPages; page++) {
@@ -211,6 +233,7 @@ export async function fetchAllDarkPoolTrades(
             fetched: all.length,
           },
         });
+        paginationError = `HTTP ${res.status}`;
         break;
       }
 
@@ -254,12 +277,20 @@ export async function fetchAllDarkPoolTrades(
     throw err;
   }
 
+  // If the very first page failed and we collected nothing, surface
+  // the failure so the caller can distinguish "quiet" from "broken".
+  // If we got any data at all, partial progress is still useful for the
+  // cron's aggregation — return it as `ok`.
+  if (paginationError != null && all.length === 0) {
+    return { kind: 'error', reason: paginationError };
+  }
+
   // Apply the same quality filters, plus a hard ET-date guard.
   // The date guard is defense in depth against UW's date/older_than
   // interaction so a contaminated page still can't reach the DB.
   // See `fetchDarkPoolBlocks` for the rationale on each filter —
   // the two chains must stay in sync.
-  return all.filter((t) => {
+  const filtered = all.filter((t) => {
     if (t.canceled) return false;
     if (t.ext_hour_sold_codes) return false;
     if (
@@ -275,6 +306,9 @@ export async function fetchAllDarkPoolTrades(
     if (date && getETDateStr(new Date(t.executed_at)) !== date) return false;
     return true;
   });
+
+  if (filtered.length === 0) return { kind: 'empty' };
+  return { kind: 'ok', data: filtered };
 }
 
 // ── Clustering ──────────────────────────────────────────────

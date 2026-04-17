@@ -53,7 +53,7 @@ describe('fetchMaxPain', () => {
 
     const result = await fetchMaxPain(API_KEY);
 
-    expect(result).toEqual(entries);
+    expect(result).toEqual({ kind: 'ok', data: entries });
     expect(fetch).toHaveBeenCalledOnce();
     const calledUrl = vi.mocked(fetch).mock.calls[0]![0] as string;
     expect(calledUrl).toContain('/stock/SPX/max-pain');
@@ -80,16 +80,16 @@ describe('fetchMaxPain', () => {
     });
   });
 
-  it('returns empty array on non-OK response', async () => {
+  it('returns error outcome on non-OK response', async () => {
     stubFetchError(403, 'Forbidden');
 
     const result = await fetchMaxPain(API_KEY);
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ kind: 'error', reason: 'HTTP 403' });
     expect(logger.warn).toHaveBeenCalledOnce();
   });
 
-  it('returns empty array on network error', async () => {
+  it('returns error outcome on network failure', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockRejectedValue(new Error('network fail')),
@@ -97,11 +97,11 @@ describe('fetchMaxPain', () => {
 
     const result = await fetchMaxPain(API_KEY);
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ kind: 'error', reason: 'network fail' });
     expect(logger.error).toHaveBeenCalledOnce();
   });
 
-  it('returns empty array when body.data is missing', async () => {
+  it('returns empty outcome when body.data is missing', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -112,7 +112,7 @@ describe('fetchMaxPain', () => {
 
     const result = await fetchMaxPain(API_KEY);
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ kind: 'empty' });
   });
 });
 

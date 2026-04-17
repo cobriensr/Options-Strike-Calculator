@@ -248,17 +248,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       for (let i = 0; i < bars.length; i += BATCH_SIZE) {
         const batch = bars.slice(i, i + BATCH_SIZE);
-        const values = batch
-          .map(
-            (bar) =>
-              `('${symbol}', '${bar.ts}', ${bar.open}, ${bar.high}, ${bar.low}, ${bar.close}, ${bar.volume})`,
-          )
+        const params: unknown[] = [];
+        const valueRows = batch
+          .map((bar, idx) => {
+            const base = idx * 7;
+            params.push(
+              symbol,
+              bar.ts,
+              bar.open,
+              bar.high,
+              bar.low,
+              bar.close,
+              bar.volume,
+            );
+            return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
+          })
           .join(',\n');
 
         await sql.query(
           `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
-           VALUES ${values}
+           VALUES ${valueRows}
            ON CONFLICT (symbol, ts) DO NOTHING`,
+          params,
         );
         inserted += batch.length;
       }

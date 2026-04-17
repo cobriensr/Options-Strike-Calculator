@@ -751,10 +751,13 @@ describe('engineerPhase2Features', () => {
       process.env.UW_API_KEY = 'test-key';
       const features = makeFeatures({ spx_open: 5800 });
 
-      mockedFetchMaxPain.mockResolvedValueOnce([
-        { expiry: '2026-03-24', max_pain: '5785.00' },
-        { expiry: '2026-03-27', max_pain: '5790.00' },
-      ]);
+      mockedFetchMaxPain.mockResolvedValueOnce({
+        kind: 'ok',
+        data: [
+          { expiry: '2026-03-24', max_pain: '5785.00' },
+          { expiry: '2026-03-27', max_pain: '5790.00' },
+        ],
+      });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
@@ -773,11 +776,14 @@ describe('engineerPhase2Features', () => {
       const features = makeFeatures({ spx_open: 5800 });
 
       // No exact date match, but a future expiry exists
-      mockedFetchMaxPain.mockResolvedValueOnce([
-        { expiry: '2026-03-21', max_pain: '5700.00' }, // before dateStr → filtered out
-        { expiry: '2026-03-28', max_pain: '5820.00' }, // nearest future
-        { expiry: '2026-04-17', max_pain: '5850.00' },
-      ]);
+      mockedFetchMaxPain.mockResolvedValueOnce({
+        kind: 'ok',
+        data: [
+          { expiry: '2026-03-21', max_pain: '5700.00' }, // before dateStr → filtered out
+          { expiry: '2026-03-28', max_pain: '5820.00' }, // nearest future
+          { expiry: '2026-04-17', max_pain: '5850.00' },
+        ],
+      });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
@@ -831,7 +837,7 @@ describe('engineerPhase2Features', () => {
       process.env.UW_API_KEY = 'test-key';
       const features = makeFeatures({ spx_open: 5800 });
 
-      mockedFetchMaxPain.mockResolvedValueOnce([]);
+      mockedFetchMaxPain.mockResolvedValueOnce({ kind: 'empty' });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
@@ -848,9 +854,10 @@ describe('engineerPhase2Features', () => {
       process.env.UW_API_KEY = 'test-key';
       const features = makeFeatures(); // no spx_open
 
-      mockedFetchMaxPain.mockResolvedValueOnce([
-        { expiry: '2026-03-24', max_pain: '5785.00' },
-      ]);
+      mockedFetchMaxPain.mockResolvedValueOnce({
+        kind: 'ok',
+        data: [{ expiry: '2026-03-24', max_pain: '5785.00' }],
+      });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
@@ -1712,9 +1719,10 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([{ next_date: '2026-03-27' }]);
 
       // Max pain
-      mockedFetchMaxPain.mockResolvedValueOnce([
-        { expiry: '2026-03-24', max_pain: '5785.00' },
-      ]);
+      mockedFetchMaxPain.mockResolvedValueOnce({
+        kind: 'ok',
+        data: [{ expiry: '2026-03-24', max_pain: '5785.00' }],
+      });
 
       // Query 6: dpRows (from dark_pool_levels)
       mockSql.mockResolvedValueOnce([

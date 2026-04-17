@@ -97,8 +97,9 @@ describe('fetchAllDarkPoolTrades', () => {
     const result = await fetchAllDarkPoolTrades('test-key');
 
     // canceled trade filtered out
-    expect(result).toHaveLength(1);
-    expect(result[0]!.tracking_id).toBe(123456);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]!.tracking_id).toBe(123456);
 
     // Should use min_premium=0
     const url = vi.mocked(fetch).mock.calls[0]![0] as string;
@@ -143,7 +144,8 @@ describe('fetchAllDarkPoolTrades', () => {
 
     // Page 1 has 500 trades, page 2 has 1 (< 500 so stops)
     expect(mockFetch).toHaveBeenCalledTimes(2);
-    expect(result).toHaveLength(501);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(501);
 
     vi.unstubAllGlobals();
   });
@@ -208,8 +210,10 @@ describe('fetchAllDarkPoolTrades', () => {
     const result = await fetchAllDarkPoolTrades('key');
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
-    // Should return the trades from page 1
-    expect(result).toHaveLength(500);
+    // Partial data from page 1 is still useful → `ok` wrap is correct
+    // here. The non-OK page 2 is surfaced via Sentry + warn only.
+    if (result.kind !== 'ok') throw new Error('expected ok (partial data)');
+    expect(result.data).toHaveLength(500);
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ status: 429 }),
       expect.stringContaining('paginated fetch non-OK'),
@@ -258,7 +262,8 @@ describe('fetchAllDarkPoolTrades', () => {
     // Page 2 oldest: same timestamp → oldestTs >= olderThan → break
     // But the trade from page 2 is pushed before the check.
     // Wait, let me re-read: batch is pushed, THEN cursor check.
-    expect(result.length).toBeGreaterThanOrEqual(500);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data.length).toBeGreaterThanOrEqual(500);
 
     vi.unstubAllGlobals();
   });
@@ -332,8 +337,9 @@ describe('fetchAllDarkPoolTrades', () => {
 
     const result = await fetchAllDarkPoolTrades('key');
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.tracking_id).toBe(123456);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]!.tracking_id).toBe(123456);
 
     vi.unstubAllGlobals();
   });
@@ -379,7 +385,7 @@ describe('fetchAllDarkPoolTrades', () => {
 
     const result = await fetchAllDarkPoolTrades('key');
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ kind: 'empty' });
 
     vi.unstubAllGlobals();
   });
@@ -415,8 +421,9 @@ describe('fetchAllDarkPoolTrades', () => {
 
     const result = await fetchAllDarkPoolTrades('key', '2026-04-08');
 
-    expect(result).toHaveLength(2);
-    expect(result.map((t) => t.tracking_id).sort()).toEqual([81, 82]);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(2);
+    expect(result.data.map((t) => t.tracking_id).sort()).toEqual([81, 82]);
 
     vi.unstubAllGlobals();
   });
@@ -474,8 +481,9 @@ describe('fetchAllDarkPoolTrades', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     // The 400 Apr 7 trades were filtered out by the final date guard,
     // and the poisoned Apr 6 trade must never appear.
-    expect(result).toHaveLength(100);
-    for (const trade of result) {
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(100);
+    for (const trade of result.data) {
       expect(trade.executed_at.startsWith('2026-04-08')).toBe(true);
       expect(trade.tracking_id).not.toBe(9999);
     }

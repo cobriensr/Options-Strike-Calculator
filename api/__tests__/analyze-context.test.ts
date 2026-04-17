@@ -258,13 +258,13 @@ vi.mock('../_lib/spx-candles.js', () => ({
 }));
 
 vi.mock('../_lib/darkpool.js', () => ({
-  fetchDarkPoolBlocks: vi.fn().mockResolvedValue([]),
+  fetchDarkPoolBlocks: vi.fn().mockResolvedValue({ kind: 'empty' }),
   clusterDarkPoolTrades: vi.fn().mockReturnValue([]),
   formatDarkPoolForClaude: vi.fn().mockReturnValue(null),
 }));
 
 vi.mock('../_lib/max-pain.js', () => ({
-  fetchMaxPain: vi.fn().mockResolvedValue([]),
+  fetchMaxPain: vi.fn().mockResolvedValue({ kind: 'empty' }),
   formatMaxPainForClaude: vi.fn().mockReturnValue(null),
 }));
 
@@ -1528,9 +1528,10 @@ describe('buildAnalysisContext: API-gated paths', () => {
       formatDarkPoolForClaude,
     } = await import('../_lib/darkpool.js');
     const fakeCluster = [{ price: 570.0, totalSize: 5000000 }];
-    vi.mocked(fetchDarkPoolBlocks).mockResolvedValueOnce([
-      { price: 570.0, size: 5000000 } as never,
-    ]);
+    vi.mocked(fetchDarkPoolBlocks).mockResolvedValueOnce({
+      kind: 'ok',
+      data: [{ price: 570.0, size: 5000000 } as never],
+    });
     vi.mocked(clusterDarkPoolTrades).mockReturnValueOnce(fakeCluster as never);
     vi.mocked(formatDarkPoolForClaude).mockReturnValueOnce(
       'Dark Pool: 5700 level',
@@ -1554,9 +1555,10 @@ describe('buildAnalysisContext: API-gated paths', () => {
     process.env.UW_API_KEY = 'test-uw-key';
     const { fetchMaxPain, formatMaxPainForClaude } =
       await import('../_lib/max-pain.js');
-    vi.mocked(fetchMaxPain).mockResolvedValueOnce([
-      { strike: 5700, totalPain: 1000000 } as never,
-    ]);
+    vi.mocked(fetchMaxPain).mockResolvedValueOnce({
+      kind: 'ok',
+      data: [{ strike: 5700, totalPain: 1000000 } as never],
+    });
     vi.mocked(formatMaxPainForClaude).mockReturnValueOnce('Max Pain: 5700');
 
     const result = await buildAnalysisContext([], {

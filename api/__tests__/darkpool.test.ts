@@ -101,8 +101,14 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key');
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.tracking_id).toBe(123456);
+    expect(result).toEqual({
+      kind: 'ok',
+      data: expect.arrayContaining([
+        expect.objectContaining({ tracking_id: 123456 }),
+      ]),
+    });
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(1);
 
     vi.unstubAllGlobals();
   });
@@ -134,8 +140,9 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key');
 
-    expect(result).toHaveLength(2);
-    expect(result.map((t) => t.tracking_id)).toEqual(
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(2);
+    expect(result.data.map((t) => t.tracking_id)).toEqual(
       expect.arrayContaining([100, 101]),
     );
 
@@ -196,7 +203,7 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('bad-key');
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ kind: 'error', reason: 'HTTP 403' });
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ status: 403 }),
       expect.stringContaining('non-OK'),
@@ -205,12 +212,12 @@ describe('fetchDarkPoolBlocks', () => {
     vi.unstubAllGlobals();
   });
 
-  it('returns empty on network error', async () => {
+  it('returns error outcome on network failure', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
 
     const result = await fetchDarkPoolBlocks('key');
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ kind: 'error', reason: 'timeout' });
     expect(mockLogger.error).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
       expect.stringContaining('Failed to fetch dark pool'),
@@ -219,7 +226,7 @@ describe('fetchDarkPoolBlocks', () => {
     vi.unstubAllGlobals();
   });
 
-  it('handles missing data field gracefully', async () => {
+  it('handles missing data field gracefully (empty outcome)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -230,7 +237,7 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('key');
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ kind: 'empty' });
 
     vi.unstubAllGlobals();
   });
@@ -262,8 +269,9 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key', '2026-04-08');
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.tracking_id).toBe(8);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]!.tracking_id).toBe(8);
 
     vi.unstubAllGlobals();
   });
@@ -293,8 +301,9 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key');
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.tracking_id).toBe(10);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]!.tracking_id).toBe(10);
 
     vi.unstubAllGlobals();
   });
@@ -318,8 +327,9 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key');
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.tracking_id).toBe(42);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]!.tracking_id).toBe(42);
 
     vi.unstubAllGlobals();
   });
@@ -344,7 +354,7 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key');
 
-    expect(result).toHaveLength(0);
+    expect(result).toEqual({ kind: 'empty' });
 
     vi.unstubAllGlobals();
   });
@@ -367,7 +377,7 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key');
 
-    expect(result).toHaveLength(0);
+    expect(result).toEqual({ kind: 'empty' });
 
     vi.unstubAllGlobals();
   });
@@ -393,8 +403,9 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key');
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.tracking_id).toBe(830);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]!.tracking_id).toBe(830);
 
     vi.unstubAllGlobals();
   });
@@ -422,8 +433,9 @@ describe('fetchDarkPoolBlocks', () => {
 
     const result = await fetchDarkPoolBlocks('test-key');
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.tracking_id).toBe(200);
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]!.tracking_id).toBe(200);
 
     vi.unstubAllGlobals();
   });

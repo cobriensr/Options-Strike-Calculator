@@ -14,6 +14,7 @@
  */
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
+import type { UwFetchOutcome } from './uw-result.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -33,12 +34,16 @@ interface MaxPainResponse {
 
 /**
  * Fetch max pain for all SPX expirations.
- * Returns entries sorted by expiry ascending, or empty array on failure.
+ *
+ * Returns a discriminated union so callers can distinguish:
+ *   - `ok`    — entries successfully fetched
+ *   - `empty` — fetch succeeded but no entries returned (quiet market)
+ *   - `error` — non-OK response or network throw (data unavailable)
  */
 export async function fetchMaxPain(
   apiKey: string,
   date?: string,
-): Promise<MaxPainEntry[]> {
+): Promise<UwFetchOutcome<MaxPainEntry[]>> {
   try {
     const params = new URLSearchParams();
     if (date) params.set('date', date);
@@ -66,16 +71,19 @@ export async function fetchMaxPain(
           `Max pain API returned non-OK: ${res.status} ${text.slice(0, 200)}`,
         ),
       );
-      return [];
+      return { kind: 'error', reason: `HTTP ${res.status}` };
     }
 
     const body: MaxPainResponse = await res.json();
-    return body.data ?? [];
+    const entries = body.data ?? [];
+    if (entries.length === 0) return { kind: 'empty' };
+    return { kind: 'ok', data: entries };
   } catch (err) {
     logger.error({ err }, 'Failed to fetch max pain data');
     metrics.increment('max_pain.fetch_error');
     Sentry.captureException(err);
-    return [];
+    const reason = err instanceof Error ? err.message : 'network error';
+    return { kind: 'error', reason };
   }
 }
 

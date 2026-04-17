@@ -50,11 +50,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ? Number(cursorRows[0].cursor_ts)
         : undefined;
 
-    const trades = await withRetry(() =>
+    const outcome = await withRetry(() =>
       fetchAllDarkPoolTrades(apiKey, today, { newerThan: cursorTs }),
     );
 
-    if (trades.length === 0) {
+    if (outcome.kind === 'error') {
+      // Surface the API error as a failed cron run so we see it in the
+      // dashboard and Sentry — not as a "no new trades" skip, which would
+      // silently mask a broken pipeline.
+      logger.error(
+        { reason: outcome.reason, cursor: cursorTs },
+        'fetch-darkpool: UW API error',
+      );
+      await reportCronRun('fetch-darkpool', {
+        status: 'error',
+        reason: outcome.reason,
+        incremental: cursorTs != null,
+        durationMs: Date.now() - startTime,
+      });
+      return res.status(502).json({
+        job: 'fetch-darkpool',
+        error: 'UW API error',
+        reason: outcome.reason,
+      });
+    }
+
+    if (outcome.kind === 'empty') {
       logger.info({ cursor: cursorTs }, 'fetch-darkpool: no new trades');
       await reportCronRun('fetch-darkpool', {
         status: 'skipped',
@@ -70,6 +91,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    const trades = outcome.data;
     const levels = aggregateDarkPoolLevels(trades);
 
     const now = new Date().toISOString();

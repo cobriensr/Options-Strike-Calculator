@@ -489,10 +489,22 @@ export async function fetchDarkPoolContext(
     const uwKey = process.env.UW_API_KEY;
     if (!uwKey) return { darkPoolContext: null, darkPoolClusters: null };
 
-    const trades = await fetchDarkPoolBlocks(uwKey, analysisDate);
-    if (trades.length === 0) {
+    const outcome = await fetchDarkPoolBlocks(uwKey, analysisDate);
+
+    if (outcome.kind === 'error') {
+      // Surface the API failure to Claude explicitly so the model can
+      // distinguish "no institutional blocks today" from "the data
+      // pipeline is broken."
+      return {
+        darkPoolContext: `Dark pool data unavailable: API error (${outcome.reason}). No institutional level context.`,
+        darkPoolClusters: null,
+      };
+    }
+    if (outcome.kind === 'empty') {
       return { darkPoolContext: null, darkPoolClusters: null };
     }
+
+    const trades = outcome.data;
     const currentSpx = context.spx as number | undefined;
     const currentSpy = context.spy as number | undefined;
     const ratio =
@@ -517,10 +529,15 @@ export async function fetchMaxPainContext(
     const uwKey = process.env.UW_API_KEY;
     if (!uwKey) return null;
 
-    const entries = await fetchMaxPain(uwKey, analysisDate);
-    if (entries.length === 0) return null;
+    const outcome = await fetchMaxPain(uwKey, analysisDate);
+
+    if (outcome.kind === 'error') {
+      return `Max pain data unavailable: API error (${outcome.reason}). No settlement attractor context.`;
+    }
+    if (outcome.kind === 'empty') return null;
+
     const currentSpx = context.spx as number | undefined;
-    return formatMaxPainForClaude(entries, analysisDate, currentSpx);
+    return formatMaxPainForClaude(outcome.data, analysisDate, currentSpx);
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch max pain data');
     return null;
