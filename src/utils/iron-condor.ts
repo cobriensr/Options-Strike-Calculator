@@ -3,11 +3,11 @@ import {
   DEFAULT_SPX_SPY_RATIO,
   getKurtosisFactor,
   type KurtosisPair,
-} from '../constants';
-import type { DeltaRow, IronCondorLegs } from '../types';
-import { normalCDF, blackScholesPrice } from './black-scholes';
-import { snapToSpyHalf } from './formatting';
-import { calcTimeToExpiry } from './time';
+} from '../constants/index.js';
+import type { DeltaRow, IronCondorLegs } from '../types/index.js';
+import { normalCDF, blackScholesPrice } from './black-scholes.js';
+import { snapToSpyHalf } from './formatting.js';
+import { calcTimeToExpiry } from './time.js';
 
 /**
  * Adjusts a log-normal PoP for fat-tailed (leptokurtic) intraday returns.

@@ -4,22 +4,22 @@ import {
   DEFAULTS,
   MARKET,
   DEFAULT_SPX_SPY_RATIO,
-} from '../constants';
+} from '../constants/index.js';
 import type {
   DeltaTarget,
   StrikeResult,
   StrikeError,
   DeltaRow,
   DeltaRowError,
-} from '../types';
+} from '../types/index.js';
 import {
   calcBSDelta,
   calcBSGamma,
   calcBSTheta,
   blackScholesPrice,
   calcIVAcceleration,
-} from './black-scholes';
-import { roundToHalf } from './formatting';
+} from './black-scholes.js';
+import { roundToHalf } from './formatting.js';
 
 /**
  * Snaps a strike price to the nearest increment.

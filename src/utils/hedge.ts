@@ -4,10 +4,14 @@ import {
   HEDGE_Z_SCORES,
   SPX_MULTIPLIER,
   STRESS,
-} from '../constants';
-import type { HedgeDelta, HedgeResult, HedgeScenario } from '../types';
-import { blackScholesPrice, calcBSVega } from './black-scholes';
-import { snapToIncrement, calcScaledSkew, calcScaledCallSkew } from './strikes';
+} from '../constants/index.js';
+import type { HedgeDelta, HedgeResult, HedgeScenario } from '../types/index.js';
+import { blackScholesPrice, calcBSVega } from './black-scholes.js';
+import {
+  snapToIncrement,
+  calcScaledSkew,
+  calcScaledCallSkew,
+} from './strikes.js';
 
 // ============================================================
 // HEDGE (REINSURANCE) CALCULATOR

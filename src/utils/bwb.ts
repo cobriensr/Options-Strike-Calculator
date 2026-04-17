@@ -1,15 +1,18 @@
-import { DEFAULT_SPX_SPY_RATIO, getKurtosisFactor } from '../constants';
-import type { DeltaRow, BWBLegs } from '../types';
+import {
+  DEFAULT_SPX_SPY_RATIO,
+  getKurtosisFactor,
+} from '../constants/index.js';
+import type { DeltaRow, BWBLegs } from '../types/index.js';
 import {
   blackScholesPrice,
   calcBSDelta,
   calcBSGamma,
   calcBSTheta,
   calcBSVega,
-} from './black-scholes';
-import { snapToSpyHalf } from './formatting';
-import { adjustPoPForKurtosis, calcSpreadPoP } from './iron-condor';
-import { snapToIncrement } from './strikes';
+} from './black-scholes.js';
+import { snapToSpyHalf } from './formatting.js';
+import { adjustPoPForKurtosis, calcSpreadPoP } from './iron-condor.js';
+import { snapToIncrement } from './strikes.js';
 
 /**
  * Builds a Put BWB (all puts) for a given delta row.

@@ -19,7 +19,7 @@ export {
   calcBSTheta,
   blackScholesPrice,
   calcIVAcceleration,
-} from './black-scholes';
+} from './black-scholes.js';
 
 export {
   snapToIncrement,
@@ -29,7 +29,7 @@ export {
   isStrikeError,
   calcAllDeltas,
   spxToSpy,
-} from './strikes';
+} from './strikes.js';
 
 export {
   adjustPoPForKurtosis,
@@ -38,11 +38,11 @@ export {
   calcSpreadPoP,
   buildIronCondor,
   calcThetaCurve,
-} from './iron-condor';
+} from './iron-condor.js';
 
-export { buildPutBWB, buildCallBWB, bwbPnLAtExpiry } from './bwb';
+export { buildPutBWB, buildCallBWB, bwbPnLAtExpiry } from './bwb.js';
 
-export { stressedSigma, calcHedge } from './hedge';
+export { stressedSigma, calcHedge } from './hedge.js';
 
 export {
   validateMarketTime,
@@ -50,4 +50,4 @@ export {
   resolveIV,
   to24Hour,
   toETTime,
-} from './time';
+} from './time.js';

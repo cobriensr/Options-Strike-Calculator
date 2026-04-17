@@ -1,4 +1,4 @@
-import { MARKET, DEFAULTS } from '../constants';
+import { MARKET, DEFAULTS } from '../constants/index.js';
 
 // ============================================================
 // CUMULATIVE NORMAL DISTRIBUTION (Abramowitz & Stegun 26.2.17)

@@ -4,6 +4,7 @@ import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 import sonarjs from 'eslint-plugin-sonarjs';
+import importX from 'eslint-plugin-import-x';
 import prettier from 'eslint-config-prettier';
 
 export default [
@@ -42,6 +43,33 @@ export default [
       'sonarjs/cognitive-complexity': 'off',
       // Callback nesting in hooks is normal React pattern
       'sonarjs/no-nested-functions': 'off',
+    },
+  },
+  // Enforce explicit `.js` extensions on relative imports in files that are
+  // part of the api/ Vercel Functions compile graph. Node ESM's strict
+  // resolution requires the extension at runtime; TypeScript's `bundler`
+  // moduleResolution happily compiles bare imports that then crash in prod.
+  // Scope: api/**, plus the shared src/ modules api/ transitively imports
+  // (pure logic — types, utils, data, constants). Frontend-only .tsx files
+  // go through Vite, which handles resolution, so they're exempt.
+  {
+    files: [
+      'api/**/*.ts',
+      'src/utils/**/*.ts',
+      'src/types/**/*.ts',
+      'src/data/**/*.ts',
+      'src/constants/**/*.ts',
+    ],
+    ignores: ['**/*.test.ts', '**/*.test.tsx', '**/__tests__/**'],
+    plugins: {
+      'import-x': importX,
+    },
+    rules: {
+      'import-x/extensions': [
+        'error',
+        'ignorePackages',
+        { ts: 'never', tsx: 'never', js: 'always', jsx: 'always' },
+      ],
     },
   },
   {

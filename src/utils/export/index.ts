@@ -1,2 +1,2 @@
-export { exportBWBComparison } from './exportBWBComparison';
-export { exportPnLComparison } from './exportPnLComparison';
+export { exportBWBComparison } from './exportBWBComparison.js';
+export { exportPnLComparison } from './exportPnLComparison.js';
