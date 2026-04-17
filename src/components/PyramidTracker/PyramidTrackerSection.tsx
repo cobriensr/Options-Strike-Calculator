@@ -9,17 +9,23 @@
  * disabled in production without stale UI.
  *
  * Task 2A: collapsible shell + data hook plumbing + loading / error states.
- * Task 2B (this file): wires the ChainFormModal + LegFormModal — the "+ New
- * Chain" button opens ChainFormModal in create mode and calls the hook's
- * `createChain` mutation on save. Leg modal state is scaffolded here so
- * Task 2C (ChainList) can trigger it without touching this file again.
+ * Task 2B: wires the ChainFormModal + LegFormModal — the "+ New Chain" button
+ * opens ChainFormModal in create mode; leg modal state is scaffolded here so
+ * Task 2C can trigger it from the per-chain action buttons.
+ * Task 2C (this file): renders ProgressCounter, ExportCSVButton, and ChainList
+ * below the "+ New Chain" button. Leg cache invalidation flows through a
+ * forwardRef handle exposed by ChainList so a successful leg mutation drops
+ * the cached leg list for its chain and the next expand refetches.
  */
 
-import { useCallback, useId, useState } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 import type { PyramidChain, PyramidLeg } from '../../types/pyramid';
 import { usePyramidData } from '../../hooks/usePyramidData';
 import ChainFormModal from './ChainFormModal';
 import LegFormModal from './LegFormModal';
+import ChainList, { type ChainListHandle } from './ChainList';
+import ProgressCounter from './ProgressCounter';
+import ExportCSVButton from './ExportCSVButton';
 
 /**
  * Kill-switch helper. `import.meta.env.VITE_PYRAMID_ENABLED` is injected
@@ -69,12 +75,55 @@ function PyramidTrackerBody() {
     refresh,
     createChain,
     updateChain,
+    deleteChain,
+    getChainWithLegs,
     createLeg,
     updateLeg,
+    deleteLeg,
   } = usePyramidData();
 
   const [modal, setModal] = useState<ModalState>(null);
   const closeModal = useCallback(() => setModal(null), []);
+
+  // Imperative handle to ChainList's internal legs cache. Used after any leg
+  // mutation so the next expand of that chain refetches fresh data.
+  const chainListRef = useRef<ChainListHandle | null>(null);
+
+  // Load ALL legs across every chain for CSV export. Runs the per-chain
+  // endpoint sequentially for simplicity (low volumes — see ExportCSVButton
+  // comment); switching to Promise.all is a future optimisation if needed.
+  const fetchAllLegs = useCallback(async (): Promise<PyramidLeg[]> => {
+    const all: PyramidLeg[] = [];
+    for (const c of chains) {
+      const { legs } = await getChainWithLegs(c.id);
+      all.push(...legs);
+    }
+    return all;
+  }, [chains, getChainWithLegs]);
+
+  const handleDeleteChain = useCallback(
+    async (chainId: string) => {
+      // Native confirm — lightweight, no modal-on-modal overlays. SPA
+      // context guarantees a window; `globalThis.confirm` satisfies the
+      // sonar window-preference rule without the typeof guard.
+      const ok = globalThis.confirm(
+        `Delete chain ${chainId}? This cascades to all its legs.`,
+      );
+      if (!ok) return;
+      await deleteChain(chainId);
+      chainListRef.current?.clearLegsCache(chainId);
+    },
+    [deleteChain],
+  );
+
+  const handleDeleteLeg = useCallback(
+    async (legId: string) => {
+      const ok = globalThis.confirm('Delete this leg?');
+      if (!ok) return;
+      await deleteLeg(legId);
+    },
+    [deleteLeg],
+  );
 
   // Surface the chain count in the collapsed header so the user can see
   // their progress without expanding — matches the default noted in the
@@ -175,8 +224,10 @@ function PyramidTrackerBody() {
           )}
 
           {!loading && error == null && (
-            <>
-              <div className="flex items-center justify-between py-2">
+            <div className="flex flex-col gap-3 py-2">
+              {progress != null && <ProgressCounter progress={progress} />}
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={() => setModal({ kind: 'chain-create' })}
@@ -184,13 +235,24 @@ function PyramidTrackerBody() {
                 >
                   + New Chain
                 </button>
-                {/* Task 2C slot: ProgressCounter renders summary here. */}
+                <ExportCSVButton chains={chains} fetchAllLegs={fetchAllLegs} />
               </div>
-              {/* Task 2C slot: ChainList + ChainCard + LegTable mount here. */}
-              <p className="text-muted py-4 text-sm italic">
-                List and per-feature counters coming in Task 2C.
-              </p>
-            </>
+
+              <ChainList
+                ref={chainListRef}
+                chains={chains}
+                getChainWithLegs={getChainWithLegs}
+                onEditChain={(chain) => setModal({ kind: 'chain-edit', chain })}
+                onDeleteChain={handleDeleteChain}
+                onEditLeg={(leg) =>
+                  setModal({ kind: 'leg-edit', chainId: leg.chain_id, leg })
+                }
+                onDeleteLeg={handleDeleteLeg}
+                onAddLeg={(chainId) =>
+                  setModal({ kind: 'leg-create', chainId })
+                }
+              />
+            </div>
           )}
         </div>
       )}
@@ -224,6 +286,7 @@ function PyramidTrackerBody() {
           onClose={closeModal}
           onSubmit={async (values) => {
             await createLeg(values);
+            chainListRef.current?.clearLegsCache(values.chain_id);
           }}
         />
       )}
@@ -236,6 +299,7 @@ function PyramidTrackerBody() {
           onClose={closeModal}
           onSubmit={async (values) => {
             await updateLeg(modal.leg.id, values);
+            chainListRef.current?.clearLegsCache(modal.chainId);
           }}
         />
       )}

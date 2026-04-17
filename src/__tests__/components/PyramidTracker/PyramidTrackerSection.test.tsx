@@ -250,6 +250,75 @@ describe('PyramidTrackerSection', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders ProgressCounter, Export button, and ChainList when expanded', async () => {
+    mockFetchByUrl({
+      '/api/pyramid/chains': {
+        status: 200,
+        body: {
+          chains: [
+            {
+              id: '2026-04-16-MNQ-1',
+              trade_date: '2026-04-16',
+              instrument: 'MNQ',
+              direction: 'long',
+              entry_time_ct: '09:15',
+              exit_time_ct: '14:30',
+              initial_entry_price: 21200,
+              final_exit_price: 21250,
+              exit_reason: 'reverse_choch',
+              total_legs: 2,
+              winning_legs: 2,
+              net_points: 50,
+              session_atr_pct: null,
+              day_type: 'trend',
+              higher_tf_bias: null,
+              notes: null,
+              status: 'closed',
+              created_at: '2026-04-16T14:30:00Z',
+              updated_at: '2026-04-16T14:30:00Z',
+            },
+          ],
+        },
+      },
+      '/api/pyramid/progress': {
+        status: 200,
+        body: {
+          total_chains: 1,
+          chains_by_day_type: {
+            trend: 1,
+            chop: 0,
+            news: 0,
+            mixed: 0,
+            unspecified: 0,
+          },
+          elapsed_calendar_days: 1,
+          fill_rates: { entry_price: 1, notes: 0.25 },
+        },
+      },
+    });
+
+    render(<PyramidTrackerSection />);
+
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: /Pyramid Trade Tracker/i,
+      }),
+    );
+
+    // ProgressCounter + ExportCSVButton + ChainList are all mounted.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('pyramid-progress-counter'),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole('button', { name: /export pyramid chains/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('pyramid-chain-card-2026-04-16-MNQ-1'),
+    ).toBeInTheDocument();
+  });
+
   it('shows a retry button on non-401 error and re-fetches when clicked', async () => {
     // Initial load fails; retry succeeds.
     const fn = vi.fn((url: string | URL | Request) => {
