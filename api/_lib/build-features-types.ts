@@ -6,8 +6,26 @@ import { getETTime, getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Types ──────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type FeatureRow = Record<string, any>;
+/**
+ * ML feature rows are a dynamic bag of scalar signals produced by many
+ * builders (flow, greeks, charm, pin, dark pool, events, ...). Using
+ * `Record<string, any>` forfeited too much type safety — this tighter
+ * scalar union catches accidental object/array assignments at compile
+ * time while leaving the key space open for new features.
+ */
+export type FeatureValue = number | string | boolean | null;
+export type FeatureRow = Record<string, FeatureValue>;
+
+/**
+ * Narrow a `FeatureRow` field to a finite number at the use site.
+ * Returns null when the field is absent, null, non-numeric, or NaN/Infinity.
+ * Use instead of raw `row.key` when doing arithmetic — TypeScript cannot
+ * otherwise prove a `FeatureValue` is numeric across member-access reads.
+ */
+export function featureNum(row: FeatureRow, key: string): number | null {
+  const v = row[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
 
 export interface FlowRow {
   timestamp: string;

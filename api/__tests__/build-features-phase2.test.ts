@@ -29,7 +29,11 @@ import type { FeatureRow } from '../_lib/build-features-types.js';
 
 /** Create a fresh features object with optional overrides. */
 function makeFeatures(overrides: Partial<FeatureRow> = {}): FeatureRow {
-  return { ...overrides };
+  const row: FeatureRow = {};
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v !== undefined) row[k] = v;
+  }
+  return row;
 }
 
 /** Type-safe mock cast for fetchMaxPain. */
@@ -333,7 +337,7 @@ describe('engineerPhase2Features', () => {
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
       expect(features.rv_iv_ratio).toBeCloseTo(
-        features.realized_vol_5d / 20,
+        (features.realized_vol_5d as number) / 20,
         4,
       );
     });

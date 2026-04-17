@@ -122,7 +122,7 @@ Split:
 
 **Verification per sub-phase:** `npm run review` + `git diff --stat` shows file-count delta but LOC delta is near-zero (code moved, not rewritten). Run [api/__tests__/analyze.test.ts](../../api/__tests__/analyze.test.ts) for Phase 2.5.
 
-### Phase 3 — Structural fixes — ~1 day
+### Phase 3 — Structural fixes — ~1 day (partial: 6 of 8 shipped, 2 deferred)
 
 **Files to modify:**
 

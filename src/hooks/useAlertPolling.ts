@@ -156,15 +156,24 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
 
       if (!res.ok) return;
 
-      const data = (await res.json()) as { alerts: MarketAlert[] };
-      if (!data.alerts || data.alerts.length === 0) return;
+      const data: unknown = await res.json();
+      if (
+        typeof data !== 'object' ||
+        data === null ||
+        !('alerts' in data) ||
+        !Array.isArray((data as { alerts: unknown }).alerts)
+      ) {
+        return;
+      }
+      const alerts = (data as { alerts: MarketAlert[] }).alerts;
+      if (alerts.length === 0) return;
 
       // Track the newest timestamp for incremental polling
-      const newest = data.alerts[0]!.created_at;
+      const newest = alerts[0]!.created_at;
       lastSeenRef.current = newest;
 
       // Deduplicate via ref (stable across renders, not called twice)
-      const fresh = data.alerts.filter(
+      const fresh = alerts.filter(
         (a) => !seenIdsRef.current.has(a.id) && !a.acknowledged,
       );
 

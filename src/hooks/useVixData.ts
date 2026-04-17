@@ -64,12 +64,19 @@ export function useVixData(
     });
   }, []);
 
-  // VIX data lookup on date change
+  // Single effect handles both static-data lookup and API fallback so the
+  // two paths can't race. Prior version split them; when `selectedDate`
+  // changed faster than an in-flight fetch could complete, a late API
+  // response could overwrite a freshly-set static-data entry. The merged
+  // path checks static first and only starts a fetch when static is
+  // missing, with AbortController cleanup cancelling any pending request
+  // before the next effect run begins.
   useEffect(() => {
     if (!selectedDate || Object.keys(vixData).length === 0) {
       setVixOHLC(null);
       return;
     }
+
     const entry = vixData[selectedDate];
     if (entry) {
       setVixOHLC(entry);
@@ -84,24 +91,13 @@ export function useVixData(
         const v = etH < 13 ? entry.open : entry.close;
         if (v != null) setVixInput(v.toFixed(2));
       }
-    } else {
-      setVixOHLC(null);
+      return;
     }
-  }, [
-    selectedDate,
-    vixData,
-    vixOHLCField,
-    ivMode,
-    timezone,
-    timeHour,
-    timeAmPm,
-    setVixInput,
-  ]);
 
-  // API fallback: fetch from /api/vix-ohlc when static data has no entry
-  useEffect(() => {
-    if (!vixDataLoaded || !selectedDate) return;
-    if (vixData[selectedDate] != null) return; // static data covers this date
+    // No static entry — fall back to the API (only once initial load is
+    // complete, otherwise we'd fire during the bootstrap phase).
+    setVixOHLC(null);
+    if (!vixDataLoaded) return;
 
     const controller = new AbortController();
 
@@ -117,6 +113,7 @@ export function useVixData(
         }>;
       })
       .then((data) => {
+        if (controller.signal.aborted) return;
         if (!data || data.count === 0) return;
         setVixOHLC({
           open: data.open,
@@ -130,7 +127,17 @@ export function useVixData(
       });
 
     return () => controller.abort();
-  }, [selectedDate, vixData, vixDataLoaded]);
+  }, [
+    selectedDate,
+    vixData,
+    vixDataLoaded,
+    vixOHLCField,
+    ivMode,
+    timezone,
+    timeHour,
+    timeAmPm,
+    setVixInput,
+  ]);
 
   // Re-apply OHLC selection when field or time changes
   useEffect(() => {

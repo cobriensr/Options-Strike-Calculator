@@ -299,8 +299,14 @@ export function useChartAnalysis(opts: {
         }
 
         // Non-retryable client errors
-        const status = (err as Error & { status?: number }).status;
-        if (status && status >= 400 && status < 500) {
+        const status =
+          typeof err === 'object' &&
+          err !== null &&
+          'status' in err &&
+          typeof (err as { status: unknown }).status === 'number'
+            ? (err as { status: number }).status
+            : undefined;
+        if (status != null && status >= 400 && status < 500) {
           return { outcome: 'fatal', error: getErrorMessage(err) };
         }
 

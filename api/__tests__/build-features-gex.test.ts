@@ -20,7 +20,11 @@ import type { FeatureRow, StrikeRow } from '../_lib/build-features-types.js';
 // ── Helpers ─────────────────────────────────────────────────
 
 function makeFeatures(overrides: Partial<FeatureRow> = {}): FeatureRow {
-  return { ...overrides };
+  const row: FeatureRow = {};
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v !== undefined) row[k] = v;
+  }
+  return row;
 }
 
 /**

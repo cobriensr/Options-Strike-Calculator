@@ -7,27 +7,35 @@
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
+import { z } from 'zod';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 
 type Sql = NeonQueryFunction<false, false>;
 
-// ── Types ──────────────────────────────────────────────────
+// ── Row schemas ────────────────────────────────────────────
+//
+// Neon returns rows as untyped `Record<string, unknown>` arrays. Parsing
+// each row through Zod catches schema drift the day it happens (column
+// renames, type changes) instead of letting stale assumptions leak into
+// the Claude prompt.
 
-interface FuturesSnapshot {
-  symbol: string;
-  price: string;
-  change_1h_pct: string | null;
-  change_day_pct: string | null;
-  volume_ratio: string | null;
-}
+const futuresSnapshotSchema = z.object({
+  symbol: z.string(),
+  price: z.string(),
+  change_1h_pct: z.string().nullable(),
+  change_day_pct: z.string().nullable(),
+  volume_ratio: z.string().nullable(),
+});
+type FuturesSnapshot = z.infer<typeof futuresSnapshotSchema>;
 
-interface EsOptionsDailyRow {
-  strike: string;
-  option_type: string;
-  open_interest: string | null;
-  volume: string | null;
-}
+const esOptionsDailyRowSchema = z.object({
+  strike: z.string(),
+  option_type: z.string(),
+  open_interest: z.string().nullable(),
+  volume: z.string().nullable(),
+});
+type EsOptionsDailyRow = z.infer<typeof esOptionsDailyRowSchema>;
 
 interface DerivedSignals {
   esSpxBasis: number | null;
@@ -94,18 +102,29 @@ export async function formatFuturesForClaude(
   analysisDate: string,
   spxPrice?: number,
 ): Promise<string | null> {
-  let snapshots: FuturesSnapshot[] = [];
-  let esOptionsRows: EsOptionsDailyRow[] = [];
+  const snapshots: FuturesSnapshot[] = [];
+  const esOptionsRows: EsOptionsDailyRow[] = [];
 
   // Fetch latest snapshots — gracefully handle missing table
   try {
-    snapshots = (await sql`
+    const rawRows = await sql`
       SELECT DISTINCT ON (symbol)
         symbol, price, change_1h_pct, change_day_pct, volume_ratio
       FROM futures_snapshots
       WHERE trade_date = ${analysisDate}
       ORDER BY symbol, ts DESC
-    `) as unknown as FuturesSnapshot[];
+    `;
+    for (const row of rawRows) {
+      const parsed = futuresSnapshotSchema.safeParse(row);
+      if (parsed.success) {
+        snapshots.push(parsed.data);
+      } else {
+        logger.warn(
+          { issues: parsed.error.issues, row },
+          'futures_snapshots row failed schema validation — dropping',
+        );
+      }
+    }
   } catch (err) {
     logger.debug({ err }, 'futures_snapshots table not available — skipping');
     metrics.increment('futures_context.fetch_error');
@@ -123,7 +142,7 @@ export async function formatFuturesForClaude(
 
   // Fetch ES options OI concentration — gracefully handle missing
   try {
-    esOptionsRows = (await sql`
+    const rawRows = await sql`
       SELECT strike, option_type, open_interest, volume
       FROM futures_options_daily
       WHERE underlying = 'ES'
@@ -131,7 +150,18 @@ export async function formatFuturesForClaude(
         AND open_interest IS NOT NULL
       ORDER BY open_interest DESC
       LIMIT 20
-    `) as unknown as EsOptionsDailyRow[];
+    `;
+    for (const row of rawRows) {
+      const parsed = esOptionsDailyRowSchema.safeParse(row);
+      if (parsed.success) {
+        esOptionsRows.push(parsed.data);
+      } else {
+        logger.warn(
+          { issues: parsed.error.issues, row },
+          'futures_options_daily row failed schema validation — dropping',
+        );
+      }
+    }
   } catch (err) {
     logger.debug(
       { err },

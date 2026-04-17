@@ -137,7 +137,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       setTimeAmPm(ampm);
       setTimezone('CT');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refs (spotEdited, spxEdited, vixEdited) are stable; listing them is misleading
+    // `spotEdited`, `spxEdited`, `vixEdited` are useRef objects owned by the
+    // parent and passed through props — listing them is safe (stable
+    // identity) and satisfies exhaustive-deps.
   }, [
     market.data.quotes,
     market.session,
@@ -154,6 +156,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     setTimezone,
     timeHour,
     timeMinute,
+    spotEdited,
+    spxEdited,
+    vixEdited,
   ]);
 
   // ── Auto-fill from historical data when a past date is selected,
@@ -207,7 +212,12 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- destructured to specific props to avoid re-firing on every render from unstable parent objects
+    // Listing individual props (not whole `historyData` / `vix1dStatic`
+    // objects) is intentional — both parents re-create a fresh wrapper on
+    // every render, so listing the whole object would retrigger this
+    // effect unnecessarily. The specific props we read ARE stable across
+    // renders when their underlying data hasn't changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     historyData.hasHistory,
     historyData.history,

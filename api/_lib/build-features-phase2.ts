@@ -87,8 +87,9 @@ export async function engineerPhase2Features(
     features.prev_day_direction = prev.direction as string;
     features.prev_day_range_cat = prev.range_cat as string;
 
-    if (features.vix != null && prev.vix_close != null) {
-      features.prev_day_vix_change = features.vix - Number(prev.vix_close);
+    const vixNow = typeof features.vix === 'number' ? features.vix : null;
+    if (vixNow !== null && prev.vix_close != null) {
+      features.prev_day_vix_change = vixNow - Number(prev.vix_close);
     }
   }
 
@@ -132,22 +133,20 @@ export async function engineerPhase2Features(
   }
 
   // RV/IV ratio
-  if (
-    features.realized_vol_5d != null &&
-    features.vix != null &&
-    features.vix > 0
-  ) {
-    features.rv_iv_ratio = features.realized_vol_5d / features.vix;
+  const rv5 =
+    typeof features.realized_vol_5d === 'number'
+      ? features.realized_vol_5d
+      : null;
+  const vix = typeof features.vix === 'number' ? features.vix : null;
+  if (rv5 !== null && vix !== null && vix > 0) {
+    features.rv_iv_ratio = rv5 / vix;
   }
 
   // VIX term structure
-  if (
-    features.vix1d != null &&
-    features.vix9d != null &&
-    features.vix != null &&
-    features.vix > 0
-  ) {
-    features.vix_term_slope = (features.vix9d - features.vix1d) / features.vix;
+  const vix1d = typeof features.vix1d === 'number' ? features.vix1d : null;
+  const vix9d = typeof features.vix9d === 'number' ? features.vix9d : null;
+  if (vix1d !== null && vix9d !== null && vix !== null && vix > 0) {
+    features.vix_term_slope = (vix9d - vix1d) / vix;
   }
 
   // VVIX percentile (trailing 20-day)
@@ -159,7 +158,9 @@ export async function engineerPhase2Features(
     `;
     if (vvixHistory.length >= 10) {
       const vvixValues = vvixHistory.map((r) => Number(r.vvix));
-      const belowCount = vvixValues.filter((v) => v <= features.vvix!).length;
+      const vvixNow = typeof features.vvix === 'number' ? features.vvix : null;
+      const belowCount =
+        vvixNow !== null ? vvixValues.filter((v) => v <= vvixNow).length : 0;
       features.vvix_percentile = belowCount / vvixValues.length;
     }
   }
