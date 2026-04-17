@@ -87,7 +87,14 @@ CREATE TABLE IF NOT EXISTS pyramid_legs (
   minutes_since_chain_start       INTEGER,
   minutes_since_prior_bos         INTEGER,
   ob_quality                      INTEGER CHECK (ob_quality BETWEEN 1 AND 5),
-  relative_volume                 INTEGER CHECK (relative_volume BETWEEN 1 AND 5),    -- volume at signal bar vs. recent avg (1=thin, 5=heavy)
+  relative_volume                 INTEGER CHECK (relative_volume BETWEEN 1 AND 5),
+  ob_high                         NUMERIC,    -- upper boundary of the order block
+  ob_low                          NUMERIC,    -- lower boundary of the order block
+  ob_poc_price                    NUMERIC,    -- price at the top volume node
+  ob_poc_pct                      NUMERIC CHECK (ob_poc_pct BETWEEN 0 AND 100),        -- volume share at POC (e.g. 32 for 32%)
+  ob_secondary_node_pct           NUMERIC CHECK (ob_secondary_node_pct BETWEEN 0 AND 100),  -- 2nd-largest node % (always captured)
+  ob_tertiary_node_pct            NUMERIC CHECK (ob_tertiary_node_pct BETWEEN 0 AND 100),   -- 3rd-largest node %, nullable (not always visible)
+  ob_total_volume                 NUMERIC,    -- total OB volume if shown (e.g. 38914 + ... from LuxAlgo)    -- volume at signal bar vs. recent avg (1=thin, 5=heavy)
   session_phase                   TEXT CHECK (session_phase IN ('pre_open', 'open_drive', 'morning_drive', 'lunch', 'afternoon', 'power_hour', 'close')),
   session_high_at_entry           NUMERIC,                                           -- day's high up to this leg
   session_low_at_entry            NUMERIC,                                           -- day's low up to this leg
