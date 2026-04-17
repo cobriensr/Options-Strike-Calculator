@@ -5,41 +5,25 @@
  * dark pool blocks, max pain, IV term structure, pre-market data,
  * positions, and lessons in parallel, then assembles the final user
  * message template for Claude.
+ *
+ * The original 1,500-line monolith was split into three files:
+ *   - analyze-context-helpers.ts     Pure helpers (numOrUndef, parseEntryTimeAsUtc, types)
+ *   - analyze-context-formatters.ts  Pure formatters (format* helpers, tests target these)
+ *   - analyze-context-fetchers.ts    Each data source fetch + format
+ *
+ * This file is the orchestrator: calls each fetcher, assembles the
+ * template literal, appends lessons/win-rate/similar-analyses, and
+ * returns the final `AnalysisContextResult`.
+ *
+ * Public API (re-exported for backwards compatibility with callers and
+ * the existing test suite): `numOrUndef`, `parseEntryTimeAsUtc`,
+ * `formatEconomicCalendarForClaude`, `formatMarketInternalsForClaude`,
+ * `formatPriorDayFlowForClaude`, `AnalysisContentBlock`,
+ * `AnalysisContextResult`, `buildAnalysisContext`.
  */
 
-import {
-  getDb,
-  getLatestPositions,
-  getPreviousRecommendation,
-  getFlowData,
-  formatFlowDataForClaude,
-  getGreekExposure,
-  formatGreekExposureForClaude,
-  getSpotExposures,
-  formatSpotExposuresForClaude,
-} from './db.js';
-import {
-  getStrikeExposures,
-  formatStrikeExposuresForClaude,
-  getAllExpiryStrikeExposures,
-  formatAllExpiryStrikesForClaude,
-  formatGreekFlowForClaude,
-  formatZeroGammaForClaude,
-  getNetGexHeatmap,
-  formatNetGexHeatmapForClaude,
-} from './db-strike-helpers.js';
-import { analyzeZeroGamma } from '../../src/utils/zero-gamma.js';
-import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
-import {
-  fetchDarkPoolBlocks,
-  clusterDarkPoolTrades,
-  formatDarkPoolForClaude,
-} from './darkpool.js';
+import { getLatestPositions, getPreviousRecommendation } from './db.js';
 import type { DarkPoolCluster } from './darkpool.js';
-import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
-import { getOiChangeData, formatOiChangeForClaude } from './db-oi-change.js';
-import { getRecentNope, formatNopeForClaude } from './db-nope.js';
-import logger from './logger.js';
 import {
   getActiveLessons,
   formatLessonsBlock,
@@ -53,108 +37,40 @@ import {
   formatSimilarAnalysesBlock,
 } from './embeddings.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
-import type { IvTermRow } from '../iv-term-structure.js';
-import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
-import type { PreMarketData } from '../pre-market.js';
-import { formatOvernightForClaude } from './overnight-gap.js';
-import { schwabFetch } from './api-helpers.js';
 import { metrics } from './sentry.js';
 import type { ImageMediaType } from './analyze-prompts.js';
-import { formatFuturesForClaude } from './futures-context.js';
-import { getMarketInternalsToday } from './db-flow.js';
-import { classifyRegime } from '../../src/utils/market-regime.js';
-import { detectExtremes } from '../../src/utils/extreme-detector.js';
-import type { InternalBar } from '../../src/types/market-internals.js';
+import logger from './logger.js';
 
-// Minimal Schwab chain types for 14 DTE directional chain fetch
-interface SchwabContract {
-  strikePrice: number;
-  bid: number;
-  ask: number;
-  delta: number;
-  volatility: number; // IV as percentage (e.g. 25.5)
-  totalVolume: number;
-  openInterest: number;
-  daysToExpiration: number;
-  symbol: string;
-}
+import {
+  type AnalysisContentBlock,
+  numOrUndef,
+  parseEntryTimeAsUtc,
+} from './analyze-context-helpers.js';
+import {
+  fetchDarkPoolContext,
+  fetchDirectionalChainContext,
+  fetchEconomicCalendarContext,
+  fetchFuturesContext,
+  fetchIvTermContext,
+  fetchMainData,
+  fetchMaxPainContext,
+  fetchMlCalibrationContext,
+  fetchOiChangeContext,
+  fetchPreMarketContext,
+  fetchPriorDayFlowContext,
+  fetchSpxCandlesContext,
+  fetchVolRealizedContext,
+} from './analyze-context-fetchers.js';
 
-interface SchwabChainData {
-  underlying: { last: number };
-  putExpDateMap: Record<string, Record<string, SchwabContract[]>>;
-  callExpDateMap: Record<string, Record<string, SchwabContract[]>>;
-}
+// ── Re-exports for backwards compatibility ────────────────────────────
 
-/** Safely extract a numeric value from the untyped context object. */
-export function numOrUndef(val: unknown): number | undefined {
-  return typeof val === 'number' && Number.isFinite(val) ? val : undefined;
-}
-
-/**
- * Parse an entryTime string ("2:55 PM CT" or "2:55 PM ET") on a given date
- * into a UTC ISO string suitable for DB timestamp comparisons.
- *
- * Returns undefined if parsing fails — callers treat undefined as "no cutoff"
- * and return all rows for the day (safe fallback for live runs).
- */
-export function parseEntryTimeAsUtc(
-  entryTime: string | null,
-  date: string,
-): string | undefined {
-  if (!entryTime) return undefined;
-
-  // Expected format: "H:MM AM/PM TZ" e.g. "2:55 PM CT" or "10:30 AM ET"
-  const match = /^(\d{1,2}):(\d{2})\s+(AM|PM)\s+(CT|ET)$/i.exec(
-    entryTime.trim(),
-  );
-  if (!match) return undefined;
-
-  const [, hourStr, minuteStr, ampm, tz] = match;
-  let hour = Number(hourStr);
-  const minute = Number(minuteStr);
-
-  if (ampm!.toUpperCase() === 'PM' && hour !== 12) hour += 12;
-  if (ampm!.toUpperCase() === 'AM' && hour === 12) hour = 0;
-
-  const ianaZone =
-    tz!.toUpperCase() === 'CT' ? 'America/Chicago' : 'America/New_York';
-
-  // Build a wall-clock date-time string and find the UTC equivalent by
-  // iterating the Intl offset correction (converges in ≤2 passes).
-  const wallClock = `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:59`;
-
-  let utcGuess = new Date(`${wallClock}Z`);
-  for (let i = 0; i < 2; i++) {
-    const localStr = utcGuess.toLocaleString('en-CA', {
-      timeZone: ianaZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    });
-    // en-CA produces "YYYY-MM-DD, HH:MM:SS"
-    const localDate = new Date(localStr.replace(', ', 'T') + 'Z');
-    const offsetMs = utcGuess.getTime() - localDate.getTime();
-    utcGuess = new Date(new Date(`${wallClock}Z`).getTime() + offsetMs);
-  }
-
-  return utcGuess.toISOString();
-}
-
-/** Shape of the content blocks sent to the Anthropic API. */
-export type AnalysisContentBlock =
-  | { type: 'text'; text: string }
-  | {
-      type: 'image';
-      source: {
-        type: 'base64';
-        media_type: ImageMediaType;
-        data: string;
-      };
-    };
+export { numOrUndef, parseEntryTimeAsUtc };
+export type { AnalysisContentBlock };
+export {
+  formatEconomicCalendarForClaude,
+  formatMarketInternalsForClaude,
+  formatPriorDayFlowForClaude,
+} from './analyze-context-formatters.js';
 
 /** Result of buildAnalysisContext — everything the handler needs. */
 export interface AnalysisContextResult {
@@ -170,500 +86,9 @@ export interface AnalysisContextResult {
   darkPoolClusters: DarkPoolCluster[] | null;
 }
 
-function formatMlFindingsForClaude(
-  findings: Record<string, unknown>,
-  updatedAt: Date,
-): string {
-  if (!findings?.dataset) {
-    return `Latest ML pipeline run: ${updatedAt.toISOString().slice(0, 10)} (data unavailable)`;
-  }
-  const d = findings.dataset as {
-    total_days: number;
-    labeled_days: number;
-    date_range: string[];
-    overall_accuracy: number;
-  };
-  const conf = findings.confidence_calibration as Record<
-    string,
-    { correct: number; total: number; rate: number }
-  >;
-  const flow = findings.flow_reliability as Record<
-    string,
-    { correct: number; total: number; rate: number }
-  >;
-  const structAcc = findings.structure_accuracy as Record<
-    string,
-    { correct: number; total: number; rate: number }
-  >;
-  const majority = findings.majority_baseline as {
-    structure: string;
-    rate: number;
-  };
-  const topPredictors = (
-    findings.top_correctness_predictors as Array<{
-      feature: string;
-      r: number;
-      p: number;
-    }>
-  )?.slice(0, 5);
-
-  const lines: string[] = [
-    `Latest ML pipeline run: ${updatedAt.toISOString().slice(0, 10)} (${d.total_days} days, ${d.labeled_days} labeled, ${d.date_range[0]} to ${d.date_range[1]})`,
-    `Overall accuracy: ${(d.overall_accuracy * 100).toFixed(1)}%`,
-    '',
-    'Structure accuracy:',
-  ];
-
-  for (const [struct, acc] of Object.entries(structAcc)) {
-    lines.push(
-      `  ${struct}: ${acc.correct}/${acc.total} (${(acc.rate * 100).toFixed(0)}%)`,
-    );
-  }
-
-  lines.push('', 'Confidence calibration:');
-  for (const [level, cal] of Object.entries(conf)) {
-    lines.push(
-      `  ${level}: ${cal.correct}/${cal.total} (${(cal.rate * 100).toFixed(0)}%)`,
-    );
-  }
-
-  lines.push('', 'Flow source accuracy (settlement direction):');
-  for (const [source, rel] of Object.entries(flow)) {
-    lines.push(
-      `  ${source}: ${rel.correct}/${rel.total} (${(rel.rate * 100).toFixed(0)}%)`,
-    );
-  }
-
-  lines.push(
-    '',
-    `Previous-day baseline: always repeat yesterday = ${(majority.rate * 100).toFixed(0)}% (structure: ${majority.structure})`,
-  );
-
-  if (topPredictors?.length) {
-    lines.push('', 'Top correctness predictors:');
-    for (const pred of topPredictors) {
-      const dir =
-        pred.r > 0 ? 'higher = MORE correct' : 'higher = LESS correct';
-      lines.push(`  ${pred.feature}: r=${pred.r.toFixed(3)} (${dir})`);
-    }
-  }
-
-  return lines.join('\n');
-}
-
-// ── NeonQueryFunction minimal interface for the helper functions ──
-
-type Sql = ReturnType<typeof getDb>;
-
-// ── Economic event row shape from economic_events table ──
-
-interface EconomicEventRow {
-  event_name: string;
-  event_time: string | Date;
-  event_type: string;
-  forecast: string | null;
-  previous: string | null;
-  reported_period: string | null;
-}
-
-const HIGH_SEVERITY_TYPES = new Set(['FOMC', 'CPI', 'PCE', 'JOBS', 'GDP']);
-
 /**
- * Format rows from economic_events into a Claude-readable block.
- * High-severity events (FOMC, CPI, PCE, JOBS, GDP) get 🔴; others get 🟡.
- */
-export function formatEconomicCalendarForClaude(
-  rows: EconomicEventRow[],
-): string {
-  if (rows.length === 0) return 'No scheduled economic events today.';
-
-  const lines = rows.map((row) => {
-    const severity = HIGH_SEVERITY_TYPES.has(row.event_type) ? '🔴' : '🟡';
-    const level = HIGH_SEVERITY_TYPES.has(row.event_type) ? 'HIGH' : 'MEDIUM';
-
-    // Convert event_time (ISO timestamp or Date) to "HH:MM ET"
-    const dt =
-      row.event_time instanceof Date
-        ? row.event_time
-        : new Date(row.event_time);
-    const timeEt = dt.toLocaleTimeString('en-US', {
-      timeZone: 'America/New_York',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-
-    let line = `${severity} ${row.event_name} at ${timeEt} ET [${level}]`;
-
-    const forecastTrimmed = row.forecast != null ? row.forecast.trim() : '';
-    const previousTrimmed = row.previous != null ? row.previous.trim() : '';
-
-    if (forecastTrimmed) line += ` | Forecast: ${forecastTrimmed}`;
-    if (previousTrimmed) {
-      const period =
-        row.reported_period != null && row.reported_period.trim()
-          ? ` (${row.reported_period.trim()})`
-          : '';
-      line += ` | Previous: ${previousTrimmed}${period}`;
-    }
-
-    return line;
-  });
-
-  return lines.join('\n');
-}
-
-/**
- * Format market internals (regime + extremes) as a Claude-readable block.
- * Returns null if no bars are available.
- */
-export function formatMarketInternalsForClaude(
-  bars: InternalBar[],
-): string | null {
-  if (bars.length === 0) return null;
-
-  const regime = classifyRegime(bars);
-  const extremes = detectExtremes(bars, regime.regime);
-
-  const regimeLabel =
-    regime.regime === 'range'
-      ? 'RANGE DAY'
-      : regime.regime === 'trend'
-        ? 'TREND DAY'
-        : 'NEUTRAL';
-  const confidencePct = Math.round(regime.confidence * 100);
-
-  const lines: string[] = [
-    `Regime: ${regimeLabel} (confidence: ${confidencePct}%)`,
-    'Evidence:',
-  ];
-  for (const ev of regime.evidence) {
-    lines.push(`- ${ev}`);
-  }
-
-  // Latest readings by symbol
-  const bySymbol = new Map<string, InternalBar>();
-  for (const bar of bars) {
-    bySymbol.set(bar.symbol, bar);
-  }
-
-  const latestLines: string[] = [];
-  const tick = bySymbol.get('$TICK');
-  if (tick)
-    latestLines.push(
-      `$TICK: ${tick.close > 0 ? '+' : ''}${Math.round(tick.close)}`,
-    );
-  const add = bySymbol.get('$ADD');
-  if (add)
-    latestLines.push(
-      `$ADD: ${add.close > 0 ? '+' : ''}${Math.round(add.close).toLocaleString()}`,
-    );
-  const vold = bySymbol.get('$VOLD');
-  if (vold)
-    latestLines.push(
-      `$VOLD: ${vold.close > 0 ? '+' : ''}${Math.round(vold.close).toLocaleString()}`,
-    );
-  const trin = bySymbol.get('$TRIN');
-  if (trin) latestLines.push(`$TRIN: ${trin.close.toFixed(2)}`);
-
-  if (latestLines.length > 0) {
-    lines.push('', 'Current readings (latest bar):');
-    for (const l of latestLines) {
-      lines.push(`- ${l}`);
-    }
-  }
-
-  // Extreme events
-  if (extremes.length > 0) {
-    lines.push('', `Today's extreme events (${extremes.length} total):`);
-    for (const evt of extremes) {
-      const time = new Date(evt.ts).toLocaleTimeString('en-US', {
-        timeZone: 'America/New_York',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-      });
-      const pinnedTag = evt.pinned ? ', pinned 5m' : '';
-      lines.push(
-        `- ${time} ET: ${evt.symbol} ${evt.value > 0 ? '+' : ''}${Math.round(evt.value)} (${evt.band}${pinnedTag}) — ${evt.label}`,
-      );
-    }
-  }
-
-  return lines.join('\n');
-}
-
-const FLOW_SOURCE_LABELS: Record<string, string> = {
-  market_tide: 'Market Tide',
-  spx_flow: 'SPX Flow',
-  spy_flow: 'SPY Flow',
-  qqq_flow: 'QQQ Flow',
-  spy_etf_tide: 'SPY ETF Tide',
-  qqq_etf_tide: 'QQQ ETF Tide',
-};
-
-const SECONDARY_FLOW_SOURCES = [
-  'spx_flow',
-  'spy_flow',
-  'qqq_flow',
-  'spy_etf_tide',
-  'qqq_etf_tide',
-] as const;
-
-type SecondaryFlowSource = (typeof SECONDARY_FLOW_SOURCES)[number];
-
-// 17:00 UTC = 12:00 PM ET (noon) for mid-session checkpoint
-const MIDDAY_UTC_HOUR = 17;
-
-interface FlowRow {
-  ncp: number;
-  npp: number;
-  ticker: string;
-  date: string;
-  created_at: string | Date;
-}
-
-interface TideArc {
-  open: FlowRow;
-  midday: FlowRow;
-  close: FlowRow;
-}
-
-interface DayFlowData {
-  date: string;
-  tideArc: TideArc | null;
-  secondarySources: Partial<Record<SecondaryFlowSource, FlowRow>>;
-}
-
-/** Format a net flow value as "+/-XB/M dir" label. */
-function formatNetFlow(ncp: number, npp: number): string {
-  const net = ncp - npp;
-  const dir = net < 0 ? 'bull' : 'bear';
-  const absNet = Math.abs(net);
-  const label =
-    absNet >= 1e9
-      ? `${(absNet / 1e9).toFixed(1)}B`
-      : `${Math.round(absNet / 1e6)}M`;
-  return `${net < 0 ? '-' : '+'}${label} ${dir}`;
-}
-
-/**
- * Find the row whose created_at is closest to 17:00 UTC (noon ET).
- * Rows must be sorted ASC by created_at before calling this.
- */
-function findMiddayRow(rows: FlowRow[]): FlowRow {
-  let best = rows[0]!;
-  let bestDiff = Infinity;
-  for (const row of rows) {
-    const dt =
-      row.created_at instanceof Date
-        ? row.created_at
-        : new Date(row.created_at);
-    const diffHours = Math.abs(dt.getUTCHours() - MIDDAY_UTC_HOUR);
-    if (diffHours < bestDiff) {
-      bestDiff = diffHours;
-      best = row;
-    }
-  }
-  return best;
-}
-
-/**
- * Classify a single day's Market Tide intraday arc into a session type.
- *
- * - REVERSAL   — open and close in opposite directions
- * - FADE       — same direction open/close but midday peak ≥ 2× close magnitude
- * - TREND DAY  — same direction, midday peak ≥ 1.5× close magnitude (strong, held)
- * - SUSTAINED  — same direction, relatively flat arc (< 1.5× peak/close ratio)
- */
-function classifySessionType(arc: TideArc): string {
-  const openBull = arc.open.ncp < arc.open.npp;
-  const closeBull = arc.close.ncp < arc.close.npp;
-
-  if (openBull !== closeBull) return 'REVERSAL';
-
-  const closeMag = Math.abs(arc.close.ncp - arc.close.npp);
-  const middayMag = Math.abs(arc.midday.ncp - arc.midday.npp);
-
-  if (closeMag === 0) return 'SUSTAINED';
-
-  const ratio = middayMag / closeMag;
-  if (ratio >= 2) return 'FADE';
-  if (ratio >= 1.5) return 'TREND DAY';
-  return 'SUSTAINED';
-}
-
-/**
- * Format prior 2 trading days' flow readings for Claude, including the full
- * intraday arc (open → midday → close) for Market Tide and terminal values
- * for secondary sources. Returns null when no prior dates have data.
- */
-export async function formatPriorDayFlowForClaude(
-  sql: Sql,
-  currentDate: string,
-): Promise<string | null> {
-  // Find the 2 most recent dates before currentDate that have market_tide data
-  const dateRows = await sql`
-    SELECT DISTINCT date
-    FROM flow_data
-    WHERE ticker = 'market_tide'
-      AND date < ${currentDate}
-    ORDER BY date DESC
-    LIMIT 2
-  `;
-
-  if (dateRows.length === 0) return null;
-
-  const priorDates = (dateRows as Array<{ date: string }>).map((r) => r.date);
-
-  const dayData: DayFlowData[] = await Promise.all(
-    priorDates.map(async (date) => {
-      // Fetch all Market Tide rows in chronological order to extract arc
-      const tideRows = (await sql`
-        SELECT ncp, npp, ticker, date, created_at
-        FROM flow_data
-        WHERE date = ${date}
-          AND ticker = 'market_tide'
-        ORDER BY created_at ASC
-      `) as FlowRow[];
-
-      let tideArc: TideArc | null = null;
-      if (tideRows.length > 0) {
-        const openRow = tideRows[0]!;
-        const closeRow = tideRows.at(-1)!;
-        const middayRow = findMiddayRow(tideRows);
-        tideArc = { open: openRow, midday: middayRow, close: closeRow };
-      }
-
-      // Fetch terminal row for each secondary source
-      const secRows = (await sql`
-        SELECT DISTINCT ON (ticker) ticker, ncp, npp, date, created_at
-        FROM flow_data
-        WHERE date = ${date}
-          AND ticker = ANY(${SECONDARY_FLOW_SOURCES as unknown as string[]})
-        ORDER BY ticker, created_at DESC
-      `) as FlowRow[];
-
-      const secondarySources: Partial<Record<SecondaryFlowSource, FlowRow>> =
-        {};
-      for (const row of secRows) {
-        if (
-          SECONDARY_FLOW_SOURCES.includes(row.ticker as SecondaryFlowSource)
-        ) {
-          secondarySources[row.ticker as SecondaryFlowSource] = row;
-        }
-      }
-
-      return { date, tideArc, secondarySources };
-    }),
-  );
-
-  // Reverse so oldest is first (chronological order in output)
-  dayData.reverse();
-
-  const lines: string[] = ['## Prior-Day Flow Trend'];
-
-  for (const day of dayData) {
-    lines.push('');
-    lines.push(`### ${day.date}`);
-
-    if (day.tideArc) {
-      const { open, midday, close } = day.tideArc;
-      const openLabel = formatNetFlow(open.ncp, open.npp);
-      const middayLabel = formatNetFlow(midday.ncp, midday.npp);
-      const closeLabel = formatNetFlow(close.ncp, close.npp);
-      const sessionType = classifySessionType(day.tideArc);
-      const closeBull = close.ncp < close.npp;
-      const closeDir = closeBull ? 'bullish' : 'bearish';
-      lines.push(
-        `Market Tide Arc: Open ${openLabel} → Midday ${middayLabel} → Close ${closeLabel}`,
-      );
-      lines.push(`Session Type: ${sessionType} — ${closeDir} close`);
-    } else {
-      lines.push('Market Tide: N/A');
-    }
-
-    // Secondary sources — terminal values as confirmation column
-    const secParts: string[] = [];
-    for (const src of SECONDARY_FLOW_SOURCES) {
-      const row = day.secondarySources[src];
-      if (row) {
-        const label = FLOW_SOURCE_LABELS[src] ?? src;
-        secParts.push(`${label}: ${formatNetFlow(row.ncp, row.npp)}`);
-      }
-    }
-    if (secParts.length > 0) {
-      lines.push(`Confirmation: ${secParts.join(' | ')}`);
-    }
-  }
-
-  // Cross-day trend summary
-  lines.push('');
-  lines.push(`Trend: ${buildPriorFlowTrend(dayData)}`);
-
-  return lines.join('\n');
-}
-
-function buildPriorFlowTrend(dayData: DayFlowData[]): string {
-  if (dayData.length === 0) return 'Insufficient data.';
-
-  // Assess Market Tide close direction and strength for each day
-  const assessments = dayData
-    .map((day) => {
-      if (!day.tideArc) return null;
-      const { close } = day.tideArc;
-      return {
-        bullish: close.ncp < close.npp,
-        strength: Math.abs(close.ncp - close.npp),
-        sessionType: classifySessionType(day.tideArc),
-      };
-    })
-    .filter(Boolean) as Array<{
-    bullish: boolean;
-    strength: number;
-    sessionType: string;
-  }>;
-
-  if (assessments.length === 0)
-    return 'No Market Tide data available for prior days.';
-
-  if (assessments.length === 1) {
-    const a = assessments[0]!;
-    return `Market Tide was ${a.bullish ? 'bullish' : 'bearish'} (${a.sessionType}, single prior day — no trend).`;
-  }
-
-  const first = assessments[0]!;
-  const last = assessments.at(-1)!;
-
-  // Check alignment across secondary sources for the most recent prior day
-  const recentDay = dayData.at(-1)!;
-  const sourcesAligned = SECONDARY_FLOW_SOURCES.every((src) => {
-    const row = recentDay.secondarySources[src];
-    if (!row) return true; // missing = skip
-    return row.ncp < row.npp === last.bullish;
-  });
-
-  let trend: string;
-  if (first.bullish === last.bullish) {
-    const strengthening = last.strength > first.strength;
-    const dir = last.bullish ? 'bullish' : 'bearish';
-    const change = strengthening ? 'strengthening' : 'weakening';
-    trend = `Market Tide ${change} ${dir} (${last.sessionType} most recent session).`;
-  } else {
-    const newDir = last.bullish ? 'bullish' : 'bearish';
-    trend = `Market Tide reversing to ${newDir} (${last.sessionType} most recent session).`;
-  }
-
-  const alignmentNote = sourcesAligned
-    ? ' Other sources aligned.'
-    : ' Mixed signals across sources.';
-
-  return trend + alignmentNote;
-}
-
-/**
- * Build the full analysis context by fetching data from multiple sources
- * in parallel, then assembling the user message template.
+ * Build the full analysis context by fetching data from multiple sources,
+ * then assembling the user message template.
  */
 export async function buildAnalysisContext(
   images: Array<{
@@ -694,12 +119,7 @@ export async function buildAnalysisContext(
     );
   }
 
-  // Add context as text
   const mode = (context.mode as string | undefined) ?? 'entry';
-  // Auto-fetch open positions from DB for this date (if any)
-  let positionSummary: string | null = null;
-  // Auto-fetch previous recommendation from DB for continuity
-  let previousRec: string | null = null;
   const analysisDate =
     (context.selectedDate as string | undefined) ?? getETDateStr(new Date());
 
@@ -711,6 +131,10 @@ export async function buildAnalysisContext(
     (context.entryTime as string | undefined) ?? null,
     analysisDate,
   );
+
+  // Positions + previous recommendation (both DB-only, fast)
+  let positionSummary: string | null = null;
+  let previousRec: string | null = null;
   if (!context.isBacktest && mode !== 'review') {
     try {
       const posData = await getLatestPositions(analysisDate);
@@ -722,7 +146,6 @@ export async function buildAnalysisContext(
       metrics.increment('analyze_context.positions_fetch_error');
     }
   }
-  // Always fetch previous recommendation (works for both live and backtest)
   if (mode === 'midday' || mode === 'review') {
     try {
       previousRec = await getPreviousRecommendation(analysisDate, mode);
@@ -731,576 +154,114 @@ export async function buildAnalysisContext(
       metrics.increment('analyze_context.prev_recommendation_error');
     }
   }
-  // Use DB positions if available, fall back to manually provided currentPosition
-  // Review mode doesn't need positions — it evaluates the recommendation, not trades
   const positionContext =
     mode === 'review'
       ? null
       : (positionSummary ??
         (context.currentPosition as string | undefined) ??
         null);
-  // Use DB previous recommendation if available, fall back to manually provided
   const previousContext =
     previousRec ??
     (context.previousRecommendation as string | undefined) ??
     null;
-  // Auto-fetch flow data from DB (populated by crons)
-  let marketTideContext: string | null = null;
-  let marketTideOtmContext: string | null = null;
-  let spxFlowContext: string | null = null;
-  let spyFlowContext: string | null = null;
-  let qqqFlowContext: string | null = null;
-  let spyEtfTideContext: string | null = null;
-  let qqqEtfTideContext: string | null = null;
-  let zeroDteIndexContext: string | null = null;
-  let greekExposureContext: string | null = null;
-  let spotGexContext: string | null = null;
-  let strikeExposureContext: string | null = null;
-  let zeroGammaContext: string | null = null;
-  let allExpiryStrikeContext: string | null = null;
-  let greekFlowContext: string | null = null;
-  let netGexHeatmapContext: string | null = null;
-  let ivTermStructureContext: string | null = null;
-  let overnightGapContext: string | null = null;
-  // Latest Market Tide NCP for directional chain fetch (hoisted for scope)
-  let latestTideNcp: number | null = null;
-  let latestTideNpp: number | null = null;
-  let spxCandlesContext: string | null = null;
-  let darkPoolContext: string | null = null;
-  let darkPoolClusters: DarkPoolCluster[] | null = null;
-  let maxPainContext: string | null = null;
-  let oiChangeContext: string | null = null;
-  let volRealizedContext: string | null = null;
-  let mlCalibrationContext: string | null = null;
-  let futuresContext: string | null = null;
-  let priorDayFlowContext: string | null = null;
-  let economicCalendarContext: string | null = null;
-  let nopeContext: string | null = null;
-  let marketInternalsContext: string | null = null;
 
-  // Cone boundaries — populated from pre-market data or context
+  // Initial cone boundaries (from context), may be overwritten by pre-market
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
   let straddleConeLower = numOrUndef(context.straddleConeLower);
 
-  try {
-    const [
-      tideRows,
-      tideOtmRows,
-      spxRows,
-      spyRows,
-      qqqRows,
-      spyEtfRows,
-      qqqEtfRows,
-      zeroDteIndexRows,
-      greekFlowRows,
-      greekRows,
-      spotGexRows,
-      strikeRows,
-      allExpiryStrikeRows,
-      netGexRows,
-      nopeRows,
-      marketInternalsRows,
-    ] = await Promise.all([
-      getFlowData(analysisDate, 'market_tide', asOf),
-      getFlowData(analysisDate, 'market_tide_otm', asOf),
-      getFlowData(analysisDate, 'spx_flow', asOf),
-      getFlowData(analysisDate, 'spy_flow', asOf),
-      getFlowData(analysisDate, 'qqq_flow', asOf),
-      getFlowData(analysisDate, 'spy_etf_tide', asOf),
-      getFlowData(analysisDate, 'qqq_etf_tide', asOf),
-      getFlowData(analysisDate, 'zero_dte_index', asOf),
-      getFlowData(analysisDate, 'zero_dte_greek_flow', asOf),
-      getGreekExposure(analysisDate), // no timestamp column — full day
-      getSpotExposures(analysisDate, 'SPX', asOf),
-      getStrikeExposures(analysisDate, 'SPX', asOf),
-      getAllExpiryStrikeExposures(analysisDate, 'SPX', asOf),
-      getNetGexHeatmap(analysisDate), // upsert table — no timestamp, always latest
-      getRecentNope('SPY', 60, asOf), // last-hour SPY NOPE trajectory
-      getMarketInternalsToday(analysisDate),
-    ]);
-    marketTideContext = formatFlowDataForClaude(
-      tideRows,
-      'Market Tide (All-In)',
-    );
-    // Capture latest tide for directional chain direction
-    if (tideRows.length > 0) {
-      const latest = tideRows.at(-1)!;
-      latestTideNcp = latest.ncp;
-      latestTideNpp = latest.npp;
-    }
-    marketTideOtmContext = formatFlowDataForClaude(
-      tideOtmRows,
-      'Market Tide (OTM Only)',
-    );
-    spxFlowContext = formatFlowDataForClaude(spxRows, 'SPX Net Flow');
-    spyFlowContext = formatFlowDataForClaude(spyRows, 'SPY Net Flow');
-    qqqFlowContext = formatFlowDataForClaude(qqqRows, 'QQQ Net Flow');
-    spyEtfTideContext = formatFlowDataForClaude(
-      spyEtfRows,
-      'SPY ETF Tide (Holdings Flow)',
-    );
-    qqqEtfTideContext = formatFlowDataForClaude(
-      qqqEtfRows,
-      'QQQ ETF Tide (Holdings Flow)',
-    );
-    zeroDteIndexContext = formatFlowDataForClaude(
-      zeroDteIndexRows,
-      '0DTE Index-Only Net Flow',
-    );
-    // Append 0DTE P/C premium ratio from latest NCP/NPP
-    if (zeroDteIndexContext && zeroDteIndexRows.length > 0) {
-      const latest = zeroDteIndexRows.at(-1)!;
-      const absNcp = Math.abs(latest.ncp);
-      const absNpp = Math.abs(latest.npp);
-      if (absNcp > 0) {
-        const pcRatio = Math.round((absNpp / absNcp) * 100) / 100;
-        let signal = '';
-        if (pcRatio > 1.5)
-          signal =
-            'Extreme put-side hedging demand — potential intraday bottom. Increases PCS confidence.';
-        else if (pcRatio < 0.7)
-          signal =
-            'Extreme call-side speculation — potential intraday top. Increases CCS confidence.';
-        else signal = 'Balanced — no additional signal.';
-        zeroDteIndexContext += `\n  0DTE Put/Call Premium Ratio: ${pcRatio.toFixed(2)} (|NPP|/|NCP|) — ${signal}`;
-      }
-    }
-    greekExposureContext = formatGreekExposureForClaude(
-      greekRows,
-      analysisDate,
-    );
-    greekFlowContext = formatGreekFlowForClaude(greekFlowRows);
-    spotGexContext = formatSpotExposuresForClaude(spotGexRows);
-    strikeExposureContext = formatStrikeExposuresForClaude(strikeRows);
-    netGexHeatmapContext = formatNetGexHeatmapForClaude(netGexRows);
-    allExpiryStrikeContext = formatAllExpiryStrikesForClaude(
-      allExpiryStrikeRows,
-      strikeRows,
-    );
-    nopeContext = formatNopeForClaude(nopeRows);
+  // Core flow/greek/internals fetch (16-way Promise.all inside)
+  const main = await fetchMainData(
+    analysisDate,
+    asOf,
+    straddleConeUpper,
+    straddleConeLower,
+  );
 
-    // Market internals regime classification
-    if (marketInternalsRows.length > 0) {
-      marketInternalsContext =
-        formatMarketInternalsForClaude(marketInternalsRows);
-    }
+  // IV term structure — direct UW API call
+  const ivTermStructureContext = await fetchIvTermContext(
+    analysisDate,
+    context.sigma as string | undefined,
+  );
 
-    // Zero-gamma (GEX flip) analysis — ENH-SIGNAL-001.
-    // Uses the same strikeRows already fetched above; no extra DB round-trip.
-    // The cone half-width (if known) normalizes the flip distance into
-    // "expected-move fractions" so Claude can reason about proximity to
-    // regime change in units that match the existing straddle-cone framing.
-    if (strikeRows.length > 0) {
-      const spot = strikeRows[0]!.price;
-      const coneHalfWidth =
-        straddleConeUpper != null && straddleConeLower != null
-          ? (straddleConeUpper - straddleConeLower) / 2
-          : null;
-      const zeroGamma = analyzeZeroGamma(
-        strikeRows.map((r) => ({ strike: r.strike, netGamma: r.netGamma })),
-        spot,
-        coneHalfWidth,
-      );
-      zeroGammaContext = formatZeroGammaForClaude(zeroGamma, spot);
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch flow data for analysis');
-    metrics.increment('analyze_context.parallel_fetch_error');
-  }
+  // Realized vol + IV rank — single DB row
+  const volRealizedContext = await fetchVolRealizedContext(analysisDate);
 
-  // On-demand IV term structure fetch (not from DB — direct UW API call)
-  try {
-    const uwKey = process.env.UW_API_KEY;
-    if (uwKey) {
-      const ivDate = analysisDate ?? getETDateStr(new Date());
-      const ivRes = await fetch(
-        `https://api.unusualwhales.com/api/stock/SPX/interpolated-iv?date=${ivDate}`,
-        {
-          headers: { Authorization: `Bearer ${uwKey}` },
-          signal: AbortSignal.timeout(15_000),
-        },
-      );
-      if (ivRes.ok) {
-        const ivBody: { data: IvTermRow[] } = await ivRes.json();
-        ivTermStructureContext = formatIvTermStructureForClaude(
-          ivBody.data ?? [],
-          context.sigma as string | undefined,
-        );
-      } else {
-        logger.warn(
-          { status: ivRes.status },
-          'IV term structure API returned non-OK',
-        );
-        metrics.increment('analyze_context.iv_term_api_error');
-      }
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch IV term structure');
-    metrics.increment('analyze_context.iv_term_fetch_error');
-  }
+  // Pre-market + overnight gap (updates cone boundaries if present)
+  const preMarket = await fetchPreMarketContext(
+    analysisDate,
+    context,
+    straddleConeUpper,
+    straddleConeLower,
+  );
+  straddleConeUpper = preMarket.straddleConeUpper;
+  straddleConeLower = preMarket.straddleConeLower;
+  let overnightGapContext = preMarket.overnightGapContext;
 
-  // Realized vol + IV rank from daily vol_realized table
-  try {
-    const sql = getDb();
-    const rvRows = await sql`
-      SELECT iv_30d, rv_30d, iv_rv_spread, iv_overpricing_pct, iv_rank
-      FROM vol_realized
-      WHERE date = ${analysisDate}
-      LIMIT 1
-    `;
-    if (rvRows.length > 0) {
-      const rv = rvRows[0]!;
-      const iv30 =
-        rv.iv_30d != null ? (Number(rv.iv_30d) * 100).toFixed(1) : null;
-      const rv30 =
-        rv.rv_30d != null ? (Number(rv.rv_30d) * 100).toFixed(1) : null;
-      const spread =
-        rv.iv_rv_spread != null
-          ? (Number(rv.iv_rv_spread) * 100).toFixed(1)
-          : null;
-      const overpricing =
-        rv.iv_overpricing_pct != null
-          ? Number(rv.iv_overpricing_pct).toFixed(1)
-          : null;
-      const rank = rv.iv_rank != null ? Number(rv.iv_rank).toFixed(0) : null;
+  // SPX candles — depends on cone boundaries set above
+  const candles = await fetchSpxCandlesContext(
+    context,
+    analysisDate,
+    straddleConeUpper,
+    straddleConeLower,
+  );
+  const spxCandlesContext = candles.spxCandlesContext;
 
-      const lines: string[] = [];
-      if (iv30 && rv30) {
-        lines.push(`30D Implied Vol: ${iv30}% | 30D Realized Vol: ${rv30}%`);
-        if (spread) {
-          const label =
-            Number(spread) > 0 ? 'IV OVERPRICING' : 'IV UNDERPRICING';
-          lines.push(`IV-RV Spread: ${spread} vol pts (${label})`);
-        }
-        if (overpricing) {
-          lines.push(
-            `Overpricing: ${overpricing}% — ${Number(overpricing) > 10 ? 'premium is rich, favorable for selling' : Number(overpricing) < -10 ? 'premium is cheap, caution selling' : 'fairly priced'}`,
-          );
-        }
-      }
-      if (rank) {
-        lines.push(
-          `IV Rank (1-year): ${rank}th percentile — ${Number(rank) > 70 ? 'elevated, rich premium' : Number(rank) < 30 ? 'low, cheap premium' : 'mid-range'}`,
-        );
-      }
-      if (lines.length > 0) {
-        volRealizedContext = lines.join('\n  ');
-      }
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch vol realized data');
-    metrics.increment('analyze_context.vol_realized_db_error');
-  }
-
-  // On-demand pre-market data (ES overnight + straddle cone from manual input)
-  let previousClose: number | null = null;
-  let preMarketRow: PreMarketData | null = null;
-  try {
-    const db = getDb();
-    const pmRows = await db`
-      SELECT pre_market_data FROM market_snapshots
-      WHERE date = ${analysisDate} AND pre_market_data IS NOT NULL
-      ORDER BY created_at DESC LIMIT 1
-    `;
-
-    if (pmRows.length > 0 && pmRows[0]?.pre_market_data) {
-      const pm = pmRows[0].pre_market_data as PreMarketData;
-      preMarketRow = pm;
-
-      // Extract cone boundaries for candles + overnight formatters
-      if (pm.straddleConeUpper != null && !straddleConeUpper)
-        straddleConeUpper = pm.straddleConeUpper;
-      if (pm.straddleConeLower != null && !straddleConeLower)
-        straddleConeLower = pm.straddleConeLower;
-
-      // Format overnight gap analysis if we have cash open + prev close
-      const cashOpen = numOrUndef(context.spx);
-      const prevCloseVal = numOrUndef(context.prevClose);
-
-      if (cashOpen && prevCloseVal) {
-        overnightGapContext = formatOvernightForClaude({
-          preMarket: pm,
-          cashOpen,
-          prevClose: prevCloseVal,
-        });
-      }
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch pre-market data');
-  }
-
-  // On-demand SPX candles from UW (fetches SPY, translates via ratio)
-  if (!context.isBacktest) {
-    try {
-      const uwKey = process.env.UW_API_KEY;
-      const currentSpxC = context.spx as number | undefined;
-      const currentSpyC = context.spy as number | undefined;
-      const candleRatio =
-        currentSpxC && currentSpyC && currentSpyC > 0
-          ? currentSpxC / currentSpyC
-          : 10;
-      const candleResult = uwKey
-        ? await fetchSPXCandles(uwKey, analysisDate, candleRatio)
-        : { candles: [], previousClose: null };
-      if (candleResult.candles.length > 0) {
-        previousClose = candleResult.previousClose;
-        spxCandlesContext = formatSPXCandlesForClaude(
-          candleResult.candles,
-          candleResult.previousClose,
-          straddleConeUpper,
-          straddleConeLower,
-        );
-      }
-    } catch (error_) {
-      logger.error({ err: error_ }, 'Failed to fetch SPX candles');
-    }
-  }
-
-  // If we got previousClose from candles and have pre-market but no gap context yet, retry
-  if (!overnightGapContext && previousClose && preMarketRow) {
+  // Retry overnight gap if candles provided previousClose but pre-market
+  // alone didn't have enough to produce the gap context
+  if (!overnightGapContext && candles.previousClose && preMarket.preMarketRow) {
     const cashOpen = numOrUndef(context.spx);
     if (cashOpen) {
+      const { formatOvernightForClaude } = await import('./overnight-gap.js');
       overnightGapContext = formatOvernightForClaude({
-        preMarket: preMarketRow,
+        preMarket: preMarket.preMarketRow,
         cashOpen,
-        prevClose: previousClose,
+        prevClose: candles.previousClose,
       });
     }
   }
 
-  // On-demand dark pool blocks
-  try {
-    const uwKey = process.env.UW_API_KEY;
-    if (uwKey) {
-      const trades = await fetchDarkPoolBlocks(uwKey, analysisDate);
-      if (trades.length > 0) {
-        const currentSpx = context.spx as number | undefined;
-        const currentSpy = context.spy as number | undefined;
-        const ratio =
-          currentSpx && currentSpy && currentSpy > 0
-            ? currentSpx / currentSpy
-            : 10;
-        darkPoolClusters = clusterDarkPoolTrades(trades, ratio);
-        darkPoolContext = formatDarkPoolForClaude(trades, currentSpx, ratio);
-      }
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch dark pool data');
-  }
+  // Remaining single-source fetches run in parallel — no interdependencies
+  const [
+    darkPool,
+    maxPainContext,
+    oiChangeContext,
+    mlCalibrationContext,
+    futuresContext,
+    priorDayFlowContext,
+    economicCalendarContext,
+    directionalChainContext,
+  ] = await Promise.all([
+    fetchDarkPoolContext(context, analysisDate),
+    fetchMaxPainContext(context, analysisDate),
+    fetchOiChangeContext(context, analysisDate),
+    fetchMlCalibrationContext(),
+    fetchFuturesContext(context, analysisDate),
+    fetchPriorDayFlowContext(analysisDate),
+    fetchEconomicCalendarContext(analysisDate),
+    fetchDirectionalChainContext(
+      mode,
+      context,
+      main.latestTideNcp,
+      main.latestTideNpp,
+    ),
+  ]);
 
-  // On-demand max pain
-  try {
-    const uwKey = process.env.UW_API_KEY;
-    if (uwKey) {
-      const entries = await fetchMaxPain(uwKey, analysisDate);
-      if (entries.length > 0) {
-        const currentSpx = context.spx as number | undefined;
-        maxPainContext = formatMaxPainForClaude(
-          entries,
-          analysisDate,
-          currentSpx,
-        );
-      }
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch max pain data');
-  }
-
-  // On-demand OI change data (prior day positioning)
-  try {
-    const oiChangeRows = await getOiChangeData(analysisDate);
-    if (oiChangeRows.length > 0) {
-      const currentSpx = context.spx as number | undefined;
-      oiChangeContext = formatOiChangeForClaude(
-        oiChangeRows,
-        currentSpx ?? undefined,
-      );
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch OI change data');
-  }
-
-  // ML calibration — latest validated ML findings from EDA pipeline
-  try {
-    const sql = getDb();
-    const mlRows = await sql`
-      SELECT findings, updated_at FROM ml_findings WHERE id = 1
-    `;
-    if (mlRows.length > 0) {
-      const { findings, updated_at } = mlRows[0] as {
-        findings?: Record<string, unknown>;
-        updated_at?: Date;
-      };
-      if (findings && updated_at) {
-        mlCalibrationContext = formatMlFindingsForClaude(findings, updated_at);
-      }
-    }
-  } catch (error_) {
-    logger.warn(
-      { err: error_ },
-      'ML findings fetch failed — using static prompt values',
-    );
-  }
-
-  // Futures context — institutional signals from futures_snapshots
-  try {
-    const sql = getDb();
-    const currentSpx = context.spx as number | undefined;
-    futuresContext = await formatFuturesForClaude(
-      sql,
-      analysisDate,
-      currentSpx,
-    );
-  } catch (error_) {
-    logger.debug({ err: error_ }, 'Futures context fetch failed — skipping');
-  }
-
-  // Prior 2 trading days' terminal flow readings — multi-day momentum context
-  try {
-    const sql = getDb();
-    priorDayFlowContext = await formatPriorDayFlowForClaude(sql, analysisDate);
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch prior-day flow data');
-    metrics.increment('analyze_context.prior_flow_error');
-  }
-
-  // Economic calendar from DB — structured event data with forecast/consensus
-  try {
-    const sql = getDb();
-    const calRows = await sql`
-      SELECT event_name, event_time, event_type, forecast, previous,
-             reported_period
-      FROM economic_events
-      WHERE date = ${analysisDate}
-      ORDER BY event_time ASC
-    `;
-    if (calRows.length > 0) {
-      economicCalendarContext = formatEconomicCalendarForClaude(
-        calRows as EconomicEventRow[],
-      );
-    } else {
-      economicCalendarContext = 'No scheduled economic events today.';
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch economic calendar from DB');
-    metrics.increment('analyze_context.economic_calendar_error');
-  }
-
-  // On-demand 14 DTE directional chain (midday only, not backtests)
-  let directionalChainContext: string | null = null;
-  if (mode === 'midday' && !context.isBacktest) {
-    try {
-      // Determine flow direction from latest Market Tide NCP
-      const flowDirection: 'bullish' | 'bearish' | null =
-        latestTideNcp != null && latestTideNpp != null
-          ? latestTideNcp < latestTideNpp
-            ? 'bearish'
-            : 'bullish'
-          : null;
-
-      if (flowDirection) {
-        const contractType = flowDirection === 'bullish' ? 'CALL' : 'PUT';
-        // Target 14 DTE: window of 12-16 days out
-        const now = new Date();
-        const from = new Date(now);
-        from.setDate(from.getDate() + 12);
-        const to = new Date(now);
-        to.setDate(to.getDate() + 16);
-        const fromStr = from.toLocaleDateString('en-CA', {
-          timeZone: 'America/New_York',
-        });
-        const toStr = to.toLocaleDateString('en-CA', {
-          timeZone: 'America/New_York',
-        });
-
-        const chainResult = await schwabFetch<SchwabChainData>(
-          `/chains?symbol=$SPX&contractType=${contractType}` +
-            `&includeUnderlyingQuote=true&strategy=SINGLE&range=NTM` +
-            `&fromDate=${fromStr}&toDate=${toStr}&strikeCount=20`,
-        );
-
-        if (chainResult.ok) {
-          const expMap =
-            flowDirection === 'bullish'
-              ? chainResult.data.callExpDateMap
-              : chainResult.data.putExpDateMap;
-
-          // Pick expiration closest to 14 DTE
-          let bestExpKey: string | null = null;
-          let bestDteDiff = Infinity;
-          for (const key of Object.keys(expMap)) {
-            const dte = Number.parseInt(key.split(':')[1] ?? '0');
-            const diff = Math.abs(dte - 14);
-            if (diff < bestDteDiff) {
-              bestDteDiff = diff;
-              bestExpKey = key;
-            }
-          }
-
-          if (bestExpKey) {
-            const strikes = expMap[bestExpKey]!;
-            const contracts: SchwabContract[] = [];
-            for (const strikeKey of Object.keys(strikes)) {
-              const list = strikes[strikeKey]!;
-              if (list.length > 0) contracts.push(list[0]!);
-            }
-
-            // Filter to |delta| between 0.40 and 0.65 (50Δ zone)
-            const filtered = contracts.filter((c) => {
-              const absDelta = Math.abs(c.delta);
-              return absDelta >= 0.4 && absDelta <= 0.65;
-            });
-
-            if (filtered.length > 0) {
-              filtered.sort((a, b) => a.strikePrice - b.strikePrice);
-              const expDate = bestExpKey.split(':')[0];
-              const dte = bestExpKey.split(':')[1];
-              const side = flowDirection === 'bullish' ? 'Call' : 'Put';
-              const tag = side[0]; // C or P
-              const fmtOI = (n: number) =>
-                n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
-              const lines = filtered.map(
-                (c) =>
-                  `  ${c.strikePrice}${tag}  Bid $${c.bid.toFixed(2)}  Ask $${c.ask.toFixed(2)}  Mid $${((c.bid + c.ask) / 2).toFixed(2)}  Δ ${c.delta.toFixed(2)}  IV ${c.volatility.toFixed(1)}%  OI ${fmtOI(c.openInterest)}  Vol ${fmtOI(c.totalVolume)}`,
-              );
-              directionalChainContext =
-                `## ${dte} DTE SPX ${side} Chain (${expDate} expiry, 40-65Δ range)\n` +
-                `Flow direction: ${flowDirection.toUpperCase()} (from Market Tide NCP). ` +
-                `Showing ${side.toLowerCase()}s only.\n` +
-                lines.join('\n');
-            }
-          }
-        } else {
-          logger.warn(
-            { status: chainResult.status },
-            '14 DTE chain fetch failed — Schwab auth may be unavailable',
-          );
-        }
-      }
-    } catch (error_) {
-      logger.error(
-        { err: error_ },
-        'Failed to fetch 14 DTE chain for directional opportunity',
-      );
-    }
-  }
-
-  const marketTideOtmSection = marketTideOtmContext
-    ? `\n${marketTideOtmContext}\n`
+  const marketTideOtmSection = main.marketTideOtmContext
+    ? `\n${main.marketTideOtmContext}\n`
     : '';
 
   // Build data unavailability manifest so the model knows what failed to fetch
   const unavailable: string[] = [];
-  if (!spxFlowContext) unavailable.push('SPX Net Flow');
-  if (!marketTideContext) unavailable.push('Market Tide');
-  if (!spotGexContext) unavailable.push('Aggregate GEX Panel');
-  if (!greekExposureContext) unavailable.push('Greek Exposure (OI-based)');
-  if (!strikeExposureContext) unavailable.push('Per-Strike Greek Profile');
-  if (!netGexHeatmapContext) unavailable.push('Net GEX Heatmap');
-  if (!greekFlowContext) unavailable.push('0DTE Delta Flow');
+  if (!main.spxFlowContext) unavailable.push('SPX Net Flow');
+  if (!main.marketTideContext) unavailable.push('Market Tide');
+  if (!main.spotGexContext) unavailable.push('Aggregate GEX Panel');
+  if (!main.greekExposureContext) unavailable.push('Greek Exposure (OI-based)');
+  if (!main.strikeExposureContext) unavailable.push('Per-Strike Greek Profile');
+  if (!main.netGexHeatmapContext) unavailable.push('Net GEX Heatmap');
+  if (!main.greekFlowContext) unavailable.push('0DTE Delta Flow');
   if (!spxCandlesContext && !context.isBacktest)
     unavailable.push('SPX Intraday Candles');
-  if (!darkPoolContext) unavailable.push('Dark Pool Blocks');
+  if (!darkPool.darkPoolContext) unavailable.push('Dark Pool Blocks');
   if (!maxPainContext) unavailable.push('Max Pain');
   if (!ivTermStructureContext) unavailable.push('IV Term Structure');
   if (!overnightGapContext) unavailable.push('Overnight Gap Analysis');
@@ -1308,8 +269,8 @@ export async function buildAnalysisContext(
   if (!futuresContext) unavailable.push('Futures Context');
   if (!priorDayFlowContext) unavailable.push('Prior-Day Flow Trend');
   if (!economicCalendarContext) unavailable.push('Economic Calendar');
-  if (!nopeContext) unavailable.push('SPY NOPE');
-  if (!marketInternalsContext) unavailable.push('NYSE Market Internals');
+  if (!main.nopeContext) unavailable.push('SPY NOPE');
+  if (!main.marketInternalsContext) unavailable.push('NYSE Market Internals');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -1361,23 +322,23 @@ ${mlCalibrationContext ? `\n## ML Calibration Update (from latest EDA pipeline r
 ${unavailableSection}
 ${economicCalendarContext ? `\n## Today's Economic Events (from DB)\n${economicCalendarContext}\n` : ''}
 ${priorDayFlowContext ? `\n${priorDayFlowContext}\n` : ''}
-${marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${marketTideContext}\n${marketTideOtmSection}` : ''}
-${spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. These are the primary flow signal (Rule 8, 50% weight). Trust these values over screenshot estimates.\n\n${spxFlowContext}\n` : ''}
-${spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPY. Secondary confirmation signal (Rule 8, 15% weight).\n\n${spyFlowContext}\n` : ''}
-${qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for QQQ. Tech divergence check (Rule 8, 10% weight).\n\n${qqqFlowContext}\n` : ''}
-${spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside SPY (AAPL, MSFT, NVDA, etc), not on SPY itself. When SPY Net Flow is bullish but SPY ETF Tide is bearish, the SPY call buying is likely hedging — the underlying stocks are seeing directional put buying. Use as a confirmation/divergence layer against SPY Net Flow.\n\n${spyEtfTideContext}\n` : ''}
-${qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${qqqEtfTideContext}\n` : ''}
-${zeroDteIndexContext ? `\n## 0DTE Index-Only Net Flow (from API)\nPure 0DTE flow from index products (SPX, NDX) only — excludes weekly/monthly expirations and ETFs/equities. When this diverges from aggregate SPX Net Flow, the aggregate signal contains longer-dated hedging noise. Trust 0DTE index flow for same-session directional reads. When both agree, highest conviction.\n\n${zeroDteIndexContext}\n` : ''}
-${nopeContext ? `\n## SPY NOPE — Net Options Pricing Effect (from API — 1-min resolution)\nIntraday dealer hedging pressure derived from options delta per unit of underlying stock volume. SPY is used as the SPX proxy because SPX has no tradeable shares. See <spy_nope> in the system prompt for full interpretation rules — the short version: positive NOPE = bullish tape pressure (dealers buying shares), negative NOPE = bearish tape pressure (dealers selling shares). Use this as a confirmation layer alongside Market Tide and SPX Net Flow.\n\n${nopeContext}\n` : ''}
-${marketInternalsContext ? `\n## NYSE Market Internals — Session Regime Classification\nNYSE breadth indicators ($TICK, $ADD, $VOLD, $TRIN) classify the session as RANGE DAY, TREND DAY, or NEUTRAL. The regime adjusts how to weight other signals — see <market_internals_regime> in the system prompt. On range days, GEX walls are reliable and TICK extremes are fade candidates. On trend days, walls may fail and TICK extremes confirm the trend.\n\n${marketInternalsContext}\n` : ''}
-${greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${greekExposureContext}\n` : ''}
-${greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${greekFlowContext}\n` : ''}
-${spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${spotGexContext}\n` : ''}
-${strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${strikeExposureContext}\n` : ''}
-${netGexHeatmapContext ? `\n## SPX 0DTE Net GEX Heatmap (from API — signed dollar GEX per strike)\nThis is the signed net GEX dollar amount at each strike from the greek_exposure_strike table, updated every minute. This is the same data shown in the UW Net GEX Heatmap UI. Positive net_gex = net long gamma (dealer mean-reverting hedging → price suppression, pin magnetism); negative net_gex = net short gamma (dealer momentum hedging → price acceleration, breakouts). The gamma flip zone (net_gex sign change) is the structural regime boundary between suppression and acceleration. Use this alongside the Per-Strike Greek Profile — this adds the dollar-scaled magnitude and call/put composition that the naive profile lacks.\n\n${netGexHeatmapContext}\n` : ''}
-${zeroGammaContext ? `\n## SPX 0DTE Zero-Gamma Level (derived from per-strike gamma profile)\nThe zero-gamma strike is the approximate SPX level at which aggregate dealer gamma flips sign. Above the flip (positive gamma) dealers hedge mean-reverting and price movement is suppressed. Below the flip (negative gamma) dealers hedge momentum and price movement accelerates. Distance-to-flip in cone fractions tells you how close today's price is to a regime change in units that match the straddle cone.\n\n${zeroGammaContext}\n` : ''}
+${main.marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${main.marketTideContext}\n${marketTideOtmSection}` : ''}
+${main.spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. These are the primary flow signal (Rule 8, 50% weight). Trust these values over screenshot estimates.\n\n${main.spxFlowContext}\n` : ''}
+${main.spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPY. Secondary confirmation signal (Rule 8, 15% weight).\n\n${main.spyFlowContext}\n` : ''}
+${main.qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for QQQ. Tech divergence check (Rule 8, 10% weight).\n\n${main.qqqFlowContext}\n` : ''}
+${main.spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside SPY (AAPL, MSFT, NVDA, etc), not on SPY itself. When SPY Net Flow is bullish but SPY ETF Tide is bearish, the SPY call buying is likely hedging — the underlying stocks are seeing directional put buying. Use as a confirmation/divergence layer against SPY Net Flow.\n\n${main.spyEtfTideContext}\n` : ''}
+${main.qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${main.qqqEtfTideContext}\n` : ''}
+${main.zeroDteIndexContext ? `\n## 0DTE Index-Only Net Flow (from API)\nPure 0DTE flow from index products (SPX, NDX) only — excludes weekly/monthly expirations and ETFs/equities. When this diverges from aggregate SPX Net Flow, the aggregate signal contains longer-dated hedging noise. Trust 0DTE index flow for same-session directional reads. When both agree, highest conviction.\n\n${main.zeroDteIndexContext}\n` : ''}
+${main.nopeContext ? `\n## SPY NOPE — Net Options Pricing Effect (from API — 1-min resolution)\nIntraday dealer hedging pressure derived from options delta per unit of underlying stock volume. SPY is used as the SPX proxy because SPX has no tradeable shares. See <spy_nope> in the system prompt for full interpretation rules — the short version: positive NOPE = bullish tape pressure (dealers buying shares), negative NOPE = bearish tape pressure (dealers selling shares). Use this as a confirmation layer alongside Market Tide and SPX Net Flow.\n\n${main.nopeContext}\n` : ''}
+${main.marketInternalsContext ? `\n## NYSE Market Internals — Session Regime Classification\nNYSE breadth indicators ($TICK, $ADD, $VOLD, $TRIN) classify the session as RANGE DAY, TREND DAY, or NEUTRAL. The regime adjusts how to weight other signals — see <market_internals_regime> in the system prompt. On range days, GEX walls are reliable and TICK extremes are fade candidates. On trend days, walls may fail and TICK extremes confirm the trend.\n\n${main.marketInternalsContext}\n` : ''}
+${main.greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${main.greekExposureContext}\n` : ''}
+${main.greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${main.greekFlowContext}\n` : ''}
+${main.spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${main.spotGexContext}\n` : ''}
+${main.strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${main.strikeExposureContext}\n` : ''}
+${main.netGexHeatmapContext ? `\n## SPX 0DTE Net GEX Heatmap (from API — signed dollar GEX per strike)\nThis is the signed net GEX dollar amount at each strike from the greek_exposure_strike table, updated every minute. This is the same data shown in the UW Net GEX Heatmap UI. Positive net_gex = net long gamma (dealer mean-reverting hedging → price suppression, pin magnetism); negative net_gex = net short gamma (dealer momentum hedging → price acceleration, breakouts). The gamma flip zone (net_gex sign change) is the structural regime boundary between suppression and acceleration. Use this alongside the Per-Strike Greek Profile — this adds the dollar-scaled magnitude and call/put composition that the naive profile lacks.\n\n${main.netGexHeatmapContext}\n` : ''}
+${main.zeroGammaContext ? `\n## SPX 0DTE Zero-Gamma Level (derived from per-strike gamma profile)\nThe zero-gamma strike is the approximate SPX level at which aggregate dealer gamma flips sign. Above the flip (positive gamma) dealers hedge mean-reverting and price movement is suppressed. Below the flip (negative gamma) dealers hedge momentum and price movement accelerates. Distance-to-flip in cone fractions tells you how close today's price is to a regime change in units that match the straddle cone.\n\n${main.zeroGammaContext}\n` : ''}
 ${context.gexLandscapeBias ? `\n## GEX Landscape Structural Bias (from live GEX panel)\nThis is the real-time structural bias verdict computed from the per-strike GEX panel, using 5-minute smoothing. It synthesizes gravity direction (where the largest GEX wall sits relative to spot), total net GEX regime (positive = dealer counter-cyclical; negative = dealer pro-cyclical), and 1m/5m GEX trends into a single directional verdict. Use this as the GEX structural summary — it is more reliable than a manual reading because it uses the full strike-level data and smooths out per-snapshot noise.\n\n${context.gexLandscapeBias as string}\n` : ''}
-${allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${allExpiryStrikeContext}\n` : ''}
+${main.allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${main.allExpiryStrikeContext}\n` : ''}
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
 ${volRealizedContext ? `\n## Realized Vol & IV Rank (from API — daily)\n  ${volRealizedContext}\n` : ''}
 ${overnightGapContext ? `\n## ES Overnight Gap Analysis (from pre-market data)\nThe ES futures overnight session data provides pre-market context for the cash session. Gap fill probability, overnight range consumption, and VWAP positioning help calibrate the opening hour bias. On high gap fill probability days, the first 30 minutes are likely to see a reversal toward the previous close. On low fill probability days, the gap direction extends and aligns with the session trend.\n\n${overnightGapContext}\n` : ''}
@@ -1391,7 +352,7 @@ ${
 `
     : ''
 }
-${darkPoolContext ? `\n## SPY Dark Pool Institutional Blocks (from API)\nLarge ($5M+) dark pool block trades in SPY, translated to approximate SPX levels. Dark pool prints reveal where institutions are buying or selling in size off-exchange — these create structural support/resistance levels that options flow, gamma, and charm cannot see. When a dark pool buyer-initiated cluster aligns with a positive gamma wall, that level has the highest-confidence structural support. When a dark pool seller cluster aligns with negative gamma, that level is a confirmed ceiling.\n\n${darkPoolContext}\n` : ''}
+${darkPool.darkPoolContext ? `\n## SPY Dark Pool Institutional Blocks (from API)\nLarge ($5M+) dark pool block trades in SPY, translated to approximate SPX levels. Dark pool prints reveal where institutions are buying or selling in size off-exchange — these create structural support/resistance levels that options flow, gamma, and charm cannot see. When a dark pool buyer-initiated cluster aligns with a positive gamma wall, that level has the highest-confidence structural support. When a dark pool seller cluster aligns with negative gamma, that level is a confirmed ceiling.\n\n${darkPool.darkPoolContext}\n` : ''}
 ${(() => {
   const topOI = context.topOIStrikes as
     | Array<{
@@ -1517,6 +478,6 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     mode,
     lessonsBlock,
     similarAnalysesBlock,
-    darkPoolClusters,
+    darkPoolClusters: darkPool.darkPoolClusters,
   };
 }
