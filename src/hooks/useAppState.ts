@@ -8,13 +8,25 @@
  *
  * Extracted from App.tsx to keep the root component focused on
  * composition and rendering.
+ *
+ * Memoization policy: the previous incarnation wrapped the entire
+ * 30-field return object in a single `useMemo` with 26 dependencies.
+ * That pattern looks defensive but does nothing useful: the only
+ * consumer (App.tsx) destructures the return immediately, so object
+ * identity never leaves this hook. The memo was invalidated on every
+ * state change and bought zero downstream stability. Removed.
+ *
+ * What IS still memoized: the four derived values (`spyVal`, `spxVal`,
+ * `spxDirectActive`, `effectiveRatio`) share a tight 3-dep array
+ * `[dSpot, dSpx, spxRatio]` and stay stable across unrelated state
+ * churn (theme toggle, time picker, etc.).
  */
 
-import { useState, useMemo, useCallback } from 'react';
-import type { IVMode, AmPm, Timezone } from '../types';
+import { useCallback, useMemo, useState } from 'react';
 import { DEFAULTS, IV_MODES } from '../constants';
-import { useDebounced } from './useDebounced';
+import type { AmPm, IVMode, Timezone } from '../types';
 import { getCTTime, getETTime } from '../utils/timezone';
+import { useDebounced } from './useDebounced';
 
 /**
  * Returns a CT time that is valid for the calculator.
@@ -118,8 +130,9 @@ export function useAppState() {
   const dIV = useDebounced(directIVInput);
   const dMult = useDebounced(multiplier);
 
-  // Derived SPX ratio (memoized to stabilise object identity)
-  return useMemo(() => {
+  // Derived SPX ratio — memoized against its true dependencies only so
+  // unrelated state changes (theme, time, IC settings) don't re-compute.
+  const derived = useMemo(() => {
     const spyVal = Number.parseFloat(dSpot);
     const spxVal = Number.parseFloat(dSpx);
     const spxDirectActive =
@@ -129,111 +142,80 @@ export function useAppState() {
       !Number.isNaN(spyVal) &&
       spyVal > 0;
     const effectiveRatio = spxDirectActive ? spxVal / spyVal : spxRatio;
+    return { spyVal, spxVal, spxDirectActive, effectiveRatio };
+  }, [dSpot, dSpx, spxRatio]);
 
-    return {
-      // Theme
-      darkMode,
-      setDarkMode: setDarkModeAndPersist,
-
-      // Spot
-      spotPrice,
-      setSpotPrice,
-      spxDirect,
-      setSpxDirect,
-      spxRatio,
-      setSpxRatio,
-
-      // IV
-      ivMode,
-      setIvMode,
-      vixInput,
-      setVixInput,
-      multiplier,
-      setMultiplier,
-      directIVInput,
-      setDirectIVInput,
-
-      // Time
-      timeHour,
-      setTimeHour,
-      timeMinute,
-      setTimeMinute,
-      timeAmPm,
-      setTimeAmPm,
-      timezone,
-      setTimezone,
-
-      // IC & skew
-      wingWidth,
-      setWingWidth,
-      showIC,
-      setShowIC,
-      contracts,
-      setContracts,
-      skewPct,
-      setSkewPct,
-      clusterMult,
-      setClusterMult,
-
-      // Hedge
-      breakevenTarget,
-      setBreakevenTarget,
-
-      // BWB
-      showBWB,
-      setShowBWB,
-      bwbNarrowWidth,
-      setBwbNarrowWidth,
-      bwbWideMultiplier,
-      setBwbWideMultiplier,
-
-      // Portfolio risk gate (FE-STATE-006)
-      portfolioRiskThresholdPct,
-      setPortfolioRiskThresholdPct,
-
-      // Debounced
-      dSpot,
-      dSpx,
-      dVix,
-      dIV,
-      dMult,
-
-      // Derived
-      spyVal,
-      spxVal,
-      spxDirectActive,
-      effectiveRatio,
-    };
-  }, [
+  return {
+    // Theme
     darkMode,
-    setDarkModeAndPersist,
+    setDarkMode: setDarkModeAndPersist,
+
+    // Spot
     spotPrice,
+    setSpotPrice,
     spxDirect,
+    setSpxDirect,
     spxRatio,
+    setSpxRatio,
+
+    // IV
     ivMode,
+    setIvMode,
     vixInput,
+    setVixInput,
     multiplier,
+    setMultiplier,
     directIVInput,
+    setDirectIVInput,
+
+    // Time
     timeHour,
+    setTimeHour,
     timeMinute,
+    setTimeMinute,
     timeAmPm,
+    setTimeAmPm,
     timezone,
+    setTimezone,
+
+    // IC & skew
     wingWidth,
+    setWingWidth,
     showIC,
+    setShowIC,
     contracts,
+    setContracts,
     skewPct,
+    setSkewPct,
     clusterMult,
+    setClusterMult,
+
+    // Hedge
     breakevenTarget,
+    setBreakevenTarget,
+
+    // BWB
     showBWB,
+    setShowBWB,
     bwbNarrowWidth,
+    setBwbNarrowWidth,
     bwbWideMultiplier,
+    setBwbWideMultiplier,
+
+    // Portfolio risk gate (FE-STATE-006)
     portfolioRiskThresholdPct,
+    setPortfolioRiskThresholdPct,
+
+    // Debounced
     dSpot,
     dSpx,
     dVix,
     dIV,
     dMult,
-  ]);
+
+    // Derived
+    ...derived,
+  };
 }
 
 export type AppState = ReturnType<typeof useAppState>;
