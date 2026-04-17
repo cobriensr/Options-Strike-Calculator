@@ -43,21 +43,38 @@ Fix silent failures and validation bypasses first. These are production risks; e
 
 **Verification:** `npm run review` passes. Manually trigger an error path on dark pool (e.g., bad API key) and confirm Sentry receives it.
 
-### Phase 1B — exactOptionalPropertyTypes strict flag (separate PR) — ~1 day
+### Phase 1B — exactOptionalPropertyTypes strict flag — WON'T FIX (evaluated 2026-04-16)
 
-Flipping `exactOptionalPropertyTypes: true` produces ~119 TS errors across:
+**Decision: do not flip the flag. Stay on `exactOptionalPropertyTypes: false`.**
 
-- **Frontend (most errors):** component Props interfaces declared as `foo?: T` where tests pass `foo: undefined`. 71 in [src/__tests__/components/DeltaRegimeGuide.test.tsx](../../src/__tests__/components/DeltaRegimeGuide.test.tsx) alone; also BWBSection, IronCondorSection, ChartAnalysis, TradingScheduleSection, HedgeSection tests plus the hook tests (useRangeAnalysis, useComputedSignals, useSnapshotSave).
-- **Backend:** [api/positions.ts](../../api/positions.ts), [api/cron/fetch-outcomes.ts](../../api/cron/fetch-outcomes.ts), [api/cron/fetch-darkpool.ts](../../api/cron/fetch-darkpool.ts), [api/ml/plot-image.ts](../../api/ml/plot-image.ts), [api/options-flow/whale-positioning.ts](../../api/options-flow/whale-positioning.ts), [api/cron/curate-lessons.ts](../../api/cron/curate-lessons.ts).
+Flipping `exactOptionalPropertyTypes: true` produces 119 TS errors across 29 files. Most (71) cluster in one test helper (`DeltaRegimeGuide.test.tsx`'s `makeProps`); the remaining 48 are legitimate app-code call sites passing `foo: undefined` where interfaces declare `foo?: T`.
 
-**Root pattern:** Interfaces declared `foo?: T` but callers pass `foo: undefined` explicitly.
+**Why this is being rejected rather than shipped:**
 
-**Fix strategy (pick one per file, prefer #1 for mechanical sites):**
+Empirical audit of the codebase (2026-04-16) confirmed the flag catches zero runtime bugs here:
 
-1. Widen the interface: `foo?: T` → `foo?: T | undefined`. Preferred for shared types.
-2. Fix the caller: use conditional spread `...(value !== undefined && { foo: value })` to omit the key. Preferred for Props passed from tests.
+- **`'key' in obj` uses:** 112 occurrences — all are discriminated-union narrowing (`'error' in row`), zero test for set-vs-absent.
+- **`hasOwnProperty` uses:** 0.
+- **`Object.keys().length` on typed shapes:** 0.
+- **JSON.stringify:** strips undefined values — network/DB/cache paths coalesce `{foo: undefined}` and `{}`.
+- **Zod `.optional()`:** accepts both missing and undefined.
+- **React props:** `<Foo prop={undefined} />` and `<Foo />` are runtime-identical.
 
-**Scope:** ~25 files, ~119 errors. Do this as its own branch `react-ts-audit-phase1b`. Partial widenings already applied in Phase 1 (PositionLeg, SkippedLesson, getHistoricalWinRate, formatWinRateForClaude, buildAnalysisContext) are no-ops with the flag off and serve as preparation.
+The flag would enforce a semantic distinction (absent vs set-to-undefined) that no code in this repo actually uses. Flipping it would produce ~50 lines of `| undefined` widening for zero safety gain — pure alignment churn.
+
+**Risk of leaving the flag off:**
+
+- Runtime bug risk: ~zero (based on grep above).
+- Future drift risk: low; a policy note in [CLAUDE.md#optional-props-policy](../../CLAUDE.md) documents the convention so new code doesn't add `'foo' in obj` patterns on typed props.
+- Documentation risk: `?:` is ambiguous about intent without the flag. Mitigated by the policy note.
+
+**What we're doing instead:**
+
+Added an **Optional props policy** section to [CLAUDE.md](../../CLAUDE.md) documenting that `foo?: T` is treated as "may be absent or undefined" in this repo, with explicit guidance against `in`/`hasOwnProperty` checks on typed props. For genuine set-vs-unset semantics, use a sentinel (`null`, `'unset'`) or discriminated loading state.
+
+Partial widenings already applied in Phase 1 (PositionLeg, SkippedLesson, getHistoricalWinRate, formatWinRateForClaude, buildAnalysisContext) are no-ops with the flag off. They stay in place as harmless documentation of intent at those specific types.
+
+**If the cost-benefit changes** (e.g., a new library is added that distinguishes absent from undefined, or a bug is traced to this flag being off), revisit.
 
 ### Phase 2 — Decompose the monoliths — ~3–4 days, one file per session
 

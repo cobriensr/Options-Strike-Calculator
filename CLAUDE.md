@@ -176,6 +176,25 @@ When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/_
 - Run `npm run lint` before reporting any task complete. Lint covers root project only — `sidecar/` and `playwright-report/` are in the ESLint ignores list.
 - Use `type` imports for type-only imports (`import type { ... }`).
 
+### Optional props policy (`exactOptionalPropertyTypes` is OFF — intentional)
+
+The codebase treats `foo?: T` as "the field may be absent **or explicitly set to undefined**". The two are semantically equivalent everywhere we care:
+
+- **React props** — `<Foo prop={undefined} />` and `<Foo />` are runtime-identical.
+- **JSON.stringify** — undefined values are omitted, so network / DB / cache paths coalesce both forms.
+- **Zod `.optional()`** — accepts both missing keys and `{key: undefined}`.
+- **Anthropic/OpenAI SDKs** — serialize through JSON, so same coalescing.
+
+Because of this, we do **not** write code that distinguishes "absent" from "undefined":
+
+- ❌ Do not use `'foo' in obj` or `Object.hasOwnProperty(obj, 'foo')` to test whether a typed prop was set. (The `'error' in row` pattern for discriminated-union narrowing is fine — different use case.)
+- ❌ Do not rely on `Object.keys(obj).length` on typed object shapes for the same reason.
+- ✅ Use `obj.foo != null` / `obj.foo !== undefined` / optional chaining. These coalesce the distinction, which matches React/JSON semantics.
+
+If you need genuine set-vs-unset semantics (rare — no production code in this repo does), model it explicitly: an `'unset'` sentinel string, a `null` sentinel, or a discriminated loading state (`{ status: 'loading' } | { status: 'loaded'; value: T }`). Don't rely on `undefined`.
+
+Turning on `exactOptionalPropertyTypes` was evaluated during the 2026-04-16 TypeScript audit (Phase 1B) and rejected: 119 type errors to fix, zero runtime bugs prevented in this codebase (verified by grepping for `in`/`hasOwnProperty` patterns). See `docs/superpowers/specs/react-ts-audit-2026-04-16.md`.
+
 ## Environment Variables
 
 Required env vars (pulled via `vercel env pull .env.local`):
